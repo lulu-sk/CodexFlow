@@ -1,0 +1,74 @@
+name: Bug report
+description: File a bug report
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report! Before filing, please search existing Issues.
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      description: A clear and concise description of the bug.
+      placeholder: "Terminal freezes after switching WSL distro"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Provide a minimal, reliable reproduction.
+      placeholder: |
+        1. Open Settings -> set distro to Ubuntu-24.04
+        2. New Terminal -> run `uname -a`
+        3. Switch to Windows terminal mode
+        4. Observe hang
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      placeholder: "v0.1.0 (commit abcdefg)"
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: OS, WSL distro/version, Node, Electron (if dev), etc.
+      placeholder: |
+        - Windows 11 23H2
+        - WSL Ubuntu-24.04
+        - Node 20, Electron 29
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Attach relevant excerpts. Avoid noise. Set `localStorage.CF_DIAG_LOG='1'` to collect renderer errors.
+      render: shell
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Self-check
+      options:
+        - label: I searched for existing issues
+          required: true
+        - label: I can reproduce this with latest main or latest release
+          required: true
+

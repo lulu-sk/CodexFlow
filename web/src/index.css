@@ -1,0 +1,40 @@
+/* xterm styles - 必须放在所有 Tailwind 指令之前 */
+@import "@xterm/xterm/css/xterm.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root { height: 100%; }
+body { @apply bg-slate-50 text-slate-900; overflow: hidden; }
+
+/* 全局滚动条样式（更纤细、更柔和） */
+* {
+  scrollbar-width: thin; /* Firefox */
+  scrollbar-color: #cbd5e1 transparent; /* thumb: slate-300; track: transparent */
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background-color: rgba(148, 163, 184, 0.7); /* slate-400 */
+  border-radius: 9999px;
+  border: 2px solid transparent; /* 留出一点内边距视觉 */
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(100, 116, 139, 0.85); /* slate-500 */
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 隐藏滚动条但保留滚动能力（用于水平标签栏等） */
+.no-scrollbar {
+  -ms-overflow-style: none; /* IE/Edge */
+  scrollbar-width: none; /* Firefox */
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none; /* Chrome/Safari */
+}

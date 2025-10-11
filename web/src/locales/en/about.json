@@ -1,0 +1,65 @@
+{
+  "openButton": "About & Support",
+  "dialogTitle": "About & Support",
+  "content": {
+    "heading": "About CodexFlow",
+    "paragraphs": [
+      "CodexFlow began with a simple idea: a smoother, more elegant way to interact with Codex."
+    ]
+  },
+  "actions": {
+    "openLicense": "Open LICENSE",
+    "openNotice": "Open NOTICE",
+    "openHomepage": "Project Homepage",
+    "check": "Check for Updates",
+    "checking": "Checking..."
+  },
+  "homepage": {
+    "dialogOpenLinkHint": "This will open the CodexFlow project homepage on GitHub in your browser. Continue?",
+    "dialogOpenLink": "Open Homepage"
+  },
+  "donate": {
+    "sectionTitle": "Support the Author",
+    "description": "Like this project? Feel free to buy me a coffee to help it grow!",
+    "signatureInvalid": "Signature verification failed, information may be tampered",
+    "defaultPlaceholder": "QR Code",
+    "dialogTitle": "Donate / Support",
+    "dialogImageAlt": "{name} QR code",
+    "dialogOpenLinkHint": "The payment page will open in your browser. Continue?",
+    "dialogOpenLink": "Open Link",
+    "channels": {
+      "alipay": "Alipay",
+      "wechat": "WeChat",
+      "paypal": "PayPal.me"
+    }
+  },
+  "announce": {
+    "sectionTitle": "Announcements"
+  },
+  "privacy": "Privacy: The app runs fully offline and never collects or uploads any data. If this ever changes, we'll ask first and keep it disabled by default.",
+  "update": {
+    "badge": "New version available",
+    "title": "CodexFlow {version}",
+    "current": "Current version v{version}",
+    "intro": "Here's a quick overview of the changes. Thank you for supporting CodexFlow.",
+    "notesTitle": "Release Notes",
+    "notesFallback": "A new version is available. Visit the download page for the full release notes.",
+    "later": "Remind me later",
+    "skip": "Skip this version",
+    "download": "Go to download"
+  },
+  "updateError": {
+    "title": "Update check failed",
+    "network": "Unable to reach the update server. Please check your connection and try again.",
+    "timeout": "The update check timed out. Please try again later.",
+    "invalid": "The update metadata is malformed, so we can't tell if a new version is available right now.",
+    "unknown": "An unexpected error occurred while checking for updates. Please try again later.",
+    "confirm": "Got it"
+  },
+  "noUpdate": {
+    "title": "Already up to date",
+    "message": "CodexFlow {version} is already the latest version; no update is required.",
+    "messageNoVersion": "CodexFlow is already the latest version; no update is required.",
+    "confirm": "Got it"
+  }
+}

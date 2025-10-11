@@ -1,0 +1,24 @@
+name: i18n-check
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  i18n:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: Install (ignore postinstall)
+        run: npm ci --ignore-scripts
+      - name: Run i18n check
+        run: npm run i18n:check
+

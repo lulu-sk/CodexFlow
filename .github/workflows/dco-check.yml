@@ -1,0 +1,80 @@
+name: dco-check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  verify-dco:
+    name: Verify DCO Sign-offs
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine range
+        id: range
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "base=${{ github.event.pull_request.base.sha }}" >> $GITHUB_OUTPUT
+            echo "head=${{ github.event.pull_request.head.sha }}" >> $GITHUB_OUTPUT
+          else
+            echo "base=${{ github.event.before }}" >> $GITHUB_OUTPUT
+            echo "head=${{ github.sha }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check commit sign-offs
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="${{ steps.range.outputs.base }}"
+          HEAD="${{ steps.range.outputs.head }}"
+          echo "Checking commits in range ${BASE}..${HEAD}"
+          fails=0
+          while IFS= read -r sha; do
+            [[ -z "$sha" ]] && continue
+            subject=$(git log -1 --pretty=format:%s "$sha")
+            body=$(git log -1 --pretty=format:%b "$sha")
+            author_sig="$(git show -s --format='%an <%ae>' "$sha")"
+            committer_sig="$(git show -s --format='%cn <%ce>' "$sha")"
+            # 查找签署行（大小写不敏感）
+            sig_lines=$(git show -s --format=%B "$sha" | grep -iE '^Signed-off-by: .+ <.+@.+>$' || true)
+            if [[ -z "$sig_lines" ]]; then
+              echo "::error title=Missing DCO sign-off::Commit $sha ($subject) has no 'Signed-off-by' line"
+              ((fails+=1))
+              continue
+            fi
+            # 至少一行匹配作者或提交者邮箱
+            match=0
+            while IFS= read -r line; do
+              # 规范化大小写
+              line_lc=$(echo "$line" | tr '[:upper:]' '[:lower:]')
+              author_lc=$(echo "$author_sig" | tr '[:upper:]' '[:lower:]')
+              committer_lc=$(echo "$committer_sig" | tr '[:upper:]' '[:lower:]')
+              if [[ "$line_lc" == *"$author_lc"* || "$line_lc" == *"$committer_lc"* ]]; then
+                match=1
+                break
+              fi
+            done <<< "$sig_lines"
+            if [[ $match -ne 1 ]]; then
+              echo "::error title=Invalid DCO sign-off::Commit $sha ($subject) has sign-off but it does not match author/committer ($author_sig / $committer_sig)"
+              ((fails+=1))
+            fi
+          done < <(git rev-list --no-merges "${BASE}..${HEAD}")
+          if [[ $fails -ne 0 ]]; then
+            echo "Found $fails commits without valid DCO sign-off"
+            exit 1
+          fi
+          echo "All commits have valid DCO sign-off"
+

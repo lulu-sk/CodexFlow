@@ -1,0 +1,18 @@
+{
+  "aboutHtml": "<h2>关于 CodexFlow</h2><p>开源 + 捐赠，永久免费、最少维护、谁都能用。</p><p>作者：<a href=\"https://github.com/yourname\">yourname</a></p>",
+  "donate": [
+    { "name": "GitHub Sponsors", "url": "https://github.com/lulu-sk/CodexCLI-GUI" },
+    { "name": "爱发电", "url": "https://afdian.com/@yourname" },
+    { "name": "微信赞赏码", "image": "https://your.cdn.example.com/wechat-qrcode.png" }
+  ],
+  "announces": [
+    { "id": "2025-09-01", "text": "v1.0 发布" }
+  ],
+  "latest": {
+    "version": "1.0.0",
+    "notes": "改进稳定性与性能，优化 WSL 路径兼容。",
+    "url": "https://github.com/<repo>/releases/tag/v0.2.0",
+    "minSupported": "0.1.0"
+  }
+}
+

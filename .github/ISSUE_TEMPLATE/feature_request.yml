@@ -1,0 +1,42 @@
+name: Feature request
+description: Suggest an idea for CodexFlow
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for your suggestion! Please search existing Issues and Discussions first.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What problem will this feature solve?
+      placeholder: "Hard to discover WSL distro switch in settings"
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the feature. Mockups or screenshots welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope & impact
+      description: Affected modules (electron/web), migrations, risks.
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched for existing issues/discussions
+          required: true
+        - label: I’m willing to help with a PR (optional)
+          required: false
+

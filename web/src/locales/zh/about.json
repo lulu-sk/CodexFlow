@@ -1,0 +1,65 @@
+{
+  "openButton": "关于与支持",
+  "dialogTitle": "关于与支持",
+  "content": {
+    "heading": "关于 CodexFlow",
+    "paragraphs": [
+      "CodexFlow 诞生于一个简单的想法：让 Codex 的操作体验更加流畅与优雅。"
+    ]
+  },
+  "actions": {
+    "openLicense": "打开 LICENSE",
+    "openNotice": "打开 NOTICE",
+    "openHomepage": "项目主页",
+    "check": "检查更新",
+    "checking": "检查并刷新中…"
+  },
+  "homepage": {
+    "dialogOpenLinkHint": "将在浏览器中打开 CodexFlow 项目 GitHub 主页，请确认是否继续：",
+    "dialogOpenLink": "打开主页"
+  },
+  "donate": {
+    "sectionTitle": "支持作者",
+    "description": "如果您喜欢这个项目，欢迎请我喝杯咖啡，为它的成长出一份力。",
+    "signatureInvalid": "签名校验失败，信息可能被篡改",
+    "defaultPlaceholder": "二维码",
+    "dialogTitle": "捐赠 / 支持",
+    "dialogImageAlt": "{name} 二维码",
+    "dialogOpenLinkHint": "将在浏览器中打开支付页面，请确认是否继续：",
+    "dialogOpenLink": "打开链接",
+    "channels": {
+      "alipay": "支付宝",
+      "wechat": "微信",
+      "paypal": "PayPal.me"
+    }
+  },
+  "announce": {
+    "sectionTitle": "公告"
+  },
+  "privacy": "隐私承诺：应用完全离线运行，不统计和上传任何数据；若将来发生变化，也会以询问的形式并默认关闭。",
+  "update": {
+    "badge": "发现新版本",
+    "title": "CodexFlow {version}",
+    "current": "当前版本 v{version}",
+    "intro": "以下是更新内容摘要，感谢你持续关注 CodexFlow。",
+    "notesTitle": "更新内容",
+    "notesFallback": "已发现新版本，详情请前往下载页查看完整发布说明。",
+    "later": "稍后提醒",
+    "skip": "跳过本次",
+    "download": "前往下载"
+  },
+  "updateError": {
+    "title": "检查更新失败",
+    "network": "无法连接到更新服务器，请确认网络后稍后再试。",
+    "timeout": "检查更新超时，请稍后再试。",
+    "invalid": "获取的更新信息格式异常，暂时无法确定是否有新版本。",
+    "unknown": "检查更新时发生未知错误，请稍后再试。",
+    "confirm": "知道了"
+  },
+  "noUpdate": {
+    "title": "已是最新版本",
+    "message": "当前安装的 CodexFlow {version} 已是最新版本，无需更新。",
+    "messageNoVersion": "当前安装的 CodexFlow 已是最新版本，无需更新。",
+    "confirm": "知道了"
+  }
+}

@@ -1,0 +1,73 @@
+name: 缺陷报告
+description: 提交 CodexFlow 的缺陷
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢你抽时间反馈问题！在提交之前，请先在 Issue 中搜索是否已有人汇报。
+  - type: input
+    id: summary
+    attributes:
+      label: 问题摘要
+      description: 用一句话说明出现了什么问题。
+      placeholder: "切换 WSL 发行版后终端卡住"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 提供最小可复现路径，必要时附带命令或截图。
+      placeholder: |
+        1. 打开设置 -> 将发行版设置为 Ubuntu-24.04
+        2. 新建终端，执行 `uname -a`
+        3. 切换到 Windows 终端模式
+        4. 观察终端卡死
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 应用版本
+      placeholder: "v0.1.0（commit abcdefg）"
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: 运行环境
+      description: 请说明 Windows 版本、WSL 发行版/版本、Node、Electron（如适用）等信息。
+      placeholder: |
+        - Windows 11 23H2
+        - WSL Ubuntu-24.04
+        - Node 20、Electron 29
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志
+      description: 附上相关日志片段，避免无关噪声。渲染进程错误可设置 `localStorage.CF_DIAG_LOG='1'` 采集。
+      render: shell
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 自检清单
+      options:
+        - label: 我已搜索过现有 Issue，确认无人重复反馈
+          required: true
+        - label: 我在最新 main 或最新发行版上复现了该问题
+          required: true

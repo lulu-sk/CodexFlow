@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+. "$(dirname -- "$0")/_/husky.sh"
+
+echo "[husky] i18n:check"
+npm run -s i18n:check || {
+  echo "\n[i18n] Missing translation keys detected. Commit aborted."
+  exit 2
+}
+

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Q&A / Discussions
+    url: https://github.com/lulu-sk/CodexFlow/discussions
+    about: Ask questions, share ideas, and get help.
+  - name: Security (private)
+    url: https://github.com/lulu-sk/CodexFlow/blob/main/SECURITY.md
+    about: Please read SECURITY.md for private reporting. Do not open public issues for vulnerabilities.

@@ -1,0 +1,37 @@
+name: enforce-npm
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  check-only-npm:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure no Yarn/pnpm lockfiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f yarn.lock || -f pnpm-lock.yaml ]]; then
+            echo "::error::检测到非 npm 锁文件 (yarn.lock / pnpm-lock.yaml)。本项目仅允许使用 npm/package-lock.json。" >&2
+            exit 1
+          fi
+          if [[ ! -f package-lock.json ]]; then
+            echo "::error::未找到 package-lock.json，请使用 npm 生成并提交锁文件。" >&2
+            exit 1
+          fi
+
+      - name: Check package.json scripts only use npm
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+        # 以 Node 校验 scripts 中是否引用 yarn/pnpm 命令
+      - name: Validate scripts
+        run: |
+          node -e "const fs=require('fs');const pkg=JSON.parse(fs.readFileSync('package.json','utf8'));const s=pkg.scripts||{};const bad=[];for(const [k,v] of Object.entries(s)){if(/\\b(yarn|pnpm)\\b/.test(String(v))){bad.push(k+': '+v);}};if(bad.length){console.error('\n发现非 npm 的 scripts:');console.error(bad.map(x=>'  - '+x).join('\n'));process.exit(2);} else {console.log('scripts 校验通过：仅使用 npm');}"
+

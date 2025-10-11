@@ -1,0 +1,17 @@
+CodexFlow
+
+Copyright (c) 2025 Lulu (GitHub: lulu-sk)
+
+Licensed under the Apache License, Version 2.0 (the "License").
+You may obtain a copy of the License in the file named "LICENSE"
+or at: http://www.apache.org/licenses/LICENSE-2.0
+
+This distribution bundles components including (examples):
+- Electron (MIT)
+- React (MIT)
+- node-pty (MIT)
+- xterm.js (MIT)
+
+For a complete list of licenses and attributions, see the licenses
+included with each package in node_modules/**/LICENSE.
+This NOTICE is for attribution only and does not modify the License.

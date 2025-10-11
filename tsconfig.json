@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "outDir": "dist",
+    "rootDir": ".",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "types": ["node"],
+    "resolveJsonModule": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["web/src/*"]
+    }
+  },
+  "include": [
+    "electron/**/*.ts",
+    "web/src/types/**/*.d.ts"
+  ],
+  "references": [
+    { "path": "./web" }
+  ],
+  "exclude": [
+    "node_modules",
+    "web/**/dist/**",
+    "web/dist/**"
+  ]
+}

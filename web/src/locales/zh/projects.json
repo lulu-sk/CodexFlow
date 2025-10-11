@@ -1,0 +1,11 @@
+{
+  "searchPlaceholder": "搜索项目...",
+  "openProject": "打开项目",
+  "ctxShowInExplorer": "在文件管理器中显示",
+  "ctxOpenExternalConsole": "通过外部控制台打开Codex",
+  "cannotOpenExternalConsole": "无法打开外部控制台",
+  "ctxOpenExternalConsoleWith": "通过外部{env}控制台打开Codex",
+  "cannotOpenExternalConsoleWith": "无法打开外部{env}控制台",
+  "selectProjectLeft": "请选择左侧项目",
+  "createOneToStart": "或新建一个项目开始"
+}

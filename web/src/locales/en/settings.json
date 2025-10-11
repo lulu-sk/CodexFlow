@@ -1,0 +1,53 @@
+{
+  "title": "Settings",
+  "language": {
+    "label": "UI Language",
+    "placeholder": "Select language",
+    "en": "English",
+    "zh": "Simplified Chinese"
+  },
+  "terminal": "Terminal",
+  "terminalPlaceholder": "Select terminal",
+  "noTerminalDetected": "No terminal detected",
+  "terminalMode": {
+    "label": "Execution Environment",
+    "wsl": "WSL",
+    "windows": "Windows (PowerShell)"
+  },
+  "wslDistro": "WSL Distro",
+  "codexCmd": "CodexFlow launch command",
+  "sendMode": {
+    "label": "Send key behavior",
+    "write_only": "Send only",
+    "write_and_enter": "Send and confirm"
+  },
+  "projectPathStyle": {
+    "label": "Message path format",
+    "absolute": "Absolute path",
+    "relative": "Relative path (to project root)"
+  },
+  "codexRoots": {
+    "label": ".codex roots (read-only)",
+    "empty": "No .codex roots detected"
+  },
+  "historyCleanup": {
+    "label": "History cleanup",
+    "desc": "Scan all sessions and permanently delete those with empty input/output.",
+    "scan": "Clean empty histories…",
+    "scanning": "Scanning…",
+    "result": "Cleaned {ok}, Not found {notFound}, Failed {failed}",
+    "resultTitle": "Cleanup complete",
+    "scanFailed": "Scan failed"
+  },
+  "cleanupConfirm": {
+    "title": "Delete Permanently",
+    "desc": "The following {count} history files will be permanently deleted:",
+    "showFirst": "\u00A0\u00A0Showing first {count} items (if more, please clean in batches)",
+    "empty": "No files to clean.",
+    "confirm": "Delete Permanently",
+    "warningTitle": "Final Confirmation",
+    "warningDesc": "This will permanently delete {count} history files and cannot be undone. Continue?",
+    "warningConfirm": "Delete anyway",
+    "batchDeleteFailed": "Batch delete failed"
+  }
+}

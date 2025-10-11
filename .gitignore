@@ -1,0 +1,101 @@
+#############################
+# Node / General
+#############################
+node_modules/
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+debug.log*
+*.pid
+*.seed
+*.pid.lock
+
+#############################
+# TypeScript
+#############################
+*.tsbuildinfo
+
+#############################
+# Build Artifacts
+#############################
+# Compiled Electron code + app bundles
+dist/
+# Vite web build output
+web/dist/
+# Other common Electron packaging dirs
+release/
+out/
+
+#############################
+# Env files (keep examples)
+#############################
+.env
+.env.*
+!.env.example
+!.env.sample
+
+#############################
+# IDE / Editor
+#############################
+.idea/
+*.iml
+# VS Code：仅保留扩展推荐文件，其他全部忽略（避免个人环境差异）
+.vscode/*
+!.vscode/extensions.json
+
+#############################
+# OS Artifacts
+#############################
+.DS_Store
+Thumbs.db
+
+#############################
+# Caches / Temp
+#############################
+.cache/
+.eslintcache
+*.swp
+*.swo
+.tmp/
+tmp/
+
+#############################
+# Vite 缓存（避免误提交本地预打包产物）
+#############################
+.vite/
+web/.vite/
+
+#############################
+# 测试与覆盖率（未来若引入 Vitest/Jest）
+#############################
+coverage/
+web/coverage/
+
+#############################
+# electron-builder 临时配置/输出（非必要产物）
+#############################
+# 生效配置快照（排查用，构建时生成）
+builder-effective-config.yaml
+# 调试配置（某些版本可能生成）
+builder-debug.yml
+
+#############################
+# 包管理器锁文件（项目使用 npm，忽略其它锁）
+#############################
+yarn.lock
+pnpm-lock.yaml
+
+#############################
+# 其它系统/工具产生的零散文件
+#############################
+desktop.ini
+*.orig
+
+#############################
+# 项目元信息（对外不展示的说明）
+#############################
+AGENTS.md

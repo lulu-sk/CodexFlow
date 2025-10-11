@@ -1,0 +1,10 @@
+{
+  "searchPlaceholder": "Search projects…",
+  "openProject": "Open Project",
+  "ctxShowInExplorer": "Show in File Manager",
+  "ctxOpenExternalWSL": "Open Codex in external WSL console",
+  "cannotOpenExternalWSL": "Unable to open external WSL console",
+  "selectProjectLeft": "Select a project on the left",
+  "createOneToStart": "Or open a project to get started"
+}
+

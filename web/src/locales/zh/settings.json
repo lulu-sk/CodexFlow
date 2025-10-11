@@ -1,0 +1,53 @@
+{
+  "title": "设置",
+  "language": {
+    "label": "界面语言",
+    "placeholder": "选择语言",
+    "en": "English",
+    "zh": "简体中文"
+  },
+  "terminal": "终端",
+  "terminalPlaceholder": "选择终端",
+  "noTerminalDetected": "未检测到终端",
+  "terminalMode": {
+    "label": "执行环境",
+    "wsl": "WSL 终端",
+    "windows": "Windows（PowerShell）"
+  },
+  "wslDistro": "WSL 发行版",
+  "codexCmd": "CodexFlow 启动命令",
+  "sendMode": {
+    "label": "发送键行为",
+    "write_only": "仅发送",
+    "write_and_enter": "发送并确认"
+  },
+  "projectPathStyle": {
+    "label": "消息路径格式",
+    "absolute": "全路径（绝对路径）",
+    "relative": "相对路径（相对项目根）"
+  },
+  "codexRoots": {
+    "label": ".codex 根路径（只读）",
+    "empty": "未检测到 .codex 根路径"
+  },
+  "historyCleanup": {
+    "label": "历史清理",
+    "desc": "扫描所有历史，找出筛选后 input/output 均为空的文件，彻底删除。",
+    "scan": "清理空历史…",
+    "scanning": "扫描中…",
+    "result": "已清理 {ok}，未找到 {notFound}，失败 {failed}",
+    "resultTitle": "清理完成",
+    "scanFailed": "扫描失败"
+  },
+  "cleanupConfirm": {
+    "title": "彻底删除",
+    "desc": "将把以下 {count} 个历史文件彻底删除：",
+    "showFirst": "\u00A0\u00A0显示前 {count} 项（若更多，请分批清理）",
+    "empty": "没有可清理的文件。",
+    "confirm": "彻底删除",
+    "warningTitle": "彻底删除确认",
+    "warningDesc": "此操作会永久删除 {count} 个历史记录文件，且不可恢复。是否继续？",
+    "warningConfirm": "仍要删除",
+    "batchDeleteFailed": "批量删除失败"
+  }
+}

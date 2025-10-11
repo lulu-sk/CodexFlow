@@ -1,0 +1,21 @@
+{
+  "cancel": "Cancel",
+  "save": "Save",
+  "open": "Open",
+  "app": {
+    "name": "CodexFlow",
+    "language": "Language",
+    "language_en": "English",
+    "language_zh": "简体中文"
+  },
+  "common": {
+    "ok": "OK",
+    "cancel": "Cancel",
+    "save": "Save",
+    "open": "Open"
+  },
+  "files": {
+    "copyFileNameWithExt": "Copy filename (with extension)",
+    "cannotOpenPath": "Unable to open path"
+  }
+}

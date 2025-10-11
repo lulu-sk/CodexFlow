@@ -1,0 +1,11 @@
+{
+  "searchPlaceholder": "Search projects…",
+  "openProject": "Open Project",
+  "ctxShowInExplorer": "Show in File Manager",
+  "ctxOpenExternalConsole": "Open Codex in external console",
+  "cannotOpenExternalConsole": "Unable to open external console",
+  "ctxOpenExternalConsoleWith": "Open Codex in external {env} console",
+  "cannotOpenExternalConsoleWith": "Unable to open external {env} console",
+  "selectProjectLeft": "Select a project on the left",
+  "createOneToStart": "Or open a project to get started"
+}

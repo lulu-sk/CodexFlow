@@ -1,0 +1,41 @@
+name: 功能建议
+description: 为 CodexFlow 提出新功能或改进
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢你的想法！提交前请先在 Issue 与 Discussions 中搜索是否已有类似建议。
+  - type: textarea
+    id: problem
+    attributes:
+      label: 待解决的问题
+      description: 这个功能要解决什么痛点或场景？
+      placeholder: "设置页面里 WSL 发行版切换入口不够明显"
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 功能描述
+      description: 详细描述你的方案，可附上流程、草图或截图。
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 尝试过的替代方案
+  - type: textarea
+    id: scope
+    attributes:
+      label: 影响范围
+      description: 可能影响的模块（如 electron/web）、迁移步骤、潜在风险。
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 自检清单
+      options:
+        - label: 我已搜索过现有 Issue/Discussions，确认没有重复条目
+          required: true
+        - label: 我愿意尝试提交实现该功能的 PR（可选）
+          required: false

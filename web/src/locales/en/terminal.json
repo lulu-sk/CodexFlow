@@ -1,0 +1,14 @@
+{
+  "dirMissing": "Directory missing, unable to create console",
+  "newConsole": "New Console",
+  "inputPlaceholder": "Type message to Codex (paste images, @ search files), Ctrl+Enter to send",
+  "send": "Send",
+  "readyPlaceholder": "# Terminal ready. Embedded console placeholder (UI prototype; no real PTY yet)."
+  ,
+  "ctx": {
+    "copy": "Copy",
+    "copyLine": "Copy Line",
+    "copyAll": "Copy All",
+    "paste": "Paste"
+  }
+}
