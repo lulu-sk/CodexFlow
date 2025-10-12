@@ -76,6 +76,24 @@ function resolveAppIcon(): string | undefined {
   return undefined;
 }
 
+function resolveRendererEntry(): string {
+  const appPath = app.getAppPath();
+  const dirBasedHtml = path.join(__dirname, '..', '..', 'web', 'dist', 'index.html');
+  const packagedHtml = path.join(appPath, 'web', 'dist', 'index.html');
+  const unpackedHtml = path.join(process.resourcesPath, 'app.asar.unpacked', 'web', 'dist', 'index.html');
+  const resourcesHtml = path.join(process.resourcesPath, 'web', 'dist', 'index.html');
+  const projectHtml = path.join(process.cwd(), 'web', 'dist', 'index.html');
+  const candidates = app.isPackaged
+    ? [packagedHtml, dirBasedHtml, unpackedHtml, resourcesHtml, projectHtml]
+    : [projectHtml, dirBasedHtml, packagedHtml, resourcesHtml];
+  for (const candidate of candidates) {
+    try { if (fs.existsSync(candidate)) return candidate; } catch {}
+  }
+  // 缺省返回候选列表首项，即便缺失也能让 loadFile 给出明确错误
+  return candidates[0] || projectHtml;
+}
+
+
 function createWindow() {
   const windowIcon = resolveAppIcon();
   mainWindow = new BrowserWindow({
@@ -106,12 +124,9 @@ function createWindow() {
     mainWindow.loadURL(devUrl);
     mainWindow.webContents.openDevTools({ mode: 'detach' });
   } else {
-    const indexHtml = path.join(process.resourcesPath, 'web', 'dist', 'index.html');
-    // Fallback to local dist under project when running unpackaged
-    const localHtml = path.join(process.cwd(), 'web', 'dist', 'index.html');
-    const toLoad = process.env.PORTABLE_EXECUTABLE_DIR ? indexHtml : localHtml;
-    if (DIAG) { try { perfLogger.log(`[WIN] loadFile ${toLoad}`); } catch {} }
-    mainWindow.loadFile(toLoad);
+    const entryFile = resolveRendererEntry();
+    if (DIAG) { try { perfLogger.log(`[WIN] loadFile ${entryFile}`); } catch {} }
+    mainWindow.loadFile(entryFile);
     // 支持通过环境变量强制打开 DevTools（无论是否走本地文件或打包产物）
     try {
       const forceDevtools = String(process.env.CODEX_OPEN_DEVTOOLS || '').trim() === '1';
@@ -237,35 +252,44 @@ function setupAppMenu() {
     const template: Electron.MenuItemConstructorOptions[] = [
       // macOS 标准应用菜单
       ...(isMac ? [{ role: 'appMenu' as const }] : []),
-      {
-        label: 'View',
-        submenu: [
-          { role: 'reload' },
-          { role: 'forceReload' },
-          { type: 'separator' },
-          { role: 'toggleDevTools', accelerator: isMac ? 'Alt+Command+I' : 'Ctrl+Shift+I' },
-        ],
-      },
-      {
-        label: 'Window',
-        submenu: [
-          { role: 'minimize' },
-          { role: 'close' },
-        ],
-      },
-      {
-        label: 'Help',
-        submenu: [
-          {
-            label: 'Open Perf Log Folder',
-            click: () => {
-              try { shell.showItemInFolder(path.join(app.getPath('userData'), 'perf.log')); } catch {}
-            },
-          },
-        ],
-      },
     ];
-    Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+    // 打包版 Windows/Linux 不保留菜单栏；开发期或 macOS 仍保留调试入口
+    if (!app.isPackaged || isMac) {
+      template.push(
+        {
+          label: 'View',
+          submenu: [
+            { role: 'reload' },
+            { role: 'forceReload' },
+            { type: 'separator' },
+            { role: 'toggleDevTools', accelerator: isMac ? 'Alt+Command+I' : 'Ctrl+Shift+I' },
+          ],
+        },
+        {
+          label: 'Window',
+          submenu: [
+            { role: 'minimize' },
+            { role: 'close' },
+          ],
+        },
+        {
+          label: 'Help',
+          submenu: [
+            {
+              label: 'Open Perf Log Folder',
+              click: () => {
+                try { shell.showItemInFolder(path.join(app.getPath('userData'), 'perf.log')); } catch {}
+              },
+            },
+          ],
+        },
+      );
+    }
+    if (template.length === 0) {
+      Menu.setApplicationMenu(null);
+    } else {
+      Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+    }
   } catch {}
 }
 

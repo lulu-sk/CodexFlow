@@ -6,14 +6,15 @@
   "main": "dist/electron/main.js",
   "type": "commonjs",
   "scripts": {
-    "postinstall": "tsc -p tsconfig.electron.json && electron-builder install-app-deps",
+    "postinstall": "npm run build:electron && electron-builder install-app-deps",
     "dev:web": "vite --config web/vite.config.ts",
     "dev:electron": "cross-env DEV_SERVER_URL=http://localhost:5173 electron .",
     "dev": "concurrently -k \"npm:dev:web\" \"npm:dev:electron\"",
     "dev:electron:dist": "cross-env DEV_SERVER_URL=file://local electron .",
-    "dev:dist": "npm run build:web && npm run dev:electron:dist",
+    "dev:dist": "npm run build:electron && npm run build:web && npm run dev:electron:dist",
+    "build:electron": "node scripts/clean-electron-dist.cjs && tsc -p tsconfig.electron.json",
     "build:web": "vite build --config web/vite.config.ts",
-    "build": "npm run build:web && electron-builder",
+    "build": "npm run build:electron && npm run build:web && electron-builder",
     "i18n:report": "node scripts/i18n-check.js STRICT=0",
     "i18n:check": "node scripts/i18n-check.js",
     "prepare": "husky install",
@@ -21,36 +22,35 @@
   },
   "dependencies": {
     "@lydell/node-pty": "^1.1.0",
+    "chokidar": "^3.6.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/line-clamp": "^0.4.4",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-unicode11": "^0.8.0",
     "@xterm/addon-web-links": "^0.11.0",
     "@xterm/addon-webgl": "^0.18.0",
     "@xterm/xterm": "^5.5.0",
-    "chokidar": "^3.6.0",
-    "concurrently": "^9.0.0",
-    "cross-env": "^7.0.3",
-    "electron": "^29.1.0",
-    "electron-builder": "^24.13.3",
-    "fuzzysort": "^2.0.4",
-    "i18next": "^23.11.5",
-    "i18next-icu": "^2.4.0",
-    "i18next-resources-to-backend": "^1.2.1",
-    "intl-messageformat": "^10.7.16",
-    "lucide-react": "^0.453.0",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "react-i18next": "^14.1.2"
-  },
-  "devDependencies": {
-    "@tailwindcss/line-clamp": "^0.4.4",
     "@types/node": "^20.11.30",
     "@types/react": "^18.2.66",
     "@types/react-dom": "^18.2.22",
     "@vitejs/plugin-react": "^4.2.0",
     "autoprefixer": "^10.4.18",
+    "concurrently": "^9.0.0",
+    "cross-env": "^7.0.3",
+    "electron": "^29.1.0",
+    "electron-builder": "^24.13.3",
+    "fuzzysort": "^2.0.4",
     "husky": "^9.0.11",
+    "i18next": "^23.11.5",
+    "i18next-icu": "^2.4.0",
+    "i18next-resources-to-backend": "^1.2.1",
+    "lucide-react": "^0.453.0",
     "jsdom": "^27.0.0",
     "postcss": "^8.4.35",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-i18next": "^14.1.2",
     "tailwindcss": "^3.4.3",
     "typescript": "^5.4.5",
     "vite": "^5.2.8",
@@ -60,13 +60,15 @@
   "build": {
     "appId": "com.codexflow.app",
     "productName": "CodexFlow",
+    "afterPack": "./scripts/after-pack.js",
     "files": [
-      "dist/**",
+      "dist/electron/**",
       "web/dist/**",
       "package.json",
       "LICENSE",
       "NOTICE"
     ],
+    "compression": "maximum",
     "directories": {
       "buildResources": "build"
     },
@@ -100,8 +102,15 @@
         }
       ]
     },
+    "nsis": {
+      "differentialPackage": false
+    },
     "linux": {
       "icon": "build/icons"
-    }
+    },
+    "electronLanguages": [
+      "en-US",
+      "zh-CN"
+    ]
   }
 }
