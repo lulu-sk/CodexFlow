@@ -6,7 +6,7 @@ import { promises as fsp } from "node:fs";
 import path from "node:path";
 import { BrowserWindow } from "electron";
 import { perfLogger } from "./log";
-import { getSessionsRootsFastAsync, isUNCPath, uncToWsl } from "./wsl";
+import { getSessionsRootCandidatesFastAsync, isUNCPath, uncToWsl } from "./wsl";
 import { detectResumeInfo } from "./history";
 import type { HistorySummary, Message } from "./history";
 
@@ -764,9 +764,16 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
     g.__indexer.details = loadDetails();
 
     // 2) 计算根目录（不扫描）
-    const roots = await getSessionsRootsFastAsync();
-    perfLogger.log(`[roots] ${JSON.stringify(roots)}`);
-    try { (g.__indexer as any).roots = roots.slice(); } catch {}
+    const rootCandidates = await getSessionsRootCandidatesFastAsync();
+    const roots = Array.from(new Set(rootCandidates.map((c) => c.path)));
+    const rootsExisting = rootCandidates.filter((c) => c.exists).map((c) => c.path);
+    const rootsMissing = rootCandidates.filter((c) => !c.exists).map((c) => c.path);
+    perfLogger.log(`[roots] existing=${JSON.stringify(rootsExisting)} missing=${JSON.stringify(rootsMissing)}`);
+    try {
+      (g.__indexer as any).roots = roots.slice();
+      (g.__indexer as any).missingRoots = rootsMissing.slice();
+      (g.__indexer as any).existingRoots = rootsExisting.slice();
+    } catch {}
 
     // 3) 枚举所有 .jsonl 文件并比对签名，增量更新
     const files: string[] = [];
