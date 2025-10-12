@@ -123,6 +123,8 @@ function canonicalizePath(p: string): string {
 
 function normDir(p?: string): string { return canonicalizePath(getDir(p)); }
 
+function historyDirKey(p?: string): string { return normDir(p) || '__unknown__'; }
+
 // ---------- Helpers ----------
 
 const UUID_REGEX = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
@@ -869,13 +871,13 @@ export default function CodexFlowManagerUI() {
         // 若当前选择无效或为空，重置为缓存中的第一组（除非是点击项目触发的切换）
         if (!skipAuto) {
           const ids = new Set(cached.map((x) => x.id));
-          const dirs = new Set(cached.map((x) => normDir(x.filePath) || '__unknown__'));
+          const dirs = new Set(cached.map((x) => historyDirKey(x.filePath)));
           if (!selectedHistoryId || !ids.has(selectedHistoryId) || !selectedHistoryDir || !dirs.has(selectedHistoryDir)) {
-            const firstKey = normDir(cached[0]?.filePath || '') || '__unknown__';
+            const firstKey = historyDirKey(cached[0]?.filePath);
             if (firstKey) {
               setSelectedHistoryDir(firstKey);
               const firstInDir = cached
-                .filter((x) => (normDir(x.filePath) || '__unknown__') === firstKey)
+                .filter((x) => historyDirKey(x.filePath) === firstKey)
                 .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
               setSelectedHistoryId(firstInDir?.id || null);
               setCenterMode('history');
@@ -917,15 +919,15 @@ export default function CodexFlowManagerUI() {
         // 校验并修正当前选择，避免缓存残留导致的空白详情
         if (!skipAuto) {
           const ids = new Set(mapped.map((x) => x.id));
-          const dirs = new Set(mapped.map((x) => normDir(x.filePath)).filter(Boolean));
+          const dirs = new Set(mapped.map((x) => historyDirKey(x.filePath)));
           const needResetId = !selectedHistoryId || !ids.has(selectedHistoryId);
           const needResetDir = !selectedHistoryDir || !dirs.has(selectedHistoryDir);
           if (needResetId || needResetDir) {
-            const firstKey = normDir(mapped[0]?.filePath || '') || '__unknown__';
+            const firstKey = historyDirKey(mapped[0]?.filePath);
             if (firstKey) {
               setSelectedHistoryDir(firstKey);
               const firstInDir = mapped
-                .filter((x) => (normDir(x.filePath) || '__unknown__') === firstKey)
+                .filter((x) => historyDirKey(x.filePath) === firstKey)
                 .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
               setSelectedHistoryId(firstInDir?.id || null);
               setCenterMode('history');
@@ -1039,18 +1041,18 @@ export default function CodexFlowManagerUI() {
         } catch {}
         // 若当前选中项被移除，选择同组最新一条
         if (selectedHistoryId && !next.some((x) => x.id === selectedHistoryId)) {
-          const key = normDir(filePath) || '__unknown__';
+          const key = historyDirKey(filePath);
           const restInGroup = next
-            .filter((x) => (normDir(x.filePath) || '__unknown__') === key)
+            .filter((x) => historyDirKey(x.filePath) === key)
             .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
           if (restInGroup.length > 0) setSelectedHistoryId(restInGroup[0].id);
           else {
-            const groups = Array.from(new Set(next.map((x) => normDir(x.filePath) || '__unknown__')));
+            const groups = Array.from(new Set(next.map((x) => historyDirKey(x.filePath))));
             const firstKey = groups[0] || null;
             setSelectedHistoryDir(firstKey);
             if (firstKey) {
               const firstInDir = next
-                .filter((x) => (normDir(x.filePath) || '__unknown__') === firstKey)
+                .filter((x) => historyDirKey(x.filePath) === firstKey)
                 .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
               setSelectedHistoryId(firstInDir ? firstInDir.id : null);
             } else {
@@ -2380,51 +2382,84 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
   const [localSessions, setLocalSessions] = useState<HistorySession[]>(sessions);
   const [typeFilter, setTypeFilter] = useState<Record<string, boolean>>({});
   const reqSeq = useRef(0);
+  const lastLoadedFingerprintRef = useRef<string>("");
+  const selectedSession = useMemo(() => sessions.find((x) => x.id === selectedHistoryId) || null, [sessions, selectedHistoryId]);
+  const selectedLocalSession = useMemo(
+    () => localSessions.find((x) => x.id === selectedHistoryId) || null,
+    [localSessions, selectedHistoryId],
+  );
+  const selectedSessionFingerprint = useMemo(() => {
+    if (!selectedSession) return "none";
+    return [
+      selectedSession.id,
+      selectedSession.filePath || "",
+      selectedSession.date || "",
+      selectedSession.resumeMode || "",
+      selectedSession.resumeId || "",
+      selectedSession.preview || "",
+      selectedSession.rawDate || "",
+    ].join("|");
+  }, [selectedSession]);
 
-  useEffect(() => setLocalSessions(sessions), [sessions]);
+  // 刷新列表时保留已加载的消息内容，避免详情面板闪烁
+  useEffect(() => {
+    setLocalSessions((cur) => {
+      const prevMap = new Map(cur.map((x) => [x.id, x]));
+      return sessions.map((s) => {
+        const prev = prevMap.get(s.id);
+        if (!prev) return s;
+        const prevMsgs = Array.isArray(prev.messages) ? prev.messages : [];
+        const nextMsgs = Array.isArray(s.messages) ? s.messages : [];
+        if (nextMsgs.length === 0 && prevMsgs.length > 0) return { ...s, messages: prevMsgs };
+        return s;
+      });
+    });
+  }, [sessions]);
 
   useEffect(() => {
+    if (!selectedHistoryId || !selectedSession || !selectedSession.filePath) return;
+    const signature = selectedSessionFingerprint;
+    const hasMessages = !!(selectedLocalSession && Array.isArray(selectedLocalSession.messages) && selectedLocalSession.messages.length > 0);
+    if (hasMessages && lastLoadedFingerprintRef.current === signature) return;
+    setLoaded(false);
+    const seq = ++reqSeq.current;
     (async () => {
-      if (!selectedHistoryId) return;
-      const s = sessions.find((x) => x.id === selectedHistoryId);
-      if (!s || !s.filePath) return;
-      setLoaded(false);
-      const seq = ++reqSeq.current;
       try {
-        const res: any = await window.host.history.read({ filePath: s.filePath });
+        const res: any = await window.host.history.read({ filePath: selectedSession.filePath });
         const msgs = (res.messages || []).map((m: any) => ({ role: m.role as any, content: m.content }));
         if (seq === reqSeq.current) {
           setLocalSessions((cur) => cur.map((x) => (x.id === selectedHistoryId ? { ...x, messages: msgs } : x)));
           setSkipped(res.skippedLines || 0);
           setLoaded(true);
+          lastLoadedFingerprintRef.current = signature;
         }
-      try {
-        const allKeys = new Set<string>();
-        for (const mm of msgs) {
-          for (const it of (mm.content || [])) for (const k of keysOfItemCanonical(it)) allKeys.add(k);
-        }
-        // 去重策略：若同时存在 base 与 message.<base>，则仅保留 base（避免重复展示）。
-        const BASES = new Set(['input_text','output_text','text','code','json','instructions','environment_context','summary']);
-        const hasBase = (b: string) => allKeys.has(b);
-        const filtered: string[] = [];
-        for (const k of Array.from(allKeys)) {
-          if (k.startsWith('message.')) {
-            const tail = k.slice('message.'.length);
-            if (BASES.has(tail) && hasBase(tail)) continue; // drop redundant message.<base>
+        try {
+          const allKeys = new Set<string>();
+          for (const mm of msgs) {
+            for (const it of (mm.content || [])) for (const k of keysOfItemCanonical(it)) allKeys.add(k);
           }
-          filtered.push(k);
-        }
-        filtered.sort();
-        const next: Record<string, boolean> = {};
-        for (const k of filtered) next[k] = (k === 'input_text' || k === 'output_text');
-        if (seq === reqSeq.current) setTypeFilter(next);
-      } catch {}
+          // 去重策略：若同时存在 base 与 message.<base>，则仅保留 base（避免重复展示）。
+          const BASES = new Set(['input_text','output_text','text','code','json','instructions','environment_context','summary']);
+          const hasBase = (b: string) => allKeys.has(b);
+          const filtered: string[] = [];
+          for (const k of Array.from(allKeys)) {
+            if (k.startsWith('message.')) {
+              const tail = k.slice('message.'.length);
+              if (BASES.has(tail) && hasBase(tail)) continue;
+            }
+            filtered.push(k);
+          }
+          filtered.sort();
+          const next: Record<string, boolean> = {};
+          for (const k of filtered) next[k] = (k === 'input_text' || k === 'output_text');
+          if (seq === reqSeq.current) setTypeFilter(next);
+        } catch {}
       } catch (e) {
         console.warn('history.read failed', e);
         if (seq === reqSeq.current) setLoaded(true);
       }
     })();
-  }, [selectedHistoryId]);
+  }, [selectedHistoryId, selectedSession, selectedSessionFingerprint, selectedLocalSession]);
 
   function buildFilteredText(): string {
     if (!selectedHistoryId) return '';
