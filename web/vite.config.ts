@@ -7,6 +7,8 @@ import path from 'node:path';
 
 export default defineConfig({
   root: path.resolve(__dirname),
+  // 产物部署在 file:// 协议下，使用相对 base 确保资源路径指向当前目录
+  base: './',
   plugins: [react()],
   resolve: {
     alias: {
