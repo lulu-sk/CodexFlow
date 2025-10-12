@@ -3,7 +3,6 @@
 
 <!-- Badges -->
 <a href="https://github.com/lulu-sk/CodexFlow/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/lulu-sk/CodexFlow?style=for-the-badge&logo=undertale&logoColor=red&color=orange"/></a>
-<a href="https://github.com/lulu-sk/CodexFlow/releases"><img alt="Release" src="https://img.shields.io/github/v/release/lulu-sk/CodexFlow?include_prereleases&style=for-the-badge&label=Release"/></a>
 <a href="https://github.com/lulu-sk/CodexFlow/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/lulu-sk/CodexFlow/total?style=for-the-badge&label=Downloads"/></a>
 <img alt="Platform" src="https://img.shields.io/badge/Windows%2011+WSL-Recommended-blue?style=for-the-badge&logo=windows"/>
 <img alt="Electron" src="https://img.shields.io/badge/Electron-App-informational?style=for-the-badge&logo=electron"/>
