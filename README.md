@@ -90,9 +90,10 @@
 - If no release is published yet, follow “Development & Build” to package it locally.
 
 ### First Run
-1. Select (or add) a project directory and click **+** to create a session.
-2. In the terminal, run `codex` or `codex .`, then configure your model or approval policy as needed.
-3. Paste images, @files, or drag files into the rich input panel and start collaborating.
+1. Open **Settings** (gear icon) and configure the execution environment: choose **WSL** or **PowerShell**, pick the correct WSL distro, then save.
+2. Select (or add) a project directory and click **+** to create a session.
+3. In the Codex terminal, sign in or use your API credentials, type `/`, and complete the initial model and approval policy setup as needed.
+4. Paste images, @project files, or drag files into the input box and start collaborating.
 
 ---
 
