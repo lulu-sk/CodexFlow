@@ -80,10 +80,13 @@
 
 ## 🚀 Quick Start
 
-### Environment
+### Environment Preparation
 - **Windows 11** with **WSL** installed (default distro `Ubuntu-24.04`, configurable; the app falls back to the system default if the preferred distro is unavailable).
 - **Codex CLI** must be runnable inside WSL (e.g., `codex` / `codex .`) with successful conversation tests.
 - Choose **WSL terminal mode** for the first run; **PowerShell mode is experimental**.
+
+### Environment Preparation Tutorials
+- [Install WSL (Ubuntu) on Windows and set up Codex CLI inside WSL](./docs/setup-wsl-codex.en.md)
 
 ### Installation
 - When releases are available, download the latest installer from **[Releases](https://github.com/lulu-sk/CodexFlow/releases)**.

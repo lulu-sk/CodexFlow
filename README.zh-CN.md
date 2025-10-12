@@ -85,6 +85,9 @@
 - **Codex CLI** 已在 WSL 内可直接运行(如 `codex` / `codex .`)并测试可进行会话。
 - 首次体验建议选择 **WSL 终端模式**；**PowerShell 模式为实验性**。
 
+### 环境准备教程
+- [在 Windows 安装 WSL(Ubuntu)并在 WSL 安装 Codex CLI](./docs/setup-wsl-codex.zh-CN.md)
+
 ### 安装
 - 若仓库已有发布版本,请前往 **[Releases](https://github.com/lulu-sk/CodexFlow/releases)** 下载最新安装包。
 - 若暂无发布,可按下文“开发与构建”在本地打包。
