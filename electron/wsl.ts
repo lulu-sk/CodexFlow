@@ -2,6 +2,7 @@
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
 import { execFileSync, execFile } from 'node:child_process';
+import { promises as fsp } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -420,24 +421,76 @@ export async function getCodexRootsFastAsync(): Promise<{ windowsCodex: string; 
   return { windowsCodex, windowsSessions, wsl: wslRoots };
 }
 
-/** 返回所有可用 sessions 根（Windows + 所有 WSL 发行版），不进行目录扫描 */
-export async function getSessionsRootsFastAsync(): Promise<string[]> {
-  const roots: string[] = [];
+export type SessionsRootCandidate = {
+  path: string;
+  exists: boolean;
+  source: 'windows' | 'wsl';
+  distro?: string;
+  kind: 'local' | 'unc';
+};
+
+async function directoryExists(p: string): Promise<boolean> {
   try {
-    const all = await getCodexRootsFastAsync();
-    roots.push(all.windowsSessions);
-    for (const w of all.wsl) roots.push(w.sessionsUNC);
+    const stat = await fsp.stat(p);
+    return stat.isDirectory();
   } catch {
-    try { roots.push(path.join(os.homedir(), '.codex', 'sessions')); } catch {}
+    return false;
   }
-  // 去重 + 仅保留真实存在且为目录的路径（UNC 可能不可达）
-  const uniq = Array.from(new Set((roots.filter(Boolean))));
-  const out: string[] = [];
-  for (const r of uniq) {
+}
+
+function dedupeCandidates(list: SessionsRootCandidate[]): SessionsRootCandidate[] {
+  const seen = new Map<string, SessionsRootCandidate>();
+  for (const item of list) {
+    const key = item.path.replace(/\\/g, '/').toLowerCase();
+    if (!seen.has(key)) {
+      seen.set(key, item);
+    } else {
+      const existing = seen.get(key)!;
+      if (!existing.exists && item.exists) seen.set(key, item);
+    }
+  }
+  return Array.from(seen.values());
+}
+
+export async function getSessionsRootCandidatesFastAsync(): Promise<SessionsRootCandidate[]> {
+  const list: SessionsRootCandidate[] = [];
+  try {
+    const roots = await getCodexRootsFastAsync();
+    if (roots.windowsSessions) {
+      list.push({
+        path: roots.windowsSessions,
+        exists: await directoryExists(roots.windowsSessions),
+        source: 'windows',
+        kind: 'local',
+      });
+    }
+    for (const w of roots.wsl) {
+      if (!w.sessionsUNC) continue;
+      list.push({
+        path: w.sessionsUNC,
+        exists: await directoryExists(w.sessionsUNC),
+        source: 'wsl',
+        distro: w.distro,
+        kind: 'unc',
+      });
+    }
+  } catch {}
+  if (list.length === 0) {
     try {
-      const st = await (await import('node:fs/promises')).stat(r);
-      if (st && st.isDirectory()) out.push(r);
+      const fallback = path.join(os.homedir(), '.codex', 'sessions');
+      list.push({
+        path: fallback,
+        exists: await directoryExists(fallback),
+        source: 'windows',
+        kind: 'local',
+      });
     } catch {}
   }
-  return out;
+  return dedupeCandidates(list);
+}
+
+/** 返回所有可用 sessions 根（Windows + 所有 WSL 发行版），不进行目录扫描 */
+export async function getSessionsRootsFastAsync(): Promise<string[]> {
+  const candidates = await getSessionsRootCandidatesFastAsync();
+  return candidates.filter((c) => c.exists).map((c) => c.path);
 }
