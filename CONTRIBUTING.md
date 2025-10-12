@@ -69,14 +69,14 @@ Thank you for your interest in CodexFlow. Please read this guide to keep contrib
 
 ## Branching & Merging Rules
 
-- Create topic branches: `feat/*`, `fix/*`, etc. Don’t commit to `main`.
+- Create topic branches: `feat/*`, `fix/*`, etc. Don’t commit to `master`.
 - No force-push to protected branches. For your own PR branches, prefer `--force-with-lease` only when necessary (e.g., to add missing `-s`). Avoid history rewrites after review has started.
 - Prefer Squash & Merge unless preserving history is essential.
 
 ## PR Content & Self-check
 
 - Branch names: `feat/<short>`, `fix/<short>`, `chore/<short>`, `docs/<short>`, `refactor/<short>`, `test/<short>`.
-- Conventional commits are encouraged: `feat:`, `fix:`, `docs:`, `refactor:`, `chore:`, `test:`.
+- Conventional commits are encouraged. Common prefixes include `feat:` (new feature), `fix:` (bug fix), `docs:` (documentation), `style:` (formatting only), `refactor:` (code restructuring), `perf:` (performance improvements), `test:` (tests), `build:` (build tooling or dependencies), `ci:` (continuous integration), `chore:` (maintenance), and `revert:` (revert a previous change).
 - A good PR explains the motivation/scope, impacted modules, migration notes, UI screenshots/video (if applicable), and whether `postinstall` is needed.
 - Pre-merge checklist:
   - Build/dev run pass. If `electron/*` changed, ensure it compiles to `dist/electron`.

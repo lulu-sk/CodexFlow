@@ -69,14 +69,14 @@
 
 ## 分支与合并规则
 
-- 使用主题分支：`feat/*`、`fix/*` 等，勿直接提交到 `main`。
+- 使用主题分支：`feat/*`、`fix/*` 等，勿直接提交到 `master`。
 - 禁止对受保护分支强推。个人 PR 分支如因补签 `-s` 等必要情况需改写历史，请使用 `--force-with-lease`，并尽量避免在评审开始后重写历史。
 - 合并方式：优先使用 Squash & Merge，除非确需保留详细历史。
 
 ## PR 内容与自检
 
 - 分支命名：`feat/<short>`、`fix/<short>`、`chore/<short>`、`docs/<short>`、`refactor/<short>`、`test/<short>`。
-- 建议遵循 Conventional Commits：`feat:`、`fix:`、`docs:`、`refactor:`、`chore:`、`test:`。
+- 建议遵循 Conventional Commits，常用前缀包括：`feat:`（新增功能）、`fix:`（缺陷修复）、`docs:`（文档）、`style:`（格式调整）、`refactor:`（重构）、`perf:`（性能优化）、`test:`（测试）、`build:`（构建与依赖）、`ci:`（持续集成）、`chore:`（日常维护）、`revert:`（回滚提交）。
 - PR 应说明动机/范围、影响模块、迁移注意、UI 截图/录屏（如适用）、以及是否需要 `postinstall`。
 - 合并前自检：
   - 构建/运行通过；若改动 `electron/*`，确认已编译到 `dist/electron`。
