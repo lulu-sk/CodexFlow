@@ -74,6 +74,7 @@
 | Project overview (tabs + history panel) | <img src="assets/screenshots/en/overview.png" width="820" alt="overview"/> |
 | History search & preview | <img src="assets/screenshots/en/history.png" width="820" alt="history list"/> |
 | Rich input (paste images / drag files / @file) | <img src="assets/screenshots/en/input.png" width="820" alt="rich input"/> |
+| Pasted image inline preview | <img src="assets/screenshots/en/input-paste.png" width="820" alt="pasted image inline preview"/> |
 | Resume historical sessions | <img src="assets/screenshots/en/multi-projects.png" width="820" alt="multi projects"/> |
 
 ---
