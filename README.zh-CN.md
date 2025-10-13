@@ -74,6 +74,7 @@
 | 项目概览(标签页 + 历史面板) | <img src="assets/screenshots/zh/overview.png" width="820" alt="overview"/> |
 | 历史检索与预览 | <img src="assets/screenshots/zh/history.png" width="820" alt="history list"/> |
 | 图形输入框(粘贴图片 / 拖拽 / @文件) | <img src="assets/screenshots/zh/input.png" width="820" alt="rich input"/> |
+| 粘贴图片内联预览 | <img src="assets/screenshots/zh/input-paste.png" width="820" alt="粘贴图片内联预览"/> |
 | 一键继续历史对话 | <img src="assets/screenshots/zh/multi-projects.png" width="820" alt="multi projects"/> |
 
 ---
