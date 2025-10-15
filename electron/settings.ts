@@ -5,7 +5,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { app } from 'electron';
 import os from 'node:os';
-import wsl, { getSessionsRootsFastAsync } from './wsl';
+import { getSessionsRootsFastAsync, listDistros } from './wsl';
+import type { DistroInfo } from './wsl';
 
 export type AppSettings = {
   /** 终端类型：WSL 或 Windows 本地终端 */
@@ -28,10 +29,48 @@ function getStorePath() {
   return path.join(app.getPath('userData'), 'settings.json');
 }
 
-function defaultSettings(): AppSettings {
-  return {
+const DEFAULT_WSL_DISTRO = 'Ubuntu-24.04';
+const DISTRO_CACHE_TTL_MS = 30_000;
+let cachedDistros: DistroInfo[] | null = null;
+let cachedDistrosAt = 0;
+
+function loadDistroList(): DistroInfo[] {
+  if (os.platform() !== 'win32') return [];
+  const now = Date.now();
+  if (cachedDistros && now - cachedDistrosAt < DISTRO_CACHE_TTL_MS) {
+    return cachedDistros;
+  }
+  try {
+    const list = listDistros();
+    cachedDistros = Array.isArray(list) ? list : [];
+    cachedDistrosAt = now;
+    return cachedDistros;
+  } catch {
+    if (cachedDistros) return cachedDistros;
+    return [];
+  }
+}
+
+function pickPreferredDistro(preferred: unknown, distros: DistroInfo[]): string {
+  const normalized = typeof preferred === 'string' ? preferred.trim() : '';
+  if (normalized) {
+    const hit = distros.find((d) => d.name.toLowerCase() === normalized.toLowerCase());
+    if (hit?.name) return hit.name;
+  }
+  const markedDefault = distros.find((d) => d.isDefault && d.name);
+  if (markedDefault?.name) return markedDefault.name;
+  const running = distros.find((d) => (d.state || '').toLowerCase() === 'running' && d.name);
+  if (running?.name) return running.name;
+  const first = distros.find((d) => !!d.name);
+  if (first?.name) return first.name;
+  return normalized || DEFAULT_WSL_DISTRO;
+}
+
+function mergeWithDefaults(raw: Partial<AppSettings>, preloadedDistros?: DistroInfo[]): AppSettings {
+  const distros = preloadedDistros ?? loadDistroList();
+  const defaults: AppSettings = {
     terminal: 'wsl',
-    distro: 'Ubuntu-24.04',
+    distro: pickPreferredDistro('', distros),
     // 渲染层会按“每标签独立 tmux 会话”包装该命令；默认仅保存基础命令
     codexCmd: 'codex',
     historyRoot: path.join(os.homedir(), '.codex', 'sessions'),
@@ -39,14 +78,24 @@ function defaultSettings(): AppSettings {
     // 默认：发送给 Codex 的项目内文件路径使用“全路径”（WSL 绝对路径）
     projectPathStyle: 'absolute',
   };
+  const merged = Object.assign({}, defaults, raw);
+  merged.distro = pickPreferredDistro(merged.distro, distros);
+  return merged;
+}
+
+function defaultSettings(): AppSettings {
+  const distros = loadDistroList();
+  return mergeWithDefaults({}, distros);
 }
 
 export function getSettings(): AppSettings {
   try {
     const p = getStorePath();
-    if (!fs.existsSync(p)) return defaultSettings();
+    const distros = loadDistroList();
+    if (!fs.existsSync(p)) return mergeWithDefaults({}, distros);
     const raw = fs.readFileSync(p, 'utf8');
-    return Object.assign(defaultSettings(), JSON.parse(raw || '{}')) as AppSettings;
+    const parsed = JSON.parse(raw || '{}') as Partial<AppSettings>;
+    return mergeWithDefaults(parsed, distros);
   } catch (e) {
     return defaultSettings();
   }
@@ -54,8 +103,9 @@ export function getSettings(): AppSettings {
 
 export function updateSettings(partial: Partial<AppSettings>) {
   try {
-    const cur = getSettings();
-    const next = Object.assign({}, cur, partial);
+    const distros = loadDistroList();
+    const cur = mergeWithDefaults(getSettings(), distros);
+    const next = mergeWithDefaults(Object.assign({}, cur, partial), distros);
     fs.writeFileSync(getStorePath(), JSON.stringify(next, null, 2), 'utf8');
     return next;
   } catch (e) {
