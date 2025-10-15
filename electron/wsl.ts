@@ -8,7 +8,7 @@ import path from 'node:path';
 
 // WSL 辅助工具: 发行版探测, 路径转换, UNC 映射
 
-export type DistroInfo = { name: string; state?: string; version?: string };
+export type DistroInfo = { name: string; state?: string; version?: string; isDefault?: boolean };
 
 
 function decodeBuffer(buf: Buffer): string {
@@ -25,6 +25,32 @@ function decodeBuffer(buf: Buffer): string {
   }
 }
 
+function parseListDistrosOutput(raw: string): DistroInfo[] {
+  const lines = raw.split(/\r?\n/).slice(1).filter(Boolean);
+  const result: DistroInfo[] = [];
+  for (const ln of lines) {
+    // 格式:  Ubuntu-22.04  Running 2
+    // 去掉 ANSI 转义码和控制字符，规范化空白
+    const clean = ln.replace(/\x1B\[[0-9;]*[A-Za-z]/g, '').replace(/[\x00-\x1F\x7F]/g, '').trim();
+    if (!clean) continue;
+    const parts = clean.split(/\s{2,}/).filter(Boolean);
+    if (parts.length === 0) continue;
+    const rawName = parts[0] || '';
+    const isDefault = rawName.trim().startsWith('*');
+    // 去掉标识默认的 '*' 以及行尾可能的数字标注，移除奇怪不可见符号
+    const nameStripped = rawName.replace(/^\*\s*/, '').replace(/\s+\d+$/, '');
+    const name = nameStripped.replace(/[^\x20-\x7E\u4E00-\u9FFF\-_.]/g, '').trim();
+    if (!name) continue;
+    result.push({
+      name,
+      state: parts[1],
+      version: parts[2],
+      isDefault,
+    });
+  }
+  return result;
+}
+
 /**
  * 运行 wsl.exe -l -v 获取可用发行版列表，失败返回空数组
  */
@@ -33,18 +59,7 @@ export function listDistros(): DistroInfo[] {
   try {
     const outBuf = execFileSync('wsl.exe', ['-l', '-v']);
     const out = decodeBuffer(Buffer.isBuffer(outBuf) ? outBuf : Buffer.from(String(outBuf)));
-    const lines = out.split(/\r?\n/).slice(1).filter(Boolean);
-    return lines.map((ln) => {
-      // 格式:  Ubuntu-22.04  Running 2
-      // 去掉 ANSI 转义码和控制字符，规范化空白
-      const clean = ln.replace(/\x1B\[[0-9;]*[A-Za-z]/g, '').replace(/[\x00-\x1F\x7F]/g, '').trim();
-      const parts = clean.split(/\s{2,}/).filter(Boolean);
-      const rawName = parts[0] || '';
-      // 去掉标识默认的 '*' 以及行尾可能的数字标注，移除奇怪不可见符号
-      const nameStripped = rawName.replace(/^\*\s*/, '').replace(/\s+\d+$/, '');
-      const name = nameStripped.replace(/[^\x20-\x7E\u4E00-\u9FFF\-_.]/g, '').trim();
-      return { name, state: parts[1], version: parts[2] } as DistroInfo;
-    });
+    return parseListDistrosOutput(out);
   } catch (e) {
     return [];
   }
@@ -72,15 +87,7 @@ export async function listDistrosAsync(): Promise<DistroInfo[]> {
   try {
     const { stdout } = await execFilePromise('wsl.exe', ['-l', '-v']);
     const out = decodeBuffer(stdout);
-    const lines = out.split(/\r?\n/).slice(1).filter(Boolean);
-    return lines.map((ln) => {
-      const clean = ln.replace(/\x1B\[[0-9;]*[A-Za-z]/g, '').replace(/[\x00-\x1F\x7F]/g, '').trim();
-      const parts = clean.split(/\s{2,}/).filter(Boolean);
-      const rawName = parts[0] || '';
-      const nameStripped = rawName.replace(/^\*\s*/, '').replace(/\s+\d+$/, '');
-      const name = nameStripped.replace(/[^\x20-\x7E\u4E00-\u9FFF\-_.]/g, '').trim();
-      return { name, state: parts[1], version: parts[2] } as DistroInfo;
-    });
+    return parseListDistrosOutput(out);
   } catch (e) {
     return [];
   }
