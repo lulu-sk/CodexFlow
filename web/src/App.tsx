@@ -38,6 +38,7 @@ import {
   Info as InfoIcon,
 } from "lucide-react";
 import AboutSupport from "@/components/about-support";
+import CodexUsageSummary, { CodexAccountInline } from "@/components/topbar/codex-status";
 import { checkForUpdate, type UpdateCheckErrorType } from "@/lib/about";
 import { createTerminalAdapter, type TerminalAdapterAPI } from "@/adapters/TerminalAdapter";
 import TerminalManager from "@/lib/TerminalManager";
@@ -1297,9 +1298,10 @@ export default function CodexFlowManagerUI() {
   }, [selectedProject?.winPath]);
 
   const TopBar = (
-    <div className="flex items-center justify-between border-b bg-white/70 px-4 py-3 backdrop-blur">
-      {/* 顶栏左侧：按需保留容器，但不再展示图标与路径 */}
-      <div className="flex min-w-0 items-center gap-3"></div>
+    <div className="relative z-40 flex items-center justify-between border-b bg-white/70 px-4 py-3 backdrop-blur">
+      <div className="flex min-w-0 items-center gap-3">
+        <CodexUsageSummary className="min-w-0" terminalMode={terminalMode} distro={terminalMode === "wsl" ? wslDistro : undefined} />
+      </div>
       <div className="flex items-center gap-2">
         {/* 目录缺失提示：若选中项目的 Windows 路径不存在则提示 */}
         {selectedProject?.winPath && (
@@ -2064,14 +2066,20 @@ export default function CodexFlowManagerUI() {
         onOpenChange={setSettingsOpen}
         values={{ terminal: terminalMode, distro: wslDistro, codexCmd, sendMode, locale, projectPathStyle }}
         onSave={async (v) => {
-          setTerminalMode(v.terminal);
-          setWslDistro(v.distro);
-          setCodexCmd(v.codexCmd);
-          setSendMode(v.sendMode);
-          setProjectPathStyle(v.projectPathStyle || 'absolute');
+          const nextTerminal = v.terminal;
+          const nextDistro = v.distro;
+          const nextCmd = v.codexCmd;
+          const nextSend = v.sendMode;
+          const nextStyle = v.projectPathStyle || 'absolute';
+          const nextLocale = v.locale;
           // 先切换语言（内部会写入 settings 并广播），再持久化其它字段
-          try { await (window as any).host?.i18n?.setLocale?.(v.locale); setLocale(v.locale); } catch {}
-          try { await window.host.settings.update({ terminal: v.terminal, distro: v.distro, codexCmd: v.codexCmd, sendMode: v.sendMode, projectPathStyle: v.projectPathStyle }); } catch {}
+          try { await (window as any).host?.i18n?.setLocale?.(nextLocale); setLocale(nextLocale); } catch {}
+          try { await window.host.settings.update({ terminal: nextTerminal, distro: nextDistro, codexCmd: nextCmd, sendMode: nextSend, projectPathStyle: v.projectPathStyle }); } catch (e) { console.warn('settings.update failed', e); }
+          setTerminalMode(nextTerminal);
+          setWslDistro(nextDistro);
+          setCodexCmd(nextCmd);
+          setSendMode(nextSend);
+          setProjectPathStyle(nextStyle);
         }}
       />
 
@@ -2745,6 +2753,17 @@ function SettingsDialog({
           <DialogTitle>{t('settings:title')}</DialogTitle>
         </DialogHeader>
         <div className="space-y-4">
+          <div className="grid grid-cols-4 items-center gap-3">
+            <Label>{t('settings:codexAccount.label')}</Label>
+            <div className="col-span-3">
+              <CodexAccountInline
+                className="text-sm text-slate-700"
+                auto={open}
+                terminalMode={terminal}
+                distro={terminal === "wsl" ? distro : undefined}
+              />
+            </div>
+          </div>
           <div className="grid grid-cols-4 items-center gap-3">
             <Label>{t('settings:language.label')}</Label>
             <div className="col-span-3">

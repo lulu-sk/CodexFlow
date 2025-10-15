@@ -75,6 +75,29 @@ export interface SettingsAPI {
   codexRoots(): Promise<string[]>;
 }
 
+export type CodexAccountInfo = {
+  accountId: string | null;
+  userId: string | null;
+  email: string | null;
+  plan: string | null;
+};
+
+export type CodexRateLimitWindow = {
+  usedPercent: number | null;
+  windowMinutes: number | null;
+  resetsInSeconds: number | null;
+};
+
+export type CodexRateLimitSnapshot = {
+  primary: CodexRateLimitWindow | null;
+  secondary: CodexRateLimitWindow | null;
+};
+
+export interface CodexAPI {
+  getAccountInfo(): Promise<{ ok: boolean; info?: CodexAccountInfo; error?: string }>;
+  getRateLimit(): Promise<{ ok: boolean; snapshot?: CodexRateLimitSnapshot; error?: string }>;
+}
+
 export interface UtilsAPI {
   perfLog(text: string): Promise<{ ok: boolean; error?: string }>;
   copyText(text: string): Promise<{ ok: boolean; error?: string }>;
@@ -119,6 +142,7 @@ declare global {
       settings: SettingsAPI;
       utils: UtilsAPI;
       i18n: I18nAPI;
+      codex: CodexAPI;
     };
   }
 }

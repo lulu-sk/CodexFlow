@@ -26,6 +26,27 @@
     "absolute": "全路径（绝对路径）",
     "relative": "相对路径（相对项目根）"
   },
+  "codexAccount": {
+    "label": "ChatGPT 账号",
+    "statusLoading": "正在读取账号信息…",
+    "statusError": "账号信息不可用",
+    "statusUnknown": "未登录",
+    "statusLabel": "状态",
+    "email": "邮箱",
+    "planLabel": "套餐",
+    "accountId": "账号 ID",
+    "userId": "用户 ID",
+    "notProvided": "未提供",
+    "plan": {
+      "free": "免费",
+      "plus": "ChatGPT Plus",
+      "pro": "ChatGPT Pro",
+      "team": "团队",
+      "business": "企业",
+      "education": "教育",
+      "unknown": "未知套餐"
+    }
+  },
   "codexRoots": {
     "label": ".codex 根路径（只读）",
     "empty": "未检测到 .codex 根路径"

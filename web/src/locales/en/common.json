@@ -12,10 +12,30 @@
     "ok": "OK",
     "cancel": "Cancel",
     "save": "Save",
-    "open": "Open"
+    "open": "Open",
+    "refresh": "Refresh"
   },
   "files": {
     "copyFileNameWithExt": "Copy filename (with extension)",
     "cannotOpenPath": "Unable to open path"
+  },
+  "codexUsage": {
+    "loading": "Loading usage…",
+    "unavailable": "Usage unavailable",
+    "title": "Usage",
+    "summary": "Used {percent}",
+    "primary": "Primary quota",
+    "secondary": "Backup quota",
+    "reset": "Resets {time}",
+    "resetNotProvided": "Not available",
+    "resetFinished": "Already reset",
+    "windowUnknown": "No limit",
+    "windowWeekly": "{count, plural, one {# week} other {# weeks}}",
+    "windowDaily": "{count, plural, one {# day} other {# days}}",
+    "windowHourly": "{count, plural, one {# hour} other {# hours}}",
+    "windowMinutes": "{count, plural, one {# minute} other {# minutes}}",
+    "empty": "No usage data",
+    "errorFetchFailed": "Unable to fetch rate limit",
+    "errorNotLoggedIn": "Not signed in to ChatGPT, unable to fetch rate limit"
   }
 }

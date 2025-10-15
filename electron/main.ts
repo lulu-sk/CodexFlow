@@ -6,18 +6,19 @@ import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import { promises as fsp } from 'node:fs';
 import path from 'node:path';
-import { PTYManager, setTermDebug } from './pty.js';
-import projects, { IMPLEMENTATION_NAME as PROJECTS_IMPL } from './projects/index';
-import history from './history';
-import { startHistoryIndexer, getIndexedSummaries, getIndexedDetails, getLastIndexerRoots } from './indexer';
-import { getSessionsRootsFastAsync } from './wsl';
-import { perfLogger } from './log';
-import settings, { ensureSettingsAutodetect } from './settings';
-import i18n from './i18n';
-import wsl from './wsl';
-import fileIndex from './fileIndex';
-import images from './images';
-import { installInputContextMenu } from './contextMenu';
+import { PTYManager, setTermDebug } from "./pty.js";
+import projects, { IMPLEMENTATION_NAME as PROJECTS_IMPL } from "./projects/index";
+import history from "./history";
+import { startHistoryIndexer, getIndexedSummaries, getIndexedDetails, getLastIndexerRoots } from "./indexer";
+import { getSessionsRootsFastAsync } from "./wsl";
+import { perfLogger } from "./log";
+import settings, { ensureSettingsAutodetect } from "./settings";
+import i18n from "./i18n";
+import wsl from "./wsl";
+import fileIndex from "./fileIndex";
+import images from "./images";
+import { installInputContextMenu } from "./contextMenu";
+import { CodexBridge, type CodexBridgeOptions } from "./codex/bridge";
 
 // 使用 CommonJS 编译输出时，运行时环境会提供 `__dirname`，直接使用即可
 
@@ -26,6 +27,28 @@ const DIAG = String(process.env.CODEX_DIAG_LOG || '').trim() === '1';
 const ptyManager = new PTYManager(() => mainWindow);
 // 会话期粘贴图片（保存后的 Windows 路径），用于退出时统一清理
 const sessionPastedImages = new Set<string>();
+const codexBridges = new Map<string, CodexBridge>();
+
+function resolveCodexBridgeTarget(): { key: string; options: CodexBridgeOptions } {
+  const cfg = settings.getSettings();
+  const terminal = cfg.terminal ?? "wsl";
+  if (terminal === "wsl" && process.platform === "win32") {
+    const distro = cfg.distro ? String(cfg.distro) : undefined;
+    const key = `wsl:${distro ?? ""}`;
+    return { key, options: { mode: "wsl", wslDistro: distro } };
+  }
+  return { key: "native", options: { mode: "native" } };
+}
+
+function ensureCodexBridge(): CodexBridge {
+  const { key, options } = resolveCodexBridgeTarget();
+  let bridge = codexBridges.get(key);
+  if (!bridge) {
+    bridge = new CodexBridge(options);
+    codexBridges.set(key, bridge);
+  }
+  return bridge;
+}
 
 function rectsOverlap(a: Electron.Rectangle, b: Electron.Rectangle): boolean {
   const horizontal = a.x < b.x + b.width && a.x + a.width > b.x;
@@ -194,6 +217,20 @@ if (!gotLock) {
   const tryDisposePtys = () => {
     try { ptyManager.disposeAll(); } catch (e) { /* noop */ }
   };
+  const tryDisposeCodex = () => {
+    if (codexBridges.size === 0) return;
+    for (const [key, bridge] of codexBridges.entries()) {
+      try {
+        bridge.dispose();
+      } catch (e) {
+        if (DIAG) {
+          try { perfLogger.log(`[codex] dispose failed (${key}): ${String(e)}`); } catch {}
+        }
+      } finally {
+        codexBridges.delete(key);
+      }
+    }
+  };
   const tryCleanupPastedImages = async () => {
     try {
       if (sessionPastedImages.size === 0) return;
@@ -213,21 +250,24 @@ if (!gotLock) {
   app.on('before-quit', () => {
     tryDisposePtys();
     tryCleanupPastedImages();
+    tryDisposeCodex();
   });
 
   app.on('will-quit', () => {
     tryDisposePtys();
     tryCleanupPastedImages();
+    tryDisposeCodex();
   });
 
   // Also hook process-level events so that when Node receives termination signals we attempt cleanup.
-  process.on('exit', () => { tryDisposePtys(); });
-  process.on('SIGINT', () => { tryDisposePtys(); tryCleanupPastedImages(); process.exit(0); });
-  process.on('SIGTERM', () => { tryDisposePtys(); tryCleanupPastedImages(); process.exit(0); });
+  process.on('exit', () => { tryDisposePtys(); tryDisposeCodex(); });
+  process.on('SIGINT', () => { tryDisposePtys(); tryCleanupPastedImages(); tryDisposeCodex(); process.exit(0); });
+  process.on('SIGTERM', () => { tryDisposePtys(); tryCleanupPastedImages(); tryDisposeCodex(); process.exit(0); });
   process.on('uncaughtException', (err) => {
     try { console.error('uncaughtException', err); } catch {}
     if (DIAG) { try { perfLogger.log(`[PROC] uncaughtException ${String((err as any)?.stack || err)}`); } catch {} }
     tryDisposePtys();
+    tryDisposeCodex();
     // rethrow to allow default behavior after cleanup
     try { throw err; } catch {}
   });
@@ -1082,6 +1122,26 @@ ipcMain.handle('utils.pathExists', async (_e, args: { path: string; dirOnly?: bo
     return { ok: true, exists: true } as any;
   } catch (e: any) {
     return { ok: false, error: String(e) } as any;
+  }
+});
+
+ipcMain.handle("codex.accountInfo", async () => {
+  try {
+    const bridge = ensureCodexBridge();
+    const info = await bridge.getAccountInfo();
+    return { ok: true, info };
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+ipcMain.handle("codex.rateLimit", async () => {
+  try {
+    const bridge = ensureCodexBridge();
+    const snapshot = await bridge.getRateLimit();
+    return { ok: true, snapshot };
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
   }
 });
 

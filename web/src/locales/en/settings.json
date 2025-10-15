@@ -26,6 +26,27 @@
     "absolute": "Absolute path",
     "relative": "Relative path (to project root)"
   },
+  "codexAccount": {
+    "label": "ChatGPT account",
+    "statusLoading": "Loading account…",
+    "statusError": "Account unavailable",
+    "statusUnknown": "Not signed in",
+    "statusLabel": "Status",
+    "email": "Email",
+    "planLabel": "Plan",
+    "accountId": "Account ID",
+    "userId": "User ID",
+    "notProvided": "Not provided",
+    "plan": {
+      "free": "Free",
+      "plus": "ChatGPT Plus",
+      "pro": "ChatGPT Pro",
+      "team": "Team",
+      "business": "Business",
+      "education": "Education",
+      "unknown": "Unknown plan"
+    }
+  },
   "codexRoots": {
     "label": ".codex roots (read-only)",
     "empty": "No .codex roots detected"
