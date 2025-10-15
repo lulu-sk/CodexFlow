@@ -12,10 +12,30 @@
     "ok": "确定",
     "cancel": "取消",
     "save": "保存",
-    "open": "打开"
+    "open": "打开",
+    "refresh": "刷新"
   },
   "files": {
     "copyFileNameWithExt": "复制文件名（含后缀）",
     "cannotOpenPath": "无法打开路径"
+  },
+  "codexUsage": {
+    "loading": "正在同步用量…",
+    "unavailable": "用量信息不可用",
+    "title": "用量",
+    "summary": "已用 {percent}",
+    "primary": "主要额度",
+    "secondary": "备用额度",
+    "reset": "重置时间 {time}",
+    "resetNotProvided": "未提供",
+    "resetFinished": "已重置",
+    "windowUnknown": "不限",
+    "windowWeekly": "{count} 周",
+    "windowDaily": "{count} 天",
+    "windowHourly": "{count} 小时",
+    "windowMinutes": "{count} 分钟",
+    "empty": "暂无用量信息",
+    "errorFetchFailed": "无法获取速率限制",
+    "errorNotLoggedIn": "尚未登录 ChatGPT，无法获取速率限制"
   }
 }

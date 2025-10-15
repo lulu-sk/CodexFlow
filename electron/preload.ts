@@ -149,6 +149,14 @@ contextBridge.exposeInMainWorld('host', {
       return { ok: false, distros: [] } as any;
     }
   }
+  , codex: {
+    getAccountInfo: async () => {
+      try { return await ipcRenderer.invoke('codex.accountInfo'); } catch (e) { return { ok: false, error: String(e) }; }
+    },
+    getRateLimit: async () => {
+      try { return await ipcRenderer.invoke('codex.rateLimit'); } catch (e) { return { ok: false, error: String(e) }; }
+    }
+  }
   , utils: {
     perfLog: async (text: string) => {
       try { return await ipcRenderer.invoke('utils.perfLog', { text }); } catch (e) { return { ok: false, error: String(e) }; }
