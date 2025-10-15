@@ -477,9 +477,15 @@ export default function CodexFlowManagerUI() {
 
   // 设置活跃 tab 的封装：同时记录到 per-project map，供切换时恢复
   function setActiveTab(id: string | null, options?: TabFocusOptions) {
-    setActiveTabId(id);
+    setActiveTabId((prev) => (prev === id ? prev : id));
     try {
-      if (selectedProject) setActiveTabByProject((m) => ({ ...m, [selectedProject.id]: id }));
+      if (selectedProject) {
+        setActiveTabByProject((m) => {
+          const current = m[selectedProject.id];
+          if (current === id) return m;
+          return { ...m, [selectedProject.id]: id };
+        });
+      }
     } catch {}
     tabFocusNextRef.current = {
       immediate: options?.focusMode === 'immediate',
