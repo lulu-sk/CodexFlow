@@ -29,6 +29,100 @@ export type SavedImage = PastedImage & {
 
 const uid = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
+const IMAGE_EXTS = new Set([
+  "png",
+  "jpg",
+  "jpeg",
+  "jpe",
+  "jfif",
+  "bmp",
+  "webp",
+  "gif",
+  "svg",
+  "svgz",
+  "ico",
+  "cur",
+  "tif",
+  "tiff",
+  "avif",
+  "heic",
+  "heif",
+]);
+
+function guessMimeByExt(name?: string, fallback = "image/png"): string {
+  const ext = extractExt(name);
+  switch (ext) {
+    case "jpg":
+    case "jpeg":
+    case "jpe":
+    case "jfif":
+      return "image/jpeg";
+    case "png":
+      return "image/png";
+    case "gif":
+      return "image/gif";
+    case "bmp":
+      return "image/bmp";
+    case "webp":
+      return "image/webp";
+    case "svg":
+    case "svgz":
+      return "image/svg+xml";
+    case "ico":
+    case "cur":
+      return "image/x-icon";
+    case "tif":
+    case "tiff":
+      return "image/tiff";
+    case "avif":
+      return "image/avif";
+    case "heic":
+    case "heif":
+      return "image/heif";
+    default:
+      return fallback;
+  }
+}
+
+function extractExt(name?: string): string {
+  if (!name) return "";
+  const m = String(name).toLowerCase().match(/\.([a-z0-9]+)$/);
+  return m ? m[1] : "";
+}
+
+export function isImageFileName(name?: string): boolean {
+  if (!name) return false;
+  return IMAGE_EXTS.has(extractExt(name));
+}
+
+export function isImageFileLike(file: { type?: string; name?: string } | null | undefined): boolean {
+  if (!file) return false;
+  const type = String(file.type || "").toLowerCase();
+  if (type.startsWith("image/")) return true;
+  return isImageFileName(file.name);
+}
+
+// 从拖拽 FileList 中转为 PastedImage，复用粘贴图片流程
+export async function extractImagesFromFileList(files: ArrayLike<File> | File[]): Promise<PastedImage[]> {
+  const out: PastedImage[] = [];
+  const arr = Array.from(files || []);
+  for (const file of arr) {
+    try {
+      if (!isImageFileLike(file)) continue;
+      const blob: Blob = file;
+      const id = uid();
+      const type = String(file.type || guessMimeByExt(file.name));
+      const size = typeof file.size === "number" ? file.size : (blob as any).size || 0;
+      const url = URL.createObjectURL(blob);
+      let width: number | undefined;
+      let height: number | undefined;
+      try { ({ width, height } = await probeImageSize(url)); } catch {}
+      out.push({ id, blob, previewUrl: url, width, height, type, size });
+    } catch {}
+  }
+  return out;
+}
+
 export async function extractImagesFromPasteEvent(ev: ClipboardEvent): Promise<PastedImage[]> {
   const out: PastedImage[] = [];
   try {
