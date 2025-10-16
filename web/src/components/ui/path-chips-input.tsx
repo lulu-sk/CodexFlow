@@ -12,6 +12,8 @@ import { toWSLForInsert, joinWinAbs, toWslRelOrAbsForProject } from "@/lib/wsl";
 import { extractWinPathsFromDataTransfer } from "@/lib/dragDrop";
 import {
   extractImagesFromPasteEvent,
+  extractImagesFromFileList,
+  isImageFileName,
   persistImages,
   type SavedImage,
 } from "@/lib/clipboardImages";
@@ -405,7 +407,25 @@ export default function PathChipsInput({
         onDrop={async (e) => {
           try {
             e.preventDefault();
-            const list = extractWinPathsFromDataTransfer(e.dataTransfer);
+            const dt = e.dataTransfer;
+            if (!dt) return;
+
+            // 拖拽图片时复用粘贴流程：持久化后生成带预览的 Chip
+            let shouldSkipImagePaths = false;
+            try {
+              const files = dt.files;
+              if (files && files.length > 0) {
+                const imgs = await extractImagesFromFileList(files);
+                if (imgs.length > 0) {
+                  shouldSkipImagePaths = true;
+                  const saved = await persistImages(imgs, winRoot, projectName);
+                  if (saved.length > 0) appendChips(saved);
+                }
+              }
+            } catch {}
+
+            const listRaw = extractWinPathsFromDataTransfer(dt);
+            const list = shouldSkipImagePaths ? listRaw.filter((wp) => !isImageFileName(wp)) : listRaw;
             if (!list || list.length === 0) return;
             let checks: boolean[] = [];
             try {
