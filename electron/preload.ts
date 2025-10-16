@@ -140,9 +140,20 @@ contextBridge.exposeInMainWorld('host', {
       const res = await ipcRenderer.invoke('settings.codexRoots');
       if (res && res.ok && Array.isArray(res.roots)) return res.roots as string[];
       return [] as string[];
-    }
-  }
-  , wsl: {
+    },
+  },
+  storage: {
+    getAppDataInfo: async () => {
+      return await ipcRenderer.invoke('storage.appData.info');
+    },
+    clearAppData: async (args?: { preserveSettings?: boolean }) => {
+      return await ipcRenderer.invoke('storage.appData.clear', args);
+    },
+    purgeAppDataAndQuit: async () => {
+      return await ipcRenderer.invoke('storage.appData.purgeAndQuit');
+    },
+  },
+  wsl: {
     listDistros: async () => {
       const res = await ipcRenderer.invoke('wsl.listDistros');
       if (res && res.ok && Array.isArray(res.distros)) return res as { ok: true; distros: string[] };

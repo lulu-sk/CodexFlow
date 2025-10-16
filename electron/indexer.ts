@@ -1106,3 +1106,41 @@ export function removeFromIndex(filePath: string): boolean {
     return existed;
   } catch { return false; }
 }
+
+export async function stopHistoryIndexer(): Promise<void> {
+  try {
+    const watchers = Array.isArray(g.__indexer?.watchers) ? (g.__indexer.watchers as any[]) : [];
+    if (watchers.length > 0) {
+      const tasks = watchers.map(async (w) => {
+        try {
+          if (!w) return;
+          if (typeof w.close === 'function') {
+            await Promise.resolve(w.close());
+            return;
+          }
+          if (typeof w.stop === 'function') {
+            await Promise.resolve(w.stop());
+          }
+        } catch {}
+      });
+      try { await Promise.allSettled(tasks); } catch {}
+    }
+  } catch {}
+  try { (g.__indexer as any).watchers = []; } catch {}
+  try {
+    const timer = (g.__indexer as any)?.rescanTimer;
+    if (timer) {
+      try { clearInterval(timer); } catch {}
+    }
+    (g.__indexer as any).rescanTimer = null;
+  } catch {}
+  try {
+    const retries: Map<string, { count: number; timer?: NodeJS.Timeout }> | undefined = g.__indexer?.retries;
+    if (retries && typeof retries.forEach === 'function') {
+      retries.forEach((st) => {
+        try { if (st?.timer) clearTimeout(st.timer); } catch {}
+      });
+      retries.clear();
+    }
+  } catch {}
+}
