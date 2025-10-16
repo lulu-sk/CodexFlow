@@ -2,6 +2,7 @@
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { FolderOpenDot, FileText } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -77,6 +78,17 @@ function shouldTriggerAt(text: string, caret: number): boolean {
   return left.lastIndexOf("@") >= 0;
 }
 
+function buildChipStableKey(chip: PathChip, fallback: string): string {
+  try {
+    const c = chip as any;
+    const candidates = [c.id, c.previewUrl, c.wslPath, c.winPath, c.fileName];
+    for (const item of candidates) {
+      if (item && String(item).length > 0) return String(item);
+    }
+  } catch {}
+  return fallback;
+}
+
 export default function PathChipsInput({
   chips,
   onChipsChange,
@@ -138,6 +150,51 @@ export default function PathChipsInput({
     document.addEventListener('keydown', onKey, true);
     return () => { document.removeEventListener('mousedown', onDown, true); document.removeEventListener('keydown', onKey, true); };
   }, [ctxMenu.show]);
+
+  const [hoverPreview, setHoverPreview] = useState<{ chip: PathChip; rect: DOMRect; key: string } | null>(null);
+  const previewAnchorRef = useRef<HTMLElement | null>(null);
+  const hidePreview = useCallback(() => {
+    previewAnchorRef.current = null;
+    setHoverPreview(null);
+  }, []);
+  const showPreview = useCallback((chip: PathChip, key: string, target: HTMLElement | null) => {
+    if (!target) return;
+    previewAnchorRef.current = target;
+    setHoverPreview({ chip, rect: target.getBoundingClientRect(), key });
+  }, []);
+  useEffect(() => {
+    if (!hoverPreview) return;
+    const refresh = () => {
+      const anchor = previewAnchorRef.current;
+      if (!anchor || !anchor.isConnected) {
+        hidePreview();
+        return;
+      }
+      setHoverPreview((prev) => {
+        if (!prev) return prev;
+        const rect = anchor.getBoundingClientRect();
+        const same =
+          prev.rect.left === rect.left &&
+          prev.rect.top === rect.top &&
+          prev.rect.width === rect.width &&
+          prev.rect.height === rect.height;
+        if (same) return prev;
+        return { ...prev, rect };
+      });
+    };
+    refresh();
+    window.addEventListener('scroll', refresh, true);
+    window.addEventListener('resize', refresh);
+    return () => {
+      window.removeEventListener('scroll', refresh, true);
+      window.removeEventListener('resize', refresh);
+    };
+  }, [hoverPreview, hidePreview]);
+  useEffect(() => {
+    if (!hoverPreview) return;
+    const exists = chips.some((chip, idx) => buildChipStableKey(chip, String(idx)) === hoverPreview.key);
+    if (!exists) hidePreview();
+  }, [chips, hoverPreview, hidePreview]);
 
   // 将 SavedImage 转成 PathChip 并追加
   const appendChips = useCallback((items: SavedImage[]) => {
@@ -203,6 +260,11 @@ export default function PathChipsInput({
       return "";
     } catch { return ""; }
   }, [projectWslRoot, winRoot]);
+
+  const handleChipMouseEnter = useCallback((chip: PathChip, key: string, target: HTMLElement) => {
+    if (!chip?.previewUrl) return;
+    showPreview(chip, key, target);
+  }, [showPreview]);
 
   // 判定 Chip 是否目录：优先使用 isDir 标记；若无则根据路径尾部斜杠推断
   const isChipDir = useCallback((chip?: any): boolean => {
@@ -459,61 +521,82 @@ export default function PathChipsInput({
       >
         {/* Chips 采用常规文档流放置在输入区上方，最小可见间隙 2px */}
         <div ref={chipsRef} className="mt-px mb-0.5 flex flex-wrap items-start gap-0.5">
-          {chips.map((chip, idx) => (
-            <div
-              key={chip.id || `${chip.wslPath}-${idx}`}
-              className="group relative inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-1 py-0.5 text-[12px] leading-4"
-              title={runEnv === 'windows' ? (resolveChipWindowsFullPath(chip as any) || String((chip as any)?.winPath || (chip as any)?.wslPath || "")) : String((chip as any)?.wslPath || (chip as any)?.winPath || "")}
-              onContextMenu={(ev) => {
-                ev.preventDefault(); ev.stopPropagation();
-                setCtxMenu({ show: true, x: ev.clientX, y: ev.clientY, chip });
-              }}
-            >
-              {(() => {
-                const isDir = !!(chip as any).isDir || (/\/$/.test(String(chip.wslPath || '')));
-                if (chip.previewUrl) {
-                  return (
-                    <img src={chip.previewUrl} className="h-4 w-4 object-cover rounded" alt={chip.fileName || "img"} />
-                  );
-                }
-                if (isDir) return <FolderOpenDot className="h-4 w-4 text-slate-600" />;
-                return <FileText className="h-4 w-4 text-slate-600" />;
-              })()}
-              <span
-                className="text-slate-700 max-w-[160px] truncate"
-                title={runEnv === 'windows' ? (resolveChipWindowsFullPath(chip as any) || String((chip as any)?.winPath || (chip as any)?.wslPath || '')) : String((chip as any)?.wslPath || (chip as any)?.winPath || '')}
-              >
-                {chip.fileName || chip.wslPath || "image"}
-              </span>
-              <span className="ml-0.5 inline-block rounded bg-slate-200 px-1 text-[10px] text-slate-600">{idx + 1}</span>
-              <button
-                type="button"
-                className="ml-1 rounded px-1 text-slate-500 hover:text-slate-900 hover:bg-slate-200"
-                onClick={async (ev) => {
+          {chips.map((chip, idx) => {
+            const chipKey = buildChipStableKey(chip, `${idx}`);
+            return (
+              <div
+                key={chip.id || `${chip.wslPath}-${idx}`}
+                className="group relative inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-1 py-0.5 text-[12px] leading-4"
+                title={runEnv === 'windows' ? (resolveChipWindowsFullPath(chip as any) || String((chip as any)?.winPath || (chip as any)?.wslPath || "")) : String((chip as any)?.wslPath || (chip as any)?.winPath || "")}
+                onMouseEnter={(ev) => handleChipMouseEnter(chip, chipKey, ev.currentTarget)}
+                onMouseLeave={hidePreview}
+                onContextMenu={(ev) => {
                   ev.preventDefault(); ev.stopPropagation();
-                  try {
-                    if ((chip as any).fromPaste && chip.winPath) {
-                      try { await (window as any).host?.images?.trash?.({ winPath: chip.winPath }); } catch {}
-                    }
-                  } finally {
-                    const next = chips.filter((c) => c !== chip);
-                    onChipsChange(next);
-                  }
+                  setCtxMenu({ show: true, x: ev.clientX, y: ev.clientY, chip });
                 }}
               >
-                ×
-              </button>
-
-              {chip.previewUrl && (
-                <div className="pointer-events-none absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <div className="absolute z-50 left-1/2 -translate-x-1/2 bottom-full mb-2 p-1 bg-white border rounded shadow-lg">
-                    <img src={chip.previewUrl} className="block max-h-[28rem] max-w-[28rem] object-contain" alt={chip.fileName || 'image'} />
-                  </div>
-                </div>
-              )}
-            </div>
-          ))}
+                {(() => {
+                  const isDir = !!(chip as any).isDir || (/\/$/.test(String(chip.wslPath || '')));
+                  if (chip.previewUrl) {
+                    return (
+                      <img src={chip.previewUrl} className="h-4 w-4 object-cover rounded" alt={chip.fileName || "img"} />
+                    );
+                  }
+                  if (isDir) return <FolderOpenDot className="h-4 w-4 text-slate-600" />;
+                  return <FileText className="h-4 w-4 text-slate-600" />;
+                })()}
+                <span
+                  className="text-slate-700 max-w-[160px] truncate"
+                  title={runEnv === 'windows' ? (resolveChipWindowsFullPath(chip as any) || String((chip as any)?.winPath || (chip as any)?.wslPath || '')) : String((chip as any)?.wslPath || (chip as any)?.winPath || '')}
+                >
+                  {chip.fileName || chip.wslPath || "image"}
+                </span>
+                <span className="ml-0.5 inline-block rounded bg-slate-200 px-1 text-[10px] text-slate-600">{idx + 1}</span>
+                <button
+                  type="button"
+                  className="ml-1 rounded px-1 text-slate-500 hover:text-slate-900 hover:bg-slate-200"
+                  onClick={async (ev) => {
+                    ev.preventDefault(); ev.stopPropagation();
+                    try {
+                      if ((chip as any).fromPaste && chip.winPath) {
+                        try { await (window as any).host?.images?.trash?.({ winPath: chip.winPath }); } catch {}
+                      }
+                    } finally {
+                      const next = chips.filter((c) => c !== chip);
+                      onChipsChange(next);
+                    }
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            );
+          })}
         </div>
+
+        {hoverPreview && hoverPreview.chip?.previewUrl && typeof document !== "undefined"
+          ? createPortal(
+              (() => {
+                const { rect, chip } = hoverPreview;
+                const centerX = rect.left + rect.width / 2;
+                const preferredTop = rect.top - 8;
+                const fitsAbove = preferredTop >= 24;
+                const top = fitsAbove ? preferredTop : rect.bottom + 8;
+                const translateYClass = fitsAbove ? "-translate-y-full" : "translate-y-0";
+                return (
+                  <div
+                    className="fixed z-[1200] pointer-events-none"
+                    style={{ left: centerX, top }}
+                  >
+                    <div className={cn("rounded border bg-white p-1 shadow-lg transition-opacity", "-translate-x-1/2", translateYClass)}>
+                      <img src={chip.previewUrl} className="block max-h-[28rem] max-w-[28rem] object-contain rounded" alt={chip.fileName || 'image'} />
+                    </div>
+                  </div>
+                );
+              })(),
+              document.body
+            )
+          : null}
 
         {/* 内部输入：multiline 时使用 textarea 以获得自动换行；避免长文本被截断
             同时增加 pb-10 给右下角发送按钮让位，避免遮挡最后一行。 */}
