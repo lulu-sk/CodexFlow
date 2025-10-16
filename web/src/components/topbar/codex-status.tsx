@@ -13,6 +13,7 @@ import {
   formatResetTime,
   formatWindowLabel,
   translateRateLimitError,
+  translateCodexBridgeError,
 } from "@/lib/codex-status";
 
 type FetchState<T> = {
@@ -51,12 +52,24 @@ function useHoverCard(): HoverHandlers {
   return { open, onEnter, onLeave };
 }
 
-function useCodexAccount(auto = true): [FetchState<CodexAccountInfo>, () => void] {
+function useCodexAccount(
+  auto = true,
+  translateError?: (error: unknown) => string,
+): [FetchState<CodexAccountInfo>, () => void] {
   const [state, setState] = useState<FetchState<CodexAccountInfo>>({
     loading: false,
     error: null,
     data: null,
   });
+  const resolveError = useCallback(
+    (error: unknown) => {
+      if (translateError) return translateError(error);
+      if (error == null) return "Unable to load account information";
+      const text = String(error).trim();
+      return text || "Unable to load account information";
+    },
+    [translateError],
+  );
   const fetchAccount = useCallback(async () => {
     setState((prev) => ({ ...prev, loading: true, error: null }));
     try {
@@ -66,18 +79,18 @@ function useCodexAccount(auto = true): [FetchState<CodexAccountInfo>, () => void
       } else {
         setState({
           loading: false,
-          error: res.error || "无法获取账号信息",
+          error: resolveError(res.error),
           data: null,
         });
       }
     } catch (err) {
       setState({
         loading: false,
-        error: err instanceof Error ? err.message : String(err),
+        error: resolveError(err),
         data: null,
       });
     }
-  }, []);
+  }, [resolveError]);
   useEffect(() => {
     if (auto) fetchAccount();
   }, [auto, fetchAccount]);
@@ -290,7 +303,15 @@ export const CodexAccountInline: React.FC<{
   distro?: string;
 }> = ({ className, auto = true, terminalMode, distro }) => {
   const { t } = useTranslation(["settings", "common"]);
-  const [accountState, reloadAccount] = useCodexAccount(auto);
+  const errorTranslator = useCallback(
+    (error: unknown) =>
+      translateCodexBridgeError(error, t, {
+        fallbackKey: "settings:codexAccount.statusError",
+        fallbackDefault: "账号信息不可用",
+      }),
+    [t],
+  );
+  const [accountState, reloadAccount] = useCodexAccount(auto, errorTranslator);
   const hover = useHoverCard();
   const envKey = useMemo(() => {
     if (terminalMode === "wsl") return `wsl:${distro ?? ""}`;
