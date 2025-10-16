@@ -111,8 +111,8 @@
     "feedbackSuccessTitle": "操作完成"
   },
   "historyCleanup": {
-    "label": "历史清理",
-    "desc": "扫描所有历史，找出筛选后 input/output 均为空的文件，彻底删除。",
+    "label": "会话历史文件清理",
+    "desc": "扫描所有会话历史文件，找出 input/output 均为空的文件，彻底删除。",
     "scan": "清理空历史…",
     "scanning": "扫描中…",
     "result": "已清理 {ok}，未找到 {notFound}，失败 {failed}",
