@@ -37,5 +37,8 @@
     "empty": "No usage data",
     "errorFetchFailed": "Unable to fetch rate limit",
     "errorNotLoggedIn": "Not signed in to ChatGPT, unable to fetch rate limit"
+  },
+  "codexErrors": {
+    "cliExited": "Error. Try switching to another WSL distribution, refresh, then save."
   }
 }

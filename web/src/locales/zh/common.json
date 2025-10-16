@@ -37,5 +37,8 @@
     "empty": "暂无用量信息",
     "errorFetchFailed": "无法获取速率限制",
     "errorNotLoggedIn": "尚未登录 ChatGPT，无法获取速率限制"
+  },
+  "codexErrors": {
+    "cliExited": "错误，请尝试更换刷新WSL发行版并保存"
   }
 }

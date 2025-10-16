@@ -85,6 +85,16 @@ function base64UrlDecode(input: string): string {
   return Buffer.from(input, "base64url").toString("utf8");
 }
 
+const CLI_EXIT_ERROR_CODE = "CODEX_CLI_EXITED";
+const CLI_EXIT_ERROR_NAME = "CodexCliExitedError";
+const CLI_EXIT_ERROR_MESSAGE = "Codex CLI exited unexpectedly";
+function createCliExitedError(): Error {
+  const error = new Error(`${CLI_EXIT_ERROR_MESSAGE} (${CLI_EXIT_ERROR_CODE})`);
+  error.name = CLI_EXIT_ERROR_NAME;
+  (error as Error & { code?: string }).code = CLI_EXIT_ERROR_CODE;
+  return error;
+}
+
 function compareSemver(a: string, b: string): number {
   const ap = a.split(".").map((v) => Number.parseInt(v, 10));
   const bp = b.split(".").map((v) => Number.parseInt(v, 10));
@@ -370,7 +380,7 @@ export class CodexBridge {
       this.proc = null;
       this.rl?.close();
       this.rl = null;
-      const error = new Error("Codex CLI 已退出");
+      const error = createCliExitedError();
       this.pending.forEach(({ reject }) => reject(error));
       this.pending.clear();
     });

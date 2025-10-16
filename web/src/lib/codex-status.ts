@@ -6,6 +6,15 @@ import type { CodexRateLimitSnapshot, CodexRateLimitWindow } from "@/types/host"
 
 const MIN_INTERVAL_MS = 60_000;
 const DEFAULT_INTERVAL_SECONDS = 30 * 60;
+const CLI_EXIT_PATTERNS = [
+  /\bCODEX_CLI_EXITED\b/i,
+  /codex\s+cli[^a-z0-9]+exited/i,
+  /codex\s*cli\s*已退出/i,
+];
+const NOT_SIGNED_IN_PATTERNS = [
+  /尚未登录\s*chatgpt/i,
+  /not\s+(signed\s+)?in\s+to\s+chatgpt/i,
+];
 
 export function computeRefreshInterval(snapshot: CodexRateLimitSnapshot | null | undefined): number {
   if (!snapshot) return MIN_INTERVAL_MS;
@@ -74,18 +83,45 @@ export function formatResetTime(
   return future.toLocaleDateString(locale, { month: "short", day: "numeric" });
 }
 
-export function translateRateLimitError(raw: unknown, t: TFunction): string {
-  const fallback = t("common:codexUsage.errorFetchFailed", "无法获取速率限制");
-  if (raw == null) return fallback;
+function normalizeCodexError(raw: unknown): string {
+  if (raw == null) return "";
+  if (raw instanceof Error) {
+    const msg = raw.message?.trim();
+    if (msg) return msg;
+  }
   const text = String(raw).trim();
-  if (!text) return fallback;
   const normalized = text.replace(/^error:\s*/i, "").trim();
-  const message = normalized || text;
-  if (message.includes("尚未登录 ChatGPT")) {
+  return normalized || text;
+}
+
+export function translateCodexBridgeError(
+  raw: unknown,
+  t: TFunction,
+  options?: { fallbackKey?: string; fallbackDefault?: string },
+): string {
+  const fallbackKey = options?.fallbackKey ?? "common:codexUsage.errorFetchFailed";
+  const fallbackDefault = options?.fallbackDefault ?? "无法获取速率限制";
+  const fallback = t(fallbackKey, fallbackDefault);
+  const message = normalizeCodexError(raw);
+  if (!message) return fallback;
+  if (CLI_EXIT_PATTERNS.some((pattern) => pattern.test(message))) {
+    return t(
+      "common:codexErrors.cliExited",
+      "错误，请尝试更换刷新WSL发行版并保存",
+    );
+  }
+  if (NOT_SIGNED_IN_PATTERNS.some((pattern) => pattern.test(message))) {
     return t(
       "common:codexUsage.errorNotLoggedIn",
       "尚未登录 ChatGPT，无法获取速率限制",
     );
   }
   return message || fallback;
+}
+
+export function translateRateLimitError(raw: unknown, t: TFunction): string {
+  return translateCodexBridgeError(raw, t, {
+    fallbackKey: "common:codexUsage.errorFetchFailed",
+    fallbackDefault: "无法获取速率限制",
+  });
 }
