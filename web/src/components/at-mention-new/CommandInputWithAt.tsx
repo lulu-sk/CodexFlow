@@ -244,10 +244,10 @@ export function AtInput({ value, onValueChange, winRoot, projectName, projectPat
     const caret = (el.selectionStart as number) ?? String(value || "").length;
     const left = value.slice(0, caret);
     const at = left.lastIndexOf("@");
-    // WSL 路径插入：文件/目录返回“`WSL 相对路径`”样式（两侧带反引号，/ 分隔）；规则等其它类别按标题插入
+    // WSL 路径插入：文件、规则返回路径（用反引号包裹）；其它类别按标题插入
     let insertText = item.title;
     try {
-      if (item.categoryId === 'files') {
+      if (item.categoryId === 'files' || item.categoryId === 'rule') {
         const relOrPath = String((item as any).path || (item as any).subtitle || item.title || "");
         const isRel = !/^\//.test(relOrPath) && !/^([a-zA-Z]):\\/.test(relOrPath) && !/^\\\\/.test(relOrPath);
         const wsl = (projectPathStyle === 'absolute' && isRel && winRoot)

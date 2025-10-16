@@ -1,16 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { AtCategory, AtCategoryId, AtItem, SearchResult, SearchScope } from "@/types/at";
 import { AT_CATEGORIES, searchAtItems, getCategoryById } from "@/lib/atSearch";
 import { CaretPosition } from "./caret";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { FolderOpen, Folder, File, Puzzle, Tag, BadgeCheck, ChevronRight, Search as SearchIcon } from "lucide-react";
-import { FileText, FolderOpenDot } from "lucide-react";
+import { FolderOpen, Folder, File, Puzzle, Tag, BadgeCheck, ChevronRight, FileText, FolderOpenDot, ScrollText } from "lucide-react";
 
 // 图标解析：基于字符串名称返回具体图标
 function IconByName({ name, className }: { name?: string; className?: string }) {
@@ -21,6 +19,7 @@ function IconByName({ name, className }: { name?: string; className?: string }) 
     Puzzle: <Puzzle className={className} />,
     Tag: <Tag className={className} />,
     BadgeCheck: <BadgeCheck className={className} />,
+    ScrollText: <ScrollText className={className} />,
     // 新增更具区分度的文件和文件夹图标
     FolderOpenDot: <FolderOpenDot className={className} />,
     FileText: <FileText className={className} />,
@@ -243,4 +242,3 @@ export default function AtCommandPalette(props: AtCommandPaletteProps) {
     </div>
   );
 }
-

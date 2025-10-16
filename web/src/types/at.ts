@@ -36,6 +36,8 @@ export interface RuleItem extends AtItemBase {
   categoryId: "rule";
   /** 所属分组（示例：IDC、Lint 等） */
   group?: string;
+  /** 规则文件的相对路径或完整路径（如 .cursor/index.mdc） */
+  path?: string;
 }
 
 export type AtItem = FileItem | RuleItem;
