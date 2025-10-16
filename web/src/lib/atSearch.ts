@@ -8,15 +8,12 @@ import { ensureIndex as ensureIdx, getAllCandidates } from "@/lib/fileIndexClien
 // 分类常量（保持不变）
 export const AT_CATEGORIES: AtCategory[] = [
   { id: "files", name: "Files & Folders", icon: "FolderOpenDot" },
-  // “Rule” 实际无功能，改为 Test 仅做测试用
-  { id: "rule", name: "Test", icon: "Puzzle" },
+  { id: "rule", name: "Rules", icon: "ScrollText" },
 ];
 
-// 简易规则 Mock（可保留）
-const MOCK_RULES: RuleItem[] = [
-  { id: "r-idc-1", categoryId: "rule", title: "idc 1", subtitle: "IDC", icon: "Tag" },
-  { id: "r-idc-2", categoryId: "rule", title: "idc 2", subtitle: "IDC", icon: "Tag" },
-  { id: "r-lint-typing", categoryId: "rule", title: "ts strict", subtitle: "Lint", icon: "BadgeCheck" },
+const SPECIAL_RULE_FILES = [
+  { rel: ".cursor/index.mdc", group: "项目常驻" },
+  { rel: ".cursorrules", group: "旧版兼容" },
 ];
 
 // Worker 管理（懒加载）
@@ -38,6 +35,56 @@ function perfLog(msg: string) {
   const line = `[atSearch] ${msg}`;
   try { (window as any).host?.utils?.perfLog?.(line); } catch {}
   try { console.debug(line); } catch {}
+}
+
+function toPosixRel(value: string): string {
+  return String(value || "").replace(/\\/g, "/");
+}
+
+function buildRuleItem(rel: string, group?: string): RuleItem {
+  const posix = toPosixRel(rel);
+  const idx = posix.lastIndexOf("/");
+  const baseName = idx >= 0 ? posix.slice(idx + 1) : posix;
+  const title = baseName || posix;
+  const subtitle = group ? `${group} · ${posix}` : posix;
+  return {
+    id: `rule:${posix}`,
+    categoryId: "rule",
+    title,
+    subtitle,
+    group,
+    path: posix,
+    icon: "ScrollText",
+  };
+}
+
+function buildRuleItemsFromCandidates(list: FileCandidate[]): RuleItem[] {
+  const items: RuleItem[] = [];
+  const byRel = new Map<string, FileCandidate>();
+  for (const cand of list) {
+    if (!cand || cand.isDir) continue;
+    const rel = toPosixRel(cand.rel);
+    if (!rel) continue;
+    byRel.set(rel, cand);
+  }
+
+  for (const spec of SPECIAL_RULE_FILES) {
+    const rel = toPosixRel(spec.rel);
+    if (!rel) continue;
+    if (byRel.has(rel)) {
+      items.push(buildRuleItem(rel, spec.group));
+    }
+  }
+
+  const dynamic: string[] = [];
+  for (const rel of byRel.keys()) {
+    if (rel.startsWith(".cursor/rules/") && rel.endsWith(".mdc")) dynamic.push(rel);
+  }
+  dynamic.sort((a, b) => a.localeCompare(b));
+  for (const rel of dynamic) {
+    items.push(buildRuleItem(rel, "按场景动态"));
+  }
+  return items;
 }
 
 function ensureWorker(): Worker {
@@ -200,14 +247,22 @@ export async function searchAtItems(query: string, scope: SearchScope, limit = 3
   const q = String(query || "").trim();
   const results: SearchResult[] = [];
 
-  // 规则类：本地 mock 即可
-  const pickRules = () => {
+  // 规则类：从候选文件中过滤 .cursor 相关规则文件
+  const pickRules = async () => {
     if (scope !== 'all' && scope !== 'rule') return;
+    if (!currentRoot) return;
+    const rootKey = String(currentRoot || '').toLowerCase();
+    let candidates = cacheByRoot.get(rootKey);
+    if (!candidates) {
+      candidates = await loadCandidatesForRoot(currentRoot).catch(() => [] as FileCandidate[]);
+    }
+    const rules = buildRuleItemsFromCandidates(candidates || []);
+    if (rules.length === 0) return;
     if (!q) {
-      for (const it of MOCK_RULES.slice(0, Math.min(10, Math.max(0, limit - results.length)))) results.push({ item: it, score: 0 });
+      for (const it of rules.slice(0, Math.min(10, Math.max(0, limit - results.length)))) results.push({ item: it, score: 0 });
       return;
     }
-    const scored = MOCK_RULES.map((it) => ({ item: it as AtItem, score: scoreRule(it, q) }));
+    const scored = rules.map((it) => ({ item: it as AtItem, score: scoreRule(it, q) }));
     scored.sort((a, b) => b.score - a.score);
     for (const it of scored.slice(0, Math.max(0, limit - results.length))) results.push(it);
   };
@@ -274,12 +329,12 @@ export async function searchAtItems(query: string, scope: SearchScope, limit = 3
 
   if (!q) {
     await pickFiles();
-    pickRules();
+    await pickRules();
     return results.slice(0, limit);
   }
 
   await pickFiles();
-  pickRules();
+  await pickRules();
   perfLog(`search.done root='${currentRoot}' q='${q}' scope='${scope}' total=${results.length}`);
   return results.slice(0, limit);
 }

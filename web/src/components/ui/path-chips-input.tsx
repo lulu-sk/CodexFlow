@@ -4,7 +4,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { FolderOpenDot, FileText } from "lucide-react";
+import { FolderOpenDot, FileText, ScrollText } from "lucide-react";
 import { cn } from "@/lib/utils";
 import AtCommandPalette, { type PaletteLevel } from "@/components/at-mention-new/AtCommandPalette";
 import type { AtCategoryId, AtItem, SearchScope } from "@/types/at";
@@ -29,6 +29,8 @@ import {
 
 export type PathChip = SavedImage & {
   // SavedImage 已包含：id、previewUrl、winPath、wslPath、fileName、fromPaste
+  chipKind?: "file" | "image" | "rule";
+  rulePath?: string;
 };
 
 export interface PathChipsInputProps extends Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange"> {
@@ -430,6 +432,7 @@ export default function PathChipsInput({
           fileName: wsl.split("/").pop() || "file",
           // 保留 item 提供的 isDir；否则根据路径尾部是否含 / 判断
           isDir: !!(item as any).isDir || /\/$/.test(wsl),
+          chipKind: "file",
         } as any;
         appendChips([it]);
         // 将 @ 段落替换为空
@@ -437,6 +440,42 @@ export default function PathChipsInput({
         onDraftChange(next);
         requestAnimationFrame(() => { try { el.setSelectionRange(nextCaret, nextCaret); el.focus(); } catch {} });
         // 关闭面板
+        dismissedAtIndexRef.current = atIndexRef.current;
+        atIndexRef.current = null;
+        setQ("");
+        setOpen(false);
+        return;
+      }
+      if (item.categoryId === "rule") {
+        const relOrPath = String((item as any).path || (item as any).subtitle || item.title || "").trim();
+        const isRel = !/^\//.test(relOrPath) && !/^([a-zA-Z]):\\/.test(relOrPath) && !/^\\\\/.test(relOrPath);
+        let winAbs = "";
+        if (isRel && winRoot) {
+          try { winAbs = joinWinAbs(String(winRoot), relOrPath); } catch { winAbs = ""; }
+        } else if (/^([a-zA-Z]):\\/.test(relOrPath) || /^\\\\/.test(relOrPath)) {
+          winAbs = relOrPath.replace(/\//g, "\\");
+        }
+        const wsl = (projectPathStyle === 'absolute' && isRel && winRoot)
+          ? toWSLForInsert(winAbs || joinWinAbs(String(winRoot), relOrPath))
+          : toWSLForInsert(winAbs || relOrPath);
+        const baseName = relOrPath.split(/[/\\]/).pop() || relOrPath;
+        const chip: SavedImage = {
+          id: uid(),
+          blob: new Blob(),
+          previewUrl: "",
+          type: "text/rule",
+          size: 0,
+          saved: true,
+          wslPath: wsl,
+          winPath: winAbs || undefined,
+          fileName: baseName,
+          chipKind: "rule",
+          rulePath: relOrPath,
+        } as any;
+        appendChips([chip]);
+        const { next, nextCaret } = replaceAtQuery(draft, caret, "");
+        onDraftChange(next);
+        requestAnimationFrame(() => { try { el.setSelectionRange(nextCaret, nextCaret); el.focus(); } catch {} });
         dismissedAtIndexRef.current = atIndexRef.current;
         atIndexRef.current = null;
         setQ("");
@@ -523,11 +562,31 @@ export default function PathChipsInput({
         <div ref={chipsRef} className="mt-px mb-0.5 flex flex-wrap items-start gap-0.5">
           {chips.map((chip, idx) => {
             const chipKey = buildChipStableKey(chip, `${idx}`);
+            const chipAny = chip as PathChip;
+            const isRule = chipAny.chipKind === "rule";
+            const tooltip = isRule
+              ? chipAny.rulePath || chipAny.winPath || chipAny.wslPath || ""
+              : (runEnv === 'windows'
+                ? (resolveChipWindowsFullPath(chipAny) || String((chipAny as any)?.winPath || (chipAny as any)?.wslPath || ""))
+                : String((chipAny as any)?.wslPath || (chipAny as any)?.winPath || ""));
+            const ruleLabel = chipAny.rulePath?.split(/[/\\]/).pop() || chipAny.rulePath || chipAny.fileName || "rule";
+            const labelText = isRule
+              ? ruleLabel
+              : chip.fileName || (chip as any)?.wslPath || "image";
+            const isDir = !!(chipAny as any).isDir || (/\/$/.test(String(chip.wslPath || '')));
+            const iconNode = (() => {
+              if (chip.previewUrl) {
+                return <img src={chip.previewUrl} className="h-4 w-4 object-cover rounded" alt={chip.fileName || "img"} />;
+              }
+              if (isRule) return <ScrollText className="h-4 w-4 text-slate-600" />;
+              if (isDir) return <FolderOpenDot className="h-4 w-4 text-slate-600" />;
+              return <FileText className="h-4 w-4 text-slate-600" />;
+            })();
             return (
               <div
                 key={chip.id || `${chip.wslPath}-${idx}`}
                 className="group relative inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-1 py-0.5 text-[12px] leading-4"
-                title={runEnv === 'windows' ? (resolveChipWindowsFullPath(chip as any) || String((chip as any)?.winPath || (chip as any)?.wslPath || "")) : String((chip as any)?.wslPath || (chip as any)?.winPath || "")}
+                title={tooltip || undefined}
                 onMouseEnter={(ev) => handleChipMouseEnter(chip, chipKey, ev.currentTarget)}
                 onMouseLeave={hidePreview}
                 onContextMenu={(ev) => {
@@ -535,21 +594,12 @@ export default function PathChipsInput({
                   setCtxMenu({ show: true, x: ev.clientX, y: ev.clientY, chip });
                 }}
               >
-                {(() => {
-                  const isDir = !!(chip as any).isDir || (/\/$/.test(String(chip.wslPath || '')));
-                  if (chip.previewUrl) {
-                    return (
-                      <img src={chip.previewUrl} className="h-4 w-4 object-cover rounded" alt={chip.fileName || "img"} />
-                    );
-                  }
-                  if (isDir) return <FolderOpenDot className="h-4 w-4 text-slate-600" />;
-                  return <FileText className="h-4 w-4 text-slate-600" />;
-                })()}
+                {iconNode}
                 <span
                   className="text-slate-700 max-w-[160px] truncate"
-                  title={runEnv === 'windows' ? (resolveChipWindowsFullPath(chip as any) || String((chip as any)?.winPath || (chip as any)?.wslPath || '')) : String((chip as any)?.wslPath || (chip as any)?.winPath || '')}
+                  title={tooltip || undefined}
                 >
-                  {chip.fileName || chip.wslPath || "image"}
+                  {labelText}
                 </span>
                 <span className="ml-0.5 inline-block rounded bg-slate-200 px-1 text-[10px] text-slate-600">{idx + 1}</span>
                 <button
