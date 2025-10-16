@@ -75,6 +75,44 @@ export interface SettingsAPI {
   codexRoots(): Promise<string[]>;
 }
 
+export interface StorageAPI {
+  getAppDataInfo(): Promise<{
+    ok: boolean;
+    path: string;
+    totalBytes: number;
+    dirCount: number;
+    fileCount: number;
+    collectedAt: number;
+    error?: string;
+  }>;
+  clearAppData(args?: { preserveSettings?: boolean }): Promise<{
+    ok: boolean;
+    path: string;
+    bytesBefore: number;
+    bytesAfter: number;
+    bytesFreed: number;
+    removedEntries: number;
+    skippedEntries: number;
+    errors?: Array<{ name: string; message: string }>;
+    error?: string;
+    scheduled?: boolean;
+    note?: string;
+  }>;
+  purgeAppDataAndQuit(): Promise<{
+    ok: boolean;
+    path: string;
+    bytesBefore: number;
+    bytesAfter: number;
+    bytesFreed: number;
+    removedEntries: number;
+    skippedEntries: number;
+    errors?: Array<{ name: string; message: string }>;
+    error?: string;
+    scheduled?: boolean;
+    note?: string;
+  }>;
+}
+
 export type CodexAccountInfo = {
   accountId: string | null;
   userId: string | null;
@@ -140,6 +178,7 @@ declare global {
       projects: ProjectsAPI;
       history: HistoryAPI;
       settings: SettingsAPI;
+      storage: StorageAPI;
       utils: UtilsAPI;
       i18n: I18nAPI;
       codex: CodexAPI;

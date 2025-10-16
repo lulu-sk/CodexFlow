@@ -16,10 +16,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { cn } from "@/lib/utils";
+import { cn, formatBytes } from "@/lib/utils";
 import { listAvailableLanguages, changeAppLanguage } from "@/i18n/setup";
 import { CodexAccountInline } from "@/components/topbar/codex-status";
-import { Trash2 } from "lucide-react";
+import { Trash2, Power } from "lucide-react";
 
 type TerminalMode = "wsl" | "windows";
 type SendMode = "write_only" | "write_and_enter";
@@ -61,6 +61,14 @@ type CleanupResult = {
   failed: number;
 };
 
+type AppDataInfo = {
+  path: string;
+  totalBytes: number;
+  dirCount: number;
+  fileCount: number;
+  collectedAt: number;
+};
+
 type SectionKey = "basic" | "terminal" | "account" | "data";
 
 const NAV_ORDER: SectionKey[] = ["basic", "terminal", "account", "data"];
@@ -91,7 +99,16 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   const [cleanupResult, setCleanupResult] = useState<CleanupResult | null>(null);
   const [cleanupWarningOpen, setCleanupWarningOpen] = useState(false);
   const [cleanupFeedback, setCleanupFeedback] = useState<{ open: boolean; message: string; isError: boolean }>({ open: false, message: "", isError: false });
+  const [storageInfo, setStorageInfo] = useState<AppDataInfo | null>(null);
+  const [storageLoading, setStorageLoading] = useState(false);
+  const [storageClearing, setStorageClearing] = useState(false);
+  const [storagePurging, setStoragePurging] = useState(false);
+  const [storageConfirmOpen, setStorageConfirmOpen] = useState(false);
+  const [storagePurgeConfirmOpen, setStoragePurgeConfirmOpen] = useState(false);
+  const [storageFeedback, setStorageFeedback] = useState<{ open: boolean; message: string; isError: boolean }>({ open: false, message: "", isError: false });
+  const [storageError, setStorageError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const storageLoadedRef = useRef(false);
 
   const labelOf = useCallback((lng: string) => {
     const map: Record<string, string> = { zh: "简体中文", en: "English" };
@@ -215,6 +232,123 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
       setCleanupWarningOpen(false);
     }
   }, [cleanupList, t]);
+
+  const refreshAppDataInfo = useCallback(async () => {
+    const api = (window as any).host?.storage?.getAppDataInfo;
+    if (!api) {
+      setStorageInfo(null);
+      setStorageError(t("settings:appData.notSupported") as string);
+      return;
+    }
+    setStorageLoading(true);
+    setStorageError(null);
+    try {
+      const res: any = await api();
+      if (res && res.ok) {
+        setStorageInfo({
+          path: typeof res.path === "string" ? res.path : "",
+          totalBytes: typeof res.totalBytes === "number" ? res.totalBytes : Number(res.totalBytes || 0),
+          dirCount: typeof res.dirCount === "number" ? res.dirCount : Number(res.dirCount || 0),
+          fileCount: typeof res.fileCount === "number" ? res.fileCount : Number(res.fileCount || 0),
+          collectedAt: typeof res.collectedAt === "number" ? res.collectedAt : Date.now(),
+        });
+      } else {
+        const message = res && res.error ? String(res.error) : (t("settings:appData.loadFailed") as string);
+        setStorageInfo(null);
+        setStorageError(message);
+      }
+    } catch (error: any) {
+      setStorageInfo(null);
+      setStorageError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setStorageLoading(false);
+    }
+  }, [t]);
+
+  const handleClearAppData = useCallback(async () => {
+    setStorageConfirmOpen(false);
+    const api = (window as any).host?.storage?.clearAppData;
+    if (!api) {
+      setStorageFeedback({ open: true, message: t("settings:appData.cleanFailed") as string, isError: true });
+      return;
+    }
+    setStorageClearing(true);
+    try {
+      const res: any = await api({ preserveSettings: true });
+      if (res && res.ok) {
+        const freedRaw =
+          typeof res.bytesFreed === "number"
+            ? res.bytesFreed
+            : Math.max(
+                0,
+                Number(res.bytesBefore || 0) - Number(res.bytesAfter || 0),
+              );
+        await refreshAppDataInfo();
+        const note =
+          res && typeof res.note === "string" && res.note.trim().length > 0
+            ? String(res.note).trim()
+            : "";
+        setStorageFeedback({
+          open: true,
+          message: [
+            String(t("settings:appData.cleanSuccess", { freed: formatBytes(freedRaw) })),
+            note,
+          ]
+            .filter(Boolean)
+            .join("\n"),
+          isError: false,
+        });
+      } else {
+        const note =
+          res && typeof res.note === "string" && res.note.trim().length > 0
+            ? String(res.note).trim()
+            : "";
+        const messageBase = res && res.error ? String(res.error) : (t("settings:appData.cleanFailed") as string);
+        const message = [messageBase, note].filter(Boolean).join("\n");
+        setStorageFeedback({ open: true, message, isError: true });
+      }
+    } catch {
+      setStorageFeedback({ open: true, message: t("settings:appData.cleanFailed") as string, isError: true });
+    } finally {
+      setStorageClearing(false);
+    }
+  }, [refreshAppDataInfo, t]);
+
+  const handlePurgeAppData = useCallback(async () => {
+    setStoragePurgeConfirmOpen(false);
+    const api = (window as any).host?.storage?.purgeAppDataAndQuit;
+    if (!api) {
+      setStorageFeedback({ open: true, message: t("settings:appData.purgeFailed") as string, isError: true });
+      return;
+    }
+    setStoragePurging(true);
+    try {
+      const res: any = await api();
+      if (!(res && res.ok)) {
+        const message = res && res.error ? String(res.error) : (t("settings:appData.purgeFailed") as string);
+        setStorageFeedback({ open: true, message, isError: true });
+      } else if (res && typeof res.note === "string" && res.note.trim().length > 0) {
+        setStorageFeedback({ open: true, message: String(res.note).trim(), isError: false });
+      }
+    } catch {
+      setStorageFeedback({ open: true, message: t("settings:appData.purgeFailed") as string, isError: true });
+    } finally {
+      setStoragePurging(false);
+    }
+  }, [t]);
+
+  useEffect(() => {
+    if (!open) {
+      storageLoadedRef.current = false;
+      setStorageInfo(null);
+      setStorageError(null);
+      return;
+    }
+    if (!storageLoadedRef.current) {
+      storageLoadedRef.current = true;
+      refreshAppDataInfo();
+    }
+  }, [open, refreshAppDataInfo]);
 
   const sections = useMemo(() => {
     return NAV_ORDER.map((key) => {
@@ -477,11 +611,107 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                 </div>
               </CardContent>
             </Card>
+            <Card>
+              <CardHeader>
+                <CardTitle>{t("settings:appData.label")}</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <p className="text-sm text-slate-500">{t("settings:appData.desc")}</p>
+                <div className="space-y-3 rounded border bg-slate-50 p-3 text-xs">
+                  <div>
+                    <span className="text-slate-500">{t("settings:appData.pathLabel")}</span>
+                    <div className="mt-1 break-words select-all font-mono text-[11px] text-slate-700">
+                      {storageInfo?.path || (t("settings:appData.pathUnknown") as string)}
+                    </div>
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-3">
+                    <div>
+                      <div className="text-slate-500">{t("settings:appData.sizeLabel")}</div>
+                      <div className="mt-1 text-sm font-medium text-slate-700">
+                        {storageLoading && !storageInfo
+                          ? (t("settings:appData.loading") as string)
+                          : formatBytes(storageInfo?.totalBytes ?? 0)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-slate-500">{t("settings:appData.dirLabel")}</div>
+                      <div className="mt-1 text-sm font-medium text-slate-700">
+                        {storageInfo ? storageInfo.dirCount : "—"}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-slate-500">{t("settings:appData.fileLabel")}</div>
+                      <div className="mt-1 text-sm font-medium text-slate-700">
+                        {storageInfo ? storageInfo.fileCount : "—"}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="text-[11px] text-slate-500">
+                    {storageInfo
+                      ? t("settings:appData.updatedAt", {
+                          value: new Date(storageInfo.collectedAt).toLocaleString(),
+                        })
+                      : storageLoading
+                        ? (t("settings:appData.loading") as string)
+                        : t("settings:appData.awaitingRefresh")}
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    variant="outline"
+                    disabled={storageLoading || storageClearing || storagePurging}
+                    onClick={refreshAppDataInfo}
+                  >
+                    {storageLoading ? t("settings:appData.refreshing") : t("settings:appData.refresh")}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    className="border border-amber-200 text-amber-600 hover:bg-amber-50"
+                    disabled={storageLoading || storageClearing || storagePurging}
+                    onClick={() => setStorageConfirmOpen(true)}
+                  >
+                    <Trash2 className="mr-2 h-4 w-4" />{" "}
+                    {storageClearing ? t("settings:appData.cleaning") : t("settings:appData.clean")}
+                  </Button>
+                  <Button
+                    variant="default"
+                    className="bg-red-600 hover:bg-red-700 focus-visible:ring-2 focus-visible:ring-red-500"
+                    disabled={storagePurging || storageClearing}
+                    onClick={() => setStoragePurgeConfirmOpen(true)}
+                  >
+                    <Power className="mr-2 h-4 w-4" />{" "}
+                    {storagePurging ? t("settings:appData.fullPurging") : t("settings:appData.fullPurge")}
+                  </Button>
+                </div>
+                {storageError && <div className="text-sm text-red-600">{storageError}</div>}
+              </CardContent>
+            </Card>
           </div>
         ),
       };
     });
-  }, [availableDistros, availableLangs, cleanupResult, cleanupRunning, cleanupScanning, codexCmd, codexRoots, distro, labelOf, lang, pathStyle, sendMode, t, terminal]);
+  }, [
+    availableDistros,
+    availableLangs,
+    cleanupResult,
+    cleanupRunning,
+    cleanupScanning,
+    codexCmd,
+    codexRoots,
+    distro,
+    labelOf,
+    lang,
+    pathStyle,
+    sendMode,
+    storageInfo,
+    storageLoading,
+    storageClearing,
+    storagePurging,
+    storageError,
+    refreshAppDataInfo,
+    t,
+    terminal,
+  ]);
 
   useEffect(() => {
     if (!open) {
@@ -575,6 +805,80 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
           </div>
         </div>
       </DialogContent>
+      <Dialog open={storageConfirmOpen} onOpenChange={setStorageConfirmOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>{t("settings:appData.cleanConfirmTitle")}</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-slate-500">
+            {t("settings:appData.cleanConfirmDesc", { path: storageInfo?.path || "" })}
+          </p>
+          <p className="mt-2 text-xs text-slate-500">
+            {t("settings:appData.cleanConfirmNote")}
+          </p>
+          <div className="flex justify-end gap-2 pt-4">
+            <Button variant="outline" onClick={() => setStorageConfirmOpen(false)} disabled={storageClearing}>
+              {t("common:cancel")}
+            </Button>
+            <Button
+              variant="secondary"
+              className="border border-amber-200 text-amber-600 hover:bg-amber-50"
+              disabled={storageClearing}
+              onClick={handleClearAppData}
+            >
+              <Trash2 className="mr-2 h-4 w-4" />{" "}
+              {storageClearing ? t("settings:appData.cleaning") : t("settings:appData.cleanConfirmAction")}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={storagePurgeConfirmOpen} onOpenChange={setStoragePurgeConfirmOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>{t("settings:appData.fullConfirmTitle")}</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-slate-500">
+            {t("settings:appData.fullConfirmDesc", { path: storageInfo?.path || "" })}
+          </p>
+          <p className="mt-3 text-xs text-red-600">
+            {t("settings:appData.fullConfirmNote")}
+          </p>
+          <div className="flex justify-end gap-2 pt-4">
+            <Button variant="outline" onClick={() => setStoragePurgeConfirmOpen(false)} disabled={storagePurging}>
+              {t("common:cancel")}
+            </Button>
+            <Button
+              className="bg-red-500 text-white hover:bg-red-600"
+              disabled={storagePurging}
+              onClick={handlePurgeAppData}
+            >
+              <Power className="mr-2 h-4 w-4" />{" "}
+              {storagePurging ? t("settings:appData.fullPurging") : t("settings:appData.fullConfirmAction")}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={storageFeedback.open} onOpenChange={(openState) => setStorageFeedback((prev) => ({ ...prev, open: openState }))}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>
+              {storageFeedback.isError
+                ? t("settings:appData.feedbackErrorTitle")
+                : t("settings:appData.feedbackSuccessTitle")}
+            </DialogTitle>
+          </DialogHeader>
+          {storageFeedback.message && (
+            <p className={cn("text-sm", storageFeedback.isError ? "text-red-600" : "text-slate-600")}>
+              {storageFeedback.message}
+            </p>
+          )}
+          <div className="flex justify-end pt-4">
+            <Button onClick={() => setStorageFeedback((prev) => ({ ...prev, open: false }))}>
+              {t("common:common.ok", "OK")}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
       <Dialog open={cleanupOpen} onOpenChange={setCleanupOpen}>
         <DialogContent className="max-w-4xl w-[80vw]">
           <DialogHeader>

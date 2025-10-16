@@ -9,7 +9,7 @@ import path from 'node:path';
 import { PTYManager, setTermDebug } from "./pty.js";
 import projects, { IMPLEMENTATION_NAME as PROJECTS_IMPL } from "./projects/index";
 import history from "./history";
-import { startHistoryIndexer, getIndexedSummaries, getIndexedDetails, getLastIndexerRoots } from "./indexer";
+import { startHistoryIndexer, getIndexedSummaries, getIndexedDetails, getLastIndexerRoots, stopHistoryIndexer } from "./indexer";
 import { getSessionsRootsFastAsync } from "./wsl";
 import { perfLogger } from "./log";
 import settings, { ensureSettingsAutodetect } from "./settings";
@@ -19,6 +19,7 @@ import fileIndex from "./fileIndex";
 import images from "./images";
 import { installInputContextMenu } from "./contextMenu";
 import { CodexBridge, type CodexBridgeOptions } from "./codex/bridge";
+import storage from "./storage";
 
 // 使用 CommonJS 编译输出时，运行时环境会提供 `__dirname`，直接使用即可
 
@@ -28,6 +29,41 @@ const ptyManager = new PTYManager(() => mainWindow);
 // 会话期粘贴图片（保存后的 Windows 路径），用于退出时统一清理
 const sessionPastedImages = new Set<string>();
 const codexBridges = new Map<string, CodexBridge>();
+
+function disposeAllPtys() {
+  try { ptyManager.disposeAll(); } catch (e) { /* noop */ }
+}
+
+function disposeCodexBridges() {
+  if (codexBridges.size === 0) return;
+  for (const [key, bridge] of codexBridges.entries()) {
+    try {
+      bridge.dispose();
+    } catch (e) {
+      if (DIAG) {
+        try { perfLogger.log(`[codex] dispose failed (${key}): ${String(e)}`); } catch {}
+      }
+    } finally {
+      codexBridges.delete(key);
+    }
+  }
+}
+
+async function cleanupPastedImages() {
+  try {
+    if (sessionPastedImages.size === 0) return;
+    const toTrash = Array.from(sessionPastedImages);
+    sessionPastedImages.clear();
+    for (const p of toTrash) {
+      try {
+        if (fs.existsSync(p)) {
+          // 彻底删除粘贴的临时图片（无回收站回退）
+          try { await fsp.rm(p, { force: true }); } catch {}
+        }
+      } catch {}
+    }
+  } catch {}
+}
 
 function resolveCodexBridgeTarget(): { key: string; options: CodexBridgeOptions } {
   const cfg = settings.getSettings();
@@ -213,61 +249,33 @@ if (!gotLock) {
     try { mainWindow?.webContents.send('history:index:add', { items: [] }); } catch {}
   });
 
-  // Ensure PTY sessions are cleaned up on application shutdown events (best-effort).
-  const tryDisposePtys = () => {
-    try { ptyManager.disposeAll(); } catch (e) { /* noop */ }
-  };
-  const tryDisposeCodex = () => {
-    if (codexBridges.size === 0) return;
-    for (const [key, bridge] of codexBridges.entries()) {
-      try {
-        bridge.dispose();
-      } catch (e) {
-        if (DIAG) {
-          try { perfLogger.log(`[codex] dispose failed (${key}): ${String(e)}`); } catch {}
-        }
-      } finally {
-        codexBridges.delete(key);
-      }
-    }
-  };
-  const tryCleanupPastedImages = async () => {
-    try {
-      if (sessionPastedImages.size === 0) return;
-      const toTrash = Array.from(sessionPastedImages);
-      sessionPastedImages.clear();
-      for (const p of toTrash) {
-        try {
-          if (fs.existsSync(p)) {
-            // 彻底删除粘贴的临时图片（无回收站回退）
-            try { await fsp.rm(p, { force: true }); } catch {}
-          }
-        } catch {}
-      }
-    } catch {}
+  const tryStopIndexer = () => {
+    try { stopHistoryIndexer().catch(() => {}); } catch {}
   };
 
   app.on('before-quit', () => {
-    tryDisposePtys();
-    tryCleanupPastedImages();
-    tryDisposeCodex();
+    disposeAllPtys();
+    cleanupPastedImages().catch(() => {});
+    disposeCodexBridges();
+    tryStopIndexer();
   });
 
   app.on('will-quit', () => {
-    tryDisposePtys();
-    tryCleanupPastedImages();
-    tryDisposeCodex();
+    disposeAllPtys();
+    cleanupPastedImages().catch(() => {});
+    disposeCodexBridges();
+    tryStopIndexer();
   });
 
   // Also hook process-level events so that when Node receives termination signals we attempt cleanup.
-  process.on('exit', () => { tryDisposePtys(); tryDisposeCodex(); });
-  process.on('SIGINT', () => { tryDisposePtys(); tryCleanupPastedImages(); tryDisposeCodex(); process.exit(0); });
-  process.on('SIGTERM', () => { tryDisposePtys(); tryCleanupPastedImages(); tryDisposeCodex(); process.exit(0); });
+  process.on('exit', () => { disposeAllPtys(); disposeCodexBridges(); tryStopIndexer(); });
+  process.on('SIGINT', () => { disposeAllPtys(); cleanupPastedImages().catch(() => {}); disposeCodexBridges(); tryStopIndexer(); process.exit(0); });
+  process.on('SIGTERM', () => { disposeAllPtys(); cleanupPastedImages().catch(() => {}); disposeCodexBridges(); tryStopIndexer(); process.exit(0); });
   process.on('uncaughtException', (err) => {
     try { console.error('uncaughtException', err); } catch {}
     if (DIAG) { try { perfLogger.log(`[PROC] uncaughtException ${String((err as any)?.stack || err)}`); } catch {} }
-    tryDisposePtys();
-    tryDisposeCodex();
+    disposeAllPtys();
+    disposeCodexBridges();
     // rethrow to allow default behavior after cleanup
     try { throw err; } catch {}
   });
@@ -1178,6 +1186,57 @@ ipcMain.handle('settings.codexRoots', async () => {
     return { ok: true, roots };
   } catch (e: any) {
     return { ok: false, error: String(e) };
+  }
+});
+ipcMain.handle('storage.appData.info', async () => {
+  try {
+    return await storage.getAppDataInfo();
+  } catch (e: any) {
+    return {
+      ok: false,
+      path: '',
+      totalBytes: 0,
+      dirCount: 0,
+      fileCount: 0,
+      collectedAt: Date.now(),
+      error: String(e),
+    };
+  }
+});
+ipcMain.handle('storage.appData.clear', async (_e, args: { preserveSettings?: boolean } = {}) => {
+  try {
+    return await storage.clearAppData(args);
+  } catch (e: any) {
+    return {
+      ok: false,
+      path: '',
+      bytesBefore: 0,
+      bytesAfter: 0,
+      bytesFreed: 0,
+      removedEntries: 0,
+      skippedEntries: 0,
+      error: String(e),
+    };
+  }
+});
+ipcMain.handle('storage.appData.purgeAndQuit', async () => {
+  try {
+    disposeAllPtys();
+    disposeCodexBridges();
+    await cleanupPastedImages();
+    await stopHistoryIndexer();
+    return await storage.purgeAppDataAndQuit();
+  } catch (e: any) {
+    return {
+      ok: false,
+      path: '',
+      bytesBefore: 0,
+      bytesAfter: 0,
+      bytesFreed: 0,
+      removedEntries: 0,
+      skippedEntries: 0,
+      error: String(e),
+    };
   }
 });
 
