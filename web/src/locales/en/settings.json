@@ -111,8 +111,8 @@
     "feedbackSuccessTitle": "Operation completed"
   },
   "historyCleanup": {
-    "label": "History cleanup",
-    "desc": "Scan all sessions and permanently delete those with empty input/output.",
+    "label": "Session history file cleanup",
+    "desc": "Scan all session history files, find those with empty input/output, and delete them permanently.",
     "scan": "Clean empty histories…",
     "scanning": "Scanning…",
     "result": "Cleaned {ok}, Not found {notFound}, Failed {failed}",
