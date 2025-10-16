@@ -1,10 +1,29 @@
 {
   "title": "Settings",
+  "sections": {
+    "basic": {
+      "title": "Basic experience",
+      "desc": "Language preferences and composer defaults."
+    },
+    "terminal": {
+      "title": "Terminal & execution",
+      "desc": "Configure how CodexFlow runs commands."
+    },
+    "account": {
+      "title": "Account & connections",
+      "desc": "Review the ChatGPT account linked to CodexFlow."
+    },
+    "data": {
+      "title": "Data & storage",
+      "desc": "Inspect cached files and clean redundant histories."
+    }
+  },
   "language": {
     "label": "UI Language",
     "placeholder": "Select language",
     "en": "English",
-    "zh": "Simplified Chinese"
+    "zh": "Simplified Chinese",
+    "help": "Choose the language used across the app."
   },
   "terminal": "Terminal",
   "terminalPlaceholder": "Select terminal",
@@ -12,22 +31,28 @@
   "terminalMode": {
     "label": "Execution Environment",
     "wsl": "WSL",
-    "windows": "Windows (PowerShell)"
+    "windows": "Windows (PowerShell)",
+    "help": "Switch between WSL and PowerShell execution environments."
   },
   "wslDistro": "WSL Distro",
+  "wslDistroHelp": "Select the default distribution used when opening a WSL terminal.",
   "codexCmd": "CodexFlow launch command",
+  "codexCmdHelp": "Customize the command CodexFlow runs when launching from the terminal.",
   "sendMode": {
     "label": "Send key behavior",
     "write_only": "Send only",
-    "write_and_enter": "Send and confirm"
+    "write_and_enter": "Send and confirm",
+    "help": "Decide whether pressing Enter sends the text immediately."
   },
   "projectPathStyle": {
     "label": "Message path format",
     "absolute": "Absolute path",
-    "relative": "Relative path (to project root)"
+    "relative": "Relative path (to project root)",
+    "help": "Pick the path format inserted into conversations."
   },
   "codexAccount": {
     "label": "ChatGPT account",
+    "help": "Check the login status synced from your ChatGPT desktop session.",
     "statusLoading": "Loading account…",
     "statusError": "Account unavailable",
     "statusUnknown": "Not signed in",
@@ -49,6 +74,7 @@
   },
   "codexRoots": {
     "label": ".codex roots (read-only)",
+    "help": "Reference directories detected on disk. Useful for troubleshooting.",
     "empty": "No .codex roots detected"
   },
   "historyCleanup": {
@@ -70,5 +96,8 @@
     "warningDesc": "This will permanently delete {count} history files and cannot be undone. Continue?",
     "warningConfirm": "Delete anyway",
     "batchDeleteFailed": "Batch delete failed"
+  },
+  "footer": {
+    "note": "Changes apply after you save. Some items may require restarting CodexFlow."
   }
 }

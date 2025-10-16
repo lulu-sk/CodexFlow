@@ -301,7 +301,8 @@ export const CodexAccountInline: React.FC<{
   auto?: boolean;
   terminalMode?: "wsl" | "windows";
   distro?: string;
-}> = ({ className, auto = true, terminalMode, distro }) => {
+  expanded?: boolean;
+}> = ({ className, auto = true, terminalMode, distro, expanded = false }) => {
   const { t } = useTranslation(["settings", "common"]);
   const errorTranslator = useCallback(
     (error: unknown) =>
@@ -340,6 +341,45 @@ export const CodexAccountInline: React.FC<{
     return resolveAccountLabel(accountState.data, t);
   }, [accountState, t]);
 
+  const details = (
+    <>
+      {accountState.error ? (
+        <div className="text-red-600">{accountState.error}</div>
+      ) : accountState.loading && !accountState.data ? (
+        <div className="text-slate-500">
+          {t("settings:codexAccount.statusLoading", "正在读取账号信息…")}
+        </div>
+      ) : (
+        <dl className="grid grid-cols-[110px_1fr] gap-x-4 gap-y-2 text-sm text-slate-800">
+          <dt className="text-xs text-slate-500">{t("settings:codexAccount.statusLabel", "状态")}</dt>
+          <dd>{resolveAccountLabel(accountState.data, t)}</dd>
+          <dt className="text-xs text-slate-500">{t("settings:codexAccount.email", "邮箱")}</dt>
+          <dd className="break-all">{accountState.data?.email ?? t("settings:codexAccount.notProvided", "未提供")}</dd>
+          <dt className="text-xs text-slate-500">{t("settings:codexAccount.planLabel", "套餐")}</dt>
+          <dd>{describePlan(accountState.data?.plan ?? null, t)}</dd>
+          <dt className="text-xs text-slate-500">{t("settings:codexAccount.accountId", "账号 ID")}</dt>
+          <dd className="break-all">{accountState.data?.accountId ?? t("settings:codexAccount.notProvided", "未提供")}</dd>
+          <dt className="text-xs text-slate-500">{t("settings:codexAccount.userId", "用户 ID")}</dt>
+          <dd className="break-all">{accountState.data?.userId ?? t("settings:codexAccount.notProvided", "未提供")}</dd>
+        </dl>
+      )}
+      <div className="mt-3 flex justify-end">
+        <Button size="sm" variant="outline" className="gap-2" onClick={() => reloadAccount()}>
+          <RotateCcw className="h-3.5 w-3.5" />
+          {t(["common:refresh", "common:common.refresh"], "刷新")}
+        </Button>
+      </div>
+    </>
+  );
+
+  if (expanded) {
+    return (
+      <div className={`rounded-lg border border-slate-200 bg-white/80 p-4 ${className ?? ""}`}>
+        {details}
+      </div>
+    );
+  }
+
   return (
     <div
       className={`relative inline-flex cursor-default items-center ${className ?? ""}`}
@@ -351,28 +391,7 @@ export const CodexAccountInline: React.FC<{
       </span>
       {hover.open && (
         <div className="absolute left-0 top-full z-[70] mt-2 w-[480px] rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-800 shadow-xl">
-          {accountState.error ? (
-            <div className="text-red-600">{accountState.error}</div>
-          ) : (
-            <dl className="grid grid-cols-[90px_1fr] gap-x-3 gap-y-2">
-              <dt className="text-xs text-slate-500">{t("settings:codexAccount.statusLabel", "状态")}</dt>
-              <dd>{resolveAccountLabel(accountState.data, t)}</dd>
-              <dt className="text-xs text-slate-500">{t("settings:codexAccount.email", "邮箱")}</dt>
-              <dd className="break-all">{accountState.data?.email ?? t("settings:codexAccount.notProvided", "未提供")}</dd>
-              <dt className="text-xs text-slate-500">{t("settings:codexAccount.planLabel", "套餐")}</dt>
-              <dd>{describePlan(accountState.data?.plan ?? null, t)}</dd>
-              <dt className="text-xs text-slate-500">{t("settings:codexAccount.accountId", "账号 ID")}</dt>
-              <dd className="break-all">{accountState.data?.accountId ?? t("settings:codexAccount.notProvided", "未提供")}</dd>
-              <dt className="text-xs text-slate-500">{t("settings:codexAccount.userId", "用户 ID")}</dt>
-              <dd className="break-all">{accountState.data?.userId ?? t("settings:codexAccount.notProvided", "未提供")}</dd>
-            </dl>
-          )}
-          <div className="mt-3 flex justify-end">
-            <Button size="sm" variant="outline" className="gap-2" onClick={() => reloadAccount()}>
-              <RotateCcw className="h-3.5 w-3.5" />
-              {t(["common:refresh", "common:common.refresh"], "刷新")}
-            </Button>
-          </div>
+          {details}
         </div>
       )}
     </div>
