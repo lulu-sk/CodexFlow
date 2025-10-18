@@ -30,6 +30,7 @@ import {
   ChevronRight,
   ChevronLeft,
   ExternalLink,
+  EyeOff,
   Trash2,
   X,
   Copy as CopyIcon,
@@ -443,6 +444,40 @@ export default function CodexFlowManagerUI() {
     notifyLog(`ctx.menu.toggle enabled=${showNotifDebugMenu ? '1' : '0'}`);
   }, [notifyLog, showNotifDebugMenu]);
 
+  const [devMeta, setDevMeta] = useState<boolean | null>(null);
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const res: any = await window.host?.env?.getMeta?.();
+        if (!active) return;
+        if (res && res.ok && typeof res.isDev === 'boolean') setDevMeta(res.isDev);
+      } catch {}
+    })();
+    return () => { active = false; };
+  }, []);
+
+  const isDevEnvironment = React.useMemo(() => {
+    if (devMeta !== null) return devMeta;
+    try {
+      if ((import.meta as any)?.env?.DEV) return true;
+    } catch {}
+    try {
+      const loc = window.location;
+      const protocol = String(loc?.protocol || '').toLowerCase();
+      if (protocol === 'http:' || protocol === 'https:') {
+        const host = String(loc?.hostname || '').toLowerCase();
+        if (!host || host === 'localhost' || host === '127.0.0.1') return true;
+        if (host.endsWith('.localhost')) return true;
+        if (protocol === 'http:') return true;
+      }
+    } catch {}
+    try {
+      if (uiDebugEnabled()) return true;
+    } catch {}
+    return false;
+  }, [devMeta, uiDebugEnabled]);
+
   // 诊断：打印当前页面上可能的“覆盖层/遮罩”信息以及活跃元素
   const dumpOverlayDiagnostics = React.useCallback((reason: string) => {
     if (!uiDebugEnabled()) return;
@@ -471,12 +506,36 @@ export default function CodexFlowManagerUI() {
   }, [uiLog, uiDebugEnabled]);
   // ---------- App State ----------
   const [projects, setProjects] = useState<Project[]>([]);
+  const [hiddenProjectIds, setHiddenProjectIds] = useState<string[]>([]);
   const [query, setQuery] = useState("");
-  const [selectedProjectId, setSelectedProjectId] = useState<string>(projects[0]?.id ?? "");
-  const selectedProject = useMemo(
-    () => projects.find((p) => p.id === selectedProjectId) || null,
-    [projects, selectedProjectId]
+  const [selectedProjectId, setSelectedProjectId] = useState<string>("");
+  const visibleProjects = useMemo(
+    () => projects.filter((p) => !hiddenProjectIds.includes(p.id)),
+    [projects, hiddenProjectIds]
   );
+  const selectedProject = useMemo(
+    () => visibleProjects.find((p) => p.id === selectedProjectId) || null,
+    [visibleProjects, selectedProjectId]
+  );
+
+  useEffect(() => {
+    if (hiddenProjectIds.length === 0) return;
+    setProjects((prev) => prev.filter((p) => !hiddenProjectIds.includes(p.id)));
+  }, [hiddenProjectIds]);
+
+  useEffect(() => {
+    if (visibleProjects.length === 0) {
+      if (selectedProjectId !== "") setSelectedProjectId("");
+      return;
+    }
+    if (!selectedProjectId) {
+      setSelectedProjectId(visibleProjects[0].id);
+      return;
+    }
+    if (!visibleProjects.some((p) => p.id === selectedProjectId)) {
+      setSelectedProjectId(visibleProjects[0]?.id ?? "");
+    }
+  }, [visibleProjects, selectedProjectId]);
 
   // 切换项目时：确保/加载文件索引并推送至前端 Worker
   useEffect(() => {
@@ -999,6 +1058,7 @@ export default function CodexFlowManagerUI() {
   // 历史删除确认（应用内对话框，替代 window.confirm，避免同步阻塞导致的焦点/指针异常）
   const [confirmDelete, setConfirmDelete] = useState<{ open: boolean; item: HistorySession | null; groupKey: string | null }>({ open: false, item: null, groupKey: null });
   const [projectCtxMenu, setProjectCtxMenu] = useState<{ show: boolean; x: number; y: number; project: Project | null }>({ show: false, x: 0, y: 0, project: null });
+  const [hideProjectConfirm, setHideProjectConfirm] = useState<{ open: boolean; project: Project | null }>({ open: false, project: null });
   const projectCtxMenuRef = useRef<HTMLDivElement | null>(null);
   // Simple in-memory cache to show previous results instantly when switching projects
   const historyCacheRef = useRef<Record<string, HistorySession[]>>({});
@@ -1324,15 +1384,82 @@ export default function CodexFlowManagerUI() {
   }, [pendingCompletions, tabsByProject]);
 
   const filtered = useMemo(() => {
-    if (!query.trim()) return projects;
+    if (!query.trim()) return visibleProjects;
     const q = query.toLowerCase();
-    return projects.filter((p) => `${p.name} ${p.winPath}`.toLowerCase().includes(q));
-  }, [projects, query]);
+    return visibleProjects.filter((p) => `${p.name} ${p.winPath}`.toLowerCase().includes(q));
+  }, [visibleProjects, query]);
 
   const tabsForProject = tabsByProject[selectedProjectId] || [];
   const activeTab = useMemo(() => tabsForProject.find((tab) => tab.id === activeTabId) || null, [tabsForProject, activeTabId]);
 
   // ---------- Actions ----------
+
+  const hideProjectTemporarily = useCallback((project: Project | null) => {
+    if (!project) return;
+    const projectTabs = tabsByProject[project.id] || [];
+    const tabIds = projectTabs.map((tab) => tab.id);
+    for (const tabId of tabIds) {
+      const ptyId = ptyByTabRef.current[tabId];
+      if (ptyId) {
+        try { window.host.pty.close(ptyId); } catch {}
+        unregisterPtyListener(ptyId);
+        delete ptyByTabRef.current[tabId];
+      }
+      delete ptyAliveRef.current[tabId];
+      clearPendingForTab(tabId);
+      unregisterTabProject(tabId);
+      try { tm.disposeTab(tabId, true); } catch (err) { console.warn('tm.disposeTab failed', err); }
+    }
+    if (tabIds.length > 0) {
+      setPtyByTab((prev) => {
+        const next = { ...prev };
+        for (const tabId of tabIds) delete next[tabId];
+        return next;
+      });
+      setPtyAlive((prev) => {
+        const next = { ...prev };
+        for (const tabId of tabIds) delete next[tabId];
+        return next;
+      });
+      setChipsByTab((prev) => {
+        const next = { ...prev };
+        for (const tabId of tabIds) delete next[tabId];
+        return next;
+      });
+      setDraftByTab((prev) => {
+        const next = { ...prev };
+        for (const tabId of tabIds) delete next[tabId];
+        return next;
+      });
+    }
+    setTabsByProject((prev) => {
+      if (!(project.id in prev)) return prev;
+      const next = { ...prev };
+      delete next[project.id];
+      return next;
+    });
+    setActiveTabByProject((prev) => {
+      if (!(project.id in prev)) return prev;
+      const next = { ...prev };
+      delete next[project.id];
+      return next;
+    });
+    if (tabIds.includes(activeTabId || "")) {
+      setActiveTab(null, { projectId: project.id, focusMode: 'immediate', allowDuringRename: true });
+    }
+    try {
+      const projectKey = canonicalizePath(project.wslPath || project.winPath || project.id);
+      if (projectKey) delete historyCacheRef.current[projectKey];
+    } catch {}
+    setHiddenProjectIds((prev) => (prev.includes(project.id) ? prev : [...prev, project.id]));
+    setSelectedProjectId((prev) => (prev === project.id ? "" : prev));
+    try { suppressAutoSelectRef.current = true; } catch {}
+    setSelectedHistoryDir(null);
+    setSelectedHistoryId(null);
+    setCenterMode('console');
+    setHideProjectConfirm({ open: false, project: null });
+    setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
+  }, [activeTabId, setActiveTab, tabsByProject, tm]);
 
   // 新增项目并选中，随后自动为该项目打开一个控制台（无 tmux 包装）
 
@@ -1373,6 +1500,10 @@ export default function CodexFlowManagerUI() {
       // 若该路径已在项目列表中，行为等同于点击对应项目
       const exists = projects.find((x) => String(x.winPath || '').replace(/\\/g, '/').toLowerCase() === winPath.replace(/\\/g, '/').toLowerCase());
       if (exists) {
+        if (hiddenProjectIds.includes(exists.id)) {
+          alert(String(t('projects:hiddenProjectBlocked')));
+          return;
+        }
         try { suppressAutoSelectRef.current = true; } catch {}
         setSelectedProjectId(exists.id);
         try { await openConsoleForProject(exists); } catch {}
@@ -1381,6 +1512,10 @@ export default function CodexFlowManagerUI() {
       const added: any = await window.host.projects.add({ winPath });
       if (added && added.ok && added.project) {
         const p = added.project as Project;
+        if (hiddenProjectIds.includes(p.id)) {
+          alert(String(t('projects:hiddenProjectBlocked')));
+          return;
+        }
         // 在选中项目前抑制自动选中历史详情
         try { suppressAutoSelectRef.current = true; } catch {}
         setProjects((s) => [p, ...s]);
@@ -2661,48 +2796,104 @@ export default function CodexFlowManagerUI() {
           onClick={() => setProjectCtxMenu((m) => ({ ...m, show: false }))}
           onContextMenu={(e) => { e.preventDefault(); setProjectCtxMenu((m) => ({ ...m, show: false })); }}
         >
-          <div
-            ref={projectCtxMenuRef}
-            className="absolute z-50 min-w-[160px] rounded-md border bg-white/95 backdrop-blur-sm py-1 text-sm shadow-xl ring-1 ring-black/5"
-            style={{ left: projectCtxMenu.x, top: projectCtxMenu.y }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <button
-              className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-slate-100"
-              onClick={async () => {
-                const proj = projectCtxMenu.project;
-                if (proj) {
-                  try {
-                    const res: any = await window.host.utils.showInFolder(proj.winPath);
-                    if (!(res && res.ok)) throw new Error(res?.error || 'failed');
-                  } catch (e) { alert(String(t('history:cannotOpenContaining'))); }
-                }
-                setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
-              }}
-            >
-              <FolderOpen className="h-4 w-4 text-slate-500" /> {t('projects:ctxShowInExplorer')}
-            </button>
-            <button
-              className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-slate-100"
-              onClick={async () => {
-                const proj = projectCtxMenu.project;
-                if (proj) {
-                  try {
-                    const res: any = await (window.host.utils as any).openExternalConsole({ wslPath: proj.wslPath, winPath: proj.winPath, distro: wslDistro, startupCmd: codexCmd });
-                    if (!(res && res.ok)) throw new Error(res?.error || 'failed');
-                  } catch (e) {
-                    const env = toShellLabel(terminalMode);
-                    setBlockingNotice({ type: 'external-console', env });
+          {(function renderProjectMenu() {
+            const menuItems: JSX.Element[] = [];
+            menuItems.push(
+              <button
+                key="show-in-explorer"
+                className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-slate-100"
+                onClick={async () => {
+                  const proj = projectCtxMenu.project;
+                  if (proj) {
+                    try {
+                      const res: any = await window.host.utils.showInFolder(proj.winPath);
+                      if (!(res && res.ok)) throw new Error(res?.error || 'failed');
+                    } catch (e) { alert(String(t('history:cannotOpenContaining'))); }
                   }
-                }
-                setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
-              }}
-            >
-              <ExternalLink className="h-4 w-4 text-slate-500" /> {t('projects:ctxOpenExternalConsoleWith', { env: terminalMode === 'windows' ? 'PowerShell' : 'WSL' })}
-            </button>
-          </div>
+                  setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
+                }}
+              >
+                <FolderOpen className="h-4 w-4 text-slate-500" /> {t('projects:ctxShowInExplorer')}
+              </button>
+            );
+            menuItems.push(
+              <button
+                key="open-external"
+                className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-slate-100"
+                onClick={async () => {
+                  const proj = projectCtxMenu.project;
+                  if (proj) {
+                    try {
+                      const res: any = await (window.host.utils as any).openExternalConsole({ wslPath: proj.wslPath, winPath: proj.winPath, distro: wslDistro, startupCmd: codexCmd });
+                      if (!(res && res.ok)) throw new Error(res?.error || 'failed');
+                    } catch (e) {
+                      const env = toShellLabel(terminalMode);
+                      setBlockingNotice({ type: 'external-console', env });
+                    }
+                  }
+                  setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
+                }}
+              >
+                <ExternalLink className="h-4 w-4 text-slate-500" /> {t('projects:ctxOpenExternalConsoleWith', { env: terminalMode === 'windows' ? 'PowerShell' : 'WSL' })}
+              </button>
+            );
+            if (isDevEnvironment) {
+              menuItems.push(
+                <button
+                  key="hide-temporary"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-slate-100"
+                  onClick={() => {
+                    const proj = projectCtxMenu.project;
+                    if (proj) setHideProjectConfirm({ open: true, project: proj });
+                    setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
+                  }}
+                >
+                  <EyeOff className="h-4 w-4 text-slate-500" /> {t('projects:ctxHideTemporarily')}
+                </button>
+              );
+            }
+            return (
+              <div
+                ref={projectCtxMenuRef}
+                className="absolute z-50 min-w-[160px] rounded-md border bg-white/95 backdrop-blur-sm py-1 text-sm shadow-xl ring-1 ring-black/5"
+                style={{ left: projectCtxMenu.x, top: projectCtxMenu.y }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                {menuItems}
+              </div>
+            );
+          })()}
         </div>
       )}
+
+      <Dialog open={hideProjectConfirm.open} onOpenChange={(open) => {
+        setHideProjectConfirm((prev) => ({ open, project: open ? prev.project : null }));
+        if (!open) {
+          try { document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); } catch {}
+          try { document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true } as any)); } catch {}
+        }
+      }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>{t('projects:hideTemporaryTitle')}</DialogTitle>
+            <DialogDescription>
+              {hideProjectConfirm.project?.name
+                ? t('projects:hideTemporaryDescriptionNamed', { name: hideProjectConfirm.project.name })
+                : t('projects:hideTemporaryDescription')}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" onClick={() => setHideProjectConfirm({ open: false, project: null })}>{t('common:cancel')}</Button>
+            <Button
+              variant="secondary"
+              onClick={() => hideProjectTemporarily(hideProjectConfirm.project)}
+              disabled={!hideProjectConfirm.project}
+            >
+              {t('projects:hideTemporaryConfirm')}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {tabCtxMenu.show && showNotifDebugMenu && (
         <div

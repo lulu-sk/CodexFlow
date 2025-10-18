@@ -172,6 +172,10 @@ export interface AppAPI {
   getPaths(): Promise<{ licensePath?: string; noticePath?: string }>;
 }
 
+export interface EnvAPI {
+  getMeta(): Promise<{ ok: boolean; isDev?: boolean; devServerUrl?: string | null; protocol?: string; error?: string }>;
+}
+
 export interface I18nAPI {
   getLocale(): Promise<{ ok: boolean; locale?: string; error?: string }>;
   setLocale(locale: string): Promise<{ ok: boolean; locale?: string; error?: string }>;
@@ -187,6 +191,7 @@ declare global {
   interface Window {
     host: {
       app: AppAPI;
+      env: EnvAPI;
       pty: PtyAPI;
       projects: ProjectsAPI;
       history: HistoryAPI;

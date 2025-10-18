@@ -1180,6 +1180,17 @@ ipcMain.handle('app.getPaths', async () => {
   }
 });
 
+ipcMain.handle('app.getEnvMeta', async () => {
+  try {
+    const isDev = !app.isPackaged && !process.env.PORTABLE_EXECUTABLE_DIR;
+    const devServerUrl = String(process.env.DEV_SERVER_URL || '').trim();
+    const protocol = devServerUrl && /^https?:/i.test(devServerUrl) ? 'http' : 'file';
+    return { ok: true, isDev, devServerUrl: devServerUrl || null, protocol } as const;
+  } catch (e: any) {
+    return { ok: false, error: String(e) } as const;
+  }
+});
+
 // 打开外部 WSL 控制台（以“打开 WSL 终端 -> cd 到目录 -> 执行 codex”为准则，优先稳健性）
 ipcMain.handle('utils.openExternalWSLConsole', async (_e, args: { wslPath?: string; winPath?: string; distro?: string; startupCmd?: string }) => {
   try {
