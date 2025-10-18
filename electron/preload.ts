@@ -14,6 +14,11 @@ contextBridge.exposeInMainWorld('host', {
       try { const res = await ipcRenderer.invoke('app.getPaths'); if (res && res.ok) return { licensePath: res.licensePath, noticePath: res.noticePath }; return {}; } catch { return {}; }
     }
   },
+  env: {
+    getMeta: async (): Promise<{ ok: boolean; isDev?: boolean; devServerUrl?: string | null; protocol?: string; error?: string }> => {
+      try { return await ipcRenderer.invoke('app.getEnvMeta'); } catch (e) { return { ok: false, error: String(e) } as any; }
+    }
+  },
   i18n: {
     getLocale: async (): Promise<{ ok: boolean; locale?: string; error?: string }> => {
       try { return await ipcRenderer.invoke('i18n.getLocale'); } catch (e) { return { ok: false, error: String(e) } as any; }
