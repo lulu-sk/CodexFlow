@@ -39,6 +39,7 @@ export type HistorySummary = {
   preview?: string;
   resumeMode?: 'modern' | 'legacy' | 'unknown';
   resumeId?: string;
+  runtimeShell?: 'wsl' | 'windows' | 'unknown';
 };
 
 export type MessageContent = { type: string; text: string };

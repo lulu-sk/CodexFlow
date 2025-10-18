@@ -6,6 +6,9 @@
   "cannotOpenExternalConsole": "无法打开外部控制台",
   "ctxOpenExternalConsoleWith": "通过外部{env}控制台打开Codex",
   "cannotOpenExternalConsoleWith": "无法打开外部{env}控制台",
+  "externalConsoleBlockedTitle": "外部终端不可用",
+  "externalConsoleBlockedDesc": "未能启动外部{env}控制台，请检查环境设置后再试。",
+  "externalConsoleBlockedHint": "如需切换终端环境，请使用顶部的模式切换器。",
   "selectProjectLeft": "请选择左侧项目",
   "createOneToStart": "或新建一个项目开始"
 }
