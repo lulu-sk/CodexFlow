@@ -3,6 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "description": "Electron + React + Vite + node-pty + xterm WSL terminal host (UI only, minimal bridge)",
+  "license": "Apache-2.0",
+  "author": "Lulu (GitHub: lulu-sk)",
+  "homepage": "https://github.com/lulu-sk/CodexFlow",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lulu-sk/CodexFlow.git"
+  },
+  "bugs": {
+    "url": "https://github.com/lulu-sk/CodexFlow/issues"
+  },
   "main": "dist/electron/main.js",
   "type": "commonjs",
   "scripts": {
@@ -94,6 +104,10 @@
     ],
     "win": {
       "icon": "build/icon.ico",
+      "publisherName": [
+        "Lulu"
+      ],
+      "artifactName": "CodexFlow-${version}-Setup.${ext}",
       "target": [
         {
           "target": "nsis",
@@ -106,8 +120,19 @@
     "nsis": {
       "differentialPackage": false
     },
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        "dmg"
+      ]
+    },
     "linux": {
-      "icon": "build/icons"
+      "icon": "build/icons",
+      "target": [
+        "AppImage"
+      ],
+      "maintainer": "Lulu <58587930+lulu-sk@users.noreply.github.com>",
+      "category": "Development"
     },
     "electronLanguages": [
       "en-US",
