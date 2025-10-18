@@ -20,11 +20,15 @@ import images from "./images";
 import { installInputContextMenu } from "./contextMenu";
 import { CodexBridge, type CodexBridgeOptions } from "./codex/bridge";
 import storage from "./storage";
+import { registerNotificationIPC } from "./notifications";
 
 // 使用 CommonJS 编译输出时，运行时环境会提供 `__dirname`，直接使用即可
 
 let mainWindow: BrowserWindow | null = null;
 const DIAG = String(process.env.CODEX_DIAG_LOG || '').trim() === '1';
+const APP_USER_MODEL_ID = 'com.codexflow.app';
+const DEV_APP_USER_MODEL_ID = 'com.codexflow.app.dev';
+const PROTOCOL_SCHEME = 'codexflow';
 const ptyManager = new PTYManager(() => mainWindow);
 // 会话期粘贴图片（保存后的 Windows 路径），用于退出时统一清理
 const sessionPastedImages = new Set<string>();
@@ -152,6 +156,159 @@ function resolveRendererEntry(): string {
   return candidates[0] || projectHtml;
 }
 
+function ensureWindowsDevShortcut(appUserModelId: string, iconPath?: string) {
+  try {
+    const startMenuRoot = path.join(app.getPath('appData'), 'Microsoft', 'Windows', 'Start Menu', 'Programs');
+    const shortcutDir = path.join(startMenuRoot, 'CodexFlow');
+    const shortcutPath = path.join(shortcutDir, 'CodexFlow Dev.lnk');
+    try { fs.mkdirSync(shortcutDir, { recursive: true }); } catch {}
+    const target = process.execPath;
+    const cwd = path.dirname(target);
+    let current: Electron.ShortcutDetails | null = null;
+    try { current = shell.readShortcutLink(shortcutPath); } catch {}
+    const shortcutDetails: Electron.ShortcutDetails = {
+      appUserModelId,
+      target,
+      cwd,
+      description: 'CodexFlow (Dev)',
+    };
+    if (iconPath) {
+      shortcutDetails.icon = iconPath;
+      shortcutDetails.iconIndex = 0;
+    }
+    const needsUpdate = !current
+      || current.target !== shortcutDetails.target
+      || current.appUserModelId !== shortcutDetails.appUserModelId
+      || (!!shortcutDetails.icon && current.icon !== shortcutDetails.icon);
+    if (needsUpdate) {
+      const mode: 'create' | 'update' | 'replace' = current ? 'update' : 'create';
+      shell.writeShortcutLink(shortcutPath, mode, shortcutDetails);
+      try { perfLogger.log(`[notifications] ensure dev shortcut mode=${mode} path=${shortcutPath}`); } catch {}
+    }
+  } catch (error) {
+    try { perfLogger.log(`[notifications] ensure dev shortcut failed: ${String(error)}`); } catch {}
+  }
+}
+
+function ensureWindowsUserShortcut(appUserModelId: string, iconPath?: string) {
+  try {
+    const startMenuRoot = path.join(app.getPath('appData'), 'Microsoft', 'Windows', 'Start Menu', 'Programs');
+    const shortcutDir = path.join(startMenuRoot, 'CodexFlow');
+    const shortcutPath = path.join(shortcutDir, 'CodexFlow.lnk');
+    try { fs.mkdirSync(shortcutDir, { recursive: true }); } catch {}
+    const target = process.execPath;
+    const cwd = path.dirname(target);
+    let current: Electron.ShortcutDetails | null = null;
+    try { current = shell.readShortcutLink(shortcutPath); } catch {}
+    const shortcutDetails: Electron.ShortcutDetails = {
+      appUserModelId,
+      target,
+      cwd,
+      description: 'CodexFlow',
+    };
+    if (iconPath) {
+      shortcutDetails.icon = iconPath;
+      shortcutDetails.iconIndex = 0;
+    }
+    const needsUpdate = !current
+      || current.target !== shortcutDetails.target
+      || current.appUserModelId !== shortcutDetails.appUserModelId
+      || (!!shortcutDetails.icon && current.icon !== shortcutDetails.icon);
+    if (needsUpdate) {
+      const mode: 'create' | 'update' | 'replace' = current ? 'update' : 'create';
+      shell.writeShortcutLink(shortcutPath, mode, shortcutDetails);
+      try { perfLogger.log(`[notifications] ensure user shortcut mode=${mode} path=${shortcutPath}`); } catch {}
+    }
+  } catch (error) {
+    try { perfLogger.log(`[notifications] ensure user shortcut failed: ${String(error)}`); } catch {}
+  }
+}
+
+function setupWindowsNotifications(): string | undefined {
+  if (process.platform !== 'win32') return undefined;
+  const appUserModelId = app.isPackaged ? APP_USER_MODEL_ID : DEV_APP_USER_MODEL_ID;
+  try { app.setAppUserModelId(appUserModelId); } catch (error) {
+    try { perfLogger.log(`[notifications] setAppUserModelId failed: ${String(error)}`); } catch {}
+  }
+  const iconPath = resolveAppIcon();
+  if (app.isPackaged) ensureWindowsUserShortcut(appUserModelId, iconPath);
+  else ensureWindowsDevShortcut(appUserModelId, iconPath);
+  return appUserModelId;
+}
+
+function registerProtocol(): void {
+  try {
+    let registered = false;
+    if (app.isPackaged) {
+      registered = app.setAsDefaultProtocolClient(PROTOCOL_SCHEME);
+    } else {
+      const extra = (() => {
+        try {
+          const target = process.argv[1];
+          if (!target) return [];
+          return [path.resolve(target)];
+        } catch { return []; }
+      })();
+      registered = app.setAsDefaultProtocolClient(PROTOCOL_SCHEME, process.execPath, extra);
+    }
+    // 与通知模块的 toastXml 保持同一协议，避免后续改动导致 Windows Action Center 无法激活
+    try { perfLogger.log(`[notifications] protocol ${PROTOCOL_SCHEME} registered=${registered}`); } catch {}
+  } catch (error) {
+    try { perfLogger.log(`[notifications] protocol register failed: ${String(error)}`); } catch {}
+  }
+}
+
+function extractProtocolUrl(argv: string[] | readonly string[] | undefined | null): string | null {
+  try {
+    if (!argv) return null;
+    const prefix = `${PROTOCOL_SCHEME.toLowerCase()}://`;
+    for (const arg of argv) {
+      if (typeof arg !== 'string') continue;
+      if (arg.toLowerCase().startsWith(prefix)) return arg;
+    }
+  } catch {}
+  return null;
+}
+
+function focusTabFromProtocol(rawUrl?: string | null) {
+  if (!rawUrl) return;
+  try {
+    const parsed = new URL(rawUrl);
+    const intent = parsed.hostname || parsed.pathname.replace(/^\//, '');
+    if (intent !== 'focus-tab') return;
+    const tabId = parsed.searchParams.get('tabId') ?? parsed.searchParams.get('tab') ?? parsed.searchParams.get('id');
+    if (!tabId) return;
+    const handleWindow = (target: BrowserWindow) => {
+      if (target.isMinimized()) {
+        try { target.restore(); } catch {}
+      }
+      try { target.show(); target.focus(); } catch {}
+      const wc = target.webContents;
+      const dispatch = () => {
+        try { perfLogger.log(`[notifications] protocol focus tabId=${tabId}`); } catch {}
+        try { wc.send('notifications:focus-tab', { tabId }); } catch {}
+      };
+      if (wc.isDestroyed()) return;
+      if (wc.isLoading()) wc.once('did-finish-load', dispatch);
+      else dispatch();
+    };
+    if (mainWindow) {
+      handleWindow(mainWindow);
+      return;
+    }
+    app.once('browser-window-created', (_event, win) => {
+      if (!win) return;
+      const deliver = () => handleWindow(win);
+      const wc = win.webContents;
+      if (!wc || wc.isDestroyed()) return;
+      if (wc.isLoading()) wc.once('did-finish-load', deliver);
+      else deliver();
+    });
+  } catch (error) {
+    try { perfLogger.log(`[notifications] protocol focus failed: ${String(error)}`); } catch {}
+  }
+}
+
 
 function createWindow() {
   const windowIcon = resolveAppIcon();
@@ -222,7 +379,12 @@ const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
+  app.on('second-instance', (_event, argv) => {
+    const url = extractProtocolUrl(argv as any);
+    if (url) {
+      focusTabFromProtocol(url);
+      return;
+    }
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
@@ -230,6 +392,8 @@ if (!gotLock) {
   });
 
   app.whenReady().then(async () => {
+    const appUserModelId = setupWindowsNotifications();
+    registerProtocol();
     try { perfLogger.log(`[BOOT] Using projects implementation: ${PROJECTS_IMPL}`); } catch {}
     if (DIAG) { try { perfLogger.log(`[BOOT] userData=${app.getPath('userData')}`); } catch {} }
     try { await ensureSettingsAutodetect(); } catch {}
@@ -237,7 +401,9 @@ if (!gotLock) {
     if (DIAG) { try { perfLogger.log(`[BOOT] Locale: ${i18n.getCurrentLocale?.()}`); } catch {} }
     // 构建应用菜单（包含 Toggle Developer Tools）
     try { setupAppMenu(); } catch {}
+    try { registerNotificationIPC(() => mainWindow, { appUserModelId, protocolScheme: PROTOCOL_SCHEME }); } catch {}
     try { createWindow(); } catch (e) { if (DIAG) { try { perfLogger.log(`[BOOT] createWindow error: ${String(e)}`); } catch {} } }
+    focusTabFromProtocol(extractProtocolUrl(process.argv));
     // 启动时静默检查更新由渲染进程完成（仅提示，不下载）
     try {
       // 读取环境变量作为主进程 PTY 日志默认值（1 开启，其它关闭）

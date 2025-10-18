@@ -24,6 +24,11 @@ import { Trash2, Power } from "lucide-react";
 type TerminalMode = "wsl" | "windows";
 type SendMode = "write_only" | "write_and_enter";
 type PathStyle = "absolute" | "relative";
+type NotificationPrefs = {
+  badge: boolean;
+  system: boolean;
+  sound: boolean;
+};
 
 export type SettingsDialogProps = {
   open: boolean;
@@ -35,6 +40,7 @@ export type SettingsDialogProps = {
     sendMode: SendMode;
     locale: string;
     projectPathStyle: PathStyle;
+    notifications: NotificationPrefs;
   };
   onSave: (v: {
     terminal: TerminalMode;
@@ -43,6 +49,7 @@ export type SettingsDialogProps = {
     sendMode: SendMode;
     locale: string;
     projectPathStyle: PathStyle;
+    notifications: NotificationPrefs;
   }) => void;
 };
 
@@ -69,9 +76,9 @@ type AppDataInfo = {
   collectedAt: number;
 };
 
-type SectionKey = "basic" | "terminal" | "account" | "data";
+type SectionKey = "basic" | "notifications" | "terminal" | "account" | "data";
 
-const NAV_ORDER: SectionKey[] = ["basic", "terminal", "account", "data"];
+const NAV_ORDER: SectionKey[] = ["basic", "notifications", "terminal", "account", "data"];
 
 const DEFAULT_LANGS = ["zh", "en"];
 
@@ -89,6 +96,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   const [codexCmd, setCodexCmd] = useState(values.codexCmd);
   const [sendMode, setSendMode] = useState<SendMode>(values.sendMode);
   const [pathStyle, setPathStyle] = useState<PathStyle>(values.projectPathStyle || "absolute");
+  const [notifications, setNotifications] = useState<NotificationPrefs>(values.notifications);
   const [codexRoots, setCodexRoots] = useState<string[]>([]);
   const [lang, setLang] = useState<string>(values.locale || "en");
   const [availableDistros, setAvailableDistros] = useState<string[]>([]);
@@ -132,8 +140,9 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
       setSendMode(values.sendMode || "write_and_enter");
       setPathStyle(values.projectPathStyle || "absolute");
       setLang(values.locale || "en");
+      setNotifications(values.notifications);
     }
-  }, [open, values.codexCmd, values.distro, values.locale, values.projectPathStyle, values.sendMode, values.terminal]);
+  }, [open, values.codexCmd, values.distro, values.locale, values.notifications, values.projectPathStyle, values.sendMode, values.terminal]);
 
   useEffect(() => {
     if (!open) return;
@@ -443,6 +452,81 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
           ),
         };
       }
+      if (key === "notifications") {
+        return {
+          key,
+          title: t("settings:sections.notifications.title"),
+          description: t("settings:sections.notifications.desc"),
+          content: (
+            <div className="space-y-6">
+              <Card>
+                <CardHeader>
+                  <CardTitle>{t("settings:notifications.label")}</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <label className="flex items-start gap-3 rounded-lg border border-slate-200/70 bg-white/60 px-3 py-3 shadow-sm">
+                    <input
+                      type="checkbox"
+                      className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400"
+                      checked={notifications.badge}
+                      onChange={(event) => {
+                        const next = { ...notifications, badge: event.target.checked };
+                        setNotifications(next);
+                      }}
+                    />
+                    <div>
+                      <div className="text-sm font-medium text-slate-800">
+                        {t("settings:notifications.badge.label")}
+                      </div>
+                      <p className="text-xs text-slate-500">
+                        {t("settings:notifications.badge.desc")}
+                      </p>
+                    </div>
+                  </label>
+                  <label className="flex items-start gap-3 rounded-lg border border-slate-200/70 bg-white/60 px-3 py-3 shadow-sm">
+                    <input
+                      type="checkbox"
+                      className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400"
+                      checked={notifications.system}
+                      onChange={(event) => {
+                        const next = { ...notifications, system: event.target.checked };
+                        setNotifications(next);
+                      }}
+                    />
+                    <div>
+                      <div className="text-sm font-medium text-slate-800">
+                        {t("settings:notifications.system.label")}
+                      </div>
+                      <p className="text-xs text-slate-500">
+                        {t("settings:notifications.system.desc")}
+                      </p>
+                    </div>
+                  </label>
+                  <label className="flex items-start gap-3 rounded-lg border border-slate-200/70 bg-white/60 px-3 py-3 shadow-sm">
+                    <input
+                      type="checkbox"
+                      className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400"
+                      checked={notifications.sound}
+                      onChange={(event) => {
+                        const next = { ...notifications, sound: event.target.checked };
+                        setNotifications(next);
+                      }}
+                    />
+                    <div>
+                      <div className="text-sm font-medium text-slate-800">
+                        {t("settings:notifications.sound.label")}
+                      </div>
+                      <p className="text-xs text-slate-500">
+                        {t("settings:notifications.sound.desc")}
+                      </p>
+                    </div>
+                  </label>
+                </CardContent>
+              </Card>
+            </div>
+          ),
+        };
+      }
       if (key === "terminal") {
         return {
           key,
@@ -702,6 +786,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     labelOf,
     lang,
     pathStyle,
+    notifications,
     sendMode,
     storageInfo,
     storageLoading,
@@ -794,6 +879,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                       sendMode,
                       locale: lang,
                       projectPathStyle: pathStyle,
+                      notifications,
                     });
                     onOpenChange(false);
                   }}

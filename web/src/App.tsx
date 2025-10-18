@@ -197,6 +197,40 @@ function normalizeMsToIso(v: any): string {
 }
 const uid = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
+type CompletionPreferences = {
+  badge: boolean;
+  system: boolean;
+  sound: boolean;
+};
+
+const DEFAULT_COMPLETION_PREFS: CompletionPreferences = {
+  badge: true,
+  system: true,
+  sound: false,
+};
+
+// OSC 9; 是终端的 Operating System Command #9，用于终端/PTY 向宿主发送通知类信息
+const OSC_NOTIFICATION_PREFIX = '\u001b]9;';
+const OSC_TERMINATOR_BEL = '\u0007';
+const OSC_TERMINATOR_ST = '\u001b\\';
+
+function normalizeCompletionPrefs(raw?: Partial<CompletionPreferences> | null): CompletionPreferences {
+  return {
+    badge: raw?.badge ?? DEFAULT_COMPLETION_PREFS.badge,
+    system: raw?.system ?? DEFAULT_COMPLETION_PREFS.system,
+    sound: raw?.sound ?? DEFAULT_COMPLETION_PREFS.sound,
+  };
+}
+
+function isAgentCompletionMessage(message: string): boolean {
+  const normalized = message.trim();
+  if (!normalized) return false;
+  const lower = normalized.toLowerCase();
+  if (lower.includes('approval requested')) return false;
+  if (lower.startsWith('codex wants to edit')) return false;
+  return true;
+}
+
 // 筛选键规范化：将等价的 tags 与 type 统一到一个“规范键”，用于去重显示与匹配
 function canonicalFilterKey(k?: string): string {
   try {
@@ -307,7 +341,7 @@ function StatusDot({ ok }: { ok: boolean }) {
   );
 }
 
-function TerminalView({ logs, tabId, ptyId, attachTerminal }: { logs: string[]; tabId: string; ptyId?: string | null; attachTerminal?: (tabId: string, el: HTMLDivElement) => void; }) {
+function TerminalView({ logs, tabId, ptyId, attachTerminal, onContextMenuDebug }: { logs: string[]; tabId: string; ptyId?: string | null; attachTerminal?: (tabId: string, el: HTMLDivElement) => void; onContextMenuDebug?: (event: React.MouseEvent) => void; }) {
   const { t } = useTranslation(['terminal']);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [mounted, setMounted] = useState(false);
@@ -319,7 +353,14 @@ function TerminalView({ logs, tabId, ptyId, attachTerminal }: { logs: string[]; 
     }
   }, [attachTerminal, tabId, ptyId]);
   return (
-    <div className="relative h-full min-h-0">
+    <div
+      className="relative h-full min-h-0"
+      onContextMenu={(event) => {
+        if (onContextMenuDebug) {
+          onContextMenuDebug(event);
+        }
+      }}
+    >
       {/* 外层容器负责视觉（圆角/背景/阴影），并裁剪内部，保证四角对称 */}
       <div className="h-full min-h-[320px] w-full rounded-lg overflow-hidden bg-slate-950 text-slate-100 shadow-inner">
         {/* 纯净宿主：无 padding/滚动，避免 fit 计算偏差；xterm 内部自带滚动 */}
@@ -362,6 +403,32 @@ export default function CodexFlowManagerUI() {
     if (!uiDebugEnabled()) return;
     try { (window as any).host?.utils?.perfLog?.(`[ui] ${msg}`); } catch { try { console.log(`[ui] ${msg}`); } catch {} }
   }, [uiDebugEnabled]);
+  const notificationsDebugEnabled = React.useCallback(() => {
+    try {
+      const flag = localStorage.getItem('CF_DEBUG_NOTIFICATIONS');
+      if (flag === '1') return true;
+      if (flag === '0') return false;
+    } catch {}
+    try { return !!(import.meta as any)?.env?.DEV; } catch { return false; }
+  }, []);
+  const notifyLog = React.useCallback((msg: string) => {
+    if (!notificationsDebugEnabled()) return;
+    try { (window as any).host?.utils?.perfLog?.(`[notifications.renderer] ${msg}`); } catch {}
+  }, [notificationsDebugEnabled]);
+  // 是否显示右键调试菜单：开发环境、UI 调试开关或显式开关
+  const showNotifDebugMenu = React.useMemo(() => {
+    let flag: string | null = null;
+    try { flag = localStorage.getItem('CF_DEBUG_NOTIFICATIONS_MENU'); } catch {}
+    if (flag === '1') return true;
+    if (flag === '0') return false;
+    try { if (uiDebugEnabled()) return true; } catch {}
+    try { if (notificationsDebugEnabled()) return true; } catch {}
+    try { if ((import.meta as any)?.env?.DEV) return true; } catch {}
+    return false;
+  }, [notificationsDebugEnabled, uiDebugEnabled]);
+  useEffect(() => {
+    notifyLog(`ctx.menu.toggle enabled=${showNotifDebugMenu ? '1' : '0'}`);
+  }, [notifyLog, showNotifDebugMenu]);
 
   // 诊断：打印当前页面上可能的“覆盖层/遮罩”信息以及活跃元素
   const dumpOverlayDiagnostics = React.useCallback((reason: string) => {
@@ -412,6 +479,7 @@ export default function CodexFlowManagerUI() {
   const [tabsByProject, setTabsByProject] = useState<Record<string, ConsoleTab[]>>({});
   const tabs = tabsByProject[selectedProjectId] || [];
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const activeTabIdRef = useRef<string | null>(null);
   // 记录每个项目的活跃 tab，切换项目时恢复对应的活跃 tab，避免切换关闭控制台
   const [activeTabByProject, setActiveTabByProject] = useState<Record<string, string | null>>({});
   // 编辑标签名状态
@@ -422,6 +490,31 @@ export default function CodexFlowManagerUI() {
   const tabFocusTimerRef = useRef<number | null>(null);
   const tabFocusNextRef = useRef<{ immediate: boolean; allowDuringRename: boolean; delay?: number }>({ immediate: false, allowDuringRename: false });
   const editingTabIdRef = useRef<string | null>(null);
+  // 调试：标签页右键测试菜单（仅开发或显式开启）
+  const [tabCtxMenu, setTabCtxMenu] = useState<{ show: boolean; x: number; y: number; tabId?: string | null }>({ show: false, x: 0, y: 0, tabId: null });
+  useEffect(() => {
+    if (!showNotifDebugMenu && tabCtxMenu.show) {
+      notifyLog("ctx.menu.forceClose reason=disabled");
+      setTabCtxMenu({ show: false, x: 0, y: 0, tabId: null });
+    }
+  }, [notifyLog, showNotifDebugMenu, tabCtxMenu.show]);
+  const closeTabContextMenu = React.useCallback((source: string, targetTabId?: string | null) => {
+    const id = targetTabId ?? tabCtxMenu.tabId ?? activeTabId ?? null;
+    notifyLog(`ctx.menu.close source=${source} tab=${id || 'none'}`);
+    setTabCtxMenu({ show: false, x: 0, y: 0, tabId: null });
+  }, [activeTabId, notifyLog, tabCtxMenu.tabId]);
+  const openTabContextMenu = React.useCallback((event: React.MouseEvent, tabId: string | null, source: string) => {
+    const id = tabId || "none";
+    notifyLog(`ctx.menu.request source=${source} tab=${id} enabled=${showNotifDebugMenu ? '1' : '0'}`);
+    event.preventDefault();
+    event.stopPropagation();
+    if (!showNotifDebugMenu) {
+      notifyLog(`ctx.menu.blocked source=${source} tab=${id}`);
+      return;
+    }
+    setTabCtxMenu({ show: true, x: event.clientX, y: event.clientY, tabId });
+    notifyLog(`ctx.menu.open source=${source} tab=${id} x=${Math.round(event.clientX)} y=${Math.round(event.clientY)}`);
+  }, [notifyLog, setTabCtxMenu, showNotifDebugMenu]);
   // Terminal adapters 与 PTY 状态
   const ptyByTabRef = useRef<Record<string, string>>({});
   const [ptyByTab, setPtyByTab] = useState<Record<string, string>>({});
@@ -430,8 +523,22 @@ export default function CodexFlowManagerUI() {
   const terminalManagerRef = useRef<TerminalManager | null>(null);
   if (!terminalManagerRef.current) terminalManagerRef.current = new TerminalManager((tabId: string) => ptyByTabRef.current[tabId]);
   const tm = terminalManagerRef.current;
+  const [notificationPrefs, setNotificationPrefs] = useState<CompletionPreferences>(DEFAULT_COMPLETION_PREFS);
+  const notificationPrefsRef = useRef<CompletionPreferences>(DEFAULT_COMPLETION_PREFS);
+  const [pendingCompletions, setPendingCompletions] = useState<Record<string, number>>({});
+  const pendingCompletionsRef = useRef<Record<string, number>>({});
+  const ptyNotificationBuffersRef = useRef<Record<string, string>>({});
+  const ptyListenersRef = useRef<Record<string, () => void>>({});
+  const ptyToTabRef = useRef<Record<string, string>>({});
+  const tabProjectRef = useRef<Record<string, string>>({});
+  const tabsByProjectRef = useRef<Record<string, ConsoleTab[]>>(tabsByProject);
+  const projectsRef = useRef<Project[]>(projects);
+  const audioContextRef = useRef<AudioContext | null>(null);
 
   useEffect(() => { editingTabIdRef.current = editingTabId; }, [editingTabId]);
+  useEffect(() => { notificationPrefsRef.current = notificationPrefs; }, [notificationPrefs]);
+  useEffect(() => { tabsByProjectRef.current = tabsByProject; }, [tabsByProject]);
+  useEffect(() => { projectsRef.current = projects; }, [projects]);
 
   const scheduleFocusForTab = React.useCallback((tabId: string | null | undefined, opts?: { immediate?: boolean; allowDuringRename?: boolean; delay?: number }) => {
     if (!tabId) return;
@@ -449,7 +556,7 @@ export default function CodexFlowManagerUI() {
     else tabFocusTimerRef.current = window.setTimeout(run, delay);
   }, [terminalManagerRef]);
 
-  type TabFocusOptions = { focusMode?: 'immediate' | 'defer'; allowDuringRename?: boolean; delay?: number };
+  type TabFocusOptions = { focusMode?: 'immediate' | 'defer'; allowDuringRename?: boolean; delay?: number; projectId?: string };
 
   function startEditTab(id: string, name: string) {
     // set a fixed width equal to current label width to avoid layout jump
@@ -478,11 +585,12 @@ export default function CodexFlowManagerUI() {
   function setActiveTab(id: string | null, options?: TabFocusOptions) {
     setActiveTabId((prev) => (prev === id ? prev : id));
     try {
-      if (selectedProject) {
+      const targetProjectId = options?.projectId || selectedProject?.id;
+      if (targetProjectId) {
         setActiveTabByProject((m) => {
-          const current = m[selectedProject.id];
+          const current = m[targetProjectId];
           if (current === id) return m;
-          return { ...m, [selectedProject.id]: id };
+          return { ...m, [targetProjectId]: id };
         });
       }
     } catch {}
@@ -493,14 +601,383 @@ export default function CodexFlowManagerUI() {
     };
   }
   const tabsListRef = useRef<HTMLDivElement | null>(null);
+  const [centerMode, setCenterMode] = useState<'console' | 'history'>('console');
+
+  function computePendingTotal(map: Record<string, number>): number {
+    let total = 0;
+    for (const value of Object.values(map)) {
+      if (typeof value === 'number' && value > 0) total += value;
+    }
+    return total;
+  }
+
+  function syncTaskbarBadge(map: Record<string, number>, prefs?: CompletionPreferences) {
+    try {
+      const effective = prefs ?? notificationPrefsRef.current;
+      const rawTotal = computePendingTotal(map);
+      const total = effective.badge ? rawTotal : 0;
+      notifyLog(`syncTaskbarBadge raw=${rawTotal} effective=${total} enabled=${effective.badge}`);
+      window.host.notifications?.setBadgeCount?.(total);
+    } catch {}
+  }
+
+  function isAppForeground(): boolean {
+    try {
+      const visibility = typeof document.visibilityState === 'string' ? document.visibilityState : (document as any)?.visibilityState;
+      const visible = typeof visibility === 'string' ? visibility === 'visible' : !(document as any)?.hidden;
+      const focused = typeof document.hasFocus === 'function' ? document.hasFocus() : true;
+      return !!(visible && focused);
+    } catch {
+      return true;
+    }
+  }
+
+  function applyPending(next: Record<string, number>) {
+    pendingCompletionsRef.current = next;
+    setPendingCompletions(next);
+    const entries = Object.entries(next).filter(([_, count]) => typeof count === 'number' && count > 0);
+    notifyLog(`applyPending entries=${entries.map(([id, count]) => `${id}:${count}`).join(',') || 'none'}`);
+    syncTaskbarBadge(next);
+  }
+
+  function clearPendingForTab(tabId: string) {
+    if (!tabId) return;
+    const current = pendingCompletionsRef.current;
+    if (!current[tabId]) return;
+    const next = { ...current };
+    delete next[tabId];
+    applyPending(next);
+  }
+
+  function autoClearActiveTabIfForeground(source: string) {
+    const tabId = activeTabIdRef.current;
+    if (!tabId) return;
+    const count = pendingCompletionsRef.current[tabId];
+    if (!count || count <= 0) return;
+    if (!isAppForeground()) return;
+    notifyLog(`autoClearPending source=${source} tab=${tabId} count=${count}`);
+    clearPendingForTab(tabId);
+  }
+
+  function registerTabProject(tabId: string, projectId: string | null | undefined) {
+    if (!tabId || !projectId) return;
+    tabProjectRef.current[tabId] = projectId;
+  }
+
+  function unregisterTabProject(tabId: string) {
+    if (!tabId) return;
+    delete tabProjectRef.current[tabId];
+  }
+
+  async function playCompletionChime() {
+    if (!notificationPrefsRef.current.sound) return;
+    try {
+      const AudioCtor: typeof AudioContext | undefined =
+        (window as any).AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtor) return;
+
+      let ctx = audioContextRef.current;
+      if (!ctx) {
+        ctx = new AudioCtor({ latencyHint: "interactive" as any });
+        audioContextRef.current = ctx;
+      }
+      if (ctx.state === "suspended") {
+        try { await ctx.resume(); } catch {}
+      }
+
+      // 源 -> 高通 -> 低通 -> 压缩 -> 总线，用短包络塑造柔和的提示音。
+      const now = ctx.currentTime;
+      const start = now + 0.04;
+
+      const hp = ctx.createBiquadFilter();
+      hp.type = "highpass";
+      hp.frequency.setValueAtTime(120, start);
+      hp.Q.setValueAtTime(0.7, start);
+
+      const lp = ctx.createBiquadFilter();
+      lp.type = "lowpass";
+      lp.frequency.setValueAtTime(3800, start);
+      lp.Q.setValueAtTime(0.9, start);
+
+      const comp = ctx.createDynamicsCompressor();
+      comp.threshold.setValueAtTime(-24, start);
+      comp.knee.setValueAtTime(24, start);
+      comp.ratio.setValueAtTime(3, start);
+      comp.attack.setValueAtTime(0.003, start);
+      comp.release.setValueAtTime(0.12, start);
+
+      const master = ctx.createGain();
+      master.gain.setValueAtTime(0.0001, start);
+      master.gain.exponentialRampToValueAtTime(0.16, start + 0.05);
+      master.gain.exponentialRampToValueAtTime(0.0001, start + 0.9);
+
+      hp.connect(lp);
+      lp.connect(comp);
+      comp.connect(master);
+      master.connect(ctx.destination);
+
+      const panL = ctx.createStereoPanner();
+      const panR = ctx.createStereoPanner();
+      panL.pan.setValueAtTime(-0.18, start);
+      panR.pan.setValueAtTime(0.18, start);
+      panL.connect(hp);
+      panR.connect(hp);
+
+      const blip = (t: number, freq: number, pan: "L" | "R") => {
+        const gainNode = ctx!.createGain();
+        gainNode.gain.setValueAtTime(0.0001, t);
+        gainNode.gain.exponentialRampToValueAtTime(0.9, t + 0.012);
+        gainNode.gain.linearRampToValueAtTime(0.22, t + 0.14);
+        gainNode.gain.exponentialRampToValueAtTime(0.0001, t + 0.38);
+
+        const sine = ctx!.createOscillator();
+        sine.type = "sine";
+        sine.frequency.setValueAtTime(freq, t);
+
+        const triangle = ctx!.createOscillator();
+        triangle.type = "triangle";
+        triangle.frequency.setValueAtTime(freq * 2, t);
+
+        sine.connect(gainNode);
+        triangle.connect(gainNode);
+        gainNode.connect(pan === "L" ? panL : panR);
+
+        sine.start(t);
+        triangle.start(t);
+        sine.stop(t + 0.45);
+        triangle.stop(t + 0.45);
+      };
+
+      const FREQ_E5 = 659;
+      const FREQ_GS5 = 831;
+      const FREQ_B5 = 988;
+
+      blip(start + 0, FREQ_E5, "L");
+      blip(start + 0.08, FREQ_GS5, "R");
+      blip(start + 0.16, FREQ_B5, "L");
+    } catch {}
+  }
+
+  function showCompletionNotification(tabId: string, preview: string) {
+    if (!notificationPrefsRef.current.system) {
+      notifyLog(`showCompletionNotification skipped tab=${tabId} reason=systemDisabled`);
+      return;
+    }
+    let tabName = '';
+    let projectName: string | undefined;
+    const currentTabs = tabsByProjectRef.current;
+    for (const [pid, list] of Object.entries(currentTabs)) {
+      const found = (list || []).find((tab) => tab.id === tabId);
+      if (found) {
+        tabName = found.name;
+        const project = projectsRef.current.find((p) => p.id === pid);
+        if (project) projectName = project.name;
+        break;
+      }
+    }
+    if (!tabName) tabName = t('common:notifications.untitledTab', 'Agent');
+    const appTitle = t('common:app.name', 'CodexFlow') as string;
+    const header = [appTitle, tabName].filter(Boolean).join(' · ') || appTitle;
+    const normalizedPreview = preview.trim();
+    const body = normalizedPreview || (t('common:notifications.openTabHint', '点击查看详情') as string);
+    try {
+      notifyLog(`showCompletionNotification tab=${tabId} project=${projectName || 'n/a'} title="${header}" bodyPreview="${body.slice(0, 60)}"`);
+      window.host.notifications?.showAgentCompletion?.({
+        tabId,
+        tabName,
+        projectName,
+        preview: normalizedPreview,
+        title: header,
+        body,
+        appTitle,
+      });
+    } catch {}
+  }
+
+  // 右键菜单：测试通知/徽标/铃声/整链路（仅开发/显式开关）
+  function renderTabContextMenu() {
+    if (!tabCtxMenu.show || !showNotifDebugMenu) return null;
+    const tabId = tabCtxMenu.tabId || activeTabId || null;
+    const close = (reason: string = "menu-close") => closeTabContextMenu(reason, tabId);
+    const doTestSystemNotification = () => {
+      if (!tabId) { close("system-notification-missing-tab"); return; }
+      const preview = '这是一条模拟的完成内容片段（mock preview）';
+      showCompletionNotification(tabId, preview);
+      notifyLog(`ctx.testSystemNotification tab=${tabId}`);
+      close("system-notification");
+    };
+    const doTestBadgePlus = () => {
+      const current = { ...pendingCompletionsRef.current };
+      const id = tabId || 'mock';
+      current[id] = (current[id] ?? 0) + 1;
+      applyPending(current);
+      notifyLog(`ctx.badge.plus id=${id} val=${current[id]}`);
+      close("badge-plus");
+    };
+    const doBadgeClear = () => {
+      applyPending({});
+      notifyLog('ctx.badge.clear');
+      close("badge-clear");
+    };
+    const doTestChime = () => {
+      const prev = { ...notificationPrefsRef.current };
+      (notificationPrefsRef as any).current = { ...prev, sound: true };
+      void playCompletionChime();
+      (notificationPrefsRef as any).current = prev;
+      notifyLog('ctx.chime');
+      close("chime");
+    };
+    const doTestOSCChain = () => {
+      const id = tabId || activeTabId || '';
+      if (!id) { close("osc-chain-missing-tab"); return; }
+      const ptyId = ptyByTabRef.current[id];
+      const payload = 'agent-turn-complete: mock via OSC';
+      const chunk = `${OSC_NOTIFICATION_PREFIX}${payload}${OSC_TERMINATOR_BEL}`;
+      if (ptyId) {
+        try { processPtyNotificationChunk(ptyId, chunk); notifyLog(`ctx.osc.inject pty=${ptyId}`); } catch {}
+      } else {
+        try { handleAgentCompletion(id, payload); notifyLog('ctx.osc.fallback.handle'); } catch {}
+      }
+      close("osc-chain");
+    };
+    return (
+      <div
+        style={{ position: 'fixed', left: tabCtxMenu.x, top: tabCtxMenu.y, zIndex: 10000 }}
+        className="min-w-[220px] rounded-md border border-slate-200 bg-white/95 shadow-lg"
+        onClick={(e) => { e.stopPropagation(); e.preventDefault(); }}
+      >
+        <div className="px-3 py-2 text-xs text-slate-400">通知调试菜单（仅开发/显式开启）</div>
+        <button className="w-full px-3 py-2 text-left hover:bg-slate-50" onClick={doTestSystemNotification}>测试系统通知</button>
+        <button className="w-full px-3 py-2 text-left hover:bg-slate-50" onClick={doTestOSCChain}>测试整链路（OSC 9;）</button>
+        <div className="h-px bg-slate-200" />
+        <button className="w-full px-3 py-2 text-left hover:bg-slate-50" onClick={doTestBadgePlus}>徽标+1</button>
+        <button className="w-full px-3 py-2 text-left hover:bg-slate-50" onClick={doBadgeClear}>清空徽标</button>
+        <div className="h-px bg-slate-200" />
+        <button className="w-full px-3 py-2 text-left hover:bg-slate-50" onClick={doTestChime}>测试完成铃声</button>
+      </div>
+    );
+  }
+
+  function handleAgentCompletion(tabId: string, preview: string) {
+    if (!tabId) return;
+    const foreground = isAppForeground();
+    const activeMatch = activeTabIdRef.current === tabId;
+    notifyLog(`handleAgentCompletion tab=${tabId} previewLength=${preview.length} sound=${notificationPrefsRef.current.sound} foreground=${foreground ? '1' : '0'} activeMatch=${activeMatch ? '1' : '0'}`);
+    const current = pendingCompletionsRef.current;
+    if (foreground && activeMatch) {
+      notifyLog(`handleAgentCompletion auto-clear tab=${tabId}`);
+      autoClearActiveTabIfForeground('agent-complete');
+    } else {
+      const next = { ...current, [tabId]: (current[tabId] ?? 0) + 1 };
+      applyPending(next);
+    }
+    showCompletionNotification(tabId, preview);
+    void playCompletionChime();
+  }
+
+  function processPtyNotificationChunk(ptyId: string, chunk: string) {
+    if (!ptyId || typeof chunk !== 'string' || chunk.length === 0) return;
+    const hasOsc = chunk.includes(OSC_NOTIFICATION_PREFIX);
+    if (hasOsc || chunk.includes('\u001b')) {
+      const snippet = chunk.replace(/\s+/g, ' ').slice(0, 120);
+      notifyLog(`ptyChunk pty=${ptyId} len=${chunk.length} hasOSC=${hasOsc} snippet="${snippet}"`);
+    }
+    let buffer = (ptyNotificationBuffersRef.current[ptyId] || '') + chunk;
+    while (true) {
+      const start = buffer.indexOf(OSC_NOTIFICATION_PREFIX);
+      if (start < 0) break;
+      if (start > 0) buffer = buffer.slice(start);
+      const payload = buffer.slice(OSC_NOTIFICATION_PREFIX.length);
+      const belIndex = payload.indexOf(OSC_TERMINATOR_BEL);
+      const stIndex = payload.indexOf(OSC_TERMINATOR_ST);
+      let terminatorIndex = -1;
+      let terminatorLength = 1;
+      if (belIndex >= 0 && (stIndex < 0 || belIndex < stIndex)) {
+        terminatorIndex = belIndex;
+        terminatorLength = 1;
+      } else if (stIndex >= 0) {
+        terminatorIndex = stIndex;
+        terminatorLength = OSC_TERMINATOR_ST.length;
+      }
+      if (terminatorIndex < 0) {
+        break;
+      }
+      const message = payload.slice(0, terminatorIndex);
+      buffer = payload.slice(terminatorIndex + terminatorLength);
+      const tabId = ptyToTabRef.current[ptyId];
+      if (tabId && isAgentCompletionMessage(message)) {
+        notifyLog(`processPtyNotificationChunk hit tab=${tabId} message="${message.slice(0, 80)}"`);
+        handleAgentCompletion(tabId, message);
+      } else if (tabId) {
+        notifyLog(`processPtyNotificationChunk ignore tab=${tabId} message="${message.slice(0, 80)}"`);
+      } else {
+        notifyLog(`processPtyNotificationChunk ignoreNoTab message="${message.slice(0, 80)}"`);
+      }
+    }
+    if (buffer.length > 2048) buffer = buffer.slice(-2048);
+    ptyNotificationBuffersRef.current[ptyId] = buffer;
+  }
+
+  function unregisterPtyListener(ptyId: string | undefined | null) {
+    if (!ptyId) return;
+    const off = ptyListenersRef.current[ptyId];
+    if (typeof off === 'function') {
+      try { off(); } catch {}
+    }
+    delete ptyListenersRef.current[ptyId];
+    delete ptyNotificationBuffersRef.current[ptyId];
+    delete ptyToTabRef.current[ptyId];
+    notifyLog(`unregisterPtyListener pty=${ptyId}`);
+  }
+
+  function registerPtyForTab(tabId: string, ptyId: string | undefined) {
+    if (!ptyId) return;
+    unregisterPtyListener(ptyId);
+    ptyToTabRef.current[ptyId] = tabId;
+    notifyLog(`registerPtyForTab tab=${tabId} pty=${ptyId}`);
+    try {
+      const off = window.host.pty.onData(ptyId, (data) => {
+        try { processPtyNotificationChunk(ptyId, data); } catch (err) { console.warn('processPtyNotificationChunk failed', err); }
+      });
+      if (typeof off === 'function') {
+        ptyListenersRef.current[ptyId] = off;
+      }
+    } catch (err) {
+      console.warn('registerPtyForTab failed', err);
+    }
+  }
 
   // History panel data (fixed sidebar)
   const [historySessions, setHistorySessions] = useState<HistorySession[]>([]);
   const [selectedHistoryDir, setSelectedHistoryDir] = useState<string | null>(null);
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
-  const [centerMode, setCenterMode] = useState<'console' | 'history'>('console');
   // 用于在点击项目时抑制自动选中历史的标志
   const suppressAutoSelectRef = useRef(false);
+
+  const focusTabFromNotification = React.useCallback((tabId: string) => {
+    if (!tabId) return;
+    let projectId = tabProjectRef.current[tabId];
+    if (!projectId) {
+      const entries = tabsByProjectRef.current;
+      for (const [pid, list] of Object.entries(entries)) {
+        if ((list || []).some((tab) => tab.id === tabId)) {
+          projectId = pid;
+          tabProjectRef.current[tabId] = pid;
+          break;
+        }
+      }
+    }
+    if (!projectId) return;
+    if (projectId !== selectedProjectId) {
+      suppressAutoSelectRef.current = true;
+      setSelectedProjectId(projectId);
+    }
+    setCenterMode('console');
+    setSelectedHistoryDir(null);
+    setSelectedHistoryId(null);
+    setActiveTab(tabId, { focusMode: 'immediate', allowDuringRename: true, delay: 0, projectId });
+  }, [selectedProjectId, setActiveTab, setCenterMode, setSelectedHistoryDir, setSelectedHistoryId, setSelectedProjectId]);
+
   const [showHistoryPanel, setShowHistoryPanel] = useState(true);
   const [historyQuery, setHistoryQuery] = useState("");
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
@@ -658,6 +1135,64 @@ export default function CodexFlowManagerUI() {
     };
   }, [activeTabId, scheduleFocusForTab]);
 
+  useEffect(() => {
+    activeTabIdRef.current = activeTabId;
+    if (!activeTabId) return;
+    if (!pendingCompletionsRef.current[activeTabId]) return;
+    const next = { ...pendingCompletionsRef.current };
+    delete next[activeTabId];
+    applyPending(next);
+  }, [activeTabId]);
+
+  useEffect(() => {
+    const handleFocus = () => {
+      try { autoClearActiveTabIfForeground('window-focus'); } catch {}
+    };
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleFocus);
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleFocus);
+    };
+  }, []);
+
+  useEffect(() => {
+    syncTaskbarBadge(pendingCompletionsRef.current, notificationPrefs);
+  }, [notificationPrefs]);
+
+  useEffect(() => {
+    const aliveTabs = new Set<string>();
+    for (const list of Object.values(tabsByProject)) {
+      for (const tab of list || []) {
+        aliveTabs.add(tab.id);
+      }
+    }
+    const current = pendingCompletionsRef.current;
+    let changed = false;
+    const next: Record<string, number> = {};
+    for (const [tabId, count] of Object.entries(current)) {
+      if (aliveTabs.has(tabId) && count > 0) {
+        next[tabId] = count;
+      } else if (count) {
+        changed = true;
+      }
+    }
+    if (changed) {
+      applyPending(next);
+    }
+    const currentMappings = { ...tabProjectRef.current };
+    let mappingChanged = false;
+    for (const tabId of Object.keys(currentMappings)) {
+      if (!aliveTabs.has(tabId)) {
+        delete tabProjectRef.current[tabId];
+        mappingChanged = true;
+      }
+    }
+    if (mappingChanged) {
+      // no further action required; mappingRef 仅用于辅助焦点
+    }
+  }, [tabsByProject]);
+
   // Load settings and projects on mount
   useEffect(() => {
     (async () => {
@@ -669,6 +1204,7 @@ export default function CodexFlowManagerUI() {
           setCodexCmd(s.codexCmd || codexCmd);
           setSendMode(s.sendMode || 'write_and_enter');
           setProjectPathStyle((s as any).projectPathStyle || 'absolute');
+          setNotificationPrefs(normalizeCompletionPrefs((s as any).notifications));
           // historyRoot 自动计算，无需显示设置
         }
       } catch (e) {
@@ -726,6 +1262,18 @@ export default function CodexFlowManagerUI() {
     return () => { try { off && off(); } catch {} };
   }, []);
 
+  useEffect(() => {
+    let off: (() => void) | undefined;
+    try {
+      off = window.host.notifications?.onFocusTab?.((payload: { tabId?: string }) => {
+        const tabId = typeof payload?.tabId === 'string' ? payload.tabId : '';
+        if (!tabId) return;
+        focusTabFromNotification(tabId);
+      });
+    } catch {}
+    return () => { try { off && off(); } catch {} };
+  }, [focusTabFromNotification]);
+
   // Basic smoke tests (non-blocking)
   useEffect(() => {
     try {
@@ -746,6 +1294,21 @@ export default function CodexFlowManagerUI() {
   }, []);
 
   // Filtered projects
+  const pendingByProject = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const [projectId, list] of Object.entries(tabsByProject)) {
+      let sum = 0;
+      for (const tab of list || []) {
+        const pending = pendingCompletions[tab.id];
+        if (typeof pending === 'number' && pending > 0) {
+          sum += pending;
+        }
+      }
+      if (sum > 0) map[projectId] = sum;
+    }
+    return map;
+  }, [pendingCompletions, tabsByProject]);
+
   const filtered = useMemo(() => {
     if (!query.trim()) return projects;
     const q = query.toLowerCase();
@@ -767,6 +1330,7 @@ export default function CodexFlowManagerUI() {
       logs: [],
       createdAt: Date.now(),
     };
+    registerTabProject(tab.id, project.id);
     setTabsByProject((m) => ({ ...m, [project.id]: [...(m[project.id] || []), tab] }));
     setActiveTab(tab.id, { focusMode: 'immediate', allowDuringRename: true, delay: 0 });
     try {
@@ -776,6 +1340,7 @@ export default function CodexFlowManagerUI() {
       setPtyByTab((m) => ({ ...m, [tab.id]: id }));
       ptyAliveRef.current[tab.id] = true;
       setPtyAlive((m) => ({ ...m, [tab.id]: true }));
+      registerPtyForTab(tab.id, id);
       try { tm.setPty(tab.id, id); } catch (err) { console.warn('tm.setPty failed', err); }
       try { window.host.projects.touch(project.id); } catch {}
     } catch (e) {
@@ -826,6 +1391,7 @@ export default function CodexFlowManagerUI() {
       logs: [],
       createdAt: Date.now(),
     };
+    registerTabProject(tab.id, selectedProject.id);
     setTabsByProject((m) => ({ ...m, [selectedProject.id]: [...(m[selectedProject.id] || []), tab] }));
     setActiveTab(tab.id, { focusMode: 'immediate', allowDuringRename: true, delay: 0 });
 
@@ -846,6 +1412,7 @@ export default function CodexFlowManagerUI() {
       setPtyByTab((m) => ({ ...m, [tab.id]: id }));
       ptyAliveRef.current[tab.id] = true;
       setPtyAlive((m) => ({ ...m, [tab.id]: true }));
+      registerPtyForTab(tab.id, id);
       // inform manager about PTY so it can wire bridges
       try { tm.setPty(tab.id, id); } catch (err) { console.warn('tm.setPty failed', err); }
       // touch project lastOpenedAt
@@ -1095,6 +1662,7 @@ export default function CodexFlowManagerUI() {
             setPtyAlive((m) => ({ ...m, [tabId]: false }));
             delete ptyByTabRef.current[tabId];
             setPtyByTab((m) => { const n = { ...m }; delete n[tabId]; return n; });
+            unregisterPtyListener(id);
           } catch {}
         })
       : () => {};
@@ -1170,6 +1738,7 @@ export default function CodexFlowManagerUI() {
     if (pid) {
       try { window.host.pty.close(pid); } catch {}
       delete ptyByTabRef.current[id];
+      unregisterPtyListener(pid);
     }
     try { delete ptyAliveRef.current[id]; setPtyAlive((m) => { const n = { ...m }; delete n[id]; return n; }); } catch {}
     // let manager dispose the tab (adapter/container and optionally close PTY)
@@ -1178,6 +1747,8 @@ export default function CodexFlowManagerUI() {
       const next = (m[selectedProject.id] || []).filter((tab) => tab.id !== id);
       return { ...m, [selectedProject.id]: next };
     });
+    clearPendingForTab(id);
+    unregisterTabProject(id);
     if (activeTabId === id) setActiveTab(null);
   }
 
@@ -1209,48 +1780,53 @@ export default function CodexFlowManagerUI() {
       </div>
       <ScrollArea className="flex-1 min-h-0 px-2 pb-6">
         <div className="space-y-1 pr-1">
-          {filtered.map((p) => (
-            <div
-              key={p.id}
-              className={`group flex cursor-pointer items-center justify-between rounded-lg px-3 py-2 transition hover:bg-slate-100 ${
-                p.id === selectedProjectId ? 'bg-slate-100' : ''
-              }`}
-              onClick={() => {
-                // 点击项目时默认进入控制台，并清除历史选择（避免自动跳到历史详情）
-                suppressAutoSelectRef.current = true;
-                setSelectedProjectId(p.id);
-                setCenterMode('console');
-                setSelectedHistoryDir(null);
-                setSelectedHistoryId(null);
-              }}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                setProjectCtxMenu({ show: true, x: e.clientX, y: e.clientY, project: p });
-              }}
-            >
-              {/* 左侧内容区域：可水平滚动以查看长路径；右侧计数固定不滚动，避免遮挡 */}
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 font-medium">
-                  <FolderOpen className="h-4 w-4 text-slate-500" />
-                  <span className="truncate max-w-[16rem]" title={p.name}>{p.name}</span>
+          {filtered.map((p) => {
+            const tabsInProject = tabsByProject[p.id] || [];
+            const liveCount = tabsInProject.filter((tab) => !!ptyAlive[tab.id]).length;
+            const pendingCount = pendingByProject[p.id] ?? 0;
+            return (
+              <div
+                key={p.id}
+                className={`group flex cursor-pointer items-center justify-between rounded-lg px-3 py-2 transition hover:bg-slate-100 ${
+                  p.id === selectedProjectId ? 'bg-slate-100' : ''
+                }`}
+                onClick={() => {
+                  // 点击项目时默认进入控制台，并清除历史选择（避免自动跳到历史详情）
+                  suppressAutoSelectRef.current = true;
+                  setSelectedProjectId(p.id);
+                  setCenterMode('console');
+                  setSelectedHistoryDir(null);
+                  setSelectedHistoryId(null);
+                }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  setProjectCtxMenu({ show: true, x: e.clientX, y: e.clientY, project: p });
+                }}
+              >
+                {/* 左侧内容区域：可水平滚动以查看长路径；右侧计数固定不滚动，避免遮挡 */}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 font-medium">
+                    <FolderOpen className="h-4 w-4 text-slate-500" />
+                    <span className="truncate max-w-[16rem]" title={p.name}>{p.name}</span>
+                  </div>
+                  <div className="text-xs text-slate-500 overflow-x-auto no-scrollbar whitespace-nowrap pr-1" title={p.winPath}>{p.winPath}</div>
                 </div>
-                <div className="text-xs text-slate-500 overflow-x-auto no-scrollbar whitespace-nowrap pr-1" title={p.winPath}>{p.winPath}</div>
+                <div className="ml-2 shrink-0 flex items-center gap-2">
+                  {pendingCount > 0 ? (
+                    <span
+                      className="inline-flex h-2 w-2 rounded-full bg-red-500"
+                      title={t('common:notifications.openTabHint', '点击查看详情') as string}
+                    ></span>
+                  ) : null}
+                  {liveCount > 0 ? (
+                    <span className="inline-flex items-center justify-center rounded-full bg-slate-800 text-white text-[10px] h-5 min-w-[20px] px-1">
+                      {liveCount}
+                    </span>
+                  ) : null}
+                </div>
               </div>
-              <div className="ml-2 shrink-0">
-                {(() => {
-                  try {
-                    const list = tabsByProject[p.id] || [];
-                    const count = list.filter((tab) => !!ptyAlive[tab.id]).length;
-                    return count > 0 ? (
-                      <span className="inline-flex items-center justify-center rounded-full bg-slate-800 text-white text-[10px] h-5 min-w-[20px] px-1">
-                        {count}
-                      </span>
-                    ) : null;
-                  } catch { return null; }
-                })()}
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </ScrollArea>
     </div>
@@ -1318,6 +1894,7 @@ export default function CodexFlowManagerUI() {
     </div>
   );
 
+
   const ConsoleArea = (
     <div className="flex h-full min-h-0 flex-col gap-0 p-0">
       <div className="flex items-center justify-between">
@@ -1341,34 +1918,35 @@ export default function CodexFlowManagerUI() {
               )
             ) : (
               <>
-            {tabs.map((tab) => (
-              <div key={tab.id} className="flex items-center shrink-0 h-6" onDoubleClick={(e) => { e.preventDefault(); e.stopPropagation(); startEditTab(tab.id, tab.name); }}>
-                <TabsTrigger value={tab.id} className="px-2 py-0.5 text-xs whitespace-nowrap" onDoubleClick={(e) => { e.preventDefault(); e.stopPropagation(); startEditTab(tab.id, tab.name); }}>
-                  <TerminalSquare className="mr-2 h-4 w-4" />
-                  {editingTabId === tab.id ? (
-                    <input
-                      id={`tab-input-${tab.id}`}
-                      ref={(el) => { editInputRef.current = el; }}
-                      onFocus={(e) => { try { (e.target as HTMLInputElement).select(); } catch {} }}
-                      autoFocus
-                      onMouseDown={(e) => { e.stopPropagation(); }}
-                      style={{ width: renameWidth ? `${renameWidth}px` : undefined }}
-                      className="bg-transparent outline-none text-xs"
-                      value={renameDraft}
-                      onChange={(e) => setRenameDraft(e.target.value)}
-                      onBlur={() => {
-                        const projKey = selectedProjectId;
-                        const newName = String(renameDraft || tab.name).trim();
-                        setTabsByProject((m) => {
-                          const list = (m[projKey] || []).map((x) => x.id === tab.id ? { ...x, name: newName } : x);
-                          return { ...m, [projKey]: list };
-                        });
-                        setEditingTabId(null);
-                        setRenameWidth(null);
-                        if (activeTabId === tab.id) scheduleFocusForTab(tab.id, { immediate: true, allowDuringRename: true });
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
+            {tabs.map((tab) => {
+              const pendingCount = pendingCompletions[tab.id] ?? 0;
+              const hasPending = pendingCount > 0;
+              return (
+                <div
+                  key={tab.id}
+                  className="flex items-center shrink-0 h-6"
+                  onDoubleClick={(e) => { e.preventDefault(); e.stopPropagation(); startEditTab(tab.id, tab.name); }}
+                  onContextMenu={(e) => openTabContextMenu(e, tab.id, "tabs-header")}
+                >
+                  <TabsTrigger
+                    value={tab.id}
+                    className="px-2 py-0.5 text-xs whitespace-nowrap"
+                    onDoubleClick={(e) => { e.preventDefault(); e.stopPropagation(); startEditTab(tab.id, tab.name); }}
+                    onContextMenu={(e) => openTabContextMenu(e, tab.id, "tab-trigger")}
+                  >
+                    <TerminalSquare className="mr-2 h-4 w-4" />
+                    {editingTabId === tab.id ? (
+                      <input
+                        id={`tab-input-${tab.id}`}
+                        ref={(el) => { editInputRef.current = el; }}
+                        onFocus={(e) => { try { (e.target as HTMLInputElement).select(); } catch {} }}
+                        autoFocus
+                        onMouseDown={(e) => { e.stopPropagation(); }}
+                        style={{ width: renameWidth ? `${renameWidth}px` : undefined }}
+                        className="bg-transparent outline-none text-xs"
+                        value={renameDraft}
+                        onChange={(e) => setRenameDraft(e.target.value)}
+                        onBlur={() => {
                           const projKey = selectedProjectId;
                           const newName = String(renameDraft || tab.name).trim();
                           setTabsByProject((m) => {
@@ -1378,27 +1956,48 @@ export default function CodexFlowManagerUI() {
                           setEditingTabId(null);
                           setRenameWidth(null);
                           if (activeTabId === tab.id) scheduleFocusForTab(tab.id, { immediate: true, allowDuringRename: true });
-                        } else if (e.key === 'Escape') {
-                          setEditingTabId(null);
-                          setRenameWidth(null);
-                          if (activeTabId === tab.id) scheduleFocusForTab(tab.id, { immediate: true, allowDuringRename: true });
-                        }
-                      }}
-                    />
-                  ) : (
-                    <span id={`tab-label-${tab.id}`} className="truncate max-w-[8rem]">{tab.name}</span>
-                  )}
-                </TabsTrigger>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="-ml-1 h-6 w-6"
-                  onClick={() => closeTab(tab.id)}
-                >
-                  <X className="h-4 w-4" />
-                </Button>
-              </div>
-            ))}
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            const projKey = selectedProjectId;
+                            const newName = String(renameDraft || tab.name).trim();
+                            setTabsByProject((m) => {
+                              const list = (m[projKey] || []).map((x) => x.id === tab.id ? { ...x, name: newName } : x);
+                              return { ...m, [projKey]: list };
+                            });
+                            setEditingTabId(null);
+                            setRenameWidth(null);
+                            if (activeTabId === tab.id) scheduleFocusForTab(tab.id, { immediate: true, allowDuringRename: true });
+                          } else if (e.key === 'Escape') {
+                            setEditingTabId(null);
+                            setRenameWidth(null);
+                            if (activeTabId === tab.id) scheduleFocusForTab(tab.id, { immediate: true, allowDuringRename: true });
+                          }
+                        }}
+                      />
+                    ) : (
+                      <span className="flex items-center gap-1">
+                        <span id={`tab-label-${tab.id}`} className="truncate max-w-[8rem]">{tab.name}</span>
+                        {hasPending ? (
+                          <span
+                            className="inline-flex h-2 w-2 rounded-full bg-red-500"
+                            title={t('common:notifications.openTabHint', '点击查看详情') as string}
+                          ></span>
+                        ) : null}
+                      </span>
+                    )}
+                  </TabsTrigger>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="-ml-1 h-6 w-6"
+                    onClick={() => closeTab(tab.id)}
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
+              );
+            })}
                 {/* Tabs 区右侧的紧凑新建按钮 */}
                 <div className="flex items-center pl-2">
                   <Button variant="default" size="icon" className="p-0" onClick={openNewConsole} title={t('terminal:newConsole') as string} style={{ height: 21, width: 21, borderRadius: 12, padding: 0 }}>
@@ -1410,12 +2009,23 @@ export default function CodexFlowManagerUI() {
           </TabsList>
         </div>
 
-        {tabs.map((tab) => (
-          <TabsContent key={tab.id} value={tab.id} className="mt-1 flex flex-1 min-h-0 flex-col space-y-1">
+            {tabs.map((tab) => (
+          <TabsContent
+            key={tab.id}
+            value={tab.id}
+            className="mt-1 flex flex-1 min-h-0 flex-col space-y-1"
+            onContextMenu={(e) => openTabContextMenu(e, tab.id, "tab-content")}
+          >
             <Card className="flex flex-1 min-h-0 flex-col">
               <CardContent className="flex flex-1 min-h-0 flex-col p-0">
                 <div className="relative flex-1 min-h-0">
-                  <TerminalView logs={tab.logs} tabId={tab.id} ptyId={ptyByTab[tab.id]} attachTerminal={attachTerminal} />
+                  <TerminalView
+                    logs={tab.logs}
+                    tabId={tab.id}
+                    ptyId={ptyByTab[tab.id]}
+                    attachTerminal={attachTerminal}
+                    onContextMenuDebug={(event) => openTabContextMenu(event, tab.id, "terminal-body")}
+                  />
                 </div>
 
                 <div className="mt-3 w-full">
@@ -1544,6 +2154,7 @@ export default function CodexFlowManagerUI() {
           logs: [],
           createdAt: Date.now(),
         };
+        registerTabProject(tab.id, selectedProject.id);
         setTabsByProject((m) => ({ ...m, [selectedProject.id]: [...(m[selectedProject.id] || []), tab] }));
         setActiveTab(tab.id, { focusMode: 'immediate', allowDuringRename: true, delay: 0 });
         try {
@@ -1564,6 +2175,7 @@ export default function CodexFlowManagerUI() {
         setPtyByTab((m) => ({ ...m, [tab.id]: id }));
         ptyAliveRef.current[tab.id] = true;
         setPtyAlive((m) => ({ ...m, [tab.id]: true }));
+        registerPtyForTab(tab.id, id);
         try { tm.setPty(tab.id, id); } catch (err) { console.warn('tm.setPty failed', err); }
         try { window.host.projects.touch(selectedProject.id); } catch {}
         return true;
@@ -2059,10 +2671,26 @@ export default function CodexFlowManagerUI() {
         </div>
       )}
 
+      {tabCtxMenu.show && showNotifDebugMenu && (
+        <div
+          className="fixed inset-0 z-50"
+          onClick={() => closeTabContextMenu("backdrop-click")}
+          onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); closeTabContextMenu("backdrop-contextmenu"); }}
+        >
+          <div
+            className="absolute z-50"
+            style={{ left: tabCtxMenu.x, top: tabCtxMenu.y }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {renderTabContextMenu()}
+          </div>
+        </div>
+      )}
+
       <SettingsDialog
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
-        values={{ terminal: terminalMode, distro: wslDistro, codexCmd, sendMode, locale, projectPathStyle }}
+        values={{ terminal: terminalMode, distro: wslDistro, codexCmd, sendMode, locale, projectPathStyle, notifications: notificationPrefs }}
         onSave={async (v) => {
           const nextTerminal = v.terminal;
           const nextDistro = v.distro;
@@ -2070,14 +2698,25 @@ export default function CodexFlowManagerUI() {
           const nextSend = v.sendMode;
           const nextStyle = v.projectPathStyle || 'absolute';
           const nextLocale = v.locale;
+          const nextNotifications = normalizeCompletionPrefs(v.notifications);
           // 先切换语言（内部会写入 settings 并广播），再持久化其它字段
           try { await (window as any).host?.i18n?.setLocale?.(nextLocale); setLocale(nextLocale); } catch {}
-          try { await window.host.settings.update({ terminal: nextTerminal, distro: nextDistro, codexCmd: nextCmd, sendMode: nextSend, projectPathStyle: v.projectPathStyle }); } catch (e) { console.warn('settings.update failed', e); }
+          try {
+            await window.host.settings.update({
+              terminal: nextTerminal,
+              distro: nextDistro,
+              codexCmd: nextCmd,
+              sendMode: nextSend,
+              projectPathStyle: v.projectPathStyle,
+              notifications: nextNotifications,
+            });
+          } catch (e) { console.warn('settings.update failed', e); }
           setTerminalMode(nextTerminal);
           setWslDistro(nextDistro);
           setCodexCmd(nextCmd);
           setSendMode(nextSend);
           setProjectPathStyle(nextStyle);
+          setNotificationPrefs(nextNotifications);
         }}
       />
 
@@ -2500,7 +3139,8 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
   }
 
   return (
-    <div className="grid h-full min-h-0 grid-rows-[auto_auto_auto_1fr]">
+    <>
+      <div className="grid h-full min-h-0 grid-rows-[auto_auto_auto_1fr]">
       <div className="flex items-center justify-between px-3 py-2">
         <div className="flex items-center gap-2 text-sm">
           {/* 返回箭头：点击返回到控制台 */}
@@ -2586,7 +3226,8 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
           <div className="p-6 text-sm text-slate-500">{t('history:selectRightToView')}</div>
         )}
       </ScrollArea>
-    </div>
+      </div>
+    </>
   );
 }
 

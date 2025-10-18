@@ -168,6 +168,19 @@ contextBridge.exposeInMainWorld('host', {
       try { return await ipcRenderer.invoke('codex.rateLimit'); } catch (e) { return { ok: false, error: String(e) }; }
     }
   }
+  , notifications: {
+    setBadgeCount: (count: number) => {
+      ipcRenderer.send('notifications:setBadge', { count });
+    },
+    showAgentCompletion: (payload: { tabId: string; tabName?: string; projectName?: string; preview?: string; title: string; body: string; appTitle?: string }) => {
+      ipcRenderer.send('notifications:agentComplete', payload);
+    },
+    onFocusTab: (handler: (payload: { tabId: string }) => void) => {
+      const listener = (_: unknown, payload: { tabId: string }) => handler(payload);
+      ipcRenderer.on('notifications:focus-tab', listener);
+      return () => ipcRenderer.removeListener('notifications:focus-tab', listener);
+    }
+  }
   , utils: {
     perfLog: async (text: string) => {
       try { return await ipcRenderer.invoke('utils.perfLog', { text }); } catch (e) { return { ok: false, error: String(e) }; }

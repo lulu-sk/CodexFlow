@@ -5,6 +5,10 @@
       "title": "Basic experience",
       "desc": "Language preferences and composer defaults."
     },
+    "notifications": {
+      "title": "Notifications",
+      "desc": "Choose how CodexFlow reminds you when agents finish their tasks."
+    },
     "terminal": {
       "title": "Terminal & execution",
       "desc": "Configure how CodexFlow runs commands."
@@ -49,6 +53,21 @@
     "absolute": "Absolute path",
     "relative": "Relative path (to project root)",
     "help": "Pick the path format inserted into conversations."
+  },
+  "notifications": {
+    "label": "Task completion alerts",
+    "badge": {
+      "label": "Taskbar badge",
+      "desc": "Show the number of finished tasks on the CodexFlow icon."
+    },
+    "system": {
+      "label": "Desktop notification",
+      "desc": "Send a system notification whenever an agent completes its current task."
+    },
+    "sound": {
+      "label": "Play chime",
+      "desc": "Play a short sound when a task completes."
+    }
   },
   "codexAccount": {
     "label": "ChatGPT account",

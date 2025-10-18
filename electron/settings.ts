@@ -8,6 +8,15 @@ import os from 'node:os';
 import { getSessionsRootsFastAsync, listDistros } from './wsl';
 import type { DistroInfo } from './wsl';
 
+export type NotificationSettings = {
+  /** 任务完成时是否在任务栏显示徽标计数 */
+  badge?: boolean;
+  /** 任务完成时是否发送系统通知 */
+  system?: boolean;
+  /** 任务完成时是否播放提示音 */
+  sound?: boolean;
+};
+
 export type AppSettings = {
   /** 终端类型：WSL 或 Windows 本地终端 */
   terminal?: 'wsl' | 'windows';
@@ -23,6 +32,8 @@ export type AppSettings = {
   locale?: string;
   /** 项目内文件路径样式：absolute=全路径；relative=相对路径（相对项目根） */
   projectPathStyle?: 'absolute' | 'relative';
+  /** 任务完成提醒相关偏好 */
+  notifications?: NotificationSettings;
 };
 
 function getStorePath() {
@@ -33,6 +44,11 @@ const DEFAULT_WSL_DISTRO = 'Ubuntu-24.04';
 const DISTRO_CACHE_TTL_MS = 30_000;
 let cachedDistros: DistroInfo[] | null = null;
 let cachedDistrosAt = 0;
+const DEFAULT_NOTIFICATIONS: NotificationSettings = {
+  badge: true,
+  system: true,
+  sound: false,
+};
 
 function loadDistroList(): DistroInfo[] {
   if (os.platform() !== 'win32') return [];
@@ -77,8 +93,13 @@ function mergeWithDefaults(raw: Partial<AppSettings>, preloadedDistros?: DistroI
     sendMode: 'write_and_enter',
     // 默认：发送给 Codex 的项目内文件路径使用“全路径”（WSL 绝对路径）
     projectPathStyle: 'absolute',
+    notifications: { ...DEFAULT_NOTIFICATIONS },
   };
   const merged = Object.assign({}, defaults, raw);
+  merged.notifications = {
+    ...DEFAULT_NOTIFICATIONS,
+    ...(raw?.notifications ?? {}),
+  };
   merged.distro = pickPreferredDistro(merged.distro, distros);
   return merged;
 }

@@ -475,16 +475,12 @@ export default class TerminalManager {
    */
   onTabActivated(tabId: string): void {
     this.dlog(`tabActivated tab=${tabId}`);
-    // 先恢复当前活动 PTY 的数据流，暂停其它隐藏 PTY，避免隐藏期间的数据在错误度量下被渲染
+    // 先确保所有 PTY 均处于 resume 状态：后台标签仍需接收 OSC 事件以触发完成通知
     try {
       for (const t of Object.keys(this.adapters)) {
         const pid = this.getPtyId(t);
         if (!pid) continue;
-        if (t === tabId) {
-          try { this.hostPty.resume?.(pid); this.dlog(`resume pty=${pid} tab=${t}`); } catch {}
-        } else {
-          try { this.hostPty.pause?.(pid); this.dlog(`pause pty=${pid} tab=${t}`); } catch {}
-        }
+        try { this.hostPty.resume?.(pid); this.dlog(`resume pty=${pid} tab=${t}`); } catch {}
       }
     } catch {}
     // 精确度量并立即同步尺寸

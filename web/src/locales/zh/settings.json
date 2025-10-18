@@ -5,6 +5,10 @@
       "title": "基础体验",
       "desc": "界面语言与消息行为等通用设置。"
     },
+    "notifications": {
+      "title": "通知提醒",
+      "desc": "配置代理完成任务时的提醒方式。"
+    },
     "terminal": {
       "title": "终端与运行",
       "desc": "配置 CodexFlow 执行命令的默认环境。"
@@ -49,6 +53,21 @@
     "absolute": "全路径（绝对路径）",
     "relative": "相对路径（相对项目根）",
     "help": "选择插入会话中的路径格式。"
+  },
+  "notifications": {
+    "label": "任务完成提醒",
+    "badge": {
+      "label": "任务栏徽标",
+      "desc": "在 CodexFlow 图标上显示未查看的完成数量。"
+    },
+    "system": {
+      "label": "系统通知",
+      "desc": "当代理完成当前任务时，发送系统通知提醒。"
+    },
+    "sound": {
+      "label": "播放提示音",
+      "desc": "任务完成时播放简短提示音。"
+    }
   },
   "codexAccount": {
     "label": "ChatGPT 账号",
