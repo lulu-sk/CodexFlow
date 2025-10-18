@@ -16,6 +16,8 @@ import settings from './settings';
  * History 读取模块: 支持逐行解析 JSONL, list/read 接口
  */
 
+export type RuntimeShell = 'wsl' | 'windows' | 'unknown';
+
 export type HistorySummary = {
   id: string;
   title: string;
@@ -25,10 +27,107 @@ export type HistorySummary = {
   preview?: string;
   resumeMode?: 'modern' | 'legacy' | 'unknown';
   resumeId?: string;
+  runtimeShell?: RuntimeShell;
 };
 // 消息内容：支持可选 tags（用于嵌套类型筛选，例如 message.input_text）
 export type MessageContent = { type: string; text: string; tags?: string[] };
 export type Message = { role: string; content: MessageContent[] };
+
+export function detectRuntimeShell(filePath?: string): RuntimeShell {
+  try {
+    if (!filePath) return 'unknown';
+    let raw = String(filePath).trim();
+    if (!raw) return 'unknown';
+    // 处理 \\?\UNC\ 前缀，统一为常规 UNC 形式
+    if (raw.startsWith('\\\\?\\UNC\\')) raw = '\\\\' + raw.slice(8);
+    if (raw.startsWith('\\\\?\\')) raw = raw.slice(4);
+    const lowered = raw.toLowerCase();
+    if (lowered.startsWith('\\\\wsl.localhost\\') || lowered.startsWith('\\\\wsl$\\') || lowered.startsWith('//wsl.localhost/')) {
+      return 'wsl';
+    }
+    const replaced = lowered.replace(/\\/g, '/');
+    if (replaced.startsWith('/mnt/')) return 'wsl';
+    if (replaced.startsWith('/home/') || replaced.startsWith('/root/')) return 'wsl';
+    if (/^[a-z]:\\/.test(raw)) return 'windows';
+    return 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+function classifyRuntimeShell(raw?: string): RuntimeShell {
+  try {
+    const s = String(raw || '').trim().toLowerCase();
+    if (!s) return 'unknown';
+    const windowsHints = ['powershell', 'pwsh', 'cmd.exe', 'command prompt', 'cmd'];
+    for (const hint of windowsHints) {
+      if (s.includes(hint)) return 'windows';
+    }
+    const wslHints = ['bash', 'zsh', 'fish', 'wsl', 'ubuntu', 'debian', 'arch', 'alpine', '/bin/bash', '/bin/zsh'];
+    for (const hint of wslHints) {
+      if (s.includes(hint)) return 'wsl';
+    }
+    return 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+function extractShellFromEnvironmentContext(source?: string): string | null {
+  try {
+    if (!source) return null;
+    let text = String(source);
+    text = text.replace(/\\r/g, '\r').replace(/\\n/g, '\n');
+    const envRe = /<environment_context\b[^>]*>([\s\S]*?)<\/environment_context>/gi;
+    let match: RegExpExecArray | null;
+    while ((match = envRe.exec(text)) !== null) {
+      const block = match[1] || '';
+      const shellMatch = block.match(/<shell\b[^>]*>([\s\S]*?)<\/shell>/i);
+      if (shellMatch && typeof shellMatch[1] === 'string') {
+        const val = shellMatch[1].replace(/\\[rn]/g, '').trim();
+        if (val) return val;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function detectRuntimeShellFromContent(parsed?: any, text?: string): RuntimeShell {
+  try {
+    const tryClassify = (value?: any): RuntimeShell => {
+      if (typeof value !== 'string') return 'unknown';
+      return classifyRuntimeShell(value);
+    };
+    if (parsed && typeof parsed === 'object') {
+      const direct = tryClassify(parsed.shell ?? parsed.runtimeShell ?? parsed.terminal);
+      if (direct !== 'unknown') return direct;
+      if (parsed.payload && typeof parsed.payload === 'object') {
+        const inPayload = tryClassify(parsed.payload.shell ?? parsed.payload.runtimeShell ?? parsed.payload.terminal);
+        if (inPayload !== 'unknown') return inPayload;
+      }
+    }
+    const rawShell = extractShellFromEnvironmentContext(text);
+    if (rawShell) {
+      const hint = classifyRuntimeShell(rawShell);
+      if (hint !== 'unknown') return hint;
+    }
+    if (parsed && typeof parsed === 'object') {
+      try {
+        const serialized = JSON.stringify(parsed);
+        const shellFromSerialized = extractShellFromEnvironmentContext(serialized);
+        if (shellFromSerialized) {
+          const hint = classifyRuntimeShell(shellFromSerialized);
+          if (hint !== 'unknown') return hint;
+        }
+      } catch {}
+    }
+    return 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
 
 // ---- Debug helpers (also exposed via history.debugInfo) ----
 function __userDataPath(): string { try { return app.getPath('userData'); } catch { return process.cwd(); } }
@@ -271,6 +370,7 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
     rawDate?: string;
     resumeMode?: 'modern' | 'legacy' | 'unknown';
     resumeId?: string;
+    runtimeShell?: RuntimeShell;
   };
   const g: any = global as any;
   if (!g.__historySummaryCache) g.__historySummaryCache = new Map<string, SumCache>();
@@ -279,7 +379,7 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
   const rootsToScan: string[] = await computeHistoryRoots(rootOriginal);
   if (rootsToScan.length === 0) return summaries;
   // Fast-path: if roots' latest-file signature unchanged, reuse cached list
-  const PARSER_VERSION = 'v6';
+  const PARSER_VERSION = 'v7';
   const cacheKey = (rts: string[], nc: string[]) => `${rts.map((r) => r.toLowerCase()).sort().join('|')}||${nc.sort().join('|')}||${PARSER_VERSION}`;
   const needles = buildNeedles();
   // 将 needles 规范化为统一可对比的 WSL 风格（/mnt/c 或 /home/...），用于前缀对比
@@ -359,9 +459,13 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
           logDebug(`cache-pruned removed=${hit.list.length - pruned.length}`);
         } catch {}
       }
-      return (opts?.offset || opts?.limit)
+      const sliced = (opts?.offset || opts?.limit)
         ? pruned.slice(opts.offset || 0, (opts.offset || 0) + (opts.limit || pruned.length))
         : pruned.slice();
+      return sliced.map((entry) => {
+        const shell = entry.runtimeShell && entry.runtimeShell !== 'unknown' ? entry.runtimeShell : detectRuntimeShell(entry.filePath);
+        return { ...entry, runtimeShell: shell };
+      });
     }
   } catch {}
   function buildNeedles(): string[] {
@@ -543,6 +647,7 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
             let title = titleFromFilename(fp);
             let resumeMode: 'modern' | 'legacy' | 'unknown' = 'unknown';
             let resumeId: string | undefined = undefined;
+            let runtimeShell: RuntimeShell = 'unknown';
             if (cached) {
               id = cached.id;
               timestamp = cached.date;
@@ -550,6 +655,7 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
               rawDate = cached.rawDate;
               resumeMode = cached.resumeMode ?? 'unknown';
               resumeId = cached.resumeId;
+              if (cached.runtimeShell && cached.runtimeShell !== 'unknown') runtimeShell = cached.runtimeShell;
               firstLine = (prefix.split(/\r?\n/).find(Boolean) || '').trim();
               try { parsed = JSON.parse(firstLine); } catch { parsed = null; }
               let changed = false;
@@ -572,8 +678,29 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
                   changed = true;
                 }
               }
+              const hint = detectRuntimeShellFromContent(parsed, prefix);
+              if (runtimeShell === 'unknown') {
+                if (hint !== 'unknown') {
+                  runtimeShell = hint;
+                  changed = true;
+                }
+              } else if (hint !== 'unknown' && hint !== runtimeShell) {
+                runtimeShell = hint;
+                changed = true;
+              }
+              if (runtimeShell === 'unknown') {
+                const fallback = detectRuntimeShell(fp);
+                const cachedShell = cached.runtimeShell ?? 'unknown';
+                if (fallback !== 'unknown' && fallback !== cachedShell) {
+                  runtimeShell = fallback;
+                  changed = true;
+                } else if (fallback !== 'unknown' && cachedShell === 'unknown') {
+                  runtimeShell = fallback;
+                  changed = true;
+                }
+              }
               if (stat && changed) {
-                const entry: SumCache = { ...cached, rawDate, resumeMode, resumeId: resumeId || cached.resumeId || cached.id };
+                const entry: SumCache = { ...cached, rawDate, resumeMode, resumeId: resumeId || cached.resumeId || cached.id, runtimeShell };
                 summaryCache.set(fp, entry);
               }
             } else {
@@ -594,6 +721,10 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
               const info = detectResumeInfo(parsed);
               resumeMode = info.mode;
               if (info.id) resumeId = info.id;
+              const hint = detectRuntimeShellFromContent(parsed, prefix);
+              if (hint !== 'unknown') {
+                runtimeShell = hint;
+              }
               // 生成时间戳/标题
               try {
                 if (parsed && Object.prototype.hasOwnProperty.call(parsed, 'timestamp')) {
@@ -607,9 +738,10 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
               timestamp = stat?.mtimeMs || 0;
               // Title: prefer filename timestamp (simple and stable)
               title = titleFromFilename(fp);
+              if (runtimeShell === 'unknown') runtimeShell = detectRuntimeShell(fp);
               // 写入缓存
               if (stat) {
-                const entry: SumCache = { mtimeMs: stat.mtimeMs, size: stat.size, id, title, date: timestamp, prefix, rawDate, resumeMode, resumeId: resumeId || id };
+                const entry: SumCache = { mtimeMs: stat.mtimeMs, size: stat.size, id, title, date: timestamp, prefix, rawDate, resumeMode, resumeId: resumeId || id, runtimeShell };
                 // 简单限长
                 if (summaryCache.size > 2000) {
                   let i = 0; for (const k of summaryCache.keys()) { summaryCache.delete(k); if (++i >= 200) break; }
@@ -617,6 +749,7 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
                 summaryCache.set(fp, entry);
               }
             }
+            if (runtimeShell === 'unknown') runtimeShell = detectRuntimeShell(fp);
             // 严格按项目归属过滤：优先从元信息/前缀中提取 cwd，再与 needles 前缀匹配；否则回退到全文前缀搜索
             let belongs = true;
             if (needlesCanon.length > 0) {
@@ -685,7 +818,7 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
             }
             // 构造基础条目（用于回退展示）
             if (!resumeId) resumeId = id;
-            const basic: HistorySummary = { id, title, date: (stat?.mtimeMs || 0), filePath: fp, rawDate, resumeMode, resumeId };
+            const basic: HistorySummary = { id, title, date: (stat?.mtimeMs || 0), filePath: fp, rawDate, resumeMode, resumeId, runtimeShell };
             if (!seenAll.has(key)) { summariesAll.push(basic); seenAll.add(key); }
             if (belongs && !seenBelongs.has(key)) { summaries.push(basic); seenBelongs.add(key); }
           } catch (e) {
@@ -729,6 +862,7 @@ export async function listHistorySplit(project: { wslPath?: string; winPath?: st
     rawDate?: string;
     resumeMode?: 'modern' | 'legacy' | 'unknown';
     resumeId?: string;
+    runtimeShell?: RuntimeShell;
   };
   const g: any = global as any;
   if (!g.__historySummaryCache) g.__historySummaryCache = new Map<string, SumCache>();
@@ -761,6 +895,7 @@ export async function listHistorySplit(project: { wslPath?: string; winPath?: st
               let title = titleFromFilename(fp);
               let resumeMode: 'modern' | 'legacy' | 'unknown' = 'unknown';
               let resumeId: string | undefined = undefined;
+              let runtimeShell: RuntimeShell = 'unknown';
               if (cached) {
                 id = cached.id;
                 timestamp = cached.date;
@@ -768,6 +903,7 @@ export async function listHistorySplit(project: { wslPath?: string; winPath?: st
                 rawDate = cached.rawDate;
                 resumeMode = cached.resumeMode ?? 'unknown';
                 resumeId = cached.resumeId;
+                if (cached.runtimeShell && cached.runtimeShell !== 'unknown') runtimeShell = cached.runtimeShell;
                 firstLine = (prefix.split(/\r?\n/).find(Boolean) || '').trim();
                 try { parsed = JSON.parse(firstLine); } catch { parsed = null; }
                 let changed = false;
@@ -792,8 +928,29 @@ export async function listHistorySplit(project: { wslPath?: string; winPath?: st
                     changed = true;
                   }
                 }
+                const hint = detectRuntimeShellFromContent(parsed, prefix);
+                if (runtimeShell === 'unknown') {
+                  if (hint !== 'unknown') {
+                    runtimeShell = hint;
+                    changed = true;
+                  }
+                } else if (hint !== 'unknown' && hint !== runtimeShell) {
+                  runtimeShell = hint;
+                  changed = true;
+                }
+                if (runtimeShell === 'unknown') {
+                  const fallback = detectRuntimeShell(fp);
+                  const cachedShell = cached.runtimeShell ?? 'unknown';
+                  if (fallback !== 'unknown' && fallback !== cachedShell) {
+                    runtimeShell = fallback;
+                    changed = true;
+                  } else if (fallback !== 'unknown' && cachedShell === 'unknown') {
+                    runtimeShell = fallback;
+                    changed = true;
+                  }
+                }
                 if (stat && changed) {
-                  const entry: SumCache = { ...cached, rawDate, resumeMode, resumeId: resumeId || cached.resumeId || cached.id };
+                  const entry: SumCache = { ...cached, rawDate, resumeMode, resumeId: resumeId || cached.resumeId || cached.id, runtimeShell };
                   summaryCache.set(fp, entry);
                 }
               } else {
@@ -810,6 +967,8 @@ export async function listHistorySplit(project: { wslPath?: string; winPath?: st
                 const info = detectResumeInfo(parsed);
                 resumeMode = info.mode;
                 if (info.id) resumeId = info.id;
+                const hint = detectRuntimeShellFromContent(parsed, prefix);
+                if (hint !== 'unknown') runtimeShell = hint;
                 if (parsed) {
                   try {
                     if (Object.prototype.hasOwnProperty.call(parsed, 'timestamp')) {
@@ -821,14 +980,16 @@ export async function listHistorySplit(project: { wslPath?: string; winPath?: st
                 }
                 timestamp = stat?.mtimeMs || 0;
                 title = titleFromFilename(fp);
+                if (runtimeShell === 'unknown') runtimeShell = detectRuntimeShell(fp);
                 if (stat) {
-                  const entry: SumCache = { mtimeMs: stat.mtimeMs, size: stat.size, id, title, date: timestamp, prefix, rawDate, resumeMode, resumeId: resumeId || id };
+                  const entry: SumCache = { mtimeMs: stat.mtimeMs, size: stat.size, id, title, date: timestamp, prefix, rawDate, resumeMode, resumeId: resumeId || id, runtimeShell };
                   if (summaryCache.size > 2000) { let i = 0; for (const k of summaryCache.keys()) { summaryCache.delete(k); if (++i >= 200) break; } }
                   summaryCache.set(fp, entry);
                 }
               }
+              if (runtimeShell === 'unknown') runtimeShell = detectRuntimeShell(fp);
               if (!resumeId) resumeId = id;
-              all.push({ id, title, date: (stat?.mtimeMs || 0), filePath: fp, rawDate, resumeMode, resumeId });
+              all.push({ id, title, date: (stat?.mtimeMs || 0), filePath: fp, rawDate, resumeMode, resumeId, runtimeShell });
             } catch {}
           }
         }

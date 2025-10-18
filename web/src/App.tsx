@@ -75,10 +75,15 @@ type HistorySession = {
   filePath?: string;
   resumeMode?: 'modern' | 'legacy' | 'unknown';
   resumeId?: string;
+  runtimeShell?: 'wsl' | 'windows' | 'unknown';
 };
 
 type ResumeExecutionMode = 'internal' | 'external';
 type LegacyResumePrompt = { filePath: string; mode: ResumeExecutionMode };
+type ShellLabel = 'PowerShell' | 'WSL';
+type BlockingNotice =
+  | { type: 'shell-mismatch'; expected: ShellLabel; current: ShellLabel }
+  | { type: 'external-console'; env: ShellLabel };
 type ResumeStrategy = 'legacy-only' | 'experimental_resume' | 'resume+fallback' | 'force-legacy-cli';
 type ResumeStartup = {
   startupCmd: string;
@@ -119,6 +124,8 @@ function canonicalizePath(p: string): string {
   // Already POSIX-like or other
   return s.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 }
+
+const toShellLabel = (mode: 'wsl' | 'windows'): ShellLabel => (mode === 'windows' ? 'PowerShell' : 'WSL');
 
 function normDir(p?: string): string { return canonicalizePath(getDir(p)); }
 
@@ -196,6 +203,12 @@ function normalizeMsToIso(v: any): string {
   }
 }
 const uid = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+function normalizeResumeMode(mode: any): 'modern' | 'legacy' | 'unknown' {
+  if (mode === 'modern') return 'modern';
+  if (mode === 'legacy') return 'legacy';
+  return 'unknown';
+}
 
 type CompletionPreferences = {
   badge: boolean;
@@ -1061,6 +1074,7 @@ export default function CodexFlowManagerUI() {
   const [locale, setLocale] = useState<string>("en");
   const [legacyResumePrompt, setLegacyResumePrompt] = useState<LegacyResumePrompt | null>(null);
   const [legacyResumeLoading, setLegacyResumeLoading] = useState(false);
+  const [blockingNotice, setBlockingNotice] = useState<BlockingNotice | null>(null);
 
   // 命令输入改为 Chips + 草稿：按 Tab 隔离
   const [chipsByTab, setChipsByTab] = useState<Record<string, PathChip[]>>({});
@@ -1475,8 +1489,9 @@ export default function CodexFlowManagerUI() {
           preview: (typeof h.preview === 'string' ? String(h.preview) : undefined),
           messages: [],
           filePath: h.filePath,
-          resumeMode: h.resumeMode === 'modern' ? 'modern' : 'legacy',
+          resumeMode: normalizeResumeMode(h.resumeMode),
           resumeId: typeof h.resumeId === 'string' ? h.resumeId : undefined,
+          runtimeShell: h.runtimeShell === 'windows' ? 'windows' : (h.runtimeShell === 'wsl' ? 'wsl' : 'unknown'),
         }));
         setHistorySessions(mapped as any);
         setSessionPreviewMap((cur) => {
@@ -1556,8 +1571,9 @@ export default function CodexFlowManagerUI() {
         preview: (typeof it.preview === 'string' ? it.preview : undefined),
         messages: [],
         filePath: String(it.filePath || ''),
-        resumeMode: (typeof it.resumeMode === 'string' && it.resumeMode === 'modern') ? 'modern' : 'legacy',
+        resumeMode: normalizeResumeMode(it.resumeMode),
         resumeId: typeof it.resumeId === 'string' ? it.resumeId : undefined,
+        runtimeShell: it.runtimeShell === 'windows' ? 'windows' : (it.runtimeShell === 'wsl' ? 'wsl' : 'unknown'),
       };
     };
     const upsertSessions = (items: any[]) => {
@@ -1578,7 +1594,8 @@ export default function CodexFlowManagerUI() {
             prev.rawDate !== s.rawDate ||
             prev.preview !== s.preview ||
             prev.resumeMode !== s.resumeMode ||
-            prev.resumeId !== s.resumeId
+            prev.resumeId !== s.resumeId ||
+            prev.runtimeShell !== s.runtimeShell
           ) {
             mp.set(key, s);
             changed = true;
@@ -2197,8 +2214,20 @@ export default function CodexFlowManagerUI() {
     }
   };
 
-  const requestResume = async (filePath?: string, mode: ResumeExecutionMode = 'internal', options?: { skipPrompt?: boolean; forceLegacyCli?: boolean }): Promise<'prompt' | 'ok' | 'error'> => {
+  const requestResume = async (filePath?: string, mode: ResumeExecutionMode = 'internal', options?: { skipPrompt?: boolean; forceLegacyCli?: boolean }): Promise<'prompt' | 'ok' | 'blocked-shell' | 'error'> => {
     if (!filePath) return 'error';
+    const session = findSessionForFile(filePath);
+    const sessionMode = session?.resumeMode || 'unknown';
+    const enforceShell = sessionMode !== 'legacy' && !options?.forceLegacyCli;
+    if (enforceShell) {
+      const sessionShell = session?.runtimeShell === 'windows' ? 'windows' : (session?.runtimeShell === 'wsl' ? 'wsl' : null);
+      if (sessionShell && sessionShell !== terminalMode) {
+        const expected = toShellLabel(sessionShell);
+        const current = toShellLabel(terminalMode);
+        setBlockingNotice({ type: 'shell-mismatch', expected, current });
+        return 'blocked-shell';
+      }
+    }
     const needPrompt = !options?.forceLegacyCli && !options?.skipPrompt && isLegacyHistory(filePath);
     if (needPrompt) {
       setLegacyResumePrompt({ filePath, mode });
@@ -2220,10 +2249,11 @@ export default function CodexFlowManagerUI() {
     setLegacyResumeLoading(true);
     try {
       const status = await requestResume(payload.filePath, payload.mode, { skipPrompt: true, forceLegacyCli: true });
+      if (status === 'blocked-shell') return;
       if (status === 'error') {
         if (payload.mode === 'external') {
-          const env = terminalMode === 'windows' ? 'PowerShell' : 'WSL';
-          try { alert(String(t('projects:cannotOpenExternalConsoleWith', { env }))); } catch {}
+          const env = toShellLabel(terminalMode);
+          setBlockingNotice({ type: 'external-console', env });
         } else {
           console.warn('legacy resume failed');
         }
@@ -2440,8 +2470,8 @@ export default function CodexFlowManagerUI() {
                   if (!it || !it.filePath || !selectedProject) { setHistoryCtxMenu((m) => ({ ...m, show: false })); return; }
                   const status = await requestResume(it.filePath, 'external');
                   if (status === 'error') {
-                    const env = terminalMode === 'windows' ? 'PowerShell' : 'WSL';
-                    try { alert(String(t('projects:cannotOpenExternalConsoleWith', { env }))); } catch {}
+                    const env = toShellLabel(terminalMode);
+                    setBlockingNotice({ type: 'external-console', env });
                   }
                 } catch (e) {
                   console.warn('resume external failed', e);
@@ -2607,7 +2637,10 @@ export default function CodexFlowManagerUI() {
                   try {
                     if (!filePath || !selectedProject) return;
                     const status = await requestResume(filePath, 'external');
-                    if (status === 'error') { try { alert(String(t('projects:cannotOpenExternalConsole'))); } catch {} }
+                    if (status === 'error') {
+                      const env = toShellLabel(terminalMode);
+                      setBlockingNotice({ type: 'external-console', env });
+                    }
                   } catch (e) {
                     console.warn('resume external panel failed', e);
                   }
@@ -2658,8 +2691,8 @@ export default function CodexFlowManagerUI() {
                     const res: any = await (window.host.utils as any).openExternalConsole({ wslPath: proj.wslPath, winPath: proj.winPath, distro: wslDistro, startupCmd: codexCmd });
                     if (!(res && res.ok)) throw new Error(res?.error || 'failed');
                   } catch (e) {
-                    const env = terminalMode === 'windows' ? 'PowerShell' : 'WSL';
-                    alert(String(t('projects:cannotOpenExternalConsoleWith', { env })));
+                    const env = toShellLabel(terminalMode);
+                    setBlockingNotice({ type: 'external-console', env });
                   }
                 }
                 setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
@@ -2813,6 +2846,49 @@ export default function CodexFlowManagerUI() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {blockingNotice ? (
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setBlockingNotice(null);
+          }}
+        >
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>
+                {blockingNotice.type === 'shell-mismatch'
+                  ? t('history:resumeShellMismatchTitle')
+                  : t('projects:externalConsoleBlockedTitle')}
+              </DialogTitle>
+              <DialogDescription>
+                {blockingNotice.type === 'shell-mismatch'
+                  ? t('history:resumeShellMismatch', { expected: blockingNotice.expected, current: blockingNotice.current })
+                  : t('projects:externalConsoleBlockedDesc', { env: blockingNotice.env })}
+              </DialogDescription>
+            </DialogHeader>
+            {blockingNotice.type === 'shell-mismatch' ? (
+              <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500">{t('history:resumeShellMismatchExpectedLabel')}</span>
+                  <span className="font-medium">{blockingNotice.expected}</span>
+                </div>
+                <div className="mt-1 flex items-center justify-between">
+                  <span className="text-slate-500">{t('history:resumeShellMismatchCurrentLabel')}</span>
+                  <span className="font-medium">{blockingNotice.current}</span>
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-slate-700">
+                <span>{t('projects:externalConsoleBlockedHint')}</span>
+              </div>
+            )}
+            <div className="flex justify-end gap-2 pt-4">
+              <Button onClick={() => setBlockingNotice(null)}>{t('common:common.ok')}</Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      ) : null}
 
       <Dialog
         open={!!legacyResumePrompt}
@@ -3049,6 +3125,7 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
       selectedSession.resumeId || "",
       selectedSession.preview || "",
       selectedSession.rawDate || "",
+      selectedSession.runtimeShell || "",
     ].join("|");
   }, [selectedSession]);
 

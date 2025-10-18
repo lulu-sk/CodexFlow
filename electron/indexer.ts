@@ -7,8 +7,8 @@ import path from "node:path";
 import { BrowserWindow } from "electron";
 import { perfLogger } from "./log";
 import { getSessionsRootCandidatesFastAsync, isUNCPath, uncToWsl } from "./wsl";
-import { detectResumeInfo } from "./history";
-import type { HistorySummary, Message } from "./history";
+import { detectResumeInfo, detectRuntimeShell, detectRuntimeShellFromContent } from "./history";
+import type { HistorySummary, Message, RuntimeShell } from "./history";
 
 // 仅在存在时使用 chokidar；否则跳过监听
 let chokidar: any = null;
@@ -28,6 +28,7 @@ type Details = {
   preview?: string;
   resumeMode?: 'modern' | 'legacy' | 'unknown';
   resumeId?: string;
+  runtimeShell?: RuntimeShell;
 };
 
 type PersistIndex = {
@@ -42,14 +43,14 @@ type PersistDetails = {
   savedAt: number;
 };
 
-const VERSION = "v5";
+const VERSION = "v6";
 
 function getUserDataDir(): string {
   try { const { app } = require("electron"); return app.getPath("userData"); } catch { return process.cwd(); }
 }
 
-function indexPath(): string { return path.join(getUserDataDir(), "history.index.v5.json"); }
-function detailsPath(): string { return path.join(getUserDataDir(), "history.details.v5.json"); }
+function indexPath(): string { return path.join(getUserDataDir(), "history.index.v6.json"); }
+function detailsPath(): string { return path.join(getUserDataDir(), "history.details.v6.json"); }
 // ---- Minimal debug (opt-in) ----
 function idxDbgEnabled(): boolean {
   try { if (String((process as any).env.CODEX_INDEXER_DEBUG || '').trim() === '1') return true; } catch {}
@@ -289,8 +290,11 @@ async function parseSummary(fp: string, stat: fs.Stats): Promise<IndexSummary> {
   let dbgSrc: string = "";
   let resumeMode: 'modern' | 'legacy' | 'unknown' = 'unknown';
   let resumeId: string | undefined = undefined;
+  let runtimeShell: RuntimeShell = 'unknown';
+  let parsedFirst: any = null;
   try {
     const obj = JSON.parse(first);
+    parsedFirst = obj;
     try {
       const info = detectResumeInfo(obj);
       if (info.mode) resumeMode = info.mode;
@@ -312,6 +316,8 @@ async function parseSummary(fp: string, stat: fs.Stats): Promise<IndexSummary> {
       }
     }
   } catch {}
+  const shellHint = detectRuntimeShellFromContent(parsedFirst, prefix);
+  if (shellHint !== 'unknown') runtimeShell = shellHint;
   // 进一步从前缀中尝试提取 CWD
   if (!cwd) {
     try {
@@ -407,7 +413,8 @@ async function parseSummary(fp: string, stat: fs.Stats): Promise<IndexSummary> {
   try { if (idxDbgEnabled() && idxDbgMatch(fp)) idxLog(`summary file='${fp}' id='${id}' src=${dbgSrc} cwd='${cwd}' dirKey='${dirKey}'`); } catch {}
   // 预览字段由详情解析阶段统一生成（避免与详情筛选逻辑重复/偏差）
   if (!resumeId) resumeId = id;
-  return { id, title, date, filePath: fp, rawDate, dirKey, resumeMode, resumeId };
+  if (runtimeShell === 'unknown') runtimeShell = detectRuntimeShell(fp);
+  return { id, title, date, filePath: fp, rawDate, dirKey, resumeMode, resumeId, runtimeShell };
 }
 
 async function parseDetails(fp: string, stat: fs.Stats): Promise<Details> {
@@ -422,6 +429,7 @@ async function parseDetails(fp: string, stat: fs.Stats): Promise<Details> {
   let preview: string | undefined = undefined;
   let resumeMode: 'modern' | 'legacy' | 'unknown' = 'unknown';
   let resumeId: string | undefined = undefined;
+  let runtimeShell: RuntimeShell = 'unknown';
   let prefixAcc: string = ""; // 前缀累积用于提取 <cwd> 或 CWD 行
   const chunk = 256 * 1024;
   // 说明类去重：会话头 instructions 与用户 <user_instructions> 可能重复
@@ -474,6 +482,10 @@ async function parseDetails(fp: string, stat: fs.Stats): Promise<Details> {
           if (!line) continue;
           try {
             const obj = JSON.parse(line);
+            if (runtimeShell === 'unknown') {
+              const hint = detectRuntimeShellFromContent(obj, prefixAcc);
+              if (hint !== 'unknown') runtimeShell = hint;
+            }
             if (lineIndex === 0) {
               try {
                 const info = detectResumeInfo(obj);
@@ -688,7 +700,21 @@ async function parseDetails(fp: string, stat: fs.Stats): Promise<Details> {
         }
       };
 
-      rs.on('data', (c) => { buf += c; prefixAcc += c; if (prefixAcc.length > 128 * 1024) prefixAcc = prefixAcc.slice(prefixAcc.length - 128 * 1024); const i = buf.lastIndexOf('\n'); if (i >= 0) { const seg = buf.slice(0, i); buf = buf.slice(i + 1); flushLines(seg); } });
+      rs.on('data', (c) => {
+        buf += c;
+        prefixAcc += c;
+        if (prefixAcc.length > 128 * 1024) prefixAcc = prefixAcc.slice(prefixAcc.length - 128 * 1024);
+        if (runtimeShell === 'unknown') {
+          const hint = detectRuntimeShellFromContent(undefined, prefixAcc);
+          if (hint !== 'unknown') runtimeShell = hint;
+        }
+        const i = buf.lastIndexOf('\n');
+        if (i >= 0) {
+          const seg = buf.slice(0, i);
+          buf = buf.slice(i + 1);
+          flushLines(seg);
+        }
+      });
       rs.on('end', () => {
         if (buf) flushLines(buf);
         // 从前缀累积中提取 CWD（仅一次正则匹配）
@@ -726,16 +752,19 @@ async function parseDetails(fp: string, stat: fs.Stats): Promise<Details> {
           }
         } catch {}
         if (cwd) dirKey = dirKeyFromCwd(cwd); else dirKey = dirKeyOf(fp);
+        if (runtimeShell === 'unknown') runtimeShell = detectRuntimeShell(fp);
         const finalResumeId = resumeId || id;
-        resolve({ id, title, date, messages, skippedLines: skipped, rawDate, cwd, dirKey, preview, resumeMode, resumeId: finalResumeId });
+        resolve({ id, title, date, messages, skippedLines: skipped, rawDate, cwd, dirKey, preview, resumeMode, resumeId: finalResumeId, runtimeShell });
       });
       rs.on('error', () => {
+        if (runtimeShell === 'unknown') runtimeShell = detectRuntimeShell(fp);
         const finalResumeId = resumeId || id;
-        resolve({ id, title, date, messages, skippedLines: skipped, rawDate, cwd, dirKey, preview, resumeMode, resumeId: finalResumeId });
+        resolve({ id, title, date, messages, skippedLines: skipped, rawDate, cwd, dirKey, preview, resumeMode, resumeId: finalResumeId, runtimeShell });
       });
     } catch {
+      if (runtimeShell === 'unknown') runtimeShell = detectRuntimeShell(fp);
       const finalResumeId = resumeId || id;
-      resolve({ id, title, date, messages, skippedLines: skipped, resumeMode, resumeId: finalResumeId });
+      resolve({ id, title, date, messages, skippedLines: skipped, resumeMode, resumeId: finalResumeId, runtimeShell });
     }
   });
 }
@@ -747,14 +776,22 @@ if (!g.__indexer.retries) g.__indexer.retries = new Map<string, { count: number;
 
 export function getIndexedSummaries(): IndexSummary[] {
   const ix: PersistIndex = g.__indexer.index || { version: VERSION, files: {}, savedAt: 0 };
-  return Object.values(ix.files).map((x) => x.summary).sort((a, b) => b.date - a.date);
+  return Object.values(ix.files)
+    .map((x) => {
+      const summary = x.summary;
+      const shell = summary.runtimeShell && summary.runtimeShell !== 'unknown' ? summary.runtimeShell : detectRuntimeShell(summary.filePath);
+      return { ...summary, runtimeShell: shell };
+    })
+    .sort((a, b) => b.date - a.date);
 }
 
 export function getIndexedDetails(filePath: string): Details | null {
   const det: PersistDetails = g.__indexer.details || { version: VERSION, files: {}, savedAt: 0 };
   const k = canonicalKey(filePath);
   const v = det.files[k]?.details;
-  return v || null;
+  if (!v) return null;
+  const shell = v.runtimeShell && v.runtimeShell !== 'unknown' ? v.runtimeShell : detectRuntimeShell(filePath);
+  return { ...v, runtimeShell: shell };
 }
 
 export async function startHistoryIndexer(getWindow: () => BrowserWindow | null) {
@@ -840,6 +877,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
               preview: details.preview,
               resumeMode: details.resumeMode,
               resumeId: details.resumeId,
+              runtimeShell: details.runtimeShell && details.runtimeShell !== 'unknown' ? details.runtimeShell : detectRuntimeShell(fp),
             } as any;
             det.files[k] = { sig, details };
             ix.files[k] = { sig, summary };
@@ -885,6 +923,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
             preview: details.preview,
             resumeMode: details.resumeMode,
             resumeId: details.resumeId,
+            runtimeShell: details.runtimeShell && details.runtimeShell !== 'unknown' ? details.runtimeShell : detectRuntimeShell(fp),
           } as any;
           ix.files[k] = { sig, summary };
           updatedSummaries++;
@@ -927,6 +966,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
               preview: details.preview,
               resumeMode: details.resumeMode,
               resumeId: details.resumeId,
+              runtimeShell: details.runtimeShell && details.runtimeShell !== 'unknown' ? details.runtimeShell : detectRuntimeShell(fp),
             } as any;
             ix.files[k] = { sig, summary };
             ix.savedAt = Date.now(); det.savedAt = Date.now(); saveIndex(ix); saveDetails(det);
@@ -1039,6 +1079,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
                 preview: details.preview,
                 resumeMode: details.resumeMode,
                 resumeId: details.resumeId,
+                runtimeShell: details.runtimeShell && details.runtimeShell !== 'unknown' ? details.runtimeShell : detectRuntimeShell(fp),
               } as any;
               ix.files[k] = { sig, summary };
               ix.savedAt = Date.now(); det.savedAt = Date.now();

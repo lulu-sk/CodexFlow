@@ -740,6 +740,7 @@ ipcMain.handle('history.list', async (_e, args: { projectWslPath?: string; proje
         preview: (x as any).preview,
         resumeMode: (x as any).resumeMode,
         resumeId: (x as any).resumeId,
+        runtimeShell: (x as any).runtimeShell,
       }));
       return { ok: true, sessions: mapped };
     }
