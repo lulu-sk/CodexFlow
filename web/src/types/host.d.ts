@@ -12,6 +12,12 @@ export type AppSettings = {
   sendMode?: 'write_only' | 'write_and_enter';
   locale?: string;
   projectPathStyle?: 'absolute' | 'relative';
+  /** 任务完成提醒偏好 */
+  notifications?: {
+    badge?: boolean;
+    system?: boolean;
+    sound?: boolean;
+  };
 };
 
 export type Project = {
@@ -136,6 +142,12 @@ export interface CodexAPI {
   getRateLimit(): Promise<{ ok: boolean; snapshot?: CodexRateLimitSnapshot; error?: string }>;
 }
 
+export interface NotificationsAPI {
+  setBadgeCount(count: number): void;
+  showAgentCompletion(payload: { tabId: string; tabName?: string; projectName?: string; preview?: string; title: string; body: string; appTitle?: string }): void;
+  onFocusTab?(handler: (payload: { tabId: string }) => void): () => void;
+}
+
 export interface UtilsAPI {
   perfLog(text: string): Promise<{ ok: boolean; error?: string }>;
   copyText(text: string): Promise<{ ok: boolean; error?: string }>;
@@ -182,6 +194,7 @@ declare global {
       utils: UtilsAPI;
       i18n: I18nAPI;
       codex: CodexAPI;
+      notifications: NotificationsAPI;
     };
   }
 }

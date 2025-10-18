@@ -40,5 +40,11 @@
   },
   "codexErrors": {
     "cliExited": "Error. Try switching to another WSL distribution, refresh, then save."
+  },
+  "notifications": {
+    "taskCompleted": "{tab} completed",
+    "taskCompletedWithProject": "{tab} · {project}",
+    "openTabHint": "Click to return to the agent tab.",
+    "untitledTab": "Agent"
   }
 }

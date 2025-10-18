@@ -40,5 +40,11 @@
   },
   "codexErrors": {
     "cliExited": "错误，请尝试更换刷新WSL发行版并保存"
+  },
+  "notifications": {
+    "taskCompleted": "{tab} 已完成",
+    "taskCompletedWithProject": "{tab} · {project} 已完成",
+    "openTabHint": "点击查看对应的终端标签页。",
+    "untitledTab": "代理"
   }
 }
