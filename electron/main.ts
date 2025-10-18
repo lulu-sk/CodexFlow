@@ -19,6 +19,7 @@ import fileIndex from "./fileIndex";
 import images from "./images";
 import { installInputContextMenu } from "./contextMenu";
 import { CodexBridge, type CodexBridgeOptions } from "./codex/bridge";
+import { ensureAllCodexNotifications } from "./codex/config";
 import storage from "./storage";
 import { registerNotificationIPC } from "./notifications";
 
@@ -397,6 +398,7 @@ if (!gotLock) {
     try { perfLogger.log(`[BOOT] Using projects implementation: ${PROJECTS_IMPL}`); } catch {}
     if (DIAG) { try { perfLogger.log(`[BOOT] userData=${app.getPath('userData')}`); } catch {} }
     try { await ensureSettingsAutodetect(); } catch {}
+    try { await ensureAllCodexNotifications(); } catch {}
     try { i18n.registerI18nIPC(); } catch {}
     if (DIAG) { try { perfLogger.log(`[BOOT] Locale: ${i18n.getCurrentLocale?.()}`); } catch {} }
     // 构建应用菜单（包含 Toggle Developer Tools）
@@ -1322,17 +1324,20 @@ ipcMain.handle("codex.rateLimit", async () => {
 // Settings
 ipcMain.handle('settings.get', async () => {
   try { await ensureSettingsAutodetect(); } catch {}
+  try { await ensureAllCodexNotifications(); } catch {}
   return settings.getSettings();
 });
 
-ipcMain.handle('settings.update', (_e, partial: any) => {
+ipcMain.handle('settings.update', async (_e, partial: any) => {
   try {
     if (partial && typeof partial.locale === 'string' && partial.locale.trim()) {
       // 使用 i18n 通道更新并广播语言，同时继续保存其它设置字段
       try { i18n.setCurrentLocale(String(partial.locale)); } catch {}
     }
   } catch {}
-  return settings.updateSettings(partial || {});
+  const next = settings.updateSettings(partial || {});
+  try { await ensureAllCodexNotifications(); } catch {}
+  return next;
 });
 
 // Read-only: return the .codex/sessions roots that are currently in use (or can be detected quickly)
