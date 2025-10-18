@@ -24,6 +24,7 @@
     "unavailable": "Usage unavailable",
     "title": "Usage",
     "summary": "Used {percent}",
+    "summaryWithWindow": "Used {percent} ({window})",
     "primary": "Primary quota",
     "secondary": "Backup quota",
     "reset": "Resets {time}",

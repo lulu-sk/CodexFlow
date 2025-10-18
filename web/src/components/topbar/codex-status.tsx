@@ -11,7 +11,9 @@ import {
   computeRefreshInterval,
   formatPercent,
   formatResetTime,
+  formatUsageSummaryLabel,
   formatWindowLabel,
+  resolveDominantUsageWindow,
   translateRateLimitError,
   translateCodexBridgeError,
 } from "@/lib/codex-status";
@@ -183,6 +185,10 @@ const CodexUsageHoverButton: React.FC<{ className?: string; terminalMode?: "wsl"
     return () => window.clearTimeout(timer);
   }, [rateState.data, reloadRate]);
 
+  const dominantWindow = useMemo(
+    () => resolveDominantUsageWindow(rateState.data ?? null),
+    [rateState.data],
+  );
   const percentUsed = useMemo(() => {
     if (!rateState.data) return null;
     const values = [
@@ -196,11 +202,11 @@ const CodexUsageHoverButton: React.FC<{ className?: string; terminalMode?: "wsl"
     ? t("common:codexUsage.loading", "加载用量…")
     : rateState.error
       ? t("common:codexUsage.unavailable", "用量不可用")
-      : percentUsed == null
-        ? t("common:codexUsage.title", "用量")
-        : t("common:codexUsage.summary", {
-            percent: formatPercent(percentUsed),
-          });
+      : dominantWindow
+        ? formatUsageSummaryLabel(dominantWindow, dominantWindow.usedPercent ?? null, t)
+        : percentUsed != null
+          ? formatUsageSummaryLabel(null, percentUsed, t)
+          : t("common:codexUsage.title", "用量");
 
   return (
     <div

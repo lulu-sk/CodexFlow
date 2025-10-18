@@ -56,6 +56,53 @@ export function formatWindowLabel(
   return t("common:codexUsage.windowMinutes", { count: Math.max(1, Math.ceil(minutes)) });
 }
 
+export function resolveDominantUsageWindow(
+  snapshot: CodexRateLimitSnapshot | null | undefined,
+): CodexRateLimitWindow | null {
+  if (!snapshot) return null;
+  const candidates: Array<{ window: CodexRateLimitWindow; priority: number }> = [];
+  if (snapshot.primary) candidates.push({ window: snapshot.primary, priority: 0 });
+  if (snapshot.secondary) candidates.push({ window: snapshot.secondary, priority: 1 });
+  if (candidates.length === 0) return null;
+  return candidates
+    .reduce((best, current) => {
+      if (!best) return current;
+      const bestPercent =
+        typeof best.window.usedPercent === "number" && Number.isFinite(best.window.usedPercent)
+          ? best.window.usedPercent
+          : -Infinity;
+      const currentPercent =
+        typeof current.window.usedPercent === "number" &&
+        Number.isFinite(current.window.usedPercent)
+          ? current.window.usedPercent
+          : -Infinity;
+      if (currentPercent > bestPercent) return current;
+      if (currentPercent === bestPercent && current.priority < best.priority) return current;
+      return best;
+    })
+    .window;
+}
+
+export function formatUsageSummaryLabel(
+  window: CodexRateLimitWindow | null | undefined,
+  percent: number | null | undefined,
+  t: TFunction,
+): string {
+  const percentLabel = formatPercent(percent);
+  const windowMinutes = window?.windowMinutes;
+  const hasWindow = typeof windowMinutes === "number" && Number.isFinite(windowMinutes);
+  if (hasWindow) {
+    const windowLabel = formatWindowLabel(window, t);
+    return t("common:codexUsage.summaryWithWindow", {
+      percent: percentLabel,
+      window: windowLabel,
+    });
+  }
+  return t("common:codexUsage.summary", {
+    percent: percentLabel,
+  });
+}
+
 function resolveLocale(language: string | undefined): string | undefined {
   if (!language) return undefined;
   try {
