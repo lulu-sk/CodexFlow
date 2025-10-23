@@ -38,12 +38,12 @@ export function TabsTrigger({ value, className, children, ...props }: React.Butt
   );
 }
 
-export function TabsContent({ value, className, children }: { value: string; className?: string; children: React.ReactNode }) {
+export function TabsContent({ value, className, children, onContextMenu }: { value: string; className?: string; children: React.ReactNode; onContextMenu?: React.MouseEventHandler<HTMLDivElement> }) {
   const ctx = React.useContext(TabsContext);
   // 保留子树挂载，仅通过隐藏切换可见性，从而记忆滚动等内部状态
   const active = ctx.value === value;
   return (
-    <div className={cn(active ? '' : 'hidden', className)} aria-hidden={!active}>
+    <div className={cn(active ? '' : 'hidden', className)} aria-hidden={!active} onContextMenu={onContextMenu}>
       {children}
     </div>
   );

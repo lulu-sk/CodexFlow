@@ -37,10 +37,16 @@
     "windowMinutes": "{count, plural, one {# minute} other {# minutes}}",
     "empty": "No usage data",
     "errorFetchFailed": "Unable to fetch rate limit",
-    "errorNotLoggedIn": "Not signed in to ChatGPT, unable to fetch rate limit"
+    "errorNotLoggedIn": "Not signed in to ChatGPT, unable to fetch rate limit",
+    "errorAccountInfoFailed": "Unable to load account information"
   },
   "codexErrors": {
-    "cliExited": "Error. Try switching to another WSL distribution, refresh, then save."
+    "cliExited": "Error. Try switching to another WSL distribution, refresh, then save.",
+    "cliNotFound": "Codex CLI not found. Please try:\n1. npm install -g @openai/codex\n2. Or install Cursor/Windsurf extension\n3. Or set CODEXFLOW_CODEX_BIN environment variable",
+    "cliNotExecutable": "Codex CLI is not executable",
+    "refreshTokenFailed": "Unable to refresh ChatGPT login status",
+    "wslNotSupported": "WSL mode is not supported on this platform",
+    "wslPathConversionFailed": "Unable to convert Codex CLI path for WSL usage"
   },
   "notifications": {
     "taskCompleted": "{tab} completed",

@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
-import { app, BrowserWindow, ipcMain, dialog, clipboard, shell, Menu, screen } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, clipboard, shell, Menu, screen, session } from 'electron';
 import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import { promises as fsp } from 'node:fs';
 import path from 'node:path';
+import { ProxyAgent, setGlobalDispatcher, Agent } from 'undici';
 import { PTYManager, setTermDebug } from "./pty.js";
 import projects, { IMPLEMENTATION_NAME as PROJECTS_IMPL } from "./projects/index";
 import history from "./history";
@@ -89,6 +90,113 @@ function ensureCodexBridge(): CodexBridge {
     codexBridges.set(key, bridge);
   }
   return bridge;
+}
+
+// 统一配置/更新全局代理（支持：自定义/系统代理；并同步给 CLI 及 WSL 环境变量）
+let appliedProxySig = "";
+function redactProxy(uri: string): string {
+  try {
+    const u = new URL(uri);
+    const auth = u.username || u.password ? "***@" : "";
+    return `${u.protocol}//${auth}${u.hostname}${u.port ? `:${u.port}` : ""}`;
+  } catch {
+    return uri.replace(/\/\/([^@]+)@/, "//***@");
+  }
+}
+
+function chooseFromElectronProxyString(spec: string): string | null {
+  // 参考 Chromium 语法：
+  // 返回形如 "DIRECT"、"PROXY host:port; DIRECT"、"SOCKS5 host:port; PROXY ..."
+  const parts = String(spec || "").split(";").map((s) => s.trim().toUpperCase());
+  // 优先 SOCKS5/SOCKS
+  for (const p of parts) {
+    const m = p.match(/^SOCKS5\s+([^;\s]+)$/) || p.match(/^SOCKS\s+([^;\s]+)$/);
+    if (m && m[1]) return `socks5://${m[1]}`;
+  }
+  // 再尝试 HTTP 代理（PROXY）
+  for (const p of parts) {
+    const m = p.match(/^PROXY\s+([^;\s]+)$/);
+    if (m && m[1]) return `http://${m[1]}`;
+  }
+  return null;
+}
+
+async function detectSystemProxyUrl(): Promise<string | null> {
+  try {
+    const s = session.defaultSession;
+    if (!s) return null;
+    const spec = await s.resolveProxy('https://chatgpt.com');
+    const uri = chooseFromElectronProxyString(spec);
+    return uri;
+  } catch {
+    return null;
+  }
+}
+
+async function configureOrUpdateProxy(): Promise<void> {
+  try {
+    const cfg = settings.getSettings() as any;
+    const net = (cfg && cfg.network) ? cfg.network : {};
+    let uri: string | null = null;
+    let noProxy = String(net.noProxy || process.env.NO_PROXY || '').trim();
+
+    if (net.proxyEnabled === false) {
+      // 显式关闭代理
+      setGlobalDispatcher(new Agent());
+      delete (process as any).env.CODEXFLOW_PROXY;
+      delete (process as any).env.HTTPS_PROXY;
+      delete (process as any).env.HTTP_PROXY;
+      if (noProxy) (process as any).env.NO_PROXY = noProxy; else delete (process as any).env.NO_PROXY;
+      const sig = `off|${noProxy}`;
+      if (sig !== appliedProxySig) {
+        appliedProxySig = sig;
+        try { perfLogger.log(`[codex] Proxy disabled`); } catch {}
+      }
+      return;
+    }
+
+    const mode = (net.proxyMode as 'system' | 'custom') || 'system';
+    if (mode === 'custom') {
+      const raw = String(net.proxyUrl || '').trim();
+      if (raw) {
+        try { uri = new URL(raw).toString(); } catch { uri = raw; }
+      }
+    }
+    if (!uri) {
+      // 环境变量回退
+      const envRaw = (process.env.CODEXFLOW_PROXY || process.env.HTTPS_PROXY || process.env.HTTP_PROXY || '').trim();
+      if (envRaw) uri = envRaw;
+    }
+    if (!uri && mode === 'system') {
+      uri = await detectSystemProxyUrl();
+    }
+
+    if (!uri) {
+      // 未检测到代理：使用直连
+      setGlobalDispatcher(new Agent());
+      const sig = `direct|${noProxy}`;
+      if (sig !== appliedProxySig) {
+        appliedProxySig = sig;
+        try { perfLogger.log(`[codex] Proxy: DIRECT`); } catch {}
+      }
+      return;
+    }
+
+    // 应用代理并同步环境变量（供子进程与 WSL 使用）
+    setGlobalDispatcher(new ProxyAgent(uri));
+    (process as any).env.CODEXFLOW_PROXY = uri;
+    (process as any).env.HTTPS_PROXY = uri;
+    (process as any).env.HTTP_PROXY = uri;
+    if (noProxy) (process as any).env.NO_PROXY = noProxy; else delete (process as any).env.NO_PROXY;
+
+    const sig = `${uri}|${noProxy}`;
+    if (sig !== appliedProxySig) {
+      appliedProxySig = sig;
+      try { perfLogger.log(`[codex] Using proxy: ${redactProxy(uri)}${noProxy ? ` (NO_PROXY=${noProxy})` : ''}`); } catch {}
+    }
+  } catch (err) {
+    try { perfLogger.log(`[codex] Proxy setup failed: ${err instanceof Error ? err.message : String(err)}`); } catch {}
+  }
 }
 
 function rectsOverlap(a: Electron.Rectangle, b: Electron.Rectangle): boolean {
@@ -393,6 +501,8 @@ if (!gotLock) {
   });
 
   app.whenReady().then(async () => {
+    // 统一配置/更新全局代理（支持 Codex、fetch 等所有 undici 请求）
+    try { await configureOrUpdateProxy(); } catch {}
     const appUserModelId = setupWindowsNotifications();
     registerProtocol();
     try { perfLogger.log(`[BOOT] Using projects implementation: ${PROJECTS_IMPL}`); } catch {}
@@ -1348,6 +1458,8 @@ ipcMain.handle('settings.update', async (_e, partial: any) => {
     }
   } catch {}
   const next = settings.updateSettings(partial || {});
+  // 设置更新后尝试刷新代理
+  try { await configureOrUpdateProxy(); } catch {}
   try { await ensureAllCodexNotifications(); } catch {}
   return next;
 });

@@ -5,9 +5,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, execFileSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { ProxyAgent, setGlobalDispatcher } from "undici";
 import { perfLogger } from "../log";
 import { winToWsl } from "../wsl";
 
@@ -25,8 +24,8 @@ export type CodexAccountInfo = {
 
 export type CodexRateLimitWindow = {
   usedPercent: number | null;
-  windowMinutes: number | null;
-  resetsInSeconds: number | null;
+  limitWindowSeconds: number | null;  // 原始字段（秒），UI 层转换为分钟/小时/天
+  resetAfterSeconds: number | null;   // 原始字段，统一命名
 };
 
 export type CodexRateLimitSnapshot = {
@@ -52,34 +51,7 @@ type AuthPayload = {
   "https://api.openai.com/profile"?: { email?: string };
 };
 
-let proxyConfigured = false;
-function configureProxyIfNeeded() {
-  if (proxyConfigured) return;
-  proxyConfigured = true;
-  const raw =
-    process.env.CODEXFLOW_PROXY ??
-    process.env.HTTPS_PROXY ??
-    process.env.HTTP_PROXY ??
-    "";
-  if (!raw) return;
-  try {
-    setGlobalDispatcher(new ProxyAgent(raw));
-    let printable = raw;
-    try {
-      const parsed = new URL(raw);
-      printable = `${parsed.protocol}//${parsed.hostname}${
-        parsed.port ? `:${parsed.port}` : ""
-      }`;
-    } catch {
-      printable = raw.replace(/\/\/([^@]+)@/, "//***@");
-    }
-    perfLogger.log(`[codex] Using proxy: ${printable}`);
-  } catch (err) {
-    perfLogger.log(
-      `[codex] Proxy setup failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-}
+// 代理配置已移至 main.ts 应用初始化阶段统一设置
 
 function base64UrlDecode(input: string): string {
   return Buffer.from(input, "base64url").toString("utf8");
@@ -108,10 +80,134 @@ function compareSemver(a: string, b: string): number {
   return 0;
 }
 
-function resolveBinaryPath(mode: "native" | "wsl"): string {
-  const hint = process.env.CODEXFLOW_CODEX_BIN;
-  if (hint && fs.existsSync(hint)) return hint;
+/**
+ * 通过 where.exe 查找 npm 全局安装的 codex，解析脚本定位 vendor 目录
+ */
+function findCodexViaWhereExe(mode: "native" | "wsl"): string | null {
+  if (process.platform !== "win32") return null;
+  
+  try {
+    // 使用 where.exe 查找 codex（极快，C 实现）
+    const output = execFileSync("where.exe", ["codex"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 5000,
+    });
+    
+    const lines = output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    if (lines.length === 0) return null;
+    
+    // 依次尝试每一个 where.exe 的结果，直到成功
+    for (const entry of lines) {
+      const codexPath = entry;
+      if (!fs.existsSync(codexPath)) continue;
 
+      const lower = codexPath.toLowerCase();
+      const isExe = lower.endsWith(".exe");
+      const isCmd = lower.endsWith(".cmd") || lower.endsWith(".bat");
+      const isPs1 = lower.endsWith(".ps1");
+      const isSh = !isExe && !isCmd && !isPs1; // 其他情况按 shell 脚本处理
+
+      // 如果 where.exe 直接指向 vendor 下的二进制，则直接使用
+      if (/node_modules[\\/]@openai[\\/]codex[\\/]vendor[\\/]/i.test(lower)) {
+        // 校验是否与当前模式匹配（WSL 需要 linux 可执行，Windows 需要 exe）
+        if (mode === "wsl" && !isExe) {
+          // 假设为 linux 可执行
+          perfLogger.log(`[codex] Using vendor binary (direct): ${codexPath}`);
+          return codexPath;
+        }
+        if (mode === "native" && isExe) {
+          perfLogger.log(`[codex] Using vendor binary (direct): ${codexPath}`);
+          return codexPath;
+        }
+        // 否则继续尝试下一个
+        continue;
+      }
+
+      // 读取脚本内容，兼容 .cmd/.bat/.ps1/.sh 等
+      let scriptContent = "";
+      try {
+        scriptContent = fs.readFileSync(codexPath, "utf8");
+      } catch {
+        // 某些 .cmd 是二进制或不可读，跳过
+        continue;
+      }
+
+      // 解析脚本中的 node_modules 路径片段（兼容反斜杠与正斜杠）
+      const hasNodeModulesRef = /node_modules[\\\/]@openai[\\\/]codex/i.test(scriptContent);
+      if (!hasNodeModulesRef) continue;
+
+      // 脚本所在目录即为 npm 全局 bin 目录（%~dp0 / $basedir）
+      const binDir = path.dirname(codexPath);
+      const vendorDir = path.join(binDir, "node_modules", "@openai", "codex", "vendor");
+      if (!fs.existsSync(vendorDir)) continue;
+
+      // 在 vendor 目录内自适应选择子目录与可执行文件
+      const selected = selectVendorBinary(vendorDir, mode);
+      if (selected) {
+        perfLogger.log(`[codex] Found via where.exe: ${selected}`);
+        return selected;
+      }
+    }
+  } catch (err) {
+    // where.exe 失败或解析失败，静默降级到插件目录查找
+    if (process.env.CODEX_DIAG_LOG === "1") {
+      perfLogger.log(`[codex] where.exe lookup failed: ${String(err)}`);
+    }
+  }
+  
+  return null;
+}
+
+// 在 npm vendor 目录中选择最匹配的二进制（按架构/平台自适应，而非硬编码子目录名）
+function selectVendorBinary(vendorDir: string, mode: "native" | "wsl"): string | null {
+  try {
+    const entries = fs.readdirSync(vendorDir, { withFileTypes: true }).filter((e) => e.isDirectory());
+    const subdirs = entries.map((e) => e.name);
+    if (subdirs.length === 0) return null;
+
+    const binaryName = mode === "wsl" ? "codex" : "codex.exe";
+    const isWindowsTarget = mode === "native";
+
+    // 归一化匹配 token：架构/平台
+    const arch = process.arch; // 'x64' | 'arm64' | ...
+    const archTokens = arch === "arm64" ? ["aarch64", "arm64"] : ["x86_64", "amd64", "x64"];
+    const osTokens = isWindowsTarget ? ["windows"] : ["linux"];
+
+    // 评分函数：匹配越多分越高；Windows 偏好 msvc；Linux 可微弱偏好 gnu
+    const score = (name: string): number => {
+      const lower = name.toLowerCase();
+      let s = 0;
+      if (archTokens.some((t) => lower.includes(t))) s += 2;
+      if (osTokens.some((t) => lower.includes(t))) s += 2;
+      if (isWindowsTarget && lower.includes("msvc")) s += 1;
+      if (!isWindowsTarget && lower.includes("gnu")) s += 1;
+      return s;
+    };
+
+    const sorted = subdirs
+      .map((name) => ({ name, s: score(name) }))
+      .sort((a, b) => b.s - a.s);
+
+    for (const { name } of sorted) {
+      const candidate = path.join(vendorDir, name, "codex", binaryName);
+      if (fs.existsSync(candidate)) return candidate;
+    }
+
+    // 兜底：尝试遍历一层子目录查找命名为 codex/codex(.exe) 的路径
+    for (const name of subdirs) {
+      const p = path.join(vendorDir, name);
+      const maybe = path.join(p, "codex", binaryName);
+      if (fs.existsSync(maybe)) return maybe;
+    }
+  } catch {}
+  return null;
+}
+
+/**
+ * 从 Cursor/Windsurf 插件目录查找 Codex CLI（后备方案）
+ */
+function findCodexInExtensions(mode: "native" | "wsl"): string | null {
   const targetPlatform = mode === "wsl" ? "linux" : process.platform;
   const binName = targetPlatform === "win32" ? "codex.exe" : "codex";
   const arch =
@@ -142,13 +238,41 @@ function resolveBinaryPath(mode: "native" | "wsl"): string {
         .sort((a, b) => compareSemver(b, a));
       for (const sub of entries) {
         const candidate = path.join(dir, sub, "bin", arch, binName);
-        if (fs.existsSync(candidate)) return candidate;
+        if (fs.existsSync(candidate)) {
+          perfLogger.log(`[codex] Found in extensions: ${candidate}`);
+          return candidate;
+        }
       }
     } catch {
       continue;
     }
   }
-  throw new Error("未找到 Codex CLI，可设置 CODEXFLOW_CODEX_BIN 环境变量指向 codex 可执行文件");
+  
+  return null;
+}
+
+function resolveBinaryPath(mode: "native" | "wsl"): string {
+  // 1. 优先使用环境变量指定的路径
+  const hint = process.env.CODEXFLOW_CODEX_BIN;
+  if (hint && fs.existsSync(hint)) {
+    perfLogger.log(`[codex] Using CODEXFLOW_CODEX_BIN: ${hint}`);
+    return hint;
+  }
+
+  // 2. 尝试通过 where.exe 查找 npm 全局安装的版本（优先）
+  const npmGlobal = findCodexViaWhereExe(mode);
+  if (npmGlobal) return npmGlobal;
+
+  // 3. 降级到插件目录查找（后备方案）
+  const extensionPath = findCodexInExtensions(mode);
+  if (extensionPath) return extensionPath;
+
+  throw new Error(
+    "未找到 Codex CLI。请尝试：\n" +
+    "1. npm install -g @openai/codex\n" +
+    "2. 或安装 Cursor/Windsurf 插件\n" +
+    "3. 或设置 CODEXFLOW_CODEX_BIN 环境变量"
+  );
 }
 
 function pathExistsExecutable(p: string): boolean {
@@ -183,7 +307,6 @@ export class CodexBridge {
   constructor(options: CodexBridgeOptions = {}) {
     this.mode = options.mode ?? "native";
     this.wslDistro = options.wslDistro;
-    configureProxyIfNeeded();
   }
 
   async getAccountInfo(): Promise<CodexAccountInfo> {
@@ -217,11 +340,13 @@ export class CodexBridge {
 
   private mapWindow(raw: any): CodexRateLimitWindow | null {
     if (!raw || typeof raw !== "object") return null;
-    const limitSeconds = Number(raw.limit_window_seconds ?? NaN);
+    // 保留原始字段，UI 层负责单位转换与展示
     return {
       usedPercent: Number.isFinite(raw.used_percent) ? Number(raw.used_percent) : null,
-      windowMinutes: Number.isFinite(limitSeconds) ? limitSeconds / 60 : null,
-      resetsInSeconds: Number.isFinite(raw.reset_after_seconds)
+      limitWindowSeconds: Number.isFinite(raw.limit_window_seconds)
+        ? Number(raw.limit_window_seconds)
+        : null,
+      resetAfterSeconds: Number.isFinite(raw.reset_after_seconds)
         ? Number(raw.reset_after_seconds)
         : null,
     };
@@ -252,7 +377,7 @@ export class CodexBridge {
   private async requestJson(endpoint: string): Promise<any> {
     await this.ensureProcess();
     let token = await this.ensureToken(false);
-    if (!token) throw new Error("尚未登录 ChatGPT，无法获取速率限制");
+    if (!token) throw new Error("Not signed in to ChatGPT, unable to fetch rate limit");
     const maxRetry = 2;
     let attempt = 0;
     let lastErr: unknown = null;
@@ -260,12 +385,12 @@ export class CodexBridge {
       try {
         const url = this.normalizeEndpoint(endpoint);
         const currentToken = token;
-        if (!currentToken) throw new Error("尚未登录 ChatGPT，无法获取速率限制");
+        if (!currentToken) throw new Error("Not signed in to ChatGPT, unable to fetch rate limit");
         const headers = this.buildHeaders(currentToken);
         const res = await fetch(url, { method: "GET", headers });
         if (res.status === 401 && attempt === 0) {
           token = await this.ensureToken(true);
-          if (!token) throw new Error("无法刷新 ChatGPT 登录状态");
+          if (!token) throw new Error("Unable to refresh ChatGPT login status");
           attempt += 1;
           continue;
         }
@@ -284,7 +409,7 @@ export class CodexBridge {
       }
     }
     throw new Error(
-      `请求速率限制失败：${
+      `Rate limit request failed: ${
         lastErr instanceof Error ? lastErr.message : String(lastErr ?? "unknown")
       }`,
     );
@@ -313,7 +438,8 @@ export class CodexBridge {
   private async ensureToken(force: boolean): Promise<string | null> {
     await this.ensureProcess();
     const now = Date.now();
-    if (!force && this.lastToken && now - this.tokenFetchedAt < 120_000) {
+    // 延长缓存到 1 小时，降低请求频率；401 时会强刷
+    if (!force && this.lastToken && now - this.tokenFetchedAt < 3_600_000) {
       return this.lastToken;
     }
     try {
@@ -349,10 +475,10 @@ export class CodexBridge {
   private async startProcess(): Promise<void> {
     const binary = resolveBinaryPath(this.mode);
     if (!fs.existsSync(binary)) {
-      throw new Error(`未找到 codex CLI：${binary}`);
+      throw new Error(`Codex CLI not found: ${binary}`);
     }
     if (this.mode === "native" && !pathExistsExecutable(binary)) {
-      throw new Error(`codex CLI 不可执行：${binary}`);
+      throw new Error(`Codex CLI not executable: ${binary}`);
     }
     const binDir = path.dirname(binary);
     let child: ChildProcessWithoutNullStreams;
@@ -478,7 +604,7 @@ export class CodexBridge {
 
   private writeMessage(payload: Record<string, unknown>) {
     if (!this.proc || !this.proc.stdin || this.proc.stdin.destroyed) {
-      throw new Error("codex 子进程未就绪");
+      throw new Error("Codex subprocess not ready");
     }
     const serialized = JSON.stringify(payload) + "\n";
     this.proc.stdin.write(serialized);
@@ -486,18 +612,18 @@ export class CodexBridge {
 
   private spawnWslProcess(binary: string): ChildProcessWithoutNullStreams {
     if (process.platform !== "win32") {
-      throw new Error("当前环境不支持 WSL 模式");
+      throw new Error("WSL mode not supported on this platform");
     }
     const distroArg = this.wslDistro ? ["-d", this.wslDistro] : [];
     const wslPath = winToWsl(binary);
     if (!wslPath || !wslPath.startsWith("/")) {
-      throw new Error("无法转换 codex CLI 路径以供 WSL 使用");
+      throw new Error("Unable to convert Codex CLI path for WSL usage");
     }
     const escapedBin = shEscape(wslPath);
     const exports: string[] = [
       `export CODEX_INTERNAL_ORIGINATOR_OVERRIDE=${shEscape(ORIGINATOR)}`,
     ];
-    const proxyVars = ["CODEXFLOW_PROXY", "HTTPS_PROXY", "HTTP_PROXY"];
+    const proxyVars = ["CODEXFLOW_PROXY", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY"];
     for (const name of proxyVars) {
       const value = process.env[name];
       if (value) exports.push(`export ${name}=${shEscape(value)}`);

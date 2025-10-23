@@ -167,10 +167,10 @@ contextBridge.exposeInMainWorld('host', {
   }
   , codex: {
     getAccountInfo: async () => {
-      try { return await ipcRenderer.invoke('codex.accountInfo'); } catch (e) { return { ok: false, error: String(e) }; }
+      return await ipcRenderer.invoke('codex.accountInfo');
     },
     getRateLimit: async () => {
-      try { return await ipcRenderer.invoke('codex.rateLimit'); } catch (e) { return { ok: false, error: String(e) }; }
+      return await ipcRenderer.invoke('codex.rateLimit');
     }
   }
   , notifications: {

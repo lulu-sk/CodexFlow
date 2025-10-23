@@ -29,6 +29,12 @@ type NotificationPrefs = {
   system: boolean;
   sound: boolean;
 };
+type NetworkPrefs = {
+  proxyEnabled: boolean;
+  proxyMode: "system" | "custom";
+  proxyUrl: string;
+  noProxy: string;
+};
 
 export type SettingsDialogProps = {
   open: boolean;
@@ -41,6 +47,7 @@ export type SettingsDialogProps = {
     locale: string;
     projectPathStyle: PathStyle;
     notifications: NotificationPrefs;
+    network?: NetworkPrefs;
   };
   onSave: (v: {
     terminal: TerminalMode;
@@ -50,6 +57,7 @@ export type SettingsDialogProps = {
     locale: string;
     projectPathStyle: PathStyle;
     notifications: NotificationPrefs;
+    network: NetworkPrefs;
   }) => void;
 };
 
@@ -76,9 +84,9 @@ type AppDataInfo = {
   collectedAt: number;
 };
 
-type SectionKey = "basic" | "notifications" | "terminal" | "account" | "data";
+type SectionKey = "basic" | "notifications" | "terminal" | "networkAccount" | "data";
 
-const NAV_ORDER: SectionKey[] = ["basic", "notifications", "terminal", "account", "data"];
+const NAV_ORDER: SectionKey[] = ["basic", "notifications", "terminal", "networkAccount", "data"];
 
 const DEFAULT_LANGS = ["zh", "en"];
 
@@ -97,6 +105,12 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   const [sendMode, setSendMode] = useState<SendMode>(values.sendMode);
   const [pathStyle, setPathStyle] = useState<PathStyle>(values.projectPathStyle || "absolute");
   const [notifications, setNotifications] = useState<NotificationPrefs>(values.notifications);
+  const [network, setNetwork] = useState<NetworkPrefs>({
+    proxyEnabled: values.network?.proxyEnabled ?? true,
+    proxyMode: values.network?.proxyMode ?? "system",
+    proxyUrl: values.network?.proxyUrl ?? "",
+    noProxy: values.network?.noProxy ?? "",
+  });
   const [codexRoots, setCodexRoots] = useState<string[]>([]);
   const [lang, setLang] = useState<string>(values.locale || "en");
   const [availableDistros, setAvailableDistros] = useState<string[]>([]);
@@ -141,6 +155,12 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
       setPathStyle(values.projectPathStyle || "absolute");
       setLang(values.locale || "en");
       setNotifications(values.notifications);
+      setNetwork({
+        proxyEnabled: values.network?.proxyEnabled ?? true,
+        proxyMode: values.network?.proxyMode ?? "system",
+        proxyUrl: values.network?.proxyUrl ?? "",
+        noProxy: values.network?.noProxy ?? "",
+      });
     }
   }, [open, values.codexCmd, values.distro, values.locale, values.notifications, values.projectPathStyle, values.sendMode, values.terminal]);
 
@@ -598,27 +618,86 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
           ),
         };
       }
-      if (key === "account") {
+      if (key === "networkAccount") {
         return {
           key,
-          title: t("settings:sections.account.title"),
-          description: t("settings:sections.account.desc"),
+          title: t("settings:sections.networkAccount.title"),
+          description: t("settings:sections.networkAccount.desc"),
           content: (
-            <Card>
-              <CardHeader>
-                <CardTitle>{t("settings:codexAccount.label")}</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <p className="text-sm text-slate-500">{t("settings:codexAccount.help")}</p>
-                <CodexAccountInline
-                  className="w-full"
-                  auto={open}
-                  terminalMode={terminal}
-                  distro={terminal === "wsl" ? distro : undefined}
-                  expanded
-                />
-              </CardContent>
-            </Card>
+            <div className="space-y-6">
+              <Card>
+                <CardHeader>
+                  <CardTitle>{t("settings:network.label")}</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <p className="text-sm text-slate-500">{t("settings:network.desc")}</p>
+                  <div className="flex flex-col gap-3 max-w-xl">
+                    <label className="flex items-start gap-3 rounded-lg border border-slate-200/70 bg-white/60 px-3 py-3 shadow-sm">
+                      <input
+                        type="checkbox"
+                        className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400"
+                        checked={network.proxyEnabled}
+                        onChange={(e) => setNetwork((v) => ({ ...v, proxyEnabled: e.target.checked }))}
+                      />
+                      <div>
+                        <div className="text-sm font-medium text-slate-800">{t("settings:network.enable")}</div>
+                        <p className="text-xs text-slate-500">{t("settings:network.enableDesc")}</p>
+                      </div>
+                    </label>
+                    <div className="grid gap-3 sm:grid-cols-[180px_1fr] items-center">
+                      <div className="text-sm text-slate-700">{t("settings:network.mode")}</div>
+                      <div className="max-w-xs">
+                        <Select
+                          value={network.proxyMode}
+                          onValueChange={(v) => setNetwork((s) => ({ ...s, proxyMode: v as any }))}
+                        >
+                          <SelectTrigger disabled={!network.proxyEnabled}>
+                            <SelectValue placeholder={t("settings:network.mode") as string} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="system">{t("settings:network.modeSystem")}</SelectItem>
+                            <SelectItem value="custom">{t("settings:network.modeCustom")}</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-[180px_1fr] items-center">
+                      <div className="text-sm text-slate-700">{t("settings:network.customUrl")}</div>
+                      <Input
+                        disabled={!network.proxyEnabled || network.proxyMode !== "custom"}
+                        value={network.proxyUrl}
+                        onChange={(e) => setNetwork((s) => ({ ...s, proxyUrl: e.target.value }))}
+                        placeholder="http://127.0.0.1:7890"
+                      />
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-[180px_1fr] items-center">
+                      <div className="text-sm text-slate-700">{t("settings:network.noProxy")}</div>
+                      <Input
+                        disabled={!network.proxyEnabled}
+                        value={network.noProxy}
+                        onChange={(e) => setNetwork((s) => ({ ...s, noProxy: e.target.value }))}
+                        placeholder="localhost,127.0.0.1,.corp,.local"
+                      />
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardTitle>{t("settings:codexAccount.label")}</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <p className="text-sm text-slate-500">{t("settings:codexAccount.help")}</p>
+                  <CodexAccountInline
+                    className="w-full"
+                    auto={open}
+                    terminalMode={terminal}
+                    distro={terminal === "wsl" ? distro : undefined}
+                    expanded
+                  />
+                </CardContent>
+              </Card>
+            </div>
           ),
         };
       }
@@ -787,6 +866,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     lang,
     pathStyle,
     notifications,
+    network,
     sendMode,
     storageInfo,
     storageLoading,
@@ -880,6 +960,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                       locale: lang,
                       projectPathStyle: pathStyle,
                       notifications,
+                      network,
                     });
                     onOpenChange(false);
                   }}
