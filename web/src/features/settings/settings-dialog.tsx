@@ -652,7 +652,11 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                           onValueChange={(v) => setNetwork((s) => ({ ...s, proxyMode: v as any }))}
                         >
                           <SelectTrigger disabled={!network.proxyEnabled}>
-                            <SelectValue placeholder={t("settings:network.mode") as string} />
+                            <span className="truncate text-left">
+                              {network.proxyMode === "system"
+                                ? t("settings:network.modeSystem")
+                                : t("settings:network.modeCustom")}
+                            </span>
                           </SelectTrigger>
                           <SelectContent>
                             <SelectItem value="system">{t("settings:network.modeSystem")}</SelectItem>
