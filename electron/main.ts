@@ -13,7 +13,7 @@ import history from "./history";
 import { startHistoryIndexer, getIndexedSummaries, getIndexedDetails, getLastIndexerRoots, stopHistoryIndexer } from "./indexer";
 import { getSessionsRootsFastAsync } from "./wsl";
 import { perfLogger } from "./log";
-import settings, { ensureSettingsAutodetect } from "./settings";
+import settings, { ensureSettingsAutodetect, ensureFirstRunTerminalSelection } from "./settings";
 import i18n from "./i18n";
 import wsl from "./wsl";
 import fileIndex from "./fileIndex";
@@ -507,6 +507,8 @@ if (!gotLock) {
     registerProtocol();
     try { perfLogger.log(`[BOOT] Using projects implementation: ${PROJECTS_IMPL}`); } catch {}
     if (DIAG) { try { perfLogger.log(`[BOOT] userData=${app.getPath('userData')}`); } catch {} }
+    // 首次运行：优先选择 WSL/Ubuntu，其次 PowerShell（不提示安装）
+    try { await ensureFirstRunTerminalSelection(); } catch {}
     try { await ensureSettingsAutodetect(); } catch {}
     try { await ensureAllCodexNotifications(); } catch {}
     try { i18n.registerI18nIPC(); } catch {}

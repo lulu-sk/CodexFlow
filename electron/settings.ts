@@ -5,7 +5,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { app } from 'electron';
 import os from 'node:os';
-import { getSessionsRootsFastAsync, listDistros } from './wsl';
+import { execFileSync } from 'node:child_process';
+import { getSessionsRootsFastAsync, listDistros, execInWslAsync } from './wsl';
 import type { DistroInfo } from './wsl';
 
 export type NotificationSettings = {
@@ -73,6 +74,25 @@ function pickPreferredDistro(preferred: unknown, distros: DistroInfo[]): string 
     const hit = distros.find((d) => d.name.toLowerCase() === normalized.toLowerCase());
     if (hit?.name) return hit.name;
   }
+  // 优先选择 Ubuntu 系列（满足“优先考虑 Ubuntu”的策略）
+  try {
+    const ubuntuList = distros.filter((d) => /ubuntu/i.test(d.name));
+    if (ubuntuList.length > 0) {
+      const def = ubuntuList.find((d) => d.isDefault && d.name);
+      if (def?.name) return def.name;
+      // 若无默认，按版本号从高到低排序（Ubuntu-24.04 > Ubuntu-22.04 > Ubuntu）
+      const parseUbuntuVersion = (name: string): number => {
+        const m = name.match(/ubuntu[-_\s]?([0-9]{2})\.([0-9]{2})/i);
+        if (!m) return 0;
+        return Number(`${m[1].padStart(2, '0')}${m[2].padStart(2, '0')}`);
+      };
+      const sorted = ubuntuList
+        .map((d) => ({ d, v: parseUbuntuVersion(d.name) }))
+        .sort((a, b) => b.v - a.v);
+      const first = sorted[0]?.d?.name || ubuntuList[0]?.name;
+      if (first) return first;
+    }
+  } catch {}
   const markedDefault = distros.find((d) => d.isDefault && d.name);
   if (markedDefault?.name) return markedDefault.name;
   const running = distros.find((d) => (d.state || '').toLowerCase() === 'running' && d.name);
@@ -157,6 +177,64 @@ export async function ensureSettingsAutodetect(): Promise<AppSettings> {
     try { if (exists(c)) return updateSettings({ historyRoot: c }); } catch {}
   }
   return cur;
+}
+
+/**
+ * 首次运行时：自动选择终端环境（不提示安装）。
+ * 规则：
+ *  - 优先使用 WSL；在有多个发行版时优先 Ubuntu（版本高者优先）。
+ *  - 若未检测到任何 WSL 发行版，但在 PowerShell 可找到 codex，则默认使用 PowerShell。
+ *  - 仅在“首次无设置文件或设置缺失 terminal 字段”时写入；否则保持用户选择。
+ */
+export async function ensureFirstRunTerminalSelection(): Promise<AppSettings> {
+  try {
+    const storePath = getStorePath();
+    const hasStore = fs.existsSync(storePath);
+    const current = getSettings();
+    // 若已有设置且包含明确的 terminal，视为非首次，无需更改
+    if (hasStore && (current.terminal === 'wsl' || current.terminal === 'windows')) {
+      return current;
+    }
+
+    const distros = loadDistroList();
+    // 情况 A：存在 WSL，优先 Ubuntu；若仅 PowerShell 中存在 codex 则选 Windows
+    if (os.platform() === 'win32' && Array.isArray(distros) && distros.length > 0) {
+      const distro = pickPreferredDistro('', distros);
+      const hasPsCodex = (() => {
+        try {
+          const out = execFileSync('where.exe', ['codex'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 });
+          return !!String(out || '').trim();
+        } catch { return false; }
+      })();
+      const hasWslCodex = !!(await (async () => {
+        try {
+          const out = await execInWslAsync(distro, 'command -v codex >/dev/null 2>&1 && echo yes || echo no');
+          return (out || '').trim().toLowerCase() === 'yes';
+        } catch { return false; }
+      })());
+      if (hasPsCodex && !hasWslCodex) {
+        return updateSettings({ terminal: 'windows' });
+      }
+      return updateSettings({ terminal: 'wsl', distro });
+    }
+
+    // 情况 B：无 WSL，若 PowerShell 中存在 codex，则选 Windows；否则仍写 Windows 以避免 WSL 失败
+    const hasPsCodex = (() => {
+      if (os.platform() !== 'win32') return false;
+      try {
+        const out = execFileSync('where.exe', ['codex'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 });
+        return !!String(out || '').trim();
+      } catch { return false; }
+    })();
+    if (hasPsCodex || os.platform() === 'win32') {
+      return updateSettings({ terminal: 'windows' });
+    }
+
+    // 其他平台兜底：保持当前合并默认
+    return updateSettings({});
+  } catch {
+    return getSettings();
+  }
 }
 
 export default { getSettings, updateSettings };

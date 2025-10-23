@@ -524,16 +524,14 @@ export default function CodexFlowManagerUI() {
   }, [hiddenProjectIds]);
 
   useEffect(() => {
+    // 如果没有可见项目，清空选择
     if (visibleProjects.length === 0) {
       if (selectedProjectId !== "") setSelectedProjectId("");
       return;
     }
-    if (!selectedProjectId) {
-      setSelectedProjectId(visibleProjects[0].id);
-      return;
-    }
-    if (!visibleProjects.some((p) => p.id === selectedProjectId)) {
-      setSelectedProjectId(visibleProjects[0]?.id ?? "");
+    // 如果当前选中的项目已被隐藏或删除，清空选择（回到首页）
+    if (selectedProjectId && !visibleProjects.some((p) => p.id === selectedProjectId)) {
+      setSelectedProjectId("");
     }
   }, [visibleProjects, selectedProjectId]);
 
