@@ -22,10 +22,10 @@ export function Select({ value, onValueChange, children }: { value?: string; onV
   );
 }
 
-export function SelectTrigger({ children, className }: React.HTMLAttributes<HTMLButtonElement>) {
+export function SelectTrigger({ children, className, disabled }: React.HTMLAttributes<HTMLButtonElement> & { disabled?: boolean }) {
   const ctx = React.useContext(SelectCtx)!;
   return (
-    <button className={cn('flex h-10 w-full items-center justify-between rounded-md border border-slate-200 bg-white px-3 text-sm', className)} onClick={() => ctx.setOpen(!ctx.open)}>
+    <button className={cn('flex h-10 w-full items-center justify-between rounded-md border border-slate-200 bg-white px-3 text-sm', className, disabled && 'opacity-60 cursor-not-allowed')} disabled={!!disabled} onClick={() => !disabled && ctx.setOpen(!ctx.open)}>
       {children}
     </button>
   );
@@ -39,9 +39,9 @@ export function SelectValue({ placeholder }: { placeholder?: string }) {
 
 export function SelectContent({ children }: { children: React.ReactNode }) {
   const ctx = React.useContext(SelectCtx)!;
-  if (!ctx.open) return null;
+  // 为了在未展开时也能完成 value->label 映射，保持内容挂载，仅通过 hidden 切换可见性
   return (
-    <div className="relative z-10 mt-1 w-full rounded-md border bg-white p-1 shadow">
+    <div className={cn('relative z-10 mt-1 w-full rounded-md border bg-white p-1 shadow', !ctx.open && 'hidden')} aria-hidden={!ctx.open}>
       {children}
     </div>
   );

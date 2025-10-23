@@ -13,14 +13,25 @@
       "title": "Terminal & execution",
       "desc": "Configure how CodexFlow runs commands."
     },
-    "account": {
-      "title": "Account & connections",
-      "desc": "Review the ChatGPT account linked to CodexFlow."
+    "networkAccount": {
+      "title": "Network & Account",
+      "desc": "Manage network proxy settings and review your ChatGPT account status."
     },
     "data": {
       "title": "Data & storage",
       "desc": "Inspect cached files and clean redundant histories."
     }
+  },
+  "network": {
+    "label": "Network proxy",
+    "desc": "Make all in-app requests follow your proxy (default: on).",
+    "enable": "Enable proxy for network requests",
+    "enableDesc": "When enabled, CodexFlow will proxy rate-limit checks and other requests.",
+    "mode": "Proxy mode",
+    "modeSystem": "Follow system proxy",
+    "modeCustom": "Custom proxy URL",
+    "customUrl": "Custom proxy URL",
+    "noProxy": "Bypass hosts"
   },
   "language": {
     "label": "UI Language",

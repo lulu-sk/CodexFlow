@@ -13,14 +13,25 @@
       "title": "终端与运行",
       "desc": "配置 CodexFlow 执行命令的默认环境。"
     },
-    "account": {
-      "title": "账号与连接",
-      "desc": "查看 CodexFlow 关联的 ChatGPT 账号状态。"
+    "networkAccount": {
+      "title": "网络与账号",
+      "desc": "管理应用内网络代理设置，查看 ChatGPT 账号状态。"
     },
     "data": {
       "title": "数据与存储",
       "desc": "查看缓存目录并清理冗余历史记录。"
     }
+  },
+  "network": {
+    "label": "网络代理",
+    "desc": "让应用内请求走代理（默认开启）以保证海外服务可达。",
+    "enable": "启用代理网络",
+    "enableDesc": "开启后，用量/更新等网络请求将按下方模式走代理。",
+    "mode": "代理模式",
+    "modeSystem": "跟随系统代理",
+    "modeCustom": "自定义代理地址",
+    "customUrl": "自定义代理地址",
+    "noProxy": "绕过代理主机"
   },
   "language": {
     "label": "界面语言",

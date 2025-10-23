@@ -3,6 +3,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Gauge, RotateCcw } from "lucide-react";
@@ -148,14 +149,14 @@ const PLAN_KEYS: Record<string, string> = {
   deprecated_edu: "settings:codexAccount.plan.education",
 };
 
-function resolveAccountLabel(account: CodexAccountInfo | null, t: (key: string, fallback?: string) => string): string {
+function resolveAccountLabel(account: CodexAccountInfo | null, t: TFunction): string {
   if (!account) return t("settings:codexAccount.statusUnknown", "未登录");
   if (account.email) return account.email;
   if (account.accountId) return account.accountId;
   return t("settings:codexAccount.statusUnknown", "未登录");
 }
 
-function describePlan(plan: string | null, t: (key: string, fallback?: string) => string): string {
+function describePlan(plan: string | null, t: TFunction): string {
   if (!plan) return t("settings:codexAccount.plan.unknown", "未知套餐");
   const key = PLAN_KEYS[plan];
   return key ? t(key) : plan;
@@ -242,7 +243,7 @@ const CodexUsageHoverButton: React.FC<{ className?: string; terminalMode?: "wsl"
                   <span className="text-xs text-slate-500">
                     {t("common:codexUsage.reset", {
                       time: formatResetTime(
-                        rateState.data.primary?.resetsInSeconds ?? null,
+                        rateState.data.primary?.resetAfterSeconds ?? null,
                         t,
                         i18n.language,
                       ),
@@ -268,7 +269,7 @@ const CodexUsageHoverButton: React.FC<{ className?: string; terminalMode?: "wsl"
                   <span className="text-xs text-slate-500">
                     {t("common:codexUsage.reset", {
                       time: formatResetTime(
-                        rateState.data.secondary?.resetsInSeconds ?? null,
+                        rateState.data.secondary?.resetAfterSeconds ?? null,
                         t,
                         i18n.language,
                       ),
@@ -311,11 +312,19 @@ export const CodexAccountInline: React.FC<{
 }> = ({ className, auto = true, terminalMode, distro, expanded = false }) => {
   const { t } = useTranslation(["settings", "common"]);
   const errorTranslator = useCallback(
-    (error: unknown) =>
-      translateCodexBridgeError(error, t, {
-        fallbackKey: "settings:codexAccount.statusError",
-        fallbackDefault: "账号信息不可用",
-      }),
+    (error: unknown) => {
+      // 尝试使用多语言翻译
+      const translated = translateCodexBridgeError(error, t, {
+        fallbackKey: "common:codexUsage.errorAccountInfoFailed",
+        fallbackDefault: "无法读取账号信息",
+      });
+      // 如果翻译结果等于原错误消息，说明没有匹配到模式，使用账号特定错误键
+      const errorMsg = String(error || "").trim();
+      if (translated === errorMsg) {
+        return t("settings:codexAccount.statusError", "账号信息不可用");
+      }
+      return translated;
+    },
     [t],
   );
   const [accountState, reloadAccount] = useCodexAccount(auto, errorTranslator);

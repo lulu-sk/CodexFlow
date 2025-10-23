@@ -4,8 +4,9 @@
 import type { TFunction } from "i18next";
 import type { CodexRateLimitSnapshot, CodexRateLimitWindow } from "@/types/host";
 
-const MIN_INTERVAL_MS = 60_000;
-const DEFAULT_INTERVAL_SECONDS = 30 * 60;
+const MIN_INTERVAL_MS = 60_000;     // 1 分钟
+const MAX_INTERVAL_MS = 6 * 60 * 60 * 1000;  // 6 小时
+const DEFAULT_INTERVAL_SECONDS = 5 * 60;  // 无数据时默认 5 分钟
 const CLI_EXIT_PATTERNS = [
   /\bCODEX_CLI_EXITED\b/i,
   /codex\s+cli[^a-z0-9]+exited/i,
@@ -15,17 +16,58 @@ const NOT_SIGNED_IN_PATTERNS = [
   /尚未登录\s*chatgpt/i,
   /not\s+(signed\s+)?in\s+to\s+chatgpt/i,
 ];
+const CLI_NOT_FOUND_PATTERNS = [
+  /未找到.*codex\s*cli/i,
+  /codex\s*cli.*not\s+found/i,
+];
+const CLI_NOT_EXECUTABLE_PATTERNS = [
+  /codex\s*cli.*不可执行/i,
+  /codex\s*cli.*not\s+executable/i,
+];
+const REFRESH_TOKEN_FAILED_PATTERNS = [
+  /无法刷新.*chatgpt.*登录/i,
+  /unable\s+to\s+refresh.*chatgpt.*login/i,
+];
+const WSL_NOT_SUPPORTED_PATTERNS = [
+  /不支持.*wsl.*模式/i,
+  /wsl.*mode.*not\s+supported/i,
+];
+const WSL_PATH_CONVERSION_FAILED_PATTERNS = [
+  /无法转换.*codex.*cli.*路径.*wsl/i,
+  /unable.*convert.*codex.*cli.*path.*wsl/i,
+];
+const RATE_LIMIT_FETCH_FAILED_PATTERNS = [
+  /请求速率限制失败/i,
+  /rate\s+limit\s+request\s+failed/i,
+];
 
 export function computeRefreshInterval(snapshot: CodexRateLimitSnapshot | null | undefined): number {
   if (!snapshot) return MIN_INTERVAL_MS;
-  const candidates = [
-    snapshot.primary?.resetsInSeconds,
-    snapshot.secondary?.resetsInSeconds,
-  ]
-    .map((v) => (typeof v === "number" && Number.isFinite(v) ? v : null))
-    .filter((v): v is number => v != null && v > 0);
-  const seconds = candidates.length > 0 ? Math.min(...candidates) : DEFAULT_INTERVAL_SECONDS;
-  return Math.max(seconds * 1000, MIN_INTERVAL_MS);
+  
+  // 仅从有消耗的窗口中选取最小重置时间
+  const candidates: number[] = [];
+  if (snapshot.primary?.usedPercent && snapshot.primary.usedPercent > 0 && snapshot.primary.resetAfterSeconds) {
+    candidates.push(snapshot.primary.resetAfterSeconds);
+  }
+  if (snapshot.secondary?.usedPercent && snapshot.secondary.usedPercent > 0 && snapshot.secondary.resetAfterSeconds) {
+    candidates.push(snapshot.secondary.resetAfterSeconds);
+  }
+  
+  let seconds = candidates.length > 0 ? Math.min(...candidates) : DEFAULT_INTERVAL_SECONDS;
+  
+  // 兜底：防止 Infinity 或异常值
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    seconds = DEFAULT_INTERVAL_SECONDS;
+  }
+  
+  // 夹在 [1min, 6h] 之间
+  let intervalMs = Math.max(MIN_INTERVAL_MS, Math.min(seconds * 1000, MAX_INTERVAL_MS));
+  
+  // 加 5-10% jitter，避免多实例同时打点
+  const jitter = 0.05 + Math.random() * 0.05;  // 5-10%
+  intervalMs = Math.floor(intervalMs * (1 + jitter));
+  
+  return intervalMs;
 }
 
 export function formatPercent(value: number | null | undefined): string {
@@ -37,10 +79,11 @@ export function formatWindowLabel(
   window: CodexRateLimitWindow | null | undefined,
   t: TFunction,
 ): string {
-  if (!window || window.windowMinutes == null || Number.isNaN(window.windowMinutes)) {
+  if (!window || window.limitWindowSeconds == null || Number.isNaN(window.limitWindowSeconds)) {
     return t("common:codexUsage.windowUnknown", "不限");
   }
-  const minutes = Number(window.windowMinutes);
+  // UI 层转换：秒 → 分钟
+  const minutes = Number(window.limitWindowSeconds) / 60;
   if (minutes >= 7 * 24 * 60 - 1) {
     const weeks = Math.ceil(minutes / (7 * 24 * 60));
     return t("common:codexUsage.windowWeekly", { count: weeks });
@@ -89,8 +132,8 @@ export function formatUsageSummaryLabel(
   t: TFunction,
 ): string {
   const percentLabel = formatPercent(percent);
-  const windowMinutes = window?.windowMinutes;
-  const hasWindow = typeof windowMinutes === "number" && Number.isFinite(windowMinutes);
+  const limitWindowSeconds = window?.limitWindowSeconds;
+  const hasWindow = typeof limitWindowSeconds === "number" && Number.isFinite(limitWindowSeconds);
   if (hasWindow) {
     const windowLabel = formatWindowLabel(window, t);
     return t("common:codexUsage.summaryWithWindow", {
@@ -151,18 +194,47 @@ export function translateCodexBridgeError(
   const fallback = t(fallbackKey, fallbackDefault);
   const message = normalizeCodexError(raw);
   if (!message) return fallback;
+  
+  // CLI 退出错误
   if (CLI_EXIT_PATTERNS.some((pattern) => pattern.test(message))) {
-    return t(
-      "common:codexErrors.cliExited",
-      "错误，请尝试更换刷新WSL发行版并保存",
-    );
+    return t("common:codexErrors.cliExited", "错误，请尝试更换刷新WSL发行版并保存");
   }
+  
+  // 未登录错误
   if (NOT_SIGNED_IN_PATTERNS.some((pattern) => pattern.test(message))) {
-    return t(
-      "common:codexUsage.errorNotLoggedIn",
-      "尚未登录 ChatGPT，无法获取速率限制",
-    );
+    return t("common:codexUsage.errorNotLoggedIn", "尚未登录 ChatGPT，无法获取速率限制");
   }
+  
+  // CLI 未找到
+  if (CLI_NOT_FOUND_PATTERNS.some((pattern) => pattern.test(message))) {
+    return t("common:codexErrors.cliNotFound", "未找到 Codex CLI。请尝试：\n1. npm install -g @openai/codex\n2. 或安装 Cursor/Windsurf 插件\n3. 或设置 CODEXFLOW_CODEX_BIN 环境变量");
+  }
+  
+  // CLI 不可执行
+  if (CLI_NOT_EXECUTABLE_PATTERNS.some((pattern) => pattern.test(message))) {
+    return t("common:codexErrors.cliNotExecutable", "codex CLI 不可执行");
+  }
+  
+  // 刷新 Token 失败
+  if (REFRESH_TOKEN_FAILED_PATTERNS.some((pattern) => pattern.test(message))) {
+    return t("common:codexErrors.refreshTokenFailed", "无法刷新 ChatGPT 登录状态");
+  }
+  
+  // WSL 不支持
+  if (WSL_NOT_SUPPORTED_PATTERNS.some((pattern) => pattern.test(message))) {
+    return t("common:codexErrors.wslNotSupported", "当前环境不支持 WSL 模式");
+  }
+  
+  // WSL 路径转换失败
+  if (WSL_PATH_CONVERSION_FAILED_PATTERNS.some((pattern) => pattern.test(message))) {
+    return t("common:codexErrors.wslPathConversionFailed", "无法转换 codex CLI 路径以供 WSL 使用");
+  }
+  
+  // 速率限制获取失败（通用）
+  if (RATE_LIMIT_FETCH_FAILED_PATTERNS.some((pattern) => pattern.test(message))) {
+    return fallback;
+  }
+  
   return message || fallback;
 }
 

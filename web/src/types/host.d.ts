@@ -18,6 +18,13 @@ export type AppSettings = {
     system?: boolean;
     sound?: boolean;
   };
+  /** 网络代理设置 */
+  network?: {
+    proxyEnabled?: boolean;
+    proxyMode?: 'system' | 'custom';
+    proxyUrl?: string;
+    noProxy?: string;
+  };
 };
 
 export type Project = {
@@ -129,8 +136,8 @@ export type CodexAccountInfo = {
 
 export type CodexRateLimitWindow = {
   usedPercent: number | null;
-  windowMinutes: number | null;
-  resetsInSeconds: number | null;
+  limitWindowSeconds: number | null;  // 原始字段（秒），UI 层转换为分钟/小时/天
+  resetAfterSeconds: number | null;   // 原始字段，统一命名
 };
 
 export type CodexRateLimitSnapshot = {

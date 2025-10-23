@@ -2166,7 +2166,7 @@ export default function CodexFlowManagerUI() {
             key={tab.id}
             value={tab.id}
             className="mt-1 flex flex-1 min-h-0 flex-col space-y-1"
-            onContextMenu={(e) => openTabContextMenu(e, tab.id, "tab-content")}
+            onContextMenu={(e: React.MouseEvent) => openTabContextMenu(e, tab.id, "tab-content")}
           >
             <Card className="flex flex-1 min-h-0 flex-col">
               <CardContent className="flex flex-1 min-h-0 flex-col p-0">
@@ -2925,14 +2925,15 @@ export default function CodexFlowManagerUI() {
           const nextNotifications = normalizeCompletionPrefs(v.notifications);
           // 先切换语言（内部会写入 settings 并广播），再持久化其它字段
           try { await (window as any).host?.i18n?.setLocale?.(nextLocale); setLocale(nextLocale); } catch {}
-          try {
-            await window.host.settings.update({
+           try {
+             await window.host.settings.update({
               terminal: nextTerminal,
               distro: nextDistro,
               codexCmd: nextCmd,
               sendMode: nextSend,
               projectPathStyle: v.projectPathStyle,
               notifications: nextNotifications,
+              network: v.network,
             });
           } catch (e) { console.warn('settings.update failed', e); }
           setTerminalMode(nextTerminal);
@@ -3344,7 +3345,7 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
     const seq = ++reqSeq.current;
     (async () => {
       try {
-        const res: any = await window.host.history.read({ filePath: selectedSession.filePath });
+        const res: any = await window.host.history.read({ filePath: String(selectedSession.filePath || '') });
         const msgs = (res.messages || []).map((m: any) => ({ role: m.role as any, content: m.content }));
         if (seq === reqSeq.current) {
           setLocalSessions((cur) => cur.map((x) => (x.id === selectedHistoryId ? { ...x, messages: msgs } : x)));

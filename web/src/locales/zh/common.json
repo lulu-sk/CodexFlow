@@ -37,10 +37,16 @@
     "windowMinutes": "{count} 分钟",
     "empty": "暂无用量信息",
     "errorFetchFailed": "无法获取速率限制",
-    "errorNotLoggedIn": "尚未登录 ChatGPT，无法获取速率限制"
+    "errorNotLoggedIn": "尚未登录 ChatGPT，无法获取速率限制",
+    "errorAccountInfoFailed": "无法读取账号信息"
   },
   "codexErrors": {
-    "cliExited": "错误，请尝试更换刷新WSL发行版并保存"
+    "cliExited": "错误，请尝试更换刷新WSL发行版并保存",
+    "cliNotFound": "未找到 Codex CLI。请尝试：\n1. npm install -g @openai/codex\n2. 或安装 Cursor/Windsurf 插件\n3. 或设置 CODEXFLOW_CODEX_BIN 环境变量",
+    "cliNotExecutable": "codex CLI 不可执行",
+    "refreshTokenFailed": "无法刷新 ChatGPT 登录状态",
+    "wslNotSupported": "当前环境不支持 WSL 模式",
+    "wslPathConversionFailed": "无法转换 codex CLI 路径以供 WSL 使用"
   },
   "notifications": {
     "taskCompleted": "{tab} 已完成",
