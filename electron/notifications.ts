@@ -462,10 +462,40 @@ export function registerNotificationIPC(getWindow: () => BrowserWindow | null, o
         logNotification(`notification focus source=${source} tabId=${payload.tabId}`);
         const win = getWindow();
         if (win) {
-          if (win.isMinimized()) {
-            try { win.restore(); } catch {}
+          // Windows 平台窗口恢复到前台的完整流程
+          const wasMinimized = win.isMinimized();
+          try {
+            // 1. 先显示窗口（在恢复之前）
+            win.show();
+            
+            // 2. 如果窗口被最小化，恢复窗口
+            if (wasMinimized) {
+              win.restore();
+            }
+            
+            // 3. 使用 setAlwaysOnTop 技巧强制窗口到前台（Windows 平台常用做法）
+            if (process.platform === 'win32') {
+              const wasAlwaysOnTop = win.isAlwaysOnTop();
+              if (!wasAlwaysOnTop) {
+                win.setAlwaysOnTop(true);
+                win.setAlwaysOnTop(false);
+              }
+            }
+            
+            // 4. 聚焦窗口
+            win.focus();
+            
+            // 5. 尝试将窗口移到最前面（Windows 特定）
+            if (process.platform === 'win32') {
+              try { win.moveTop(); } catch {}
+            }
+            
+            logNotification(`window restored wasMinimized=${wasMinimized} platform=${process.platform}`);
+          } catch (error) {
+            logNotification(`window restore failed: ${String(error)}`);
           }
-          try { win.show(); win.focus(); } catch {}
+          
+          // 6. 发送聚焦标签页的消息
           try { win.webContents.send('notifications:focus-tab', { tabId: payload.tabId }); } catch {}
         } else {
           logNotification(`notification focus skipped (window missing) source=${source} tabId=${payload.tabId}`);
