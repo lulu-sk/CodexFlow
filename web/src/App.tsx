@@ -316,6 +316,14 @@ type CompletionPreferences = {
   sound: boolean;
 };
 
+// 网络代理偏好（与设置对话框保持一致）
+type NetworkPrefs = {
+  proxyEnabled: boolean;
+  proxyMode: "system" | "custom";
+  proxyUrl: string;
+  noProxy: string;
+};
+
 const DEFAULT_COMPLETION_PREFS: CompletionPreferences = {
   badge: true,
   system: true,
@@ -1421,6 +1429,8 @@ export default function CodexFlowManagerUI() {
   const [wslDistro, setWslDistro] = useState("Ubuntu-24.04");
   // 基础命令（默认 'codex'），不做 tmux 包装，直接在 WSL 中执行。
   const [codexCmd, setCodexCmd] = useState("codex");
+  // 网络代理设置（用于设置对话框初始值与回显）
+  const [networkPrefs, setNetworkPrefs] = useState<NetworkPrefs>({ proxyEnabled: true, proxyMode: "system", proxyUrl: "", noProxy: "" });
   const [sendMode, setSendMode] = useState<'write_only' | 'write_and_enter'>("write_and_enter");
   // 项目内路径样式：absolute=全路径；relative=相对路径（默认全路径）
   const [projectPathStyle, setProjectPathStyle] = useState<'absolute' | 'relative'>('absolute');
@@ -1574,6 +1584,16 @@ export default function CodexFlowManagerUI() {
           setProjectPathStyle((s as any).projectPathStyle || 'absolute');
           setNotificationPrefs(normalizeCompletionPrefs((s as any).notifications));
           setCodexTraceEnabled((s as any).codexTraceEnabled !== undefined ? !!(s as any).codexTraceEnabled : false);
+          // 同步网络代理偏好
+          try {
+            const net = (s as any).network || {};
+            setNetworkPrefs({
+              proxyEnabled: net.proxyEnabled !== false,
+              proxyMode: net.proxyMode === 'custom' ? 'custom' : 'system',
+              proxyUrl: String(net.proxyUrl || ''),
+              noProxy: String(net.noProxy || ''),
+            });
+          } catch {}
           // historyRoot 自动计算，无需显示设置
         }
       } catch (e) {
@@ -3246,7 +3266,7 @@ export default function CodexFlowManagerUI() {
       <SettingsDialog
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
-        values={{ terminal: terminalMode, distro: wslDistro, codexCmd, sendMode, locale, projectPathStyle, notifications: notificationPrefs, codexTrace: codexTraceEnabled }}
+        values={{ terminal: terminalMode, distro: wslDistro, codexCmd, sendMode, locale, projectPathStyle, notifications: notificationPrefs, network: networkPrefs, codexTrace: codexTraceEnabled }}
         onSave={async (v) => {
           const nextTerminal = v.terminal;
           const nextDistro = v.distro;
@@ -3277,6 +3297,7 @@ export default function CodexFlowManagerUI() {
           setProjectPathStyle(nextStyle);
           setNotificationPrefs(nextNotifications);
           setCodexTraceEnabled(nextTrace);
+          setNetworkPrefs(v.network);
         }}
       />
 
