@@ -3,8 +3,7 @@
   "newConsole": "新建控制台",
   "inputPlaceholder": "输入要发给 Codex 的消息（支持粘贴图片、@ 搜索文件），Ctrl + Enter 发送",
   "send": "发送",
-  "readyPlaceholder": "# 终端就绪。这里是内嵌控制台的视觉占位（UI 原型，未接真 PTY）。"
-  ,
+  "readyPlaceholder": "# 终端就绪。这里是内嵌控制台的视觉占位（UI 原型，未接真 PTY）。",
   "ctx": {
     "copy": "复制",
     "copyLine": "复制整行",
