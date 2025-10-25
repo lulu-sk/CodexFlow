@@ -104,6 +104,103 @@ function getDir(p?: string): string {
   return i >= 0 ? s.slice(0, i) : s;
 }
 
+// 从文件名中提取时间（例如 rollout-2025-09-12T01-47-57-xxxx.jsonl -> 2025-09-12 01:47:57）
+function timeFromFilename(p?: string): string {
+  if (!p) return "";
+  try {
+    const base = (p.replace(/\\\\/g, '/').split('/').pop() || '').replace(/\.jsonl$/i, '');
+    let m = base.match(/(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})/);
+    if (m) {
+      const d = m[1], hh = m[2], mm = m[3], ss = m[4];
+      return `${d} ${hh}:${mm}:${ss}`;
+    }
+    m = base.match(/(\d{4}-\d{2}-\d{2})[T_ ](\d{2})[:\-](\d{2})[:\-](\d{2})/);
+    if (m) {
+      const d = m[1], hh = m[2], mm = m[3], ss = m[4];
+      return `${d} ${hh}:${mm}:${ss}`;
+    }
+    return base;
+  } catch {
+    return "";
+  }
+}
+
+// 解析文件名中的时间为本地 Date 对象
+function parseDateFromFilename(p?: string): Date | null {
+  if (!p) return null;
+  try {
+    const base = (p.replace(/\\\\/g, '/').split('/').pop() || '').replace(/\.jsonl$/i, '');
+    let m = base.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})/);
+    if (m) {
+      const y = Number(m[1]), mo = Number(m[2]) - 1, d = Number(m[3]), hh = Number(m[4]), mm = Number(m[5]), ss = Number(m[6]);
+      const dt = new Date(y, mo, d, hh, mm, ss);
+      return isNaN(dt.getTime()) ? null : dt;
+    }
+    m = base.match(/(\d{4})-(\d{2})-(\d{2})[T_ ](\d{2})[:\-](\d{2})[:\-](\d{2})/);
+    if (m) {
+      const y = Number(m[1]), mo = Number(m[2]) - 1, d = Number(m[3]), hh = Number(m[4]), mm = Number(m[5]), ss = Number(m[6]);
+      const dt = new Date(y, mo, d, hh, mm, ss);
+      return isNaN(dt.getTime()) ? null : dt;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function formatAsLocal(dt: Date): string {
+  try {
+    const pad = (n: number) => (n < 10 ? `0${n}` : String(n));
+    const y = dt.getFullYear();
+    const mo = pad(dt.getMonth() + 1);
+    const d = pad(dt.getDate());
+    const hh = pad(dt.getHours());
+    const mm = pad(dt.getMinutes());
+    const ss = pad(dt.getSeconds());
+    return `${y}-${mo}-${d} ${hh}:${mm}:${ss}`;
+  } catch { return ''; }
+}
+
+function parseRawDate(raw?: string): Date | null {
+  try {
+    if (!raw || typeof raw !== 'string') return null;
+    const t = raw.trim();
+    if (!t) return null;
+    if (/^\d+(\.\d+)?$/.test(t)) {
+      const num = Number(t);
+      const ms = t.length <= 10 ? num * 1000 : num; // 秒或毫秒
+      const dt = new Date(ms);
+      return isNaN(dt.getTime()) ? null : dt;
+    }
+    // 先尝试原生解析（支持 ISO）
+    const dtIso = new Date(t);
+    if (!isNaN(dtIso.getTime())) return dtIso;
+    // 再尝试常见的 "YYYY-MM-DD HH:mm:ss" 格式（视为本地时间）
+    const m = t.match(/(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/);
+    if (m) {
+      const y = Number(m[1]), mo = Number(m[2]) - 1, d = Number(m[3]), hh = Number(m[4]), mm = Number(m[5]), ss = Number(m[6]);
+      const dt = new Date(y, mo, d, hh, mm, ss);
+      return isNaN(dt.getTime()) ? null : dt;
+    }
+    return null;
+  } catch { return null; }
+}
+
+function toLocalDisplayTime(s: HistorySession): string {
+  try {
+    const fromRaw = parseRawDate(s.rawDate);
+    if (fromRaw) return formatAsLocal(fromRaw);
+    if (s.date) {
+      const dt = new Date(s.date);
+      if (!isNaN(dt.getTime())) return formatAsLocal(dt);
+    }
+    const fromName = parseDateFromFilename(s.filePath);
+    if (fromName) return formatAsLocal(fromName);
+  } catch {}
+  // 回退：尽量返回已有的原始时间/ISO，避免空白
+  return String(s.rawDate || s.date || '');
+}
+
 // Canonicalize path to unify UNC/Windows to WSL-like for grouping
 function canonicalizePath(p: string): string {
   if (!p) return '';
@@ -2728,8 +2825,25 @@ export default function CodexFlowManagerUI() {
                     }}
                   >
                     <div className="font-medium max-w-full truncate" title={match ? (match.filePath || match.title) : (g.latestTitle || g.label)}>
-                      {/* 组标题：若 latestRaw 可用，则显示 latestRaw，否则保留原有逻辑 */}
-                      {g.latestRaw ? clampText(g.latestRaw, HISTORY_TITLE_MAX_CHARS) : clampText(labelName, HISTORY_TITLE_MAX_CHARS)}
+                      {/* 组标题：显示本地时间（按文件名解析，失败则回退 rawDate/date） */}
+                      {clampText(
+                        (() => {
+                          const candidate = (match || target)?.filePath || '';
+                          const byName = parseDateFromFilename(candidate);
+                          if (byName) return formatAsLocal(byName);
+                          const r = (match || target) as any;
+                          if (r?.rawDate) {
+                            const dt = parseRawDate(r.rawDate);
+                            if (dt) return formatAsLocal(dt);
+                          }
+                          if (r?.date) {
+                            const dt = new Date(r.date);
+                            if (!isNaN(dt.getTime())) return formatAsLocal(dt);
+                          }
+                          return timeFromFilename(candidate);
+                        })(),
+                        HISTORY_TITLE_MAX_CHARS
+                      )}
                     </div>
                     <div className="mt-0.5 max-w-full truncate text-[11px] text-slate-500" title={g.latestRaw || g.label}>{g.label}</div>
                   </button>
@@ -2737,8 +2851,18 @@ export default function CodexFlowManagerUI() {
                 {expanded && displayList.length > 0 && (
                   <div className="pb-2 pl-7 pr-2">
                     {displayList.map((s) => {
-                      // 优先显示原始字符串（rawDate），若无则显示后端传入的 date 原始值（不做时区转换）
-                      const timeLabel = s.rawDate ? String(s.rawDate) : String(s.date);
+                      // 列表项主标题：本地时间（文件名解析优先，其次 rawDate/date）
+                      const fileTimeLabel = (() => {
+                        const byName = parseDateFromFilename(s.filePath);
+                        if (byName) return formatAsLocal(byName);
+                        const fromRaw = parseRawDate(s.rawDate);
+                        if (fromRaw) return formatAsLocal(fromRaw);
+                        if (s.date) {
+                          const dt = new Date(s.date);
+                          if (!isNaN(dt.getTime())) return formatAsLocal(dt);
+                        }
+                        return timeFromFilename(s.filePath);
+                      })();
                       const active = selectedHistoryId === s.id;
                       // 预览文本仅显示外部预先准备并缓存的数据（sessionPreviewMap），UI 不主动读取历史内容
                       const preview = sessionPreviewMap[s.filePath || s.id] || '';
@@ -2752,7 +2876,7 @@ export default function CodexFlowManagerUI() {
                           title={sessionPreviewMap[s.filePath || s.id] || s.filePath || s.title}
                         >
                           <div className="flex flex-col">
-                            <div className="text-sm leading-5 text-slate-800 truncate">{timeLabel}</div>
+                            <div className="text-sm leading-5 text-slate-800 truncate">{fileTimeLabel}</div>
                             {!!preview && <div className="mt-0.5 text-xs text-slate-500 truncate">{preview}</div>}
                           </div>
                         </button>
@@ -3485,10 +3609,9 @@ function renderHistoryBlocks(id: string, sessions: HistorySession[], filter?: Re
     .filter((m) => Array.isArray(m.content) && m.content.some((it) => String((it as any)?.text ?? '').trim().length > 0));
   return (
     <div>
-      {/* 只保留加粗标题，移除顶部小字号的重复时间显示 */}
-      {/* 标题显示：优先展示 rawDate，其次展示 date（后端原始），否则展示 title；tooltip 保留完整信息 */}
-      <h3 className="mb-3 max-w-full truncate text-base font-semibold" title={`${s.title} ${s.rawDate ? '• ' + s.rawDate : (s.date ? '• ' + s.date : '')}`}>
-        {s.rawDate ? String(s.rawDate) : (s.date ? String(s.date) : clampText(s.title, HISTORY_TITLE_MAX_CHARS * 2))}
+      {/* 详情标题：显示本地时间（优先 rawDate -> date -> 文件名推断），tooltip 同时展示本地与原始信息 */}
+      <h3 className="mb-3 max-w-full truncate text-base font-semibold" title={`${toLocalDisplayTime(s)} ${s.rawDate ? '• ' + s.rawDate : (s.date ? '• ' + s.date : '')}`}>
+        {toLocalDisplayTime(s)}
       </h3>
       <div className="space-y-3">
         {nonEmptyMessages.map((m, i) => (
@@ -3599,9 +3722,11 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
       return !!typeFilter['other'];
     };
     const lines: string[] = [];
-    // 导出头部：优先使用原始时间 rawDate，保证导出内容保留原始时间戳
+    // 导出头部：首行标题保留原有 title；Date 行显示本地时间，并附原始（若有）
     lines.push(`# ${s.title}`);
-    lines.push(`Date: ${s?.rawDate ? s.rawDate : (s?.date ? String(s.date) : '')}`);
+    const local = toLocalDisplayTime(s);
+    const raw = s?.rawDate ? s.rawDate : (s?.date ? String(s.date) : '');
+    lines.push(`Date: ${local}${raw ? ` (raw: ${raw})` : ''}`);
     for (const m of (s.messages || [])) {
       const items = (m.content || []).filter((it) => allowItem(it));
       if (items.length === 0) continue;
