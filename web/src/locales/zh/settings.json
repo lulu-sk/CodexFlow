@@ -53,6 +53,12 @@
   "wslDistroHelp": "指定打开 WSL 终端时默认使用的发行版。",
   "codexCmd": "CodexFlow 启动命令",
   "codexCmdHelp": "自定义从终端启动 CodexFlow 时执行的命令。",
+  "codexTrace": {
+    "label": "Codex TUI 调试",
+    "help": "控制 CodexFlow 启动 Codex 时是否自动附加 trace 日志参数（作用于新打开的终端）。",
+    "toggle": "启用 codex_tui trace 日志",
+    "note": "WSL 与 PowerShell 均支持，如不需要详细日志可关闭。"
+  },
   "sendMode": {
     "label": "发送键行为",
     "write_only": "仅发送",
@@ -67,6 +73,7 @@
   },
   "notifications": {
     "label": "任务完成提醒",
+    "help": "当代理完成任务时自动提醒您。提醒只会在您切换到其他窗口或查看其他标签页时显示，不会打断当前工作。",
     "badge": {
       "label": "任务栏徽标",
       "desc": "在 CodexFlow 图标上显示未查看的完成数量。"

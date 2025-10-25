@@ -16,6 +16,7 @@ export type TerminalAdapterAPI = {
   onData: (cb: (data: string) => void) => () => void;
   resize: () => { cols: number; rows: number };
   focus?: () => void;
+  blur?: () => void;
   dispose: () => void;
 };
 
@@ -52,9 +53,15 @@ export function createTerminalAdapter(): TerminalAdapterAPI {
   let removeWheelListener: (() => void) | null = null;
   let removeCtxMenuOverlay: (() => void) | null = null;
   let removeAppLevelListeners: (() => void) | null = null; // 全局监听清理（用于关闭终端右键菜单）
+  let removeTermFocusListener: (() => void) | null = null;
+  let removeTermBlurListener: (() => void) | null = null;
   // 防重与抑制：用于避免 Ctrl+V 同时触发 keydown + paste 导致的重复粘贴
   let lastManualPasteAt = 0; // 上次手动触发粘贴时间戳（ms）
   let suppressNativePasteUntil = 0; // 在该时间点之前忽略原生 paste 事件（ms）
+  const logFocus = (state: "focus" | "blur") => {
+    if (!dbgEnabled()) return;
+    try { (window as any).host?.utils?.perfLog?.(`[adapter] xterm.${state}`); } catch {}
+  };
 
   // 精确 fit 并将容器高度钉在“整行像素”，消除半行余数导致的上下偏移
   const fitAndPin = (forceRefresh = true): { cols: number; rows: number } => {
@@ -130,6 +137,8 @@ export function createTerminalAdapter(): TerminalAdapterAPI {
         cursorStyle: "bar",
         // 透明背景在某些机器上会影响清屏性能，若遇到问题可改为 false
         allowTransparency: true,
+        // 关键：启用 sendFocus，确保在 focus/blur 时向后端发送 CSI I/O 序列，便于 Codex 感知焦点变化
+        sendFocus: true,
         // Windows/ConPTY 自行处理 CR/LF，前端不应把 "\n" 强行当作 CRLF
         // 否则会与后端的换行判定叠加，放大错位风险
         convertEol: false,
@@ -146,6 +155,7 @@ export function createTerminalAdapter(): TerminalAdapterAPI {
         // 高滚动缓存，避免频繁重绘导致的“伪影残留”误判
         scrollback: 10000,
       });
+      try { term.setOption("sendFocus", true); } catch {}
       fitAddon = new FitAddon();
       term.loadAddon(fitAddon);
       term.loadAddon(new WebLinksAddon());
@@ -165,6 +175,20 @@ export function createTerminalAdapter(): TerminalAdapterAPI {
       container = el;
       term!.open(el);
       try { dlog(`[adapter] mount.open dpr=${window.devicePixelRatio || 1}`); } catch {}
+      try {
+        removeTermFocusListener?.();
+      } catch {} finally { removeTermFocusListener = null; }
+      try {
+        removeTermBlurListener?.();
+      } catch {} finally { removeTermBlurListener = null; }
+      try {
+        const focusDisposable = term!.onFocus(() => logFocus("focus"));
+        removeTermFocusListener = () => { try { focusDisposable.dispose(); } catch {} };
+      } catch { removeTermFocusListener = null; }
+      try {
+        const blurDisposable = term!.onBlur(() => logFocus("blur"));
+        removeTermBlurListener = () => { try { blurDisposable.dispose(); } catch {} };
+      } catch { removeTermBlurListener = null; }
 
       // 复制拦截：若存在选区，Ctrl/Cmd + C => 复制选区并阻止 ^C 透传
       try {
@@ -526,6 +550,12 @@ export function createTerminalAdapter(): TerminalAdapterAPI {
     },
     // 主动聚焦隐藏 textarea，避免切换后输入法合成态残留导致的键位/光标错位
     focus: () => { try { term?.focus(); } catch {} },
+    blur: () => {
+      try {
+        term?.blur();
+        logFocus("blur");
+      } catch {}
+    },
     dispose: () => {
       try { dlog('[adapter] dispose'); if (container) container.style.height = ""; } catch {}
       term?.dispose();
@@ -551,6 +581,10 @@ export function createTerminalAdapter(): TerminalAdapterAPI {
       try { removeAppLevelListeners?.(); } catch {}
       removeCtxMenuOverlay = null;
       removeAppLevelListeners = null;
+      try { removeTermFocusListener?.(); } catch {}
+      try { removeTermBlurListener?.(); } catch {}
+      removeTermFocusListener = null;
+      removeTermBlurListener = null;
     }
   };
 }

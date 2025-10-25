@@ -35,6 +35,8 @@ export type AppSettings = {
   projectPathStyle?: 'absolute' | 'relative';
   /** 任务完成提醒相关偏好 */
   notifications?: NotificationSettings;
+  /** Codex TUI 调试日志开关（启用时注入 RUST_LOG=codex_tui=trace） */
+  codexTraceEnabled?: boolean;
 };
 
 function getStorePath() {
