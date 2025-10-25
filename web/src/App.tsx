@@ -41,6 +41,7 @@ import CodexUsageSummary from "@/components/topbar/codex-status";
 import { checkForUpdate, type UpdateCheckErrorType } from "@/lib/about";
 import { createTerminalAdapter, type TerminalAdapterAPI } from "@/adapters/TerminalAdapter";
 import TerminalManager from "@/lib/TerminalManager";
+import { oscBufferDefaults, trimOscBuffer } from "@/lib/oscNotificationBuffer";
 import { toWSLForInsert } from "@/lib/wsl";
 import SettingsDialog from "@/features/settings/settings-dialog";
 
@@ -224,9 +225,13 @@ const DEFAULT_COMPLETION_PREFS: CompletionPreferences = {
 };
 
 // OSC 9; 是终端的 Operating System Command #9，用于终端/PTY 向宿主发送通知类信息
-const OSC_NOTIFICATION_PREFIX = '\u001b]9;';
+const OSC_NOTIFICATION_PREFIX = oscBufferDefaults.prefix;
 const OSC_TERMINATOR_BEL = '\u0007';
 const OSC_TERMINATOR_ST = '\u001b\\';
+const MAX_OSC_BUFFER_LENGTH = oscBufferDefaults.maxLength;
+const OSC_TAIL_WINDOW = oscBufferDefaults.tailWindow;
+// 软限制：达到此大小时发出警告（但不裁剪），帮助提前发现问题
+const OSC_BUFFER_SOFT_LIMIT = Math.floor(MAX_OSC_BUFFER_LENGTH * 0.75);
 
 function normalizeCompletionPrefs(raw?: Partial<CompletionPreferences> | null): CompletionPreferences {
   return {
@@ -423,7 +428,9 @@ export default function CodexFlowManagerUI() {
       if (flag === '1') return true;
       if (flag === '0') return false;
     } catch {}
-    try { return !!(import.meta as any)?.env?.DEV; } catch { return false; }
+    // 临时默认开启通知调试日志，便于排查问题
+    return true;
+    // try { return !!(import.meta as any)?.env?.DEV; } catch { return false; }
   }, []);
   const notifyLog = React.useCallback((msg: string) => {
     if (!notificationsDebugEnabled()) return;
@@ -586,6 +593,8 @@ export default function CodexFlowManagerUI() {
     notifyLog(`ctx.menu.open source=${source} tab=${id} x=${Math.round(event.clientX)} y=${Math.round(event.clientY)}`);
   }, [notifyLog, setTabCtxMenu, showNotifDebugMenu]);
   // Terminal adapters 与 PTY 状态
+  const [terminalMode, setTerminalMode] = useState<'wsl' | 'windows'>('wsl');
+  const [codexTraceEnabled, setCodexTraceEnabled] = useState(false);
   const ptyByTabRef = useRef<Record<string, string>>({});
   const [ptyByTab, setPtyByTab] = useState<Record<string, string>>({});
   const ptyAliveRef = useRef<Record<string, boolean>>({});
@@ -610,6 +619,22 @@ export default function CodexFlowManagerUI() {
   useEffect(() => { tabsByProjectRef.current = tabsByProject; }, [tabsByProject]);
   useEffect(() => { projectsRef.current = projects; }, [projects]);
 
+  const injectTraceEnv = React.useCallback((cmd: string | null | undefined) => {
+    const raw = String(cmd || "").trim();
+    const base = raw.length > 0 ? raw : "codex";
+    if (!codexTraceEnabled) return base;
+    if (terminalMode === "windows") {
+      if (/RUST_LOG\s*=/.test(base) || base.includes("$env:RUST_LOG")) {
+        return base;
+      }
+      return `$env:RUST_LOG='codex_tui=trace'; ${base}`;
+    }
+    if (/RUST_LOG\s*=/.test(base) || (base.startsWith("export ") && base.includes("RUST_LOG="))) {
+      return base;
+    }
+    return `export RUST_LOG=codex_tui=trace; ${base}`;
+  }, [terminalMode, codexTraceEnabled]);
+
   const scheduleFocusForTab = React.useCallback((tabId: string | null | undefined, opts?: { immediate?: boolean; allowDuringRename?: boolean; delay?: number }) => {
     if (!tabId) return;
     if (tabFocusTimerRef.current) {
@@ -619,12 +644,18 @@ export default function CodexFlowManagerUI() {
     const allowDuringRename = opts?.allowDuringRename ?? false;
     const delay = typeof opts?.delay === 'number' ? Math.max(0, opts.delay) : (opts?.immediate ? 0 : TAB_FOCUS_DELAY);
     const run = () => {
-      if (!allowDuringRename && editingTabIdRef.current === tabId) return;
-      try { terminalManagerRef.current?.onTabActivated(tabId); } catch {}
+      if (!allowDuringRename && editingTabIdRef.current === tabId) {
+        notifyLog(`tabFocus.skip tab=${tabId} reason=editing`);
+        return;
+      }
+      try {
+        notifyLog(`tabFocus.run tab=${tabId} delay=${delay}`);
+        terminalManagerRef.current?.onTabActivated(tabId);
+      } catch {}
     };
     if (delay === 0) run();
     else tabFocusTimerRef.current = window.setTimeout(run, delay);
-  }, [terminalManagerRef]);
+  }, [terminalManagerRef, notifyLog]);
 
   type TabFocusOptions = { focusMode?: 'immediate' | 'defer'; allowDuringRename?: boolean; delay?: number; projectId?: string };
 
@@ -653,6 +684,19 @@ export default function CodexFlowManagerUI() {
 
   // 设置活跃 tab 的封装：同时记录到 per-project map，供切换时恢复
   function setActiveTab(id: string | null, options?: TabFocusOptions) {
+    const prevId = activeTabIdRef.current;
+    if (prevId && prevId !== id) {
+      try {
+        terminalManagerRef.current?.onTabDeactivated(prevId);
+        notifyLog(`tabFocus.deactivate tab=${prevId} next=${id || 'none'}`);
+      } catch {}
+    }
+    activeTabIdRef.current = id ?? null;
+    if (id && prevId !== id) {
+      try { notifyLog(`tabFocus.activate tab=${id} prev=${prevId || 'none'}`); } catch {}
+    } else if (!id && prevId) {
+      try { notifyLog(`tabFocus.clear prev=${prevId}`); } catch {}
+    }
     setActiveTabId((prev) => (prev === id ? prev : id));
     try {
       const targetProjectId = options?.projectId || selectedProject?.id;
@@ -952,11 +996,40 @@ export default function CodexFlowManagerUI() {
       const snippet = chunk.replace(/\s+/g, ' ').slice(0, 120);
       notifyLog(`ptyChunk pty=${ptyId} len=${chunk.length} hasOSC=${hasOsc} snippet="${snippet}"`);
     }
+    
+    // 获取或初始化缓冲区，关键防护：确保总是有有效的字符串
+    const existingBuffer = ptyNotificationBuffersRef.current[ptyId];
+    if (typeof existingBuffer !== 'string' && existingBuffer !== undefined) {
+      console.warn(`[Notification] Invalid buffer type for pty=${ptyId}, resetting`);
+      notifyLog(`WARN: Invalid buffer type pty=${ptyId} type=${typeof existingBuffer}`);
+      ptyNotificationBuffersRef.current[ptyId] = '';
+    }
     let buffer = (ptyNotificationBuffersRef.current[ptyId] || '') + chunk;
+    
+    // 增强诊断：记录缓冲区状态，特别是在检测到 OSC 前缀时
+    const hadOscBefore = existingBuffer && existingBuffer.includes(OSC_NOTIFICATION_PREFIX);
+    if (hasOsc || hadOscBefore) {
+      notifyLog(`buffer state pty=${ptyId} before=${existingBuffer?.length || 0} after=${buffer.length} hadOsc=${hadOscBefore} newOsc=${hasOsc}`);
+    }
+    
+    // 防护：检测异常超长的缓冲区（在处理之前），可能表明 OSC 序列长时间未完成
+    if (buffer.length > MAX_OSC_BUFFER_LENGTH * 2) {
+      const oscIdx = buffer.lastIndexOf(OSC_NOTIFICATION_PREFIX);
+      if (oscIdx >= 0) {
+        const pendingLen = buffer.length - oscIdx;
+        notifyLog(`WARN: Extremely long buffer pty=${ptyId} total=${buffer.length} pendingOSC=${pendingLen}`);
+        console.warn(`[Notification] Potential stuck OSC sequence pty=${ptyId} bufferLen=${buffer.length} pendingLen=${pendingLen}`);
+      }
+    }
+    
+    let processedCount = 0;
     while (true) {
       const start = buffer.indexOf(OSC_NOTIFICATION_PREFIX);
       if (start < 0) break;
-      if (start > 0) buffer = buffer.slice(start);
+      if (start > 0) {
+        notifyLog(`OSC prefix found at offset=${start}, trimming pty=${ptyId}`);
+        buffer = buffer.slice(start);
+      }
       const payload = buffer.slice(OSC_NOTIFICATION_PREFIX.length);
       const belIndex = payload.indexOf(OSC_TERMINATOR_BEL);
       const stIndex = payload.indexOf(OSC_TERMINATOR_ST);
@@ -970,21 +1043,86 @@ export default function CodexFlowManagerUI() {
         terminatorLength = OSC_TERMINATOR_ST.length;
       }
       if (terminatorIndex < 0) {
+        // OSC 前缀存在但终止符未到达，记录诊断信息（但只在缓冲区较大时记录，避免日志泛滥）
+        if (buffer.length > 1024) {
+          notifyLog(`OSC incomplete pty=${ptyId} bufferLen=${buffer.length} payloadLen=${payload.length}`);
+        }
         break;
       }
       const message = payload.slice(0, terminatorIndex);
       buffer = payload.slice(terminatorIndex + terminatorLength);
+      processedCount++;
+      
       const tabId = ptyToTabRef.current[ptyId];
-      if (tabId && isAgentCompletionMessage(message)) {
-        notifyLog(`processPtyNotificationChunk hit tab=${tabId} message="${message.slice(0, 80)}"`);
+      const isCompletion = isAgentCompletionMessage(message);
+      if (tabId && isCompletion) {
+        const activeMatch = activeTabIdRef.current === tabId;
+        notifyLog(`processPtyNotificationChunk hit tab=${tabId} active=${activeMatch ? '1' : '0'} message="${message.slice(0, 80)}"`);
         handleAgentCompletion(tabId, message);
       } else if (tabId) {
-        notifyLog(`processPtyNotificationChunk ignore tab=${tabId} message="${message.slice(0, 80)}"`);
+        notifyLog(`processPtyNotificationChunk ignore tab=${tabId} isCompletion=${isCompletion} message="${message.slice(0, 80)}"`);
       } else {
-        notifyLog(`processPtyNotificationChunk ignoreNoTab message="${message.slice(0, 80)}"`);
+        // 增强日志：记录映射丢失的情况，便于诊断
+        notifyLog(`processPtyNotificationChunk ignoreNoTab pty=${ptyId} isCompletion=${isCompletion} message="${message.slice(0, 80)}" hasMapping=${!!ptyToTabRef.current[ptyId]}`);
+        if (!ptyToTabRef.current[ptyId]) {
+          console.warn('[Notification] Lost pty-to-tab mapping for notification', { ptyId, messagePreview: message.slice(0, 80) });
+        }
       }
     }
-    if (buffer.length > 2048) buffer = buffer.slice(-2048);
+    
+    if (processedCount > 0) {
+      notifyLog(`processed ${processedCount} OSC sequence(s) pty=${ptyId} remainingBuffer=${buffer.length}`);
+    }
+    
+    // 软限制警告：在达到硬限制之前提前发现潜在问题
+    if (buffer.length > OSC_BUFFER_SOFT_LIMIT && buffer.length <= MAX_OSC_BUFFER_LENGTH) {
+      const oscIdx = buffer.lastIndexOf(OSC_NOTIFICATION_PREFIX);
+      if (oscIdx >= 0) {
+        const pendingLen = buffer.length - oscIdx;
+        notifyLog(`SOFT LIMIT: Buffer approaching max pty=${ptyId} len=${buffer.length} limit=${MAX_OSC_BUFFER_LENGTH} pendingOSC=${pendingLen}`);
+      } else if (buffer.length > OSC_BUFFER_SOFT_LIMIT * 1.2) {
+        // 如果缓冲区较大但没有 OSC 前缀，也记录（可能是异常情况）
+        notifyLog(`SOFT LIMIT: Large buffer without OSC pty=${ptyId} len=${buffer.length}`);
+      }
+    }
+    
+    // 专用缓冲裁剪：限制内存占用，同时保留 OSC 起始片段，防止分片导致的通知丢失
+    if (buffer.length > MAX_OSC_BUFFER_LENGTH) {
+      // 在裁剪前记录完整状态，帮助诊断
+      const preCheck = {
+        hasPrefix: buffer.includes(OSC_NOTIFICATION_PREFIX),
+        lastPrefixIdx: buffer.lastIndexOf(OSC_NOTIFICATION_PREFIX),
+        length: buffer.length,
+      };
+      notifyLog(`buffer trim START pty=${ptyId} len=${preCheck.length} hasPrefix=${preCheck.hasPrefix} lastIdx=${preCheck.lastPrefixIdx}`);
+      
+      const { buffer: reducedBuffer, reason, trimmedBytes, partialPrefixLength } = trimOscBuffer(buffer, {
+        prefix: OSC_NOTIFICATION_PREFIX,
+        maxLength: MAX_OSC_BUFFER_LENGTH,
+        tailWindow: OSC_TAIL_WINDOW,
+      });
+      
+      if (trimmedBytes > 0) {
+        const postCheck = {
+          hasPrefix: reducedBuffer.includes(OSC_NOTIFICATION_PREFIX),
+          lastPrefixIdx: reducedBuffer.lastIndexOf(OSC_NOTIFICATION_PREFIX),
+          length: reducedBuffer.length,
+        };
+        if (reason === "from-prefix") {
+          notifyLog(`buffer trimmed from OSC start, trimmed=${trimmedBytes} keep=${reducedBuffer.length} prefixPreserved=${postCheck.hasPrefix}`);
+        } else if (reason === "partial-prefix") {
+          notifyLog(`buffer trimmed, preserved partial OSC prefix length=${partialPrefixLength} trimmed=${trimmedBytes} keep=${reducedBuffer.length}`);
+        } else if (reason === "tail") {
+          notifyLog(`buffer trimmed to tail window, trimmed=${trimmedBytes} keep=${reducedBuffer.length}`);
+          // 特别警告：如果裁剪前有前缀但裁剪后没有，说明可能丢失了 OSC 序列
+          if (preCheck.hasPrefix && !postCheck.hasPrefix) {
+            console.warn(`[Notification] OSC prefix lost during tail trimming pty=${ptyId} before=${preCheck.length} after=${postCheck.length}`);
+            notifyLog(`CRITICAL: OSC prefix lost in tail trim pty=${ptyId} beforeLen=${preCheck.length} beforeIdx=${preCheck.lastPrefixIdx}`);
+          }
+        }
+      }
+      buffer = reducedBuffer;
+    }
     ptyNotificationBuffersRef.current[ptyId] = buffer;
   }
 
@@ -1002,18 +1140,77 @@ export default function CodexFlowManagerUI() {
 
   function registerPtyForTab(tabId: string, ptyId: string | undefined) {
     if (!ptyId) return;
-    unregisterPtyListener(ptyId);
+    const previousTab = ptyToTabRef.current[ptyId];
+    const previousListener = ptyListenersRef.current[ptyId];
+    const existingBuffer = ptyNotificationBuffersRef.current[ptyId];
+    
+    if (previousTab === tabId && typeof previousListener === 'function') {
+      notifyLog(`registerPtyForTab reuse tab=${tabId} pty=${ptyId} bufferLen=${existingBuffer?.length || 0}`);
+      return;
+    }
+
+    notifyLog(`registerPtyForTab BEGIN tab=${tabId} pty=${ptyId} prevTab=${previousTab || 'none'} bufferLen=${existingBuffer?.length || 0}`);
+
+    const shouldResetBuffer = !!previousTab && previousTab !== tabId;
+    
+    // 关键诊断：在重置缓冲区前，检查是否有未完成的 OSC 序列
+    if (shouldResetBuffer && existingBuffer && existingBuffer.length > 0) {
+      const hasOscPrefix = existingBuffer.includes(OSC_NOTIFICATION_PREFIX);
+      if (hasOscPrefix) {
+        const oscIdx = existingBuffer.lastIndexOf(OSC_NOTIFICATION_PREFIX);
+        const pendingLen = existingBuffer.length - oscIdx;
+        notifyLog(`WARN: Resetting buffer with pending OSC pty=${ptyId} prevTab=${previousTab} newTab=${tabId} bufferLen=${existingBuffer.length} pendingOSC=${pendingLen}`);
+        console.warn(`[Notification] Discarding buffer with OSC sequence during tab reassignment pty=${ptyId} pendingLen=${pendingLen}`);
+      } else {
+        notifyLog(`Resetting buffer (no OSC) pty=${ptyId} prevTab=${previousTab} newTab=${tabId} bufferLen=${existingBuffer.length}`);
+      }
+    }
+
+    // 关键：先更新映射，确保此后到达的流量具备正确归属
     ptyToTabRef.current[ptyId] = tabId;
-    notifyLog(`registerPtyForTab tab=${tabId} pty=${ptyId}`);
+    notifyLog(`registerPtyForTab mapping set tab=${tabId} pty=${ptyId}`);
+
+    let off: (() => void) | undefined;
     try {
-      const off = window.host.pty.onData(ptyId, (data) => {
+      off = window.host.pty.onData(ptyId, (data) => {
         try { processPtyNotificationChunk(ptyId, data); } catch (err) { console.warn('processPtyNotificationChunk failed', err); }
       });
-      if (typeof off === 'function') {
-        ptyListenersRef.current[ptyId] = off;
-      }
     } catch (err) {
       console.warn('registerPtyForTab failed', err);
+      notifyLog(`registerPtyForTab ERROR: ${String((err as any)?.message || err)} pty=${ptyId}`);
+      // 回滚映射
+      if (previousTab && previousTab !== tabId) {
+        ptyToTabRef.current[ptyId] = previousTab;
+      } else if (!previousTab) {
+        delete ptyToTabRef.current[ptyId];
+      }
+      return;
+    }
+
+    if (typeof off === 'function') {
+      ptyListenersRef.current[ptyId] = off;
+      notifyLog(`registerPtyForTab SUCCESS tab=${tabId} pty=${ptyId} listener=${typeof off}`);
+    } else {
+      console.warn('registerPtyForTab: onData did not return a function', ptyId);
+      notifyLog(`registerPtyForTab WARNING: onData returned non-function pty=${ptyId} type=${typeof off}`);
+    }
+
+    if (typeof previousListener === 'function') {
+      try {
+        previousListener();
+        notifyLog(`registerPtyForTab unregistered old listener pty=${ptyId}`);
+      } catch (err) {
+        notifyLog(`registerPtyForTab failed to unregister old listener pty=${ptyId} error=${String(err)}`);
+      }
+    }
+
+    // 只在确实需要重置时才删除缓冲区，并记录详细信息
+    if (shouldResetBuffer) {
+      delete ptyNotificationBuffersRef.current[ptyId];
+      notifyLog(`registerPtyForTab buffer reset pty=${ptyId}`);
+    } else if (existingBuffer && existingBuffer.length > 0) {
+      // 不需要重置但有缓冲区内容，记录以便跟踪
+      notifyLog(`registerPtyForTab keeping existing buffer pty=${ptyId} len=${existingBuffer.length}`);
     }
   }
 
@@ -1122,7 +1319,6 @@ export default function CodexFlowManagerUI() {
   // Settings
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [wslDistro, setWslDistro] = useState("Ubuntu-24.04");
-  const [terminalMode, setTerminalMode] = useState<'wsl' | 'windows'>('wsl');
   // 基础命令（默认 'codex'），不做 tmux 包装，直接在 WSL 中执行。
   const [codexCmd, setCodexCmd] = useState("codex");
   const [sendMode, setSendMode] = useState<'write_only' | 'write_and_enter'>("write_and_enter");
@@ -1277,6 +1473,7 @@ export default function CodexFlowManagerUI() {
           setSendMode(s.sendMode || 'write_and_enter');
           setProjectPathStyle((s as any).projectPathStyle || 'absolute');
           setNotificationPrefs(normalizeCompletionPrefs((s as any).notifications));
+          setCodexTraceEnabled((s as any).codexTraceEnabled !== undefined ? !!(s as any).codexTraceEnabled : false);
           // historyRoot 自动计算，无需显示设置
         }
       } catch (e) {
@@ -1473,7 +1670,7 @@ export default function CodexFlowManagerUI() {
     setTabsByProject((m) => ({ ...m, [project.id]: [...(m[project.id] || []), tab] }));
     setActiveTab(tab.id, { focusMode: 'immediate', allowDuringRename: true, delay: 0 });
     try {
-      const startupCmd = String(codexCmd || 'codex');
+      const startupCmd = injectTraceEnv(codexCmd);
       const { id } = await window.host.pty.openWSLConsole({ distro: wslDistro, wslPath: project.wslPath, winPath: project.winPath, cols: 80, rows: 24, startupCmd });
       ptyByTabRef.current[tab.id] = id;
       setPtyByTab((m) => ({ ...m, [tab.id]: id }));
@@ -1545,7 +1742,7 @@ export default function CodexFlowManagerUI() {
     // Open PTY in main (WSL)
     try {
       try { await (window as any).host?.utils?.perfLog?.(`[ui] openNewConsole start project=${selectedProject?.name}`); } catch {}
-      const startupCmd = String(codexCmd || 'codex');
+      const startupCmd = injectTraceEnv(codexCmd);
       const { id } = await window.host.pty.openWSLConsole({
         distro: wslDistro,
         wslPath: selectedProject.wslPath,
@@ -2272,12 +2469,13 @@ export default function CodexFlowManagerUI() {
     const resumePath = toWSLForInsert(filePath);
     if (forceLegacyCli) {
       const escapedResume = resumePath.replace(/"/g, '\"');
-      const startupCmd = `npx --yes @openai/codex@0.31.0 -c experimental_resume=\"${escapedResume}\"`;
+      const startupCmd = injectTraceEnv(`npx --yes @openai/codex@0.31.0 -c experimental_resume=\"${escapedResume}\"`);
       return { startupCmd, session, resumePath, sessionId: resumeSessionId, strategy: 'force-legacy-cli', resumeHint: 'legacy', forceLegacyCli: true };
     }
-    const fallbackCmd = `${baseCmd} -c experimental_resume="${resumePath}"`;
+    const fallbackCmd = injectTraceEnv(`${baseCmd} -c experimental_resume="${resumePath}"`);
     if (!preferLegacyOnly && resumeSessionId) {
-      const startupCmd = `if ${baseCmd} resume ${resumeSessionId}; then :; else ${fallbackCmd}; fi`;
+      const resumeCmd = injectTraceEnv(`${baseCmd} resume ${resumeSessionId}`);
+      const startupCmd = `if ${resumeCmd}; then :; else ${fallbackCmd}; fi`;
       return { startupCmd, session, resumePath, sessionId: resumeSessionId, strategy: 'resume+fallback', resumeHint: resumeModeHint, forceLegacyCli: false };
     }
     const strategy = preferLegacyOnly ? 'legacy-only' : 'experimental_resume';
@@ -2313,6 +2511,9 @@ export default function CodexFlowManagerUI() {
             try { scheduleFocusForTab(tab.id, { immediate: true, allowDuringRename: true }); } catch {}
           });
         } catch {}
+        try {
+          await (window as any).host?.utils?.perfLog?.(`[ui] history.resume openWSLConsole start tab=${tab.id}`);
+        } catch {}
         const { id } = await window.host.pty.openWSLConsole({
           distro: wslDistro,
           wslPath: selectedProject.wslPath,
@@ -2321,11 +2522,17 @@ export default function CodexFlowManagerUI() {
           rows: 24,
           startupCmd,
         });
+        try {
+          await (window as any).host?.utils?.perfLog?.(`[ui] history.resume pty=${id} tab=${tab.id} - registering listener`);
+        } catch {}
         ptyByTabRef.current[tab.id] = id;
         setPtyByTab((m) => ({ ...m, [tab.id]: id }));
         ptyAliveRef.current[tab.id] = true;
         setPtyAlive((m) => ({ ...m, [tab.id]: true }));
         registerPtyForTab(tab.id, id);
+        try {
+          await (window as any).host?.utils?.perfLog?.(`[ui] history.resume pty=${id} tab=${tab.id} - listener registered`);
+        } catch {}
         try { tm.setPty(tab.id, id); } catch (err) { console.warn('tm.setPty failed', err); }
         try { window.host.projects.touch(selectedProject.id); } catch {}
         return true;
@@ -2822,7 +3029,7 @@ export default function CodexFlowManagerUI() {
                   const proj = projectCtxMenu.project;
                   if (proj) {
                     try {
-                      const res: any = await (window.host.utils as any).openExternalConsole({ wslPath: proj.wslPath, winPath: proj.winPath, distro: wslDistro, startupCmd: codexCmd });
+                      const res: any = await (window.host.utils as any).openExternalConsole({ wslPath: proj.wslPath, winPath: proj.winPath, distro: wslDistro, startupCmd: injectTraceEnv(codexCmd) });
                       if (!(res && res.ok)) throw new Error(res?.error || 'failed');
                     } catch (e) {
                       const env = toShellLabel(terminalMode);
@@ -2912,7 +3119,7 @@ export default function CodexFlowManagerUI() {
       <SettingsDialog
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
-        values={{ terminal: terminalMode, distro: wslDistro, codexCmd, sendMode, locale, projectPathStyle, notifications: notificationPrefs }}
+        values={{ terminal: terminalMode, distro: wslDistro, codexCmd, sendMode, locale, projectPathStyle, notifications: notificationPrefs, codexTrace: codexTraceEnabled }}
         onSave={async (v) => {
           const nextTerminal = v.terminal;
           const nextDistro = v.distro;
@@ -2921,6 +3128,7 @@ export default function CodexFlowManagerUI() {
           const nextStyle = v.projectPathStyle || 'absolute';
           const nextLocale = v.locale;
           const nextNotifications = normalizeCompletionPrefs(v.notifications);
+          const nextTrace = v.codexTrace ?? false;
           // 先切换语言（内部会写入 settings 并广播），再持久化其它字段
           try { await (window as any).host?.i18n?.setLocale?.(nextLocale); setLocale(nextLocale); } catch {}
            try {
@@ -2931,6 +3139,7 @@ export default function CodexFlowManagerUI() {
               sendMode: nextSend,
               projectPathStyle: v.projectPathStyle,
               notifications: nextNotifications,
+              codexTraceEnabled: nextTrace,
               network: v.network,
             });
           } catch (e) { console.warn('settings.update failed', e); }
@@ -2940,6 +3149,7 @@ export default function CodexFlowManagerUI() {
           setSendMode(nextSend);
           setProjectPathStyle(nextStyle);
           setNotificationPrefs(nextNotifications);
+          setCodexTraceEnabled(nextTrace);
         }}
       />
 

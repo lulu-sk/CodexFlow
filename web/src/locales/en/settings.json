@@ -53,6 +53,12 @@
   "wslDistroHelp": "Select the default distribution used when opening a WSL terminal.",
   "codexCmd": "CodexFlow launch command",
   "codexCmdHelp": "Customize the command CodexFlow runs when launching from the terminal.",
+  "codexTrace": {
+    "label": "Codex TUI debugging",
+    "help": "Control whether CodexFlow adds trace logging flags when launching Codex (applies to new terminals).",
+    "toggle": "Enable codex_tui trace logging",
+    "note": "Supported in both WSL and PowerShell sessions; turn this off if you prefer quieter logs."
+  },
   "sendMode": {
     "label": "Send key behavior",
     "write_only": "Send only",
@@ -67,6 +73,7 @@
   },
   "notifications": {
     "label": "Task completion alerts",
+    "help": "Get notified automatically when an agent finishes its task. Alerts only appear when you switch to another window or tab, so they won't interrupt your current work.",
     "badge": {
       "label": "Taskbar badge",
       "desc": "Show the number of finished tasks on the CodexFlow icon."

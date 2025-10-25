@@ -48,6 +48,7 @@ export type SettingsDialogProps = {
     projectPathStyle: PathStyle;
     notifications: NotificationPrefs;
     network?: NetworkPrefs;
+    codexTrace: boolean;
   };
   onSave: (v: {
     terminal: TerminalMode;
@@ -58,6 +59,7 @@ export type SettingsDialogProps = {
     projectPathStyle: PathStyle;
     notifications: NotificationPrefs;
     network: NetworkPrefs;
+    codexTrace: boolean;
   }) => void;
 };
 
@@ -102,6 +104,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   const [terminal, setTerminal] = useState<TerminalMode>(values.terminal || "wsl");
   const [distro, setDistro] = useState<string>("");
   const [codexCmd, setCodexCmd] = useState(values.codexCmd);
+  const [codexTrace, setCodexTrace] = useState<boolean>(values.codexTrace ?? false);
   const [sendMode, setSendMode] = useState<SendMode>(values.sendMode);
   const [pathStyle, setPathStyle] = useState<PathStyle>(values.projectPathStyle || "absolute");
   const [notifications, setNotifications] = useState<NotificationPrefs>(values.notifications);
@@ -149,6 +152,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   useEffect(() => {
     setCodexCmd(values.codexCmd);
     setTerminal(values.terminal || "wsl");
+    setCodexTrace(values.codexTrace ?? false);
     if (open) {
       setDistro(values.distro || "");
       setSendMode(values.sendMode || "write_and_enter");
@@ -162,7 +166,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         noProxy: values.network?.noProxy ?? "",
       });
     }
-  }, [open, values.codexCmd, values.distro, values.locale, values.notifications, values.projectPathStyle, values.sendMode, values.terminal]);
+  }, [open, values.codexCmd, values.distro, values.locale, values.notifications, values.projectPathStyle, values.sendMode, values.terminal, values.codexTrace]);
 
   useEffect(() => {
     if (!open) return;
@@ -484,6 +488,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                   <CardTitle>{t("settings:notifications.label")}</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
+                  <p className="text-sm text-slate-500">{t("settings:notifications.help")}</p>
                   <label className="flex items-start gap-3 rounded-lg border border-slate-200/70 bg-white/60 px-3 py-3 shadow-sm">
                     <input
                       type="checkbox"
@@ -612,6 +617,43 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                 <CardContent className="space-y-3">
                   <p className="text-sm text-slate-500">{t("settings:codexCmdHelp")}</p>
                   <Input value={codexCmd} onChange={(event) => setCodexCmd(event.target.value)} />
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardTitle>{t("settings:codexTrace.label")}</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <p className="text-sm text-slate-500">{t("settings:codexTrace.help")}</p>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={codexTrace}
+                    onClick={() => setCodexTrace((prev) => !prev)}
+                    className={cn(
+                      "flex w-full items-start gap-3 rounded-lg border px-3 py-3 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400",
+                      "border-slate-200/70 shadow-sm",
+                      codexTrace ? "bg-slate-900/5" : "bg-white/60"
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full transition",
+                        codexTrace ? "bg-slate-900" : "bg-slate-300"
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "absolute left-1 top-1 h-3 w-3 rounded-full bg-white transition-transform",
+                          codexTrace ? "translate-x-4" : "translate-x-0"
+                        )}
+                      />
+                    </span>
+                    <span>
+                      <span className="text-sm font-medium text-slate-800">{t("settings:codexTrace.toggle")}</span>
+                      <p className="text-xs text-slate-500">{t("settings:codexTrace.note")}</p>
+                    </span>
+                  </button>
                 </CardContent>
               </Card>
             </div>
@@ -865,6 +907,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     cleanupScanning,
     codexCmd,
     codexRoots,
+    codexTrace,
     distro,
     labelOf,
     lang,
@@ -965,6 +1008,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                       projectPathStyle: pathStyle,
                       notifications,
                       network,
+                      codexTrace,
                     });
                     onOpenChange(false);
                   }}

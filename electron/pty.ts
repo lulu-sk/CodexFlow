@@ -108,18 +108,27 @@ export class PTYManager {
       if (win) win.webContents.send('pty:exit', { id, exitCode: evt?.exitCode });
     });
 
+    // 关键修复：延迟执行 startupCmd，确保前端有足够时间订阅 'pty:data' 事件
+    // 使用 setImmediate 让前端的 IPC 订阅先完成，避免早期输出（包括 OSC 通知）丢失
     if (startupCmd) {
       const isWin = os.platform() === 'win32';
       const mode = isWin ? (termMode || 'wsl') : 'posix';
-      if (mode === 'windows') {
-        // PowerShell 中直接执行命令（cwd 已设置）
-        proc.write(`${startupCmd}\r`);
-      } else if (isWin) {
-        // WSL：通过 bash -lc 执行
-        proc.write(`bash -lc "${startupCmd.replace(/"/g, '\\"')}"\r`);
-      } else {
-        proc.write(`${startupCmd}\r`);
-      }
+      setImmediate(() => {
+        const p = this.sessions.get(id);
+        if (!p) return; // PTY 可能已关闭
+        if (mode === 'windows') {
+          // PowerShell 中直接执行命令（cwd 已设置）
+          p.write(`${startupCmd}\r`);
+          dlog(`[pty] startupCmd executed (windows) id=${id}`);
+        } else if (isWin) {
+          // WSL：通过 bash -lc 执行
+          p.write(`bash -lc "${startupCmd.replace(/"/g, '\\"')}"\r`);
+          dlog(`[pty] startupCmd executed (wsl) id=${id}`);
+        } else {
+          p.write(`${startupCmd}\r`);
+          dlog(`[pty] startupCmd executed (posix) id=${id}`);
+        }
+      });
     }
 
     return id;

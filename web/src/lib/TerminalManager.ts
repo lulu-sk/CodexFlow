@@ -45,6 +45,7 @@ export default class TerminalManager {
   private hostElByTab: Record<string, HTMLElement | null> = {};
   private getPtyId: (tabId: string) => string | undefined;
   private hostPty: HostPtyAPI;
+  private lastFocusedTabId: string | null = null;
 
   /**
    * 构造函数
@@ -176,6 +177,30 @@ export default class TerminalManager {
           } catch {}
         });
       } catch {}
+    }
+  }
+
+  private blurTab(tabId: string, reason: string): void {
+    const adapter = this.adapters[tabId];
+    if (!adapter) return;
+    if (typeof adapter.blur === "function") {
+      try {
+        adapter.blur();
+        this.dlog(`tabBlur tab=${tabId} reason=${reason}`);
+        const pid = this.getPtyId(tabId);
+        if (pid) {
+          try {
+            this.hostPty.write(pid, "\u001b[O");
+            this.dlog(`tabBlur.injectFocusLost tab=${tabId} pty=${pid}`);
+          } catch (err) {
+            this.dlog(`tabBlur.injectFocusLost.error tab=${tabId} pty=${pid} err=${(err as Error)?.message || err}`);
+          }
+        }
+      } catch (err) {
+        this.dlog(`tabBlur.error tab=${tabId} reason=${reason} err=${(err as Error)?.message || err}`);
+      }
+    } else {
+      this.dlog(`tabBlur.skip tab=${tabId} reason=${reason}`);
     }
   }
 
@@ -475,6 +500,10 @@ export default class TerminalManager {
    */
   onTabActivated(tabId: string): void {
     this.dlog(`tabActivated tab=${tabId}`);
+    if (this.lastFocusedTabId && this.lastFocusedTabId !== tabId) {
+      this.blurTab(this.lastFocusedTabId, "switch");
+    }
+    this.lastFocusedTabId = tabId;
     // 先确保所有 PTY 均处于 resume 状态：后台标签仍需接收 OSC 事件以触发完成通知
     try {
       for (const t of Object.keys(this.adapters)) {
@@ -487,6 +516,24 @@ export default class TerminalManager {
     try { this.scheduleResizeSync(tabId, true); } catch {}
     // 切换后主动聚焦并强制刷新，消解输入法合成/宽字符残影
     try { this.adapters[tabId]?.focus?.(); } catch {}
+    const pid = this.getPtyId(tabId);
+    if (pid) {
+      try {
+        this.hostPty.write(pid, "\u001b[I");
+        this.dlog(`tabActivate.injectFocusGain tab=${tabId} pty=${pid}`);
+      } catch (err) {
+        this.dlog(`tabActivate.injectFocusGain.error tab=${tabId} pty=${pid} err=${(err as Error)?.message || err}`);
+      }
+    }
+  }
+
+  onTabDeactivated(tabId: string | null | undefined): void {
+    if (!tabId) return;
+    this.dlog(`tabDeactivated tab=${tabId}`);
+    if (this.lastFocusedTabId === tabId) {
+      this.lastFocusedTabId = null;
+    }
+    this.blurTab(tabId, "deactivate");
   }
 
   /**
@@ -549,6 +596,10 @@ export default class TerminalManager {
    * 销毁某个 tab 的持久化资源；如果 alsoClosePty 为 true，则同时请求关闭关联的 PTY
    */
   disposeTab(tabId: string, alsoClosePty = true): void {
+    if (this.lastFocusedTabId === tabId) {
+      this.lastFocusedTabId = null;
+    }
+    try { this.blurTab(tabId, "dispose"); } catch {}
     try { this.resizeUnsubByTab[tabId]?.(); } catch {}
     delete this.resizeUnsubByTab[tabId];
     // 清理定时器与状态

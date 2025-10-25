@@ -25,6 +25,8 @@ export type AppSettings = {
     proxyUrl?: string;
     noProxy?: string;
   };
+  /** Codex TUI 调试日志开关 */
+  codexTraceEnabled?: boolean;
 };
 
 export type Project = {
