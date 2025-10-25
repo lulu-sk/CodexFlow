@@ -2,6 +2,7 @@
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
 import { app, BrowserWindow, ipcMain, dialog, clipboard, shell, Menu, screen, session } from 'electron';
+import os from 'node:os';
 import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import { promises as fsp } from 'node:fs';
@@ -1271,6 +1272,25 @@ ipcMain.handle('utils.openExternalUrl', async (_e, { url }: { url: string }) => 
     if (!/^https?:\/\//i.test(s)) throw new Error('invalid url');
     await shell.openExternal(s);
     return { ok: true } as const;
+  } catch (e: any) {
+    return { ok: false, error: String(e) } as const;
+  }
+});
+
+// 系统信息（用于渲染层判定 Windows 构建号，从而启用 xterm reflow）
+ipcMain.handle('utils.getWindowsInfo', async () => {
+  try {
+    const platform = process.platform;
+    if (platform !== 'win32') return { ok: true, platform } as const;
+    const rel = os.release() || '';
+    let buildNumber: number | undefined = undefined;
+    try {
+      const m = rel.match(/^\d+\.\d+\.(\d+)/);
+      if (m && m[1]) buildNumber = Math.max(0, Number(m[1]));
+    } catch {}
+    const conptyAvailable = typeof buildNumber === 'number' ? (buildNumber >= 18362) : true;
+    const backend = conptyAvailable ? 'conpty' : 'winpty';
+    return { ok: true, platform, buildNumber, backend, conptyAvailable } as const;
   } catch (e: any) {
     return { ok: false, error: String(e) } as const;
   }

@@ -190,6 +190,9 @@ contextBridge.exposeInMainWorld('host', {
     perfLog: async (text: string) => {
       try { return await ipcRenderer.invoke('utils.perfLog', { text }); } catch (e) { return { ok: false, error: String(e) }; }
     },
+    getWindowsInfo: async (): Promise<{ ok: boolean; platform?: string; buildNumber?: number; backend?: string; conptyAvailable?: boolean; error?: string }> => {
+      try { return await ipcRenderer.invoke('utils.getWindowsInfo'); } catch (e) { return { ok: false, error: String(e) } as any; }
+    },
     // 主进程 PTY 日志开关：默认关闭；可在控制台调用 setDebugTerm(true/false)
     debugTermGet: async (): Promise<{ ok: boolean; enabled?: boolean; error?: string }> => {
       try { return await ipcRenderer.invoke('utils.debugTerm.get'); } catch (e) { return { ok: false, error: String(e) }; }
