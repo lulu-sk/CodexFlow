@@ -62,6 +62,26 @@ export function createTerminalAdapter(): TerminalAdapterAPI {
     if (!dbgEnabled()) return;
     try { (window as any).host?.utils?.perfLog?.(`[adapter] xterm.${state}`); } catch {}
   };
+  // 关键：标签页切换后强制同步滚动区域高度，避免滚轮无法滚至底部
+  const syncViewportHeight = (tag: string) => {
+    if (!term) return;
+    try {
+      const core: any = (term as any)?._core;
+      const viewport = core?.viewport;
+      if (viewport && typeof viewport.syncScrollArea === "function") {
+        viewport.syncScrollArea(true);
+        if (dbgEnabled()) {
+          try {
+            (window as any).host?.utils?.perfLog?.(`[adapter] viewport.sync tag=${tag}`);
+          } catch {}
+        }
+      }
+    } catch (err) {
+      if (dbgEnabled()) {
+        try { (window as any).host?.utils?.perfLog?.(`[adapter] viewport.sync.error tag=${tag} err=${(err as Error)?.message || err}`); } catch {}
+      }
+    }
+  };
 
   // 精确 fit 并将容器高度钉在“整行像素”，消除半行余数导致的上下偏移
   const fitAndPin = (forceRefresh = true): { cols: number; rows: number } => {
@@ -120,6 +140,7 @@ export function createTerminalAdapter(): TerminalAdapterAPI {
       fitAddon.fit();
       dlog(`[adapter] fit.pinned cell=${cellW.toFixed(2)}x${cellH.toFixed(2)} hostH=${hostH} rows=${rows} pinnedPx=${pinnedPx} after=${term.cols}x${term.rows}`);
       if (forceRefresh) try { term.refresh(0, term.rows - 1); } catch {}
+      syncViewportHeight("fitAndPin");
       return { cols: term.cols, rows: term.rows };
     } catch {
       try { fitAddon!.fit(); } catch {}
@@ -549,7 +570,12 @@ export function createTerminalAdapter(): TerminalAdapterAPI {
       return s;
     },
     // 主动聚焦隐藏 textarea，避免切换后输入法合成态残留导致的键位/光标错位
-    focus: () => { try { term?.focus(); } catch {} },
+    focus: () => {
+      try {
+        term?.focus();
+      } catch {}
+      syncViewportHeight("focus");
+    },
     blur: () => {
       try {
         term?.blur();
