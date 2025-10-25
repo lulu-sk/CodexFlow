@@ -160,6 +160,7 @@ export interface NotificationsAPI {
 
 export interface UtilsAPI {
   perfLog(text: string): Promise<{ ok: boolean; error?: string }>;
+  getWindowsInfo(): Promise<{ ok: boolean; platform?: string; buildNumber?: number; backend?: string; conptyAvailable?: boolean; error?: string }>;
   copyText(text: string): Promise<{ ok: boolean; error?: string }>;
   readText(): Promise<{ ok: boolean; text?: string; error?: string }>;
   saveText(content: string, defaultPath?: string): Promise<{ ok: boolean; path?: string; canceled?: boolean; error?: string }>;

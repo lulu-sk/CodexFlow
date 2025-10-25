@@ -58,6 +58,10 @@ export function createTerminalAdapter(): TerminalAdapterAPI {
   // 防重与抑制：用于避免 Ctrl+V 同时触发 keydown + paste 导致的重复粘贴
   let lastManualPasteAt = 0; // 上次手动触发粘贴时间戳（ms）
   let suppressNativePasteUntil = 0; // 在该时间点之前忽略原生 paste 事件（ms）
+  // 低版本 Windows（ConPTY < 21376）降级重排开关与状态
+  let legacyWinNeedsReflowHack = false;
+  let legacyWinBuild = 0;
+  let legacyLastCols = 0;
   const logFocus = (state: "focus" | "blur") => {
     if (!dbgEnabled()) return;
     try { (window as any).host?.utils?.perfLog?.(`[adapter] xterm.${state}`); } catch {}
@@ -88,15 +92,32 @@ export function createTerminalAdapter(): TerminalAdapterAPI {
     if (!term || !fitAddon || !container) return { cols: 0, rows: 0 };
     try {
       const rect0 = container.getBoundingClientRect();
+      const parentEl = container.parentElement;
+      const parentRect0 = parentEl?.getBoundingClientRect() || null;
+      // 缩小时以父容器尺寸为准，避免被上一次“钉住高度”干扰
+      const hostW0 = parentRect0 ? parentRect0.width : rect0.width;
+      const hostH0 = parentRect0 ? parentRect0.height : rect0.height;
       const before = { cols: term.cols, rows: term.rows };
-      dlog(`[adapter] fit.start hostWH=${Math.round(rect0.width)}x${Math.round(rect0.height)} before=${before.cols}x${before.rows}`);
+      dlog(
+        `[adapter] fit.start hostWH=${Math.round(hostW0)}x${Math.round(hostH0)} before=${before.cols}x${before.rows}`
+      );
 
       // 若宿主高度为 0 或被隐藏，则跳过本次 fit/pin，避免产生 11x6 等异常度量
       try {
         const style = window.getComputedStyle(container);
-        const hidden = style.display === 'none' || style.visibility === 'hidden';
-        if (hidden || rect0.height <= 1) {
-          dlog(`[adapter] fit.skip hiddenOrZero hidden=${hidden} rect=${Math.round(rect0.width)}x${Math.round(rect0.height)}`);
+        const hiddenSelf = style.display === "none" || style.visibility === "hidden";
+        let hidden = hiddenSelf;
+        if (!hidden && parentEl) {
+          try {
+            const parentStyle = window.getComputedStyle(parentEl);
+            hidden = parentStyle.display === "none" || parentStyle.visibility === "hidden";
+          } catch {}
+        }
+        const zero = hostH0 <= 1 || hostW0 <= 1;
+        if (hidden || zero) {
+          dlog(
+            `[adapter] fit.skip hiddenOrZero hidden=${hidden} host=${Math.round(hostW0)}x${Math.round(hostH0)}`
+          );
           if (forceRefresh) try { term.refresh(0, term.rows - 1); } catch {}
           return { cols: term.cols, rows: term.rows };
         }
@@ -127,7 +148,11 @@ export function createTerminalAdapter(): TerminalAdapterAPI {
 
       // 宿主可用像素高度；取整去掉小数抖动
       const rect = container.getBoundingClientRect();
-      const hostH = Math.max(0, Math.floor(rect.height));
+      const parentRect = parentEl?.getBoundingClientRect() || null;
+      // 真正可用的宿主尺寸：优先使用父容器尺寸
+      const hostWidth = parentRect ? parentRect.width : rect.width;
+      const hostHeight = parentRect ? parentRect.height : rect.height;
+      const hostH = Math.max(0, Math.floor(hostHeight));
       
       // 计算整行数，并将容器高度钉为 rows*cellH 的整数像素，避免“半行余数”
       const rows = Math.max(2, Math.floor(hostH / cellH));
@@ -138,7 +163,28 @@ export function createTerminalAdapter(): TerminalAdapterAPI {
 
       // 第二次 fit：让 xterm 按钉死后的高度重新计算网格
       fitAddon.fit();
-      dlog(`[adapter] fit.pinned cell=${cellW.toFixed(2)}x${cellH.toFixed(2)} hostH=${hostH} rows=${rows} pinnedPx=${pinnedPx} after=${term.cols}x${term.rows}`);
+      dlog(
+        `[adapter] fit.pinned cell=${cellW.toFixed(2)}x${cellH.toFixed(2)} host=${Math.round(hostWidth)}x${hostH} rows=${rows} pinnedPx=${pinnedPx} after=${term.cols}x${term.rows}`
+      );
+      // 低版本 Windows：尝试一次“临时关闭 windowsMode + 列宽轻抖动”的降级重排
+      try {
+        if (legacyWinNeedsReflowHack && term && term.cols) {
+          const need = legacyLastCols !== term.cols;
+          if (need) {
+            const targetCols = term.cols;
+            const prevMode = !!((term as any)?.options?.windowsMode);
+            dlog(`[adapter] legacy.reflow try build=${legacyWinBuild} targetCols=${targetCols}`);
+            try {
+              (term as any).options = { windowsMode: false } as any;
+              try { (term as any).resize(Math.max(2, targetCols - 1), term.rows); } catch {}
+              try { (term as any).resize(targetCols, term.rows); } catch {}
+            } catch {} finally {
+              try { (term as any).options = { windowsMode: prevMode } as any; } catch {}
+            }
+            legacyLastCols = targetCols;
+          }
+        }
+      } catch {}
       if (forceRefresh) try { term.refresh(0, term.rows - 1); } catch {}
       syncViewportHeight("fitAndPin");
       return { cols: term.cols, rows: term.rows };
@@ -158,8 +204,6 @@ export function createTerminalAdapter(): TerminalAdapterAPI {
         cursorStyle: "bar",
         // 透明背景在某些机器上会影响清屏性能，若遇到问题可改为 false
         allowTransparency: true,
-        // 关键：启用 sendFocus，确保在 focus/blur 时向后端发送 CSI I/O 序列，便于 Codex 感知焦点变化
-        sendFocus: true,
         // Windows/ConPTY 自行处理 CR/LF，前端不应把 "\n" 强行当作 CRLF
         // 否则会与后端的换行判定叠加，放大错位风险
         convertEol: false,
@@ -176,7 +220,36 @@ export function createTerminalAdapter(): TerminalAdapterAPI {
         // 高滚动缓存，避免频繁重绘导致的“伪影残留”误判
         scrollback: 10000,
       });
-      try { term.setOption("sendFocus", true); } catch {}
+      // 在 Windows + ConPTY 且系统构建号 >= 21376 时，启用 xterm 的 reflow（对滚动缓冲区重排）
+      try {
+        const queryWin = async () => {
+          try {
+            const api = (window as any).host?.utils?.getWindowsInfo;
+            if (typeof api !== 'function') return;
+            const info = await api();
+            if (!info || info.ok === false) return;
+            if (String(info.platform || '').toLowerCase() !== 'win32') return;
+            const build = Number(info.buildNumber || 0);
+            if (build >= 21376) {
+              try {
+                (term as any).options = { windowsPty: { backend: 'conpty', buildNumber: build } } as any;
+                // 再次 fit 触发一次 buffer.resize，从而对历史缓冲区执行 reflow
+                requestAnimationFrame(() => {
+                  try { fitAddon?.fit(); term?.refresh(0, (term as any)?.rows - 1); syncViewportHeight("win.reflow"); } catch {}
+                });
+              } catch {}
+            } else {
+              // 低版本 Windows：记录需要启用降级重排策略
+              legacyWinNeedsReflowHack = true;
+              legacyWinBuild = build;
+              legacyLastCols = (term as any)?.cols || 0;
+            }
+          } catch {}
+        };
+        // 异步查询，尽量不阻塞初始化；结果到达后自动应用
+        queryWin();
+      } catch {}
+      // v5 无 sendFocus 选项：焦点变更由上层 TerminalManager 注入 ESC 序列处理
       fitAddon = new FitAddon();
       term.loadAddon(fitAddon);
       term.loadAddon(new WebLinksAddon());
@@ -202,14 +275,7 @@ export function createTerminalAdapter(): TerminalAdapterAPI {
       try {
         removeTermBlurListener?.();
       } catch {} finally { removeTermBlurListener = null; }
-      try {
-        const focusDisposable = term!.onFocus(() => logFocus("focus"));
-        removeTermFocusListener = () => { try { focusDisposable.dispose(); } catch {} };
-      } catch { removeTermFocusListener = null; }
-      try {
-        const blurDisposable = term!.onBlur(() => logFocus("blur"));
-        removeTermBlurListener = () => { try { blurDisposable.dispose(); } catch {} };
-      } catch { removeTermBlurListener = null; }
+      // xterm v5 无 onFocus/onBlur 事件：保留占位，焦点日志由上层切换时机驱动
 
       // 复制拦截：若存在选区，Ctrl/Cmd + C => 复制选区并阻止 ^C 透传
       try {
