@@ -244,3 +244,14 @@ export function translateRateLimitError(raw: unknown, t: TFunction): string {
     fallbackDefault: "无法获取速率限制",
   });
 }
+
+// 触发 Codex 用量刷新（渲染进程全局事件）
+// 说明：终端任务完成后会派发本事件；顶部栏用量组件监听并在 1 分钟冷却后触发刷新。
+export const CODEX_RATE_REFRESH_EVENT = "codex:rate-refresh-request";
+export type CodexRateRefreshDetail = { source?: string };
+export function emitCodexRateRefresh(source?: string): void {
+  try {
+    const detail: CodexRateRefreshDetail | undefined = source ? { source } : undefined;
+    window.dispatchEvent(new CustomEvent<CodexRateRefreshDetail>(CODEX_RATE_REFRESH_EVENT as any, { detail } as any));
+  } catch {}
+}

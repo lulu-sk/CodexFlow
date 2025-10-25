@@ -17,6 +17,7 @@ import {
   resolveDominantUsageWindow,
   translateRateLimitError,
   translateCodexBridgeError,
+  CODEX_RATE_REFRESH_EVENT,
 } from "@/lib/codex-status";
 
 type FetchState<T> = {
@@ -166,6 +167,7 @@ const CodexUsageHoverButton: React.FC<{ className?: string; terminalMode?: "wsl"
   const { t, i18n } = useTranslation(["common"]);
   const [rateState, reloadRate] = useCodexRate(true);
   const rateHover = useHoverCard();
+  const lastManualRefreshAtRef = useRef<number>(0);
   const envKey = useMemo(() => {
     if (terminalMode === "wsl") return `wsl:${distro ?? ""}`;
     if (terminalMode === "windows") return "windows";
@@ -185,6 +187,20 @@ const CodexUsageHoverButton: React.FC<{ className?: string; terminalMode?: "wsl"
     const timer = window.setTimeout(() => reloadRate(), interval);
     return () => window.clearTimeout(timer);
   }, [rateState.data, reloadRate]);
+
+  // 监听渲染进程全局的“用量刷新请求”事件；冷却时间 1 分钟
+  useEffect(() => {
+    const onRefresh = () => {
+      try {
+        const now = Date.now();
+        if (now - (lastManualRefreshAtRef.current || 0) < 60_000) return;
+        lastManualRefreshAtRef.current = now;
+        reloadRate();
+      } catch {}
+    };
+    window.addEventListener(CODEX_RATE_REFRESH_EVENT, onRefresh as any);
+    return () => window.removeEventListener(CODEX_RATE_REFRESH_EVENT, onRefresh as any);
+  }, [reloadRate]);
 
   const dominantWindow = useMemo(
     () => resolveDominantUsageWindow(rateState.data ?? null),

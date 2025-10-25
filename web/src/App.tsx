@@ -38,6 +38,7 @@ import {
 } from "lucide-react";
 import AboutSupport from "@/components/about-support";
 import CodexUsageSummary from "@/components/topbar/codex-status";
+import { emitCodexRateRefresh } from "@/lib/codex-status";
 import { checkForUpdate, type UpdateCheckErrorType } from "@/lib/about";
 import { createTerminalAdapter, type TerminalAdapterAPI } from "@/adapters/TerminalAdapter";
 import TerminalManager from "@/lib/TerminalManager";
@@ -1084,6 +1085,8 @@ export default function CodexFlowManagerUI() {
     }
     showCompletionNotification(tabId, preview);
     void playCompletionChime();
+    // 无论通知开关如何，均请求刷新 Codex 用量（由顶部栏组件自行做 1 分钟冷却）
+    try { emitCodexRateRefresh('agent-complete'); } catch {}
   }
 
   function processPtyNotificationChunk(ptyId: string, chunk: string) {
