@@ -27,10 +27,8 @@ export interface HostPtyAPI {
  * 设计目标：将和具体 host/pty 实现解耦，便于在未来提取成独立包或在不同宿主上复用。
  */
 export default class TerminalManager {
-  // 调试辅助：默认关闭；如需开启：localStorage.setItem('CF_DEBUG_TERM','1')
-  private dbgEnabled(): boolean {
-    try { return localStorage.getItem('CF_DEBUG_TERM') === '1'; } catch { return false; }
-  }
+  // 调试辅助：统一配置
+  private dbgEnabled(): boolean { try { return !!(globalThis as any).__cf_term_debug__; } catch { return false; } }
   private dlog(msg: string): void { if (this.dbgEnabled()) { try { (window as any).host?.utils?.perfLog?.(`[tm] ${msg}`); } catch {} } }
   private adapters: Record<string, TerminalAdapterAPI | null> = {};
   private containers: Record<string, HTMLDivElement | null> = {};

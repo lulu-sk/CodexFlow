@@ -366,8 +366,11 @@ export async function fetchRemoteAbout(opts?: { force?: boolean; timeoutMs?: num
     const fallback = normalizeAboutData(LOCAL_DEFAULT_ABOUT, donationSignatureValid);
     const normalized = normalizeFetchError(err);
     logUpdateEvent("fetchRemoteAbout.fallback", { force: !!opts?.force, timeoutMs, errorType: normalized.type, errorMessage: normalized.message, url: DEFAULT_REMOTE_URL });
-    return { data: fallback, from: "local", error: normalizeFetchError(err) };
+    return { data: fallback, from: "local", error: normalized };
   }
+  // 理论上不会到达此处；为满足类型检查提供兜底返回
+  const fallback = normalizeAboutData(LOCAL_DEFAULT_ABOUT, donationSignatureValid);
+  return { data: fallback, from: "local" };
 }
 
 export type UpdateCheckStatus = "update" | "no-update" | "failed";

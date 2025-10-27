@@ -8,12 +8,12 @@ import { cn } from '@/lib/utils';
 const Ctx = React.createContext<{
   open: boolean;
   setOpen: (v: boolean) => void;
-  triggerRef: React.RefObject<HTMLElement>;
+  triggerRef: React.MutableRefObject<HTMLElement | null>;
 } | null>(null);
 
 export function DropdownMenu({ children }: { children: React.ReactNode }) {
   const [open, setOpen] = React.useState(false);
-  const triggerRef = React.useRef<HTMLElement>(null);
+  const triggerRef = React.useRef<HTMLElement | null>(null);
   return <Ctx.Provider value={{ open, setOpen, triggerRef }}>{children}</Ctx.Provider>;
 }
 

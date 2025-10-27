@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import { promises as fsp } from 'node:fs';
 import path from 'node:path';
 import { ProxyAgent, setGlobalDispatcher, Agent } from 'undici';
-import { PTYManager, setTermDebug } from "./pty.js";
+import { PTYManager, setTermDebug } from "./pty";
 import projects, { IMPLEMENTATION_NAME as PROJECTS_IMPL } from "./projects/index";
 import history from "./history";
 import { startHistoryIndexer, getIndexedSummaries, getIndexedDetails, getLastIndexerRoots, stopHistoryIndexer } from "./indexer";
@@ -24,11 +24,18 @@ import { CodexBridge, type CodexBridgeOptions } from "./codex/bridge";
 import { ensureAllCodexNotifications } from "./codex/config";
 import storage from "./storage";
 import { registerNotificationIPC } from "./notifications";
+import { readDebugConfig, getDebugConfig, onDebugChanged, watchDebugConfig, updateDebugConfig, resetDebugConfig } from "./debugConfig";
 
 // 使用 CommonJS 编译输出时，运行时环境会提供 `__dirname`，直接使用即可
 
 let mainWindow: BrowserWindow | null = null;
-const DIAG = String(process.env.CODEX_DIAG_LOG || '').trim() === '1';
+let DIAG = false;
+function applyDebugGlobalsFromConfig(): void {
+  try {
+    const cfg = getDebugConfig();
+    DIAG = !!(cfg?.global?.diagLog);
+  } catch { DIAG = false; }
+}
 const APP_USER_MODEL_ID = 'com.codexflow.app';
 const DEV_APP_USER_MODEL_ID = 'com.codexflow.app.dev';
 const PROTOCOL_SCHEME = 'codexflow';
@@ -453,10 +460,10 @@ function createWindow() {
     const entryFile = resolveRendererEntry();
     if (DIAG) { try { perfLogger.log(`[WIN] loadFile ${entryFile}`); } catch {} }
     mainWindow.loadFile(entryFile);
-    // 支持通过环境变量强制打开 DevTools（无论是否走本地文件或打包产物）
+    // 支持通过统一调试配置强制打开 DevTools（无论是否走本地文件或打包产物）
     try {
-      const forceDevtools = String(process.env.CODEX_OPEN_DEVTOOLS || '').trim() === '1';
-      if (forceDevtools) mainWindow.webContents.openDevTools({ mode: 'detach' });
+      const cfg = getDebugConfig();
+      if (cfg?.global?.openDevtools) mainWindow.webContents.openDevTools({ mode: 'detach' });
     } catch {}
   }
 
@@ -502,6 +509,32 @@ if (!gotLock) {
   });
 
   app.whenReady().then(async () => {
+    // 加载统一调试配置并建立监听
+    try { readDebugConfig(); applyDebugGlobalsFromConfig(); watchDebugConfig(); } catch {}
+    // 一次性迁移：旧版 settings.json 中的 codexTraceEnabled -> debug.config.jsonc.codex.tuiTrace
+    try {
+      const s = settings.getSettings() as any;
+      if (Object.prototype.hasOwnProperty.call(s, 'codexTraceEnabled')) {
+        const wanted = !!s.codexTraceEnabled;
+        const cur = getDebugConfig();
+        if (!!cur?.codex?.tuiTrace !== wanted) {
+          try { updateDebugConfig({ codex: { tuiTrace: wanted } } as any); } catch {}
+        }
+        // 清理旧字段：通过将其置为 undefined 来覆盖并从 JSON 中移除
+        try { settings.updateSettings({ codexTraceEnabled: undefined } as any); } catch {}
+      }
+    } catch {}
+    try {
+      onDebugChanged(() => {
+        try { applyDebugGlobalsFromConfig(); } catch {}
+        // 主进程 PTY 调试开关热更新
+        try { setTermDebug(!!getDebugConfig().terminal.pty.debug); } catch {}
+        // 广播给所有窗口
+        try { for (const win of BrowserWindow.getAllWindows()) { win.webContents.send('debug:changed'); } } catch {}
+        // DevTools 强制打开（仅当配置为 true 且窗口已存在）
+        try { const cfg = getDebugConfig(); if (cfg?.global?.openDevtools) mainWindow?.webContents.openDevTools({ mode: 'detach' }); } catch {}
+      });
+    } catch {}
     // 统一配置/更新全局代理（支持 Codex、fetch 等所有 undici 请求）
     try { await configureOrUpdateProxy(); } catch {}
     const appUserModelId = setupWindowsNotifications();
@@ -520,10 +553,7 @@ if (!gotLock) {
     try { createWindow(); } catch (e) { if (DIAG) { try { perfLogger.log(`[BOOT] createWindow error: ${String(e)}`); } catch {} } }
     focusTabFromProtocol(extractProtocolUrl(process.argv));
     // 启动时静默检查更新由渲染进程完成（仅提示，不下载）
-    try {
-      // 读取环境变量作为主进程 PTY 日志默认值（1 开启，其它关闭）
-      setTermDebug(String(process.env.CODEX_TERM_DEBUG || '').trim() === '1');
-    } catch {}
+    try { setTermDebug(!!getDebugConfig().terminal.pty.debug); } catch {}
     // 启动历史索引器：后台并发解析、缓存、监听变更
     try { await startHistoryIndexer(() => mainWindow); } catch (e) { console.warn('indexer start failed', e); }
     // 启动后立刻触发一次 UI 强制刷新，确保首次 ready 后显示索引内容
@@ -810,8 +840,8 @@ ipcMain.handle('history.list', async (_e, args: { projectWslPath?: string; proje
     const needles = Array.from(new Set([canon(args.projectWslPath), canon(args.projectWinPath)].filter(Boolean)));
     const all = getIndexedSummaries();
     // Minimal probe logging (opt-in): only when CODEX_HISTORY_DEBUG=1
-    const dbg = () => String((process as any).env.CODEX_HISTORY_DEBUG || '').trim() === '1';
-    const dbgFile = String((process as any).env.CODEX_HISTORY_DEBUG_FILE || '').trim().toLowerCase();
+    const dbg = () => { try { return !!getDebugConfig().history.debug; } catch { return false; } };
+    const dbgFile = (() => { try { return String(getDebugConfig().history.filter || '').trim().toLowerCase(); } catch { return ''; } })();
     if (all && all.length > 0) {
       const startsWithBoundary = (child: string, parent: string): boolean => {
         try {
@@ -1569,10 +1599,15 @@ ipcMain.handle('wsl.listDistros', async () => {
 
 // WSL helpers
 // (trimmed) removed unused wsl.* renderer IPC handlers
-  // Debug term logs (main process PTY): expose IPC to get/set at runtime
+  // Debug term logs (main process PTY): expose IPC to get/set via unified debug config
   ipcMain.handle('utils.debugTerm.get', () => {
-    try { return { ok: true, enabled: String(process.env.CODEX_TERM_DEBUG || '').trim() === '1' }; } catch { return { ok: true, enabled: false }; }
+    try { return { ok: true, enabled: !!getDebugConfig().terminal.pty.debug }; } catch { return { ok: true, enabled: false }; }
   });
   ipcMain.handle('utils.debugTerm.set', (_e, { enabled }: { enabled: boolean }) => {
-    try { setTermDebug(!!enabled); (process as any).env.CODEX_TERM_DEBUG = enabled ? '1' : '0'; return { ok: true }; } catch (e: any) { return { ok: false, error: String(e) }; }
+    try { const cur = getDebugConfig(); updateDebugConfig({ terminal: { ...cur.terminal, pty: { debug: !!enabled } } as any }); setTermDebug(!!enabled); return { ok: true }; } catch (e: any) { return { ok: false, error: String(e) }; }
   });
+
+  // Debug config API for renderer
+  ipcMain.handle('debug.get', () => { try { return getDebugConfig(); } catch { return readDebugConfig(); } });
+  ipcMain.handle('debug.update', (_e, partial: any) => { try { const next = updateDebugConfig(partial || {}); return { ok: true, config: next }; } catch (e: any) { return { ok: false, error: String(e) }; } });
+  ipcMain.handle('debug.reset', () => { try { const next = resetDebugConfig(); return { ok: true, config: next }; } catch (e: any) { return { ok: false, error: String(e) }; } });

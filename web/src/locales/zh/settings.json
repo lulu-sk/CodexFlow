@@ -55,7 +55,7 @@
   "codexCmdHelp": "自定义从终端启动 CodexFlow 时执行的命令。",
   "codexTrace": {
     "label": "Codex TUI 调试",
-    "help": "控制 CodexFlow 启动 Codex 时是否自动附加 trace 日志参数（作用于新打开的终端）。",
+    "help": "控制 CodexFlow 启动 Codex 时是否自动附加 trace 日志参数（作用于新打开的终端）。该开关归属 debug.config.jsonc。",
     "toggle": "启用 codex_tui trace 日志",
     "note": "WSL 与 PowerShell 均支持，如不需要详细日志可关闭。"
   },
@@ -166,6 +166,12 @@
     "warningDesc": "此操作会永久删除 {count} 个历史记录文件，且不可恢复。是否继续？",
     "warningConfirm": "仍要删除",
     "batchDeleteFailed": "批量删除失败"
+  },
+  "debug": {
+    "label": "调试配置",
+    "help": "在单一 JSONC 文件中集中管理全部调试开关。",
+    "open": "打开 debug.config.jsonc",
+    "reset": "恢复默认"
   },
   "footer": {
     "note": "保存后生效；部分设置可能需要重启 CodexFlow。"

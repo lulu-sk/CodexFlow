@@ -7,6 +7,7 @@ import path from 'node:path';
 import os from 'node:os';
 import readline from 'node:readline';
 import { app } from 'electron';
+import { getDebugConfig } from './debugConfig';
 import crypto from 'node:crypto';
 import wsl, { isUNCPath, uncToWsl, getSessionsRootsFastAsync } from './wsl';
 import { perfLogger } from './log';
@@ -133,7 +134,7 @@ export function detectRuntimeShellFromContent(parsed?: any, text?: string): Runt
 function __userDataPath(): string { try { return app.getPath('userData'); } catch { return process.cwd(); } }
 function __flagPath(): string { return path.join(__userDataPath(), 'history-debug.on'); }
 function __flagExists(): boolean { try { fs.accessSync(__flagPath()); return true; } catch { return false; } }
-function __envFlag(): string { return String(process.env.CODEX_HISTORY_DEBUG || ''); }
+function __envFlag(): string { try { return getDebugConfig().history.debug ? '1' : ''; } catch { return ''; } }
 export function debugInfo() {
   return {
     userDataPath: __userDataPath(),

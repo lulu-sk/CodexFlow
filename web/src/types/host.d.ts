@@ -25,8 +25,6 @@ export type AppSettings = {
     proxyUrl?: string;
     noProxy?: string;
   };
-  /** Codex TUI 调试日志开关 */
-  codexTraceEnabled?: boolean;
 };
 
 export type Project = {
@@ -211,6 +209,12 @@ declare global {
       i18n: I18nAPI;
       codex: CodexAPI;
       notifications: NotificationsAPI;
+      debug?: {
+        get(): Promise<any>;
+        update(partial: any): Promise<any>;
+        reset?(): Promise<any>;
+        onChanged?(handler: () => void): () => void;
+      };
     };
   }
 }

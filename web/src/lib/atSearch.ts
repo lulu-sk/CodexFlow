@@ -26,9 +26,9 @@ const loadingByRoot = new Map<string, Promise<FileCandidate[]>>();
 const cacheIndexByRoot = new Map<string, Map<string, FileCandidate>>(); // key: D:/F:+rel
 let subscribed = false; // 渲染进程仅订阅一次主进程的索引变更事件
 
-// 前端调试日志：在 localStorage 设置 CODEX_AT_DEBUG=1 可启用；若可用则写入 perf.log
+// 前端调试日志：读取统一调试配置（preload 注入只读缓存）
 function dbgEnabled(): boolean {
-  try { return String(localStorage.getItem('CODEX_AT_DEBUG') || '').trim() === '1'; } catch { return false; }
+  try { return !!(globalThis as any).__cf_at_debug__; } catch { return false; }
 }
 function perfLog(msg: string) {
   if (!dbgEnabled()) return;

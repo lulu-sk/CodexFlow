@@ -1,15 +1,11 @@
-# 诊断日志开关与定位指南
+# 诊断日志开关与定位指南（已统一到 debug.config.jsonc）
 
-为便于定位白屏/加载失败等问题，我们提供“可开可关”的诊断日志。
+自 vNext 起，所有诊断/调试开关已收敛到 `%APPDATA%/codexflow/debug.config.jsonc`：
 
-## 开关
+- 主进程/渲染诊断：`global.diagLog: true`
+- 启动强制打开 DevTools：`global.openDevtools: true`
 
-- 主进程：设置环境变量开启（默认关闭）
-  - Windows PowerShell: `$env:CODEX_DIAG_LOG='1'; npm run dev`
-  - CMD: `set CODEX_DIAG_LOG=1 && npm run dev`
-- 渲染进程：本地存储开关（默认关闭）
-  - 在 DevTools 中执行：`localStorage.setItem('CF_DIAG_LOG','1')`
-  - 关闭：`localStorage.removeItem('CF_DIAG_LOG')`
+保存后主进程会热加载并广播，少数标注“需重启”的项在下次启动生效。
 
 ## 日志位置
 
@@ -20,5 +16,5 @@
   - `[WC.console] ...`（渲染端 console 输出）
   - `[renderer:error]` / `[renderer:unhandledrejection]`
 
-> 生产打包默认关闭详细日志；必要时设置主进程环境变量启用。
+> 生产打包默认关闭详细日志；可在 debug.config.jsonc 打开。
 

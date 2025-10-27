@@ -8,6 +8,7 @@ import readline from "node:readline";
 import { spawn, execFileSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { perfLogger } from "../log";
+import { getDebugConfig } from "../debugConfig";
 import { winToWsl } from "../wsl";
 
 type PendingRequest = {
@@ -150,10 +151,12 @@ function findCodexViaWhereExe(mode: "native" | "wsl"): string | null {
       }
     }
   } catch (err) {
-    // where.exe 失败或解析失败，静默降级到插件目录查找
-    if (process.env.CODEX_DIAG_LOG === "1") {
-      perfLogger.log(`[codex] where.exe lookup failed: ${String(err)}`);
-    }
+    // where.exe 失败或解析失败，静默降级到插件目录查找（仅在主进程调试开启时记录）
+    try {
+      if (getDebugConfig()?.global?.diagLog) {
+        perfLogger.log(`[codex] where.exe lookup failed: ${String(err)}`);
+      }
+    } catch {}
   }
   
   return null;
