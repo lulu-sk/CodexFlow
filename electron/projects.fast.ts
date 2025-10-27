@@ -8,6 +8,7 @@ import os from "node:os";
 import { app } from "electron";
 import { wslToUNC, isUNCPath, uncToWsl, getCodexRootsFastAsync } from "./wsl";
 import { perfLogger } from "./log";
+import { getDebugConfig } from "./debugConfig";
 
 export type Project = {
   id: string;
@@ -40,9 +41,7 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
   const store = loadStore();
   const logPath = path.join(app.getPath('userData'), 'scan-log.txt');
   const dbgPath = path.join(app.getPath('userData'), 'projects-debug.log');
-  const dbgFlagPath = path.join(app.getPath('userData'), 'projects-debug.on');
-  const envDbg = String((process as any).env.CODEX_PROJECTS_DEBUG || '').trim() === '1';
-  const dbgEnabled = () => envDbg || (() => { try { fs.accessSync(dbgFlagPath); return true; } catch { return false; } })();
+  const dbgEnabled = () => { try { return !!getDebugConfig().projects.debug; } catch { return false; } };
   const writeLog = async (msg: string) => { if (!verbose) return; try { await fsp.appendFile(logPath, `${new Date().toISOString()} ${msg}\n`, 'utf8'); } catch {} };
   const writeDbg = async (msg: string) => {
     if (!dbgEnabled()) return;

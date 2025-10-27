@@ -31,7 +31,8 @@ async function detectInitialLanguage(): Promise<string> {
 }
 
 // 通过 Vite 的 import.meta.glob 预注册所有本地 JSON 资源，避免运行时路径无法解析
-const LOCALE_MODULES: Record<string, () => Promise<any>> = import.meta.glob("../locales/**/*.json");
+// Vite 专用：通过 import.meta.glob 预注册本地 JSON 模块（非 Vite 环境下类型不包含 glob，需断言 any）
+const LOCALE_MODULES: Record<string, () => Promise<any>> = (import.meta as any).glob("../locales/**/*.json");
 
 function detectedCompiledLanguages(): string[] {
   const set = new Set<string>();

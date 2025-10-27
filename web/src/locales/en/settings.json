@@ -55,7 +55,7 @@
   "codexCmdHelp": "Customize the command CodexFlow runs when launching from the terminal.",
   "codexTrace": {
     "label": "Codex TUI debugging",
-    "help": "Control whether CodexFlow adds trace logging flags when launching Codex (applies to new terminals).",
+    "help": "Control whether CodexFlow adds trace logging flags when launching Codex (applies to new terminals). The switch is managed by debug.config.jsonc.",
     "toggle": "Enable codex_tui trace logging",
     "note": "Supported in both WSL and PowerShell sessions; turn this off if you prefer quieter logs."
   },
@@ -166,6 +166,12 @@
     "warningDesc": "This will permanently delete {count} history files and cannot be undone. Continue?",
     "warningConfirm": "Delete anyway",
     "batchDeleteFailed": "Batch delete failed"
+  },
+  "debug": {
+    "label": "Debug configuration",
+    "help": "Manage all debug flags in a single JSONC file.",
+    "open": "Open debug.config.jsonc",
+    "reset": "Restore defaults"
   },
   "footer": {
     "note": "Changes apply after you save. Some items may require restarting CodexFlow."

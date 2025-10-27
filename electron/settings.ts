@@ -18,6 +18,17 @@ export type NotificationSettings = {
   sound?: boolean;
 };
 
+export type NetworkSettings = {
+  /** 是否启用代理（默认启用） */
+  proxyEnabled?: boolean;
+  /** 代理模式：跟随系统或自定义 */
+  proxyMode?: 'system' | 'custom';
+  /** 自定义代理地址（如 http://127.0.0.1:7890） */
+  proxyUrl?: string;
+  /** NO_PROXY 绕过主机列表（逗号分隔） */
+  noProxy?: string;
+};
+
 export type AppSettings = {
   /** 终端类型：WSL 或 Windows 本地终端 */
   terminal?: 'wsl' | 'windows';
@@ -35,8 +46,8 @@ export type AppSettings = {
   projectPathStyle?: 'absolute' | 'relative';
   /** 任务完成提醒相关偏好 */
   notifications?: NotificationSettings;
-  /** Codex TUI 调试日志开关（启用时注入 RUST_LOG=codex_tui=trace） */
-  codexTraceEnabled?: boolean;
+  /** 网络代理设置（供主进程与渲染层共享） */
+  network?: NetworkSettings;
 };
 
 function getStorePath() {
@@ -51,6 +62,12 @@ const DEFAULT_NOTIFICATIONS: NotificationSettings = {
   badge: true,
   system: true,
   sound: false,
+};
+const DEFAULT_NETWORK: NetworkSettings = {
+  proxyEnabled: true,
+  proxyMode: 'system',
+  proxyUrl: '',
+  noProxy: '',
 };
 
 function loadDistroList(): DistroInfo[] {
@@ -116,11 +133,16 @@ function mergeWithDefaults(raw: Partial<AppSettings>, preloadedDistros?: DistroI
     // 默认：发送给 Codex 的项目内文件路径使用“全路径”（WSL 绝对路径）
     projectPathStyle: 'absolute',
     notifications: { ...DEFAULT_NOTIFICATIONS },
+    network: { ...DEFAULT_NETWORK },
   };
   const merged = Object.assign({}, defaults, raw);
   merged.notifications = {
     ...DEFAULT_NOTIFICATIONS,
     ...(raw?.notifications ?? {}),
+  };
+  merged.network = {
+    ...DEFAULT_NETWORK,
+    ...(raw as any)?.network,
   };
   merged.distro = pickPreferredDistro(merged.distro, distros);
   return merged;

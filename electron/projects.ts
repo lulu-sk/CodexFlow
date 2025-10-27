@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import { promises as fsp } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { getDebugConfig } from './debugConfig';
 import { app } from 'electron';
 import { winToWsl, wslToUNC, isUNCPath, uncToWsl, listDistrosAsync, getDistroHomeAsync, execInWslAsync, readFileInWslAsync, winToWslAsync, getDefaultRootsAsync } from './wsl';
 
@@ -161,9 +162,7 @@ export async function scanProjectsAsync(roots?: string[], verbose = false): Prom
   const store = loadStore();
   const logPath = path.join(app.getPath('userData'), 'scan-log.txt');
   const dbgPath = path.join(app.getPath('userData'), 'projects-debug.log');
-  const dbgFlagPath = path.join(app.getPath('userData'), 'projects-debug.on');
-  const envDbg = String(process.env.CODEX_PROJECTS_DEBUG || '').trim() === '1';
-  const dbgEnabled = () => envDbg || (() => { try { fs.accessSync(dbgFlagPath); return true; } catch { return false; } })();
+  const dbgEnabled = () => { try { return !!getDebugConfig().projects.debug; } catch { return false; } };
   const writeLog = async (msg: string) => {
     if (!verbose) return;
     try { await fsp.appendFile(logPath, `${new Date().toISOString()} ${msg}\n`, 'utf8'); } catch {};

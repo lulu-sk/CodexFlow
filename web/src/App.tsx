@@ -519,9 +519,9 @@ export default function CodexFlowManagerUI() {
     }
     return fallback || "";
   }, [localeForI18n]);
-  // UI 调试开关：默认关闭；如需开启：localStorage.setItem('CF_DEBUG_UI','1')
+  // UI 调试开关：改为读取统一调试配置
   const uiDebugEnabled = React.useCallback(() => {
-    try { return localStorage.getItem('CF_DEBUG_UI') === '1'; } catch { return false; }
+    try { return !!(window as any)?.host?.debug && !!((window as any).__cf_ui_debug_cache__); } catch { return false; }
   }, []);
   // 统一日志（仅在开启时输出）：优先写入主进程 perf.log；回退到 console
   const uiLog = React.useCallback((msg: string) => {
@@ -529,34 +529,33 @@ export default function CodexFlowManagerUI() {
     try { (window as any).host?.utils?.perfLog?.(`[ui] ${msg}`); } catch { try { console.log(`[ui] ${msg}`); } catch {} }
   }, [uiDebugEnabled]);
   const notificationsDebugEnabled = React.useCallback(() => {
-    try {
-      const flag = localStorage.getItem('CF_DEBUG_NOTIFICATIONS');
-      if (flag === '1') return true;
-      if (flag === '0') return false;
-    } catch {}
-    // 临时默认开启通知调试日志，便于排查问题
-    return true;
-    // try { return !!(import.meta as any)?.env?.DEV; } catch { return false; }
+    try { return !!(window as any).__cf_notif_debug_cache__; } catch { return true; }
   }, []);
   const notifyLog = React.useCallback((msg: string) => {
     if (!notificationsDebugEnabled()) return;
     try { (window as any).host?.utils?.perfLog?.(`[notifications.renderer] ${msg}`); } catch {}
   }, [notificationsDebugEnabled]);
   // 是否显示右键调试菜单：开发环境、UI 调试开关或显式开关
+  // 用于触发 memo 重新计算的轻量状态（由 debug.onChanged 事件驱动）
+  const [debugRefreshTick, setDebugRefreshTick] = React.useState(0);
   const showNotifDebugMenu = React.useMemo(() => {
-    let flag: string | null = null;
-    try { flag = localStorage.getItem('CF_DEBUG_NOTIFICATIONS_MENU'); } catch {}
-    if (flag === '1') return true;
-    if (flag === '0') return false;
+    try { const mode = (window as any).__cf_notif_menu_mode__ as 'auto'|'forceOn'|'forceOff'|undefined; if (mode === 'forceOn') return true; if (mode === 'forceOff') return false; } catch {}
     try { if (uiDebugEnabled()) return true; } catch {}
     try { if (notificationsDebugEnabled()) return true; } catch {}
     try { if ((import.meta as any)?.env?.DEV) return true; } catch {}
     return false;
-  }, [notificationsDebugEnabled, uiDebugEnabled]);
+  }, [notificationsDebugEnabled, uiDebugEnabled, debugRefreshTick]);
   useEffect(() => {
     notifyLog(`ctx.menu.toggle enabled=${showNotifDebugMenu ? '1' : '0'}`);
   }, [notifyLog, showNotifDebugMenu]);
 
+  // 统一调试配置变更时，更新本地缓存判断（通过 preload 注入的 onChanged 已刷新全局）
+  useEffect(() => {
+    const off = (window as any)?.host?.debug?.onChanged?.(() => {
+      try { setDebugRefreshTick((prev: number) => prev + 1); } catch {}
+    });
+    return () => { try { off && off(); } catch {} };
+  }, []);
   const [devMeta, setDevMeta] = useState<boolean | null>(null);
   useEffect(() => {
     let active = true;
@@ -589,7 +588,7 @@ export default function CodexFlowManagerUI() {
       if (uiDebugEnabled()) return true;
     } catch {}
     return false;
-  }, [devMeta, uiDebugEnabled]);
+  }, [devMeta, uiDebugEnabled, debugRefreshTick]);
 
   // 诊断：打印当前页面上可能的“覆盖层/遮罩”信息以及活跃元素
   const dumpOverlayDiagnostics = React.useCallback((reason: string) => {
@@ -740,6 +739,28 @@ export default function CodexFlowManagerUI() {
     }
     return `export RUST_LOG=codex_tui=trace; ${base}`;
   }, [terminalMode, codexTraceEnabled]);
+
+  // 从统一调试配置读取 Codex TUI trace 开关，并监听热更新
+  useEffect(() => {
+    let dispose: (() => void) | null = null;
+    (async () => {
+      try {
+        const cfg: any = await (window as any).host?.debug?.get?.();
+        if (cfg && cfg.codex) setCodexTraceEnabled(!!cfg.codex.tuiTrace);
+      } catch {}
+      try {
+        dispose = (window as any).host?.debug?.onChanged?.(() => {
+          (async () => {
+            try {
+              const nextCfg: any = await (window as any).host?.debug?.get?.();
+              setCodexTraceEnabled(!!(nextCfg && nextCfg.codex && nextCfg.codex.tuiTrace));
+            } catch {}
+          })();
+        });
+      } catch {}
+    })();
+    return () => { try { dispose && dispose(); } catch {} };
+  }, []);
 
   const scheduleFocusForTab = React.useCallback((tabId: string | null | undefined, opts?: { immediate?: boolean; allowDuringRename?: boolean; delay?: number }) => {
     if (!tabId) return;
@@ -1583,7 +1604,6 @@ export default function CodexFlowManagerUI() {
           setSendMode(s.sendMode || 'write_and_enter');
           setProjectPathStyle((s as any).projectPathStyle || 'absolute');
           setNotificationPrefs(normalizeCompletionPrefs((s as any).notifications));
-          setCodexTraceEnabled((s as any).codexTraceEnabled !== undefined ? !!(s as any).codexTraceEnabled : false);
           // 同步网络代理偏好
           try {
             const net = (s as any).network || {};
@@ -1619,7 +1639,7 @@ export default function CodexFlowManagerUI() {
       try {
         const cur = await window.host.app.getVersion();
         setAppVersion(cur);
-        const skip = (localStorage.getItem('CF_SKIP_VERSION') || '').trim();
+        const skip = String((globalThis as any).__cf_updates_skip__ || '').trim();
         const res = await checkForUpdate(cur, { force: false });
         if (res.status === "update" && res.latest && res.latest.version !== skip) {
           setUpdateDialog({
@@ -2236,7 +2256,7 @@ export default function CodexFlowManagerUI() {
           <Input
             placeholder={t('projects:searchPlaceholder') as string}
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setQuery((e.target as any).value)}
             className="h-9"
           />
           {/* 统一入口：打开项目并自动创建控制台 */}
@@ -2778,9 +2798,9 @@ export default function CodexFlowManagerUI() {
       <div className="px-3 py-2">
         <Input
           value={historyQuery}
-          onChange={(e) => setHistoryQuery((e.target as HTMLInputElement).value)}
+          onChange={(e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setHistoryQuery((e.target as any).value)}
           placeholder={t('history:searchPlaceholder') as string}
-          onKeyDown={(e) => {
+          onKeyDown={(e: React.KeyboardEvent<any>) => {
             if (e.key === 'Enter') {
               const q = historyQuery.trim().toLowerCase();
               if (!q) return;
@@ -3266,7 +3286,7 @@ export default function CodexFlowManagerUI() {
       <SettingsDialog
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
-        values={{ terminal: terminalMode, distro: wslDistro, codexCmd, sendMode, locale, projectPathStyle, notifications: notificationPrefs, network: networkPrefs, codexTrace: codexTraceEnabled }}
+        values={{ terminal: terminalMode, distro: wslDistro, codexCmd, sendMode, locale, projectPathStyle, notifications: notificationPrefs, network: networkPrefs }}
         onSave={async (v) => {
           const nextTerminal = v.terminal;
           const nextDistro = v.distro;
@@ -3275,18 +3295,16 @@ export default function CodexFlowManagerUI() {
           const nextStyle = v.projectPathStyle || 'absolute';
           const nextLocale = v.locale;
           const nextNotifications = normalizeCompletionPrefs(v.notifications);
-          const nextTrace = v.codexTrace ?? false;
           // 先切换语言（内部会写入 settings 并广播），再持久化其它字段
           try { await (window as any).host?.i18n?.setLocale?.(nextLocale); setLocale(nextLocale); } catch {}
-           try {
-             await window.host.settings.update({
+          try {
+            await window.host.settings.update({
               terminal: nextTerminal,
               distro: nextDistro,
               codexCmd: nextCmd,
               sendMode: nextSend,
               projectPathStyle: v.projectPathStyle,
               notifications: nextNotifications,
-              codexTraceEnabled: nextTrace,
               network: v.network,
             });
           } catch (e) { console.warn('settings.update failed', e); }
@@ -3296,7 +3314,6 @@ export default function CodexFlowManagerUI() {
           setSendMode(nextSend);
           setProjectPathStyle(nextStyle);
           setNotificationPrefs(nextNotifications);
-          setCodexTraceEnabled(nextTrace);
           setNetworkPrefs(v.network);
         }}
       />
@@ -3356,7 +3373,7 @@ export default function CodexFlowManagerUI() {
             )}
             <div className="flex items-center justify-end gap-2">
               <Button variant="ghost" onClick={() => setUpdateDialog({ show: false })}>{t('about:update.later')}</Button>
-              <Button variant="outline" onClick={() => { try { localStorage.setItem('CF_SKIP_VERSION', String(updateDialog.latest?.version || '')); } catch {}; setUpdateDialog({ show: false }); }}>{t('about:update.skip')}</Button>
+              <Button variant="outline" onClick={async () => { try { await (window as any)?.host?.debug?.update?.({ updates: { skipVersion: String(updateDialog.latest?.version || '') } }); } catch {}; setUpdateDialog({ show: false }); }}>{t('about:update.skip')}</Button>
               <Button onClick={() => { try { const u = String(updateDialog.latest?.url || ''); if (u) (window as any).host?.utils?.openExternalUrl?.(u); } catch {}; setUpdateDialog({ show: false }); }}>{t('about:update.download')}</Button>
             </div>
           </div>

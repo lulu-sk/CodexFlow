@@ -14,6 +14,22 @@ contextBridge.exposeInMainWorld('host', {
       try { const res = await ipcRenderer.invoke('app.getPaths'); if (res && res.ok) return { licensePath: res.licensePath, noticePath: res.noticePath }; return {}; } catch { return {}; }
     }
   },
+  debug: {
+    get: async (): Promise<any> => {
+      try { return await ipcRenderer.invoke('debug.get'); } catch (e) { return { ok: false, error: String(e) } as any; }
+    },
+    update: async (partial: any): Promise<any> => {
+      try { return await ipcRenderer.invoke('debug.update', partial); } catch (e) { return { ok: false, error: String(e) } as any; }
+    },
+    reset: async (): Promise<any> => {
+      try { return await ipcRenderer.invoke('debug.reset'); } catch (e) { return { ok: false, error: String(e) } as any; }
+    },
+    onChanged: (handler: () => void) => {
+      const listener = () => handler();
+      ipcRenderer.on('debug:changed', listener);
+      return () => ipcRenderer.removeListener('debug:changed', listener);
+    }
+  },
   env: {
     getMeta: async (): Promise<{ ok: boolean; isDev?: boolean; devServerUrl?: string | null; protocol?: string; error?: string }> => {
       try { return await ipcRenderer.invoke('app.getEnvMeta'); } catch (e) { return { ok: false, error: String(e) } as any; }
@@ -254,30 +270,52 @@ contextBridge.exposeInMainWorld('host', {
 // 确保预加载脚本以 CommonJS 导出，避免打包后在非模块环境使用 import 失败
 module.exports = {};
 
-// ---- 渲染进程诊断日志（默认关闭；设置 localStorage.CF_DIAG_LOG='1' 可开启）----
+// ---- 统一调试配置：同步关键项到全局只读缓存（供渲染层直接读取，避免多次 IPC）----
+function __applyDebugGlobals(cfg: any) {
+  try {
+    (globalThis as any).__cf_ui_debug_cache__ = !!(cfg?.renderer?.uiDebug);
+    (globalThis as any).__cf_notif_debug_cache__ = !!(cfg?.renderer?.notifications?.debug);
+    (globalThis as any).__cf_notif_menu_mode__ = String(cfg?.renderer?.notifications?.menu || 'auto');
+    (globalThis as any).__cf_term_debug__ = !!(cfg?.terminal?.frontend?.debug);
+    (globalThis as any).__cf_disable_pin__ = !!(cfg?.terminal?.frontend?.disablePin);
+    (globalThis as any).__cf_at_debug__ = !!(cfg?.renderer?.atSearchDebug);
+    (globalThis as any).__cf_updates_skip__ = String(cfg?.updates?.skipVersion || '');
+  } catch {}
+}
+
+async function __refreshDebugGlobals() {
+  try { const cfg = await ipcRenderer.invoke('debug.get'); __applyDebugGlobals(cfg); } catch {}
+}
+
+try { __refreshDebugGlobals(); } catch {}
+ipcRenderer.on('debug:changed', () => { try { __refreshDebugGlobals(); } catch {} });
+
+// ---- 渲染进程诊断日志（根据统一配置 global.diagLog 控制）----
 try {
-  let DIAG = false;
-  try { DIAG = (globalThis as any)?.localStorage?.getItem?.('CF_DIAG_LOG') === '1'; } catch {}
-  if (DIAG) {
-    window.addEventListener('error', (e) => {
-      try { ipcRenderer.invoke('utils.perfLog', { text: `[renderer:error] ${e?.message} at ${e?.filename}:${e?.lineno}:${e?.colno}` }); } catch {}
-    });
-    window.addEventListener('unhandledrejection', (e) => {
-      try {
-        const reason = (e as any)?.reason;
-        const msg = typeof reason === 'string' ? reason : (reason && (reason.stack || reason.message)) || String(reason);
-        ipcRenderer.invoke('utils.perfLog', { text: `[renderer:unhandledrejection] ${msg}` });
-      } catch {}
-    });
-    const _err = console.error.bind(console);
-    console.error = (...args: any[]) => {
-      try { ipcRenderer.invoke('utils.perfLog', { text: `[console.error] ${args.map((x) => (typeof x === 'string' ? x : (x && (x.stack || x.message)) || JSON.stringify(x))).join(' ')}` }); } catch {}
-      try { _err(...args); } catch {}
-    };
-    const _warn = console.warn.bind(console);
-    console.warn = (...args: any[]) => {
-      try { ipcRenderer.invoke('utils.perfLog', { text: `[console.warn] ${args.map((x) => (typeof x === 'string' ? x : (x && (x.stack || x.message)) || JSON.stringify(x))).join(' ')}` }); } catch {}
-      try { _warn(...args); } catch {}
-    };
-  }
+  (async () => {
+    let DIAG = false;
+    try { const cfg = await ipcRenderer.invoke('debug.get'); DIAG = !!(cfg && cfg.global && cfg.global.diagLog); } catch {}
+    if (DIAG) {
+      window.addEventListener('error', (e) => {
+        try { ipcRenderer.invoke('utils.perfLog', { text: `[renderer:error] ${e?.message} at ${e?.filename}:${e?.lineno}:${e?.colno}` }); } catch {}
+      });
+      window.addEventListener('unhandledrejection', (e) => {
+        try {
+          const reason = (e as any)?.reason;
+          const msg = typeof reason === 'string' ? reason : (reason && (reason.stack || reason.message)) || String(reason);
+          ipcRenderer.invoke('utils.perfLog', { text: `[renderer:unhandledrejection] ${msg}` });
+        } catch {}
+      });
+      const _err = console.error.bind(console);
+      console.error = (...args: any[]) => {
+        try { ipcRenderer.invoke('utils.perfLog', { text: `[console.error] ${args.map((x) => (typeof x === 'string' ? x : (x && (x.stack || x.message)) || JSON.stringify(x))).join(' ')}` }); } catch {}
+        try { _err(...args); } catch {}
+      };
+      const _warn = console.warn.bind(console);
+      console.warn = (...args: any[]) => {
+        try { ipcRenderer.invoke('utils.perfLog', { text: `[console.warn] ${args.map((x) => (typeof x === 'string' ? x : (x && (x.stack || x.message)) || JSON.stringify(x))).join(' ')}` }); } catch {}
+        try { _warn(...args); } catch {}
+      };
+    }
+  })();
 } catch {}

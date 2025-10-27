@@ -6,6 +6,7 @@ import { promises as fsp } from "node:fs";
 import path from "node:path";
 import { BrowserWindow } from "electron";
 import { perfLogger } from "./log";
+import { getDebugConfig } from "./debugConfig";
 import { getSessionsRootCandidatesFastAsync, isUNCPath, uncToWsl } from "./wsl";
 import { detectResumeInfo, detectRuntimeShell, detectRuntimeShellFromContent } from "./history";
 import type { HistorySummary, Message, RuntimeShell } from "./history";
@@ -52,18 +53,8 @@ function getUserDataDir(): string {
 function indexPath(): string { return path.join(getUserDataDir(), "history.index.v6.json"); }
 function detailsPath(): string { return path.join(getUserDataDir(), "history.details.v6.json"); }
 // ---- Minimal debug (opt-in) ----
-function idxDbgEnabled(): boolean {
-  try { if (String((process as any).env.CODEX_INDEXER_DEBUG || '').trim() === '1') return true; } catch {}
-  try { const { app } = require('electron'); const p = path.join(app.getPath('userData'), 'indexer-debug.on'); fs.accessSync(p); return true; } catch {}
-  return false;
-}
-function idxDbgMatch(fp: string): boolean {
-  try {
-    const sub = String((process as any).env.CODEX_INDEXER_DEBUG_FILE || '').trim();
-    if (!sub) return true;
-    return String(fp || '').toLowerCase().includes(sub.toLowerCase());
-  } catch { return false; }
-}
+function idxDbgEnabled(): boolean { try { return !!getDebugConfig().indexer.debug; } catch { return false; } }
+function idxDbgMatch(fp: string): boolean { try { const sub = String(getDebugConfig().indexer.filter || '').trim(); if (!sub) return true; return String(fp || '').toLowerCase().includes(sub.toLowerCase()); } catch { return true; } }
 function idxLog(msg: string) {
   if (!idxDbgEnabled()) return;
   try {

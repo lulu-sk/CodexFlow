@@ -2,6 +2,7 @@
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
 import { app, BrowserWindow } from "electron";
+import { getDebugConfig } from "./debugConfig";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -40,15 +41,7 @@ const memLRU: Map<string, MemEntry> = new Map(); // key -> entry（插入顺序�
 
 // 调试与日志开关：环境变量 CODEX_FILEINDEX_DEBUG=1 或在 userData 放置 fileindex-debug.on 文件
 function dbgEnabled(): boolean {
-  try {
-    if (String((process as any).env.CODEX_FILEINDEX_DEBUG || '').trim() === '1') return true;
-  } catch {}
-  try {
-    const flag = path.join(getUserDataDir(), 'fileindex-debug.on');
-    fs.accessSync(flag);
-    return true;
-  } catch {}
-  return false;
+  try { return !!getDebugConfig().fileIndex.debug; } catch { return false; }
 }
 function logDbg(msg: string) { try { if (dbgEnabled()) perfLogger.log(`[fileIndex] ${msg}`); } catch {} }
 
@@ -435,19 +428,20 @@ function ensureWatcher(root: string, excludes: string[]) {
 
   // chokidar 监听；UNC/盘符均尝试；若失败不会影响基础功能
   const isUNC = /^\\\\/.test(root);
-  const wantPollingEnv = String((process as any).env.CODEX_FILEINDEX_POLL || '').trim() === '1';
-  const wantPolling = wantPollingEnv || isUNC; // UNC 默认轮询更稳
-  const pollIntervalEnv = Number(String((process as any).env.CODEX_FILEINDEX_POLL_INTERVAL || '').trim() || '0');
-  const interval = pollIntervalEnv > 0 ? pollIntervalEnv : (isUNC ? 2500 : 1200);
+  const cfg = (() => { try { return getDebugConfig(); } catch { return null as any; } })();
+  const wantPollingCfg = !!(cfg && cfg.fileIndex && cfg.fileIndex.poll && cfg.fileIndex.poll.enable);
+  const wantPolling = wantPollingCfg || isUNC; // UNC 默认轮询更稳
+  const intervalCfg = Number((cfg && cfg.fileIndex && cfg.fileIndex.poll && (cfg.fileIndex.poll as any).intervalMs) || 0);
+  const interval = intervalCfg > 0 ? intervalCfg : (isUNC ? 2500 : 1200);
   const binInterval = Math.max(interval * 1.5, isUNC ? 4000 : 1500);
 
   // 大仓库策略：超阈值则跳过 watcher，仅启用周期重扫；中等规模降低 depth
-  const DISABLE_WATCH = String((process as any).env.CODEX_FILEINDEX_DISABLE_WATCH || '').trim() === '1';
-  const MAX_FILES = numEnv('CODEX_FILEINDEX_WATCH_MAX_FILES', 80000);
-  const MAX_DIRS = numEnv('CODEX_FILEINDEX_WATCH_MAX_DIRS', 12000);
-  const LARGE_FILES = numEnv('CODEX_FILEINDEX_WATCH_LARGE_FILES', 40000);
-  const LARGE_DIRS = numEnv('CODEX_FILEINDEX_WATCH_LARGE_DIRS', 6000);
-  const DEPTH_DEFAULT = numEnv('CODEX_FILEINDEX_WATCH_DEPTH', 6);
+  const DISABLE_WATCH = !!(cfg && cfg.fileIndex && cfg.fileIndex.watch && cfg.fileIndex.watch.disable);
+  const MAX_FILES = cfg?.fileIndex?.watch?.maxFiles ?? numEnv('CODEX_FILEINDEX_WATCH_MAX_FILES', 80000);
+  const MAX_DIRS = cfg?.fileIndex?.watch?.maxDirs ?? numEnv('CODEX_FILEINDEX_WATCH_MAX_DIRS', 12000);
+  const LARGE_FILES = cfg?.fileIndex?.watch?.maxFiles ? Math.floor((cfg.fileIndex.watch.maxFiles as number) / 2) : numEnv('CODEX_FILEINDEX_WATCH_LARGE_FILES', 40000);
+  const LARGE_DIRS = cfg?.fileIndex?.watch?.maxDirs ? Math.floor((cfg.fileIndex.watch.maxDirs as number) / 2) : numEnv('CODEX_FILEINDEX_WATCH_LARGE_DIRS', 6000);
+  const DEPTH_DEFAULT = ((): number => { const d = cfg?.fileIndex?.watch?.depth; if (typeof d === 'number') return d; return numEnv('CODEX_FILEINDEX_WATCH_DEPTH', 6); })();
   const DEPTH_LARGE = numEnv('CODEX_FILEINDEX_WATCH_DEPTH_LARGE', 2);
   const totalFiles = filesSet.size;
   const totalDirs = dirsSet.size;
@@ -462,8 +456,9 @@ function ensureWatcher(root: string, excludes: string[]) {
     // 强制开启兜底重扫
     try {
       state.lastEventTs = Date.now();
-      const idleMs = numEnv('CODEX_FILEINDEX_RESCAN_IDLE_MS', 10000);
-      const rescanEvery = numEnv('CODEX_FILEINDEX_RESCAN_INTERVAL', 15000);
+      const cfg2 = (() => { try { return getDebugConfig(); } catch { return null as any; } })();
+      const idleMs = Number(cfg2?.fileIndex?.rescan?.idleMs ?? 10000);
+      const rescanEvery = Number(cfg2?.fileIndex?.rescan?.intervalMs ?? 15000);
       state.rescanTimer = setInterval(async () => {
         try {
           if (!state.lastEventTs || (Date.now() - state.lastEventTs) < idleMs) return;
@@ -590,8 +585,8 @@ function ensureWatcher(root: string, excludes: string[]) {
   // —— 空闲兜底重扫：避免偶发漏报 ——
   try {
     state.lastEventTs = Date.now();
-    const idleMs = Number(String((process as any).env.CODEX_FILEINDEX_RESCAN_IDLE_MS || '').trim() || '20000');
-    const rescanEvery = Number(String((process as any).env.CODEX_FILEINDEX_RESCAN_INTERVAL || '').trim() || (wantPolling ? '0' : (isUNC ? '0' : '30000')));
+    const idleMs = Number(cfg?.fileIndex?.rescan?.idleMs ?? 20000);
+    const rescanEvery = Number(cfg?.fileIndex?.rescan?.intervalMs ?? (wantPolling ? 0 : (isUNC ? 0 : 30000)));
     if (rescanEvery > 0) {
       state.rescanTimer = setInterval(async () => {
         try {

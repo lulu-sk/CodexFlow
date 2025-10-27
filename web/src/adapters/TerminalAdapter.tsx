@@ -21,24 +21,11 @@ export type TerminalAdapterAPI = {
 };
 
 export function createTerminalAdapter(): TerminalAdapterAPI {
-  // 调试辅助：在控制台异常时，将关键度量写入主进程 perf.log
-  // 打开方式（渲染进程控制台执行一次）：localStorage.setItem('CF_DEBUG_TERM', '1')
-  // 关闭方式：localStorage.removeItem('CF_DEBUG_TERM')
-  // 默认关闭日志；如需开启：localStorage.setItem('CF_DEBUG_TERM','1')
-  // 调试开关：默认关闭；如需开启，执行：localStorage.setItem('CF_DEBUG_TERM','1')
-  const dbgEnabled = () => {
-    try { return localStorage.getItem('CF_DEBUG_TERM') === '1'; } catch { return false; }
-  };
+  // 调试辅助：统一配置（preload 注入只读缓存）
+  const dbgEnabled = () => { try { return !!(globalThis as any).__cf_term_debug__; } catch { return false; } };
   const dlog = (msg: string) => { if (dbgEnabled()) { try { (window as any).host?.utils?.perfLog?.(msg); } catch {} } };
-  // 默认启用“整行钉死”；如需禁用：localStorage.setItem('CF_DISABLE_PIN','1')
-  const pinDisabled = () => {
-    try {
-      const v = localStorage.getItem('CF_DISABLE_PIN');
-      if (v === '1') return true;
-      if (v === '0') return false;
-    } catch {}
-    return false; // 默认启用 pin
-  };
+  // “整行钉死”从统一配置读取
+  const pinDisabled = () => { try { return !!(globalThis as any).__cf_disable_pin__; } catch { return false; } };
 
   let term: Terminal | null = null;
   let fitAddon: FitAddon | null = null;

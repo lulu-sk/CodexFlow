@@ -8,9 +8,10 @@ import type { IPty } from '@lydell/node-pty';
 import * as pty from '@lydell/node-pty';
 import { BrowserWindow } from 'electron';
 import { perfLogger } from './log.js';
+import { getDebugConfig } from './debugConfig.js';
 
-// 终端日志总开关（主进程）。默认关闭，可通过 env 或 IPC 置位。
-let TERM_DEBUG = String(process.env.CODEX_TERM_DEBUG || '').trim() === '1';
+// 终端日志总开关（主进程）。默认关闭，由统一调试配置控制，也可通过 IPC 置位。
+let TERM_DEBUG = (() => { try { return !!(getDebugConfig().terminal.pty.debug); } catch { return false; } })();
 export function setTermDebug(flag: boolean) { TERM_DEBUG = !!flag; try { perfLogger.log(`[pty] debugTerm=${TERM_DEBUG ? 'on' : 'off'}`); } catch {} }
 const dlog = (msg: string) => { if (TERM_DEBUG) { try { perfLogger.log(msg); } catch {} } };
 

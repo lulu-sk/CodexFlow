@@ -287,9 +287,9 @@ export function AtInput({ value, onValueChange, winRoot, projectName, projectPat
       <Input
         ref={ref as any}
         value={value}
-        onChange={onLocalChange}
-        onKeyDown={(e: any) => { try { externalOnKeyDown && externalOnKeyDown(e); } catch {} onKeyDown(e); }}
-        onPaste={onPaste}
+        onChange={(e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => onLocalChange(e as any)}
+        onKeyDown={(e: React.KeyboardEvent<any>) => { try { externalOnKeyDown && externalOnKeyDown(e); } catch {} onKeyDown(e); }}
+        onPaste={(e: React.ClipboardEvent<any>) => onPaste(e as any)}
         onDragOver={(e) => { try { e.preventDefault(); e.dataTransfer!.dropEffect = 'copy'; } catch {} }}
         onDrop={(e) => {
           try {

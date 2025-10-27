@@ -14,7 +14,7 @@ const root = createRoot(document.getElementById('root')!);
 // 初始化 i18n 后再渲染，避免首次闪烁，并把关键阶段写入主进程日志
 (async () => {
   let DIAG = false;
-  try { DIAG = localStorage.getItem('CF_DIAG_LOG') === '1'; } catch {}
+  try { DIAG = !!(globalThis as any).__cf_ui_debug_cache__ || !!((await (window as any)?.host?.debug?.get?.())?.global?.diagLog); } catch {}
   if (DIAG) { try { await (window as any)?.host?.utils?.perfLog?.('renderer:boot start'); } catch {} }
   try { await initI18n(); } catch (e) { if (DIAG) { try { await (window as any)?.host?.utils?.perfLog?.('renderer:initI18n error ' + String((e as any)?.stack || e)); } catch {} } }
   if (DIAG) { try { await (window as any)?.host?.utils?.perfLog?.('renderer:render start'); } catch {} }
