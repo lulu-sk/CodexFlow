@@ -6,6 +6,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import i18n from "@/i18n/setup";
+import { copyTextCrossPlatform, readTextCrossPlatform } from "@/lib/clipboard";
 
 export type TerminalAdapterAPI = {
   mount: (el: HTMLElement) => { cols: number; rows: number };
@@ -268,13 +269,7 @@ export function createTerminalAdapter(): TerminalAdapterAPI {
       try {
         const copyText = async (text: string) => {
           if (!text) return;
-          try {
-            if (navigator?.clipboard?.writeText) {
-              await navigator.clipboard.writeText(text);
-              return;
-            }
-          } catch {}
-          try { await (window as any).host?.utils?.copyText?.(text); } catch {}
+          try { await copyTextCrossPlatform(text, { preferBrowser: true }); } catch {}
         };
         const isCopyCombo = (e: KeyboardEvent) => {
           const key = String(e.key || '').toLowerCase();
@@ -301,16 +296,11 @@ export function createTerminalAdapter(): TerminalAdapterAPI {
         };
         const readClipboardText = async (): Promise<string> => {
           try {
-            if (navigator?.clipboard?.readText) {
-              const t = await navigator.clipboard.readText();
-              return String(t || '');
-            }
-          } catch {}
-          try {
-            const res = await (window as any).host?.utils?.readText?.();
-            if (res && res.ok) return String(res.text || '');
-          } catch {}
-          return '';
+            const text = await readTextCrossPlatform({ preferBrowser: true });
+            return String(text || '');
+          } catch {
+            return '';
+          }
         };
         const pasteFromClipboard = async () => {
           try {
@@ -433,7 +423,7 @@ export function createTerminalAdapter(): TerminalAdapterAPI {
         };
 
         // 处理浏览器级的 copy 事件：当用户触发系统复制（菜单/快捷键）时，将 xterm 选区放入剪贴板。
-        const onCopyEvent = (e: ClipboardEvent) => {
+        const onCopyEvent = async (e: ClipboardEvent) => {
           try {
             const text = getXtermSelection();
             if (text && text.length > 0) {
@@ -445,7 +435,13 @@ export function createTerminalAdapter(): TerminalAdapterAPI {
                   wrote = true;
                 }
               } catch {}
-              if (!wrote) try { (window as any).host?.utils?.copyText?.(text); wrote = true; } catch {}
+              if (!wrote) {
+                try {
+                  wrote = await copyTextCrossPlatform(text, { preferBrowser: true });
+                } catch {
+                  wrote = false;
+                }
+              }
               if (wrote) {
                 e.preventDefault();
                 e.stopPropagation();
