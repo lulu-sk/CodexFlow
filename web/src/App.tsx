@@ -43,7 +43,7 @@ import { checkForUpdate, type UpdateCheckErrorType } from "@/lib/about";
 import { createTerminalAdapter, type TerminalAdapterAPI } from "@/adapters/TerminalAdapter";
 import TerminalManager from "@/lib/TerminalManager";
 import { oscBufferDefaults, trimOscBuffer } from "@/lib/oscNotificationBuffer";
-import { copyTextCrossPlatform } from "@/lib/clipboard";
+import HistoryCopyButton from "@/components/history/history-copy-button";
 import { toWSLForInsert } from "@/lib/wsl";
 import SettingsDialog from "@/features/settings/settings-dialog";
 
@@ -293,12 +293,38 @@ function fmtIsoDateTime(iso?: string): string {
   }
 }
 
-// Normalize numeric ms to ISO string; no parsing of freeform timestamps
+// 统一将多种时间表示（Date/ISO/数字秒或毫秒/常见格式）规范化为 ISO 字符串
 function normalizeMsToIso(v: any): string {
   try {
-    const ms = typeof v === 'number' && !Number.isNaN(v) ? v : Date.now();
-    const dt = new Date(ms);
-    return isNaN(dt.getTime()) ? new Date().toISOString() : dt.toISOString();
+    // Date 实例
+    if (v instanceof Date) {
+      const dt = v as Date;
+      return isNaN(dt.getTime()) ? new Date().toISOString() : dt.toISOString();
+    }
+    // 数值：允许秒或毫秒
+    if (typeof v === 'number' && !Number.isNaN(v)) {
+      const ms = v < 1e12 ? v * 1000 : v;
+      const dt = new Date(ms);
+      return isNaN(dt.getTime()) ? new Date().toISOString() : dt.toISOString();
+    }
+    // 字符串：优先走健壮解析，其次再尝试原生解析
+    if (typeof v === 'string') {
+      const t = v.trim();
+      if (!t) return new Date().toISOString();
+      // 纯数字字符串：按长度判断秒/毫秒
+      if (/^\d+(\.\d+)?$/.test(t)) {
+        const num = Number(t);
+        const ms = t.length <= 10 ? num * 1000 : num;
+        const dt = new Date(ms);
+        return isNaN(dt.getTime()) ? new Date().toISOString() : dt.toISOString();
+      }
+      const parsed = parseRawDate(t);
+      if (parsed) return parsed.toISOString();
+      const dt = new Date(t);
+      return isNaN(dt.getTime()) ? new Date().toISOString() : dt.toISOString();
+    }
+    // 其他类型：回退当前时间，避免空值
+    return new Date().toISOString();
   } catch {
     return new Date().toISOString();
   }
@@ -3450,7 +3476,7 @@ export default function CodexFlowManagerUI() {
               </div>
             )}
             <div className="flex justify-end gap-2 pt-4">
-              <Button onClick={() => setBlockingNotice(null)}>{t('common:common.ok')}</Button>
+              <Button onClick={() => setBlockingNotice(null)}>{t(['common:ok', 'common:common.ok'])}</Button>
             </div>
           </DialogContent>
         </Dialog>
@@ -3522,9 +3548,7 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
             <div key={`${kprefix || 'itm'}-uinst-${i}`} className="rounded border border-slate-200 bg-slate-50 p-2 text-xs">
               <div className="flex items-center justify-between text-slate-600 font-medium">
                 <div>user_instructions</div>
-                <Button size="icon" variant="ghost" title={t('history:copyBlock') as string} aria-label={t('history:copyBlock') as string} onClick={async () => { await copyTextCrossPlatform(text, { preferBrowser: true }); }}>
-                  <CopyIcon className="h-4 w-4" />
-                </Button>
+                <HistoryCopyButton text={text} />
               </div>
               <pre className="mt-2 overflow-x-auto whitespace-pre-wrap"><code>{text}</code></pre>
             </div>
@@ -3537,9 +3561,7 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
             <div key={`${kprefix || 'itm'}-env-${i}`} className="rounded border border-slate-200 bg-slate-50 p-2 text-xs">
               <div className="flex items-center justify-between text-slate-600 font-medium">
                 <div>environment_context</div>
-                <Button size="icon" variant="ghost" title={t('history:copyBlock') as string} aria-label={t('history:copyBlock') as string} onClick={async () => { await copyTextCrossPlatform(text, { preferBrowser: true }); }}>
-                  <CopyIcon className="h-4 w-4" />
-                </Button>
+                <HistoryCopyButton text={text} />
               </div>
               <pre className="mt-2 overflow-x-auto whitespace-pre-wrap"><code>{text}</code></pre>
             </div>
@@ -3551,9 +3573,7 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
             <div key={`${kprefix || 'itm'}-instr-${i}`} className="rounded border border-slate-200 bg-slate-50 p-2 text-xs">
               <div className="flex items-center justify-between text-slate-600 font-medium">
                 <div>instructions</div>
-                <Button size="icon" variant="ghost" title={t('history:copyBlock') as string} aria-label={t('history:copyBlock') as string} onClick={async () => { await copyTextCrossPlatform(text, { preferBrowser: true }); }}>
-                  <CopyIcon className="h-4 w-4" />
-                </Button>
+                <HistoryCopyButton text={text} />
               </div>
               <pre className="mt-2 overflow-x-auto whitespace-pre-wrap"><code>{text}</code></pre>
             </div>
@@ -3562,9 +3582,7 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
         if (ty === 'code') {
           return (
             <div key={`${kprefix || 'itm'}-code-${i}`} className="relative">
-              <Button size="icon" variant="secondary" className="absolute right-2 top-2" title={t('history:copyBlock') as string} aria-label={t('history:copyBlock') as string} onClick={async () => { await copyTextCrossPlatform(text, { preferBrowser: true }); }}>
-                <CopyIcon className="h-4 w-4" />
-              </Button>
+              <HistoryCopyButton text={text} variant="secondary" className="absolute right-2 top-2" />
               <pre className="overflow-x-auto rounded bg-slate-900 p-3 text-xs text-slate-100">
                 <code>{text}</code>
               </pre>
@@ -3577,9 +3595,7 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
             <div key={`${kprefix || 'itm'}-fnc-${i}`} className="rounded border border-slate-200 bg-slate-50 p-2 text-xs">
               <div className="flex items-center justify-between text-slate-600 font-medium">
                 <div>function_call</div>
-                <Button size="icon" variant="ghost" title={t('history:copyBlock') as string} aria-label={t('history:copyBlock') as string} onClick={async () => { await copyTextCrossPlatform(text, { preferBrowser: true }); }}>
-                  <CopyIcon className="h-4 w-4" />
-                </Button>
+                <HistoryCopyButton text={text} />
               </div>
               <pre className="mt-2 overflow-x-auto whitespace-pre-wrap"><code>{text}</code></pre>
             </div>
@@ -3591,9 +3607,7 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
             <div key={`${kprefix || 'itm'}-fno-${i}`} className="rounded border border-slate-200 bg-slate-50 p-2 text-xs">
               <div className="flex items-center justify-between text-slate-600 font-medium">
                 <div>function_output</div>
-                <Button size="icon" variant="ghost" title={t('history:copyBlock') as string} aria-label={t('history:copyBlock') as string} onClick={async () => { await copyTextCrossPlatform(text, { preferBrowser: true }); }}>
-                  <CopyIcon className="h-4 w-4" />
-                </Button>
+                <HistoryCopyButton text={text} />
               </div>
               <pre className="mt-2 overflow-x-auto whitespace-pre-wrap"><code>{text}</code></pre>
             </div>
@@ -3602,9 +3616,7 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
         if (ty === 'summary') {
           return (
             <div key={`${kprefix || 'itm'}-sum-${i}`} className="relative rounded border bg-white p-2 text-xs text-slate-700">
-              <Button size="icon" variant="ghost" className="absolute right-2 top-2" title={t('history:copyBlock') as string} aria-label={t('history:copyBlock') as string} onClick={async () => { await copyTextCrossPlatform(text, { preferBrowser: true }); }}>
-                <CopyIcon className="h-4 w-4" />
-              </Button>
+              <HistoryCopyButton text={text} className="absolute right-2 top-2" />
               {text}
             </div>
           );
@@ -3615,9 +3627,7 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
             <div key={`${kprefix || 'itm'}-git-${i}`} className="rounded border border-slate-200 bg-slate-50 p-2 text-xs">
               <div className="flex items-center justify-between text-slate-600 font-medium">
                 <div>git</div>
-                <Button size="icon" variant="ghost" title={t('history:copyBlock') as string} aria-label={t('history:copyBlock') as string} onClick={async () => { await copyTextCrossPlatform(text, { preferBrowser: true }); }}>
-                  <CopyIcon className="h-4 w-4" />
-                </Button>
+                <HistoryCopyButton text={text} />
               </div>
               <pre className="mt-2 overflow-x-auto whitespace-pre-wrap"><code>{text}</code></pre>
             </div>
@@ -3628,9 +3638,7 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
             <div key={`${kprefix || 'itm'}-in-${i}`} className="rounded border bg-white p-3 text-sm leading-6">
               <div className="mb-1 flex items-center justify-between text-xs uppercase tracking-wide text-slate-500">
                 <span>input</span>
-                <Button size="icon" variant="ghost" title={t('history:copyBlock') as string} aria-label={t('history:copyBlock') as string} onClick={async () => { await copyTextCrossPlatform(text, { preferBrowser: true }); }}>
-                  <CopyIcon className="h-4 w-4" />
-                </Button>
+                <HistoryCopyButton text={text} />
               </div>
               <div className="whitespace-pre-wrap break-words">{text}</div>
             </div>
@@ -3641,9 +3649,7 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
             <div key={`${kprefix || 'itm'}-out-${i}`} className="rounded border bg-white p-3 text-sm leading-6">
               <div className="mb-1 flex items-center justify-between text-xs uppercase tracking-wide text-slate-500">
                 <span>output</span>
-                <Button size="icon" variant="ghost" title={t('history:copyBlock') as string} aria-label={t('history:copyBlock') as string} onClick={async () => { await copyTextCrossPlatform(text, { preferBrowser: true }); }}>
-                  <CopyIcon className="h-4 w-4" />
-                </Button>
+                <HistoryCopyButton text={text} />
               </div>
               <div className="whitespace-pre-wrap break-words">{text}</div>
             </div>
@@ -3655,9 +3661,7 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
             <div key={`${kprefix || 'itm'}-state-${i}`} className="rounded border border-slate-200 bg-slate-50 p-2 text-xs">
               <div className="flex items-center justify-between text-slate-600 font-medium">
                 <div>state</div>
-                <Button size="icon" variant="ghost" title={t('history:copyBlock') as string} aria-label={t('history:copyBlock') as string} onClick={async () => { await copyTextCrossPlatform(text, { preferBrowser: true }); }}>
-                  <CopyIcon className="h-4 w-4" />
-                </Button>
+                <HistoryCopyButton text={text} />
               </div>
               <pre className="mt-2 overflow-x-auto whitespace-pre-wrap">
                 <code>{text}</code>
@@ -3671,9 +3675,7 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
             <div key={`${kprefix || 'itm'}-meta-${i}`} className="rounded border border-slate-200 bg-slate-50 p-2 text-xs">
               <div className="flex items-center justify-between text-slate-600 font-medium">
                 <div>session_meta</div>
-                <Button size="icon" variant="ghost" title={t('history:copyBlock') as string} aria-label={t('history:copyBlock') as string} onClick={async () => { await copyTextCrossPlatform(text, { preferBrowser: true }); }}>
-                  <CopyIcon className="h-4 w-4" />
-                </Button>
+                <HistoryCopyButton text={text} />
               </div>
               <pre className="mt-2 overflow-x-auto whitespace-pre-wrap"><code>{text}</code></pre>
             </div>
@@ -3682,9 +3684,7 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
         // default: treat as plain text, including input_text/output_text etc.
         return (
           <div key={`${kprefix || 'itm'}-txt-${i}`} className="relative">
-            <Button size="icon" variant="ghost" className="absolute right-0 -top-1" title={t('history:copyBlock') as string} aria-label={t('history:copyBlock') as string} onClick={async () => { await copyTextCrossPlatform(text, { preferBrowser: true }); }}>
-              <CopyIcon className="h-4 w-4" />
-            </Button>
+            <HistoryCopyButton text={text} className="absolute right-0 -top-1" />
             <p className="whitespace-pre-wrap break-words text-sm leading-6">{text}</p>
           </div>
         );
