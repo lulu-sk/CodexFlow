@@ -2,6 +2,7 @@
   "showPanel": "Show History",
   "hidePanel": "Hide History",
   "detailTitle": "History Detail",
+  "copyBlock": "Copy",
   "copyAll": "Copy All",
   "export": "Export",
   "filterTypes": "Filter Types",
