@@ -3,6 +3,8 @@
   "newConsole": "New Console",
   "inputPlaceholder": "Type message to Codex (paste images, @ search files), Ctrl+Enter to send",
   "send": "Send",
+  "expandInput": "Expand composer",
+  "collapseInput": "Exit expand",
   "readyPlaceholder": "# Terminal ready. Embedded console placeholder (UI prototype; no real PTY yet).",
   "ctx": {
     "copy": "Copy",

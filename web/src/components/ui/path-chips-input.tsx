@@ -49,6 +49,10 @@ export interface PathChipsInputProps extends Omit<React.InputHTMLAttributes<HTML
   multiline?: boolean;
   /** 运行环境：决定鼠标悬停时 title 显示路径风格（windows 显示 Windows 路径；wsl 显示 WSL 路径） */
   runEnv?: 'wsl' | 'windows';
+  /** 自定义草稿输入区域（textarea/input）的附加类名 */
+  draftInputClassName?: string;
+  /** 是否为滚动条预留左右对称边距，仅在全屏输入时开启以保持视觉等宽 */
+  balancedScrollbarGutter?: boolean;
 }
 
 function uid(): string {
@@ -104,6 +108,8 @@ export default function PathChipsInput({
   multiline,
   runEnv = 'wsl',
   onKeyDown: externalOnKeyDown,
+  draftInputClassName,
+  balancedScrollbarGutter = false,
   ...rest
 }: PathChipsInputProps) {
   const { t } = useTranslation(['common', 'history']);
@@ -533,7 +539,11 @@ export default function PathChipsInput({
               checks = await Promise.all(list.map(async (wp) => {
                 try {
                   const res: any = await (window as any).host?.utils?.pathExists?.(wp, true);
-                  return !!(res && res.ok && res.exists);
+                  if (res && res.ok) {
+                    if (typeof res.isDirectory === 'boolean') return res.isDirectory;
+                    return !!res.exists;
+                  }
+                  return false;
                 } catch { return false; }
               }));
             } catch {}
@@ -661,9 +671,11 @@ export default function PathChipsInput({
             // 说明：
             // - resize-none 禁用手动拖拽；whitespace-pre-wrap + break-words 实现中文/长词自动换行；
             // - leading-5 提升可读性；min-h 保持与容器协调；pb-10 给右下角发送按钮留出垂直空间；
+            style={balancedScrollbarGutter ? ({ scrollbarGutter: 'stable both-edges' } as any) : undefined}
             className={cn(
               "block w-full min-w-[8rem] outline-none bg-white placeholder:text-slate-400 select-text resize-none whitespace-pre-wrap break-words leading-5",
               "py-0.5 pb-10 min-h-[1.5rem]",
+              draftInputClassName,
             )}
             placeholder={chips.length === 0 ? (rest as any)?.placeholder : undefined}
           />
@@ -676,7 +688,8 @@ export default function PathChipsInput({
             onPaste={onPaste}
             onPointerDown={(e) => { try { (e.target as HTMLElement).setPointerCapture((e as any).pointerId); } catch {} }}
             placeholder={chips.length === 0 ? (rest as any)?.placeholder : undefined}
-            className={cn("block w-full min-w-[8rem] outline-none bg-white placeholder:text-slate-400 select-text", "h-8 py-0.5 pb-10")}
+            style={balancedScrollbarGutter ? ({ scrollbarGutter: 'stable both-edges' } as any) : undefined}
+            className={cn("block w-full min-w-[8rem] outline-none bg-white placeholder:text-slate-400 select-text", "h-8 py-0.5 pb-10", draftInputClassName)}
           />
         )}
       </div>

@@ -904,7 +904,7 @@ ipcMain.handle('history.read', async (_e, { filePath }: { filePath: string }) =>
   return history.readHistoryFile(filePath);
 });
 
-// 扫描所有索引的会话，找出“筛选后 input_text/output_text 皆为空”的文件
+// 扫描所有索引的会话，找出"筛选后 input_text/output_text 皆为空"的文件
 ipcMain.handle('history.findEmptySessions', async () => {
   try {
     const sums = getIndexedSummaries();
@@ -1353,7 +1353,7 @@ ipcMain.handle('app.getEnvMeta', async () => {
   }
 });
 
-// 打开外部 WSL 控制台（以“打开 WSL 终端 -> cd 到目录 -> 执行 codex”为准则，优先稳健性）
+// 打开外部 WSL 控制台（以"打开 WSL 终端 -> cd 到目录 -> 执行 codex"为准则，优先稳健性）
 ipcMain.handle('utils.openExternalWSLConsole', async (_e, args: { wslPath?: string; winPath?: string; distro?: string; startupCmd?: string }) => {
   try {
     const platform = process.platform;
@@ -1464,12 +1464,16 @@ ipcMain.handle('utils.chooseFolder', async (_e) => {
 ipcMain.handle('utils.pathExists', async (_e, args: { path: string; dirOnly?: boolean }) => {
   try {
     const p = String(args?.path || '');
-    if (!p) return { ok: true, exists: false } as any;
+    if (!p) return { ok: true, exists: false, isDirectory: false, isFile: false } as any;
     const fsp = await import('node:fs/promises');
     const st = await fsp.stat(p).catch(() => null as any);
-    if (!st) return { ok: true, exists: false } as any;
-    if (args?.dirOnly) return { ok: true, exists: st.isDirectory() } as any;
-    return { ok: true, exists: true } as any;
+    if (!st) return { ok: true, exists: false, isDirectory: false, isFile: false } as any;
+    const isDirectory = st.isDirectory();
+    const isFile = st.isFile();
+    if (args?.dirOnly) {
+      return { ok: true, exists: isDirectory, isDirectory, isFile } as any;
+    }
+    return { ok: true, exists: true, isDirectory, isFile } as any;
   } catch (e: any) {
     return { ok: false, error: String(e) } as any;
   }
