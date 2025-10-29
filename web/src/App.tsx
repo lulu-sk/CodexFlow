@@ -35,6 +35,8 @@ import {
   X,
   Copy as CopyIcon,
   Info as InfoIcon,
+  Maximize2,
+  Minimize2,
 } from "lucide-react";
 import AboutSupport from "@/components/about-support";
 import CodexUsageSummary from "@/components/topbar/codex-status";
@@ -1491,6 +1493,7 @@ export default function CodexFlowManagerUI() {
   // 命令输入改为 Chips + 草稿：按 Tab 隔离
   const [chipsByTab, setChipsByTab] = useState<Record<string, PathChip[]>>({});
   const [draftByTab, setDraftByTab] = useState<Record<string, string>>({});
+  const [inputFullscreenByTab, setInputFullscreenByTab] = useState<Record<string, boolean>>({});
 
   // 防御性清理：当视图中心从历史切回控制台、或窗口可见性发生变化时，强制关闭所有全屏遮罩
   useEffect(() => {
@@ -2227,6 +2230,29 @@ export default function CodexFlowManagerUI() {
     return parts.join("\n");
   }
 
+  const setInputFullscreenState = useCallback((tabId: string, next: boolean) => {
+    if (!tabId) return;
+    setInputFullscreenByTab((m) => {
+      const cur = !!m[tabId];
+      if (cur === next) return m;
+      const nextMap = { ...m };
+      if (next) nextMap[tabId] = true;
+      else delete nextMap[tabId];
+      return nextMap;
+    });
+  }, [setInputFullscreenByTab]);
+
+  const toggleInputFullscreen = useCallback((tabId: string) => {
+    if (!tabId) return;
+    setInputFullscreenByTab((m) => {
+      const has = !!m[tabId];
+      const nextMap = { ...m } as Record<string, boolean>;
+      if (has) delete nextMap[tabId];
+      else nextMap[tabId] = true;
+      return nextMap;
+    });
+  }, [setInputFullscreenByTab]);
+
   function sendCommand() {
     if (!activeTab) return;
     const text = compileTextFromChipsAndDraft(activeTab.id);
@@ -2244,6 +2270,7 @@ export default function CodexFlowManagerUI() {
     }
     setChipsByTab((m) => ({ ...m, [activeTab.id]: [] }));
     setDraftByTab((m) => ({ ...m, [activeTab.id]: "" }));
+    setInputFullscreenState(activeTab.id, false);
   }
 
   function closeTab(id: string) {
@@ -2263,6 +2290,12 @@ export default function CodexFlowManagerUI() {
     });
     clearPendingForTab(id);
     unregisterTabProject(id);
+    setInputFullscreenByTab((m) => {
+      if (!m[id]) return m;
+      const next = { ...m } as Record<string, boolean>;
+      delete next[id];
+      return next;
+    });
     if (activeTabId === id) setActiveTab(null);
   }
 
@@ -2522,62 +2555,123 @@ export default function CodexFlowManagerUI() {
             )}
           </TabsList>
         </div>
+          {tabs.map((tab) => {
+            const isInputFullscreen = !!inputFullscreenByTab[tab.id];
+            const inputPlaceholder = t('terminal:inputPlaceholder') as string;
+            const sendLabel = t('terminal:send') as string;
+            const expandLabel = isInputFullscreen ? (t('terminal:collapseInput') as string) : (t('terminal:expandInput') as string);
 
-            {tabs.map((tab) => (
-          <TabsContent
-            key={tab.id}
-            value={tab.id}
-            className="mt-1 flex flex-1 min-h-0 flex-col space-y-1"
-            onContextMenu={(e: React.MouseEvent) => openTabContextMenu(e, tab.id, "tab-content")}
-          >
-            <Card className="flex flex-1 min-h-0 flex-col">
-              <CardContent className="flex flex-1 min-h-0 flex-col p-0">
-                <div className="relative flex-1 min-h-0">
-                  <TerminalView
-                    logs={tab.logs}
-                    tabId={tab.id}
-                    ptyId={ptyByTab[tab.id]}
-                    attachTerminal={attachTerminal}
-                    onContextMenuDebug={(event) => openTabContextMenu(event, tab.id, "terminal-body")}
-                  />
-                </div>
+            return (
+              <TabsContent
+                key={tab.id}
+                value={tab.id}
+                className="mt-1 flex flex-1 min-h-0 flex-col space-y-1"
+                onContextMenu={(e: React.MouseEvent) => openTabContextMenu(e, tab.id, "tab-content")}
+              >
+                <Card className="flex flex-1 min-h-0 flex-col">
+                  <CardContent className="relative flex flex-1 min-h-0 flex-col p-0">
+                    <div className={`relative flex-1 min-h-0 transition-opacity ${isInputFullscreen ? 'pointer-events-none select-none opacity-35' : ''}`}>
+                      <TerminalView
+                        logs={tab.logs}
+                        tabId={tab.id}
+                        ptyId={ptyByTab[tab.id]}
+                        attachTerminal={attachTerminal}
+                        onContextMenuDebug={(event) => openTabContextMenu(event, tab.id, "terminal-body")}
+                      />
+                    </div>
 
-                <div className="mt-3 w-full">
-                  {/* 相对定位容器，用于将发送按钮浮层覆盖在输入框右侧 */}
-                  <div className="relative w-full">
-                    {/* 新的 Chips 输入：移除旧的粘贴预览区，节省空间 */}
-                    <PathChipsInput
-                      placeholder={t('terminal:inputPlaceholder') as string}
-                      chips={chipsByTab[tab.id] || []}
-                      onChipsChange={(next) => setChipsByTab((m) => ({ ...m, [tab.id]: next }))}
-                      draft={draftByTab[tab.id] || ""}
-                      onDraftChange={(v) => setDraftByTab((m) => ({ ...m, [tab.id]: v }))}
-                      winRoot={selectedProject?.winPath}
-                      projectWslRoot={selectedProject?.wslPath}
-                      projectName={selectedProject?.name}
-                      projectPathStyle={projectPathStyle}
-                      runEnv={terminalMode}
-                      multiline
-                      onKeyDown={(e: any) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { sendCommand(); e.preventDefault(); } }}
-                      className=""
-                    />
+                    {isInputFullscreen ? (
+                      <div className="absolute inset-0 z-20 flex flex-col overflow-auto bg-white/95 p-4 backdrop-blur-sm">
+                        <div className="relative flex-1 flex flex-col rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl">
+                          <PathChipsInput
+                            placeholder={inputPlaceholder}
+                            chips={chipsByTab[tab.id] || []}
+                            onChipsChange={(next) => setChipsByTab((m) => ({ ...m, [tab.id]: next }))}
+                            draft={draftByTab[tab.id] || ""}
+                            onDraftChange={(v) => setDraftByTab((m) => ({ ...m, [tab.id]: v }))}
+                            winRoot={selectedProject?.winPath}
+                            projectWslRoot={selectedProject?.wslPath}
+                            projectName={selectedProject?.name}
+                            projectPathStyle={projectPathStyle}
+                            runEnv={terminalMode}
+                            multiline
+                            onKeyDown={(e: any) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { sendCommand(); e.preventDefault(); } }}
+                            className="flex flex-1 flex-col overflow-auto h-full min-h-[24rem] border-0 rounded-none shadow-none focus-visible:ring-0 px-0 py-1"
+                            balancedScrollbarGutter
+                            draftInputClassName="flex-1 min-h-[18rem] border-0 focus:ring-0 focus:outline-none"
+                          />
 
-                    {/* 浮层发送按钮：圆形图标，位于输入框右下角 */}
-                    <Button
-                      size="icon"
-                      aria-label={t('terminal:send') as string}
-                      title={t('terminal:send') as string}
-                      onClick={sendCommand}
-                      className="absolute right-2 bottom-2 h-8 w-8 p-0 rounded-full shadow-sm"
-                    >
-                      <Send className="h-4 w-4" />
-                    </Button>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
-        ))}
+                          <div className="absolute right-[6px] bottom-[6px] flex flex-row gap-2">
+                            <Button
+                              size="icon"
+                              aria-label={sendLabel}
+                              title={sendLabel}
+                              onClick={sendCommand}
+                              className="h-10 w-10 rounded-full shadow-md"
+                            >
+                              <Send className="h-5 w-5" />
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              size="icon"
+                              aria-label={expandLabel}
+                              title={expandLabel}
+                              onClick={() => toggleInputFullscreen(tab.id)}
+                              className="h-10 w-10 rounded-full shadow-md"
+                            >
+                              {isInputFullscreen ? <Minimize2 className="h-5 w-5" /> : <Maximize2 className="h-5 w-5" />}
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="mt-3 w-full">
+                        <div className="relative w-full">
+                          <PathChipsInput
+                            placeholder={inputPlaceholder}
+                            chips={chipsByTab[tab.id] || []}
+                            onChipsChange={(next) => setChipsByTab((m) => ({ ...m, [tab.id]: next }))}
+                            draft={draftByTab[tab.id] || ""}
+                            onDraftChange={(v) => setDraftByTab((m) => ({ ...m, [tab.id]: v }))}
+                            winRoot={selectedProject?.winPath}
+                            projectWslRoot={selectedProject?.wslPath}
+                            projectName={selectedProject?.name}
+                            projectPathStyle={projectPathStyle}
+                            runEnv={terminalMode}
+                            multiline
+                            onKeyDown={(e: any) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { sendCommand(); e.preventDefault(); } }}
+                            className=""
+                          />
+
+                          <div className="absolute right-2 bottom-2 flex flex-row gap-2">
+                            <Button
+                              size="icon"
+                              aria-label={sendLabel}
+                              title={sendLabel}
+                              onClick={sendCommand}
+                              className="h-8 w-8 rounded-full shadow-sm"
+                            >
+                              <Send className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              size="icon"
+                              aria-label={expandLabel}
+                              title={expandLabel}
+                              onClick={() => toggleInputFullscreen(tab.id)}
+                              className="h-8 w-8 rounded-full shadow-sm"
+                            >
+                              <Maximize2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </TabsContent>
+            );
+          })}
       </Tabs>
     </div>
   );

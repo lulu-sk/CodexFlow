@@ -169,7 +169,7 @@ export interface UtilsAPI {
   openExternalConsole(args: { wslPath?: string; winPath?: string; distro?: string; startupCmd?: string }): Promise<{ ok: boolean; error?: string }>;
   // 兼容旧名
   openExternalWSLConsole?(args: { wslPath?: string; winPath?: string; distro?: string; startupCmd?: string }): Promise<{ ok: boolean; error?: string }>;
-  pathExists(p: string, dirOnly?: boolean): Promise<{ ok: boolean; exists?: boolean; error?: string }>;
+  pathExists(p: string, dirOnly?: boolean): Promise<{ ok: boolean; exists?: boolean; isDirectory?: boolean; isFile?: boolean; error?: string }>;
   chooseFolder(): Promise<{ ok: boolean; path?: string; canceled?: boolean; error?: string }>;
   debugTermGet(): Promise<{ ok: boolean; enabled?: boolean; error?: string }>;
   debugTermSet(enabled: boolean): Promise<{ ok: boolean; error?: string }>;
