@@ -7,6 +7,11 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import i18n from "@/i18n/setup";
 import { copyTextCrossPlatform, readTextCrossPlatform } from "@/lib/clipboard";
+import {
+  DEFAULT_TERMINAL_FONT_FAMILY,
+  normalizeTerminalAppearance,
+  type TerminalAppearance,
+} from "@/lib/terminal-appearance";
 
 export type TerminalAdapterAPI = {
   mount: (el: HTMLElement) => { cols: number; rows: number };
@@ -18,10 +23,15 @@ export type TerminalAdapterAPI = {
   resize: () => { cols: number; rows: number };
   focus?: () => void;
   blur?: () => void;
+  setAppearance: (appearance: Partial<TerminalAppearance>) => void;
   dispose: () => void;
 };
 
-export function createTerminalAdapter(): TerminalAdapterAPI {
+export type TerminalAdapterOptions = {
+  appearance?: Partial<TerminalAppearance>;
+};
+
+export function createTerminalAdapter(options?: TerminalAdapterOptions): TerminalAdapterAPI {
   // 调试辅助：统一配置（preload 注入只读缓存）
   const dbgEnabled = () => { try { return !!(globalThis as any).__cf_term_debug__; } catch { return false; } };
   const dlog = (msg: string) => { if (dbgEnabled()) { try { (window as any).host?.utils?.perfLog?.(msg); } catch {} } };
@@ -50,6 +60,30 @@ export function createTerminalAdapter(): TerminalAdapterAPI {
   let legacyWinNeedsReflowHack = false;
   let legacyWinBuild = 0;
   let legacyLastCols = 0;
+  let appearance: TerminalAppearance = normalizeTerminalAppearance(options?.appearance);
+
+  const applyAppearanceToTerminal = (next: TerminalAppearance) => {
+    appearance = next;
+    if (!term) return;
+    let applied = false;
+    try {
+      const setOption = (term as any).setOption;
+      if (typeof setOption === "function") {
+        setOption.call(term, "fontFamily", appearance.fontFamily);
+        applied = true;
+      }
+    } catch {}
+    if (!applied) {
+      try {
+        const opts: any = (term as any).options;
+        if (opts && typeof opts === "object") {
+          opts.fontFamily = appearance.fontFamily;
+        }
+      } catch {}
+    }
+    try { fitAndPin(true); } catch {}
+    try { term.refresh(0, term.rows - 1); } catch {}
+  };
   const logFocus = (state: "focus" | "blur") => {
     if (!dbgEnabled()) return;
     try { (window as any).host?.utils?.perfLog?.(`[adapter] xterm.${state}`); } catch {}
@@ -200,7 +234,7 @@ export function createTerminalAdapter(): TerminalAdapterAPI {
         // 明暗对比明确的配色，避免 Windows + 高 DPI 下的次像素渲染脏区
         theme: { background: "#020617", foreground: "#e2e8f0" },
         // 与容器 UI 的等宽字体保持一致
-        fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+        fontFamily: appearance.fontFamily || DEFAULT_TERMINAL_FONT_FAMILY,
         fontSize: 13,
         // 严格网格：行高与字距保持 1，减少测量误差
         lineHeight: 1,
@@ -630,6 +664,11 @@ export function createTerminalAdapter(): TerminalAdapterAPI {
         term?.blur();
         logFocus("blur");
       } catch {}
+    },
+    setAppearance: (partial) => {
+      const next = normalizeTerminalAppearance(partial);
+      if (next.fontFamily === appearance.fontFamily) return;
+      applyAppearanceToTerminal(next);
     },
     dispose: () => {
       try { dlog('[adapter] dispose'); if (container) container.style.height = ""; } catch {}

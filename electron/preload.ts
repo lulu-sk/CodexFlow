@@ -250,6 +250,16 @@ contextBridge.exposeInMainWorld('host', {
     , chooseFolder: async () => {
       return await ipcRenderer.invoke('utils.chooseFolder');
     }
+    , listFonts: async (): Promise<string[]> => {
+      try { const res = await ipcRenderer.invoke('utils.listFonts'); if (res && res.ok && Array.isArray(res.fonts)) return res.fonts as string[]; return []; } catch { return []; }
+    }
+    , listFontsDetailed: async (): Promise<Array<{ name: string; file?: string; monospace: boolean }>> => {
+      try {
+        const res = await ipcRenderer.invoke('utils.listFontsDetailed');
+        if (res && res.ok && Array.isArray(res.fonts)) return res.fonts as Array<{ name: string; file?: string; monospace: boolean }>;
+        return [];
+      } catch { return []; }
+    }
   }
   , images: {
     saveDataURL: async (args: { dataURL: string; projectWinRoot?: string; projectName?: string; ext?: string; prefix?: string }) => {

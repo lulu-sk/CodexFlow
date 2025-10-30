@@ -25,6 +25,8 @@ export type AppSettings = {
     proxyUrl?: string;
     noProxy?: string;
   };
+  /** 终端字体栈 */
+  terminalFontFamily?: string;
 };
 
 export type Project = {
@@ -173,6 +175,10 @@ export interface UtilsAPI {
   chooseFolder(): Promise<{ ok: boolean; path?: string; canceled?: boolean; error?: string }>;
   debugTermGet(): Promise<{ ok: boolean; enabled?: boolean; error?: string }>;
   debugTermSet(enabled: boolean): Promise<{ ok: boolean; error?: string }>;
+  /** 列出系统已安装字体名称（Windows）。其他平台返回空数组。 */
+  listFonts(): Promise<string[]>;
+  /** 列出系统字体详情：包含路径与是否等宽（基于字体表元数据判定）。 */
+  listFontsDetailed(): Promise<Array<{ name: string; file?: string; monospace: boolean }>>;
 }
 
 export interface AppAPI {
