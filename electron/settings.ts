@@ -48,6 +48,8 @@ export type AppSettings = {
   notifications?: NotificationSettings;
   /** 网络代理设置（供主进程与渲染层共享） */
   network?: NetworkSettings;
+  /** 终端字体栈（CSS font-family 字符串） */
+  terminalFontFamily?: string;
 };
 
 function getStorePath() {

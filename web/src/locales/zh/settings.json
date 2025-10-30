@@ -53,6 +53,31 @@
   "wslDistroHelp": "指定打开 WSL 终端时默认使用的发行版。",
   "codexCmd": "CodexFlow 启动命令",
   "codexCmdHelp": "自定义从终端启动 CodexFlow 时执行的命令。",
+  "terminalFont": {
+    "label": "终端字体",
+    "help": "选择终端使用的等宽字体，底部预览区会实时显示当前选中字体的渲染效果。",
+    "placeholder": "例如：Cascadia Code, Consolas, monospace",
+    "note": "如所选字体未安装，终端会自动回退到系统等宽字体。",
+    "custom": "自定义字体栈",
+    "previewTitle": "预览效果",
+    "preview": "0123456789 abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ !@#$%^&*() <>",
+    "effective": "实际使用：{name}",
+    "fallback": "未安装所选字体，已回退至：{name}",
+    "installedLabel": "系统已安装字体",
+    "installedPlaceholder": "选择字体",
+    "installedNone": "未检测到系统字体",
+    "recommendedTag": "推荐",
+    "showAll": "显示所有字体",
+    "showAllHint": "启用后，上方列表会展示所有已安装字体；否则仅显示等宽字体。",
+    "prev": "上一字体",
+    "next": "下一字体",
+    "presets": {
+      "cascadia": "Cascadia Code（推荐）",
+      "jetbrains": "JetBrains Mono",
+      "fira": "Fira Code"
+    }
+  },
+  "loading": "加载中…",
   "codexTrace": {
     "label": "Codex TUI 调试",
     "help": "控制 CodexFlow 启动 Codex 时是否自动附加 trace 日志参数（作用于新打开的终端）。该开关归属 debug.config.jsonc。",

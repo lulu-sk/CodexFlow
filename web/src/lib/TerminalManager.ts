@@ -2,6 +2,10 @@
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
 import { createTerminalAdapter, type TerminalAdapterAPI } from '@/adapters/TerminalAdapter';
+import {
+  normalizeTerminalAppearance,
+  type TerminalAppearance,
+} from '@/lib/terminal-appearance';
 
 /**
  * 渲染进程侧的 PTY 接口抽象，便于将 TerminalManager 从具体的 window.host.pty 解耦以实现复用。
@@ -43,6 +47,7 @@ export default class TerminalManager {
   private hostElByTab: Record<string, HTMLElement | null> = {};
   private getPtyId: (tabId: string) => string | undefined;
   private hostPty: HostPtyAPI;
+  private appearance: TerminalAppearance = normalizeTerminalAppearance();
   private lastFocusedTabId: string | null = null;
 
   /**
@@ -50,11 +55,16 @@ export default class TerminalManager {
    * @param getPtyId - 回调，用于根据 tabId 查询当前绑定的 PTY id（由上层 state 驱动）
    * @param hostPty - 实现 PTY I/O 的宿主接口（默认为 window.host.pty）
    */
-  constructor(getPtyId?: (tabId: string) => string | undefined, hostPty?: HostPtyAPI) {
+  constructor(
+    getPtyId?: (tabId: string) => string | undefined,
+    hostPty?: HostPtyAPI,
+    appearance?: Partial<TerminalAppearance>
+  ) {
     this.getPtyId = getPtyId || (() => undefined);
     // 若未提供 hostPty，则回退到全局 window.host.pty（兼容当前代码库）
     // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
     this.hostPty = hostPty || (window as any).host?.pty as HostPtyAPI;
+    this.appearance = normalizeTerminalAppearance(appearance);
   }
 
   /**
@@ -294,9 +304,10 @@ export default class TerminalManager {
     // create adapter and mount into persistent container
     let adapter = this.adapters[tabId];
     if (!adapter) {
-      adapter = createTerminalAdapter();
+      adapter = createTerminalAdapter({ appearance: this.appearance });
       this.adapters[tabId] = adapter;
     }
+    try { adapter.setAppearance(this.appearance); } catch {}
     try { adapter.mount(container); } catch (err) { console.warn('adapter.mount failed', err); }
 
     // If PTY already exists for this tab, wire up bridges
@@ -310,6 +321,17 @@ export default class TerminalManager {
     window.addEventListener('resize', onResize);
     this.resizeUnsubByTab[tabId] = () => window.removeEventListener('resize', onResize);
     return container;
+  }
+
+  setAppearance(appearance: Partial<TerminalAppearance>): void {
+    const next = normalizeTerminalAppearance(appearance);
+    if (next.fontFamily === this.appearance.fontFamily) return;
+    this.appearance = next;
+    for (const [tabId, adapter] of Object.entries(this.adapters)) {
+      if (!adapter) continue;
+      try { adapter.setAppearance(next); } catch {}
+      try { this.scheduleResizeSync(tabId, true); } catch {}
+    }
   }
 
   /**

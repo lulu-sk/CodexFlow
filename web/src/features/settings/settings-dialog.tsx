@@ -19,7 +19,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn, formatBytes } from "@/lib/utils";
 import { listAvailableLanguages, changeAppLanguage } from "@/i18n/setup";
 import { CodexAccountInline } from "@/components/topbar/codex-status";
-import { Trash2, Power } from "lucide-react";
+import { Trash2, Power, ChevronUp, ChevronDown } from "lucide-react";
+import {
+  DEFAULT_TERMINAL_FONT_FAMILY,
+  normalizeTerminalFontFamily,
+  buildTerminalFontStack,
+} from "@/lib/terminal-appearance";
+import { resolveFirstAvailableFont, parseFontFamilyList } from "@/lib/font-utils";
 
 type TerminalMode = "wsl" | "windows";
 type SendMode = "write_only" | "write_and_enter";
@@ -48,6 +54,7 @@ export type SettingsDialogProps = {
     projectPathStyle: PathStyle;
     notifications: NotificationPrefs;
     network?: NetworkPrefs;
+    terminalFontFamily: string;
   };
   onSave: (v: {
     terminal: TerminalMode;
@@ -58,6 +65,7 @@ export type SettingsDialogProps = {
     projectPathStyle: PathStyle;
     notifications: NotificationPrefs;
     network: NetworkPrefs;
+    terminalFontFamily: string;
   }) => void;
 };
 
@@ -89,6 +97,7 @@ type SectionKey = "basic" | "notifications" | "terminal" | "networkAccount" | "d
 const NAV_ORDER: SectionKey[] = ["basic", "notifications", "terminal", "networkAccount", "data"];
 
 const DEFAULT_LANGS = ["zh", "en"];
+// 移除推荐逻辑：仅保留纯字母序
 
 export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   open,
@@ -115,6 +124,33 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   const [codexRoots, setCodexRoots] = useState<string[]>([]);
   const [lang, setLang] = useState<string>(values.locale || "en");
   const [availableDistros, setAvailableDistros] = useState<string[]>([]);
+  const [terminalFontFamily, setTerminalFontFamily] = useState<string>(normalizeTerminalFontFamily(values.terminalFontFamily));
+  const [installedFonts, setInstalledFonts] = useState<string[]>([]);
+  const [installedLoading, setInstalledLoading] = useState<boolean>(false);
+  const [monospaceFonts, setMonospaceFonts] = useState<string[]>([]);
+  const [showAllFonts, setShowAllFonts] = useState<boolean>(false);
+  const fontsLoadedRef = useRef<boolean>(false);
+  const resolvedPreviewFont = useMemo(() => {
+    return resolveFirstAvailableFont(terminalFontFamily || DEFAULT_TERMINAL_FONT_FAMILY);
+  }, [terminalFontFamily]);
+  const currentPrimaryFont = useMemo(() => {
+    const list = parseFontFamilyList(terminalFontFamily);
+    return list[0] || "";
+  }, [terminalFontFamily]);
+  const sortedInstalledFonts = useMemo(() => {
+    return installedFonts.slice().sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+  }, [installedFonts]);
+  const sortedMonospaceFonts = useMemo(() => {
+    return monospaceFonts.slice().sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+  }, [monospaceFonts]);
+  const visibleFontList = useMemo(() => {
+    return showAllFonts ? sortedInstalledFonts : sortedMonospaceFonts;
+  }, [showAllFonts, sortedInstalledFonts, sortedMonospaceFonts]);
+  const currentFontIndex = useMemo(() => {
+    if (visibleFontList.length === 0) return -1;
+    const current = (currentPrimaryFont || "").toLowerCase();
+    return visibleFontList.findIndex((name) => name.toLowerCase() === current);
+  }, [visibleFontList, currentPrimaryFont]);
   const [cleanupScanning, setCleanupScanning] = useState(false);
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const [cleanupList, setCleanupList] = useState<CleanupCandidate[]>([]);
@@ -162,8 +198,9 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         proxyUrl: values.network?.proxyUrl ?? "",
         noProxy: values.network?.noProxy ?? "",
       });
+      setTerminalFontFamily(normalizeTerminalFontFamily(values.terminalFontFamily));
     }
-  }, [open, values.codexCmd, values.distro, values.locale, values.notifications, values.projectPathStyle, values.sendMode, values.terminal]);
+  }, [open, values.codexCmd, values.distro, values.locale, values.notifications, values.projectPathStyle, values.sendMode, values.terminal, values.terminalFontFamily]);
 
   useEffect(() => {
     if (!open) return;
@@ -178,6 +215,56 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
       }
     })();
   }, [open]);
+
+  // 从主进程拉取详细字体并生成等宽列表（基于字体表元数据）
+  // 延迟到进入“终端”分区再拉取；并在会话期缓存，避免重复阻塞
+  useEffect(() => {
+    if (!open) return;
+    if (activeSection !== "terminal") return;
+    if (fontsLoadedRef.current) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        setInstalledLoading(true);
+        const detailed = await (window as any).host?.utils?.listFontsDetailed?.();
+        if (!cancelled && Array.isArray(detailed)) {
+          const names = detailed.map((d: any) => String(d?.name || "")).filter(Boolean);
+          const monos = detailed
+            .filter((d: any) => !!d?.monospace)
+            .map((d: any) => String(d?.name || ""))
+            .filter(Boolean);
+          setInstalledFonts(names);
+          setMonospaceFonts(monos);
+          fontsLoadedRef.current = true;
+        }
+      } catch {
+        if (!cancelled) {
+          setInstalledFonts([]);
+          setMonospaceFonts([]);
+        }
+      } finally {
+        if (!cancelled) setInstalledLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [open, activeSection]);
+
+  // 默认优先选择 Cascadia Mono（存在时），否则 Cascadia Code；仅在首次打开且未自定义时应用
+  const autoPickRef = useRef(false);
+  useEffect(() => {
+    if (!open) return;
+    if (autoPickRef.current) return;
+    if (installedFonts.length === 0) return;
+    const configured = String(values.terminalFontFamily || "").trim();
+    const installedSet = new Set(installedFonts.map((n) => n.toLowerCase()));
+    const cur = (currentPrimaryFont || "").toLowerCase();
+    const isDefaultStack = configured === DEFAULT_TERMINAL_FONT_FAMILY;
+    if (!configured || isDefaultStack || (cur && !installedSet.has(cur))) {
+      const want = installedSet.has("cascadia mono") ? "Cascadia Mono" : (installedSet.has("cascadia code") ? "Cascadia Code" : "");
+      if (want) setTerminalFontFamily(buildTerminalFontStack(want));
+    }
+    autoPickRef.current = true;
+  }, [open, installedFonts, currentPrimaryFont, values.terminalFontFamily]);
 
   useEffect(() => {
     if (!open) return;
@@ -211,6 +298,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
       }
     })();
   }, [open, distro, values.distro]);
+
+  // 旧的纯名称枚举逻辑已移除（改为使用系统级元数据）
 
   useEffect(() => {
     if (!cleanupOpen) {
@@ -616,6 +705,117 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                   <Input value={codexCmd} onChange={(event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setCodexCmd((event.target as any).value)} />
                 </CardContent>
               </Card>
+              <Card>
+                <CardHeader>
+                  <CardTitle>{t("settings:terminalFont.label")}</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <p className="text-sm text-slate-500">{t("settings:terminalFont.help")}</p>
+                  
+                  {/* 统一预览区域 */}
+                  <div>
+                    <div className="text-xs font-medium text-slate-600 mb-2">{t("settings:terminalFont.previewTitle")}</div>
+                    <div
+                      className="rounded-lg bg-slate-900 px-4 py-3 font-mono text-xs text-slate-100 overflow-x-auto"
+                      style={{ fontFamily: terminalFontFamily || DEFAULT_TERMINAL_FONT_FAMILY }}
+                    >
+                      {t("settings:terminalFont.preview")}
+                    </div>
+                    <div className="mt-1 text-[11px] text-slate-500">
+                      {resolvedPreviewFont.isFallback
+                        ? t("settings:terminalFont.fallback", { name: resolvedPreviewFont.name })
+                        : t("settings:terminalFont.effective", { name: resolvedPreviewFont.name })}
+                    </div>
+                  </div>
+                  
+                  {/* 单一选择器：仅显示“已安装”字体；推荐项置顶并标注“推荐” */}
+                  <div className="max-w-xs space-y-2">
+                    <div className="text-xs font-medium text-slate-600">{t("settings:terminalFont.installedLabel")}</div>
+                    {installedFonts.length > 0 ? (
+                      <>
+                        <div className="flex items-stretch gap-1">
+                          <Select
+                            value={currentPrimaryFont || ""}
+                            onValueChange={(name) => {
+                              const stack = buildTerminalFontStack(name);
+                              setTerminalFontFamily(stack);
+                            }}
+                          >
+                            <SelectTrigger className="flex-1">
+                              <span className="truncate text-left">{currentPrimaryFont || (t("settings:terminalFont.installedPlaceholder") as string)}</span>
+                            </SelectTrigger>
+                            <SelectContent>
+                              {visibleFontList.map((name) => (
+                                <SelectItem key={name} value={name}>{name}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <div className="flex flex-col flex-shrink-0 h-10 w-7 overflow-hidden rounded border border-slate-200 divide-y divide-slate-200">
+                            <button
+                              type="button"
+                              className="inline-flex w-full flex-1 items-center justify-center bg-white text-slate-700 hover:bg-slate-50"
+                              title={t('settings:terminalFont.prev') as string}
+                              disabled={visibleFontList.length === 0 || currentFontIndex <= 0}
+                              onClick={() => {
+                                try {
+                                  const list = visibleFontList;
+                                  if (list.length === 0) return;
+                                  const curIdx = currentFontIndex >= 0 ? currentFontIndex : 0;
+                                  if (curIdx <= 0) return;
+                                  const next = list[curIdx - 1];
+                                  if (next) setTerminalFontFamily(buildTerminalFontStack(next));
+                                } catch {}
+                              }}
+                            >
+                              <ChevronUp className="h-4 w-4" />
+                            </button>
+                            <button
+                              type="button"
+                              className="inline-flex w-full flex-1 items-center justify-center bg-white text-slate-700 hover:bg-slate-50"
+                              title={t('settings:terminalFont.next') as string}
+                              disabled={
+                                visibleFontList.length === 0 ||
+                                (currentFontIndex !== -1 && currentFontIndex >= visibleFontList.length - 1)
+                              }
+                              onClick={() => {
+                                try {
+                                  const list = visibleFontList;
+                                  if (list.length === 0) return;
+                                  const curIdx = currentFontIndex;
+                                  if (curIdx === -1) {
+                                    const first = list[0];
+                                    if (first) setTerminalFontFamily(buildTerminalFontStack(first));
+                                    return;
+                                  }
+                                  if (curIdx >= list.length - 1) return;
+                                  const next = list[curIdx + 1];
+                                  if (next) setTerminalFontFamily(buildTerminalFontStack(next));
+                                } catch {}
+                              }}
+                            >
+                              <ChevronDown className="h-4 w-4" />
+                            </button>
+                          </div>
+                        </div>
+                        <label
+                          className="flex items-center gap-2 text-xs text-slate-700"
+                          title={t("settings:terminalFont.showAllHint") as string}
+                        >
+                          <input
+                            type="checkbox"
+                            className="h-3.5 w-3.5 rounded border-slate-300 text-slate-600"
+                            checked={showAllFonts}
+                            onChange={(e) => setShowAllFonts(e.target.checked)}
+                          />
+                          <span>{t("settings:terminalFont.showAll")}</span>
+                        </label>
+                      </>
+                    ) : (
+                      <div className="text-xs text-slate-400 mt-1">{installedLoading ? t("settings:loading") : t("settings:terminalFont.installedNone")}</div>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
               
             </div>
           ),
@@ -903,6 +1103,11 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     cleanupScanning,
     codexCmd,
     codexRoots,
+    // 字体与显示相关依赖，确保“显示所有字体”等交互即时生效
+    installedFonts,
+    monospaceFonts,
+    installedLoading,
+    showAllFonts,
     distro,
     labelOf,
     lang,
@@ -918,6 +1123,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     refreshAppDataInfo,
     t,
     terminal,
+    terminalFontFamily,
   ]);
 
   useEffect(() => {
@@ -1003,6 +1209,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                       projectPathStyle: pathStyle,
                       notifications,
                       network,
+                      terminalFontFamily: normalizeTerminalFontFamily(terminalFontFamily),
                     });
                     onOpenChange(false);
                   }}

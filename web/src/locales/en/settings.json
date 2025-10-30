@@ -53,6 +53,31 @@
   "wslDistroHelp": "Select the default distribution used when opening a WSL terminal.",
   "codexCmd": "CodexFlow launch command",
   "codexCmdHelp": "Customize the command CodexFlow runs when launching from the terminal.",
+  "terminalFont": {
+    "label": "Terminal font",
+    "help": "Choose the monospaced font for the integrated terminal. The preview below updates in real time.",
+    "placeholder": "e.g. Cascadia Code, Consolas, monospace",
+    "note": "If a font is not installed, the terminal falls back to the system default.",
+    "custom": "Custom font stack",
+    "previewTitle": "Preview",
+    "preview": "0123456789 abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ !@#$%^&*() <>",
+    "effective": "Effective: {name}",
+    "fallback": "Fallback in use: {name}",
+    "installedLabel": "Installed fonts",
+    "installedPlaceholder": "Pick a font",
+    "installedNone": "No system fonts detected",
+    "recommendedTag": "recommended",
+    "showAll": "Show all fonts",
+    "showAllHint": "If enabled, the list above shows every installed font. Otherwise only monospace fonts appear.",
+    "prev": "Previous font",
+    "next": "Next font",
+    "presets": {
+      "cascadia": "Cascadia Code (recommended)",
+      "jetbrains": "JetBrains Mono",
+      "fira": "Fira Code"
+    }
+  },
+  "loading": "Loading…",
   "codexTrace": {
     "label": "Codex TUI debugging",
     "help": "Control whether CodexFlow adds trace logging flags when launching Codex (applies to new terminals). The switch is managed by debug.config.jsonc.",

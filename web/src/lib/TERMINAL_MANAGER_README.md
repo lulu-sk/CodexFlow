@@ -8,7 +8,7 @@ TerminalManager (轻量说明)
 - 同时导出 `HostPtyAPI` 类型用于外部注入宿主 PTY 实现
 
 构造
-- new TerminalManager(getPtyId?: (tabId)=>ptyId, hostPty?: HostPtyAPI)
+- new TerminalManager(getPtyId?: (tabId)=>ptyId, hostPty?: HostPtyAPI, appearance?: { fontFamily?: string })
   - `getPtyId`：根据 tabId 获取当前绑定 PTY id 的回调（通常从上层 state 传入）
   - `hostPty`：实现 PTY I/O 的对象（默认为 window.host.pty）
 
@@ -21,7 +21,7 @@ TerminalManager (轻量说明)
 
 使用示例（简要）
 ```ts
-const tm = new TerminalManager((tabId) => ptyByTabRef.current[tabId]);
+const tm = new TerminalManager((tabId) => ptyByTabRef.current[tabId], undefined, { fontFamily: myFont });
 // 新建 pty 后
 tm.setPty(tabId, ptyId);
 // tab 激活时

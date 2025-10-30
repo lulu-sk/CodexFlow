@@ -42,12 +42,12 @@ import AboutSupport from "@/components/about-support";
 import CodexUsageSummary from "@/components/topbar/codex-status";
 import { emitCodexRateRefresh } from "@/lib/codex-status";
 import { checkForUpdate, type UpdateCheckErrorType } from "@/lib/about";
-import { createTerminalAdapter, type TerminalAdapterAPI } from "@/adapters/TerminalAdapter";
 import TerminalManager from "@/lib/TerminalManager";
 import { oscBufferDefaults, trimOscBuffer } from "@/lib/oscNotificationBuffer";
 import HistoryCopyButton from "@/components/history/history-copy-button";
 import { toWSLForInsert } from "@/lib/wsl";
 import SettingsDialog from "@/features/settings/settings-dialog";
+import { DEFAULT_TERMINAL_FONT_FAMILY, normalizeTerminalFontFamily } from "@/lib/terminal-appearance";
 
 // ---------- Types ----------
 
@@ -728,13 +728,20 @@ export default function CodexFlowManagerUI() {
   }, [notifyLog, setTabCtxMenu, showNotifDebugMenu]);
   // Terminal adapters 与 PTY 状态
   const [terminalMode, setTerminalMode] = useState<'wsl' | 'windows'>('wsl');
+  const [terminalFontFamily, setTerminalFontFamily] = useState<string>(DEFAULT_TERMINAL_FONT_FAMILY);
   const [codexTraceEnabled, setCodexTraceEnabled] = useState(false);
   const ptyByTabRef = useRef<Record<string, string>>({});
   const [ptyByTab, setPtyByTab] = useState<Record<string, string>>({});
   const ptyAliveRef = useRef<Record<string, boolean>>({});
   const [ptyAlive, setPtyAlive] = useState<Record<string, boolean>>({});
   const terminalManagerRef = useRef<TerminalManager | null>(null);
-  if (!terminalManagerRef.current) terminalManagerRef.current = new TerminalManager((tabId: string) => ptyByTabRef.current[tabId]);
+  if (!terminalManagerRef.current) {
+    terminalManagerRef.current = new TerminalManager(
+      (tabId: string) => ptyByTabRef.current[tabId],
+      undefined,
+      { fontFamily: terminalFontFamily }
+    );
+  }
   const tm = terminalManagerRef.current;
   const [notificationPrefs, setNotificationPrefs] = useState<CompletionPreferences>(DEFAULT_COMPLETION_PREFS);
   const notificationPrefsRef = useRef<CompletionPreferences>(DEFAULT_COMPLETION_PREFS);
@@ -752,6 +759,10 @@ export default function CodexFlowManagerUI() {
   useEffect(() => { notificationPrefsRef.current = notificationPrefs; }, [notificationPrefs]);
   useEffect(() => { tabsByProjectRef.current = tabsByProject; }, [tabsByProject]);
   useEffect(() => { projectsRef.current = projects; }, [projects]);
+  useEffect(() => {
+    if (!terminalManagerRef.current) return;
+    try { terminalManagerRef.current.setAppearance({ fontFamily: terminalFontFamily }); } catch {}
+  }, [terminalFontFamily]);
 
   const injectTraceEnv = React.useCallback((cmd: string | null | undefined) => {
     const raw = String(cmd || "").trim();
@@ -1634,6 +1645,7 @@ export default function CodexFlowManagerUI() {
           setSendMode(s.sendMode || 'write_and_enter');
           setProjectPathStyle((s as any).projectPathStyle || 'absolute');
           setNotificationPrefs(normalizeCompletionPrefs((s as any).notifications));
+          setTerminalFontFamily(normalizeTerminalFontFamily((s as any).terminalFontFamily));
           // 同步网络代理偏好
           try {
             const net = (s as any).network || {};
@@ -3407,7 +3419,7 @@ export default function CodexFlowManagerUI() {
       <SettingsDialog
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
-        values={{ terminal: terminalMode, distro: wslDistro, codexCmd, sendMode, locale, projectPathStyle, notifications: notificationPrefs, network: networkPrefs }}
+        values={{ terminal: terminalMode, distro: wslDistro, codexCmd, sendMode, locale, projectPathStyle, notifications: notificationPrefs, network: networkPrefs, terminalFontFamily }}
         onSave={async (v) => {
           const nextTerminal = v.terminal;
           const nextDistro = v.distro;
@@ -3416,6 +3428,7 @@ export default function CodexFlowManagerUI() {
           const nextStyle = v.projectPathStyle || 'absolute';
           const nextLocale = v.locale;
           const nextNotifications = normalizeCompletionPrefs(v.notifications);
+          const nextFontFamily = normalizeTerminalFontFamily(v.terminalFontFamily);
           // 先切换语言（内部会写入 settings 并广播），再持久化其它字段
           try { await (window as any).host?.i18n?.setLocale?.(nextLocale); setLocale(nextLocale); } catch {}
           try {
@@ -3427,6 +3440,7 @@ export default function CodexFlowManagerUI() {
               projectPathStyle: v.projectPathStyle,
               notifications: nextNotifications,
               network: v.network,
+              terminalFontFamily: nextFontFamily,
             });
           } catch (e) { console.warn('settings.update failed', e); }
           setTerminalMode(nextTerminal);
@@ -3436,6 +3450,7 @@ export default function CodexFlowManagerUI() {
           setProjectPathStyle(nextStyle);
           setNotificationPrefs(nextNotifications);
           setNetworkPrefs(v.network);
+          setTerminalFontFamily(nextFontFamily);
         }}
       />
 

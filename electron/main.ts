@@ -9,6 +9,8 @@ import { promises as fsp } from 'node:fs';
 import path from 'node:path';
 import { ProxyAgent, setGlobalDispatcher, Agent } from 'undici';
 import { PTYManager, setTermDebug } from "./pty";
+import opentype from 'opentype.js';
+import iconv from 'iconv-lite';
 import projects, { IMPLEMENTATION_NAME as PROJECTS_IMPL } from "./projects/index";
 import history from "./history";
 import { startHistoryIndexer, getIndexedSummaries, getIndexedDetails, getLastIndexerRoots, stopHistoryIndexer } from "./indexer";
@@ -43,6 +45,53 @@ const ptyManager = new PTYManager(() => mainWindow);
 // 会话期粘贴图片（保存后的 Windows 路径），用于退出时统一清理
 const sessionPastedImages = new Set<string>();
 const codexBridges = new Map<string, CodexBridge>();
+
+// 字体枚举缓存：避免每次打开设置都在主进程做大量同步 I/O/CPU 密集解析
+let __fontsDetailedCache: Array<{ name: string; file?: string; monospace: boolean }> | null = null;
+let __fontsDetailedCacheAt = 0;
+let __fontsDetailedPending: Promise<{ ok: boolean; fonts: Array<{ name: string; file?: string; monospace: boolean }> }> | null = null;
+
+const decodeRegOutput = (stdout: Buffer | string): string => {
+  // 兼容性解码：优先识别 UTF-16LE，其次 UTF-8，最后回退到 GBK（常见于中文系统）
+  try {
+    if (Buffer.isBuffer(stdout)) {
+      const buf = stdout as Buffer;
+      // 带 BOM 的 UTF-16LE
+      if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) {
+        return iconv.decode(buf.slice(2), 'utf16le');
+      }
+      // 启发式判断 UTF-16LE：存在较多的 0x00 空字节
+      const sample = buf.subarray(0, Math.min(buf.length, 512));
+      let nullCount = 0;
+      for (let i = 0; i < sample.length; i++) if (sample[i] === 0x00) nullCount++;
+      if (nullCount > (sample.length / 8)) {
+        return iconv.decode(buf, 'utf16le');
+      }
+      // 优先尝试 UTF-8（保证 ASCII 关键字如 REG_SZ 可识别），但若出现替换字符则回退
+      const utf8Text = iconv.decode(buf, 'utf8');
+      const utf8LooksValid = /\bREG_\w+\b/i.test(utf8Text) && !utf8Text.includes('\uFFFD');
+      if (utf8LooksValid) {
+        return utf8Text;
+      }
+      // 回退到 GBK（简体中文常见代码页），确保中文字体名称不被乱码
+      const gbkText = iconv.decode(buf, 'gbk');
+      const gbkLooksValid = /\bREG_\w+\b/i.test(gbkText) && !gbkText.includes('\uFFFD');
+      if (gbkLooksValid) {
+        return gbkText;
+      }
+      // 若两者均存在替换字符，优先返回结构更完整的 GBK 结果
+      return gbkText.length >= utf8Text.length ? gbkText : utf8Text;
+    }
+    // 非 Buffer 情况：直接返回字符串
+    return String(stdout || '');
+  } catch {
+    try {
+      return Buffer.isBuffer(stdout) ? (stdout as Buffer).toString('utf8') : String(stdout || '');
+    } catch {
+      return '';
+    }
+  }
+};
 
 function disposeAllPtys() {
   try { ptyManager.disposeAll(); } catch (e) { /* noop */ }
@@ -1304,6 +1353,162 @@ ipcMain.handle('utils.openExternalUrl', async (_e, { url }: { url: string }) => 
     return { ok: true } as const;
   } catch (e: any) {
     return { ok: false, error: String(e) } as const;
+  }
+});
+
+// 列出系统已安装字体（Windows）：解析注册表 HKLM/HKCU 下的 Fonts 键
+ipcMain.handle('utils.listFonts', async () => {
+  try {
+    if (process.platform !== 'win32') return { ok: true, fonts: [] as string[] } as const;
+    const execFile = await import('node:child_process').then(m => m.execFile);
+    const query = (hive: string): Promise<string> => new Promise((resolve) => {
+      try {
+        // 以 Buffer 获取原始字节，避免被错误地按 UTF-8 解码
+        (execFile as any)('reg.exe', ['query', hive], { encoding: 'buffer', windowsHide: true }, (err: any, stdout: Buffer) => {
+          if (err) { resolve(''); return; }
+          try { resolve(decodeRegOutput(stdout)); } catch { resolve(String((stdout as any) || '')); }
+        });
+      } catch { resolve(''); }
+    });
+    const [sysRaw, userRaw] = await Promise.all([
+      query('HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Fonts'),
+      query('HKCU\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Fonts'),
+    ]);
+    const lines = (sysRaw + '\n' + userRaw).split(/\r?\n/);
+    const list: string[] = [];
+    for (const line of lines) {
+      const m = line.match(/^\s*(.+?)\s+REG_SZ\s+/i);
+      if (!m) continue;
+      let name = m[1].trim();
+      // 去掉括号内类型后缀，如 "(TrueType)"、"(OpenType)"
+      name = name.replace(/\s*\((TrueType|OpenType)\)$/i, '').trim();
+      if (!name) continue;
+      // 规整大小写并去重（按不区分大小写）
+      if (!list.some((x) => x.toLowerCase() === name.toLowerCase())) list.push(name);
+    }
+    // 排序：本地化无关的字母序（简单按 toLowerCase 排）
+    const fonts = list.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+    return { ok: true, fonts } as const;
+  } catch (e: any) {
+    return { ok: false, error: String(e) } as const;
+  }
+});
+
+// 列出系统字体（含是否等宽）：基于字体文件元数据（post.isFixedPitch / OS/2.PANOSE.Proportion）
+ipcMain.handle('utils.listFontsDetailed', async () => {
+  try {
+    if (process.platform !== 'win32') return { ok: true, fonts: [] as Array<{ name: string; file?: string; monospace: boolean }> } as const;
+    if (__fontsDetailedCache && __fontsDetailedCache.length > 0) {
+      return { ok: true, fonts: __fontsDetailedCache } as const;
+    }
+    if (__fontsDetailedPending) {
+      return await __fontsDetailedPending;
+    }
+    const compute = async () => {
+      const execFile = await import('node:child_process').then(m => m.execFile);
+      const query = (hive: string): Promise<string> => new Promise((resolve) => {
+        try {
+          (execFile as any)('reg.exe', ['query', hive], { encoding: 'buffer', windowsHide: true }, (err: any, stdout: Buffer) => {
+            if (err) { resolve(''); return; }
+            try { resolve(decodeRegOutput(stdout)); } catch { resolve(String((stdout as any) || '')); }
+          });
+        } catch { resolve(''); }
+      });
+      const [sysRaw, userRaw] = await Promise.all([
+        query('HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Fonts'),
+        query('HKCU\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Fonts'),
+      ]);
+      const lines = (sysRaw + '\n' + userRaw).split(/\r?\n/);
+      const pairs: Array<{ name: string; file: string }> = [];
+      for (const line of lines) {
+        const m = line.match(/^\s*(.+?)\s+REG_SZ\s+(.+)$/i);
+        if (!m) continue;
+        let name = m[1].trim();
+        let file = m[2].trim();
+        name = name.replace(/\s*\((TrueType|OpenType|Raster)\)$/i, '').trim();
+        if (!name) continue;
+        const candidates: string[] = [];
+        const isAbs = /^(?:[a-zA-Z]:\\|\\\\)/.test(file);
+        if (isAbs) {
+          candidates.push(file);
+        } else {
+          const sysFonts = path.join(process.env.WINDIR || 'C:\\Windows', 'Fonts', file);
+          const userFonts = path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Microsoft', 'Windows', 'Fonts', file);
+          candidates.push(sysFonts, userFonts);
+        }
+        let resolved = '';
+        for (const cand of candidates) { try { if (fs.existsSync(cand)) { resolved = cand; break; } } catch {} }
+        pairs.push({ name, file: resolved || file });
+      }
+      const seen = new Set<string>();
+      const uniques: Array<{ name: string; file: string }> = [];
+      for (const p of pairs) {
+        const k = p.name.toLowerCase();
+        if (seen.has(k)) continue;
+        seen.add(k);
+        uniques.push(p);
+      }
+      const pLimitLocal = (max: number) => {
+        let running = 0; const queue: Array<() => void> = [];
+        const next = () => { running--; const fn = queue.shift(); if (fn) fn(); };
+        return function <T>(task: () => Promise<T>): Promise<T> {
+          return new Promise((resolve, reject) => {
+            const run = () => { running++; task().then((v) => { next(); resolve(v); }).catch((e) => { next(); reject(e); }); };
+            if (running < max) run(); else queue.push(run);
+          });
+        };
+      };
+      const limit = pLimitLocal(3);
+      const results: Array<{ name: string; file?: string; monospace: boolean }> = new Array(uniques.length);
+      await Promise.all(uniques.map((item, idx) => limit(async () => {
+        let monospace = false;
+        const file = item.file;
+        try {
+          if (file && fs.existsSync(file) && /\.(ttf|otf)$/i.test(file)) {
+            const buf = await fsp.readFile(file);
+            let arrayBuffer: ArrayBuffer;
+            const raw = buf.buffer;
+            if (raw instanceof ArrayBuffer) {
+              if (buf.byteOffset === 0 && buf.byteLength === raw.byteLength) {
+                arrayBuffer = raw.slice(0) as ArrayBuffer;
+              } else {
+                arrayBuffer = raw.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+              }
+            } else {
+              arrayBuffer = new ArrayBuffer(buf.byteLength);
+              new Uint8Array(arrayBuffer).set(buf);
+            }
+            const font = opentype.parse(arrayBuffer);
+            const post: any = (font as any)?.tables?.post;
+            const os2: any = (font as any)?.tables?.os2;
+            if (post && typeof post.isFixedPitch === 'number') monospace = !!post.isFixedPitch;
+            if (!monospace && os2 && os2.panose) {
+              const pan = os2.panose;
+              if (Array.isArray(pan) && pan.length >= 4) monospace = Number(pan[3]) === 9;
+              else if (typeof pan === 'object' && pan !== null && typeof (pan as any).proportion !== 'undefined') monospace = Number((pan as any).proportion) === 9;
+            }
+          }
+        } catch {}
+        results[idx] = { name: item.name, file: fs.existsSync(file) ? file : undefined, monospace };
+      })));
+      results.sort((a, b) => (Number(b.monospace) - Number(a.monospace)) || a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+      return results;
+    };
+    __fontsDetailedPending = (async () => {
+      try {
+        const fonts = await compute();
+        __fontsDetailedCache = fonts;
+        __fontsDetailedCacheAt = Date.now();
+        return { ok: true, fonts } as const;
+      } catch (e: any) {
+        return { ok: false, error: String(e), fonts: [] } as const;
+      } finally {
+        __fontsDetailedPending = null;
+      }
+    })();
+    return await __fontsDetailedPending;
+  } catch (e: any) {
+    return { ok: false, error: String(e), fonts: [] } as const;
   }
 });
 
