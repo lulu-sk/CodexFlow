@@ -1,23 +1,22 @@
 {
+  "ok": "确定",
   "cancel": "取消",
   "save": "保存",
   "open": "打开",
+  "refresh": "刷新",
   "app": {
     "name": "CodexFlow",
     "language": "语言",
     "language_en": "English",
     "language_zh": "简体中文"
   },
-  "common": {
-    "ok": "确定",
-    "cancel": "取消",
-    "save": "保存",
-    "open": "打开",
-    "refresh": "刷新"
-  },
   "files": {
     "copyFileNameWithExt": "复制文件名（含后缀）",
-    "cannotOpenPath": "无法打开路径"
+    "cannotOpenPath": "无法打开路径",
+    "image": "图片",
+    "path": "路径",
+    "rule": "规则",
+    "deleteImageAndText": "删除图片与关联文字"
   },
   "codexUsage": {
     "loading": "正在同步用量…",

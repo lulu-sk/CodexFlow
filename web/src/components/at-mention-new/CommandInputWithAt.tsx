@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Input, type InputProps } from "@/components/ui/input";
 import AtCommandPalette, { type PaletteLevel } from "./AtCommandPalette";
 import type { AtCategoryId, AtItem, SearchScope } from "@/types/at";
@@ -40,6 +41,7 @@ function shouldTriggerAt(text: string, caret: number): boolean {
 type AtInputProps = Omit<InputProps, "onChange" | "value"> & { value: string; onValueChange: (v: string) => void; winRoot?: string; projectName?: string; projectPathStyle?: 'absolute' | 'relative' };
 
 export function AtInput({ value, onValueChange, winRoot, projectName, projectPathStyle = 'absolute', ...rest }: AtInputProps) {
+  const { t } = useTranslation(['common']);
   const ref = useRef<HTMLTextAreaElement | HTMLInputElement | null>(null);
   const [open, setOpen] = useState(false);
   const [level, setLevel] = useState<PaletteLevel>("categories");
@@ -65,6 +67,16 @@ export function AtInput({ value, onValueChange, winRoot, projectName, projectPat
     }
     urlSetRef.current = nextSet;
   }, [pastedImages]);
+  useEffect(() => {
+    return () => {
+      try {
+        for (const url of Array.from(urlSetRef.current)) {
+          try { URL.revokeObjectURL(url); } catch {}
+        }
+        urlSetRef.current.clear();
+      } catch {}
+    };
+  }, []);
   // value 改变时，自动移除“正文中已不存在的图片”
   useEffect(() => {
     setPastedImages((prev) => prev.filter((img) => {
@@ -227,9 +239,12 @@ export function AtInput({ value, onValueChange, winRoot, projectName, projectPat
       // 将每张图片以“WSL 绝对路径”形式插入文本框（逐张换行）
       const el = ref.current as HTMLTextAreaElement | HTMLInputElement | null;
       if (!el) return;
-      const tokens = saved.map((s) => (s.wslPath ? ("`" + s.wslPath + "`") : '')).join('\n');
+      const tokens = saved
+        .map((s) => (s.wslPath ? ("`" + s.wslPath + "`") : ''))
+        .filter((token) => token.length > 0);
+      if (tokens.length === 0) return;
       const prefix = (value && !/\s$/.test(value)) ? '\n' : '';
-      const insert = `${prefix}${tokens}\n`;
+      const insert = `${prefix}${tokens.join('\n')}\n`;
       const { next, nextCaret } = insertTextAtCursor(el, value, insert);
       onValueChange(next);
       requestAnimationFrame(() => { try { (el as any).setSelectionRange(nextCaret, nextCaret); el.focus(); } catch {} });
@@ -294,6 +309,7 @@ export function AtInput({ value, onValueChange, winRoot, projectName, projectPat
         onDrop={(e) => {
           try {
             e.preventDefault();
+            try { e.stopPropagation(); } catch {}
             const list = extractWinPathsFromDataTransfer(e.dataTransfer);
             if (!list || list.length === 0) return;
             const el = ref.current as HTMLTextAreaElement | HTMLInputElement | null;
@@ -316,9 +332,9 @@ export function AtInput({ value, onValueChange, winRoot, projectName, projectPat
             <div key={img.id} className="group relative border rounded-md bg-white shadow-sm overflow-hidden">
               {/* 小图预览：优先 blob URL；否则使用 file:// Windows 路径 */}
               {img.previewUrl ? (
-                <img src={img.previewUrl} className="block h-16 w-16 object-cover" alt={img.fileName || 'image'} />
+                <img src={img.previewUrl} className="block h-16 w-16 object-cover" alt={img.fileName || t('common:files.image')} />
               ) : (
-                <img src={img.winPath ? ('file:///' + String(img.winPath).replace(/\\\\/g, '/')) : ''} className="block h-16 w-16 object-cover" alt={img.fileName || 'image'} />
+                <img src={img.winPath ? ('file:///' + String(img.winPath).replace(/\\\\/g, '/')) : ''} className="block h-16 w-16 object-cover" alt={img.fileName || t('common:files.image')} />
               )}
               {/* 右键：打开所在文件夹 */}
               <div
@@ -335,14 +351,14 @@ export function AtInput({ value, onValueChange, winRoot, projectName, projectPat
                   <img
                     src={img.previewUrl || (img.winPath ? ('file:///' + String(img.winPath).replace(/\\\\/g, '/')) : '')}
                     className="block max-h-56 max-w-56 object-contain"
-                    alt={img.fileName || 'image'}
+                    alt={img.fileName || t('common:files.image')}
                   />
                 </div>
               </div>
               {/* 删除按钮（删除图片预览并删除正文中所有对应路径令牌） */}
               <button
                 type="button"
-                title="删除图片与关联文字"
+                title={t('common:files.deleteImageAndText')}
                 className="absolute right-0 top-0 m-0.5 hidden h-5 w-5 items-center justify-center rounded bg-black/60 text-white group-hover:flex"
                 onClick={async (ev) => {
                   ev.preventDefault(); ev.stopPropagation();
@@ -371,7 +387,7 @@ export function AtInput({ value, onValueChange, winRoot, projectName, projectPat
                 ×
               </button>
               <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-[10px] text-white px-1 py-0.5 truncate" title={img.wslPath || img.winPath || ''}>
-                {img.fileName || 'image'}
+                {img.fileName || t('common:files.image')}
               </div>
             </div>
           ))}

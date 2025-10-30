@@ -310,7 +310,7 @@ const CodexUsageHoverButton: React.FC<{ className?: string; terminalMode?: "wsl"
               }}
             >
               <RotateCcw className="h-3.5 w-3.5" />
-              {t(["common:refresh", "common:common.refresh"], "刷新")}
+              {t("common:refresh", "刷新")}
             </Button>
           </div>
         </div>
@@ -397,7 +397,7 @@ export const CodexAccountInline: React.FC<{
       <div className="mt-3 flex justify-end">
         <Button size="sm" variant="outline" className="gap-2" onClick={() => reloadAccount()}>
           <RotateCcw className="h-3.5 w-3.5" />
-          {t(["common:refresh", "common:common.refresh"], "刷新")}
+          {t("common:refresh", "刷新")}
         </Button>
       </div>
     </>

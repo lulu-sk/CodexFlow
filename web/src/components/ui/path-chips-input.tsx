@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { FolderOpenDot, FileText, ScrollText } from "lucide-react";
@@ -93,6 +93,51 @@ function buildChipStableKey(chip: PathChip, fallback: string): string {
     }
   } catch {}
   return fallback;
+}
+
+// 基于路径的去重键：优先使用 Windows 路径（不区分大小写），其次使用 WSL 路径
+function normalizeWindowsPathForDedupe(p: string): string {
+  try {
+    let s = String(p || "");
+    if (!s) return s;
+    s = s.replace(/\//g, "\\");
+    if (s.startsWith("\\\\")) {
+      // UNC：移除末尾多余分隔符，转小写比较
+      s = s.replace(/[\\/]+$/, "");
+      return s.toLowerCase();
+    }
+    const m = s.match(/^([a-zA-Z]):(.*)$/);
+    if (m) {
+      const drive = m[1].toUpperCase();
+      let rest = m[2];
+      if (!rest || rest === "\\" || rest === "/") return `${drive}:\\`;
+      rest = rest.replace(/[\\/]+$/, "");
+      return `${drive}:${rest}`.toLowerCase();
+    }
+    return s.replace(/[\\/]+$/, "").toLowerCase();
+  } catch { return String(p || ""); }
+}
+
+function normalizeWslPathForDedupe(p: string): string {
+  try {
+    let s = String(p || "");
+    if (!s) return s;
+    // 统一 POSIX 分隔符，移除多余结尾分隔符（保留根 "/"）
+    s = s.replace(/\\/g, "/");
+    if (s !== "/") s = s.replace(/\/+$/, "");
+    return s;
+  } catch { return String(p || ""); }
+}
+
+function buildChipDedupeKey(chip: Partial<PathChip>): string {
+  try {
+    const wp = String((chip as any)?.winPath || "").trim();
+    const wsl = String((chip as any)?.wslPath || "").trim();
+    if (wp) return `win:${normalizeWindowsPathForDedupe(wp)}`;
+    if (wsl) return `wsl:${normalizeWslPathForDedupe(wsl)}`;
+    const name = String((chip as any)?.fileName || "").trim();
+    return name ? `name:${name}` : "";
+  } catch { return ""; }
 }
 
 export default function PathChipsInput({
@@ -206,8 +251,18 @@ export default function PathChipsInput({
 
   // 将 SavedImage 转成 PathChip 并追加
   const appendChips = useCallback((items: SavedImage[]) => {
-    const next = [...chips, ...items.map((it) => ({ ...it }))];
-    onChipsChange(next);
+    const merged = [...chips, ...items.map((it) => ({ ...it }))];
+    const seen = new Set<string>();
+    const unique: PathChip[] = [];
+    for (const chip of merged) {
+      const k = buildChipDedupeKey(chip);
+      const key = k || buildChipStableKey(chip, String(unique.length));
+      const sig = `k:${key}`;
+      if (seen.has(sig)) continue;
+      seen.add(sig);
+      unique.push(chip);
+    }
+    onChipsChange(unique);
   }, [chips, onChipsChange]);
 
   // 解析 chip 到可直接传给主进程的绝对路径：优先生成绝对 WSL 路径（以 / 开头）或 Windows 路径
@@ -321,14 +376,14 @@ export default function PathChipsInput({
         saved: true,
         winPath: /^(?:[a-zA-Z]:\\|\\\\)/.test(p) ? p : undefined,
         wslPath: wsl,
-        fileName: (wsl || p).split(/[/\\]/).pop() || "path",
+        fileName: (wsl || p).split(/[/\\]/).pop() || t('common:files.path'),
         fromPaste: false,
       } as any;
     });
     appendChips(items);
     onDraftChange("");
     return true;
-  }, [draft, appendChips, onDraftChange]);
+  }, [draft, appendChips, onDraftChange, projectPathStyle, winRoot, t]);
 
   // 监听输入以触发/更新 @ 面板
   const syncQueryFromCaret = useCallback(() => {
@@ -435,7 +490,7 @@ export default function PathChipsInput({
           size: 0,
           saved: true,
           wslPath: wsl,
-          fileName: wsl.split("/").pop() || "file",
+          fileName: wsl.split("/").pop() || t('common:files.path'),
           // 保留 item 提供的 isDir；否则根据路径尾部是否含 / 判断
           isDir: !!(item as any).isDir || /\/$/.test(wsl),
           chipKind: "file",
@@ -514,6 +569,7 @@ export default function PathChipsInput({
         onDrop={async (e) => {
           try {
             e.preventDefault();
+            try { e.stopPropagation(); } catch {}
             const dt = e.dataTransfer;
             if (!dt) return;
 
@@ -558,7 +614,7 @@ export default function PathChipsInput({
                 saved: true,
                 winPath: wp,
                 wslPath: wsl,
-                fileName: (wsl || wp).split(/[/\\]/).pop() || "path",
+                fileName: (wsl || wp).split(/[/\\]/).pop() || t('common:files.path'),
                 fromPaste: false,
                 isDir: !!checks[i],
               } as any;
@@ -579,14 +635,14 @@ export default function PathChipsInput({
               : (runEnv === 'windows'
                 ? (resolveChipWindowsFullPath(chipAny) || String((chipAny as any)?.winPath || (chipAny as any)?.wslPath || ""))
                 : String((chipAny as any)?.wslPath || (chipAny as any)?.winPath || ""));
-            const ruleLabel = chipAny.rulePath?.split(/[/\\]/).pop() || chipAny.rulePath || chipAny.fileName || "rule";
+            const ruleLabel = chipAny.rulePath?.split(/[/\\]/).pop() || chipAny.rulePath || chipAny.fileName || t('common:files.rule');
             const labelText = isRule
               ? ruleLabel
-              : chip.fileName || (chip as any)?.wslPath || "image";
+              : chip.fileName || (chip as any)?.wslPath || t('common:files.image');
             const isDir = !!(chipAny as any).isDir || (/\/$/.test(String(chip.wslPath || '')));
             const iconNode = (() => {
               if (chip.previewUrl) {
-                return <img src={chip.previewUrl} className="h-4 w-4 object-cover rounded" alt={chip.fileName || "img"} />;
+                return <img src={chip.previewUrl} className="h-4 w-4 object-cover rounded" alt={chip.fileName || t('common:files.image')} />;
               }
               if (isRule) return <ScrollText className="h-4 w-4 text-slate-600" />;
               if (isDir) return <FolderOpenDot className="h-4 w-4 text-slate-600" />;
@@ -594,7 +650,7 @@ export default function PathChipsInput({
             })();
             return (
               <div
-                key={chip.id || `${chip.wslPath}-${idx}`}
+                key={chipKey}
                 className="group relative inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-1 py-0.5 text-[12px] leading-4"
                 title={tooltip || undefined}
                 onMouseEnter={(ev) => handleChipMouseEnter(chip, chipKey, ev.currentTarget)}
@@ -649,7 +705,7 @@ export default function PathChipsInput({
                     style={{ left: centerX, top }}
                   >
                     <div className={cn("rounded border bg-white p-1 shadow-lg transition-opacity", "-translate-x-1/2", translateYClass)}>
-                      <img src={chip.previewUrl} className="block max-h-[28rem] max-w-[28rem] object-contain rounded" alt={chip.fileName || 'image'} />
+                      <img src={chip.previewUrl} className="block max-h-[28rem] max-w-[28rem] object-contain rounded" alt={chip.fileName || t('common:files.image')} />
                     </div>
                   </div>
                 );
