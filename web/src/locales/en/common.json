@@ -1,23 +1,22 @@
 {
+  "ok": "OK",
   "cancel": "Cancel",
   "save": "Save",
   "open": "Open",
+  "refresh": "Refresh",
   "app": {
     "name": "CodexFlow",
     "language": "Language",
     "language_en": "English",
     "language_zh": "简体中文"
   },
-  "common": {
-    "ok": "OK",
-    "cancel": "Cancel",
-    "save": "Save",
-    "open": "Open",
-    "refresh": "Refresh"
-  },
   "files": {
     "copyFileNameWithExt": "Copy filename (with extension)",
-    "cannotOpenPath": "Unable to open path"
+    "cannotOpenPath": "Unable to open path",
+    "image": "Image",
+    "path": "Path",
+    "rule": "Rule",
+    "deleteImageAndText": "Delete image and associated text"
   },
   "codexUsage": {
     "loading": "Loading usage…",

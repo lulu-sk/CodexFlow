@@ -3585,7 +3585,7 @@ export default function CodexFlowManagerUI() {
               </div>
             )}
             <div className="flex justify-end gap-2 pt-4">
-              <Button onClick={() => setBlockingNotice(null)}>{t(['common:ok', 'common:common.ok'])}</Button>
+              <Button onClick={() => setBlockingNotice(null)}>{t('common:ok')}</Button>
             </div>
           </DialogContent>
         </Dialog>
