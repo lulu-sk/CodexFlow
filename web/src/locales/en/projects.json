@@ -16,5 +16,9 @@
   "externalConsoleBlockedDesc": "Unable to launch the external {env} console. Check your environment configuration and try again.",
   "externalConsoleBlockedHint": "Use the terminal mode switcher in the top bar if you need to change environments.",
   "selectProjectLeft": "Select a project on the left",
-  "createOneToStart": "Or open a project to get started"
+  "createOneToStart": "Or open a project to get started",
+  "sortLabel": "Sort",
+  "sortRecent": "Recently used",
+  "sortName": "Name (A-Z)",
+  "sortTitle": "Sort: {{label}}"
 }

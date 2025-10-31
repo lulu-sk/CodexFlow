@@ -1,5 +1,5 @@
 {
-  "searchPlaceholder": "搜索项目...",
+  "searchPlaceholder": "搜索项目…",
   "openProject": "打开项目",
   "ctxShowInExplorer": "在文件管理器中显示",
   "ctxOpenExternalConsole": "通过外部控制台打开Codex",
@@ -16,5 +16,9 @@
   "externalConsoleBlockedDesc": "未能启动外部{env}控制台，请检查环境设置后再试。",
   "externalConsoleBlockedHint": "如需切换终端环境，请使用顶部的模式切换器。",
   "selectProjectLeft": "请选择左侧项目",
-  "createOneToStart": "或新建一个项目开始"
+  "createOneToStart": "或打开一个项目开始",
+  "sortLabel": "排序",
+  "sortRecent": "最近使用优先",
+  "sortName": "名称（A-Z）",
+  "sortTitle": "排序：{{label}}"
 }

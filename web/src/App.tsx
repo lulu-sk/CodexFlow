@@ -11,9 +11,9 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   FolderOpen,
@@ -37,6 +37,8 @@ import {
   Info as InfoIcon,
   Maximize2,
   Minimize2,
+  ArrowDownAZ,
+  Check,
 } from "lucide-react";
 import AboutSupport from "@/components/about-support";
 import CodexUsageSummary from "@/components/topbar/codex-status";
@@ -48,18 +50,9 @@ import HistoryCopyButton from "@/components/history/history-copy-button";
 import { toWSLForInsert } from "@/lib/wsl";
 import SettingsDialog from "@/features/settings/settings-dialog";
 import { DEFAULT_TERMINAL_FONT_FAMILY, normalizeTerminalFontFamily } from "@/lib/terminal-appearance";
+import type { Project } from "@/types/host";
 
 // ---------- Types ----------
-
-type Project = {
-  id: string;
-  name: string;
-  winPath: string;
-  wslPath: string;
-  hasDotCodex?: boolean;
-  createdAt: number;
-  lastOpenedAt: number;
-};
 
 type ConsoleTab = {
   id: string;
@@ -100,6 +93,10 @@ type ResumeStartup = {
   resumeHint: 'modern' | 'legacy';
   forceLegacyCli: boolean;
 };
+
+// 项目排序设置在本地存储中的键（命名空间化）
+const PROJECT_SORT_STORAGE_KEY = "codexflow.projectSort";
+type ProjectSortKey = "recent" | "name";
 
 function getDir(p?: string): string {
   if (!p) return '';
@@ -658,6 +655,51 @@ export default function CodexFlowManagerUI() {
     () => visibleProjects.find((p) => p.id === selectedProjectId) || null,
     [visibleProjects, selectedProjectId]
   );
+  const [projectSort, setProjectSort] = useState<ProjectSortKey>(() => {
+    if (typeof window === "undefined") return "recent";
+    try {
+      const saved = window.localStorage?.getItem(PROJECT_SORT_STORAGE_KEY);
+      if (saved === "recent" || saved === "name") return saved;
+    } catch {}
+    return "recent";
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try { window.localStorage?.setItem(PROJECT_SORT_STORAGE_KEY, projectSort); } catch {}
+  }, [projectSort]);
+  const sortedProjects = useMemo(() => {
+    const list = [...visibleProjects];
+    const getRecentTimestamp = (project: Project): number => {
+      if (typeof project.lastOpenedAt === "number" && !Number.isNaN(project.lastOpenedAt)) {
+        return project.lastOpenedAt;
+      }
+      if (typeof project.createdAt === "number" && !Number.isNaN(project.createdAt)) {
+        return project.createdAt;
+      }
+      return 0;
+    };
+    const compareByName = (a: Project, b: Project): number => {
+      const nameDiff = (a.name || "").localeCompare(b.name || "", undefined, { sensitivity: "base", numeric: true });
+      if (nameDiff !== 0) return nameDiff;
+      return (a.winPath || "").localeCompare(b.winPath || "", undefined, { sensitivity: "base", numeric: true });
+    };
+    list.sort((a, b) => {
+      if (projectSort === "name") return compareByName(a, b);
+      const recentDiff = getRecentTimestamp(b) - getRecentTimestamp(a);
+      if (recentDiff !== 0) return recentDiff;
+      return compareByName(a, b);
+    });
+    return list;
+  }, [visibleProjects, projectSort]);
+  const handleProjectSortChange = useCallback((value: string) => {
+    if (value === "recent" || value === "name") {
+      setProjectSort(value);
+    }
+  }, []);
+  const projectSortLabel = useMemo(() => {
+    if (projectSort === "name") return t("projects:sortName") as string;
+    return t("projects:sortRecent") as string;
+  }, [projectSort, t]);
 
   useEffect(() => {
     if (hiddenProjectIds.length === 0) return;
@@ -1761,10 +1803,10 @@ export default function CodexFlowManagerUI() {
   }, [pendingCompletions, tabsByProject]);
 
   const filtered = useMemo(() => {
-    if (!query.trim()) return visibleProjects;
+    if (!query.trim()) return sortedProjects;
     const q = query.toLowerCase();
-    return visibleProjects.filter((p) => `${p.name} ${p.winPath}`.toLowerCase().includes(q));
-  }, [visibleProjects, query]);
+    return sortedProjects.filter((p) => `${p.name} ${p.winPath}`.toLowerCase().includes(q));
+  }, [sortedProjects, query]);
 
   const tabsForProject = tabsByProject[selectedProjectId] || [];
   const activeTab = useMemo(() => tabsForProject.find((tab) => tab.id === activeTabId) || null, [tabsForProject, activeTabId]);
@@ -2331,9 +2373,47 @@ export default function CodexFlowManagerUI() {
             onChange={(e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setQuery((e.target as any).value)}
             className="h-9"
           />
+          <DropdownMenu>
+            <DropdownMenuTrigger>
+              <Button
+                size="icon"
+                variant="ghost"
+                className="h-7 w-7 shrink-0"
+            title={t('projects:sortTitle', { label: projectSortLabel }) as string}
+              >
+                <ArrowDownAZ className="h-3.5 w-3.5 text-slate-600" />
+                <span className="sr-only">{t('projects:sortLabel') as string}</span>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuLabel className="text-xs text-slate-500">{t('projects:sortLabel')}</DropdownMenuLabel>
+              <DropdownMenuItem
+                className="flex items-center justify-between gap-2"
+                onClick={() => handleProjectSortChange("recent")}
+              >
+                <span>{t('projects:sortRecent')}</span>
+                {projectSort === "recent" ? <Check className="h-4 w-4 text-slate-600" /> : null}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                className="flex items-center justify-between gap-2"
+                onClick={() => handleProjectSortChange("name")}
+              >
+                <span>{t('projects:sortName')}</span>
+                {projectSort === "name" ? <Check className="h-4 w-4 text-slate-600" /> : null}
+              </DropdownMenuItem>
+              
+            </DropdownMenuContent>
+          </DropdownMenu>
           {/* 统一入口：打开项目并自动创建控制台 */}
-          <Button size="sm" variant="secondary" onClick={() => openProjectPicker()}>
-            {t('projects:openProject')}
+          <Button
+            size="icon"
+            variant="secondary"
+            className="h-9 w-9 shrink-0"
+            onClick={() => openProjectPicker()}
+            title={t('projects:openProject') as string}
+          >
+            <FolderOpen className="h-4 w-4" />
+            <span className="sr-only">{t('projects:openProject') as string}</span>
           </Button>
         </div>
       </div>
@@ -3644,7 +3724,6 @@ function EmptyState({ onCreate }: { onCreate: () => void }) {
 }
 
 function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?: string }) {
-  const { t } = useTranslation(["history"]);
   if (!Array.isArray(items) || items.length === 0) return null;
   return (
     <div className="space-y-2">
@@ -3805,13 +3884,6 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
 function renderHistoryBlocks(id: string, sessions: HistorySession[], filter?: Record<string, boolean>) {
   const s = sessions.find((x) => x.id === id);
   if (!s) return null;
-  const allow = (ty: string) => {
-    const ty2 = (ty || '').toLowerCase();
-    if (!filter) return true;
-    if (Object.prototype.hasOwnProperty.call(filter, ty2)) return !!filter[ty2];
-    // 未列出的类型归入 other
-    return !!filter['other'];
-  };
   const nonEmptyMessages = (s.messages || [])
     .map((m) => ({ ...m, content: (m.content || []).filter((it) => {
       if (!filter) return true;
@@ -3914,6 +3986,7 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
             filtered.push(k);
           }
           filtered.sort();
+          // 默认仅勾选 input_text 与 output_text，以突出用户与助手的主要对话内容
           const next: Record<string, boolean> = {};
           for (const k of filtered) next[k] = (k === 'input_text' || k === 'output_text');
           if (seq === reqSeq.current) setTypeFilter(next);
