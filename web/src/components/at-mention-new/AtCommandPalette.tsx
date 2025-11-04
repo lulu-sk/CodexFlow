@@ -2,6 +2,7 @@
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
 import React, { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import type { AtCategory, AtCategoryId, AtItem, SearchResult, SearchScope } from "@/types/at";
 import { AT_CATEGORIES, searchAtItems, getCategoryById } from "@/lib/atSearch";
@@ -168,7 +169,7 @@ export default function AtCommandPalette(props: AtCommandPaletteProps) {
     zIndex: 1000,
   };
 
-  return (
+  const panel = (
     <div ref={rootRef} style={posStyle} className="rounded-lg border border-slate-200 bg-white/95 shadow-xl backdrop-blur supports-[backdrop-filter]:bg-white/70 select-none">
       {level === "categories" ? (
         <div className="w-full h-[160px]">
@@ -241,4 +242,13 @@ export default function AtCommandPalette(props: AtCommandPaletteProps) {
       )}
     </div>
   );
+
+  // 使用 Portal 将面板固定渲染到 body，避免在具有 transform/filter/backdrop-filter/滚动容器的祖先下
+  // 造成 position: fixed 参考系异常（全屏输入遮罩场景）。
+  try {
+    if (typeof document !== "undefined" && document.body) {
+      return createPortal(panel, document.body);
+    }
+  } catch {}
+  return panel;
 }
