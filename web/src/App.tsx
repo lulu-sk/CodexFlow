@@ -1880,6 +1880,15 @@ export default function CodexFlowManagerUI() {
     setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
   }, [activeTabId, setActiveTab, tabsByProject, tm]);
 
+  function markProjectUsed(projectId: string | null | undefined) {
+    try { suppressAutoSelectRef.current = true; } catch {}
+    if (!projectId) return;
+    try {
+      const now = Date.now();
+      setProjects((prev) => prev.map((x) => (x.id === projectId ? { ...x, lastOpenedAt: now } : x)));
+    } catch {}
+  }
+
   // 新增项目并选中，随后自动为该项目打开一个控制台（无 tmux 包装）
 
   async function openConsoleForProject(project: Project) {
@@ -1903,6 +1912,8 @@ export default function CodexFlowManagerUI() {
       registerPtyForTab(tab.id, id);
       try { tm.setPty(tab.id, id); } catch (err) { console.warn('tm.setPty failed', err); }
       try { window.host.projects.touch(project.id); } catch {}
+      // 打开控制台后，立即在内存中更新最近使用时间，保证“最近使用优先”实时生效
+      markProjectUsed(project.id);
     } catch (e) {
       console.error('Failed to open PTY for project', e);
     }
@@ -1985,6 +1996,8 @@ export default function CodexFlowManagerUI() {
       try { tm.setPty(tab.id, id); } catch (err) { console.warn('tm.setPty failed', err); }
       // touch project lastOpenedAt
       try { window.host.projects.touch(selectedProject.id); } catch {}
+      // 同步更新内存，触发排序刷新；并抑制历史面板自动切换
+      markProjectUsed(selectedProject.id);
     } catch (e) {
       console.error('Failed to open PTY', e);
       try { await (window as any).host?.utils?.perfLog?.(`[ui] openNewConsole error ${String((e as any)?.stack || e)}`); } catch {}
@@ -2888,6 +2901,8 @@ export default function CodexFlowManagerUI() {
         } catch {}
         try { tm.setPty(tab.id, id); } catch (err) { console.warn('tm.setPty failed', err); }
         try { window.host.projects.touch(selectedProject.id); } catch {}
+        // 内存也更新最近使用时间，并抑制历史面板自动切换
+        markProjectUsed(selectedProject.id);
         return true;
       }
       const res: any = await (window.host.utils as any).openExternalConsole({
