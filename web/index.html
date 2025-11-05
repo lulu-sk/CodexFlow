@@ -1,9 +1,79 @@
 <!doctype html>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk) -->
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CodexFlow</title>
+    <style>
+      :root {
+        --theme-bg-light: #ffffff;
+        --theme-bg-dark: #22272e;
+        --theme-text-light: #24292f;
+        --theme-text-dark: #adbac7;
+      }
+    </style>
+    <script>
+      (function () {
+        var STORAGE_KEY = "codexflow.themeSetting";
+        var DARK_MEDIA = "(prefers-color-scheme: dark)";
+        var readVar = function (name, fallback) {
+          try {
+            var v = getComputedStyle(document.documentElement).getPropertyValue(name);
+            v = (v || "").trim();
+            return v || fallback;
+          } catch (error) {
+            return fallback;
+          }
+        };
+        var LIGHT_BG = readVar("--theme-bg-light", "#ffffff");
+        var DARK_BG = readVar("--theme-bg-dark", "#22272e");
+        var LIGHT_TEXT = readVar("--theme-text-light", "#24292f");
+        var DARK_TEXT = readVar("--theme-text-dark", "#adbac7");
+
+        var cached = null;
+        try {
+          cached = localStorage.getItem(STORAGE_KEY);
+        } catch (error) {
+          cached = null;
+        }
+
+        var setting = (cached === "light" || cached === "dark" || cached === "system") ? cached : "system";
+        var prefersDark = false;
+        try {
+          prefersDark = !!(window.matchMedia && window.matchMedia(DARK_MEDIA).matches);
+        } catch (error) {
+          prefersDark = false;
+        }
+        var mode = (setting === "light" || setting === "dark") ? setting : (prefersDark ? "dark" : "light");
+
+        var doc = document;
+        var root = doc.documentElement;
+        var isDark = mode === "dark";
+        root.classList.toggle("dark", isDark);
+        root.dataset.theme = mode;
+        root.dataset.themeSetting = setting;
+        try { root.style.colorScheme = mode; } catch (error) {}
+        var bg = isDark ? DARK_BG : LIGHT_BG;
+        var fg = isDark ? DARK_TEXT : LIGHT_TEXT;
+        try { root.style.backgroundColor = bg; } catch (error) {}
+
+        var applyBody = function () {
+          var body = doc.body;
+          if (!body) return;
+          body.classList.toggle("dark", isDark);
+          try { body.style.backgroundColor = bg; } catch (error) {}
+          try { body.style.color = fg; } catch (error) {}
+        };
+
+        if (doc.readyState === "loading") {
+          doc.addEventListener("DOMContentLoaded", applyBody, { once: true });
+        } else {
+          applyBody();
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

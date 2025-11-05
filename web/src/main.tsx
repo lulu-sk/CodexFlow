@@ -8,6 +8,10 @@ import App from './App';
 import { I18nextProvider } from 'react-i18next';
 import i18n, { initI18n } from '@/i18n/setup';
 import ErrorBoundary from '@/components/ErrorBoundary';
+import { applyTheme, getCachedThemeSetting } from '@/lib/theme';
+
+const cachedThemeSetting = getCachedThemeSetting();
+applyTheme(cachedThemeSetting ?? 'system');
 
 const root = createRoot(document.getElementById('root')!);
 
