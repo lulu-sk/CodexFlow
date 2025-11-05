@@ -44,14 +44,26 @@ type PersistDetails = {
   savedAt: number;
 };
 
-const VERSION = "v6";
+const VERSION = "v7";
 
 function getUserDataDir(): string {
   try { const { app } = require("electron"); return app.getPath("userData"); } catch { return process.cwd(); }
 }
 
-function indexPath(): string { return path.join(getUserDataDir(), "history.index.v6.json"); }
-function detailsPath(): string { return path.join(getUserDataDir(), "history.details.v6.json"); }
+function indexPath(): string { return path.join(getUserDataDir(), `history.index.${VERSION}.json`); }
+function detailsPath(): string { return path.join(getUserDataDir(), `history.details.${VERSION}.json`); }
+function purgeLegacyPersistFiles(): void {
+  try {
+    const dir = getUserDataDir();
+    const files = fs.readdirSync(dir);
+    for (const fileName of files) {
+      if (!/^history\.(?:index|details)\.v\d+\.json$/i.test(fileName)) continue;
+      if (fileName.endsWith(`.v${VERSION}.json`)) continue;
+      try { fs.rmSync(path.join(dir, fileName), { force: true }); } catch {}
+    }
+  } catch {}
+}
+
 // ---- Minimal debug (opt-in) ----
 function idxDbgEnabled(): boolean { try { return !!getDebugConfig().indexer.debug; } catch { return false; } }
 function idxDbgMatch(fp: string): boolean { try { const sub = String(getDebugConfig().indexer.filter || '').trim(); if (!sub) return true; return String(fp || '').toLowerCase().includes(sub.toLowerCase()); } catch { return true; } }
@@ -438,12 +450,13 @@ async function parseDetails(fp: string, stat: fs.Stats): Promise<Details> {
         const picked: { type: string; text: string; tags?: string[] }[] = [];
         const leading = (src.match(/^\s*/) || [''])[0].length;
         const s2 = src.slice(leading);
+        const lower = s2.toLowerCase();
         const openU = '<user_instructions>';
         const closeU = '</user_instructions>';
         const openE = '<environment_context>';
         const closeE = '</environment_context>';
-        if (s2.toLowerCase().startsWith(openU)) {
-          const idx = s2.toLowerCase().indexOf(closeU);
+        if (lower.startsWith(openU)) {
+          const idx = lower.indexOf(closeU);
           if (idx >= 0) {
             const inner = s2.slice(openU.length, idx);
             picked.push({ type: 'instructions', text: inner });
@@ -453,8 +466,8 @@ async function parseDetails(fp: string, stat: fs.Stats): Promise<Details> {
           picked.push({ type: 'instructions', text: s2.slice(openU.length) });
           return { rest: '', picked };
         }
-        if (s2.toLowerCase().startsWith(openE)) {
-          const idx = s2.toLowerCase().indexOf(closeE);
+        if (lower.startsWith(openE)) {
+          const idx = lower.indexOf(closeE);
           if (idx >= 0) {
             const inner = s2.slice(openE.length, idx);
             picked.push({ type: 'environment_context', text: inner });
@@ -464,9 +477,30 @@ async function parseDetails(fp: string, stat: fs.Stats): Promise<Details> {
           picked.push({ type: 'environment_context', text: s2.slice(openE.length) });
           return { rest: '', picked };
         }
+        const agentsPrefix = '# agents.md instructions for';
+        if (lower.startsWith(agentsPrefix)) {
+          const openTag = '<instructions>';
+          const closeTag = '</instructions>';
+          const openIdx = lower.indexOf(openTag);
+          if (openIdx >= 0) {
+            const closeIdx = lower.indexOf(closeTag, openIdx + openTag.length);
+            if (closeIdx >= 0) {
+              const inner = s2.slice(openIdx + openTag.length, closeIdx);
+              picked.push({ type: 'instructions', text: inner });
+              const rest = s2.slice(closeIdx + closeTag.length);
+              return { rest: rest.trim(), picked };
+            }
+          }
+          const afterHeader = s2.split(/\r?\n/).slice(1).join('\n').trim();
+          if (afterHeader) {
+            picked.push({ type: 'instructions', text: afterHeader });
+            return { rest: '', picked };
+          }
+          picked.push({ type: 'instructions', text: s2 });
+          return { rest: '', picked };
+        }
         return { rest: src, picked };
       };
-
       const flushLines = (text: string) => {
         const lines = text.split(/\r?\n/);
         for (const line of lines) {
@@ -792,6 +826,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
   } catch {}
   await perfLogger.time("indexer.start", async () => {
     // 1) 读取持久化缓存
+    purgeLegacyPersistFiles();
     g.__indexer.index = loadIndex();
     g.__indexer.details = loadDetails();
 

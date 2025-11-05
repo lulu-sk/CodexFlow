@@ -12,7 +12,7 @@ import { PTYManager, setTermDebug } from "./pty";
 import opentype from 'opentype.js';
 import iconv from 'iconv-lite';
 import projects, { IMPLEMENTATION_NAME as PROJECTS_IMPL } from "./projects/index";
-import history from "./history";
+import history, { purgeHistoryCacheIfOutdated } from "./history";
 import { startHistoryIndexer, getIndexedSummaries, getIndexedDetails, getLastIndexerRoots, stopHistoryIndexer } from "./indexer";
 import { getSessionsRootsFastAsync } from "./wsl";
 import { perfLogger } from "./log";
@@ -688,6 +688,7 @@ if (!gotLock) {
     // 启动时静默检查更新由渲染进程完成（仅提示，不下载）
     try { setTermDebug(!!getDebugConfig().terminal.pty.debug); } catch {}
     // 启动历史索引器：后台并发解析、缓存、监听变更
+    try { purgeHistoryCacheIfOutdated(); } catch {}
     try { await startHistoryIndexer(() => mainWindow); } catch (e) { console.warn('indexer start failed', e); }
     // 启动后立刻触发一次 UI 强制刷新，确保首次 ready 后显示索引内容
     try { mainWindow?.webContents.send('history:index:add', { items: [] }); } catch {}
