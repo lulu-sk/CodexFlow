@@ -26,6 +26,7 @@ import {
   buildTerminalFontStack,
 } from "@/lib/terminal-appearance";
 import { resolveFirstAvailableFont, parseFontFamilyList } from "@/lib/font-utils";
+import { resolveSystemTheme, subscribeSystemTheme, type ThemeMode, type ThemeSetting } from "@/lib/theme";
 
 type TerminalMode = "wsl" | "windows";
 type SendMode = "write_only" | "write_and_enter";
@@ -42,6 +43,11 @@ type NetworkPrefs = {
   noProxy: string;
 };
 
+const normalizeThemeSetting = (value: any): ThemeSetting => {
+  if (value === "light" || value === "dark") return value;
+  return "system";
+};
+
 export type SettingsDialogProps = {
   open: boolean;
   onOpenChange: (v: boolean) => void;
@@ -52,6 +58,7 @@ export type SettingsDialogProps = {
     sendMode: SendMode;
     locale: string;
     projectPathStyle: PathStyle;
+    theme: ThemeSetting;
     notifications: NotificationPrefs;
     network?: NetworkPrefs;
     terminalFontFamily: string;
@@ -63,6 +70,7 @@ export type SettingsDialogProps = {
     sendMode: SendMode;
     locale: string;
     projectPathStyle: PathStyle;
+    theme: ThemeSetting;
     notifications: NotificationPrefs;
     network: NetworkPrefs;
     terminalFontFamily: string;
@@ -123,6 +131,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   });
   const [codexRoots, setCodexRoots] = useState<string[]>([]);
   const [lang, setLang] = useState<string>(values.locale || "en");
+  const [theme, setTheme] = useState<ThemeSetting>(normalizeThemeSetting(values.theme));
+  const [systemTheme, setSystemTheme] = useState<ThemeMode>(() => resolveSystemTheme());
   const [availableDistros, setAvailableDistros] = useState<string[]>([]);
   const [terminalFontFamily, setTerminalFontFamily] = useState<string>(normalizeTerminalFontFamily(values.terminalFontFamily));
   const [installedFonts, setInstalledFonts] = useState<string[]>([]);
@@ -151,6 +161,14 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     const current = (currentPrimaryFont || "").toLowerCase();
     return visibleFontList.findIndex((name) => name.toLowerCase() === current);
   }, [visibleFontList, currentPrimaryFont]);
+  const themeLabel = useCallback((mode: ThemeSetting) => {
+    if (mode === "dark") return t("settings:appearance.theme.dark") as string;
+    if (mode === "light") return t("settings:appearance.theme.light") as string;
+    return t("settings:appearance.theme.system") as string;
+  }, [t]);
+  const systemThemeLabel = useMemo(() => {
+    return t(`settings:appearance.theme.current.${systemTheme}`) as string;
+  }, [systemTheme, t]);
   const [cleanupScanning, setCleanupScanning] = useState(false);
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const [cleanupList, setCleanupList] = useState<CleanupCandidate[]>([]);
@@ -191,6 +209,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
       setSendMode(values.sendMode || "write_and_enter");
       setPathStyle(values.projectPathStyle || "absolute");
       setLang(values.locale || "en");
+      setTheme(normalizeThemeSetting(values.theme));
       setNotifications(values.notifications);
       setNetwork({
         proxyEnabled: values.network?.proxyEnabled ?? true,
@@ -200,7 +219,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
       });
       setTerminalFontFamily(normalizeTerminalFontFamily(values.terminalFontFamily));
     }
-  }, [open, values.codexCmd, values.distro, values.locale, values.notifications, values.projectPathStyle, values.sendMode, values.terminal, values.terminalFontFamily]);
+  }, [open, values.codexCmd, values.distro, values.locale, values.notifications, values.projectPathStyle, values.sendMode, values.terminal, values.terminalFontFamily, values.theme]);
 
   useEffect(() => {
     if (!open) return;
@@ -215,6 +234,19 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
       }
     })();
   }, [open]);
+
+  useEffect(() => {
+    const unwatch = subscribeSystemTheme((mode) => {
+      try {
+        setSystemTheme(mode);
+      } catch {}
+    });
+    return () => {
+      try {
+        unwatch?.();
+      } catch {}
+    };
+  }, []);
 
   // 从主进程拉取详细字体并生成等宽列表（基于字体表元数据）
   // 延迟到进入“终端”分区再拉取；并在会话期缓存，避免重复阻塞
@@ -514,6 +546,118 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
               </Card>
               <Card>
                 <CardHeader>
+                  <CardTitle>{t("settings:appearance.theme.label")}</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <p className="text-sm text-slate-500">
+                    {t("settings:appearance.theme.help", { mode: systemThemeLabel })}
+                  </p>
+                  <div className="max-w-xs">
+                    <Select value={theme} onValueChange={(value) => setTheme(normalizeThemeSetting(value))}>
+                      <SelectTrigger>
+                        <span className="truncate text-left">{themeLabel(theme)}</span>
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="system">{t("settings:appearance.theme.system")}</SelectItem>
+                        <SelectItem value="light">{t("settings:appearance.theme.light")}</SelectItem>
+                        <SelectItem value="dark">{t("settings:appearance.theme.dark")}</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="text-xs text-slate-500">
+                    {t("settings:appearance.theme.note", { current: themeLabel(normalizeThemeSetting(theme === "system" ? systemTheme : theme)) })}
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          ),
+        };
+      }
+      if (key === "notifications") {
+        return {
+          key,
+          title: t("settings:sections.notifications.title"),
+          description: t("settings:sections.notifications.desc"),
+          content: (
+            <div className="space-y-6">
+              <Card>
+                <CardHeader>
+                  <CardTitle>{t("settings:notifications.label")}</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <p className="text-sm text-slate-500 dark:text-[var(--cf-text-secondary)]">{t("settings:notifications.help")}</p>
+                  <label className="flex items-start gap-3 rounded-lg border border-slate-200/70 bg-white/60 px-3 py-3 shadow-sm dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:text-[var(--cf-text-primary)]">
+                    <input
+                      type="checkbox"
+                      className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)] dark:checked:bg-[var(--cf-accent)] dark:focus-visible:ring-[var(--cf-accent)]/40"
+                      checked={notifications.badge}
+                      onChange={(event) => {
+                        const next = { ...notifications, badge: event.target.checked };
+                        setNotifications(next);
+                      }}
+                    />
+                    <div>
+                      <div className="text-sm font-medium text-slate-800 dark:text-[var(--cf-text-primary)]">
+                        {t("settings:notifications.badge.label")}
+                      </div>
+                      <p className="text-xs text-slate-500 dark:text-[var(--cf-text-secondary)]">
+                        {t("settings:notifications.badge.desc")}
+                      </p>
+                    </div>
+                  </label>
+                  <label className="flex items-start gap-3 rounded-lg border border-slate-200/70 bg-white/60 px-3 py-3 shadow-sm dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:text-[var(--cf-text-primary)]">
+                    <input
+                      type="checkbox"
+                      className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)] dark:checked:bg-[var(--cf-accent)] dark:focus-visible:ring-[var(--cf-accent)]/40"
+                      checked={notifications.system}
+                      onChange={(event) => {
+                        const next = { ...notifications, system: event.target.checked };
+                        setNotifications(next);
+                      }}
+                    />
+                    <div>
+                      <div className="text-sm font-medium text-slate-800 dark:text-[var(--cf-text-primary)]">
+                        {t("settings:notifications.system.label")}
+                      </div>
+                      <p className="text-xs text-slate-500 dark:text-[var(--cf-text-secondary)]">
+                        {t("settings:notifications.system.desc")}
+                      </p>
+                    </div>
+                  </label>
+                  <label className="flex items-start gap-3 rounded-lg border border-slate-200/70 bg-white/60 px-3 py-3 shadow-sm dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:text-[var(--cf-text-primary)]">
+                    <input
+                      type="checkbox"
+                      className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)] dark:checked:bg-[var(--cf-accent)] dark:focus-visible:ring-[var(--cf-accent)]/40"
+                      checked={notifications.sound}
+                      onChange={(event) => {
+                        const next = { ...notifications, sound: event.target.checked };
+                        setNotifications(next);
+                      }}
+                    />
+                    <div>
+                      <div className="text-sm font-medium text-slate-800 dark:text-[var(--cf-text-primary)]">
+                        {t("settings:notifications.sound.label")}
+                      </div>
+                      <p className="text-xs text-slate-500 dark:text-[var(--cf-text-secondary)]">
+                        {t("settings:notifications.sound.desc")}
+                      </p>
+                    </div>
+                  </label>
+                </CardContent>
+              </Card>
+            </div>
+          ),
+        };
+      }
+      if (key === "terminal") {
+        return {
+          key,
+          title: t("settings:sections.terminal.title"),
+          description: t("settings:sections.terminal.desc"),
+          content: (
+            <div className="space-y-6">
+              <Card>
+                <CardHeader>
                   <CardTitle>{t("settings:sendMode.label")}</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3">
@@ -558,93 +702,6 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                   </div>
                 </CardContent>
               </Card>
-            </div>
-          ),
-        };
-      }
-      if (key === "notifications") {
-        return {
-          key,
-          title: t("settings:sections.notifications.title"),
-          description: t("settings:sections.notifications.desc"),
-          content: (
-            <div className="space-y-6">
-              <Card>
-                <CardHeader>
-                  <CardTitle>{t("settings:notifications.label")}</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <p className="text-sm text-slate-500">{t("settings:notifications.help")}</p>
-                  <label className="flex items-start gap-3 rounded-lg border border-slate-200/70 bg-white/60 px-3 py-3 shadow-sm">
-                    <input
-                      type="checkbox"
-                      className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400"
-                      checked={notifications.badge}
-                      onChange={(event) => {
-                        const next = { ...notifications, badge: event.target.checked };
-                        setNotifications(next);
-                      }}
-                    />
-                    <div>
-                      <div className="text-sm font-medium text-slate-800">
-                        {t("settings:notifications.badge.label")}
-                      </div>
-                      <p className="text-xs text-slate-500">
-                        {t("settings:notifications.badge.desc")}
-                      </p>
-                    </div>
-                  </label>
-                  <label className="flex items-start gap-3 rounded-lg border border-slate-200/70 bg-white/60 px-3 py-3 shadow-sm">
-                    <input
-                      type="checkbox"
-                      className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400"
-                      checked={notifications.system}
-                      onChange={(event) => {
-                        const next = { ...notifications, system: event.target.checked };
-                        setNotifications(next);
-                      }}
-                    />
-                    <div>
-                      <div className="text-sm font-medium text-slate-800">
-                        {t("settings:notifications.system.label")}
-                      </div>
-                      <p className="text-xs text-slate-500">
-                        {t("settings:notifications.system.desc")}
-                      </p>
-                    </div>
-                  </label>
-                  <label className="flex items-start gap-3 rounded-lg border border-slate-200/70 bg-white/60 px-3 py-3 shadow-sm">
-                    <input
-                      type="checkbox"
-                      className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400"
-                      checked={notifications.sound}
-                      onChange={(event) => {
-                        const next = { ...notifications, sound: event.target.checked };
-                        setNotifications(next);
-                      }}
-                    />
-                    <div>
-                      <div className="text-sm font-medium text-slate-800">
-                        {t("settings:notifications.sound.label")}
-                      </div>
-                      <p className="text-xs text-slate-500">
-                        {t("settings:notifications.sound.desc")}
-                      </p>
-                    </div>
-                  </label>
-                </CardContent>
-              </Card>
-            </div>
-          ),
-        };
-      }
-      if (key === "terminal") {
-        return {
-          key,
-          title: t("settings:sections.terminal.title"),
-          description: t("settings:sections.terminal.desc"),
-          content: (
-            <div className="space-y-6">
               <Card>
                 <CardHeader>
                   <CardTitle>{t("settings:terminalMode.label")}</CardTitle>
@@ -729,7 +786,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                   </div>
                   
                   {/* 单一选择器：仅显示“已安装”字体；推荐项置顶并标注“推荐” */}
-                  <div className="max-w-xs space-y-2">
+                    <div className="max-w-xs space-y-2 text-slate-700 dark:text-slate-200">
                     <div className="text-xs font-medium text-slate-600">{t("settings:terminalFont.installedLabel")}</div>
                     {installedFonts.length > 0 ? (
                       <>
@@ -753,7 +810,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                           <div className="flex flex-col flex-shrink-0 h-10 w-7 overflow-hidden rounded border border-slate-200 divide-y divide-slate-200">
                             <button
                               type="button"
-                              className="inline-flex w-full flex-1 items-center justify-center bg-white text-slate-700 hover:bg-slate-50"
+                          className="inline-flex w-full flex-1 items-center justify-center bg-white text-slate-700 hover:bg-slate-50 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800"
                               title={t('settings:terminalFont.prev') as string}
                               disabled={visibleFontList.length === 0 || currentFontIndex <= 0}
                               onClick={() => {
@@ -771,7 +828,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                             </button>
                             <button
                               type="button"
-                              className="inline-flex w-full flex-1 items-center justify-center bg-white text-slate-700 hover:bg-slate-50"
+                          className="inline-flex w-full flex-1 items-center justify-center bg-white text-slate-700 hover:bg-slate-50 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800"
                               title={t('settings:terminalFont.next') as string}
                               disabled={
                                 visibleFontList.length === 0 ||
@@ -833,22 +890,22 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                   <CardTitle>{t("settings:network.label")}</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3">
-                  <p className="text-sm text-slate-500">{t("settings:network.desc")}</p>
+                  <p className="text-sm text-slate-500 dark:text-[var(--cf-text-secondary)]">{t("settings:network.desc")}</p>
                   <div className="flex flex-col gap-3 max-w-xl">
-                    <label className="flex items-start gap-3 rounded-lg border border-slate-200/70 bg-white/60 px-3 py-3 shadow-sm">
+                    <label className="flex items-start gap-3 rounded-lg border border-slate-200/70 bg-white/60 px-3 py-3 shadow-sm dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:text-[var(--cf-text-primary)]">
                       <input
                         type="checkbox"
-                        className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400"
+                        className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)] dark:checked:bg-[var(--cf-accent)] dark:focus-visible:ring-[var(--cf-accent)]/40"
                         checked={network.proxyEnabled}
                         onChange={(e) => setNetwork((v) => ({ ...v, proxyEnabled: e.target.checked }))}
                       />
                       <div>
-                        <div className="text-sm font-medium text-slate-800">{t("settings:network.enable")}</div>
-                        <p className="text-xs text-slate-500">{t("settings:network.enableDesc")}</p>
+                        <div className="text-sm font-medium text-slate-800 dark:text-[var(--cf-text-primary)]">{t("settings:network.enable")}</div>
+                        <p className="text-xs text-slate-500 dark:text-[var(--cf-text-secondary)]">{t("settings:network.enableDesc")}</p>
                       </div>
                     </label>
                     <div className="grid gap-3 sm:grid-cols-[180px_1fr] items-center">
-                      <div className="text-sm text-slate-700">{t("settings:network.mode")}</div>
+                      <div className="text-sm text-slate-700 dark:text-[var(--cf-text-primary)]">{t("settings:network.mode")}</div>
                       <div className="max-w-xs">
                         <Select
                           value={network.proxyMode}
@@ -869,7 +926,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                       </div>
                     </div>
                     <div className="grid gap-3 sm:grid-cols-[180px_1fr] items-center">
-                      <div className="text-sm text-slate-700">{t("settings:network.customUrl")}</div>
+                      <div className="text-sm text-slate-700 dark:text-[var(--cf-text-primary)]">{t("settings:network.customUrl")}</div>
                       <Input
                         disabled={!network.proxyEnabled || network.proxyMode !== "custom"}
                         value={network.proxyUrl}
@@ -878,7 +935,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                       />
                     </div>
                     <div className="grid gap-3 sm:grid-cols-[180px_1fr] items-center">
-                      <div className="text-sm text-slate-700">{t("settings:network.noProxy")}</div>
+                      <div className="text-sm text-slate-700 dark:text-[var(--cf-text-primary)]">{t("settings:network.noProxy")}</div>
                       <Input
                         disabled={!network.proxyEnabled}
                         value={network.noProxy}
@@ -944,7 +1001,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                 <div className="flex items-center gap-3">
                   <Button
                     variant="secondary"
-                    className="border border-red-200 text-red-600 hover:bg-red-50"
+                    className="border border-red-200 text-red-600 hover:bg-red-50 dark:border-[var(--cf-red-dim)] dark:text-[var(--cf-red)] dark:hover:bg-[var(--cf-red)]/10"
                     disabled={cleanupScanning || cleanupRunning}
                     onClick={async () => {
                       try {
@@ -1036,7 +1093,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                   </Button>
                   <Button
                     variant="secondary"
-                    className="border border-amber-200 text-amber-600 hover:bg-amber-50"
+                    className="border border-amber-200 text-amber-600 hover:bg-amber-50 dark:border-[var(--cf-yellow-dim)] dark:text-[var(--cf-yellow)] dark:hover:bg-[var(--cf-yellow)]/10"
                     disabled={storageLoading || storageClearing || storagePurging}
                     onClick={() => setStorageConfirmOpen(true)}
                   >
@@ -1044,8 +1101,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                     {storageClearing ? t("settings:appData.cleaning") : t("settings:appData.clean")}
                   </Button>
                   <Button
-                    variant="default"
-                    className="bg-red-600 hover:bg-red-700 focus-visible:ring-2 focus-visible:ring-red-500"
+                    variant="danger"
                     disabled={storagePurging || storageClearing}
                     onClick={() => setStoragePurgeConfirmOpen(true)}
                   >
@@ -1053,7 +1109,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                     {storagePurging ? t("settings:appData.fullPurging") : t("settings:appData.fullPurge")}
                   </Button>
                 </div>
-                {storageError && <div className="text-sm text-red-600">{storageError}</div>}
+                {storageError && <div className="text-sm text-red-600 dark:text-[var(--cf-red)]">{storageError}</div>}
               </CardContent>
             </Card>
             <Card>
@@ -1111,6 +1167,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     distro,
     labelOf,
     lang,
+    theme,
     pathStyle,
     notifications,
     network,
@@ -1124,6 +1181,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     t,
     terminal,
     terminalFontFamily,
+    themeLabel,
+    systemThemeLabel,
   ]);
 
   useEffect(() => {
@@ -1151,15 +1210,15 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
           className={cn(
             "flex flex-col items-start rounded-lg border border-transparent px-3 py-2 text-left transition-colors",
             activeSection === section.key
-              ? "border-slate-300 bg-slate-100 text-slate-900 shadow-sm"
-              : "hover:bg-slate-50 text-slate-600"
+              ? "border-slate-300 bg-slate-100 text-slate-900 shadow-sm dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-hover)] dark:text-[var(--cf-text-primary)]"
+              : "hover:bg-slate-50 text-slate-600 dark:hover:bg-[var(--cf-surface)] dark:text-[var(--cf-text-secondary)]"
           )}
           onClick={() => {
             setActiveSection(section.key);
           }}
         >
           <span className="text-sm font-medium">{section.title}</span>
-          <span className="mt-0.5 text-xs text-slate-500 line-clamp-2">
+          <span className="mt-0.5 text-xs text-slate-500 dark:text-[var(--cf-text-muted)] line-clamp-2">
             {section.description}
           </span>
         </button>
@@ -1180,8 +1239,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
           <Separator orientation="vertical" />
           <div className="flex flex-1 flex-col overflow-hidden">
             <div className="flex flex-col gap-1 pb-4">
-              <h2 className="text-lg font-semibold text-slate-900">{active.title}</h2>
-              <p className="text-sm text-slate-500">{active.description}</p>
+              <h2 className="text-lg font-semibold text-slate-900 dark:text-[var(--cf-text-primary)]">{active.title}</h2>
+              <p className="text-sm text-slate-500 dark:text-[var(--cf-text-secondary)]">{active.description}</p>
             </div>
             <ScrollArea className="flex-1">
               <div ref={scrollRef} className="pr-4">
@@ -1190,8 +1249,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                 </div>
               </div>
             </ScrollArea>
-            <div className="flex items-center justify-between border-t pt-4">
-              <div className="text-xs text-slate-400">
+            <div className="flex items-center justify-between border-t dark:border-[var(--cf-border)] pt-4">
+              <div className="text-xs text-slate-400 dark:text-[var(--cf-text-muted)]">
                 {t("settings:footer.note")}
               </div>
               <div className="flex items-center gap-2">
@@ -1207,6 +1266,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                       sendMode,
                       locale: lang,
                       projectPathStyle: pathStyle,
+                    theme,
                       notifications,
                       network,
                       terminalFontFamily: normalizeTerminalFontFamily(terminalFontFamily),
@@ -1238,7 +1298,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
             </Button>
             <Button
               variant="secondary"
-              className="border border-amber-200 text-amber-600 hover:bg-amber-50"
+              className="border border-amber-200 text-amber-600 hover:bg-amber-50 dark:border-[var(--cf-yellow-dim)] dark:text-[var(--cf-yellow)] dark:hover:bg-[var(--cf-yellow)]/10"
               disabled={storageClearing}
               onClick={handleClearAppData}
             >
@@ -1264,7 +1324,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
               {t("common:cancel")}
             </Button>
             <Button
-              className="bg-red-500 text-white hover:bg-red-600"
+              variant="danger"
               disabled={storagePurging}
               onClick={handlePurgeAppData}
             >
@@ -1337,7 +1397,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
             </Button>
             <Button
               variant="secondary"
-              className="border border-red-200 text-red-600 hover:bg-red-50"
+              className="border border-red-200 text-red-600 hover:bg-red-50 dark:border-[var(--cf-red-dim)] dark:text-[var(--cf-red)] dark:hover:bg-[var(--cf-red)]/10"
               disabled={cleanupList.length === 0 || cleanupRunning}
               onClick={() => {
                 if (cleanupList.length === 0 || cleanupRunning) return;
@@ -1363,7 +1423,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
             </Button>
             <Button
               variant="secondary"
-              className="border border-red-200 text-red-600 hover:bg-red-50"
+              className="border border-red-200 text-red-600 hover:bg-red-50 dark:border-[var(--cf-red-dim)] dark:text-[var(--cf-red)] dark:hover:bg-[var(--cf-red)]/10"
               disabled={cleanupRunning}
               onClick={handleCleanupExecute}
             >

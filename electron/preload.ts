@@ -12,6 +12,12 @@ contextBridge.exposeInMainWorld('host', {
     },
     getPaths: async (): Promise<{ licensePath?: string; noticePath?: string }> => {
       try { const res = await ipcRenderer.invoke('app.getPaths'); if (res && res.ok) return { licensePath: res.licensePath, noticePath: res.noticePath }; return {}; } catch { return {}; }
+    },
+    setTitleBarTheme: async (theme: { mode: 'light' | 'dark'; source?: 'light' | 'dark' | 'system' } | 'light' | 'dark'): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        const payload = typeof theme === 'string' ? { mode: theme } : theme;
+        return await ipcRenderer.invoke('app.setTitleBarTheme', payload);
+      } catch (e) { return { ok: false, error: String(e) } as any; }
     }
   },
   debug: {

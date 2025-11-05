@@ -4,6 +4,8 @@
 export {}; // make this a module
 
 // 与主进程约定的类型（仅做声明，不引入运行时依赖）
+export type ThemeSetting = 'light' | 'dark' | 'system';
+
 export type AppSettings = {
   terminal?: 'wsl' | 'windows';
   distro: string;
@@ -12,6 +14,7 @@ export type AppSettings = {
   sendMode?: 'write_only' | 'write_and_enter';
   locale?: string;
   projectPathStyle?: 'absolute' | 'relative';
+  theme?: ThemeSetting;
   /** 任务完成提醒偏好 */
   notifications?: {
     badge?: boolean;
@@ -181,9 +184,30 @@ export interface UtilsAPI {
   listFontsDetailed(): Promise<Array<{ name: string; file?: string; monospace: boolean }>>;
 }
 
+// 仅声明渲染层使用到的最小 API（与 preload.ts 暴露保持一致）
+export interface WslAPI {
+  listDistros(): Promise<{ ok: boolean; distros: string[]; error?: string }>;
+}
+
+export interface FileIndexAPI {
+  ensureIndex(args: { root: string; excludes?: string[] }): Promise<{ ok: boolean; total?: number; updatedAt?: number; error?: string }>;
+  getAllCandidates(root: string): Promise<{ ok: boolean; items?: Array<{ rel: string; isDir: boolean }>; error?: string }>;
+  setActiveRoots(roots: string[]): Promise<{ ok: boolean; closed?: number; remain?: number; error?: string }>;
+  onChanged?: (handler: (payload: { root: string; reason?: string; adds?: { rel: string; isDir: boolean }[]; removes?: { rel: string; isDir: boolean }[] }) => void) => () => void;
+}
+
+export interface ImagesAPI {
+  saveDataURL(args: { dataURL: string; projectWinRoot?: string; projectName?: string; ext?: string; prefix?: string }): Promise<{ ok: boolean; winPath?: string; wslPath?: string; fileName?: string; error?: string }>;
+  clipboardHasImage(): Promise<{ ok: boolean; has?: boolean; error?: string }>;
+  saveFromClipboard(args: { projectWinRoot?: string; projectName?: string; prefix?: string }): Promise<{ ok: boolean; winPath?: string; wslPath?: string; fileName?: string; error?: string }>;
+  trash(args: { winPath: string }): Promise<{ ok: boolean; error?: string }>;
+}
+
 export interface AppAPI {
   getVersion(): Promise<string>;
   getPaths(): Promise<{ licensePath?: string; noticePath?: string }>;
+  /** 仅 Windows：设置原生标题栏主题（light/dark） */
+  setTitleBarTheme?(theme: { mode: 'light' | 'dark'; source?: ThemeSetting } | 'light' | 'dark'): Promise<{ ok: boolean; error?: string }>;
 }
 
 export interface EnvAPI {
@@ -215,6 +239,9 @@ declare global {
       i18n: I18nAPI;
       codex: CodexAPI;
       notifications: NotificationsAPI;
+      wsl?: WslAPI;
+      fileIndex?: FileIndexAPI;
+      images?: ImagesAPI;
       debug?: {
         get(): Promise<any>;
         update(partial: any): Promise<any>;

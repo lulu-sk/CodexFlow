@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
-import { app, BrowserWindow, ipcMain, dialog, clipboard, shell, Menu, screen, session } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, clipboard, shell, Menu, screen, session, nativeTheme } from 'electron';
 import os from 'node:os';
 import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -16,7 +16,7 @@ import history from "./history";
 import { startHistoryIndexer, getIndexedSummaries, getIndexedDetails, getLastIndexerRoots, stopHistoryIndexer } from "./indexer";
 import { getSessionsRootsFastAsync } from "./wsl";
 import { perfLogger } from "./log";
-import settings, { ensureSettingsAutodetect, ensureFirstRunTerminalSelection } from "./settings";
+import settings, { ensureSettingsAutodetect, ensureFirstRunTerminalSelection, type ThemeSetting as SettingsThemeSetting } from "./settings";
 import i18n from "./i18n";
 import wsl from "./wsl";
 import fileIndex from "./fileIndex";
@@ -482,6 +482,8 @@ function createWindow() {
     width: 1280,
     height: 800,
     icon: windowIcon,
+    // 恢复系统默认标题栏/菜单栏布局
+    autoHideMenuBar: false,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -498,6 +500,15 @@ function createWindow() {
 
   // 安装输入框右键菜单（撤销/重做/剪切/复制/粘贴/全选，支持多语言）
   try { installInputContextMenu(mainWindow.webContents); } catch {}
+
+  // 初始按已保存主题设置原生主题与标题栏颜色
+  try {
+    const s = settings.getSettings();
+    const src: any = (s as any)?.theme;
+    const themeSource: SettingsThemeSetting = (src === 'light' || src === 'dark') ? src : 'system';
+    const fallbackMode: 'light' | 'dark' = nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
+    applyTitleBarTheme(fallbackMode, themeSource);
+  } catch {}
 
   const devUrl = process.env.DEV_SERVER_URL;
   if (DIAG) { try { perfLogger.log(`[WIN] create BrowserWindow devUrl=${devUrl || ''}`); } catch {} }
@@ -539,6 +550,56 @@ function createWindow() {
     mainWindow = null;
   });
 }
+
+// 统一应用标题栏主题色（Windows）
+function applyTitleBarTheme(mode: 'light' | 'dark', source?: SettingsThemeSetting) {
+  try {
+    if (!mainWindow) return;
+    const themeSource: SettingsThemeSetting | undefined = (source === 'light' || source === 'dark' || source === 'system') ? source : undefined;
+    if (themeSource) {
+      try { nativeTheme.themeSource = themeSource; } catch {}
+    }
+    const effectiveMode: 'light' | 'dark' = (() => {
+      if (themeSource === 'light' || themeSource === 'dark') return themeSource;
+      if (themeSource === 'system') {
+        return nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
+      }
+      return mode === 'dark' ? 'dark' : 'light';
+    })();
+    const isDark = effectiveMode === 'dark';
+    // 与 web/src/index.css 中的 --cf-app-bg 完全一致（GitHub Primer 配色）
+    const bar = isDark ? '#22272e' : '#ffffff';
+    const symbols = isDark ? '#adbac7' : '#24292f';
+    // 1) 统一系统主题（影响原生菜单/对话框/窗口框架）
+    if (!themeSource) {
+      try { nativeTheme.themeSource = isDark ? 'dark' : 'light'; } catch {}
+    }
+    // 2) 若启用了 overlay（未来可能切换），也同步覆盖色
+    try { (mainWindow as any).setTitleBarOverlay?.({ color: bar, symbolColor: symbols, height: 32 }); } catch {}
+    // 3) 背景色尽量保持一致（对默认框架影响有限，但无副作用）
+    try { mainWindow.setBackgroundColor(bar); } catch {}
+  } catch {}
+}
+
+// IPC: 渲染层请求同步标题栏主题
+ipcMain.handle('app.setTitleBarTheme', async (_e, payload: { mode?: string; source?: string } | string) => {
+  try {
+    let mode: 'light' | 'dark' = 'light';
+    let source: SettingsThemeSetting | undefined;
+    if (typeof payload === 'string') {
+      mode = payload === 'dark' ? 'dark' : 'light';
+    } else if (payload && typeof payload === 'object') {
+      mode = payload.mode === 'dark' ? 'dark' : 'light';
+      if (payload.source === 'light' || payload.source === 'dark' || payload.source === 'system') {
+        source = payload.source;
+      }
+    }
+    applyTitleBarTheme(mode, source);
+    return { ok: true } as any;
+  } catch (e: any) {
+    return { ok: false, error: String(e) } as any;
+  }
+});
 
 // Single instance lock
 const gotLock = app.requestSingleInstanceLock();

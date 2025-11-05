@@ -1,27 +1,188 @@
 {
   "title": "Settings",
+  "sections": {
+    "basic": {
+      "title": "Basic experience",
+      "desc": "Language preferences, theme mode, and general settings."
+    },
+    "notifications": {
+      "title": "Notifications",
+      "desc": "Choose how CodexFlow reminds you when agents finish their tasks."
+    },
+    "terminal": {
+      "title": "Terminal & input",
+      "desc": "Configure input field behavior and how CodexFlow runs commands."
+    },
+    "networkAccount": {
+      "title": "Network & Account",
+      "desc": "Manage network proxy settings and review your ChatGPT account status."
+    },
+    "data": {
+      "title": "Data & storage",
+      "desc": "Inspect cached files and clean redundant histories."
+    }
+  },
   "language": {
     "label": "UI Language",
     "placeholder": "Select language",
     "en": "English",
-    "zh": "Simplified Chinese"
+    "zh": "Simplified Chinese",
+    "help": "Choose the language used across the app."
+  },
+  "appearance": {
+    "theme": {
+      "label": "Theme",
+      "help": "Match CodexFlow to your workspace. The system theme is currently {mode}.",
+      "note": "Currently displaying {current}.",
+      "system": "Follow system",
+      "light": "Light",
+      "dark": "Dark",
+      "current": {
+        "light": "light",
+        "dark": "dark"
+      }
+    }
   },
   "terminal": "Terminal",
   "terminalPlaceholder": "Select terminal",
   "noTerminalDetected": "No terminal detected",
+  "terminalMode": {
+    "label": "Execution Environment",
+    "wsl": "WSL",
+    "windows": "Windows (PowerShell)",
+    "help": "Switch between WSL and PowerShell execution environments."
+  },
+  "wslDistro": "WSL Distro",
+  "wslDistroHelp": "Select the default distribution used when opening a WSL terminal.",
   "codexCmd": "CodexFlow launch command",
+  "codexCmdHelp": "Customize the command CodexFlow runs when launching from the terminal.",
+  "terminalFont": {
+    "label": "Terminal font",
+    "help": "Choose the monospaced font for the integrated terminal. The preview below updates in real time.",
+    "placeholder": "e.g. Cascadia Code, Consolas, monospace",
+    "note": "If a font is not installed, the terminal falls back to the system default.",
+    "custom": "Custom font stack",
+    "previewTitle": "Preview",
+    "preview": "0123456789 abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ !@#$%^&*() <>",
+    "effective": "Effective: {name}",
+    "fallback": "Fallback in use: {name}",
+    "installedLabel": "Installed fonts",
+    "installedPlaceholder": "Pick a font",
+    "installedNone": "No system fonts detected",
+    "recommendedTag": "recommended",
+    "showAll": "Show all fonts",
+    "showAllHint": "If enabled, the list above shows every installed font. Otherwise only monospace fonts appear.",
+    "prev": "Previous font",
+    "next": "Next font",
+    "presets": {
+      "cascadia": "Cascadia Code (recommended)",
+      "jetbrains": "JetBrains Mono",
+      "fira": "Fira Code"
+    }
+  },
+  "loading": "Loading…",
   "sendMode": {
     "label": "Send key behavior",
-    "write_only": "Send to console",
-    "write_and_enter": "Send to console and Enter"
+    "write_only": "Send only",
+    "write_and_enter": "Send and confirm",
+    "help": "Decide whether pressing Enter sends the text immediately."
+  },
+  "projectPathStyle": {
+    "label": "Message path format",
+    "absolute": "Absolute path",
+    "relative": "Relative path (to project root)",
+    "help": "Pick the path format inserted into conversations."
+  },
+  "notifications": {
+    "label": "Task completion alerts",
+    "help": "Get notified automatically when an agent finishes its task. Alerts only appear when you switch to another window or tab, so they won't interrupt your current work.",
+    "badge": {
+      "label": "Taskbar badge",
+      "desc": "Show the number of finished tasks on the CodexFlow icon."
+    },
+    "system": {
+      "label": "Desktop notification",
+      "desc": "Send a system notification whenever an agent completes its current task."
+    },
+    "sound": {
+      "label": "Play chime",
+      "desc": "Play a short sound when a task completes."
+    }
+  },
+  "network": {
+    "label": "Network proxy",
+    "desc": "Make all in-app requests follow your proxy (default: on).",
+    "enable": "Enable proxy for network requests",
+    "enableDesc": "When enabled, CodexFlow will proxy rate-limit checks and other requests.",
+    "mode": "Proxy mode",
+    "modeSystem": "Follow system proxy",
+    "modeCustom": "Custom proxy URL",
+    "customUrl": "Custom proxy URL",
+    "noProxy": "Bypass hosts"
+  },
+  "codexAccount": {
+    "label": "ChatGPT account",
+    "help": "Check the login status synced from your ChatGPT desktop session.",
+    "statusLoading": "Loading account…",
+    "statusError": "Account unavailable",
+    "statusUnknown": "Not signed in",
+    "statusLabel": "Status",
+    "email": "Email",
+    "planLabel": "Plan",
+    "accountId": "Account ID",
+    "userId": "User ID",
+    "notProvided": "Not provided",
+    "plan": {
+      "free": "Free",
+      "plus": "ChatGPT Plus",
+      "pro": "ChatGPT Pro",
+      "team": "Team",
+      "business": "Business",
+      "education": "Education",
+      "unknown": "Unknown plan"
+    }
   },
   "codexRoots": {
     "label": ".codex roots (read-only)",
+    "help": "Reference directories detected on disk. Useful for troubleshooting.",
     "empty": "No .codex roots detected"
   },
+  "appData": {
+    "label": "App data directory",
+    "desc": "Inspect CodexFlow's user data footprint and clean it when necessary.",
+    "pathLabel": "Path",
+    "pathUnknown": "Path unavailable",
+    "sizeLabel": "Disk usage",
+    "dirLabel": "Folders",
+    "fileLabel": "Files",
+    "updatedAt": "Measured at {value}",
+    "awaitingRefresh": "Not measured yet. Click \"Refresh usage\" to collect the latest data.",
+    "loading": "Measuring…",
+    "refresh": "Refresh usage",
+    "refreshing": "Refreshing…",
+    "clean": "Clean cache",
+    "cleaning": "Cleaning…",
+    "fullPurge": "Delete all & quit",
+    "fullPurging": "Processing…",
+    "cleanConfirmTitle": "Clean cache",
+    "cleanConfirmDesc": "This removes cached files under {path} while keeping essential preferences (settings.json).",
+    "cleanConfirmNote": "Caches regenerate automatically when needed. You do not need to restore them manually.",
+    "cleanConfirmAction": "Clean now",
+    "cleanSuccess": "Cache cleaned. Freed {freed}.",
+    "cleanFailed": "Failed to clean cache.",
+    "notSupported": "Cache inspection is not available in this build.",
+    "loadFailed": "Unable to load cache information.",
+    "purgeFailed": "Failed to delete all data. Please try again.",
+    "fullConfirmTitle": "Delete all data and quit",
+    "fullConfirmDesc": "This deletes everything inside {path} and then closes CodexFlow.",
+    "fullConfirmNote": "The action cannot be undone. Back up anything important first.",
+    "fullConfirmAction": "Delete and quit",
+    "feedbackErrorTitle": "Operation failed",
+    "feedbackSuccessTitle": "Operation completed"
+  },
   "historyCleanup": {
-    "label": "History cleanup",
-    "desc": "Scan all sessions and permanently delete those with empty input/output.",
+    "label": "Session history file cleanup",
+    "desc": "Scan all session history files, find those with empty input/output, and delete them permanently.",
     "scan": "Clean empty histories…",
     "scanning": "Scanning…",
     "result": "Cleaned {ok}, Not found {notFound}, Failed {failed}",
@@ -38,5 +199,14 @@
     "warningDesc": "This will permanently delete {count} history files and cannot be undone. Continue?",
     "warningConfirm": "Delete anyway",
     "batchDeleteFailed": "Batch delete failed"
+  },
+  "debug": {
+    "label": "Debug configuration",
+    "help": "Manage all debug flags in a single JSONC file.",
+    "open": "Open debug.config.jsonc",
+    "reset": "Restore defaults"
+  },
+  "footer": {
+    "note": "Changes apply after you save. Some items may require restarting CodexFlow."
   }
 }

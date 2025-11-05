@@ -35,8 +35,8 @@ export function DialogContent({ className, children }: React.HTMLAttributes<HTML
   if (!ctx || !ctx.open) return null;
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/40" onClick={() => ctx.setOpen(false)} />
-      <div className={cn('relative z-10 w-[520px] rounded-lg border bg-white p-6 shadow-xl', className)}>{children}</div>
+      <div className="absolute inset-0 bg-black/50" onClick={() => ctx.setOpen(false)} />
+      <div className={cn('relative z-10 w-[520px] rounded-lg border border-[var(--cf-border)] bg-[var(--cf-app-bg)] p-6 shadow-xl text-[var(--cf-text-primary)]', className)}>{children}</div>
     </div>,
     document.body
   );
@@ -46,8 +46,8 @@ export function DialogHeader(props: React.HTMLAttributes<HTMLDivElement>) {
   return <div className={cn('mb-3', props.className)} {...props} />;
 }
 export function DialogTitle(props: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn('text-lg font-semibold', props.className)} {...props} />;
+  return <div className={cn('text-lg font-semibold dark:text-[var(--cf-text-primary)]', props.className)} {...props} />;
 }
 export function DialogDescription(props: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn('text-sm text-slate-600', props.className)} {...props} />;
+  return <div className={cn('text-sm text-slate-600 dark:text-[var(--cf-text-secondary)]', props.className)} {...props} />;
 }

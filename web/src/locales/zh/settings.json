@@ -3,15 +3,15 @@
   "sections": {
     "basic": {
       "title": "基础体验",
-      "desc": "界面语言与消息行为等通用设置。"
+      "desc": "界面语言、主题模式等通用设置。"
     },
     "notifications": {
       "title": "通知提醒",
       "desc": "配置代理完成任务时的提醒方式。"
     },
     "terminal": {
-      "title": "终端与运行",
-      "desc": "配置 CodexFlow 执行命令的默认环境。"
+      "title": "终端与输入框",
+      "desc": "配置输入框行为与 CodexFlow 执行命令的默认环境。"
     },
     "networkAccount": {
       "title": "网络与账号",
@@ -39,6 +39,20 @@
     "en": "English",
     "zh": "简体中文",
     "help": "选择应用的界面语言。"
+  },
+  "appearance": {
+    "theme": {
+      "label": "主题模式",
+      "help": "根据工作环境调整 CodexFlow 的外观。当前系统主题为 {mode}。",
+      "note": "当前显示为 {current}。",
+      "system": "跟随系统",
+      "light": "亮色",
+      "dark": "暗色",
+      "current": {
+        "light": "亮色",
+        "dark": "暗色"
+      }
+    }
   },
   "terminal": "终端",
   "terminalPlaceholder": "选择终端",
