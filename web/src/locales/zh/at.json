@@ -1,6 +1,15 @@
 {
   "categoriesTitle": "分类",
   "scopeAll": "全部",
-  "noResults": "无匹配项"
+  "noResults": "无匹配项",
+  "category": {
+    "files": "文件与文件夹",
+    "rule": "规则"
+  },
+  "groups": {
+    "pinned": "项目常驻",
+    "legacy": "旧版兼容",
+    "dynamic": "按场景动态"
+  }
 }
 

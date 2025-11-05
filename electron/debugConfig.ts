@@ -47,6 +47,7 @@ export type DebugConfig = {
 let cached: DebugConfig | null = null;
 let lastMtime = 0;
 const listeners = new Set<(cfg: DebugConfig) => void>();
+let debugWatcher: fs.FSWatcher | null = null;
 
 function getConfigPath(): string { return path.join(app.getPath("userData"), "debug.config.jsonc"); }
 
@@ -304,7 +305,9 @@ export function watchDebugConfig(): void {
     const p = getConfigPath();
     try { fs.mkdirSync(path.dirname(p), { recursive: true }); } catch {}
     if (!fs.existsSync(p)) { saveDebugConfig(getDebugConfig()); }
-    fs.watch(p, { persistent: true }, (_eventType) => {
+    // 若已存在旧监听，先关闭，避免重复 watcher 占用资源
+    try { debugWatcher?.close(); } catch {}
+    debugWatcher = fs.watch(p, { persistent: true }, (_eventType) => {
       try {
         const st = fs.statSync(p);
         if (st && st.mtimeMs && st.mtimeMs !== lastMtime) {
@@ -314,6 +317,15 @@ export function watchDebugConfig(): void {
         }
       } catch {}
     });
+  } catch {}
+}
+
+export function unwatchDebugConfig(): void {
+  try {
+    if (debugWatcher) {
+      try { debugWatcher.close(); } catch {}
+      debugWatcher = null;
+    }
   } catch {}
 }
 

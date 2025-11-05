@@ -1,6 +1,15 @@
 {
   "categoriesTitle": "Categories",
   "scopeAll": "All",
-  "noResults": "No matches"
+  "noResults": "No matches",
+  "category": {
+    "files": "Files & Folders",
+    "rule": "Rules"
+  },
+  "groups": {
+    "pinned": "Project pinned",
+    "legacy": "Legacy compatibility",
+    "dynamic": "Scenario-based"
+  }
 }
 

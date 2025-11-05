@@ -39,6 +39,7 @@ export default class TerminalManager {
   private unsubByTab: Record<string, (() => void) | null> = {};
   private inputUnsubByTab: Record<string, (() => void) | null> = {};
   private resizeUnsubByTab: Record<string, (() => void) | null> = {};
+  private windowResizeCleanupByTab: Record<string, (() => void) | null> = {};
   private hostResizeObserverByTab: Record<string, ResizeObserver | null> = {};
   private lastSentSizeByTab: Record<string, { cols: number; rows: number } | undefined> = {};
   private pendingTimerByTab: Record<string, number | undefined> = {};
@@ -149,9 +150,16 @@ export default class TerminalManager {
       }
     } catch {}
     // 2b) 前端先精确 fit（内部可能 pin 整数行），拿到当前网格
-    const measured = adapter.resize();
+    let measured: { cols: number; rows: number } | undefined;
+    try {
+      measured = adapter.resize();
+    } catch {
+      // 防御：度量异常时确保恢复数据流，避免 PTY 长时间处于暂停状态
+      try { this.hostPty.resume?.(ptyId); } catch {}
+      return;
+    }
     this.dlog(`measure tab=${tabId} size=${measured?.cols || 0}x${measured?.rows || 0} force=${force}`);
-    if (!measured || !measured.cols || !measured.rows) return;
+    if (!measured || !measured.cols || !measured.rows) { try { this.hostPty.resume?.(ptyId); } catch {} return; }
     // 记录最新一次测量，供后续判重
     this.pendingSizeByTab[tabId] = measured;
 
@@ -292,35 +300,41 @@ export default class TerminalManager {
    */
   ensurePersistentContainer(tabId: string): HTMLDivElement {
     let container = this.containers[tabId];
-    if (container) return container;
-    container = document.createElement('div');
-    container.style.height = '100%';
-    container.style.width = '100%';
-    container.style.boxSizing = 'border-box';
-    // 终端宿主不应产生滚动条，否则会干扰 xterm 内部滚动度量
-    container.style.overflow = 'hidden';
-    this.containers[tabId] = container;
+    if (!container) {
+      container = document.createElement('div');
+      container.style.height = '100%';
+      container.style.width = '100%';
+      container.style.boxSizing = 'border-box';
+      // 终端宿主不应产生滚动条，否则会干扰 xterm 内部滚动度量
+      container.style.overflow = 'hidden';
+      this.containers[tabId] = container;
 
-    // create adapter and mount into persistent container
-    let adapter = this.adapters[tabId];
-    if (!adapter) {
-      adapter = createTerminalAdapter({ appearance: this.appearance });
-      this.adapters[tabId] = adapter;
+      // create adapter and mount into persistent container
+      let adapter = this.adapters[tabId];
+      if (!adapter) {
+        adapter = createTerminalAdapter({ appearance: this.appearance });
+        this.adapters[tabId] = adapter;
+      }
+      try { adapter.setAppearance(this.appearance); } catch {}
+      try { adapter.mount(container); } catch (err) { console.warn('adapter.mount failed', err); }
+
+      // If PTY already exists for this tab, wire up bridges
+      const pid = this.getPtyId(tabId);
+      if (pid) this.wireUp(tabId, pid);
     }
-    try { adapter.setAppearance(this.appearance); } catch {}
-    try { adapter.mount(container); } catch (err) { console.warn('adapter.mount failed', err); }
 
-    // If PTY already exists for this tab, wire up bridges
-    const pid = this.getPtyId(tabId);
-    if (pid) this.wireUp(tabId, pid);
+    if (!this.windowResizeCleanupByTab[tabId]) {
+      const onResize = () => {
+        try { this.scheduleResizeSync(tabId, false); } catch {}
+      };
+      window.addEventListener('resize', onResize);
+      this.windowResizeCleanupByTab[tabId] = () => {
+        try { window.removeEventListener('resize', onResize); } catch {}
+      };
+    }
 
-    // 注册 window resize 监听，使用防抖调度
-    const onResize = () => {
-      try { this.scheduleResizeSync(tabId, false); } catch {}
-    };
-    window.addEventListener('resize', onResize);
-    this.resizeUnsubByTab[tabId] = () => window.removeEventListener('resize', onResize);
-    return container;
+    const ensured = this.containers[tabId];
+    return ensured!;
   }
 
   setAppearance(appearance: Partial<TerminalAppearance>): void {
@@ -561,6 +575,15 @@ export default class TerminalManager {
    */
   attachToHost(tabId: string, hostEl: HTMLElement): void {
     this.dlog(`attachToHost tab=${tabId}`);
+    // 关键修复：重复挂载时需先清理旧的宿主事件，避免全局监听器累积导致内存泄漏。
+    const existingCleanup = this.resizeUnsubByTab[tabId];
+    if (typeof existingCleanup === 'function') {
+      try { existingCleanup(); } catch {}
+    }
+    this.resizeUnsubByTab[tabId] = null;
+    try { this.hostResizeObserverByTab[tabId]?.disconnect(); } catch {}
+    this.hostResizeObserverByTab[tabId] = null;
+
     const persistent = this.ensurePersistentContainer(tabId);
     try {
       while (hostEl.firstChild) hostEl.removeChild(hostEl.firstChild);
@@ -568,7 +591,6 @@ export default class TerminalManager {
     } catch (err) { console.warn('attachToHost failed', err); }
     // 记录 hostEl，安装事件以感知动画/可见性变化
     this.hostElByTab[tabId] = hostEl;
-    const prevUnsub = this.resizeUnsubByTab[tabId];
     const removeHostHandlers = this.installHostEventHandlers(tabId, hostEl);
 
     // 触发一次同步（立即 flush）
@@ -605,7 +627,7 @@ export default class TerminalManager {
       this.resizeUnsubByTab[tabId] = () => {
         try { ro.disconnect(); } catch {}
         try { removeHostHandlers(); } catch {}
-        if (typeof prevUnsub === 'function') try { prevUnsub(); } catch {}
+        this.hostResizeObserverByTab[tabId] = null;
       };
     } catch (err) {
       // If ResizeObserver is not available or errors, fall back to window resize (already registered)
@@ -622,6 +644,8 @@ export default class TerminalManager {
     try { this.blurTab(tabId, "dispose"); } catch {}
     try { this.resizeUnsubByTab[tabId]?.(); } catch {}
     delete this.resizeUnsubByTab[tabId];
+    try { this.windowResizeCleanupByTab[tabId]?.(); } catch {}
+    delete this.windowResizeCleanupByTab[tabId];
     // 清理定时器与状态
     try { this.clearPendingTimer(tabId); } catch {}
     delete this.pendingSizeByTab[tabId];
