@@ -269,25 +269,72 @@ type HistoryListCacheEntry = {
   savedAt: number;
 };
 
+const PARSER_VERSION = 'v8';
+const CACHE_SCHEMA_VERSION = '2';
+
+type HistoryCachePersisted = {
+  schemaVersion: string;
+  parserVersion: string;
+  entries: HistoryListCacheEntry[];
+  savedAt?: number;
+};
+
 function getHistoryCachePath(): string {
   const dir = app.getPath('userData');
   return path.join(dir, 'history.index.cache.json');
 }
 
 function loadHistoryCache(): HistoryListCacheEntry[] {
+  const p = getHistoryCachePath();
   try {
-    const p = getHistoryCachePath();
     if (!fs.existsSync(p)) return [];
-    return JSON.parse(fs.readFileSync(p, 'utf8')) as HistoryListCacheEntry[];
-  } catch { return []; }
+    const raw = JSON.parse(fs.readFileSync(p, 'utf8')) as unknown;
+    if (Array.isArray(raw)) {
+      try { fs.unlinkSync(p); } catch {}
+      return [];
+    }
+    const obj = raw as Partial<HistoryCachePersisted> | null | undefined;
+    if (!obj || obj.schemaVersion !== CACHE_SCHEMA_VERSION || obj.parserVersion !== PARSER_VERSION || !Array.isArray(obj.entries)) {
+      try { fs.unlinkSync(p); } catch {}
+      return [];
+    }
+    return obj.entries as HistoryListCacheEntry[];
+  } catch {
+    try { fs.unlinkSync(p); } catch {}
+    return [];
+  }
 }
 
 function saveHistoryCache(list: HistoryListCacheEntry[]) {
   try {
-    // simple bound: keep most recent 30 entries
-    const capped = list.sort((a, b) => b.savedAt - a.savedAt).slice(0, 30);
-    fs.writeFileSync(getHistoryCachePath(), JSON.stringify(capped, null, 2), 'utf8');
+    const capped = list.slice().sort((a, b) => b.savedAt - a.savedAt).slice(0, 30);
+    const payload: HistoryCachePersisted = {
+      schemaVersion: CACHE_SCHEMA_VERSION,
+      parserVersion: PARSER_VERSION,
+      entries: capped,
+      savedAt: Date.now(),
+    };
+    fs.writeFileSync(getHistoryCachePath(), JSON.stringify(payload, null, 2), 'utf8');
   } catch {}
+}
+
+export function purgeHistoryCacheIfOutdated(): void {
+  const p = getHistoryCachePath();
+  try {
+    if (!fs.existsSync(p)) return;
+    const raw = JSON.parse(fs.readFileSync(p, 'utf8')) as unknown;
+    if (Array.isArray(raw)) {
+      try { fs.unlinkSync(p); } catch {}
+      return;
+    }
+    const obj = raw as Partial<HistoryCachePersisted> | null | undefined;
+    const valid = obj && obj.schemaVersion === CACHE_SCHEMA_VERSION && obj.parserVersion === PARSER_VERSION && Array.isArray(obj.entries);
+    if (!valid) {
+      try { fs.unlinkSync(p); } catch {}
+    }
+  } catch {
+    try { fs.unlinkSync(p); } catch {}
+  }
 }
 
 async function computeRootSig(root: string): Promise<RootSig> {
@@ -380,7 +427,6 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
   const rootsToScan: string[] = await computeHistoryRoots(rootOriginal);
   if (rootsToScan.length === 0) return summaries;
   // Fast-path: if roots' latest-file signature unchanged, reuse cached list
-  const PARSER_VERSION = 'v7';
   const cacheKey = (rts: string[], nc: string[]) => `${rts.map((r) => r.toLowerCase()).sort().join('|')}||${nc.sort().join('|')}||${PARSER_VERSION}`;
   const needles = buildNeedles();
   // 将 needles 规范化为统一可对比的 WSL 风格（/mnt/c 或 /home/...），用于前缀对比
@@ -435,8 +481,6 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
     // fallback: also try project cwd
     try { fs.appendFileSync(path.join(process.cwd(), 'history-debug.log'), `${new Date().toISOString()} ${msg}\n`, 'utf8'); } catch {}
   }
-  logDebug(`listHistory start projWin=${projectWinPath} projWsl=${projectWslPath} roots=${JSON.stringify(rootsToScan)}`);
-  logDebug(`needles=${JSON.stringify(needles)} needlesCanon=${JSON.stringify(needlesCanon)}`);
   logDebug(`listHistory start projWin=${projectWinPath} projWsl=${projectWslPath} roots=${JSON.stringify(rootsToScan)}`);
   logDebug(`needles=${JSON.stringify(needles)} needlesCanon=${JSON.stringify(needlesCanon)}`);
 
@@ -1099,35 +1143,57 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
           const picked: MessageContent[] = [];
           const leading = (src.match(/^\s*/) || [''])[0].length;
           const s2 = src.slice(leading);
+          const lower = s2.toLowerCase();
           const openU = '<user_instructions>';
           const closeU = '</user_instructions>';
           const openE = '<environment_context>';
           const closeE = '</environment_context>';
           // 优先匹配 user_instructions 前缀
-          if (s2.toLowerCase().startsWith(openU)) {
-            const end = s2.toLowerCase().indexOf(closeU);
-            if (end >= 0) {
-              const inner = s2.slice(openU.length, end);
+          if (lower.startsWith(openU)) {
+            const endTag = lower.indexOf(closeU);
+            if (endTag >= 0) {
+              const inner = s2.slice(openU.length, endTag);
               picked.push({ type: 'instructions', text: inner });
-              const rest = s2.slice(end + closeU.length);
+              const rest = s2.slice(endTag + closeU.length);
               return { rest: rest.trim(), picked };
             }
-            // 未找到结束标签：全部作为该分类
             const inner = s2.slice(openU.length);
             picked.push({ type: 'instructions', text: inner });
             return { rest: '', picked };
           }
           // 匹配 environment_context 前缀
-          if (s2.toLowerCase().startsWith(openE)) {
-            const end = s2.toLowerCase().indexOf(closeE);
-            if (end >= 0) {
-              const inner = s2.slice(openE.length, end);
+          if (lower.startsWith(openE)) {
+            const endTag = lower.indexOf(closeE);
+            if (endTag >= 0) {
+              const inner = s2.slice(openE.length, endTag);
               picked.push({ type: 'environment_context', text: inner });
-              const rest = s2.slice(end + closeE.length);
+              const rest = s2.slice(endTag + closeE.length);
               return { rest: rest.trim(), picked };
             }
             const inner = s2.slice(openE.length);
             picked.push({ type: 'environment_context', text: inner });
+            return { rest: '', picked };
+          }
+          const agentsPrefix = '# agents.md instructions for';
+          if (lower.startsWith(agentsPrefix)) {
+            const openTag = '<instructions>';
+            const closeTag = '</instructions>';
+            const openIdx = lower.indexOf(openTag);
+            if (openIdx >= 0) {
+              const closeIdx = lower.indexOf(closeTag, openIdx + openTag.length);
+              if (closeIdx >= 0) {
+                const inner = s2.slice(openIdx + openTag.length, closeIdx);
+                picked.push({ type: 'instructions', text: inner });
+                const rest = s2.slice(closeIdx + closeTag.length);
+                return { rest: rest.trim(), picked };
+              }
+            }
+            const afterHeader = s2.split(/\r?\n/).slice(1).join('\n').trim();
+            if (afterHeader) {
+              picked.push({ type: 'instructions', text: afterHeader });
+              return { rest: '', picked };
+            }
+            picked.push({ type: 'instructions', text: s2 });
             return { rest: '', picked };
           }
           return { rest: src, picked };
@@ -1393,4 +1459,4 @@ export async function removePathFromCache(filePath: string) {
   } catch {}
 }
 
-export default { listHistory, readHistoryFile, computeHistoryRoots, debugInfo, removePathFromCache };
+export default { listHistory, readHistoryFile, computeHistoryRoots, debugInfo, removePathFromCache, purgeHistoryCacheIfOutdated };
