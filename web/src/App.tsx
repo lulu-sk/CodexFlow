@@ -50,7 +50,7 @@ import HistoryCopyButton from "@/components/history/history-copy-button";
 import { toWSLForInsert } from "@/lib/wsl";
 import SettingsDialog from "@/features/settings/settings-dialog";
 import { DEFAULT_TERMINAL_FONT_FAMILY, normalizeTerminalFontFamily } from "@/lib/terminal-appearance";
-import { useThemeController, type ThemeSetting } from "@/lib/theme";
+import { getCachedThemeSetting, useThemeController, writeThemeSettingCache, type ThemeSetting } from "@/lib/theme";
 import type { Project } from "@/types/host";
 
 // ---------- Types ----------
@@ -1545,12 +1545,16 @@ export default function CodexFlowManagerUI() {
   const [projectPathStyle, setProjectPathStyle] = useState<'absolute' | 'relative'>('absolute');
   // 界面语言：用于设置面板展示与切换
   const [locale, setLocale] = useState<string>("en");
-  const [themeSetting, setThemeSetting] = useState<ThemeSetting>("system");
+  const [themeSetting, setThemeSetting] = useState<ThemeSetting>(() => normalizeThemeSetting(getCachedThemeSetting() ?? "system"));
   const [legacyResumePrompt, setLegacyResumePrompt] = useState<LegacyResumePrompt | null>(null);
   const [legacyResumeLoading, setLegacyResumeLoading] = useState(false);
   const [blockingNotice, setBlockingNotice] = useState<BlockingNotice | null>(null);
 
   const themeMode = useThemeController(themeSetting);
+
+  useEffect(() => {
+    writeThemeSettingCache(themeSetting);
+  }, [themeSetting]);
 
   // 命令输入改为 Chips + 草稿：按 Tab 隔离
   useEffect(() => {
@@ -1700,7 +1704,9 @@ export default function CodexFlowManagerUI() {
           setCodexCmd(s.codexCmd || codexCmd);
           setSendMode(s.sendMode || 'write_and_enter');
           setProjectPathStyle((s as any).projectPathStyle || 'absolute');
-          setThemeSetting(normalizeThemeSetting((s as any).theme));
+          const nextThemeSetting = normalizeThemeSetting((s as any).theme);
+          setThemeSetting(nextThemeSetting);
+          writeThemeSettingCache(nextThemeSetting);
           setNotificationPrefs(normalizeCompletionPrefs((s as any).notifications));
           setTerminalFontFamily(normalizeTerminalFontFamily((s as any).terminalFontFamily));
           // 同步网络代理偏好
@@ -3561,6 +3567,7 @@ export default function CodexFlowManagerUI() {
           setSendMode(nextSend);
           setProjectPathStyle(nextStyle);
           setThemeSetting(nextTheme);
+          writeThemeSettingCache(nextTheme);
           setNotificationPrefs(nextNotifications);
           setNetworkPrefs(v.network);
           setTerminalFontFamily(nextFontFamily);

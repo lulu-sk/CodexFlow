@@ -9,6 +9,28 @@ export type ThemeMode = "light" | "dark";
 const DARK_MEDIA_QUERY = "(prefers-color-scheme: dark)";
 
 const ensureDocument = () => (typeof document !== "undefined" ? document : null);
+const ensureLocalStorage = () => {
+  try {
+    if (typeof window === "undefined" || !window.localStorage) return null;
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+};
+
+const THEME_STORAGE_KEY = "codexflow.themeSetting";
+const readThemeVar = (name: string, fallback: string): string => {
+  const doc = ensureDocument();
+  if (!doc) return fallback;
+  try {
+    const root = doc.documentElement;
+    const value = getComputedStyle(root).getPropertyValue(name);
+    const v = (value || "").trim();
+    return v || fallback;
+  } catch {
+    return fallback;
+  }
+};
 
 const applyThemeMode = (mode: ThemeMode, setting: ThemeSetting) => {
   const doc = ensureDocument();
@@ -19,8 +41,43 @@ const applyThemeMode = (mode: ThemeMode, setting: ThemeSetting) => {
   if (body) body.classList.toggle("dark", mode === "dark");
   root.dataset.theme = mode;
   root.dataset.themeSetting = setting;
+  const background = mode === "dark"
+    ? readThemeVar("--theme-bg-dark", "#22272e")
+    : readThemeVar("--theme-bg-light", "#ffffff");
+  const text = mode === "dark"
+    ? readThemeVar("--theme-text-dark", "#adbac7")
+    : readThemeVar("--theme-text-light", "#24292f");
+  try {
+    root.style.backgroundColor = background;
+  } catch {}
+  if (body) {
+    try { body.style.backgroundColor = background; } catch {}
+    try { body.style.color = text; } catch {}
+  }
   try {
     root.style.colorScheme = mode;
+  } catch {}
+};
+
+export const getCachedThemeSetting = (): ThemeSetting | undefined => {
+  try {
+    const storage = ensureLocalStorage();
+    if (!storage) return undefined;
+    const value = storage.getItem(THEME_STORAGE_KEY);
+    if (value === "light" || value === "dark" || value === "system") {
+      return value;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+export const writeThemeSettingCache = (setting: ThemeSetting) => {
+  try {
+    const storage = ensureLocalStorage();
+    // 仅在浏览器环境下缓存，避免首帧闪烁
+    storage?.setItem(THEME_STORAGE_KEY, setting);
   } catch {}
 };
 

@@ -581,7 +581,8 @@ export default class TerminalManager {
       try { existingCleanup(); } catch {}
     }
     this.resizeUnsubByTab[tabId] = null;
-    try { this.hostResizeObserverByTab[tabId]?.disconnect(); } catch {}
+    const prevObserver = this.hostResizeObserverByTab[tabId] || null;
+    try { if (prevObserver) prevObserver.disconnect(); } catch {}
     this.hostResizeObserverByTab[tabId] = null;
 
     const persistent = this.ensurePersistentContainer(tabId);
@@ -603,7 +604,12 @@ export default class TerminalManager {
     // (e.g. window restore/maximize or side panel toggles) and trigger terminal resize.
     try {
       // disconnect any existing observer first
-      try { this.hostResizeObserverByTab[tabId]?.disconnect(); } catch {}
+      const oldObserver = this.hostResizeObserverByTab[tabId] ?? null;
+      try {
+        if (oldObserver && typeof (oldObserver as any).disconnect === 'function') {
+          (oldObserver as any).disconnect();
+        }
+      } catch {}
       const ro = new ResizeObserver(() => {
         try {
           const host = this.hostElByTab[tabId];
