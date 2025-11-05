@@ -16,7 +16,7 @@ import history from "./history";
 import { startHistoryIndexer, getIndexedSummaries, getIndexedDetails, getLastIndexerRoots, stopHistoryIndexer } from "./indexer";
 import { getSessionsRootsFastAsync } from "./wsl";
 import { perfLogger } from "./log";
-import settings, { ensureSettingsAutodetect, ensureFirstRunTerminalSelection, type ThemeSetting as SettingsThemeSetting } from "./settings";
+import settings, { ensureSettingsAutodetect, ensureFirstRunTerminalSelection, type ThemeSetting as SettingsThemeSetting, type AppSettings } from "./settings";
 import i18n from "./i18n";
 import wsl from "./wsl";
 import fileIndex from "./fileIndex";
@@ -25,8 +25,8 @@ import { installInputContextMenu } from "./contextMenu";
 import { CodexBridge, type CodexBridgeOptions } from "./codex/bridge";
 import { ensureAllCodexNotifications } from "./codex/config";
 import storage from "./storage";
-import { registerNotificationIPC } from "./notifications";
-import { readDebugConfig, getDebugConfig, onDebugChanged, watchDebugConfig, updateDebugConfig, resetDebugConfig } from "./debugConfig";
+import { registerNotificationIPC, unregisterNotificationIPC } from "./notifications";
+import { readDebugConfig, getDebugConfig, onDebugChanged, watchDebugConfig, updateDebugConfig, resetDebugConfig, unwatchDebugConfig } from "./debugConfig";
 
 // 使用 CommonJS 编译输出时，运行时环境会提供 `__dirname`，直接使用即可
 
@@ -45,6 +45,36 @@ const ptyManager = new PTYManager(() => mainWindow);
 // 会话期粘贴图片（保存后的 Windows 路径），用于退出时统一清理
 const sessionPastedImages = new Set<string>();
 const codexBridges = new Map<string, CodexBridge>();
+
+type CodexBridgeDescriptor = { key: string; options: CodexBridgeOptions };
+
+function deriveCodexBridgeDescriptor(cfg: AppSettings): CodexBridgeDescriptor {
+  try {
+    const terminal = cfg?.terminal ?? "wsl";
+    if (terminal === "wsl" && process.platform === "win32") {
+      const raw = cfg?.distro;
+      const distro = raw ? String(raw) : undefined;
+      return { key: `wsl:${distro ?? ""}`, options: { mode: "wsl", wslDistro: distro } };
+    }
+  } catch {}
+  return { key: "native", options: { mode: "native" } };
+}
+
+function disposeCodexBridgesExcept(activeKey: string) {
+  if (codexBridges.size === 0) return;
+  for (const [key, bridge] of Array.from(codexBridges.entries())) {
+    if (key === activeKey) continue;
+    try {
+      bridge.dispose();
+    } catch (e) {
+      if (DIAG) {
+        try { perfLogger.log(`[codex] dispose (stale) failed (${key}): ${String(e)}`); } catch {}
+      }
+    } finally {
+      codexBridges.delete(key);
+    }
+  }
+}
 
 // 字体枚举缓存：避免每次打开设置都在主进程做大量同步 I/O/CPU 密集解析
 let __fontsDetailedCache: Array<{ name: string; file?: string; monospace: boolean }> | null = null;
@@ -128,15 +158,8 @@ async function cleanupPastedImages() {
   } catch {}
 }
 
-function resolveCodexBridgeTarget(): { key: string; options: CodexBridgeOptions } {
-  const cfg = settings.getSettings();
-  const terminal = cfg.terminal ?? "wsl";
-  if (terminal === "wsl" && process.platform === "win32") {
-    const distro = cfg.distro ? String(cfg.distro) : undefined;
-    const key = `wsl:${distro ?? ""}`;
-    return { key, options: { mode: "wsl", wslDistro: distro } };
-  }
-  return { key: "native", options: { mode: "native" } };
+function resolveCodexBridgeTarget(): CodexBridgeDescriptor {
+  return deriveCodexBridgeDescriptor(settings.getSettings());
 }
 
 function ensureCodexBridge(): CodexBridge {
@@ -678,27 +701,38 @@ if (!gotLock) {
     disposeAllPtys();
     cleanupPastedImages().catch(() => {});
     disposeCodexBridges();
+    try { unregisterNotificationIPC({ closeNotifications: true }); } catch {}
+    // 主动关闭文件索引 watcher，避免退出阶段残留句柄
+    try { (fileIndex as any).setActiveRoots?.([]); } catch {}
     tryStopIndexer();
+    try { unwatchDebugConfig(); } catch {}
   });
 
   app.on('will-quit', () => {
     disposeAllPtys();
     cleanupPastedImages().catch(() => {});
     disposeCodexBridges();
+    try { unregisterNotificationIPC({ closeNotifications: true }); } catch {}
+    // 主动关闭文件索引 watcher，避免退出阶段残留句柄
+    try { (fileIndex as any).setActiveRoots?.([]); } catch {}
     tryStopIndexer();
+    try { unwatchDebugConfig(); } catch {}
   });
 
   // Also hook process-level events so that when Node receives termination signals we attempt cleanup.
-  process.on('exit', () => { disposeAllPtys(); disposeCodexBridges(); tryStopIndexer(); });
-  process.on('SIGINT', () => { disposeAllPtys(); cleanupPastedImages().catch(() => {}); disposeCodexBridges(); tryStopIndexer(); process.exit(0); });
-  process.on('SIGTERM', () => { disposeAllPtys(); cleanupPastedImages().catch(() => {}); disposeCodexBridges(); tryStopIndexer(); process.exit(0); });
+  process.on('exit', () => { disposeAllPtys(); disposeCodexBridges(); try { unregisterNotificationIPC({ closeNotifications: true }); } catch {}; tryStopIndexer(); try { unwatchDebugConfig(); } catch {}; });
+  process.on('SIGINT', () => { disposeAllPtys(); cleanupPastedImages().catch(() => {}); disposeCodexBridges(); try { unregisterNotificationIPC({ closeNotifications: true }); } catch {}; tryStopIndexer(); try { unwatchDebugConfig(); } catch {}; process.exit(0); });
+  process.on('SIGTERM', () => { disposeAllPtys(); cleanupPastedImages().catch(() => {}); disposeCodexBridges(); try { unregisterNotificationIPC({ closeNotifications: true }); } catch {}; tryStopIndexer(); try { unwatchDebugConfig(); } catch {}; process.exit(0); });
   process.on('uncaughtException', (err) => {
     try { console.error('uncaughtException', err); } catch {}
     if (DIAG) { try { perfLogger.log(`[PROC] uncaughtException ${String((err as any)?.stack || err)}`); } catch {} }
     disposeAllPtys();
     disposeCodexBridges();
-    // rethrow to allow default behavior after cleanup
-    try { throw err; } catch {}
+    try { unregisterNotificationIPC({ closeNotifications: true }); } catch {}
+    try { unwatchDebugConfig(); } catch {}
+    // 为避免再次被当前监听器拦截，移除所有 uncaughtException 监听后在下一轮事件循环抛出
+    try { process.removeAllListeners('uncaughtException'); } catch {}
+    try { setImmediate(() => { throw err; }); } catch {}
   });
   if (DIAG) process.on('unhandledRejection', (reason: any) => {
     try { perfLogger.log(`[PROC] unhandledRejection ${String((reason as any)?.stack || reason)}`); } catch {}
@@ -1773,13 +1807,21 @@ ipcMain.handle('settings.get', async () => {
 });
 
 ipcMain.handle('settings.update', async (_e, partial: any) => {
+  let prevDescriptor: CodexBridgeDescriptor | null = null;
   try {
+    prevDescriptor = deriveCodexBridgeDescriptor(settings.getSettings());
     if (partial && typeof partial.locale === 'string' && partial.locale.trim()) {
       // 使用 i18n 通道更新并广播语言，同时继续保存其它设置字段
       try { i18n.setCurrentLocale(String(partial.locale)); } catch {}
     }
   } catch {}
   const next = settings.updateSettings(partial || {});
+  try {
+    const nextDescriptor = deriveCodexBridgeDescriptor(next);
+    if (!prevDescriptor || nextDescriptor.key !== prevDescriptor.key) {
+      disposeCodexBridgesExcept(nextDescriptor.key);
+    }
+  } catch {}
   // 设置更新后尝试刷新代理
   try { await configureOrUpdateProxy(); } catch {}
   try { await ensureAllCodexNotifications(); } catch {}

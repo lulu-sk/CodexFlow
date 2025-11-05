@@ -786,6 +786,10 @@ export function getIndexedDetails(filePath: string): Details | null {
 }
 
 export async function startHistoryIndexer(getWindow: () => BrowserWindow | null) {
+  // 若被重复调用（例如调试期热重载），先停止既有 watcher/定时器，避免重复注册导致内存泄漏
+  try {
+    await stopHistoryIndexer();
+  } catch {}
   await perfLogger.time("indexer.start", async () => {
     // 1) 读取持久化缓存
     g.__indexer.index = loadIndex();
@@ -1097,6 +1101,12 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
               return fsx.map((f) => path.join(dir, f));
             } catch { return [] as string[]; }
           };
+          try {
+            const prevTimer: NodeJS.Timeout | null | undefined = (g.__indexer as any)?.rescanTimer;
+            if (prevTimer) {
+              try { clearInterval(prevTimer); } catch {}
+            }
+          } catch {}
           const timer = setInterval(async () => {
             try {
               const today = new Date();

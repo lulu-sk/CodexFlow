@@ -79,9 +79,20 @@ function replaceAtQuery(text: string, caret: number, insert: string): { next: st
 }
 
 function shouldTriggerAt(text: string, caret: number): boolean {
-  // 放宽触发条件：只要光标左侧存在任意一个 @ 即可触发，避免还需输入空格
+  // 更严格的触发条件：
+  // 1) 仅当光标左侧存在一个未“闭合”的 @ 段（中间无空白/分隔符）时触发；
+  // 2) 若 @ 之前紧接着为路径/邮箱等连续字符（字母数字/下划线/点/斜杠/反斜杠/连字符），视为字面量 @，不触发。
   const left = text.slice(0, caret);
-  return left.lastIndexOf("@") >= 0;
+  const idx = left.lastIndexOf("@");
+  if (idx < 0) return false;
+  const seg = left.slice(idx + 1);
+  // 若 @ 后到光标间包含空白或常见分隔符，则认为该 @ 段已结束，不触发
+  if (/[,;，；、()（）\[\]{}\s]/.test(seg)) return false;
+  // 若 @ 前一字符是连续的“词/路径”字符，认为是字面量上下文（邮箱、路径等），不触发
+  const prev = idx > 0 ? left[idx - 1] : "";
+  if (prev && /[A-Za-z0-9_\.\-\/\\]/.test(prev)) return false;
+  // 允许在开头或空白/部分标点后直接输入 @ 触发
+  return true;
 }
 
 function buildChipStableKey(chip: PathChip, fallback: string): string {
@@ -206,6 +217,27 @@ export default function PathChipsInput({
 
   const [hoverPreview, setHoverPreview] = useState<{ chip: PathChip; rect: DOMRect; key: string } | null>(null);
   const previewAnchorRef = useRef<HTMLElement | null>(null);
+  // 记录当前使用中的 blob URL，Chip 移除时及时调用 revoke 释放内存
+  const previewUrlSetRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const nextSet = new Set<string>();
+    for (const chip of chips) {
+      const url = String((chip as any)?.previewUrl || "");
+      if (url && url.startsWith("blob:")) nextSet.add(url);
+    }
+    for (const url of Array.from(previewUrlSetRef.current)) {
+      if (!nextSet.has(url)) {
+        try { URL.revokeObjectURL(url); } catch {}
+      }
+    }
+    previewUrlSetRef.current = nextSet;
+  }, [chips]);
+  useEffect(() => () => {
+    for (const url of Array.from(previewUrlSetRef.current)) {
+      try { URL.revokeObjectURL(url); } catch {}
+    }
+    previewUrlSetRef.current.clear();
+  }, []);
   const hidePreview = useCallback(() => {
     previewAnchorRef.current = null;
     setHoverPreview(null);
@@ -448,7 +480,10 @@ export default function PathChipsInput({
 
     // 将草稿提交为路径 Chip
     // 注意：multiline 模式下，Enter 用于换行，不拦截
-    if ((e.key === "Enter" && !multiline) || e.key === "," || e.key === ";" || (e.key === " " && draft.trim().length > 0)) {
+    const shouldCommitByEnter = e.key === "Enter" && !multiline;
+    const shouldCommitBySpace = e.key === " ";
+    if (open && (shouldCommitByEnter || shouldCommitBySpace)) {
+      if (draft.trim().length === 0) return;
       const ok = commitDraftToChips();
       if (ok) e.preventDefault();
       return;

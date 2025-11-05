@@ -141,6 +141,28 @@ type NotificationIconCache = { image?: Electron.NativeImage; filePath?: string }
 
 let notificationIconCache: NotificationIconCache | null = null;
 const ACTIVE_NOTIFICATIONS = new Set<Electron.Notification>();
+let removeIpcListeners: (() => void) | null = null;
+
+function cleanupActiveNotifications() {
+  try {
+    if (ACTIVE_NOTIFICATIONS.size === 0) return;
+    for (const note of Array.from(ACTIVE_NOTIFICATIONS)) {
+      try { note.close(); } catch {}
+      try { (note as any)?.removeAllListeners?.(); } catch {}
+      try { ACTIVE_NOTIFICATIONS.delete(note); } catch {}
+    }
+  } catch {}
+}
+
+export function unregisterNotificationIPC(options?: { closeNotifications?: boolean }) {
+  if (removeIpcListeners) {
+    try { removeIpcListeners(); } catch {}
+    removeIpcListeners = null;
+  }
+  if (options?.closeNotifications) {
+    cleanupActiveNotifications();
+  }
+}
 
 function escapeXml(input: string): string {
   return input.replace(/[&<>"']/g, (ch) => {
@@ -343,6 +365,7 @@ type NotificationOptions = {
 };
 
 export function registerNotificationIPC(getWindow: () => BrowserWindow | null, options?: NotificationOptions) {
+  unregisterNotificationIPC();
   const appUserModelId = typeof options?.appUserModelId === 'string'
     ? options.appUserModelId.trim()
     : '';
@@ -379,13 +402,13 @@ export function registerNotificationIPC(getWindow: () => BrowserWindow | null, o
     }
   };
 
-  ipcMain.on('notifications:setBadge', (_event, payload: BadgePayload) => {
+  const onSetBadge = (_event: Electron.IpcMainEvent, payload: BadgePayload) => {
     const count = coerceCount(payload?.count);
     logNotification(`setBadge IPC count=${count}`);
     updateBadge(count);
-  });
+  };
 
-  ipcMain.on('notifications:agentComplete', (_event, payload: CompletionPayload) => {
+  const onAgentComplete = (_event: Electron.IpcMainEvent, payload: CompletionPayload) => {
     if (!payload || typeof payload.tabId !== 'string') return;
     logNotification(`agentComplete IPC tabId=${payload.tabId} previewLength=${payload?.preview ? payload.preview.length : 0}`);
     if (!shouldEnableSystemNotification()) {
@@ -451,9 +474,12 @@ export function registerNotificationIPC(getWindow: () => BrowserWindow | null, o
       note = new Notification(noteOptions);
     }
     let activated = false;
+    let autoCloseTimer: NodeJS.Timeout | null = null;
     const teardown = () => {
       if (!ACTIVE_NOTIFICATIONS.has(note)) return;
       ACTIVE_NOTIFICATIONS.delete(note);
+      // 额外清理：移除通知对象上的事件监听，避免极端情况下监听器残留
+      try { (note as any)?.removeAllListeners?.(); } catch {}
       logNotification(`notification disposed tabId=${payload.tabId}`);
     };
     const focusTab = (source: string, opts?: { skipClose?: boolean }) => {
@@ -522,20 +548,37 @@ export function registerNotificationIPC(getWindow: () => BrowserWindow | null, o
         // 这里仍视为点击并调用 focusTab（会执行 note.close()），确保 Action Center 条目正确清理
         focusTab(`close:${reason}`);
       }
+      try { if (autoCloseTimer) { clearTimeout(autoCloseTimer); autoCloseTimer = null; } } catch {}
       teardown();
     };
     note.on('close', handleClose as any);
     note.on('failed', (event, error) => {
       logNotification(`notification failed error=${error}`);
+      try { if (autoCloseTimer) { clearTimeout(autoCloseTimer); autoCloseTimer = null; } } catch {}
       teardown();
     });
     ACTIVE_NOTIFICATIONS.add(note);
     try {
       note.show();
       logNotification(`notification shown tabId=${payload.tabId} muteSound=${muteSystemSound ? '1' : '0'}`);
+      // 兜底：极端环境下若未触发 close/failed，定时清理引用，避免 ACTIVE_NOTIFICATIONS 长期增长
+      try {
+        autoCloseTimer = setTimeout(() => {
+          try { logNotification(`notification auto-dispose tabId=${payload.tabId}`); } catch {}
+          try { note.close(); } catch {}
+          teardown();
+        }, 120000);
+      } catch {}
     } catch (error) {
       logNotification(`notification show failed: ${String(error)}`);
       teardown();
     }
-  });
+  };
+
+  ipcMain.on('notifications:setBadge', onSetBadge);
+  ipcMain.on('notifications:agentComplete', onAgentComplete);
+  removeIpcListeners = () => {
+    try { ipcMain.removeListener('notifications:setBadge', onSetBadge); } catch {}
+    try { ipcMain.removeListener('notifications:agentComplete', onAgentComplete); } catch {}
+  };
 }

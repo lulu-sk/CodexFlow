@@ -4,6 +4,7 @@
 import type { AtCategory, AtCategoryId, AtItem, FileItem, RuleItem, SearchResult, SearchScope } from "@/types/at";
 import type { FileCandidate } from "@/lib/fileIndexClient";
 import { ensureIndex as ensureIdx, getAllCandidates } from "@/lib/fileIndexClient";
+import i18n from "@/i18n/setup";
 
 // 分类常量（保持不变）
 export const AT_CATEGORIES: AtCategory[] = [
@@ -11,9 +12,9 @@ export const AT_CATEGORIES: AtCategory[] = [
   { id: "rule", name: "Rules", icon: "ScrollText" },
 ];
 
-const SPECIAL_RULE_FILES = [
-  { rel: ".cursor/index.mdc", group: "项目常驻" },
-  { rel: ".cursorrules", group: "旧版兼容" },
+const SPECIAL_RULE_FILES: Array<{ rel: string; groupKey: "pinned" | "legacy" }> = [
+  { rel: ".cursor/index.mdc", groupKey: "pinned" },
+  { rel: ".cursorrules", groupKey: "legacy" },
 ];
 
 // Worker 管理（懒加载）
@@ -25,6 +26,75 @@ const cacheByRoot = new Map<string, FileCandidate[]>();
 const loadingByRoot = new Map<string, Promise<FileCandidate[]>>();
 const cacheIndexByRoot = new Map<string, Map<string, FileCandidate>>(); // key: D:/F:+rel
 let subscribed = false; // 渲染进程仅订阅一次主进程的索引变更事件
+
+// Worker 生命周期清理：在窗口卸载时主动终止，避免浏览器保留线程对象导致的极小概率残留
+let workerCleanupInstalled = false;
+function disposeWorker(): void {
+  try {
+    // 先移除回调，打断潜在闭包引用链，便于 GC 回收
+    try { if (worker) (worker as any).onmessage = null; } catch {}
+    try { if (worker) (worker as any).onmessageerror = null; } catch {}
+    try { if (worker) (worker as any).onerror = null; } catch {}
+    try { worker?.terminate(); } catch {}
+  } catch {}
+  worker = null;
+  workerLoaded = false;
+  workerRoot = null;
+}
+function ensureWorkerCleanupHook(): void {
+  if (typeof window === "undefined") return;
+  if (workerCleanupInstalled) return;
+  try {
+    window.addEventListener("beforeunload", () => { try { disposeWorker(); } catch {} });
+    workerCleanupInstalled = true;
+  } catch {}
+}
+
+const MAX_CACHE_ROOTS = 6; // 缓存根目录数量上限，防止长期运行内存无限增长
+const KEY_PREFIX_DIR = "D";
+const KEY_PREFIX_FILE = "F";
+
+function normalizeRootKey(root: string | null | undefined): string {
+  return String(root || "").toLowerCase();
+}
+
+function buildIndexFor(list: FileCandidate[]): Map<string, FileCandidate> {
+  const idx = new Map<string, FileCandidate>();
+  for (const item of list) {
+    idx.set(`${item.isDir ? KEY_PREFIX_DIR : KEY_PREFIX_FILE}:${item.rel}`, item);
+  }
+  return idx;
+}
+
+function enforceCacheLimit(preserveKey?: string): void {
+  if (cacheByRoot.size <= MAX_CACHE_ROOTS) return;
+  const currentKey = currentRoot ? normalizeRootKey(currentRoot) : null;
+  const keep = new Set<string>();
+  if (preserveKey) keep.add(preserveKey);
+  if (currentKey) keep.add(currentKey);
+  for (const key of Array.from(cacheByRoot.keys())) {
+    if (cacheByRoot.size <= MAX_CACHE_ROOTS) break;
+    if (keep.has(key)) continue;
+    cacheByRoot.delete(key);
+    cacheIndexByRoot.delete(key);
+    loadingByRoot.delete(key);
+    if (workerRoot && normalizeRootKey(workerRoot) === key) {
+      workerRoot = null;
+      workerLoaded = false;
+    }
+  }
+}
+
+function storeCacheEntry(rootKey: string, list: FileCandidate[], index?: Map<string, FileCandidate>): Map<string, FileCandidate> {
+  const key = normalizeRootKey(rootKey);
+  const idx = index ?? buildIndexFor(list);
+  if (cacheByRoot.has(key)) cacheByRoot.delete(key);
+  cacheByRoot.set(key, list);
+  if (cacheIndexByRoot.has(key)) cacheIndexByRoot.delete(key);
+  cacheIndexByRoot.set(key, idx);
+  enforceCacheLimit(key);
+  return idx;
+}
 
 // 前端调试日志：读取统一调试配置（preload 注入只读缓存）
 function dbgEnabled(): boolean {
@@ -72,7 +142,8 @@ function buildRuleItemsFromCandidates(list: FileCandidate[]): RuleItem[] {
     const rel = toPosixRel(spec.rel);
     if (!rel) continue;
     if (byRel.has(rel)) {
-      items.push(buildRuleItem(rel, spec.group));
+      const group = i18n.t(`at:groups.${spec.groupKey}`) as string;
+      items.push(buildRuleItem(rel, group));
     }
   }
 
@@ -82,7 +153,7 @@ function buildRuleItemsFromCandidates(list: FileCandidate[]): RuleItem[] {
   }
   dynamic.sort((a, b) => a.localeCompare(b));
   for (const rel of dynamic) {
-    items.push(buildRuleItem(rel, "按场景动态"));
+    items.push(buildRuleItem(rel, i18n.t("at:groups.dynamic") as string));
   }
   return items;
 }
@@ -100,6 +171,8 @@ function ensureWorker(): Worker {
       }
     };
   }
+  // 确保仅安装一次卸载清理钩子
+  ensureWorkerCleanupHook();
   return worker;
 }
 
@@ -119,25 +192,24 @@ function toFileItem(rel: string, isDir: boolean, idx: number): FileItem {
 }
 
 async function loadCandidatesForRoot(root: string, excludes?: string[]): Promise<FileCandidate[]> {
-  const key = String(root || '').toLowerCase();
+  const key = normalizeRootKey(root);
   if (cacheByRoot.has(key)) return cacheByRoot.get(key)!;
   if (loadingByRoot.has(key)) return loadingByRoot.get(key)!;
   const p = (async () => {
-    const t0 = Date.now();
-    perfLog(`ensureIndex.start root='${root}'`);
-    await ensureIdx(root, excludes);
-    perfLog(`ensureIndex.done root='${root}' dur=${Date.now() - t0}ms`);
-    const t1 = Date.now();
-    const list = await getAllCandidates(root);
-    perfLog(`candidates.loaded root='${root}' count=${list.length} dur=${Date.now() - t1}ms`);
-    cacheByRoot.set(key, list);
     try {
-      const idx = new Map<string, FileCandidate>();
-      for (const it of list) idx.set(`${it.isDir ? 'D' : 'F'}:${it.rel}`, it);
-      cacheIndexByRoot.set(key, idx);
-    } catch {}
-    loadingByRoot.delete(key);
-    return list;
+      const t0 = Date.now();
+      perfLog(`ensureIndex.start root='${root}'`);
+      await ensureIdx(root, excludes);
+      perfLog(`ensureIndex.done root='${root}' dur=${Date.now() - t0}ms`);
+      const t1 = Date.now();
+      const list = await getAllCandidates(root);
+      perfLog(`candidates.loaded root='${root}' count=${list.length} dur=${Date.now() - t1}ms`);
+      const idx = buildIndexFor(list);
+      storeCacheEntry(root, list, idx);
+      return list;
+    } finally {
+      loadingByRoot.delete(key);
+    }
   })();
   loadingByRoot.set(key, p);
   return p;
@@ -161,39 +233,40 @@ export async function setActiveFileIndexRoot(winRoot: string, excludes?: string[
           try {
             if (!root || !currentRoot) return;
             if (String(root).toLowerCase() !== String(currentRoot).toLowerCase()) return;
-            const key = String(currentRoot || '').toLowerCase();
+            const rootKey = currentRoot ?? root;
+            const key = normalizeRootKey(rootKey);
             const hasPatch = (Array.isArray(adds) && adds.length > 0) || (Array.isArray(removes) && removes.length > 0);
             if (hasPatch) {
-              const list = cacheByRoot.get(key) || [];
-              const idx = cacheIndexByRoot.get(key) || new Map<string, FileCandidate>();
+              let list = cacheByRoot.get(key) || [];
+              let idx = cacheIndexByRoot.get(key) || new Map<string, FileCandidate>();
+              if (idx.size === 0 && list.length > 0) idx = buildIndexFor(list);
               const addsList = Array.isArray(adds) ? adds : [];
               const removesList = Array.isArray(removes) ? removes : [];
               let changed = false;
               // 应用新增
               for (const a of addsList) {
-                const k = `${a.isDir ? 'D' : 'F'}:${a.rel}`;
+                const k = `${a.isDir ? KEY_PREFIX_DIR : KEY_PREFIX_FILE}:${a.rel}`;
                 if (!idx.has(k)) { const it = { rel: a.rel, isDir: !!a.isDir } as FileCandidate; idx.set(k, it); list.push(it); changed = true; }
               }
               // 应用删除（批量过滤更快）
               if (removesList.length > 0 && list.length > 0) {
-                const rm = new Set(removesList.map(r => `${r.isDir ? 'D' : 'F'}:${r.rel}`));
+                const rm = new Set(removesList.map(r => `${r.isDir ? KEY_PREFIX_DIR : KEY_PREFIX_FILE}:${r.rel}`));
                 if (rm.size > 0) {
                   const kept: FileCandidate[] = [];
-                  for (const it of list) { const k = `${it.isDir ? 'D' : 'F'}:${it.rel}`; if (!rm.has(k)) kept.push(it); }
-                  if (kept.length !== list.length) {
-                    cacheByRoot.set(key, kept);
-                    const idx2 = new Map<string, FileCandidate>(); for (const it of kept) idx2.set(`${it.isDir ? 'D' : 'F'}:${it.rel}`, it);
-                    cacheIndexByRoot.set(key, idx2);
-                  } else {
-                    cacheByRoot.set(key, list);
-                    cacheIndexByRoot.set(key, idx);
+                  let removedAny = false;
+                  for (const it of list) {
+                    const mk = `${it.isDir ? KEY_PREFIX_DIR : KEY_PREFIX_FILE}:${it.rel}`;
+                    if (rm.has(mk)) { removedAny = true; continue; }
+                    kept.push(it);
                   }
-                  changed = true;
+                  if (removedAny) {
+                    list = kept;
+                    idx = buildIndexFor(kept);
+                    changed = true;
+                  }
                 }
-              } else {
-                cacheByRoot.set(key, list);
-                cacheIndexByRoot.set(key, idx);
               }
+              idx = storeCacheEntry(rootKey, list, idx);
               if (changed) {
                 ensureWorker();
                 try { worker?.postMessage({ type: 'patch', adds: addsList, removes: removesList }); } catch {}
@@ -203,9 +276,8 @@ export async function setActiveFileIndexRoot(winRoot: string, excludes?: string[
               // 兼容兜底：全量刷新（避免极端情况下 patch 丢失）
               try { await (window as any).host?.utils?.perfLog?.(`[atSearch] onChanged(root-only) root='${root}' current='${currentRoot}'`); } catch {}
               const list = await getAllCandidates(currentRoot).catch(() => [] as FileCandidate[]);
-              cacheByRoot.set(key, list);
-              const idx = new Map<string, FileCandidate>(); for (const it of list) idx.set(`${it.isDir ? 'D' : 'F'}:${it.rel}`, it);
-              cacheIndexByRoot.set(key, idx);
+              const idx = buildIndexFor(list);
+              storeCacheEntry(rootKey, list, idx);
               postToWorkerForRoot(currentRoot, list);
             }
             const total = (cacheByRoot.get(key) || []).length;
@@ -279,26 +351,34 @@ export async function searchAtItems(query: string, scope: SearchScope, limit = 3
     const want = Math.min(30, limit);
     const w = ensureWorker();
     const t0 = Date.now();
-    const workerPromise = new Promise<{ rel: string; isDir: boolean; score: number }[]>((resolve) => {
-      const handler = (ev: MessageEvent) => {
-        const data: any = ev.data || {};
-        if (data && data.type === 'result' && String(data.q) === q) {
-          try { w.removeEventListener('message', handler as any); } catch {}
-          resolve(Array.isArray(data.items) ? data.items : []);
-        }
-      };
-      w.addEventListener('message', handler as any, { once: false });
-      try { w.postMessage({ type: 'query', q, limit: want }); } catch { resolve([]); }
-    });
-
     // 根据候选规模动态等待更长时间，避免大仓库过早超时导致 0 结果
     const rootKey = String(currentRoot || '').toLowerCase();
     const localAll = cacheByRoot.get(rootKey) || [];
     const waitMs = localAll.length > 100000 ? 350 : localAll.length > 30000 ? 200 : 60;
-    let ranked = await Promise.race([
-      workerPromise,
-      new Promise<any[]>((resolve) => setTimeout(() => resolve([]), waitMs)),
-    ]);
+    // 统一 Promise，确保无论超时还是收到结果，都移除监听，避免泄漏
+    let ranked = await new Promise<any[]>((resolve) => {
+      let timeoutId: number | undefined;
+      const handler = (ev: MessageEvent) => {
+        const data: any = ev.data || {};
+        if (data && data.type === 'result' && String(data.q) === q) {
+          try { if (typeof timeoutId === 'number') window.clearTimeout(timeoutId); } catch {}
+          try { w.removeEventListener('message', handler as any); } catch {}
+          resolve(Array.isArray(data.items) ? data.items : []);
+        }
+      };
+      try { w.addEventListener('message', handler as any, { once: false }); } catch {}
+      try {
+        w.postMessage({ type: 'query', q, limit: want });
+      } catch {
+        try { w.removeEventListener('message', handler as any); } catch {}
+        resolve([]);
+        return;
+      }
+      timeoutId = window.setTimeout(() => {
+        try { w.removeEventListener('message', handler as any); } catch {}
+        resolve([]);
+      }, waitMs);
+    });
 
     if ((!ranked || ranked.length === 0)) {
       // Worker 尚未加载完成或空查询：回退到本地候选（不阻塞 UI）

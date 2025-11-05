@@ -134,8 +134,8 @@ export default function AtCommandPalette(props: AtCommandPaletteProps) {
     try {
       const root = rootRef.current;
       if (!root) return;
-      // 在面板中查找当前带有高亮样式的按钮并滚动到可视区域
-      const highlighted = root.querySelector('button.bg-slate-100') as HTMLElement | null;
+      // 在面板中查找当前高亮项（使用一致的数据标记）并滚动到可视区域
+      const highlighted = root.querySelector('button[data-active]') as HTMLElement | null;
       if (highlighted && typeof highlighted.scrollIntoView === 'function') {
         highlighted.scrollIntoView({ block: 'nearest' });
       }
@@ -187,6 +187,7 @@ export default function AtCommandPalette(props: AtCommandPaletteProps) {
                     "flex w-full items-center justify-between gap-3 px-3 py-2 text-left hover:bg-slate-50 dark:hover:bg-[var(--cf-surface-hover)] rounded-md transition-colors border-b border-slate-300/70 last:border-0 dark:border-[var(--cf-border)]/40",
                     idx === hiCat ? "bg-slate-50 dark:bg-[var(--cf-surface-hover)]" : ""
                   )}
+                  data-active={idx === hiCat ? '1' : undefined}
                   onMouseEnter={() => setHiCat(idx)}
                   // 使用 onMouseDown 阻止默认聚焦，从而避免抢占外部输入框的光标
                   onMouseDown={(e) => { e.preventDefault(); }}
@@ -194,7 +195,7 @@ export default function AtCommandPalette(props: AtCommandPaletteProps) {
                 >
                   <div className="flex min-w-0 items-center gap-2">
                     <IconByName name={c.icon} className="h-4 w-4 text-slate-600 dark:text-[var(--cf-text-secondary)]" />
-                    <div className="truncate font-medium">{c.name}</div>
+                    <div className="truncate font-medium">{t(`at:category.${c.id}`) || c.name}</div>
                   </div>
                   <ChevronRight className="h-4 w-4 text-slate-400 dark:text-[var(--cf-text-muted)]" />
                 </button>
@@ -206,7 +207,7 @@ export default function AtCommandPalette(props: AtCommandPaletteProps) {
         <div className="w-[360px]">
           <div className="flex items-center gap-2 border-b border-slate-200 dark:border-[var(--cf-border)] px-3 py-1.5">
             <div className="text-xs text-slate-500 dark:text-[var(--cf-text-muted)]">
-              {scope === "all" ? t('at:scopeAll') : (getCategoryById(scope as AtCategoryId)?.name || "")}
+              {scope === "all" ? t('at:scopeAll') : t(`at:category.${scope as string}`)}
             </div>
           </div>
           {/* 面板仅用于展示结果列表，保留上方标题栏即可，删除多余重复标题 */}
@@ -223,6 +224,7 @@ export default function AtCommandPalette(props: AtCommandPaletteProps) {
                   <button
                     key={`${it.categoryId}-${it.id}`}
                     className={cn("flex w-full items-center gap-3 px-3 py-1.5 text-left hover:bg-slate-50 dark:hover:bg-[var(--cf-surface-hover)] rounded-md transition-colors border-b border-slate-300/70 last:border-0 dark:border-[var(--cf-border)]/40", active ? "bg-slate-50 dark:bg-[var(--cf-surface-hover)]" : "")}
+                    data-active={active ? '1' : undefined}
                     onMouseEnter={() => setHiRes(idx)}
                     // 同样在结果项上阻止鼠标按下导致的默认聚焦行为
                     onMouseDown={(e) => { e.preventDefault(); }}
