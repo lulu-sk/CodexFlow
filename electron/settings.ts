@@ -29,6 +29,8 @@ export type NetworkSettings = {
   noProxy?: string;
 };
 
+export type ThemeSetting = 'light' | 'dark' | 'system';
+
 export type AppSettings = {
   /** 终端类型：WSL 或 Windows 本地终端 */
   terminal?: 'wsl' | 'windows';
@@ -44,6 +46,8 @@ export type AppSettings = {
   locale?: string;
   /** 项目内文件路径样式：absolute=全路径；relative=相对路径（相对项目根） */
   projectPathStyle?: 'absolute' | 'relative';
+  /** UI 主题：亮色、暗色或跟随系统 */
+  theme?: ThemeSetting;
   /** 任务完成提醒相关偏好 */
   notifications?: NotificationSettings;
   /** 网络代理设置（供主进程与渲染层共享） */
@@ -71,6 +75,13 @@ const DEFAULT_NETWORK: NetworkSettings = {
   proxyUrl: '',
   noProxy: '',
 };
+const DEFAULT_THEME: ThemeSetting = 'system';
+
+function normalizeTheme(raw: unknown): ThemeSetting {
+  const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  if (value === 'light' || value === 'dark') return value;
+  return DEFAULT_THEME;
+}
 
 function loadDistroList(): DistroInfo[] {
   if (os.platform() !== 'win32') return [];
@@ -134,6 +145,7 @@ function mergeWithDefaults(raw: Partial<AppSettings>, preloadedDistros?: DistroI
     sendMode: 'write_and_enter',
     // 默认：发送给 Codex 的项目内文件路径使用“全路径”（WSL 绝对路径）
     projectPathStyle: 'absolute',
+    theme: DEFAULT_THEME,
     notifications: { ...DEFAULT_NOTIFICATIONS },
     network: { ...DEFAULT_NETWORK },
   };
@@ -147,6 +159,7 @@ function mergeWithDefaults(raw: Partial<AppSettings>, preloadedDistros?: DistroI
     ...(raw as any)?.network,
   };
   merged.distro = pickPreferredDistro(merged.distro, distros);
+  merged.theme = normalizeTheme((raw as any)?.theme ?? merged.theme);
   return merged;
 }
 

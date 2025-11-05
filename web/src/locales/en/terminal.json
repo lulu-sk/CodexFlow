@@ -1,6 +1,6 @@
 {
   "dirMissing": "Directory missing, unable to create console",
-  "newConsole": "New Console",
+  "newConsole": "New Agent",
   "inputPlaceholder": "Type message to Codex (paste images, @ search files), Ctrl+Enter to send",
   "send": "Send",
   "expandInput": "Expand composer",

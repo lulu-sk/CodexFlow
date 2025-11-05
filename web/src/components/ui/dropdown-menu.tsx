@@ -115,7 +115,7 @@ export function DropdownMenuContent({ align = 'start', children }: { align?: 'st
     <div
       ref={contentRef}
       style={style}
-      className="min-w-[180px] rounded-md border border-slate-200 bg-white p-1 shadow-lg animate-in fade-in-0 zoom-in-95"
+      className="min-w-[180px] rounded-md border border-[var(--cf-border)] bg-[var(--cf-app-bg)] p-1 shadow-lg animate-in fade-in-0 zoom-in-95 text-[var(--cf-text-primary)]"
     >
       {children}
     </div>
@@ -127,7 +127,7 @@ export function DropdownMenuItem({ className, onClick, ...props }: React.HTMLAtt
   const ctx = React.useContext(Ctx);
   return (
     <div
-      className={cn('flex cursor-pointer items-center rounded-sm px-2 py-1.5 text-sm hover:bg-slate-100', className)}
+      className={cn('flex cursor-pointer items-center rounded-sm px-2 py-1.5 text-sm text-[var(--cf-text-primary)] hover:bg-[var(--cf-surface)]', className)}
       onClick={(event) => {
         onClick?.(event);
         if (!event.defaultPrevented) ctx?.setOpen(false);
@@ -137,9 +137,9 @@ export function DropdownMenuItem({ className, onClick, ...props }: React.HTMLAtt
   );
 }
 export function DropdownMenuLabel({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn('px-2 py-1.5 text-xs text-slate-500', className)} {...props} />;
+  return <div className={cn('px-2 py-1.5 text-xs text-[var(--cf-text-muted)]', className)} {...props} />;
 }
 export function DropdownMenuSeparator() {
-  return <div className="my-1 h-px bg-slate-200" />;
+  return <div className="my-1 h-px bg-[var(--cf-border)]" />;
 }
 

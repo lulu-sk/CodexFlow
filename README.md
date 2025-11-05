@@ -236,7 +236,7 @@ npm run i18n:check
 
 ## ✅ Verification Checklist
 
-1. Launch the app and click “New Console”: the WSL prompt/command output should appear.
+1. Launch the app and click "New Agent": the WSL prompt/command output should appear.
 2. Type `uname -a` and `pwd` in the input box and press Enter: expect echoed results.
 3. Resize the window: the terminal content should auto-fit (FitAddon active).
 4. Optional: start `vim`, ensure it works, and exit cleanly.

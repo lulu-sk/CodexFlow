@@ -36,7 +36,7 @@ function highlight(text: string, q: string) {
   return (
     <>
       {text.slice(0, idx)}
-      <mark className="rounded bg-yellow-200 px-0.5 text-slate-900">{text.slice(idx, idx + query.length)}</mark>
+      <mark className="rounded bg-yellow-200 px-0.5 text-slate-900 dark:bg-[var(--cf-accent)]/20 dark:text-[var(--cf-accent)]">{text.slice(idx, idx + query.length)}</mark>
       {text.slice(idx + query.length)}
     </>
   );
@@ -170,18 +170,22 @@ export default function AtCommandPalette(props: AtCommandPaletteProps) {
   };
 
   const panel = (
-    <div ref={rootRef} style={posStyle} className="rounded-lg border border-slate-200 bg-white/95 shadow-xl backdrop-blur supports-[backdrop-filter]:bg-white/70 select-none">
+    <div
+      ref={rootRef}
+      style={posStyle}
+      className="rounded-lg border border-slate-400 bg-slate-200 shadow-xl select-none dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)] dark:text-[var(--cf-text-primary)] dark:shadow-[0_18px_34px_rgba(0,0,0,0.45)]"
+    >
       {level === "categories" ? (
         <div className="w-full h-[160px]">
-          <div className="p-2 text-xs text-slate-500">{t('at:categoriesTitle')}</div>
+          <div className="p-2 text-xs text-slate-500 dark:text-[var(--cf-text-muted)]">{t('at:categoriesTitle')}</div>
           <ScrollArea className="h-[120px]">
             <div className="py-1">
               {AT_CATEGORIES.map((c, idx) => (
                 <button
                   key={c.id}
                   className={cn(
-                    "flex w-full items-center justify-between gap-3 px-3 py-2 text-left hover:bg-slate-100",
-                    idx === hiCat ? "bg-slate-100" : ""
+                    "flex w-full items-center justify-between gap-3 px-3 py-2 text-left hover:bg-slate-50 dark:hover:bg-[var(--cf-surface-hover)] rounded-md transition-colors border-b border-slate-300/70 last:border-0 dark:border-[var(--cf-border)]/40",
+                    idx === hiCat ? "bg-slate-50 dark:bg-[var(--cf-surface-hover)]" : ""
                   )}
                   onMouseEnter={() => setHiCat(idx)}
                   // 使用 onMouseDown 阻止默认聚焦，从而避免抢占外部输入框的光标
@@ -189,10 +193,10 @@ export default function AtCommandPalette(props: AtCommandPaletteProps) {
                   onClick={() => onEnterCategory(c.id)}
                 >
                   <div className="flex min-w-0 items-center gap-2">
-                    <IconByName name={c.icon} className="h-4 w-4 text-slate-600" />
+                    <IconByName name={c.icon} className="h-4 w-4 text-slate-600 dark:text-[var(--cf-text-secondary)]" />
                     <div className="truncate font-medium">{c.name}</div>
                   </div>
-                  <ChevronRight className="h-4 w-4 text-slate-400" />
+                  <ChevronRight className="h-4 w-4 text-slate-400 dark:text-[var(--cf-text-muted)]" />
                 </button>
               ))}
             </div>
@@ -200,8 +204,8 @@ export default function AtCommandPalette(props: AtCommandPaletteProps) {
         </div>
       ) : (
         <div className="w-[360px]">
-          <div className="flex items-center gap-2 border-b px-3 py-1.5">
-            <div className="text-xs text-slate-500">
+          <div className="flex items-center gap-2 border-b border-slate-200 dark:border-[var(--cf-border)] px-3 py-1.5">
+            <div className="text-xs text-slate-500 dark:text-[var(--cf-text-muted)]">
               {scope === "all" ? t('at:scopeAll') : (getCategoryById(scope as AtCategoryId)?.name || "")}
             </div>
           </div>
@@ -209,7 +213,7 @@ export default function AtCommandPalette(props: AtCommandPaletteProps) {
           <ScrollArea className="h-[210px]">
             <div className="py-1">
               {results.length === 0 && (
-                <div className="px-3 py-4 text-sm text-slate-500">{t('at:noResults')}</div>
+                <div className="px-3 py-4 text-sm text-slate-500 dark:text-[var(--cf-text-secondary)]">{t('at:noResults')}</div>
               )}
               {results.map((r, idx) => {
                 const it = r.item;
@@ -218,17 +222,17 @@ export default function AtCommandPalette(props: AtCommandPaletteProps) {
                 return (
                   <button
                     key={`${it.categoryId}-${it.id}`}
-                    className={cn("flex w-full items-center gap-3 px-3 py-1 text-left hover:bg-slate-100", active ? "bg-slate-100" : "")}
+                    className={cn("flex w-full items-center gap-3 px-3 py-1.5 text-left hover:bg-slate-50 dark:hover:bg-[var(--cf-surface-hover)] rounded-md transition-colors border-b border-slate-300/70 last:border-0 dark:border-[var(--cf-border)]/40", active ? "bg-slate-50 dark:bg-[var(--cf-surface-hover)]" : "")}
                     onMouseEnter={() => setHiRes(idx)}
                     // 同样在结果项上阻止鼠标按下导致的默认聚焦行为
                     onMouseDown={(e) => { e.preventDefault(); }}
                     onClick={() => onPickItem(it)}
                   >
-                    <IconByName name={it.icon || cat?.icon} className="h-4 w-4 text-slate-600" />
+                    <IconByName name={it.icon || cat?.icon} className="h-4 w-4 text-slate-600 dark:text-[var(--cf-text-secondary)]" />
                     <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm font-medium text-slate-900">{highlight(it.title, query)}</div>
+                      <div className="truncate text-sm font-medium text-slate-900 dark:text-[var(--cf-text-primary)]">{highlight(it.title, query)}</div>
                       {it.subtitle && (
-                        <div className="truncate text-xs text-slate-500">{it.subtitle}</div>
+                        <div className="truncate text-xs text-slate-500 dark:text-[var(--cf-text-muted)]">{it.subtitle}</div>
                       )}
                     </div>
                     {/* 去除右侧的分类标签显示，按设计不需要在结果行重复展示 */}

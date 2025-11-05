@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk) */
 /* xterm styles - 必须放在所有 Tailwind 指令之前 */
 @import "@xterm/xterm/css/xterm.css";
 
@@ -6,28 +8,139 @@
 @tailwind utilities;
 
 html, body, #root { height: 100%; }
-body { @apply bg-slate-50 text-slate-900; overflow: hidden; }
+:root {
+  /* 亮色主题：GitHub Primer Light */
+  /* 灰度层次 */
+  --cf-app-bg: #ffffff;         /* Canvas default - 主背景 */
+  --cf-surface: #f6f8fa;        /* Canvas subtle - 卡片、对话框 */
+  --cf-surface-muted: #f6f8fa;  /* Canvas inset - 更深的区域 */
+  --cf-surface-hover: #f3f4f6;  /* Canvas overlay - 悬停状态 */
+  --cf-border: #d0d7de;         /* Border default - 边框 */
+  --cf-border-strong: #8c959f;  /* Border muted - 强边框 */
+  --cf-text-primary: #24292f;   /* Foreground default - 主文本 */
+  --cf-text-secondary: #57606a; /* Foreground muted - 次要文本 */
+  --cf-text-muted: #6e7781;     /* Foreground subtle - 弱化文本 */
+  --cf-accent: #0969da;         /* Accent emphasis - 强调色（蓝色）*/
+  --cf-accent-hover: #0860ca;   /* Accent emphasis hover - 强调悬停 */
+  
+  /* 语义色彩 */
+  --cf-red: #cf222e;            /* Danger emphasis - 错误、删除、危险 */
+  --cf-red-hover: #a40e26;      /* Danger emphasis hover */
+  --cf-red-dim: #d1242f;        /* Danger default - 用于次要危险操作 */
+  --cf-green: #1a7f37;          /* Success emphasis - 成功、确认 */
+  --cf-green-hover: #2da44e;    /* Success emphasis hover */
+  --cf-yellow: #9a6700;         /* Attention emphasis - 警告、提示 */
+  --cf-yellow-hover: #bf8700;   /* Attention emphasis hover */
+  --cf-yellow-dim: #9a6700;     /* Attention default - 用于次要警告 */
+  --cf-teal: #1b7c83;           /* Info/Done emphasis - 信息、链接 */
+  --cf-teal-hover: #3192aa;     /* Info emphasis hover */
+  --cf-pink: #8250df;           /* Sponsors - 特殊标记 */
+  --cf-rosewater: #0969da;      /* Open emphasis - 光标、选区 */
+  
+  /* 滚动条 */
+  --cf-scrollbar-thumb: rgba(140, 149, 159, 0.5);
+  --cf-scrollbar-thumb-hover: rgba(140, 149, 159, 0.8);
+  --cf-scrollbar-track: transparent;
+}
+
+.dark {
+  /* 暗色主题：GitHub Primer Dark Dimmed */
+  /* 灰度层次 */
+  --cf-app-bg: #22272e;        /* Canvas default - 主背景 */
+  --cf-surface: #2d333b;        /* Canvas subtle - 卡片、对话框 */
+  --cf-surface-muted: #1c2128;  /* Canvas inset - 更深的区域 */
+  --cf-surface-hover: #373e47;  /* Canvas overlay - 悬停状态 */
+  --cf-border: #444c56;         /* Border default - 边框 */
+  --cf-border-strong: #636e7b;  /* Border muted - 强边框 */
+  --cf-text-primary: #adbac7;   /* Foreground default - 主文本 */
+  --cf-text-secondary: #768390; /* Foreground muted - 次要文本 */
+  --cf-text-muted: #636e7b;     /* Foreground subtle - 弱化文本 */
+  --cf-accent: #539bf5;         /* Accent emphasis - 强调色（蓝色）*/
+  --cf-accent-hover: #6cb6ff;   /* Accent emphasis hover - 强调悬停 */
+  
+  /* 语义色彩 - 悬停时增强，保持警示感 */
+  --cf-red: #e5534b;            /* Danger emphasis - 错误、删除、危险 */
+  --cf-red-hover: #f47067;      /* Danger emphasis hover - 更鲜艳的红色 */
+  --cf-red-dim: #d5423d;        /* Danger default - 用于次要危险操作 */
+  --cf-green: #57ab5a;          /* Success emphasis - 成功、确认 */
+  --cf-green-hover: #6bc46d;    /* Success emphasis hover */
+  --cf-yellow: #c69026;         /* Attention emphasis - 警告、提示 */
+  --cf-yellow-hover: #daaa3f;   /* Attention emphasis hover */
+  --cf-yellow-dim: #ae7c14;     /* Attention default - 用于次要警告 */
+  --cf-teal: #76c8cf;           /* Info/Done emphasis - 信息、链接 */
+  --cf-teal-hover: #96d7dd;     /* Info emphasis hover */
+  --cf-pink: #c297d8;           /* Sponsors - 特殊标记 */
+  --cf-rosewater: #f47067;      /* Open emphasis - 光标、选区 */
+  
+  /* 滚动条 */
+  --cf-scrollbar-thumb: rgba(99, 110, 123, 0.4);
+  --cf-scrollbar-thumb-hover: rgba(99, 110, 123, 0.7);
+  --cf-scrollbar-track: transparent;
+}
+
+.dark .text-slate-900,
+.dark .text-slate-800,
+.dark .text-slate-700 {
+  color: var(--cf-text-primary);
+}
+
+.dark .text-slate-600,
+.dark .text-slate-500,
+.dark .text-slate-400 {
+  color: var(--cf-text-secondary);
+}
+
+.dark .bg-white {
+  background-color: var(--cf-surface);
+}
+
+.dark .bg-slate-50,
+.dark .bg-slate-100 {
+  background-color: var(--cf-surface-muted);
+}
+
+.dark .border-slate-200,
+.dark .border-slate-100 {
+  border-color: var(--cf-border);
+}
+
+body {
+  background-color: var(--cf-app-bg);
+  color: var(--cf-text-primary);
+  overflow: hidden;
+  transition: background-color 0.24s ease, color 0.24s ease;
+}
+
+/* 文本选区样式 */
+::selection {
+  background-color: var(--cf-accent);
+  color: var(--cf-app-bg);
+}
+.dark ::selection {
+  background-color: var(--cf-rosewater);
+  color: var(--cf-app-bg);
+}
 
 /* 全局滚动条样式（更纤细、更柔和） */
 * {
   scrollbar-width: thin; /* Firefox */
-  scrollbar-color: #cbd5e1 transparent; /* thumb: slate-300; track: transparent */
+  scrollbar-color: var(--cf-scrollbar-thumb) var(--cf-scrollbar-track);
 }
 *::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 *::-webkit-scrollbar-thumb {
-  background-color: rgba(148, 163, 184, 0.7); /* slate-400 */
+  background-color: var(--cf-scrollbar-thumb);
   border-radius: 9999px;
   border: 2px solid transparent; /* 留出一点内边距视觉 */
   background-clip: padding-box;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(100, 116, 139, 0.85); /* slate-500 */
+  background-color: var(--cf-scrollbar-thumb-hover);
 }
 *::-webkit-scrollbar-track {
-  background: transparent;
+  background: var(--cf-scrollbar-track);
 }
 
 /* 隐藏滚动条但保留滚动能力（用于水平标签栏等） */

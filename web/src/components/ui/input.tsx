@@ -13,7 +13,7 @@ export interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> 
 
 export const Input = React.forwardRef<HTMLTextAreaElement | HTMLInputElement, InputProps>(((props, ref) => {
   const { className, multiline, onPointerDown: externalOnPointerDown, ...restProps } = props as any;
-  const base = 'flex w-full rounded-md border border-slate-200 bg-white px-3 text-sm ring-offset-white placeholder:text-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-950/10';
+  const base = 'flex w-full rounded-md border border-[var(--cf-border)] bg-[var(--cf-surface)] px-3 text-sm text-[var(--cf-text-primary)] ring-offset-[var(--cf-app-bg)] placeholder:text-[var(--cf-text-muted)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cf-accent)]/40';
   // 统一处理 Pointer Capture：将拖拽事件锁定在输入框内，避免拖拽误选外部文字
 
   if (multiline) {

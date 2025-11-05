@@ -10,6 +10,7 @@ import { Separator } from "@/components/ui/separator";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { fetchRemoteAbout, LOCAL_DEFAULT_ABOUT, type AboutData, type DonateItem, checkForUpdate, type UpdateCheck } from "@/lib/about";
 import { CANONICAL_DONATION_ITEMS } from "@/lib/donate";
+import { sanitizeHtml } from "@/lib/sanitize";
 
 const TEXT_ONLY_DONATION_NAMES = new Set(["支付宝", "微信"]);
 const PROJECT_HOMEPAGE_URL = "https://github.com/lulu-sk/CodexFlow";
@@ -75,7 +76,8 @@ export function AboutSupport(props: Props) {
     }
     return fallbackHtml;
   }, [data.aboutHtml, data.aboutHtmlLocale, data.aboutHtmlLocales, dataSource, resolveLocalizedText]);
-  const shouldUseFallbackContent = !resolvedRemoteHtml;
+  const sanitizedRemoteHtml = useMemo(() => sanitizeHtml(resolvedRemoteHtml), [resolvedRemoteHtml]);
+  const shouldUseFallbackContent = !sanitizedRemoteHtml;
 
   useEffect(() => {
     (async () => {
@@ -97,21 +99,21 @@ export function AboutSupport(props: Props) {
     <div className="p-2">
       <Card>
         <CardContent className="space-y-3">
-          <div className="text-sm text-slate-600">
+          <div className="text-sm text-slate-600 dark:text-[var(--cf-text-secondary)]">
             {shouldUseFallbackContent ? (
-              <div className="prose prose-sm max-w-none">
+              <div className="prose prose-sm max-w-none dark:prose-invert">
                 <h2>{t("content.heading")}</h2>
                 {fallbackParagraphs.map((p, idx) => (
                   <p key={idx}>{p}</p>
                 ))}
               </div>
             ) : (
-              <div className="prose prose-sm max-w-none" dangerouslySetInnerHTML={{ __html: resolvedRemoteHtml }} />
+              <div className="prose prose-sm max-w-none dark:prose-invert" dangerouslySetInnerHTML={{ __html: sanitizedRemoteHtml }} />
             )}
           </div>
 
           <div className="flex justify-end">
-            <div className="text-xs text-slate-500">{version ? `v${version}` : ''}</div>
+            <div className="text-xs text-slate-500 dark:text-[var(--cf-text-muted)]">{version ? `v${version}` : ''}</div>
           </div>
 
           <Separator />
@@ -150,11 +152,11 @@ export function AboutSupport(props: Props) {
           <div>
             <div className="flex items-start justify-between mb-2 gap-3">
               <div>
-                <div className="text-sm font-medium">{t("donate.sectionTitle")}</div>
-                {showDonateDescription ? <div className="mt-1 text-xs text-slate-500">{donateDescription}</div> : null}
+                <div className="text-sm font-medium dark:text-[var(--cf-text-primary)]">{t("donate.sectionTitle")}</div>
+                {showDonateDescription ? <div className="mt-1 text-xs text-slate-500 dark:text-[var(--cf-text-secondary)]">{donateDescription}</div> : null}
               </div>
               {data.integrity?.donationSignatureValid === false ? (
-                <div className="text-xs text-red-500 whitespace-nowrap">{t("donate.signatureInvalid")}</div>
+                <div className="text-xs text-red-500 dark:text-[var(--cf-red)] whitespace-nowrap">{t("donate.signatureInvalid")}</div>
               ) : null}
             </div>
             <div className="flex flex-wrap gap-2">
@@ -171,12 +173,12 @@ export function AboutSupport(props: Props) {
           {data.announces && data.announces.length > 0 && (
             <div>
               <Separator className="my-2" />
-              <div className="text-sm font-medium mb-2">{t("announce.sectionTitle")}</div>
-              <ScrollArea className="h-36 border rounded">
+              <div className="text-sm font-medium mb-2 dark:text-[var(--cf-text-primary)]">{t("announce.sectionTitle")}</div>
+              <ScrollArea className="h-36 border rounded dark:border-[var(--cf-border)]">
                 <div className="p-2 space-y-2">
                   {data.announces.map((a) => (
-                    <div key={a.id} className="text-sm text-slate-700">
-                      <span className="mr-2 text-slate-400">[{a.id}]</span>
+                    <div key={a.id} className="text-sm text-slate-700 dark:text-[var(--cf-text-secondary)]">
+                      <span className="mr-2 text-slate-400 dark:text-[var(--cf-text-muted)]">[{a.id}]</span>
                       <span>{resolveLocalizedText(a.textLocales, a.text)}</span>
                     </div>
                   ))}
@@ -187,7 +189,7 @@ export function AboutSupport(props: Props) {
 
           <Separator />
 
-          <div className="text-xs text-slate-500">
+          <div className="text-xs text-slate-500 dark:text-[var(--cf-text-muted)]">
             {t("privacy")}
           </div>
         </CardContent>

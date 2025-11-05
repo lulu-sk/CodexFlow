@@ -172,7 +172,7 @@ export default function PathChipsInput({
 
   // 外层容器：相对定位。为避免滚动时附件 Chip 遮挡文本，
   // 采用常规文档流展示 Chips（不再叠放在输入区域上）。
-  const base = "relative w-full rounded-md border border-slate-200 bg-white px-3 text-sm ring-offset-white placeholder:text-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-950/10";
+  const base = "relative w-full rounded-md border border-slate-200 bg-white px-3 text-sm ring-offset-white placeholder:text-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-950/10 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)] dark:text-[var(--cf-text-primary)] dark:ring-offset-[var(--cf-app-bg)] dark:placeholder:text-[var(--cf-text-muted)] dark:focus-visible:ring-[var(--cf-accent)]/40";
   const containerClass = cn(
     base,
     "transition-colors select-none",
@@ -704,7 +704,7 @@ export default function PathChipsInput({
                     className="fixed z-[1200] pointer-events-none"
                     style={{ left: centerX, top }}
                   >
-                    <div className={cn("rounded border bg-white p-1 shadow-lg transition-opacity", "-translate-x-1/2", translateYClass)}>
+                    <div className={cn("rounded border bg-white p-1 shadow-lg transition-opacity dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)]", "-translate-x-1/2", translateYClass)}>
                       <img src={chip.previewUrl} className="block max-h-[28rem] max-w-[28rem] object-contain rounded" alt={chip.fileName || t('common:files.image')} />
                     </div>
                   </div>
@@ -729,7 +729,7 @@ export default function PathChipsInput({
             // - leading-5 提升可读性；min-h 保持与容器协调；pb-10 给右下角发送按钮留出垂直空间；
             style={balancedScrollbarGutter ? ({ scrollbarGutter: 'stable both-edges' } as any) : undefined}
             className={cn(
-              "block w-full min-w-[8rem] outline-none bg-white placeholder:text-slate-400 select-text resize-none whitespace-pre-wrap break-words leading-5",
+              "block w-full min-w-[8rem] outline-none bg-white placeholder:text-slate-400 select-text resize-none whitespace-pre-wrap break-words leading-5 dark:bg-[var(--cf-surface)] dark:text-[var(--cf-text-primary)] dark:placeholder:text-[var(--cf-text-muted)]",
               "py-0.5 pb-10 min-h-[1.5rem]",
               draftInputClassName,
             )}
@@ -745,7 +745,7 @@ export default function PathChipsInput({
             onPointerDown={(e) => { try { (e.target as HTMLElement).setPointerCapture((e as any).pointerId); } catch {} }}
             placeholder={chips.length === 0 ? (rest as any)?.placeholder : undefined}
             style={balancedScrollbarGutter ? ({ scrollbarGutter: 'stable both-edges' } as any) : undefined}
-            className={cn("block w-full min-w-[8rem] outline-none bg-white placeholder:text-slate-400 select-text", "h-8 py-0.5 pb-10", draftInputClassName)}
+            className={cn("block w-full min-w-[8rem] outline-none bg-white placeholder:text-slate-400 select-text dark:bg-[var(--cf-surface)] dark:text-[var(--cf-text-primary)] dark:placeholder:text-[var(--cf-text-muted)]", "h-8 py-0.5 pb-10", draftInputClassName)}
           />
         )}
       </div>
@@ -753,7 +753,7 @@ export default function PathChipsInput({
       {/* 右键菜单 */}
       {ctxMenu.show && (
         <div className="fixed z-[100]" style={{ left: ctxMenu.x, top: ctxMenu.y }} onContextMenu={(e) => e.preventDefault()}>
-          <div ref={ctxMenuRef} className="min-w-[180px] rounded-md border bg-white shadow-lg p-1 text-sm">
+          <div ref={ctxMenuRef} className="min-w-[180px] rounded-md border bg-white shadow-lg p-1 text-sm dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)] dark:text-[var(--cf-text-primary)]">
             <button
               className="w-full text-left px-2 py-1 rounded hover:bg-slate-100 disabled:opacity-50"
               disabled={!ctxMenu.chip?.winPath && !ctxMenu.chip?.wslPath}

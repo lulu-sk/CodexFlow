@@ -45,7 +45,7 @@ export function SelectTrigger({
     <button
       ref={ref}
       type={type}
-      className={cn('flex h-10 w-full items-center justify-between rounded-md border border-slate-200 bg-white px-3 text-sm', className, disabled && 'opacity-60 cursor-not-allowed')}
+      className={cn('flex h-10 w-full items-center justify-between rounded-md border border-[var(--cf-border)] bg-[var(--cf-surface)] px-3 text-sm text-[var(--cf-text-primary)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cf-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--cf-app-bg)]', className, disabled && 'opacity-60 cursor-not-allowed')}
       disabled={!!disabled}
       onClick={(event) => {
         if (disabled) {
@@ -196,7 +196,7 @@ export function SelectContent({ children }: { children: React.ReactNode }) {
   return createPortal(
     <div
       ref={contentRef}
-      className={cn('z-[60] rounded-md border bg-white p-1 shadow-lg overflow-auto')}
+      className={cn('z-[60] rounded-md border border-[var(--cf-border)] bg-[var(--cf-app-bg)] p-1 shadow-lg overflow-auto text-[var(--cf-text-primary)]')}
       style={style}
       role="listbox"
     >
@@ -214,7 +214,7 @@ export function SelectItem({ value, children }: { value: string; children: React
   }, [value, children]);
   return (
     <div
-      className={cn('cursor-pointer rounded-sm px-2 py-1.5 text-sm hover:bg-slate-100', ctx.value === value && 'bg-slate-100')}
+      className={cn('cursor-pointer rounded-sm px-2 py-1.5 text-sm hover:bg-[var(--cf-surface)]', ctx.value === value && 'bg-[var(--cf-surface)]')}
       onClick={() => { ctx.setValue?.(value); ctx.setOpen(false); }}
     >
       {children}

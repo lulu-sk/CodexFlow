@@ -3,15 +3,15 @@
   "sections": {
     "basic": {
       "title": "Basic experience",
-      "desc": "Language preferences and composer defaults."
+      "desc": "Language preferences, theme mode, and general settings."
     },
     "notifications": {
       "title": "Notifications",
       "desc": "Choose how CodexFlow reminds you when agents finish their tasks."
     },
     "terminal": {
-      "title": "Terminal & execution",
-      "desc": "Configure how CodexFlow runs commands."
+      "title": "Terminal & input",
+      "desc": "Configure input field behavior and how CodexFlow runs commands."
     },
     "networkAccount": {
       "title": "Network & Account",
@@ -39,6 +39,20 @@
     "en": "English",
     "zh": "Simplified Chinese",
     "help": "Choose the language used across the app."
+  },
+  "appearance": {
+    "theme": {
+      "label": "Theme",
+      "help": "Match CodexFlow to your workspace. The system theme is currently {mode}.",
+      "note": "Currently displaying {current}.",
+      "system": "Follow system",
+      "light": "Light",
+      "dark": "Dark",
+      "current": {
+        "light": "light",
+        "dark": "dark"
+      }
+    }
   },
   "terminal": "Terminal",
   "terminalPlaceholder": "Select terminal",

@@ -329,7 +329,7 @@ export function AtInput({ value, onValueChange, winRoot, projectName, projectPat
       {pastedImages.length > 0 && (
         <div className="mt-2 flex flex-wrap items-start gap-2">
           {pastedImages.map((img) => (
-            <div key={img.id} className="group relative border rounded-md bg-white shadow-sm overflow-hidden">
+            <div key={img.id} className="group relative border rounded-md bg-white shadow-sm overflow-hidden dark:border-slate-700 dark:bg-slate-900">
               {/* 小图预览：优先 blob URL；否则使用 file:// Windows 路径 */}
               {img.previewUrl ? (
                 <img src={img.previewUrl} className="block h-16 w-16 object-cover" alt={img.fileName || t('common:files.image')} />
@@ -347,7 +347,7 @@ export function AtInput({ value, onValueChange, winRoot, projectName, projectPat
               />
               {/* Hover 大图 */}
               <div className="pointer-events-none absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                <div className="absolute z-10 left-full top-0 ml-2 p-1 bg-white border rounded shadow-lg">
+                <div className="absolute z-10 left-full top-0 ml-2 p-1 bg-white border rounded shadow-lg dark:border-slate-700 dark:bg-slate-900">
                   <img
                     src={img.previewUrl || (img.winPath ? ('file:///' + String(img.winPath).replace(/\\\\/g, '/')) : '')}
                     className="block max-h-56 max-w-56 object-contain"

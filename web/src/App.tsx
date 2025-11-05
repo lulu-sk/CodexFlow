@@ -50,6 +50,7 @@ import HistoryCopyButton from "@/components/history/history-copy-button";
 import { toWSLForInsert } from "@/lib/wsl";
 import SettingsDialog from "@/features/settings/settings-dialog";
 import { DEFAULT_TERMINAL_FONT_FAMILY, normalizeTerminalFontFamily } from "@/lib/terminal-appearance";
+import { useThemeController, type ThemeSetting } from "@/lib/theme";
 import type { Project } from "@/types/host";
 
 // ---------- Types ----------
@@ -356,6 +357,11 @@ const DEFAULT_COMPLETION_PREFS: CompletionPreferences = {
   sound: false,
 };
 
+const normalizeThemeSetting = (value: any): ThemeSetting => {
+  if (value === "light" || value === "dark") return value;
+  return "system";
+};
+
 // OSC 9; 是终端的 Operating System Command #9，用于终端/PTY 向宿主发送通知类信息
 const OSC_NOTIFICATION_PREFIX = oscBufferDefaults.prefix;
 const OSC_TERMINATOR_BEL = '\u0007';
@@ -382,15 +388,15 @@ function isAgentCompletionMessage(message: string): boolean {
   return true;
 }
 
-// 筛选键规范化：将等价的 tags 与 type 统一到一个“规范键”，用于去重显示与匹配
+// 筛选键规范化：将等价的 tags 与 type 统一到一个"规范键"，用于去重显示与匹配
 function canonicalFilterKey(k?: string): string {
   try {
     const raw = String(k || "").toLowerCase().trim();
     if (!raw) return "";
-    // 仅将“解释性子类型”做合并；不合并 message.input_text / message.output_text / message.text
-    // 统一“说明”键：session_meta.instructions / session_instructions / instructions / user_instructions / message.user_instructions / user instructions -> instructions
+    // 仅将"解释性子类型"做合并；不合并 message.input_text / message.output_text / message.text
+    // 统一"说明"键：session_meta.instructions / session_instructions / instructions / user_instructions / message.user_instructions / user instructions -> instructions
     if (raw === 'session_meta.instructions' || raw === 'session_instructions' || raw === 'instructions' || raw === 'user_instructions' || raw === 'message.user_instructions' || raw === 'user instructions') return 'instructions';
-    // 统一“摘要”键：reasoning.summary / summary -> summary
+    // 统一"摘要"键：reasoning.summary / summary -> summary
     if (raw === 'reasoning.summary' || raw === 'summary') return 'summary';
     if (raw === "message.user_instructions" || raw === "user_instructions") return "user_instructions";
     if (raw === "message.environment_context" || raw === "environment_context") return "environment_context";
@@ -497,7 +503,7 @@ function TerminalView({ logs, tabId, ptyId, attachTerminal, onContextMenuDebug }
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
-    // 即使 PTY 已退出（无 ptyId），也把持久容器重新挂到宿主，避免“黑屏”
+    // 即使 PTY 已退出（无 ptyId），也把持久容器重新挂到宿主，避免"黑屏"
     if (hostRef.current && attachTerminal) {
       attachTerminal(tabId, hostRef.current);
       setMounted(true);
@@ -616,7 +622,7 @@ export default function CodexFlowManagerUI() {
     return false;
   }, [devMeta, uiDebugEnabled, debugRefreshTick]);
 
-  // 诊断：打印当前页面上可能的“覆盖层/遮罩”信息以及活跃元素
+  // 诊断：打印当前页面上可能的"覆盖层/遮罩"信息以及活跃元素
   const dumpOverlayDiagnostics = React.useCallback((reason: string) => {
     if (!uiDebugEnabled()) return;
     try {
@@ -1166,7 +1172,7 @@ export default function CodexFlowManagerUI() {
     return (
       <div
         style={{ position: 'fixed', left: tabCtxMenu.x, top: tabCtxMenu.y, zIndex: 10000 }}
-        className="min-w-[220px] rounded-md border border-slate-200 bg-white/95 shadow-lg"
+          className="min-w-[220px] rounded-md border border-slate-200 bg-white/95 shadow-lg dark:border-slate-700 dark:bg-slate-900/95"
         onClick={(e) => { e.stopPropagation(); e.preventDefault(); }}
       >
         <div className="px-3 py-2 text-xs text-slate-400">通知调试菜单（仅开发/显式开启）</div>
@@ -1539,11 +1545,19 @@ export default function CodexFlowManagerUI() {
   const [projectPathStyle, setProjectPathStyle] = useState<'absolute' | 'relative'>('absolute');
   // 界面语言：用于设置面板展示与切换
   const [locale, setLocale] = useState<string>("en");
+  const [themeSetting, setThemeSetting] = useState<ThemeSetting>("system");
   const [legacyResumePrompt, setLegacyResumePrompt] = useState<LegacyResumePrompt | null>(null);
   const [legacyResumeLoading, setLegacyResumeLoading] = useState(false);
   const [blockingNotice, setBlockingNotice] = useState<BlockingNotice | null>(null);
 
+  const themeMode = useThemeController(themeSetting);
+
   // 命令输入改为 Chips + 草稿：按 Tab 隔离
+  useEffect(() => {
+    try {
+      (window as any).host?.app?.setTitleBarTheme?.({ mode: themeMode, source: themeSetting });
+    } catch {}
+  }, [themeMode, themeSetting]);
   const [chipsByTab, setChipsByTab] = useState<Record<string, PathChip[]>>({});
   const [draftByTab, setDraftByTab] = useState<Record<string, string>>({});
   const [inputFullscreenByTab, setInputFullscreenByTab] = useState<Record<string, boolean>>({});
@@ -1598,7 +1612,7 @@ export default function CodexFlowManagerUI() {
     else setActiveTab(null, { focusMode: 'immediate', allowDuringRename: true, delay: 0 });
   }, [selectedProjectId, tabsByProject, activeTabByProject, activeTabId]);
 
-  // 关键修复：当 activeTabId 通过“程序方式”变化（例如切换项目时恢复活跃 tab）时，
+  // 关键修复：当 activeTabId 通过"程序方式"变化（例如切换项目时恢复活跃 tab）时，
   // 需要显式通知 TerminalManager，触发暂停/恢复数据流、精确度量与聚焦。
   useEffect(() => {
     if (tabFocusTimerRef.current) {
@@ -1686,6 +1700,7 @@ export default function CodexFlowManagerUI() {
           setCodexCmd(s.codexCmd || codexCmd);
           setSendMode(s.sendMode || 'write_and_enter');
           setProjectPathStyle((s as any).projectPathStyle || 'absolute');
+          setThemeSetting(normalizeThemeSetting((s as any).theme));
           setNotificationPrefs(normalizeCompletionPrefs((s as any).notifications));
           setTerminalFontFamily(normalizeTerminalFontFamily((s as any).terminalFontFamily));
           // 同步网络代理偏好
@@ -1912,7 +1927,7 @@ export default function CodexFlowManagerUI() {
       registerPtyForTab(tab.id, id);
       try { tm.setPty(tab.id, id); } catch (err) { console.warn('tm.setPty failed', err); }
       try { window.host.projects.touch(project.id); } catch {}
-      // 打开控制台后，立即在内存中更新最近使用时间，保证“最近使用优先”实时生效
+      // 打开控制台后，立即在内存中更新最近使用时间，保证"最近使用优先"实时生效
       markProjectUsed(project.id);
     } catch (e) {
       console.error('Failed to open PTY for project', e);
@@ -1920,7 +1935,7 @@ export default function CodexFlowManagerUI() {
     // 确保视图停留在控制台
     try { setCenterMode('console'); } catch {}
   }
-  // 点击“打开项目”：弹出系统选择目录并把选中目录加入项目，随后打开控制台
+  // 点击"打开项目"：弹出系统选择目录并把选中目录加入项目，随后打开控制台
   async function openProjectPicker() {
     try {
       const res: any = await (window.host.utils as any).chooseFolder();
@@ -2369,7 +2384,7 @@ export default function CodexFlowManagerUI() {
   // ---------- Renderers ----------
 
   const Sidebar = (
-    <div className="flex h-full min-w-[240px] flex-col border-r bg-white/50">
+    <div className="flex h-full min-w-[240px] flex-col border-r bg-white/50 dark:border-slate-800 dark:bg-slate-900/40">
       <div className="flex items-center gap-2 px-3 py-3">
         <Badge variant="secondary" className="gap-2">
           <PlugZap className="h-4 w-4" /> {terminalMode === 'windows' ? 'PowerShell' : 'WSL'} <StatusDot ok={true} />
@@ -2439,8 +2454,8 @@ export default function CodexFlowManagerUI() {
             return (
               <div
                 key={p.id}
-                className={`group flex cursor-pointer items-center justify-between rounded-lg px-3 py-2 transition hover:bg-slate-100 ${
-                  p.id === selectedProjectId ? 'bg-slate-100' : ''
+                className={`group flex cursor-pointer items-center justify-between rounded-lg px-3 py-2 transition hover:bg-slate-100 dark:hover:bg-slate-800 ${
+                  p.id === selectedProjectId ? 'bg-slate-100 dark:bg-slate-800/80 dark:text-slate-100' : ''
                 }`}
                 onClick={() => {
                   // 点击项目时默认进入控制台，并清除历史选择（避免自动跳到历史详情）
@@ -2457,21 +2472,21 @@ export default function CodexFlowManagerUI() {
               >
                 {/* 左侧内容区域：可水平滚动以查看长路径；右侧计数固定不滚动，避免遮挡 */}
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 font-medium">
-                    <FolderOpen className="h-4 w-4 text-slate-500" />
+                  <div className="flex items-center gap-2 font-medium dark:text-[var(--cf-text-primary)]">
+                    <FolderOpen className="h-4 w-4 text-slate-500 dark:text-[var(--cf-text-secondary)]" />
                     <span className="truncate max-w-[16rem]" title={p.name}>{p.name}</span>
                   </div>
-                  <div className="text-xs text-slate-500 overflow-x-auto no-scrollbar whitespace-nowrap pr-1" title={p.winPath}>{p.winPath}</div>
+                  <div className="text-xs text-slate-500 dark:text-[var(--cf-text-muted)] overflow-x-auto no-scrollbar whitespace-nowrap pr-1" title={p.winPath}>{p.winPath}</div>
                 </div>
                 <div className="ml-2 shrink-0 flex items-center gap-2">
                   {pendingCount > 0 ? (
                     <span
-                      className="inline-flex h-2 w-2 rounded-full bg-red-500"
+                      className="inline-flex h-2 w-2 rounded-full bg-red-500 dark:bg-[var(--cf-red)] dark:shadow-sm"
                       title={t('common:notifications.openTabHint', '点击查看详情') as string}
                     ></span>
                   ) : null}
                   {liveCount > 0 ? (
-                    <span className="inline-flex items-center justify-center rounded-full bg-slate-800 text-white text-[10px] h-5 min-w-[20px] px-1">
+                    <span className="inline-flex items-center justify-center rounded-full bg-slate-800 text-white text-[10px] h-5 min-w-[20px] px-1 dark:bg-[var(--cf-accent)] dark:text-[var(--cf-app-bg)] dark:shadow-sm dark:ring-1 dark:ring-[var(--cf-accent)]/20">
                       {liveCount}
                     </span>
                   ) : null}
@@ -2524,7 +2539,7 @@ export default function CodexFlowManagerUI() {
   }, [selectedProject?.winPath]);
 
   const TopBar = (
-    <div className="relative z-40 flex items-center justify-between border-b bg-white/70 px-4 py-3 backdrop-blur">
+    <div className="relative z-40 flex items-center justify-between border-b bg-white/70 px-4 py-3 backdrop-blur dark:border-slate-800 dark:bg-slate-900/60">
       <div className="flex min-w-0 items-center gap-3">
         <CodexUsageSummary className="min-w-0" terminalMode={terminalMode} distro={terminalMode === "wsl" ? wslDistro : undefined} />
       </div>
@@ -2551,12 +2566,12 @@ export default function CodexFlowManagerUI() {
     <div className="flex h-full min-h-0 flex-col gap-0 p-0">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          {/* 新建控制台按钮已移至标签区域（与 Chrome 标签页行为类似） */}
+          {/* 新建代理按钮已移至标签区域（与 Chrome 标签页行为类似） */}
         </div>
       </div>
 
       <Tabs value={activeTabId || undefined} onValueChange={(v) => setActiveTab(v ?? null)} className="flex w-full flex-1 min-h-0 flex-col">
-        <div className="rounded-md bg-white/90 border border-slate-100 px-2 py-1">
+        <div className="rounded-md bg-white/90 border border-slate-100 px-2 py-1 dark:border-slate-700 dark:bg-slate-900/90">
           <TabsList ref={tabsListRef} className="w-full h-8 flex items-center justify-start overflow-x-auto no-scrollbar whitespace-nowrap">
             {tabs.length === 0 ? (
               projPathExists === false ? (
@@ -2632,7 +2647,7 @@ export default function CodexFlowManagerUI() {
                         <span id={`tab-label-${tab.id}`} className="truncate max-w-[8rem]">{tab.name}</span>
                         {hasPending ? (
                           <span
-                            className="inline-flex h-2 w-2 rounded-full bg-red-500"
+                            className="inline-flex h-2 w-2 rounded-full bg-red-500 dark:bg-[var(--cf-red)] dark:shadow-sm"
                             title={t('common:notifications.openTabHint', '点击查看详情') as string}
                           ></span>
                         ) : null}
@@ -2686,8 +2701,8 @@ export default function CodexFlowManagerUI() {
                     </div>
 
                     {isInputFullscreen ? (
-                      <div className="absolute inset-0 z-20 flex flex-col overflow-auto bg-white/95 p-4 backdrop-blur-sm">
-                        <div className="relative flex-1 flex flex-col rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl">
+                      <div className="absolute inset-0 z-20 flex flex-col overflow-auto bg-white/95 p-4 backdrop-blur-sm dark:bg-slate-900/95">
+                        <div className="relative flex-1 flex flex-col rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl dark:border-slate-700 dark:bg-slate-900">
                           <PathChipsInput
                             placeholder={inputPlaceholder}
                             chips={chipsByTab[tab.id] || []}
@@ -3016,7 +3031,7 @@ export default function CodexFlowManagerUI() {
   // 注意：UI 不应主动发起历史消息读取以构建预览，预览应由项目初始化或后端在 list/read 时提供并缓存。
 
   const HistorySidebar = (
-    <div className="grid h-full min-w-[240px] grid-rows-[auto_auto_auto_1fr] min-h-0 border-l bg-white/60">
+    <div className="grid h-full min-w-[240px] grid-rows-[auto_auto_auto_1fr] min-h-0 border-l bg-white/60 dark:border-slate-800 dark:bg-slate-900/50">
       <div className="flex items-center justify-between px-3 py-3 gap-2">
         <div className="flex items-center gap-2 font-medium shrink-0">
           <HistoryIcon className="h-4 w-4" /> {t('history:panelTitle')}
@@ -3143,7 +3158,7 @@ export default function CodexFlowManagerUI() {
                           key={s.filePath || s.id}
                           onClick={() => { setSelectedHistoryDir(g.key); setSelectedHistoryId(s.id); setCenterMode('history'); }}
                           onContextMenu={(e) => { e.preventDefault(); setHistoryCtxMenu({ show: true, x: e.clientX, y: e.clientY, item: s, groupKey: g.key }); }}
-                          className={`block w-full rounded px-2 py-1 text-left text-xs ${active ? 'bg-white' : 'hover:bg-slate-200'}`}
+                          className={`block w-full rounded px-2 py-1 text-left text-xs ${active ? 'bg-white dark:bg-slate-800 dark:text-slate-100' : 'hover:bg-slate-200 dark:hover:bg-slate-700 dark:text-slate-200'}`}
                           title={sessionPreviewMap[s.filePath || s.id] || s.filePath || s.title}
                         >
                           <div className="flex flex-col">
@@ -3178,12 +3193,12 @@ export default function CodexFlowManagerUI() {
         >
           <div
             ref={historyCtxMenuRef}
-            className="absolute z-50 min-w-[200px] rounded-md border bg-white/95 backdrop-blur-sm py-1 text-sm shadow-xl ring-1 ring-black/5 divide-y divide-slate-100"
+            className="absolute z-50 min-w-[200px] rounded-md border bg-white/95 backdrop-blur-sm py-1 text-sm shadow-xl ring-1 ring-black/5 divide-y divide-slate-100 dark:border-slate-700 dark:bg-slate-900/95 dark:divide-slate-700"
             style={{ left: historyCtxMenu.x, top: historyCtxMenu.y }}
             onClick={(e) => e.stopPropagation()}
           >
             <button
-              className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-slate-100"
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-slate-700 hover:bg-slate-100 dark:text-slate-100 dark:hover:bg-slate-800"
               onClick={async () => {
                 try {
                   const it = historyCtxMenu.item;
@@ -3198,7 +3213,7 @@ export default function CodexFlowManagerUI() {
               {t('history:continueConversation')}
             </button>
             <button
-              className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-slate-100"
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-slate-700 hover:bg-slate-100 dark:text-slate-100 dark:hover:bg-slate-800"
               onClick={async () => {
                 try {
                   const it = historyCtxMenu.item;
@@ -3214,10 +3229,10 @@ export default function CodexFlowManagerUI() {
                 setHistoryCtxMenu((m) => ({ ...m, show: false }));
               }}
             >
-              <ExternalLink className="h-4 w-4 text-slate-500" /> {t('history:continueExternalWith', { env: terminalMode === 'windows' ? 'PowerShell' : 'WSL' })}
+              <ExternalLink className="h-4 w-4 text-slate-500 dark:text-slate-300" /> {t('history:continueExternalWith', { env: terminalMode === 'windows' ? 'PowerShell' : 'WSL' })}
             </button>
             <button
-              className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-slate-100"
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-slate-700 hover:bg-slate-100 dark:text-slate-100 dark:hover:bg-slate-800"
               onClick={async () => {
                 const f = historyCtxMenu.item?.filePath;
                 if (f) { try { await window.host.utils.copyText(f); } catch {} }
@@ -3227,7 +3242,7 @@ export default function CodexFlowManagerUI() {
               <CopyIcon className="h-4 w-4 text-slate-500" /> {t('history:copyPath')}
             </button>
             <button
-              className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-slate-100"
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-slate-700 hover:bg-slate-100 dark:text-slate-100 dark:hover:bg-slate-800"
               onClick={async () => {
                 const f = historyCtxMenu.item?.filePath;
                 if (f) {
@@ -3242,7 +3257,7 @@ export default function CodexFlowManagerUI() {
               <FolderOpen className="h-4 w-4 text-slate-500" /> {t('history:openContaining')}
             </button>
             <button
-              className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-slate-100"
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-slate-700 hover:bg-slate-100 dark:text-slate-100 dark:hover:bg-slate-800"
               onClick={async () => {
                 const f = historyCtxMenu.item?.filePath;
                 if (f) {
@@ -3287,7 +3302,7 @@ export default function CodexFlowManagerUI() {
           </DialogHeader>
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="outline" onClick={() => setConfirmDelete((m) => ({ ...m, open: false }))}>{t('common:cancel')}</Button>
-            <Button className="border border-red-200 text-red-600 hover:bg-red-50" variant="secondary" onClick={async () => {
+            <Button className="border border-red-200 text-red-600 hover:bg-red-50 dark:border-[var(--cf-red-dim)] dark:text-[var(--cf-red)] dark:hover:bg-[var(--cf-red)]/10" variant="secondary" onClick={async () => {
               try {
                 const it = confirmDelete.item; const key = confirmDelete.groupKey || (normDir(it?.filePath) || '__unknown__');
                 if (!it?.filePath) { setConfirmDelete((m) => ({ ...m, open: false })); return; }
@@ -3342,7 +3357,7 @@ export default function CodexFlowManagerUI() {
     <TooltipProvider>
       <div className={`grid h-screen overflow-hidden ${showHistoryPanel ? 'grid-cols-[240px_1fr_240px]' : 'grid-cols-[240px_1fr]'}`}>
         {Sidebar}
-        <div className="grid h-full min-w-0 grid-rows-[auto_1fr] bg-white/60 min-h-0 overflow-hidden">
+        <div className="grid h-full min-w-0 grid-rows-[auto_1fr] bg-white/60 min-h-0 overflow-hidden dark:bg-slate-900/40 dark:text-slate-100">
           {TopBar}
           {selectedProject ? (
             <div className="min-h-0 h-full">
@@ -3401,7 +3416,7 @@ export default function CodexFlowManagerUI() {
             menuItems.push(
               <button
                 key="show-in-explorer"
-                className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-slate-100"
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-slate-700 hover:bg-slate-100 dark:text-slate-100 dark:hover:bg-slate-800"
                 onClick={async () => {
                   const proj = projectCtxMenu.project;
                   if (proj) {
@@ -3419,7 +3434,7 @@ export default function CodexFlowManagerUI() {
             menuItems.push(
               <button
                 key="open-external"
-                className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-slate-100"
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-slate-700 hover:bg-slate-100 dark:text-slate-100 dark:hover:bg-slate-800"
                 onClick={async () => {
                   const proj = projectCtxMenu.project;
                   if (proj) {
@@ -3441,7 +3456,7 @@ export default function CodexFlowManagerUI() {
               menuItems.push(
                 <button
                   key="hide-temporary"
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-slate-100"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-slate-700 hover:bg-slate-100 dark:text-slate-100 dark:hover:bg-slate-800"
                   onClick={() => {
                     const proj = projectCtxMenu.project;
                     if (proj) setHideProjectConfirm({ open: true, project: proj });
@@ -3455,7 +3470,7 @@ export default function CodexFlowManagerUI() {
             return (
               <div
                 ref={projectCtxMenuRef}
-                className="absolute z-50 min-w-[160px] rounded-md border bg-white/95 backdrop-blur-sm py-1 text-sm shadow-xl ring-1 ring-black/5"
+            className="absolute z-50 min-w-[160px] rounded-md border bg-white/95 backdrop-blur-sm py-1 text-sm shadow-xl ring-1 ring-black/5 dark:border-slate-700 dark:bg-slate-900/95"
                 style={{ left: projectCtxMenu.x, top: projectCtxMenu.y }}
                 onClick={(e) => e.stopPropagation()}
               >
@@ -3514,7 +3529,7 @@ export default function CodexFlowManagerUI() {
       <SettingsDialog
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
-        values={{ terminal: terminalMode, distro: wslDistro, codexCmd, sendMode, locale, projectPathStyle, notifications: notificationPrefs, network: networkPrefs, terminalFontFamily }}
+        values={{ terminal: terminalMode, distro: wslDistro, codexCmd, sendMode, locale, projectPathStyle, theme: themeSetting, notifications: notificationPrefs, network: networkPrefs, terminalFontFamily }}
         onSave={async (v) => {
           const nextTerminal = v.terminal;
           const nextDistro = v.distro;
@@ -3524,6 +3539,7 @@ export default function CodexFlowManagerUI() {
           const nextLocale = v.locale;
           const nextNotifications = normalizeCompletionPrefs(v.notifications);
           const nextFontFamily = normalizeTerminalFontFamily(v.terminalFontFamily);
+          const nextTheme = normalizeThemeSetting(v.theme);
           // 先切换语言（内部会写入 settings 并广播），再持久化其它字段
           try { await (window as any).host?.i18n?.setLocale?.(nextLocale); setLocale(nextLocale); } catch {}
           try {
@@ -3532,7 +3548,8 @@ export default function CodexFlowManagerUI() {
               distro: nextDistro,
               codexCmd: nextCmd,
               sendMode: nextSend,
-              projectPathStyle: v.projectPathStyle,
+              projectPathStyle: nextStyle,
+              theme: nextTheme,
               notifications: nextNotifications,
               network: v.network,
               terminalFontFamily: nextFontFamily,
@@ -3543,6 +3560,7 @@ export default function CodexFlowManagerUI() {
           setCodexCmd(nextCmd);
           setSendMode(nextSend);
           setProjectPathStyle(nextStyle);
+          setThemeSetting(nextTheme);
           setNotificationPrefs(nextNotifications);
           setNetworkPrefs(v.network);
           setTerminalFontFamily(nextFontFamily);
@@ -3717,7 +3735,7 @@ export default function CodexFlowManagerUI() {
         </DialogContent>
       </Dialog>
 
-      {/* 发送行为说明：当前“发送并确认”仅为文案，逻辑仍为直接写入并回车；如需真正的确认弹窗，后续在此处接入。 */}
+      {/* 发送行为说明：当前"发送并确认"仅为文案，逻辑仍为直接写入并回车；如需真正的确认弹窗，后续在此处接入。 */}
     </TooltipProvider>
   );
 }
@@ -3795,8 +3813,8 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
         if (ty === 'function_call') {
           // 展开显示 function_call
           return (
-            <div key={`${kprefix || 'itm'}-fnc-${i}`} className="rounded border border-slate-200 bg-slate-50 p-2 text-xs">
-              <div className="flex items-center justify-between text-slate-600 font-medium">
+            <div key={`${kprefix || 'itm'}-fnc-${i}`} className="rounded border border-slate-200 bg-slate-50 p-2 text-xs dark:border-slate-700 dark:bg-slate-800/70">
+              <div className="flex items-center justify-between text-slate-600 font-medium dark:text-slate-200">
                 <div>function_call</div>
                 <HistoryCopyButton text={text} />
               </div>
@@ -3807,8 +3825,8 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
         if (ty === 'function_output') {
           // 展开显示 function_output
           return (
-            <div key={`${kprefix || 'itm'}-fno-${i}`} className="rounded border border-slate-200 bg-slate-50 p-2 text-xs">
-              <div className="flex items-center justify-between text-slate-600 font-medium">
+            <div key={`${kprefix || 'itm'}-fno-${i}`} className="rounded border border-slate-200 bg-slate-50 p-2 text-xs dark:border-slate-700 dark:bg-slate-800/70">
+              <div className="flex items-center justify-between text-slate-600 font-medium dark:text-slate-200">
                 <div>function_output</div>
                 <HistoryCopyButton text={text} />
               </div>
@@ -3818,7 +3836,7 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
         }
         if (ty === 'summary') {
           return (
-            <div key={`${kprefix || 'itm'}-sum-${i}`} className="relative rounded border bg-white p-2 text-xs text-slate-700">
+            <div key={`${kprefix || 'itm'}-sum-${i}`} className="relative rounded border bg-white p-2 text-xs text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100">
               <HistoryCopyButton text={text} className="absolute right-2 top-2" />
               {text}
             </div>
@@ -3827,8 +3845,8 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
         if (ty === 'git') {
           // 展开显示 git
           return (
-            <div key={`${kprefix || 'itm'}-git-${i}`} className="rounded border border-slate-200 bg-slate-50 p-2 text-xs">
-              <div className="flex items-center justify-between text-slate-600 font-medium">
+            <div key={`${kprefix || 'itm'}-git-${i}`} className="rounded border border-slate-200 bg-slate-50 p-2 text-xs dark:border-slate-700 dark:bg-slate-800/70">
+              <div className="flex items-center justify-between text-slate-600 font-medium dark:text-slate-200">
                 <div>git</div>
                 <HistoryCopyButton text={text} />
               </div>
@@ -3838,8 +3856,8 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
         }
         if (ty === 'input_text') {
           return (
-            <div key={`${kprefix || 'itm'}-in-${i}`} className="rounded border bg-white p-3 text-sm leading-6">
-              <div className="mb-1 flex items-center justify-between text-xs uppercase tracking-wide text-slate-500">
+            <div key={`${kprefix || 'itm'}-in-${i}`} className="rounded border bg-white p-3 text-sm leading-6 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100">
+              <div className="mb-1 flex items-center justify-between text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
                 <span>input</span>
                 <HistoryCopyButton text={text} />
               </div>
@@ -3849,8 +3867,8 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
         }
         if (ty === 'output_text') {
           return (
-            <div key={`${kprefix || 'itm'}-out-${i}`} className="rounded border bg-white p-3 text-sm leading-6">
-              <div className="mb-1 flex items-center justify-between text-xs uppercase tracking-wide text-slate-500">
+            <div key={`${kprefix || 'itm'}-out-${i}`} className="rounded border bg-white p-3 text-sm leading-6 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100">
+              <div className="mb-1 flex items-center justify-between text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
                 <span>output</span>
                 <HistoryCopyButton text={text} />
               </div>
@@ -3861,8 +3879,8 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
         if (ty === 'state') {
           // 展开显示 state
           return (
-            <div key={`${kprefix || 'itm'}-state-${i}`} className="rounded border border-slate-200 bg-slate-50 p-2 text-xs">
-              <div className="flex items-center justify-between text-slate-600 font-medium">
+            <div key={`${kprefix || 'itm'}-state-${i}`} className="rounded border border-slate-200 bg-slate-50 p-2 text-xs dark:border-slate-700 dark:bg-slate-800/70">
+              <div className="flex items-center justify-between text-slate-600 font-medium dark:text-slate-200">
                 <div>state</div>
                 <HistoryCopyButton text={text} />
               </div>
@@ -3875,8 +3893,8 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
         if (ty === 'session_meta') {
           // 展开显示 session_meta
           return (
-            <div key={`${kprefix || 'itm'}-meta-${i}`} className="rounded border border-slate-200 bg-slate-50 p-2 text-xs">
-              <div className="flex items-center justify-between text-slate-600 font-medium">
+            <div key={`${kprefix || 'itm'}-meta-${i}`} className="rounded border border-slate-200 bg-slate-50 p-2 text-xs dark:border-slate-700 dark:bg-slate-800/70">
+              <div className="flex items-center justify-between text-slate-600 font-medium dark:text-slate-200">
                 <div>session_meta</div>
                 <HistoryCopyButton text={text} />
               </div>
@@ -3915,7 +3933,7 @@ function renderHistoryBlocks(id: string, sessions: HistorySession[], filter?: Re
       </h3>
       <div className="space-y-3">
         {nonEmptyMessages.map((m, i) => (
-          <div key={`${id}-${i}`} className="rounded-lg border bg-white p-3">
+          <div key={`${id}-${i}`} className="rounded-lg border bg-white p-3 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100">
             <div className="mb-1 text-xs uppercase tracking-wide text-slate-500">{m.role}</div>
             <ContentRenderer items={m.content} kprefix={`${id}-${i}`} />
           </div>
@@ -4136,7 +4154,7 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
 
 function OpenProjectDialog({ onAdd }: { onAdd: (name: string, winPath: string) => void }) {
   const { t } = useTranslation(['common']);
-  // 现在“新建”改为“打开项目”：弹出系统选择目录对话，选中后加入项目并打开控制台
+  // 现在"新建"改为"打开项目"：弹出系统选择目录对话，选中后加入项目并打开控制台
   const [loading, setLoading] = useState(false);
   return (
     <Button
