@@ -37,6 +37,22 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
   const dlog = (msg: string) => { if (dbgEnabled()) { try { (window as any).host?.utils?.perfLog?.(msg); } catch {} } };
   // “整行钉死”从统一配置读取
   const pinDisabled = () => { try { return !!(globalThis as any).__cf_disable_pin__; } catch { return false; } };
+  const nowMs = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
+  // 说明：部分插件（例如 uTools）会在鼠标侧键上模拟 Ctrl+C，这里以时间窗口识别并阻断“伪 Ctrl+C”
+  const AUX_MOUSE_CTRL_TIMEOUT_MS = 600;
+  // 研究与工程取舍：
+  // - 键击动力学的普通字母对“飞行时间”常见在 80–200ms；但“修饰键+字母”的最短间隔可显著更短。
+  // - 为避免误杀真实 Ctrl+C，这里将“可疑 Ctrl→C 间隔”收紧为 30ms，仅倾向命中脚本/模拟注入；
+  //   若需要在特定环境进一步调优，可通过 globalThis.__cf_synth_ctrl_c_threshold_ms 覆盖。
+  const SYNTH_CTRL_C_THRESHOLD_MS = (() => {
+    try {
+      const v = Number((globalThis as any).__cf_synth_ctrl_c_threshold_ms);
+      return isFinite(v) && v > 0 ? v : 30;
+    } catch {
+      return 30;
+    }
+  })();
+  const SYNTH_CTRL_C_STALE_MS = 1500;
 
   let term: Terminal | null = null;
   let fitAddon: FitAddon | null = null;
@@ -51,11 +67,14 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
   let removeWheelListener: (() => void) | null = null;
   let removeCtxMenuOverlay: (() => void) | null = null;
   let removeAppLevelListeners: (() => void) | null = null; // 全局监听清理（用于关闭终端右键菜单）
+  let removeAuxMouseListener: (() => void) | null = null;
   let removeTermFocusListener: (() => void) | null = null;
   let removeTermBlurListener: (() => void) | null = null;
   // 防重与抑制：用于避免 Ctrl+V 同时触发 keydown + paste 导致的重复粘贴
   let lastManualPasteAt = 0; // 上次手动触发粘贴时间戳（ms）
   let suppressNativePasteUntil = 0; // 在该时间点之前忽略原生 paste 事件（ms）
+  let lastAuxMouseDownAt = 0; // 最近一次检测到鼠标侧键按下（ms）
+  let lastCtrlKeydownAt = 0; // 最近一次 Ctrl 键按下（ms）
   // 低版本 Windows（ConPTY < 21376）降级重排开关与状态
   let legacyWinNeedsReflowHack = false;
   let legacyWinBuild = 0;
@@ -288,6 +307,17 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
   return {
     mount: (el: HTMLElement) => {
       ensure();
+      // 先清理上一次 mount 残留的监听与覆盖层，确保幂等
+      try { removeDprListener?.(); } catch {} finally { dprMedia = null; removeDprListener = null; }
+      try { removeKeydownCopyListener?.(); } catch {} finally { removeKeydownCopyListener = null; }
+      try { removeDocKeydownCopyListener?.(); } catch {} finally { removeDocKeydownCopyListener = null; }
+      try { removeCopyEventListener?.(); } catch {} finally { removeCopyEventListener = null; }
+      try { removePasteEventListener?.(); } catch {} finally { removePasteEventListener = null; }
+      try { removeContextMenuListener?.(); } catch {} finally { removeContextMenuListener = null; }
+      try { removeWheelListener?.(); } catch {} finally { removeWheelListener = null; }
+      try { removeAuxMouseListener?.(); } catch {} finally { removeAuxMouseListener = null; }
+      try { removeCtxMenuOverlay?.(); } catch {} finally { removeCtxMenuOverlay = null; }
+      try { removeAppLevelListeners?.(); } catch {} finally { removeAppLevelListeners = null; }
       container = el;
       term!.open(el);
       try { dlog(`[adapter] mount.open dpr=${window.devicePixelRatio || 1}`); } catch {}
@@ -393,14 +423,122 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
             if (out) await copyText(out);
           } catch {}
         };
+        // 侧键识别：记录最近一次 AUX（前进/后退）鼠标按键，并在一定时间内将其视为“侧键触发”
+        const hasRecentAuxMouseGesture = () => {
+          try {
+            if (lastAuxMouseDownAt <= 0) return false;
+            const span = nowMs() - lastAuxMouseDownAt;
+            if (!isFinite(span) || span < 0) return false;
+            return span <= AUX_MOUSE_CTRL_TIMEOUT_MS;
+          } catch {
+            return false;
+          }
+        };
+        const consumeAuxMouseGesture = () => {
+          const hit = hasRecentAuxMouseGesture();
+          if (hit) lastAuxMouseDownAt = 0;
+          return hit;
+        };
+        const isAuxMouseButton = (btn: number, buttons: number | undefined) => {
+          if (btn === 3 || btn === 4) return true;
+          if (typeof buttons !== "number") return false;
+          return (buttons & 8) === 8 || (buttons & 16) === 16;
+        };
+        const markAuxMouseDown = () => {
+          try { lastAuxMouseDownAt = nowMs(); } catch { lastAuxMouseDownAt = Date.now(); }
+        };
+        // Ctrl+C 判定：若 Ctrl 与 C 在极短时间内连续触发，判定为外部模拟而非用户主动中断
+        const consumeSuspiciousCtrlCombo = () => {
+          if (lastCtrlKeydownAt <= 0) return false;
+          try {
+            const span = nowMs() - lastCtrlKeydownAt;
+            if (!isFinite(span) || span < 0) {
+              lastCtrlKeydownAt = 0;
+              return false;
+            }
+            if (span <= SYNTH_CTRL_C_THRESHOLD_MS) {
+              lastCtrlKeydownAt = 0;
+              return true;
+            }
+            if (span >= SYNTH_CTRL_C_STALE_MS) {
+              lastCtrlKeydownAt = 0;
+            }
+            return false;
+          } catch {
+            lastCtrlKeydownAt = 0;
+            return false;
+          }
+        };
+        const maybeMarkCtrlKeydown = (e: KeyboardEvent) => {
+          try {
+            const key = String(e.key || "").toLowerCase();
+            if (key === "control" || key === "ctrl") {
+              lastCtrlKeydownAt = nowMs();
+            }
+          } catch {
+            lastCtrlKeydownAt = Date.now();
+          }
+        };
+        const onPointerDownCapture = (e: PointerEvent) => {
+          try {
+            if (e.pointerType && e.pointerType !== "mouse") return;
+            if (isAuxMouseButton(e.button, e.buttons)) markAuxMouseDown();
+          } catch {}
+        };
+        const onMouseDownCapture = (e: MouseEvent) => {
+          try {
+            if (isAuxMouseButton(e.button, e.buttons)) markAuxMouseDown();
+          } catch {}
+        };
+        // 捕获全局 auxclick：部分浏览器不会在 pointerdown/mousedown 上报侧键，但会触发 auxclick
+        const onWindowAuxClickCapture = (e: MouseEvent) => {
+          try {
+            if (!container) return;
+            if (!isAuxMouseButton(e.button, e.buttons)) return;
+            const target = e.target as Node | null;
+            const active = (document.activeElement as any as Node | null) || null;
+            const within = container.contains(target || (null as any)) || container.contains(active || (null as any));
+            if (within) markAuxMouseDown();
+          } catch {}
+        };
+        const auxDisposers: (() => void)[] = [];
+        try {
+          const host = container!;
+          host.addEventListener("pointerdown", onPointerDownCapture, true);
+          auxDisposers.push(() => {
+            try { host.removeEventListener("pointerdown", onPointerDownCapture, true); } catch {}
+          });
+          host.addEventListener("mousedown", onMouseDownCapture, true);
+          auxDisposers.push(() => {
+            try { host.removeEventListener("mousedown", onMouseDownCapture, true); } catch {}
+          });
+        } catch {}
+        try {
+          window.addEventListener("auxclick", onWindowAuxClickCapture, true);
+          auxDisposers.push(() => {
+            try { window.removeEventListener("auxclick", onWindowAuxClickCapture, true); } catch {}
+          });
+        } catch {}
+        removeAuxMouseListener = () => {
+          while (auxDisposers.length > 0) {
+            const dispose = auxDisposers.pop();
+            if (!dispose) continue;
+            try { dispose(); } catch {}
+          }
+        };
 
         term!.attachCustomKeyEventHandler((e: KeyboardEvent) => {
           try {
+            maybeMarkCtrlKeydown(e);
             if (isCopyCombo(e)) {
               const sel = getXtermSelection();
               if (sel && sel.length > 0) {
                 copyText(sel);
                 // 阻止交由 xterm 处理，从而避免向 PTY 发送 ^C
+                return false;
+              }
+              if (consumeAuxMouseGesture() || consumeSuspiciousCtrlCombo()) {
+                // 无选区且满足“侧键/伪 Ctrl+C”条件，不向 PTY 传递中断信号
                 return false;
               }
             }
@@ -412,6 +550,7 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
         // 兜底（容器级）：在容器捕获阶段拦截复制快捷键，确保在某些渲染器/浏览器差异下也不会把 ^C 透传给 PTY。
         const onKeydownCapture = (e: KeyboardEvent) => {
           try {
+            maybeMarkCtrlKeydown(e);
             if (isCopyCombo(e)) {
               const text = getXtermSelection();
               if (text && text.length > 0) {
@@ -420,19 +559,27 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
                 try { term!.refresh(0, term!.rows - 1); } catch {}
                 return;
               }
+              if (consumeAuxMouseGesture() || consumeSuspiciousCtrlCombo()) {
+                // 阻止侧键模拟的 Ctrl+C 继续冒泡，保持终端进程不被意外中断
+                e.preventDefault();
+                e.stopPropagation();
+                return;
+              }
             }
             if (isPasteCombo(e) || isStdPasteCombo(e)) { e.preventDefault(); e.stopPropagation(); pasteFromClipboard(); return; }
           } catch {}
         };
-        container!.addEventListener('keydown', onKeydownCapture, true);
+        const hostForKeydown = container!;
+        hostForKeydown.addEventListener('keydown', onKeydownCapture, true);
         removeKeydownCopyListener = () => {
-          try { container!.removeEventListener('keydown', onKeydownCapture, true); } catch {}
+          try { hostForKeydown.removeEventListener('keydown', onKeydownCapture, true); } catch {}
         };
 
         // 兜底（文档级）：某些情况下事件可能落在隐藏的 textarea 或聚焦跳转，
         // 这里在捕获阶段兜底一次，但仅当事件来源/当前焦点在终端容器内时才处理，避免影响全局。
         const onDocKeydownCapture = (e: KeyboardEvent) => {
           try {
+            maybeMarkCtrlKeydown(e);
             if (!(isCopyCombo(e) || isPasteCombo(e) || isStdPasteCombo(e))) return;
             const target = e.target as any as Node | null;
             const active = (document.activeElement as any) as Node | null;
@@ -444,6 +591,11 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
                 e.preventDefault(); e.stopPropagation();
                 copyText(text);
                 try { term!.refresh(0, term!.rows - 1); } catch {}
+              }
+              else if (consumeAuxMouseGesture() || consumeSuspiciousCtrlCombo()) {
+                // 文档捕获层同样屏蔽“伪 Ctrl+C”，避免冒泡至其它快捷键处理器
+                e.preventDefault();
+                e.stopPropagation();
               }
             } else if (isPasteCombo(e) || isStdPasteCombo(e)) {
               e.preventDefault(); e.stopPropagation();
@@ -483,9 +635,10 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
             }
           } catch {}
         };
-        container!.addEventListener('copy', onCopyEvent as any);
+        const hostForCopy = container!;
+        hostForCopy.addEventListener('copy', onCopyEvent as any);
         removeCopyEventListener = () => {
-          try { container!.removeEventListener('copy', onCopyEvent as any); } catch {}
+          try { hostForCopy.removeEventListener('copy', onCopyEvent as any); } catch {}
         };
 
         // 粘贴事件：直接注入到终端
@@ -505,8 +658,9 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
             }
           } catch {}
         };
-        container!.addEventListener('paste', onPasteEvent as any);
-        removePasteEventListener = () => { try { container!.removeEventListener('paste', onPasteEvent as any); } catch {} };
+        const hostForPaste = container!;
+        hostForPaste.addEventListener('paste', onPasteEvent as any);
+        removePasteEventListener = () => { try { hostForPaste.removeEventListener('paste', onPasteEvent as any); } catch {} };
 
       // 右键菜单：复制 / 粘贴
       const closeCtxMenu = () => { try { dlog('[adapter] ctxmenu.close'); } catch {}
@@ -569,8 +723,9 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
           };
         };
         const onContextMenu = (e: MouseEvent) => { try { e.preventDefault(); e.stopPropagation(); openCtxMenu(e.clientX, e.clientY); } catch {} };
-        container!.addEventListener('contextmenu', onContextMenu);
-        removeContextMenuListener = () => { try { container!.removeEventListener('contextmenu', onContextMenu); } catch {} };
+        const hostForContextMenu = container!;
+        hostForContextMenu.addEventListener('contextmenu', onContextMenu);
+        removeContextMenuListener = () => { try { hostForContextMenu.removeEventListener('contextmenu', onContextMenu); } catch {} };
 
         // 窗口失焦或页面隐藏时，主动关闭终端右键菜单，避免透明遮罩残留拦截点击
         try {
@@ -609,15 +764,16 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
       // 监听 DPI 变更（跨显示器/系统缩放），触发重新度量
       try {
         const dppx = window.devicePixelRatio || 1;
-        dprMedia = window.matchMedia(`(resolution: ${dppx}dppx)`);
+        const media = window.matchMedia(`(resolution: ${dppx}dppx)`);
+        dprMedia = media;
         const onChange = () => { dlog('[adapter] dppx.change'); setTimeout(doFit, 0); };
         // 兼容旧浏览器 API
-        if ((dprMedia as any).addEventListener) {
-          (dprMedia as any).addEventListener("change", onChange);
-          removeDprListener = () => (dprMedia as any).removeEventListener("change", onChange);
-        } else if ((dprMedia as any).addListener) {
-          (dprMedia as any).addListener(onChange);
-          removeDprListener = () => (dprMedia as any).removeListener(onChange);
+        if ((media as any).addEventListener) {
+          (media as any).addEventListener("change", onChange);
+          removeDprListener = () => (media as any).removeEventListener("change", onChange);
+        } else if ((media as any).addListener) {
+          (media as any).addListener(onChange);
+          removeDprListener = () => (media as any).removeListener(onChange);
         }
       } catch { /* ignore */ }
 
@@ -672,10 +828,7 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
     },
     dispose: () => {
       try { dlog('[adapter] dispose'); if (container) container.style.height = ""; } catch {}
-      term?.dispose();
-      term = null;
-      fitAddon = null;
-      container = null;
+      // 先移除所有监听与覆盖层，再置空 container，避免移除阶段拿不到宿主元素
       try { removeDprListener?.(); } catch {}
       dprMedia = null;
       removeDprListener = null;
@@ -691,6 +844,8 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
       removeContextMenuListener = null;
       try { removeWheelListener?.(); } catch {}
       removeWheelListener = null;
+      try { removeAuxMouseListener?.(); } catch {}
+      removeAuxMouseListener = null;
       try { removeCtxMenuOverlay?.(); } catch {}
       try { removeAppLevelListeners?.(); } catch {}
       removeCtxMenuOverlay = null;
@@ -699,6 +854,13 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
       try { removeTermBlurListener?.(); } catch {}
       removeTermFocusListener = null;
       removeTermBlurListener = null;
+      // 释放终端与引用
+      term?.dispose();
+      term = null;
+      fitAddon = null;
+      container = null;
+      lastAuxMouseDownAt = 0;
+      lastCtrlKeydownAt = 0;
     }
   };
 }
