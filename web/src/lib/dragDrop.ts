@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
-import { toWSLForInsert } from "@/lib/wsl";
+import { toWslRelOrAbsForProject } from "@/lib/wsl";
 
 export type DroppedEntry = {
   /** 原始条目名（不一定包含完整路径） */
@@ -13,6 +13,15 @@ export type DroppedEntry = {
   /** 是否为目录（尽力判定） */
   isDir?: boolean;
 };
+
+export type WinPathKind = "directory" | "file" | "unknown";
+
+export interface WinPathProbeResult {
+  kind: WinPathKind;
+  exists: boolean;
+  isDirectory: boolean;
+  isFile: boolean;
+}
 
 /**
  * 从 DataTransfer 中提取尽可能多的文件/目录路径（Windows 路径），并返回去重后的列表。
@@ -55,8 +64,9 @@ export function extractWinPathsFromDataTransfer(dt: DataTransfer | null): string
         if (pFromFile) { out.push(pFromFile); continue; }
         // 若是 file: 开头但无法解析，直接跳过，避免生成 file:/G:/... 异常 token
         if (/^file:/i.test(s)) { continue; }
-        const p = s;
-        if (looksLikePath(p)) out.push(p);
+        // Rider 等 IDE 可能将 Windows 路径以百分号编码形式写入 text/plain（如 %20 表示空格），此处尝试在必要时解码
+        const resolved = resolvePlainTextPathCandidate(s);
+        if (resolved) out.push(resolved);
       }
     }
   } catch {}
@@ -65,8 +75,111 @@ export function extractWinPathsFromDataTransfer(dt: DataTransfer | null): string
   return uniq;
 }
 
+/**
+ * 综合 host 提供的 pathExists API 与字符串特征，最佳努力判定 Windows 路径的类型。
+ * - 优先使用主进程 stat 返回的 isDirectory/isFile；
+ * - 兼容旧版本仅返回 exists 标记的实现；
+ * - 当无法确认时，默认按“文件”处理，避免误将文件视作目录。
+ */
+export async function probeWinPathKind(winPath: string): Promise<WinPathProbeResult> {
+  const fallback: WinPathProbeResult = { kind: "unknown", exists: false, isDirectory: false, isFile: false };
+  const raw = String(winPath || "").trim();
+  if (!raw) return fallback;
+
+  const host: any = (window as any)?.host;
+  const utils: any = host?.utils;
+
+  if (typeof utils?.pathExists !== "function") {
+    const heuristicKind = looksLikeDirectoryPath(raw) ? "directory" : "file";
+    return {
+      kind: heuristicKind,
+      exists: false,
+      isDirectory: heuristicKind === "directory",
+      isFile: heuristicKind === "file",
+    };
+  }
+
+  const responses: Array<{ res: any; mode: "any" | "dirOnly" }> = [];
+  try { responses.push({ res: await utils.pathExists(raw), mode: "any" }); } catch {}
+  try { responses.push({ res: await utils.pathExists(raw, true), mode: "dirOnly" }); } catch {}
+
+  let exists = false;
+  for (const { res } of responses) {
+    if (!res || res.ok === false) continue;
+    if (typeof res.exists === "boolean" && res.exists) exists = true;
+    if (typeof res.isDirectory === "boolean" || typeof res.isFile === "boolean") {
+      const isDirectory = !!res.isDirectory;
+      const isFile = !!res.isFile;
+      const actualExists = typeof res.exists === "boolean" ? res.exists : (isDirectory || isFile);
+      return {
+        kind: isDirectory ? "directory" : (isFile ? "file" : exists ? "file" : "unknown"),
+        exists: actualExists,
+        isDirectory,
+        isFile,
+      };
+    }
+  }
+
+  const dirProbe = responses.find(({ mode, res }) => mode === "dirOnly" && res && res.ok !== false);
+  if (dirProbe && typeof dirProbe.res?.exists === "boolean" && dirProbe.res.exists) {
+    return { kind: "directory", exists: true, isDirectory: true, isFile: false };
+  }
+
+  if (exists) {
+    const heuristic = looksLikeDirectoryPath(raw) ? "directory" : "file";
+    return {
+      kind: heuristic,
+      exists: true,
+      isDirectory: heuristic === "directory",
+      isFile: heuristic === "file",
+    };
+  }
+
+  return fallback;
+}
+
 function looksLikePath(s: string): boolean {
-  return /^(?:[a-zA-Z]:\\|\\\\|file:\/\/\/)/.test(s) || /\//.test(s);
+  const str = String(s || "").trim();
+  if (!str) return false;
+  // Windows 盘符绝对路径（支持反斜杠或正斜杠）
+  if (/^[a-zA-Z]:[\\/]/.test(str)) return true;
+  // Windows UNC 共享路径：\\server\share\...
+  if (/^\\\\[^\\/]+[\\/][^\\/]+/.test(str)) return true;
+  // Windows 长路径前缀：\\?\C:\...
+  if (/^\\\\\?\\[a-zA-Z]:[\\/]/.test(str)) return true;
+  // Windows UNC 长路径变体：\\?\UNC\server\share\...
+  if (/^\\\\\?\\UNC\\[^\\]+\\[^\\]+/.test(str)) return true;
+  // file: URI（其余解析在 normalizeUriToWinPath 中处理）
+  if (/^file:[\\/]{1,3}/i.test(str)) return true;
+  // POSIX/WSL 绝对路径（/mnt/*、/home/* 等）
+  if (str.startsWith("/")) return true;
+  return false;
+}
+
+/**
+ * 从 text/plain 候选中推断合适的 Windows 路径字符串。
+ *
+ * 设计原则：
+ * 1) 若原串已经“像路径”（盘符/UNC/file:/POSIX），一律保留原样，不尝试百分号解码；
+ *    - 避免把合法文件名中的 %xx（如 feature%20）误解码为空格等导致访问失败。
+ * 2) 仅当原串不像路径、且包含 %xx 片段时，尝试一次“安全解码”，
+ *    - 解码后仍需“像路径”才接受；否则丢弃（返回空串，让上层忽略该条）。
+ * 3) file: URI 的解析在 normalizeUriToWinPath 中完成，这里不重复处理。
+ *
+ * 典型用例：
+ * - "C%3A%5CUsers%5Cme%5Ca.txt" -> "C:\\Users\\me\\a.txt"
+ * - "C:\\repo\\feature%20" -> 原样返回，避免误解码为带空格路径
+ */
+function resolvePlainTextPathCandidate(s: string): string | "" {
+  const value = String(s || "").trim();
+  if (!value) return "";
+  // 关键策略：一旦原串已“像路径”，直接返回原串，避免将合法文件名中的 %xx 被误当作 URL 编码解码
+  if (looksLikePath(value)) return value;
+  const hasEncoded = /%[0-9a-fA-F]{2}/.test(value);
+  if (!hasEncoded) return "";
+  // 仅当原串不像路径时，尝试一次安全解码；解码后仍需“像路径”才接受
+  const decoded = maybeDecodePercentEncodedPath(value);
+  return looksLikePath(decoded) ? decoded : "";
 }
 
 function normalizeUriToWinPath(s: string): string | "" {
@@ -140,6 +253,33 @@ function normalizeUriToWinPath(s: string): string | "" {
   } catch { return ""; }
 }
 
+/**
+ * 在原始路径与“可能的解码候选”之间进行存在性择优：
+ * - 若原串不含 %xx，直接返回原串；
+ * - 若含 %xx，尝试安全解码（仅当 decode 后仍“像路径”）；
+ * - 并发探测两个候选的存在性，若仅 decoded 存在则返回 decoded；仅 original 存在则返回 original；
+ * - 其余情况（都存在或都不存在或不可判定）返回 original，以避免静默改写包含 '%' 的合法文件名。
+ */
+export async function preferExistingWinPathCandidate(original: string): Promise<string> {
+  try {
+    const raw = String(original || "").trim();
+    if (!raw) return raw;
+    if (!/%[0-9a-fA-F]{2}/.test(raw)) return raw;
+    const decoded = maybeDecodePercentEncodedPath(raw);
+    if (decoded === raw) return raw;
+    if (!looksLikePath(decoded)) return raw;
+    const [a, b] = await Promise.all([
+      probeWinPathKind(raw).catch(() => ({ kind: "unknown", exists: false, isDirectory: false, isFile: false } as WinPathProbeResult)),
+      probeWinPathKind(decoded).catch(() => ({ kind: "unknown", exists: false, isDirectory: false, isFile: false } as WinPathProbeResult)),
+    ]);
+    const aExists = !!(a && (a.exists || a.isDirectory || a.isFile));
+    const bExists = !!(b && (b.exists || b.isDirectory || b.isFile));
+    if (bExists && !aExists) return decoded;
+    if (aExists && !bExists) return raw;
+    return raw;
+  } catch { return String(original || ""); }
+}
+
 // 仅用于去重的 Windows 路径标准化：
 // - 统一使用 \\ 分隔符；
 // - 盘符字母转大写；
@@ -149,6 +289,14 @@ function normalizeForDedupe(p: string): string {
   try {
     let s = String(p || "");
     if (!s) return s;
+    const looksValid = looksLikePath(s);
+    if (!looksValid || /%(5C|2F|3A)/i.test(s)) {
+      // 为了更好地去重，仅在可疑输入下尝试解码百分号编码（例如 C%3A%5C... -> C:\...），避免误改包含真实 %xx 的合法路径
+      const decoded = maybeDecodePercentEncodedPath(s, { onlyWhenLooksInvalid: true });
+      if (decoded !== s) {
+        s = decoded;
+      }
+    }
     // 统一分隔符
     s = s.replace(/\//g, "\\");
     // UNC
@@ -175,28 +323,53 @@ function normalizeForDedupe(p: string): string {
   } catch { return String(p || ""); }
 }
 
+function looksLikeDirectoryPath(p: string): boolean {
+  const str = String(p || "");
+  if (!str) return false;
+  if (/[\\/]+$/.test(str)) return true;
+  const name = str.split(/[\\/]/).pop() || "";
+  if (!name) return false;
+  const hasExt = /\.[^.]+$/.test(name) && !name.startsWith(".");
+  // 若最后一段缺少常见文件扩展名，更倾向视作目录
+  return !hasExt;
+}
+
+// 仅在字符串中出现合法百分号编码片段时尝试解码；失败或启发式不通过时返回原串
+function maybeDecodePercentEncodedPath(s: string, options?: { onlyWhenLooksInvalid?: boolean }): string {
+  try {
+    const raw = String(s || "");
+    if (!raw) return raw;
+    const hasEncodedToken = /%[0-9a-fA-F]{2}/.test(raw);
+    if (options?.onlyWhenLooksInvalid && looksLikePath(raw) && !hasEncodedToken) return raw;
+    if (!hasEncodedToken) return raw;
+    const decoded = decodeURIComponent(raw);
+    const canonicalSource = canonicalizeEncodedPathCandidate(raw);
+    const recodedViaUri = canonicalizeEncodedPathCandidate(encodeURI(decoded));
+    if (recodedViaUri === canonicalSource) {
+      return decoded;
+    }
+    const recodedViaComponent = canonicalizeEncodedPathCandidate(encodeURIComponent(decoded));
+    if (recodedViaComponent === canonicalSource) {
+      return decoded;
+    }
+    return raw;
+  } catch { return String(s || ""); }
+}
+
+function canonicalizeEncodedPathCandidate(value: string): string {
+  return String(value || "")
+    .replace(/\\/g, "%5C")
+    .replace(/%[0-9a-fA-F]{2}/g, (token) => token.toUpperCase());
+}
+
 /**
  * 根据项目根将拖入的 Windows 路径转换为 WSL 路径：
  * - 若在项目根内：返回相对 WSL 路径（不以 / 开头）
  * - 若不在项目内：返回 WSL 绝对路径（/mnt/... 或 /home/...）
  */
 export function toProjectWslRelOrAbs(winPath: string, projectWinRoot?: string): string {
-  const abs = String(winPath || "");
-  const root = String(projectWinRoot || "").trim();
-  if (root) {
-    try {
-      const a = normalizeWin(abs);
-      const r = normalizeWin(root);
-      if (a.toLowerCase().startsWith(r.toLowerCase() + "\\") || a.toLowerCase() === r.toLowerCase()) {
-        const rel = a.slice(r.length).replace(/^\\+/, "").replace(/\\/g, "/");
-        return rel; // 相对 WSL 路径
-      }
-    } catch {}
-  }
-  // 项目外：返回可插入的 WSL 绝对路径
-  return toWSLForInsert(abs);
+  // 与 web/src/lib/wsl.ts 保持一致，等于项目根时返回 "."，在项目内返回相对路径，否则返回可插入的 WSL 绝对路径
+  return toWslRelOrAbsForProject(winPath, projectWinRoot, "relative");
 }
-
-function normalizeWin(p: string): string { return String(p || "").replace(/\//g, "\\"); }
 
 
