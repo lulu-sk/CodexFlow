@@ -10,7 +10,7 @@ import AtCommandPalette, { type PaletteLevel } from "@/components/at-mention-new
 import type { AtCategoryId, AtItem, SearchScope } from "@/types/at";
 import { getCaretViewportPosition } from "@/components/at-mention-new/caret";
 import { toWSLForInsert, joinWinAbs, toWslRelOrAbsForProject } from "@/lib/wsl";
-import { extractWinPathsFromDataTransfer } from "@/lib/dragDrop";
+import { extractWinPathsFromDataTransfer, probeWinPathKind, preferExistingWinPathCandidate, type WinPathProbeResult } from "@/lib/dragDrop";
 import {
   extractImagesFromPasteEvent,
   extractImagesFromFileList,
@@ -22,7 +22,7 @@ import {
 // PathChipsInput：用于以 Chip 形式展示/编辑图片或路径，支持：
 // - 粘贴图片 -> 自动持久化并生成 Chip（含缩略图）
 // - 输入 @ 触发文件搜索；选中文件 -> 生成 Chip
-// - 回车/逗号/分号/空格 将草稿解析为路径并生成 Chip
+// - 回车确认：会将草稿按换行/逗号/分号/空白拆分为路径并生成 Chip（设计上不支持空格直接确认）
 // - Backspace 在草稿为空时删除最后一个 Chip
 // - 仅保留一行输入外观，自动换行展示 Chip
 // 说明：组件内不将 Chip 再写回文本；向外暴露 chips 与 draft 两个受控值
@@ -64,6 +64,31 @@ function isLikelyPath(s: string): boolean {
   if (!v) return false;
   // Windows 盘符、UNC、WSL、常见 POSIX 起始
   return /(^[a-zA-Z]:\\)|(^\\\\)|(^\/mnt\/)|(^\/(home|usr)\/)/.test(v);
+}
+
+// 判断相对路径或文件名是否足够像“路径”
+function isLikelyRelativePath(s: string): boolean {
+  const v = String(s || "").trim();
+  if (!v) return false;
+  if (/^\.{1,2}([\\\/]|$)/.test(v)) {
+    return v.length > 1; // "./"、"../" 开头视作相对路径
+  }
+  if (/[\\\/]/.test(v)) {
+    return true; // 含目录分隔符
+  }
+  if (/\s/.test(v)) return false;
+  const base = v.split(/[\\\/]/).pop() || "";
+  if (!base || base === "." || base === "..") return false;
+  if (base.startsWith(".") && base.length > 1 && /^[A-Za-z0-9._-]+$/.test(base)) {
+    return true; // .gitignore / .env 等
+  }
+  if (!base.includes(".")) return false;
+  const parts = base.split(".");
+  const ext = parts.pop() || "";
+  const name = parts.join(".");
+  if (!name || !ext) return false;
+  if (!/^[A-Za-z0-9_-]{1,16}$/.test(ext)) return false;
+  return /^[A-Za-z0-9._-]+$/.test(name);
 }
 
 // 从草稿中“@查询”替换为指定文本（不保留 @）
@@ -392,7 +417,7 @@ export default function PathChipsInput({
       .split(/[\n,;\s]+/)
       .map((s) => s.trim())
       .filter(Boolean);
-    const pathTokens = tokens.filter(isLikelyPath);
+    const pathTokens = tokens.filter((token) => isLikelyPath(token) || isLikelyRelativePath(token));
     if (pathTokens.length === 0) return false;
     const items: SavedImage[] = pathTokens.map((p) => {
       const isRel = !/^\//.test(p) && !/^([a-zA-Z]):\\/.test(p) && !/^\\\\/.test(p);
@@ -481,8 +506,9 @@ export default function PathChipsInput({
     // 将草稿提交为路径 Chip
     // 注意：multiline 模式下，Enter 用于换行，不拦截
     const shouldCommitByEnter = e.key === "Enter" && !multiline;
-    const shouldCommitBySpace = e.key === " ";
-    if (open && (shouldCommitByEnter || shouldCommitBySpace)) {
+    // 设计要求：Chip 确认仅允许回车，空格等按键不得触发提交
+    // 仅在 @ 面板展开时拦截提交：刻意保持此约束以避免常规输入被误转换为路径 Chip，请勿调整
+    if (open && shouldCommitByEnter) {
       if (draft.trim().length === 0) return;
       const ok = commitDraftToChips();
       if (ok) e.preventDefault();
@@ -623,23 +649,29 @@ export default function PathChipsInput({
             } catch {}
 
             const listRaw = extractWinPathsFromDataTransfer(dt);
-            const list = shouldSkipImagePaths ? listRaw.filter((wp) => !isImageFileName(wp)) : listRaw;
-            if (!list || list.length === 0) return;
-            let checks: boolean[] = [];
+            const listBase = shouldSkipImagePaths ? listRaw.filter((wp) => !isImageFileName(wp)) : listRaw;
+            // 可选增强：在原串与解码候选之间进行“存在性择优”，仅在包含 %xx 时尝试；其余保持原样
+            let list: string[] = listBase;
             try {
-              checks = await Promise.all(list.map(async (wp) => {
-                try {
-                  const res: any = await (window as any).host?.utils?.pathExists?.(wp, true);
-                  if (res && res.ok) {
-                    if (typeof res.isDirectory === 'boolean') return res.isDirectory;
-                    return !!res.exists;
-                  }
-                  return false;
-                } catch { return false; }
+              list = await Promise.all(listBase.map(async (wp) => {
+                if (!/%[0-9a-fA-F]{2}/.test(String(wp))) return wp;
+                try { return await preferExistingWinPathCandidate(wp); } catch { return wp; }
+              }));
+            } catch {}
+            if (!list || list.length === 0) return;
+            let probes: WinPathProbeResult[] = [];
+            try {
+              probes = await Promise.all(list.map(async (wp) => {
+                try { return await probeWinPathKind(wp); } catch { return { kind: "unknown", exists: false, isDirectory: false, isFile: false }; }
               }));
             } catch {}
             const items: SavedImage[] = list.map((wp, i) => {
               const wsl = toWslRelOrAbsForProject(wp, winRoot, projectPathStyle === 'absolute' ? 'absolute' : 'relative');
+              // 当 wsl 为 "."（项目根）时，展示友好的标签：回退到 Windows 路径的最后一段，而不是 "."
+              const labelBase = (wsl === ".")
+                ? (String(wp).split(/[/\\]/).pop() || ".")
+                : ((wsl || wp).split(/[/\\]/).pop() || "");
+              const probe = probes[i];
               return {
                 id: uid(),
                 blob: new Blob(),
@@ -649,9 +681,9 @@ export default function PathChipsInput({
                 saved: true,
                 winPath: wp,
                 wslPath: wsl,
-                fileName: (wsl || wp).split(/[/\\]/).pop() || t('common:files.path'),
+                fileName: labelBase || t('common:files.path'),
                 fromPaste: false,
-                isDir: !!checks[i],
+                isDir: probe?.kind === "directory",
               } as any;
             });
             appendChips(items);
