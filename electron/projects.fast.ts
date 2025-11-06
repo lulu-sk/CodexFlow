@@ -85,6 +85,13 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
     try { const rs = fs.createReadStream(fp, { encoding: 'utf8', start: 0, end: 128 * 1024 - 1 }); let buf = ''; rs.on('data', (c) => { buf += c; if (buf.length >= 128 * 1024) { try { rs.close(); } catch {} resolve(buf); } }); rs.on('end', () => resolve(buf)); rs.on('error', () => resolve('')); } catch { resolve(''); }
   });
   const ruleWinToWsl = (p: string): string => { try { if (isUNCPath(p)) { const u = uncToWsl(p); if (u) return u.wslPath; } const m = p.match(/^([a-zA-Z]):\\(.*)$/); if (m) return `/mnt/${m[1].toLowerCase()}/${m[2].replace(/\\/g, '/')}`; return p; } catch { return p; } };
+  const storeMap = new Map<string, Project>();
+  for (const item of store) {
+    try {
+      const key = canonKey(item.winPath, item.wslPath);
+      if (key && !storeMap.has(key)) storeMap.set(key, item);
+    } catch {}
+  }
 
   // 日志降噪：按根目录聚合统计，仅采样少量示例
   const DBG_MAX_SAMPLES = 3;
@@ -205,11 +212,24 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
     const uniqueMap = new Map<string, Project>();
     for (const p of projects) {
       const k = canonKey(p.winPath, p.wslPath);
-      if (k && !uniqueMap.has(k)) {
-        // 规范名称：优先 Windows/UNC 末级，保留大小写
-        const fixedName = p.winPath ? path.basename(p.winPath) : (p.wslPath ? p.wslPath.split('/').pop() || p.name : p.name);
-        uniqueMap.set(k, { ...p, name: fixedName || p.name });
+      if (!k || uniqueMap.has(k)) continue;
+      // 规范名称：优先 Windows/UNC 末级，保留大小写
+      const fixedName = p.winPath ? path.basename(p.winPath) : (p.wslPath ? p.wslPath.split('/').pop() || p.name : p.name);
+      const prev = storeMap.get(k);
+      if (prev) {
+        const preservedCreatedAt = typeof prev.createdAt === "number" && !Number.isNaN(prev.createdAt) ? prev.createdAt : p.createdAt;
+        const preservedLastOpenedAt = typeof prev.lastOpenedAt === "number" && !Number.isNaN(prev.lastOpenedAt) ? prev.lastOpenedAt : p.lastOpenedAt;
+        uniqueMap.set(k, {
+          ...prev,
+          ...p,
+          id: prev.id || p.id,
+          createdAt: preservedCreatedAt,
+          lastOpenedAt: preservedLastOpenedAt,
+          name: fixedName || prev.name || p.name,
+        });
+        continue;
       }
+      uniqueMap.set(k, { ...p, name: fixedName || p.name });
     }
     const unique = Array.from(uniqueMap.values());
     try { await saveStoreAsync(unique); } catch {}
