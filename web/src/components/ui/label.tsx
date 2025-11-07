@@ -5,6 +5,6 @@ import * as React from 'react';
 import { cn } from '@/lib/utils';
 
 export function Label(props: React.LabelHTMLAttributes<HTMLLabelElement>) {
-  return <label className={cn('text-sm text-[var(--cf-text-secondary)]', props.className)} {...props} />;
+  return <label className={cn('text-sm font-apple-medium text-[var(--cf-text-secondary)]', props.className)} {...props} />;
 }
 

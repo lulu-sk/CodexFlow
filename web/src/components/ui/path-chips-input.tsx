@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { FolderOpenDot, FileText, ScrollText } from "lucide-react";
@@ -208,10 +208,10 @@ export default function PathChipsInput({
 
   // 外层容器：相对定位。为避免滚动时附件 Chip 遮挡文本，
   // 采用常规文档流展示 Chips（不再叠放在输入区域上）。
-  const base = "relative w-full rounded-md border border-slate-200 bg-white px-3 text-sm ring-offset-white placeholder:text-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-950/10 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)] dark:text-[var(--cf-text-primary)] dark:ring-offset-[var(--cf-app-bg)] dark:placeholder:text-[var(--cf-text-muted)] dark:focus-visible:ring-[var(--cf-accent)]/40";
+  const base = "relative w-full rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-solid)] px-3 text-sm ring-offset-[var(--cf-app-bg)] placeholder:text-[var(--cf-text-muted)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cf-accent)]/50 focus-visible:border-[var(--cf-accent)] shadow-apple-inner";
   const containerClass = cn(
     base,
-    "transition-colors select-none",
+    "transition-all duration-apple ease-apple select-none hover:border-[var(--cf-border-strong)] text-[var(--cf-text-primary)]",
     // 减小顶部内边距，靠近容器上边缘；保留底部内边距保证输入区呼吸感
     multiline ? "min-h-[7.5rem] pt-0.5 pb-2" : "min-h-10 pt-0.5 pb-1",
     className
@@ -235,10 +235,40 @@ export default function PathChipsInput({
       setCtxMenu((m) => ({ ...m, show: false }));
     };
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setCtxMenu((m) => ({ ...m, show: false })); };
+    const onScroll = () => setCtxMenu((m) => ({ ...m, show: false }));
     document.addEventListener('mousedown', onDown, true);
     document.addEventListener('keydown', onKey, true);
-    return () => { document.removeEventListener('mousedown', onDown, true); document.removeEventListener('keydown', onKey, true); };
+    // 捕获所有滚动容器的滚动，避免错位
+    document.addEventListener('scroll', onScroll, true);
+    window.addEventListener('resize', onScroll);
+    return () => {
+      document.removeEventListener('mousedown', onDown, true);
+      document.removeEventListener('keydown', onKey, true);
+      document.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('resize', onScroll);
+    };
   }, [ctxMenu.show]);
+
+  // 打开后基于菜单实际尺寸做一次边界夹持，确保不溢出视口
+  useLayoutEffect(() => {
+    if (!ctxMenu.show) return;
+    const raf = requestAnimationFrame(() => {
+      const el = ctxMenuRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const pad = 8;
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      let nx = ctxMenu.x;
+      let ny = ctxMenu.y;
+      if (nx + rect.width + pad > vw) nx = Math.max(pad, vw - rect.width - pad);
+      if (ny + rect.height + pad > vh) ny = Math.max(pad, vh - rect.height - pad);
+      if (nx !== ctxMenu.x || ny !== ctxMenu.y) {
+        setCtxMenu((m) => ({ ...m, x: nx, y: ny }));
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [ctxMenu.show, ctxMenu.x, ctxMenu.y]);
 
   const [hoverPreview, setHoverPreview] = useState<{ chip: PathChip; rect: DOMRect; key: string } | null>(null);
   const previewAnchorRef = useRef<HTMLElement | null>(null);
@@ -709,16 +739,16 @@ export default function PathChipsInput({
             const isDir = !!(chipAny as any).isDir || (/\/$/.test(String(chip.wslPath || '')));
             const iconNode = (() => {
               if (chip.previewUrl) {
-                return <img src={chip.previewUrl} className="h-4 w-4 object-cover rounded" alt={chip.fileName || t('common:files.image')} />;
+                return <img src={chip.previewUrl} className="h-3.5 w-3.5 object-cover rounded" alt={chip.fileName || t('common:files.image')} />;
               }
-              if (isRule) return <ScrollText className="h-4 w-4 text-slate-600" />;
-              if (isDir) return <FolderOpenDot className="h-4 w-4 text-slate-600" />;
-              return <FileText className="h-4 w-4 text-slate-600" />;
+              if (isRule) return <ScrollText className="h-3.5 w-3.5 text-slate-600" />;
+              if (isDir) return <FolderOpenDot className="h-3.5 w-3.5 text-slate-600" />;
+              return <FileText className="h-3.5 w-3.5 text-slate-600" />;
             })();
             return (
               <div
                 key={chipKey}
-                className="group relative inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-1 py-0.5 text-[12px] leading-4"
+                className="group relative inline-flex items-center gap-1.5 rounded-apple-sm border border-[var(--cf-border)] bg-[var(--cf-surface-solid)] px-1.5 py-0.5 text-xs leading-[0.875rem] shadow-apple-xs transition-all duration-apple hover:shadow-apple hover:border-[var(--cf-border-strong)]"
                 title={tooltip || undefined}
                 onMouseEnter={(ev) => handleChipMouseEnter(chip, chipKey, ev.currentTarget)}
                 onMouseLeave={hidePreview}
@@ -729,15 +759,15 @@ export default function PathChipsInput({
               >
                 {iconNode}
                 <span
-                  className="text-slate-700 max-w-[160px] truncate"
+                  className="text-[var(--cf-text-primary)] max-w-[160px] truncate font-apple-medium"
                   title={tooltip || undefined}
                 >
                   {labelText}
                 </span>
-                <span className="ml-0.5 inline-block rounded bg-slate-200 px-1 text-[10px] text-slate-600">{idx + 1}</span>
+                <span className="ml-0.5 inline-block rounded-apple-sm bg-[var(--cf-surface-hover)] px-1 py-0.5 text-[10px] text-[var(--cf-text-secondary)] font-apple-medium">{idx + 1}</span>
                 <button
                   type="button"
-                  className="ml-1 rounded px-1 text-slate-500 hover:text-slate-900 hover:bg-slate-200"
+                  className="ml-0.5 rounded-apple-sm px-0.5 text-[var(--cf-text-secondary)] hover:text-[var(--cf-text-primary)] hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
                   onClick={async (ev) => {
                     ev.preventDefault(); ev.stopPropagation();
                     try {
@@ -750,7 +780,7 @@ export default function PathChipsInput({
                     }
                   }}
                 >
-                  ×
+                  <span className="text-xs">×</span>
                 </button>
               </div>
             );
@@ -771,8 +801,8 @@ export default function PathChipsInput({
                     className="fixed z-[1200] pointer-events-none"
                     style={{ left: centerX, top }}
                   >
-                    <div className={cn("rounded border bg-white p-1 shadow-lg transition-opacity dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)]", "-translate-x-1/2", translateYClass)}>
-                      <img src={chip.previewUrl} className="block max-h-[28rem] max-w-[28rem] object-contain rounded" alt={chip.fileName || t('common:files.image')} />
+                    <div className={cn("rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple p-2 shadow-apple-lg transition-opacity dark:shadow-apple-dark-lg", "-translate-x-1/2", translateYClass)}>
+                      <img src={chip.previewUrl} className="block max-h-[28rem] max-w-[28rem] object-contain rounded-apple" alt={chip.fileName || t('common:files.image')} />
                     </div>
                   </div>
                 );
@@ -796,7 +826,7 @@ export default function PathChipsInput({
             // - leading-5 提升可读性；min-h 保持与容器协调；pb-10 给右下角发送按钮留出垂直空间；
             style={balancedScrollbarGutter ? ({ scrollbarGutter: 'stable both-edges' } as any) : undefined}
             className={cn(
-              "block w-full min-w-[8rem] outline-none bg-white placeholder:text-slate-400 select-text resize-none whitespace-pre-wrap break-words leading-5 dark:bg-[var(--cf-surface)] dark:text-[var(--cf-text-primary)] dark:placeholder:text-[var(--cf-text-muted)]",
+              "block w-full min-w-[8rem] outline-none bg-[var(--cf-surface-solid)] placeholder:text-[var(--cf-text-muted)] text-[var(--cf-text-primary)] select-text resize-none whitespace-pre-wrap break-words leading-5",
               "py-0.5 pb-10 min-h-[1.5rem]",
               draftInputClassName,
             )}
@@ -812,99 +842,102 @@ export default function PathChipsInput({
             onPointerDown={(e) => { try { (e.target as HTMLElement).setPointerCapture((e as any).pointerId); } catch {} }}
             placeholder={chips.length === 0 ? (rest as any)?.placeholder : undefined}
             style={balancedScrollbarGutter ? ({ scrollbarGutter: 'stable both-edges' } as any) : undefined}
-            className={cn("block w-full min-w-[8rem] outline-none bg-white placeholder:text-slate-400 select-text dark:bg-[var(--cf-surface)] dark:text-[var(--cf-text-primary)] dark:placeholder:text-[var(--cf-text-muted)]", "h-8 py-0.5 pb-10", draftInputClassName)}
+            className={cn("block w-full min-w-[8rem] outline-none bg-[var(--cf-surface-solid)] placeholder:text-[var(--cf-text-muted)] text-[var(--cf-text-primary)] select-text", "h-8 py-0.5 pb-10", draftInputClassName)}
           />
         )}
       </div>
 
       {/* 右键菜单 */}
-      {ctxMenu.show && (
-        <div className="fixed z-[100]" style={{ left: ctxMenu.x, top: ctxMenu.y }} onContextMenu={(e) => e.preventDefault()}>
-          <div ref={ctxMenuRef} className="min-w-[180px] rounded-md border bg-white shadow-lg p-1 text-sm dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)] dark:text-[var(--cf-text-primary)]">
-            <button
-              className="w-full text-left px-2 py-1 rounded hover:bg-slate-100 disabled:opacity-50"
-              disabled={!ctxMenu.chip?.winPath && !ctxMenu.chip?.wslPath}
-              onClick={async () => {
-                try {
-                  const chip = ctxMenu.chip as any;
-                  let p = "";
-                  // 优先处理 wslPath：若为绝对 WSL 路径（以 / 开头），直接使用；若为相对路径且提供了 winRoot，则拼接为 Windows 绝对路径后使用
-                  if (chip?.wslPath) {
-                    const w = String(chip.wslPath || "");
-                    if (w.startsWith("/")) {
-                      p = w;
-                    } else if (typeof winRoot === 'string' && winRoot.trim().length > 0) {
-                      try { p = joinWinAbs(winRoot, w); } catch { p = w; }
-                    } else {
-                      p = w;
-                    }
-                  } else if (chip?.winPath) {
-                    p = String(chip.winPath || "");
-                  } else {
-                    p = "";
-                  }
-                  if (p) {
-                    const isDir = !!chip?.isDir || (/\/$/.test(String(chip?.wslPath || "")) || /\\$/.test(String(p || "")));
-                    if (isDir) {
-                      try {
-                        const res: any = await (window as any).host?.utils?.openPath?.(p);
-                        if (!(res && res.ok)) { try { alert(String(t('common:files.cannotOpenPath'))); } catch {} }
-                      } catch { try { alert(String(t('common:files.cannotOpenPath'))); } catch {} }
-                    } else {
-                      try {
-                        const res: any = await (window as any).host?.utils?.showInFolder?.(p);
-                        if (!(res && res.ok)) { try { alert(String(t('history:cannotOpenContaining'))); } catch {} }
-                      } catch { try { alert(String(t('history:cannotOpenContaining'))); } catch {} }
-                    }
-                  }
-                } catch {}
-                setCtxMenu((m) => ({ ...m, show: false }));
-              }}
-            >
-              {t('history:openContaining')}
-            </button>
-            {/* 复制文件名（含后缀）：仅文件显示 */}
-            {!isChipDir(ctxMenu.chip) && (
+      {ctxMenu.show && typeof document !== "undefined" && createPortal(
+        (
+          <div className="fixed z-[1300]" style={{ left: Math.round(ctxMenu.x), top: Math.round(ctxMenu.y) }} onContextMenu={(e) => e.preventDefault()}>
+            <div ref={ctxMenuRef} className="min-w-[160px] rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple shadow-apple-lg p-1.5 text-sm text-[var(--cf-text-primary)] dark:shadow-apple-dark-lg">
               <button
-                className="mt-0.5 w-full text-left px-2 py-1 rounded hover:bg-slate-100"
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] disabled:opacity-40 transition-all duration-apple-fast"
+                disabled={!ctxMenu.chip?.winPath && !ctxMenu.chip?.wslPath}
                 onClick={async () => {
                   try {
-                    const name = resolveChipFileName(ctxMenu.chip as any);
-                    if (name) {
-                      const res: any = await (window as any).host?.utils?.copyText?.(name);
-                      if (!(res && res.ok)) {
-                        try { await navigator.clipboard.writeText(name); } catch {}
+                    const chip = ctxMenu.chip as any;
+                    let p = "";
+                    // 优先处理 wslPath：若为绝对 WSL 路径（以 / 开头），直接使用；若为相对路径且提供了 winRoot，则拼接为 Windows 绝对路径后使用
+                    if (chip?.wslPath) {
+                      const w = String(chip.wslPath || "");
+                      if (w.startsWith("/")) {
+                        p = w;
+                      } else if (typeof winRoot === 'string' && winRoot.trim().length > 0) {
+                        try { p = joinWinAbs(winRoot, w); } catch { p = w; }
+                      } else {
+                        p = w;
+                      }
+                    } else if (chip?.winPath) {
+                      p = String(chip.winPath || "");
+                    } else {
+                      p = "";
+                    }
+                    if (p) {
+                      const isDir = !!chip?.isDir || (/\/$/.test(String(chip?.wslPath || "")) || /\\$/.test(String(p || "")));
+                      if (isDir) {
+                        try {
+                          const res: any = await (window as any).host?.utils?.openPath?.(p);
+                          if (!(res && res.ok)) { try { alert(String(t('common:files.cannotOpenPath'))); } catch {} }
+                        } catch { try { alert(String(t('common:files.cannotOpenPath'))); } catch {} }
+                      } else {
+                        try {
+                          const res: any = await (window as any).host?.utils?.showInFolder?.(p);
+                          if (!(res && res.ok)) { try { alert(String(t('history:cannotOpenContaining'))); } catch {} }
+                        } catch { try { alert(String(t('history:cannotOpenContaining'))); } catch {} }
                       }
                     }
+                  } catch {}
+                  setCtxMenu((m) => ({ ...m, show: false }));
+                }}
+              >
+                {t('history:openContaining')}
+              </button>
+              {/* 复制文件名（含后缀）：仅文件显示 */}
+              {!isChipDir(ctxMenu.chip) && (
+                <button
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
+                  onClick={async () => {
+                    try {
+                      const name = resolveChipFileName(ctxMenu.chip as any);
+                      if (name) {
+                        const res: any = await (window as any).host?.utils?.copyText?.(name);
+                        if (!(res && res.ok)) {
+                          try { await navigator.clipboard.writeText(name); } catch {}
+                        }
+                      }
+                    } catch {
+                      try { await navigator.clipboard.writeText(resolveChipFileName(ctxMenu.chip as any)); } catch {}
+                    }
+                    setCtxMenu((m) => ({ ...m, show: false }));
+                  }}
+                >
+                  {t('common:files.copyFileNameWithExt')}
+                </button>
+              )}
+              <button
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
+                onClick={async () => {
+                  try {
+                    const fullWin = resolveChipWindowsFullPath(ctxMenu.chip as any) || String(ctxMenu.chip?.winPath || "");
+                    const text = fullWin || String(ctxMenu.chip?.wslPath || ctxMenu.chip?.fileName || "");
+                    const res: any = await (window as any).host?.utils?.copyText?.(text);
+                    if (!(res && res.ok)) {
+                      try { await navigator.clipboard.writeText(text); } catch {}
+                    }
                   } catch {
-                    try { await navigator.clipboard.writeText(resolveChipFileName(ctxMenu.chip as any)); } catch {}
+                    try { await navigator.clipboard.writeText(String(ctxMenu.chip?.winPath || ctxMenu.chip?.wslPath || ctxMenu.chip?.fileName || "")); } catch {}
                   }
                   setCtxMenu((m) => ({ ...m, show: false }));
                 }}
               >
-                {t('common:files.copyFileNameWithExt')}
+                {t('history:copyPath')}
               </button>
-            )}
-            <button
-              className="mt-0.5 w-full text-left px-2 py-1 rounded hover:bg-slate-100"
-              onClick={async () => {
-                try {
-                  const fullWin = resolveChipWindowsFullPath(ctxMenu.chip as any) || String(ctxMenu.chip?.winPath || "");
-                  const text = fullWin || String(ctxMenu.chip?.wslPath || ctxMenu.chip?.fileName || "");
-                  const res: any = await (window as any).host?.utils?.copyText?.(text);
-                  if (!(res && res.ok)) {
-                    try { await navigator.clipboard.writeText(text); } catch {}
-                  }
-                } catch {
-                  try { await navigator.clipboard.writeText(String(ctxMenu.chip?.winPath || ctxMenu.chip?.wslPath || ctxMenu.chip?.fileName || "")); } catch {}
-                }
-                setCtxMenu((m) => ({ ...m, show: false }));
-              }}
-            >
-              {t('history:copyPath')}
-            </button>
+            </div>
           </div>
-        </div>
+        ),
+        document.body
       )}
 
       <AtCommandPalette

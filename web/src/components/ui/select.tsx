@@ -45,7 +45,7 @@ export function SelectTrigger({
     <button
       ref={ref}
       type={type}
-      className={cn('flex h-10 w-full items-center justify-between rounded-md border border-[var(--cf-border)] bg-[var(--cf-surface)] px-3 text-sm text-[var(--cf-text-primary)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cf-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--cf-app-bg)]', className, disabled && 'opacity-60 cursor-not-allowed')}
+      className={cn('flex h-10 w-full items-center justify-between rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-solid)] px-3 text-sm text-[var(--cf-text-primary)] transition-all duration-apple hover:border-[var(--cf-border-strong)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cf-accent)]/50 focus-visible:border-[var(--cf-accent)] shadow-apple-inner', className, disabled && 'opacity-40 cursor-not-allowed')}
       disabled={!!disabled}
       onClick={(event) => {
         if (disabled) {
@@ -196,7 +196,7 @@ export function SelectContent({ children }: { children: React.ReactNode }) {
   return createPortal(
     <div
       ref={contentRef}
-      className={cn('z-[60] rounded-md border border-[var(--cf-border)] bg-[var(--cf-app-bg)] p-1 shadow-lg overflow-auto text-[var(--cf-text-primary)]')}
+      className={cn('z-[60] rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple p-1 shadow-apple-lg overflow-auto text-[var(--cf-text-primary)] dark:shadow-apple-dark-lg')}
       style={style}
       role="listbox"
     >
@@ -214,7 +214,7 @@ export function SelectItem({ value, children }: { value: string; children: React
   }, [value, children]);
   return (
     <div
-      className={cn('cursor-pointer rounded-sm px-2 py-1.5 text-sm hover:bg-[var(--cf-surface)]', ctx.value === value && 'bg-[var(--cf-surface)]')}
+      className={cn('cursor-pointer rounded-apple-sm px-3 py-2 text-sm transition-all duration-apple-fast hover:bg-[var(--cf-surface-hover)]', ctx.value === value && 'bg-[var(--cf-surface-hover)] font-apple-medium')}
       onClick={() => { ctx.setValue?.(value); ctx.setOpen(false); }}
     >
       {children}

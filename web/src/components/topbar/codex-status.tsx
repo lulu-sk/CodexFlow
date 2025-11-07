@@ -236,27 +236,27 @@ const CodexUsageHoverButton: React.FC<{ className?: string; terminalMode?: "wsl"
         <span className="truncate max-w-[200px]">{summaryLabel}</span>
       </Button>
       {rateHover.open && (
-        <div className="absolute left-0 top-full z-[70] mt-2 w-[320px] rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-800 shadow-xl dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)] dark:text-[var(--cf-text-primary)]">
+        <div className="absolute left-0 top-full z-[70] mt-2 w-[320px] rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple-lg p-4 text-sm text-[var(--cf-text-primary)] shadow-apple-xl dark:shadow-apple-dark-xl">
           {rateState.error ? (
-            <div className="text-red-600 dark:text-[var(--cf-red)]">{rateState.error}</div>
+            <div className="text-[var(--cf-red)]">{rateState.error}</div>
           ) : rateState.data ? (
             <div className="flex flex-col gap-3">
-              <div className="flex flex-col gap-1 rounded border border-slate-200 dark:border-[var(--cf-border)] px-3 py-2">
+              <div className="flex flex-col gap-2 rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-solid)] px-3 py-2.5 shadow-apple-xs">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs text-slate-500 dark:text-[var(--cf-text-secondary)] dark:text-[var(--cf-text-muted)] dark:text-[var(--cf-text-muted)]">
+                  <span className="text-xs font-apple-medium text-[var(--cf-text-secondary)]">
                     {t("common:codexUsage.primary", "主要额度")}
                   </span>
                   <Badge variant="outline">
                     {formatWindowLabel(rateState.data.primary, t)}
                   </Badge>
                 </div>
-                <div className="flex items-center justify-between">
-                  <span>
+                <div className="flex items-center justify-between text-[var(--cf-text-primary)]">
+                  <span className="font-apple-medium">
                     {t("common:codexUsage.summary", {
                       percent: formatPercent(rateState.data.primary?.usedPercent ?? null),
                     })}
                   </span>
-                  <span className="text-xs text-slate-500 dark:text-[var(--cf-text-secondary)] dark:text-[var(--cf-text-muted)]">
+                  <span className="text-xs text-[var(--cf-text-secondary)]">
                     {t("common:codexUsage.reset", {
                       time: formatResetTime(
                         rateState.data.primary?.resetAfterSeconds ?? null,
@@ -267,22 +267,22 @@ const CodexUsageHoverButton: React.FC<{ className?: string; terminalMode?: "wsl"
                   </span>
                 </div>
               </div>
-              <div className="flex flex-col gap-1 rounded border border-slate-200 dark:border-[var(--cf-border)] px-3 py-2">
+              <div className="flex flex-col gap-2 rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-solid)] px-3 py-2.5 shadow-apple-xs">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs text-slate-500 dark:text-[var(--cf-text-secondary)] dark:text-[var(--cf-text-muted)] dark:text-[var(--cf-text-muted)]">
+                  <span className="text-xs font-apple-medium text-[var(--cf-text-secondary)]">
                     {t("common:codexUsage.secondary", "备用额度")}
                   </span>
                   <Badge variant="outline">
                     {formatWindowLabel(rateState.data.secondary, t)}
                   </Badge>
                 </div>
-                <div className="flex items-center justify-between">
-                  <span>
+                <div className="flex items-center justify-between text-[var(--cf-text-primary)]">
+                  <span className="font-apple-medium">
                     {t("common:codexUsage.summary", {
                       percent: formatPercent(rateState.data.secondary?.usedPercent ?? null),
                     })}
                   </span>
-                  <span className="text-xs text-slate-500 dark:text-[var(--cf-text-secondary)] dark:text-[var(--cf-text-muted)]">
+                  <span className="text-xs text-[var(--cf-text-secondary)]">
                     {t("common:codexUsage.reset", {
                       time: formatResetTime(
                         rateState.data.secondary?.resetAfterSeconds ?? null,
@@ -295,7 +295,7 @@ const CodexUsageHoverButton: React.FC<{ className?: string; terminalMode?: "wsl"
               </div>
             </div>
           ) : (
-            <div className="text-slate-600">
+            <div className="text-[var(--cf-text-secondary)]">
               {t("common:codexUsage.empty", "暂无用量信息")}
             </div>
           )}
@@ -375,23 +375,23 @@ export const CodexAccountInline: React.FC<{
   const details = (
     <>
       {accountState.error ? (
-        <div className="text-red-600 dark:text-[var(--cf-red)]">{accountState.error}</div>
+        <div className="text-[var(--cf-red)]">{accountState.error}</div>
       ) : accountState.loading && !accountState.data ? (
-        <div className="text-slate-500 dark:text-[var(--cf-text-secondary)]">
+        <div className="text-[var(--cf-text-secondary)]">
           {t("settings:codexAccount.statusLoading", "正在读取账号信息…")}
         </div>
       ) : (
-        <dl className="grid grid-cols-[110px_1fr] gap-x-4 gap-y-2 text-sm text-slate-800">
-          <dt className="text-xs text-slate-500 dark:text-[var(--cf-text-secondary)] dark:text-[var(--cf-text-muted)]">{t("settings:codexAccount.statusLabel", "状态")}</dt>
-          <dd>{resolveAccountLabel(accountState.data, t)}</dd>
-          <dt className="text-xs text-slate-500 dark:text-[var(--cf-text-secondary)] dark:text-[var(--cf-text-muted)]">{t("settings:codexAccount.email", "邮箱")}</dt>
-          <dd className="break-all">{accountState.data?.email ?? t("settings:codexAccount.notProvided", "未提供")}</dd>
-          <dt className="text-xs text-slate-500 dark:text-[var(--cf-text-secondary)] dark:text-[var(--cf-text-muted)]">{t("settings:codexAccount.planLabel", "套餐")}</dt>
-          <dd>{describePlan(accountState.data?.plan ?? null, t)}</dd>
-          <dt className="text-xs text-slate-500 dark:text-[var(--cf-text-secondary)] dark:text-[var(--cf-text-muted)]">{t("settings:codexAccount.accountId", "账号 ID")}</dt>
-          <dd className="break-all">{accountState.data?.accountId ?? t("settings:codexAccount.notProvided", "未提供")}</dd>
-          <dt className="text-xs text-slate-500 dark:text-[var(--cf-text-secondary)] dark:text-[var(--cf-text-muted)]">{t("settings:codexAccount.userId", "用户 ID")}</dt>
-          <dd className="break-all">{accountState.data?.userId ?? t("settings:codexAccount.notProvided", "未提供")}</dd>
+        <dl className="grid grid-cols-[110px_1fr] gap-x-4 gap-y-2.5 text-sm text-[var(--cf-text-primary)]">
+          <dt className="text-xs font-apple-medium text-[var(--cf-text-secondary)]">{t("settings:codexAccount.statusLabel", "状态")}</dt>
+          <dd className="font-apple-regular">{resolveAccountLabel(accountState.data, t)}</dd>
+          <dt className="text-xs font-apple-medium text-[var(--cf-text-secondary)]">{t("settings:codexAccount.email", "邮箱")}</dt>
+          <dd className="break-all font-apple-regular">{accountState.data?.email ?? t("settings:codexAccount.notProvided", "未提供")}</dd>
+          <dt className="text-xs font-apple-medium text-[var(--cf-text-secondary)]">{t("settings:codexAccount.planLabel", "套餐")}</dt>
+          <dd className="font-apple-regular">{describePlan(accountState.data?.plan ?? null, t)}</dd>
+          <dt className="text-xs font-apple-medium text-[var(--cf-text-secondary)]">{t("settings:codexAccount.accountId", "账号 ID")}</dt>
+          <dd className="break-all font-apple-regular">{accountState.data?.accountId ?? t("settings:codexAccount.notProvided", "未提供")}</dd>
+          <dt className="text-xs font-apple-medium text-[var(--cf-text-secondary)]">{t("settings:codexAccount.userId", "用户 ID")}</dt>
+          <dd className="break-all font-apple-regular">{accountState.data?.userId ?? t("settings:codexAccount.notProvided", "未提供")}</dd>
         </dl>
       )}
       <div className="mt-3 flex justify-end">
@@ -405,7 +405,7 @@ export const CodexAccountInline: React.FC<{
 
   if (expanded) {
     return (
-      <div className={`rounded-lg border border-slate-200 bg-white/80 p-4 dark:border-slate-700 dark:bg-slate-900/80 dark:text-slate-100 ${className ?? ""}`}>
+      <div className={`rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple p-4 shadow-apple-sm ${className ?? ""}`}>
         {details}
       </div>
     );
@@ -417,11 +417,11 @@ export const CodexAccountInline: React.FC<{
       onMouseEnter={hover.onEnter}
       onMouseLeave={hover.onLeave}
     >
-      <span className="text-sm text-slate-700 truncate max-w-full" title={statusText}>
+      <span className="text-sm text-[var(--cf-text-primary)] truncate max-w-full font-apple-regular" title={statusText}>
         {statusText}
       </span>
       {hover.open && (
-        <div className="absolute left-0 top-full z-[70] mt-2 w-[480px] rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-800 shadow-xl dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100">
+        <div className="absolute left-0 top-full z-[70] mt-2 w-[480px] rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple-lg p-4 text-sm text-[var(--cf-text-primary)] shadow-apple-xl dark:shadow-apple-dark-xl">
           {details}
         </div>
       )}
