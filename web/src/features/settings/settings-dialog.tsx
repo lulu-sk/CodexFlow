@@ -1001,7 +1001,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                 <div className="flex items-center gap-3">
                   <Button
                     variant="secondary"
-                    className="border border-red-200 text-red-600 hover:bg-red-50 dark:border-[var(--cf-red-dim)] dark:text-[var(--cf-red)] dark:hover:bg-[var(--cf-red)]/10"
+                    className="border border-red-200 text-red-600 hover:bg-red-50 dark:border-[var(--cf-red-light)] dark:text-[var(--cf-red)] dark:hover:bg-[var(--cf-red-light)]"
                     disabled={cleanupScanning || cleanupRunning}
                     onClick={async () => {
                       try {
@@ -1093,7 +1093,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                   </Button>
                   <Button
                     variant="secondary"
-                    className="border border-amber-200 text-amber-600 hover:bg-amber-50 dark:border-[var(--cf-yellow-dim)] dark:text-[var(--cf-yellow)] dark:hover:bg-[var(--cf-yellow)]/10"
+                    className="border border-amber-200 text-amber-600 hover:bg-amber-50 dark:border-[var(--cf-yellow-light)] dark:text-[var(--cf-yellow)] dark:hover:bg-[var(--cf-yellow-light)]"
                     disabled={storageLoading || storageClearing || storagePurging}
                     onClick={() => setStorageConfirmOpen(true)}
                   >
@@ -1298,7 +1298,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
             </Button>
             <Button
               variant="secondary"
-              className="border border-amber-200 text-amber-600 hover:bg-amber-50 dark:border-[var(--cf-yellow-dim)] dark:text-[var(--cf-yellow)] dark:hover:bg-[var(--cf-yellow)]/10"
+              className="border border-amber-200 text-amber-600 hover:bg-amber-50 dark:border-[var(--cf-yellow-light)] dark:text-[var(--cf-yellow)] dark:hover:bg-[var(--cf-yellow-light)]"
               disabled={storageClearing}
               onClick={handleClearAppData}
             >
@@ -1397,7 +1397,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
             </Button>
             <Button
               variant="secondary"
-              className="border border-red-200 text-red-600 hover:bg-red-50 dark:border-[var(--cf-red-dim)] dark:text-[var(--cf-red)] dark:hover:bg-[var(--cf-red)]/10"
+              className="border border-red-200 text-red-600 hover:bg-red-50 dark:border-[var(--cf-red-light)] dark:text-[var(--cf-red)] dark:hover:bg-[var(--cf-red-light)]"
               disabled={cleanupList.length === 0 || cleanupRunning}
               onClick={() => {
                 if (cleanupList.length === 0 || cleanupRunning) return;
@@ -1423,7 +1423,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
             </Button>
             <Button
               variant="secondary"
-              className="border border-red-200 text-red-600 hover:bg-red-50 dark:border-[var(--cf-red-dim)] dark:text-[var(--cf-red)] dark:hover:bg-[var(--cf-red)]/10"
+              className="border border-red-200 text-red-600 hover:bg-red-50 dark:border-[var(--cf-red-light)] dark:text-[var(--cf-red)] dark:hover:bg-[var(--cf-red-light)]"
               disabled={cleanupRunning}
               onClick={handleCleanupExecute}
             >

@@ -20,7 +20,7 @@ export function Tabs({ value, onValueChange, className, children }: { value?: st
 }
 
 export const TabsList = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(({ className, ...props }, ref) => (
-  <div ref={ref} className={cn('inline-flex items-center gap-1 rounded-lg bg-[var(--cf-surface)] p-1', className)} {...props} />
+  <div ref={ref} className={cn('inline-flex items-center gap-1 rounded-apple bg-[var(--cf-surface-solid)] p-1 shadow-apple-inner', className)} {...props} />
 ));
 TabsList.displayName = 'TabsList';
 
@@ -29,7 +29,13 @@ export function TabsTrigger({ value, className, children, ...props }: React.Butt
   const active = ctx.value === value;
   return (
     <button
-      className={cn('inline-flex items-center whitespace-nowrap px-4 py-1.5 text-sm rounded-md transition', active ? 'bg-[var(--cf-app-bg)] shadow-sm border border-[var(--cf-border)] text-[var(--cf-text-primary)]' : 'text-[var(--cf-text-secondary)] hover:bg-[var(--cf-surface-hover)]', className)}
+      className={cn(
+        'inline-flex items-center whitespace-nowrap px-4 py-2 text-sm rounded-apple-sm font-apple-medium transition-all duration-apple',
+        active 
+          ? 'bg-[var(--cf-surface-solid)] shadow-apple text-[var(--cf-text-primary)] dark:shadow-apple-dark' 
+          : 'text-[var(--cf-text-secondary)] hover:bg-[var(--cf-surface-hover)] hover:text-[var(--cf-text-primary)]',
+        className
+      )}
       onClick={(e) => { ctx.setValue?.(value); props.onClick?.(e); }}
       {...props}
     >

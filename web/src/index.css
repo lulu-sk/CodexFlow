@@ -9,72 +9,94 @@
 
 html, body, #root { height: 100%; }
 :root {
-  /* 亮色主题：GitHub Primer Light */
-  /* 灰度层次 */
-  --cf-app-bg: #ffffff;         /* Canvas default - 主背景 */
-  --cf-surface: #f6f8fa;        /* Canvas subtle - 卡片、对话框 */
-  --cf-surface-muted: #f6f8fa;  /* Canvas inset - 更深的区域 */
-  --cf-surface-hover: #f3f4f6;  /* Canvas overlay - 悬停状态 */
-  --cf-border: #d0d7de;         /* Border default - 边框 */
-  --cf-border-strong: #8c959f;  /* Border muted - 强边框 */
-  --cf-text-primary: #24292f;   /* Foreground default - 主文本 */
-  --cf-text-secondary: #57606a; /* Foreground muted - 次要文本 */
-  --cf-text-muted: #6e7781;     /* Foreground subtle - 弱化文本 */
-  --cf-accent: #0969da;         /* Accent emphasis - 强调色（蓝色）*/
-  --cf-accent-hover: #0860ca;   /* Accent emphasis hover - 强调悬停 */
+  /* 亮色主题：现代精致风格 */
+  /* 灰度层次 - 更柔和、更透明 */
+  --cf-app-bg: #f5f5f7;           /* 主背景 - 浅灰色 */
+  --cf-surface: rgba(255, 255, 255, 0.8);  /* 卡片、对话框 - 半透明白色 */
+  --cf-surface-solid: #ffffff;    /* 实心表面 */
+  --cf-surface-muted: #f9f9fb;    /* 更深的区域 */
+  --cf-surface-hover: rgba(0, 0, 0, 0.04);  /* 悬停状态 */
+  --cf-border: rgba(0, 0, 0, 0.08);         /* 边框 - 半透明 */
+  --cf-border-strong: rgba(0, 0, 0, 0.15);  /* 强边框 */
+  --cf-text-primary: #1d1d1f;     /* 主文本 - 接近黑色 */
+  --cf-text-secondary: #6e6e73;   /* 次要文本 - 中灰 */
+  --cf-text-muted: #86868b;       /* 弱化文本 - 浅灰 */
   
-  /* 语义色彩 */
-  --cf-red: #cf222e;            /* Danger emphasis - 错误、删除、危险 */
-  --cf-red-hover: #a40e26;      /* Danger emphasis hover */
-  --cf-red-dim: #d1242f;        /* Danger default - 用于次要危险操作 */
-  --cf-green: #1a7f37;          /* Success emphasis - 成功、确认 */
-  --cf-green-hover: #2da44e;    /* Success emphasis hover */
-  --cf-yellow: #9a6700;         /* Attention emphasis - 警告、提示 */
-  --cf-yellow-hover: #bf8700;   /* Attention emphasis hover */
-  --cf-yellow-dim: #9a6700;     /* Attention default - 用于次要警告 */
-  --cf-teal: #1b7c83;           /* Info/Done emphasis - 信息、链接 */
-  --cf-teal-hover: #3192aa;     /* Info emphasis hover */
-  --cf-pink: #8250df;           /* Sponsors - 特殊标记 */
-  --cf-rosewater: #0969da;      /* Open emphasis - 光标、选区 */
+  /* 现代蓝色强调系统 */
+  --cf-accent: #007aff;           /* 主强调色 */
+  --cf-accent-hover: #0051d5;     /* 悬停时更深 */
+  --cf-accent-light: rgba(0, 122, 255, 0.1);  /* 淡蓝色背景 */
   
-  /* 滚动条 */
-  --cf-scrollbar-thumb: rgba(140, 149, 159, 0.5);
-  --cf-scrollbar-thumb-hover: rgba(140, 149, 159, 0.8);
+  /* 语义色彩系统 */
+  --cf-red: #ff3b30;              /* 错误、删除、危险 */
+  --cf-red-hover: #d70015;        /* 悬停 */
+  --cf-red-light: rgba(255, 59, 48, 0.1);
+  --cf-green: #34c759;            /* 成功、确认 */
+  --cf-green-hover: #248a3d;      /* 悬停 */
+  --cf-green-light: rgba(52, 199, 89, 0.1);
+  --cf-yellow: #ffcc00;           /* 警告、提示 */
+  --cf-yellow-hover: #c89e00;     /* 悬停 */
+  --cf-yellow-light: rgba(255, 204, 0, 0.1);
+  --cf-warning-foreground: #1d1d1f; /* 警告前景：保持充足对比 */
+  --cf-orange: #ff9500;           /* 橙色 */
+  --cf-orange-hover: #c77700;
+  --cf-orange-light: rgba(255, 149, 0, 0.1);
+  --cf-teal: #5ac8fa;             /* 信息、链接 */
+  --cf-teal-hover: #0a84ff;
+  --cf-teal-light: rgba(90, 200, 250, 0.1);
+  --cf-purple: #af52de;           /* 特殊标记 */
+  --cf-purple-hover: #8e44ad;
+  --cf-purple-light: rgba(175, 82, 222, 0.1);
+  
+  /* 滚动条 - 更精致 */
+  --cf-scrollbar-thumb: rgba(0, 0, 0, 0.2);
+  --cf-scrollbar-thumb-hover: rgba(0, 0, 0, 0.3);
   --cf-scrollbar-track: transparent;
 }
 
 .dark {
-  /* 暗色主题：GitHub Primer Dark Dimmed */
-  /* 灰度层次 */
-  --cf-app-bg: #22272e;        /* Canvas default - 主背景 */
-  --cf-surface: #2d333b;        /* Canvas subtle - 卡片、对话框 */
-  --cf-surface-muted: #1c2128;  /* Canvas inset - 更深的区域 */
-  --cf-surface-hover: #373e47;  /* Canvas overlay - 悬停状态 */
-  --cf-border: #444c56;         /* Border default - 边框 */
-  --cf-border-strong: #636e7b;  /* Border muted - 强边框 */
-  --cf-text-primary: #adbac7;   /* Foreground default - 主文本 */
-  --cf-text-secondary: #768390; /* Foreground muted - 次要文本 */
-  --cf-text-muted: #636e7b;     /* Foreground subtle - 弱化文本 */
-  --cf-accent: #539bf5;         /* Accent emphasis - 强调色（蓝色）*/
-  --cf-accent-hover: #6cb6ff;   /* Accent emphasis hover - 强调悬停 */
+  /* 暗色主题：现代精致风格 */
+  /* 灰度层次 - 更深邃、更优雅 */
+  --cf-app-bg: #1c1c1e;           /* 主背景 - 深灰色 */
+  --cf-surface: rgba(44, 44, 46, 0.85);  /* 卡片、对话框 - 半透明 */
+  --cf-surface-solid: #2c2c2e;    /* 实心表面 */
+  --cf-surface-muted: #1c1c1e;    /* 更深的区域 */
+  --cf-surface-hover: rgba(255, 255, 255, 0.08);  /* 悬停状态 */
+  --cf-border: rgba(255, 255, 255, 0.1);          /* 边框 - 半透明 */
+  --cf-border-strong: rgba(255, 255, 255, 0.18);  /* 强边框 */
+  --cf-text-primary: #f5f5f7;     /* 主文本 - 接近白色 */
+  --cf-text-secondary: #98989d;   /* 次要文本 - 中灰 */
+  --cf-text-muted: #636366;       /* 弱化文本 - 深灰 */
   
-  /* 语义色彩 - 悬停时增强，保持警示感 */
-  --cf-red: #e5534b;            /* Danger emphasis - 错误、删除、危险 */
-  --cf-red-hover: #f47067;      /* Danger emphasis hover - 更鲜艳的红色 */
-  --cf-red-dim: #d5423d;        /* Danger default - 用于次要危险操作 */
-  --cf-green: #57ab5a;          /* Success emphasis - 成功、确认 */
-  --cf-green-hover: #6bc46d;    /* Success emphasis hover */
-  --cf-yellow: #c69026;         /* Attention emphasis - 警告、提示 */
-  --cf-yellow-hover: #daaa3f;   /* Attention emphasis hover */
-  --cf-yellow-dim: #ae7c14;     /* Attention default - 用于次要警告 */
-  --cf-teal: #76c8cf;           /* Info/Done emphasis - 信息、链接 */
-  --cf-teal-hover: #96d7dd;     /* Info emphasis hover */
-  --cf-pink: #c297d8;           /* Sponsors - 特殊标记 */
-  --cf-rosewater: #f47067;      /* Open emphasis - 光标、选区 */
+  /* 现代蓝色强调系统 */
+  --cf-accent: #0a84ff;           /* 主强调色（暗色版） */
+  --cf-accent-hover: #409cff;     /* 悬停时更亮 */
+  --cf-accent-light: rgba(10, 132, 255, 0.15);  /* 淡蓝色背景 */
   
-  /* 滚动条 */
-  --cf-scrollbar-thumb: rgba(99, 110, 123, 0.4);
-  --cf-scrollbar-thumb-hover: rgba(99, 110, 123, 0.7);
+  /* 语义色彩系统（暗色版） */
+  --cf-red: #ff453a;              /* 错误、删除、危险 */
+  --cf-red-hover: #ff6961;        /* 悬停 */
+  --cf-red-light: rgba(255, 69, 58, 0.15);
+  --cf-green: #32d74b;            /* 成功、确认 */
+  --cf-green-hover: #64de75;      /* 悬停 */
+  --cf-green-light: rgba(50, 215, 75, 0.15);
+  --cf-yellow: #ffd60a;           /* 警告、提示 */
+  --cf-yellow-hover: #ffed4e;     /* 悬停 */
+  --cf-yellow-light: rgba(255, 214, 10, 0.15);
+  --cf-warning-foreground: #1d1d1f; /* 警告前景：暗色下仍使用深色文字以确保对比 */
+  --cf-orange: #ff9f0a;           /* 橙色 */
+  --cf-orange-hover: #ffb340;
+  --cf-orange-light: rgba(255, 159, 10, 0.15);
+  --cf-teal: #64d2ff;             /* 信息、链接 */
+  --cf-teal-hover: #8ce0ff;
+  --cf-teal-light: rgba(100, 210, 255, 0.15);
+  --cf-purple: #bf5af2;           /* 特殊标记 */
+  --cf-purple-hover: #da8fff;
+  --cf-purple-light: rgba(191, 90, 242, 0.15);
+  
+  /* 滚动条 - 更精致 */
+  --cf-scrollbar-thumb: rgba(255, 255, 255, 0.15);
+  --cf-scrollbar-thumb-hover: rgba(255, 255, 255, 0.25);
   --cf-scrollbar-track: transparent;
 }
 
@@ -108,17 +130,20 @@ body {
   background-color: var(--cf-app-bg);
   color: var(--cf-text-primary);
   overflow: hidden;
-  transition: background-color 0.24s ease, color 0.24s ease;
+  transition: background-color 0.3s cubic-bezier(0.4, 0, 0.2, 1), color 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 /* 文本选区样式 */
 ::selection {
-  background-color: var(--cf-accent);
-  color: var(--cf-app-bg);
+  background-color: var(--cf-accent-light);
+  color: var(--cf-text-primary);
 }
 .dark ::selection {
-  background-color: var(--cf-rosewater);
-  color: var(--cf-app-bg);
+  background-color: var(--cf-accent-light);
+  color: var(--cf-text-primary);
 }
 
 /* 全局滚动条样式（更纤细、更柔和） */

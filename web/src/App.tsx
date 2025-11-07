@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -1477,8 +1477,8 @@ export default function CodexFlowManagerUI() {
   // UI 仅显示预览，预览由外部（后端/初始化流程）负责准备和缓存
   const [sessionPreviewMap, setSessionPreviewMap] = useState<Record<string, string>>({});
 
-  // Auto-adjust history context menu position to stay within viewport
-  useEffect(() => {
+  // Auto-adjust history context menu position to stay within viewport (pre-paint to avoid visible jump)
+  useLayoutEffect(() => {
     if (!historyCtxMenu.show) return;
     const margin = 8;
     const adjust = () => {
@@ -1499,14 +1499,14 @@ export default function CodexFlowManagerUI() {
         }
       } catch {}
     };
-    const raf = requestAnimationFrame(adjust);
+    adjust();
     const onResize = () => adjust();
     window.addEventListener('resize', onResize);
-    return () => { cancelAnimationFrame(raf); window.removeEventListener('resize', onResize); };
+    return () => { window.removeEventListener('resize', onResize); };
   }, [historyCtxMenu.show, historyCtxMenu.x, historyCtxMenu.y]);
 
-  // Auto-adjust project context menu position to stay within viewport
-  useEffect(() => {
+  // Auto-adjust project context menu position to stay within viewport (pre-paint to avoid visible jump)
+  useLayoutEffect(() => {
     if (!projectCtxMenu.show) return;
     const margin = 8;
     const adjust = () => {
@@ -1527,10 +1527,10 @@ export default function CodexFlowManagerUI() {
         }
       } catch {}
     };
-    const raf = requestAnimationFrame(adjust);
+    adjust();
     const onResize = () => adjust();
     window.addEventListener('resize', onResize);
-    return () => { cancelAnimationFrame(raf); window.removeEventListener('resize', onResize); };
+    return () => { window.removeEventListener('resize', onResize); };
   }, [projectCtxMenu.show, projectCtxMenu.x, projectCtxMenu.y]);
 
   // Settings
@@ -2492,7 +2492,7 @@ export default function CodexFlowManagerUI() {
                     ></span>
                   ) : null}
                   {liveCount > 0 ? (
-                    <span className="inline-flex items-center justify-center rounded-full bg-slate-800 text-white text-[10px] h-5 min-w-[20px] px-1 dark:bg-[var(--cf-accent)] dark:text-[var(--cf-app-bg)] dark:shadow-sm dark:ring-1 dark:ring-[var(--cf-accent)]/20">
+                    <span className="inline-flex items-center justify-center rounded-full bg-[var(--cf-accent)] text-white text-[10px] font-apple-semibold h-5 min-w-[20px] px-1 shadow-apple-xs ring-1 ring-[var(--cf-accent)]/20">
                       {liveCount}
                     </span>
                   ) : null}
@@ -2583,9 +2583,15 @@ export default function CodexFlowManagerUI() {
               projPathExists === false ? (
                 <Badge variant="outline" className="mx-2">{t('terminal:dirMissing')}</Badge>
               ) : (
-                <div>
-                  <Button size="sm" className="inline-flex items-center text-sm" onClick={openNewConsole} style={{ height: 21, padding: '0 8px', borderRadius: 12 }}>
-                    <Plus className="mr-2 h-4 w-4" /> {t('terminal:newConsole')}
+                <div className="px-1">
+                  <Button 
+                    size="sm" 
+                    variant="default"
+                    className="h-[25px] px-2.5 gap-1.5 text-sm font-apple-medium shadow-apple hover:shadow-apple-md transition-all duration-apple opacity-90 hover:opacity-100" 
+                    onClick={openNewConsole}
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    <span>{t('terminal:newConsole')}</span>
                   </Button>
                 </div>
               )
@@ -3199,12 +3205,12 @@ export default function CodexFlowManagerUI() {
         >
           <div
             ref={historyCtxMenuRef}
-            className="absolute z-50 min-w-[200px] rounded-md border bg-white/95 backdrop-blur-sm py-1 text-sm shadow-xl ring-1 ring-black/5 divide-y divide-slate-100 dark:border-slate-700 dark:bg-slate-900/95 dark:divide-slate-700"
+            className="absolute z-50 min-w-[160px] rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple shadow-apple-lg p-1.5 text-sm text-[var(--cf-text-primary)] dark:shadow-apple-dark-lg"
             style={{ left: historyCtxMenu.x, top: historyCtxMenu.y }}
             onClick={(e) => e.stopPropagation()}
           >
             <button
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-slate-700 hover:bg-slate-100 dark:text-slate-100 dark:hover:bg-slate-800"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
               onClick={async () => {
                 try {
                   const it = historyCtxMenu.item;
@@ -3219,7 +3225,7 @@ export default function CodexFlowManagerUI() {
               {t('history:continueConversation')}
             </button>
             <button
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-slate-700 hover:bg-slate-100 dark:text-slate-100 dark:hover:bg-slate-800"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
               onClick={async () => {
                 try {
                   const it = historyCtxMenu.item;
@@ -3235,20 +3241,20 @@ export default function CodexFlowManagerUI() {
                 setHistoryCtxMenu((m) => ({ ...m, show: false }));
               }}
             >
-              <ExternalLink className="h-4 w-4 text-slate-500 dark:text-slate-300" /> {t('history:continueExternalWith', { env: terminalMode === 'windows' ? 'PowerShell' : 'WSL' })}
+              <ExternalLink className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('history:continueExternalWith', { env: terminalMode === 'windows' ? 'PowerShell' : 'WSL' })}
             </button>
             <button
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-slate-700 hover:bg-slate-100 dark:text-slate-100 dark:hover:bg-slate-800"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
               onClick={async () => {
                 const f = historyCtxMenu.item?.filePath;
                 if (f) { try { await window.host.utils.copyText(f); } catch {} }
                 setHistoryCtxMenu((m) => ({ ...m, show: false }));
               }}
             >
-              <CopyIcon className="h-4 w-4 text-slate-500" /> {t('history:copyPath')}
+              <CopyIcon className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('history:copyPath')}
             </button>
             <button
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-slate-700 hover:bg-slate-100 dark:text-slate-100 dark:hover:bg-slate-800"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
               onClick={async () => {
                 const f = historyCtxMenu.item?.filePath;
                 if (f) {
@@ -3260,10 +3266,10 @@ export default function CodexFlowManagerUI() {
                 setHistoryCtxMenu((m) => ({ ...m, show: false }));
               }}
             >
-              <FolderOpen className="h-4 w-4 text-slate-500" /> {t('history:openContaining')}
+              <FolderOpen className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('history:openContaining')}
             </button>
             <button
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-slate-700 hover:bg-slate-100 dark:text-slate-100 dark:hover:bg-slate-800"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
               onClick={async () => {
                 const f = historyCtxMenu.item?.filePath;
                 if (f) {
@@ -3275,10 +3281,10 @@ export default function CodexFlowManagerUI() {
                 setHistoryCtxMenu((m) => ({ ...m, show: false }));
               }}
             >
-              <ExternalLink className="h-4 w-4 text-slate-500" /> {t('history:openWithDefault')}
+              <ExternalLink className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('history:openWithDefault')}
             </button>
             <button
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-red-600 hover:bg-red-50"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-red)] rounded-apple-sm hover:bg-[var(--cf-red-light)] transition-all duration-apple-fast"
               onClick={async () => {
                 const it = historyCtxMenu.item; const key = historyCtxMenu.groupKey || (normDir(it?.filePath) || '__unknown__');
                 if (!it?.filePath) { setHistoryCtxMenu((m) => ({ ...m, show: false })); return; }
@@ -3308,7 +3314,7 @@ export default function CodexFlowManagerUI() {
           </DialogHeader>
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="outline" onClick={() => setConfirmDelete((m) => ({ ...m, open: false }))}>{t('common:cancel')}</Button>
-            <Button className="border border-red-200 text-red-600 hover:bg-red-50 dark:border-[var(--cf-red-dim)] dark:text-[var(--cf-red)] dark:hover:bg-[var(--cf-red)]/10" variant="secondary" onClick={async () => {
+            <Button className="border border-red-200 text-red-600 hover:bg-red-50 dark:border-[var(--cf-red-light)] dark:text-[var(--cf-red)] dark:hover:bg-[var(--cf-red-light)]" variant="secondary" onClick={async () => {
               try {
                 const it = confirmDelete.item; const key = confirmDelete.groupKey || (normDir(it?.filePath) || '__unknown__');
                 if (!it?.filePath) { setConfirmDelete((m) => ({ ...m, open: false })); return; }
@@ -3422,7 +3428,7 @@ export default function CodexFlowManagerUI() {
             menuItems.push(
               <button
                 key="show-in-explorer"
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-slate-700 hover:bg-slate-100 dark:text-slate-100 dark:hover:bg-slate-800"
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
                 onClick={async () => {
                   const proj = projectCtxMenu.project;
                   if (proj) {
@@ -3434,13 +3440,13 @@ export default function CodexFlowManagerUI() {
                   setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
                 }}
               >
-                <FolderOpen className="h-4 w-4 text-slate-500" /> {t('projects:ctxShowInExplorer')}
+                <FolderOpen className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('projects:ctxShowInExplorer')}
               </button>
             );
             menuItems.push(
               <button
                 key="open-external"
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-slate-700 hover:bg-slate-100 dark:text-slate-100 dark:hover:bg-slate-800"
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
                 onClick={async () => {
                   const proj = projectCtxMenu.project;
                   if (proj) {
@@ -3455,28 +3461,28 @@ export default function CodexFlowManagerUI() {
                   setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
                 }}
               >
-                <ExternalLink className="h-4 w-4 text-slate-500" /> {t('projects:ctxOpenExternalConsoleWith', { env: terminalMode === 'windows' ? 'PowerShell' : 'WSL' })}
+                <ExternalLink className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('projects:ctxOpenExternalConsoleWith', { env: terminalMode === 'windows' ? 'PowerShell' : 'WSL' })}
               </button>
             );
             if (isDevEnvironment) {
               menuItems.push(
                 <button
                   key="hide-temporary"
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-slate-700 hover:bg-slate-100 dark:text-slate-100 dark:hover:bg-slate-800"
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
                   onClick={() => {
                     const proj = projectCtxMenu.project;
                     if (proj) setHideProjectConfirm({ open: true, project: proj });
                     setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
                   }}
                 >
-                  <EyeOff className="h-4 w-4 text-slate-500" /> {t('projects:ctxHideTemporarily')}
+                  <EyeOff className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('projects:ctxHideTemporarily')}
                 </button>
               );
             }
             return (
               <div
                 ref={projectCtxMenuRef}
-            className="absolute z-50 min-w-[160px] rounded-md border bg-white/95 backdrop-blur-sm py-1 text-sm shadow-xl ring-1 ring-black/5 dark:border-slate-700 dark:bg-slate-900/95"
+                className="absolute z-50 min-w-[160px] rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple shadow-apple-lg p-1.5 text-sm text-[var(--cf-text-primary)] dark:shadow-apple-dark-lg"
                 style={{ left: projectCtxMenu.x, top: projectCtxMenu.y }}
                 onClick={(e) => e.stopPropagation()}
               >
@@ -3773,12 +3779,12 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
         if (ty === 'user_instructions') {
           // 展开显示 user_instructions（移除折叠）
           return (
-            <div key={`${kprefix || 'itm'}-uinst-${i}`} className="rounded border border-slate-200 bg-slate-50 p-2 text-xs">
-              <div className="flex items-center justify-between text-slate-600 font-medium">
+            <div key={`${kprefix || 'itm'}-uinst-${i}`} className="rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-muted)] p-2 text-xs text-[var(--cf-text-primary)]">
+              <div className="flex items-center justify-between text-[var(--cf-text-secondary)] font-apple-medium">
                 <div>user_instructions</div>
                 <HistoryCopyButton text={text} />
               </div>
-              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap"><code>{text}</code></pre>
+              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-apple-regular"><code>{text}</code></pre>
             </div>
           );
         }
@@ -3786,24 +3792,24 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
         if (ty === 'environment_context') {
           // 展开显示 environment_context（移除折叠）
           return (
-            <div key={`${kprefix || 'itm'}-env-${i}`} className="rounded border border-slate-200 bg-slate-50 p-2 text-xs">
-              <div className="flex items-center justify-between text-slate-600 font-medium">
+            <div key={`${kprefix || 'itm'}-env-${i}`} className="rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-muted)] p-2 text-xs text-[var(--cf-text-primary)]">
+              <div className="flex items-center justify-between text-[var(--cf-text-secondary)] font-apple-medium">
                 <div>environment_context</div>
                 <HistoryCopyButton text={text} />
               </div>
-              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap"><code>{text}</code></pre>
+              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-apple-regular"><code>{text}</code></pre>
             </div>
           );
         }
         if (ty === 'instructions') {
           // 展开显示 instructions（移除折叠）
           return (
-            <div key={`${kprefix || 'itm'}-instr-${i}`} className="rounded border border-slate-200 bg-slate-50 p-2 text-xs">
-              <div className="flex items-center justify-between text-slate-600 font-medium">
+            <div key={`${kprefix || 'itm'}-instr-${i}`} className="rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-muted)] p-2 text-xs text-[var(--cf-text-primary)]">
+              <div className="flex items-center justify-between text-[var(--cf-text-secondary)] font-apple-medium">
                 <div>instructions</div>
                 <HistoryCopyButton text={text} />
               </div>
-              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap"><code>{text}</code></pre>
+              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-apple-regular"><code>{text}</code></pre>
             </div>
           );
         }
@@ -3811,7 +3817,7 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
           return (
             <div key={`${kprefix || 'itm'}-code-${i}`} className="relative">
               <HistoryCopyButton text={text} variant="secondary" className="absolute right-2 top-2" />
-              <pre className="overflow-x-auto rounded bg-slate-900 p-3 text-xs text-slate-100">
+              <pre className="overflow-x-auto rounded-apple bg-[var(--cf-surface-muted)] border border-[var(--cf-border)] p-3 text-xs text-[var(--cf-text-primary)] font-mono shadow-apple-inner">
                 <code>{text}</code>
               </pre>
             </div>
@@ -3820,30 +3826,30 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
         if (ty === 'function_call') {
           // 展开显示 function_call
           return (
-            <div key={`${kprefix || 'itm'}-fnc-${i}`} className="rounded border border-slate-200 bg-slate-50 p-2 text-xs dark:border-slate-700 dark:bg-slate-800/70">
-              <div className="flex items-center justify-between text-slate-600 font-medium dark:text-slate-200">
+            <div key={`${kprefix || 'itm'}-fnc-${i}`} className="rounded-apple border border-[var(--cf-border)] bg-[var(--cf-accent-light)] p-2 text-xs text-[var(--cf-text-primary)]">
+              <div className="flex items-center justify-between text-[var(--cf-accent)] font-apple-semibold">
                 <div>function_call</div>
                 <HistoryCopyButton text={text} />
               </div>
-              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap"><code>{text}</code></pre>
+              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-apple-regular"><code>{text}</code></pre>
             </div>
           );
         }
         if (ty === 'function_output') {
           // 展开显示 function_output
           return (
-            <div key={`${kprefix || 'itm'}-fno-${i}`} className="rounded border border-slate-200 bg-slate-50 p-2 text-xs dark:border-slate-700 dark:bg-slate-800/70">
-              <div className="flex items-center justify-between text-slate-600 font-medium dark:text-slate-200">
+            <div key={`${kprefix || 'itm'}-fno-${i}`} className="rounded-apple border border-[var(--cf-border)] bg-[var(--cf-teal-light)] p-2 text-xs text-[var(--cf-text-primary)]">
+              <div className="flex items-center justify-between text-[var(--cf-teal)] font-apple-semibold">
                 <div>function_output</div>
                 <HistoryCopyButton text={text} />
               </div>
-              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap"><code>{text}</code></pre>
+              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-apple-regular"><code>{text}</code></pre>
             </div>
           );
         }
         if (ty === 'summary') {
           return (
-            <div key={`${kprefix || 'itm'}-sum-${i}`} className="relative rounded border bg-white p-2 text-xs text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100">
+            <div key={`${kprefix || 'itm'}-sum-${i}`} className="relative rounded-apple border border-[var(--cf-border)] bg-[var(--cf-purple-light)] p-2 text-xs text-[var(--cf-text-primary)] font-apple-regular">
               <HistoryCopyButton text={text} className="absolute right-2 top-2" />
               {text}
             </div>
@@ -3852,46 +3858,46 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
         if (ty === 'git') {
           // 展开显示 git
           return (
-            <div key={`${kprefix || 'itm'}-git-${i}`} className="rounded border border-slate-200 bg-slate-50 p-2 text-xs dark:border-slate-700 dark:bg-slate-800/70">
-              <div className="flex items-center justify-between text-slate-600 font-medium dark:text-slate-200">
+            <div key={`${kprefix || 'itm'}-git-${i}`} className="rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-muted)] p-2 text-xs text-[var(--cf-text-primary)]">
+              <div className="flex items-center justify-between text-[var(--cf-text-secondary)] font-apple-medium">
                 <div>git</div>
                 <HistoryCopyButton text={text} />
               </div>
-              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap"><code>{text}</code></pre>
+              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-apple-regular"><code>{text}</code></pre>
             </div>
           );
         }
         if (ty === 'input_text') {
           return (
-            <div key={`${kprefix || 'itm'}-in-${i}`} className="rounded border bg-white p-3 text-sm leading-6 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100">
-              <div className="mb-1 flex items-center justify-between text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
+            <div key={`${kprefix || 'itm'}-in-${i}`} className="rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-solid)] p-3 text-sm leading-6 text-[var(--cf-text-primary)] shadow-apple-xs">
+              <div className="mb-1 flex items-center justify-between text-xs uppercase tracking-wider text-[var(--cf-text-secondary)] font-apple-semibold">
                 <span>input</span>
                 <HistoryCopyButton text={text} />
               </div>
-              <div className="whitespace-pre-wrap break-words">{text}</div>
+              <div className="whitespace-pre-wrap break-words font-apple-regular">{text}</div>
             </div>
           );
         }
         if (ty === 'output_text') {
           return (
-            <div key={`${kprefix || 'itm'}-out-${i}`} className="rounded border bg-white p-3 text-sm leading-6 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100">
-              <div className="mb-1 flex items-center justify-between text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
+            <div key={`${kprefix || 'itm'}-out-${i}`} className="rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-solid)] p-3 text-sm leading-6 text-[var(--cf-text-primary)] shadow-apple-xs">
+              <div className="mb-1 flex items-center justify-between text-xs uppercase tracking-wider text-[var(--cf-text-secondary)] font-apple-semibold">
                 <span>output</span>
                 <HistoryCopyButton text={text} />
               </div>
-              <div className="whitespace-pre-wrap break-words">{text}</div>
+              <div className="whitespace-pre-wrap break-words font-apple-regular">{text}</div>
             </div>
           );
         }
         if (ty === 'state') {
           // 展开显示 state
           return (
-            <div key={`${kprefix || 'itm'}-state-${i}`} className="rounded border border-slate-200 bg-slate-50 p-2 text-xs dark:border-slate-700 dark:bg-slate-800/70">
-              <div className="flex items-center justify-between text-slate-600 font-medium dark:text-slate-200">
+            <div key={`${kprefix || 'itm'}-state-${i}`} className="rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-muted)] p-2 text-xs text-[var(--cf-text-primary)]">
+              <div className="flex items-center justify-between text-[var(--cf-text-secondary)] font-apple-medium">
                 <div>state</div>
                 <HistoryCopyButton text={text} />
               </div>
-              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap">
+              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-apple-regular">
                 <code>{text}</code>
               </pre>
             </div>
@@ -3900,12 +3906,12 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
         if (ty === 'session_meta') {
           // 展开显示 session_meta
           return (
-            <div key={`${kprefix || 'itm'}-meta-${i}`} className="rounded border border-slate-200 bg-slate-50 p-2 text-xs dark:border-slate-700 dark:bg-slate-800/70">
-              <div className="flex items-center justify-between text-slate-600 font-medium dark:text-slate-200">
+            <div key={`${kprefix || 'itm'}-meta-${i}`} className="rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-muted)] p-2 text-xs text-[var(--cf-text-primary)]">
+              <div className="flex items-center justify-between text-[var(--cf-text-secondary)] font-apple-medium">
                 <div>session_meta</div>
                 <HistoryCopyButton text={text} />
               </div>
-              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap"><code>{text}</code></pre>
+              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-apple-regular"><code>{text}</code></pre>
             </div>
           );
         }
@@ -3913,7 +3919,7 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
         return (
           <div key={`${kprefix || 'itm'}-txt-${i}`} className="relative">
             <HistoryCopyButton text={text} className="absolute right-0 -top-1" />
-            <p className="whitespace-pre-wrap break-words text-sm leading-6">{text}</p>
+            <p className="whitespace-pre-wrap break-words text-sm leading-6 text-[var(--cf-text-primary)] font-apple-regular">{text}</p>
           </div>
         );
       })}
@@ -3935,13 +3941,13 @@ function renderHistoryBlocks(id: string, sessions: HistorySession[], filter?: Re
   return (
     <div>
       {/* 详情标题：显示本地时间（优先 rawDate -> date -> 文件名推断），tooltip 同时展示本地与原始信息 */}
-      <h3 className="mb-3 max-w-full truncate text-base font-semibold" title={`${toLocalDisplayTime(s)} ${s.rawDate ? '• ' + s.rawDate : (s.date ? '• ' + s.date : '')}`}>
+      <h3 className="mb-3 max-w-full truncate text-base font-apple-semibold text-[var(--cf-text-primary)]" title={`${toLocalDisplayTime(s)} ${s.rawDate ? '• ' + s.rawDate : (s.date ? '• ' + s.date : '')}`}>
         {toLocalDisplayTime(s)}
       </h3>
-      <div className="space-y-3">
+      <div className="space-y-2">
         {nonEmptyMessages.map((m, i) => (
-          <div key={`${id}-${i}`} className="rounded-lg border bg-white p-3 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100">
-            <div className="mb-1 text-xs uppercase tracking-wide text-slate-500">{m.role}</div>
+          <div key={`${id}-${i}`} className="rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple p-2 shadow-apple-sm text-[var(--cf-text-primary)] transition-all duration-apple hover:shadow-apple dark:shadow-apple-dark-sm dark:hover:shadow-apple-dark">
+            <div className="mb-1 text-xs uppercase tracking-wider font-apple-semibold text-[var(--cf-text-secondary)]">{m.role}</div>
             <ContentRenderer items={m.content} kprefix={`${id}-${i}`} />
           </div>
         ))}
@@ -4072,7 +4078,7 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
       <div className="flex items-center justify-between px-3 py-2">
         <div className="flex items-center gap-2 text-sm">
           {/* 返回箭头：点击返回到控制台 */}
-          <button className="flex items-center gap-2 text-sm text-slate-600" onClick={() => { if (onBack) onBack(); }} aria-label={t('history:detailTitle') as string}>
+          <button className="flex items-center gap-2 text-sm font-apple-medium text-[var(--cf-text-secondary)] hover:text-[var(--cf-text-primary)] transition-colors duration-apple" onClick={() => { if (onBack) onBack(); }} aria-label={t('history:detailTitle') as string}>
             <ChevronLeft className="h-4 w-4" /> <span>{t('history:detailTitle')}</span>
           </button>
         </div>
@@ -4104,9 +4110,9 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
         </div>
       </div>
       <Separator />
-      <div className="flex flex-col gap-1 px-3 py-1 text-xs text-slate-600">
+      <div className="flex flex-col gap-2 px-3 py-2 text-xs text-[var(--cf-text-secondary)]">
         <div className="flex items-center justify-between">
-          <div className="text-slate-400">{t('history:filterTypes')}</div>
+          <div className="text-[var(--cf-text-muted)] font-apple-medium">{t('history:filterTypes')}</div>
           <div className="flex items-center gap-2">
             <Button size="sm" variant="ghost" onClick={() => {
               const keys = Object.keys(typeFilter);
@@ -4128,30 +4134,30 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
                 return next;
               });
             }}>{t('history:invertSelection')}</Button>
-            <span className="text-slate-400">{Object.values(typeFilter).filter(Boolean).length}/{Object.keys(typeFilter).length}</span>
+            <span className="text-[var(--cf-text-muted)] font-apple-medium">{Object.values(typeFilter).filter(Boolean).length}/{Object.keys(typeFilter).length}</span>
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
           {Object.keys(typeFilter).length > 0 ? (
             Object.keys(typeFilter).sort().map((k) => (
-              <label key={k} className="inline-flex items-center gap-1">
-                <input type="checkbox" className="h-3 w-3" checked={!!typeFilter[k]} onChange={(e) => setTypeFilter((cur) => ({ ...cur, [k]: e.target.checked }))} />
-                <span>{k}</span>
+              <label key={k} className="inline-flex items-center gap-1.5 cursor-pointer hover:text-[var(--cf-text-primary)] transition-colors duration-apple-fast">
+                <input type="checkbox" className="h-3 w-3 rounded accent-[var(--cf-accent)]" checked={!!typeFilter[k]} onChange={(e) => setTypeFilter((cur) => ({ ...cur, [k]: e.target.checked }))} />
+                <span className="font-apple-regular">{k}</span>
               </label>
             ))
           ) : (
-            <span className="text-slate-400">{t('history:loadingFilters')}</span>
+            <span className="text-[var(--cf-text-muted)] font-apple-regular">{t('history:loadingFilters')}</span>
           )}
         </div>
       </div>
-      <ScrollArea key={selectedHistoryId || 'none'} className="h-full min-h-0 p-3">
+      <ScrollArea key={selectedHistoryId || 'none'} className="h-full min-h-0 p-2">
         {selectedHistoryId ? (
-          <div className="space-y-3">
+          <div className="space-y-2">
             {renderHistoryBlocks(selectedHistoryId, localSessions, typeFilter)}
-            {loaded && skipped > 0 && <div className="text-xs text-slate-500">{t('history:skippedLines', { count: skipped })}</div>}
+            {loaded && skipped > 0 && <div className="text-xs text-[var(--cf-text-secondary)] font-apple-regular">{t('history:skippedLines', { count: skipped })}</div>}
           </div>
         ) : (
-          <div className="p-6 text-sm text-slate-500">{t('history:selectRightToView')}</div>
+          <div className="p-4 text-sm text-[var(--cf-text-secondary)] font-apple-regular">{t('history:selectRightToView')}</div>
         )}
       </ScrollArea>
       </div>

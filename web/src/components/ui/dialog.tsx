@@ -32,22 +32,73 @@ export function DialogTrigger({ asChild, children }: { asChild?: boolean; childr
 
 export function DialogContent({ className, children }: React.HTMLAttributes<HTMLDivElement>) {
   const ctx = React.useContext(DialogContext);
+  const [isVisible, setIsVisible] = React.useState(false);
+
+  React.useEffect(() => {
+    let raf1: number | null = null;
+    let raf2: number | null = null;
+    let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
+
+    if (ctx?.open) {
+      const hasRAF = typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function';
+      if (hasRAF) {
+        // 延迟触发动画，确保初始状态先渲染
+        raf1 = window.requestAnimationFrame(() => {
+          raf2 = window.requestAnimationFrame(() => {
+            setIsVisible(true);
+          });
+        });
+      } else {
+        // 在无 requestAnimationFrame 的环境（如单元测试）兼容处理
+        fallbackTimer = setTimeout(() => {
+          setIsVisible(true);
+        }, 0);
+      }
+    } else {
+      setIsVisible(false);
+    }
+
+    return () => {
+      if (raf1 !== null) cancelAnimationFrame(raf1);
+      if (raf2 !== null) cancelAnimationFrame(raf2);
+      if (fallbackTimer !== null) clearTimeout(fallbackTimer);
+    };
+  }, [ctx?.open]);
+
   if (!ctx || !ctx.open) return null;
+  
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/50" onClick={() => ctx.setOpen(false)} />
-      <div className={cn('relative z-10 w-[520px] rounded-lg border border-[var(--cf-border)] bg-[var(--cf-app-bg)] p-6 shadow-xl text-[var(--cf-text-primary)]', className)}>{children}</div>
+    <div className={cn(
+      'fixed inset-0 z-50 flex items-center justify-center transition-all duration-apple-slow ease-apple',
+      isVisible ? 'opacity-100' : 'opacity-0'
+    )}>
+      <div 
+        className={cn(
+          'absolute inset-0 bg-black/40 backdrop-blur-apple transition-all duration-apple-slow ease-apple',
+          isVisible ? 'opacity-100' : 'opacity-0'
+        )}
+        onClick={() => ctx.setOpen(false)} 
+      />
+      <div 
+        className={cn(
+          'relative z-10 w-[520px] rounded-apple-xl border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple-lg p-6 shadow-apple-xl text-[var(--cf-text-primary)] transition-all duration-apple-slow ease-apple dark:shadow-apple-dark-xl',
+          isVisible ? 'opacity-100 scale-100' : 'opacity-0 scale-95',
+          className
+        )}
+      >
+        {children}
+      </div>
     </div>,
     document.body
   );
 }
 
 export function DialogHeader(props: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn('mb-3', props.className)} {...props} />;
+  return <div className={cn('mb-4', props.className)} {...props} />;
 }
 export function DialogTitle(props: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn('text-lg font-semibold dark:text-[var(--cf-text-primary)]', props.className)} {...props} />;
+  return <div className={cn('text-xl font-apple-semibold text-[var(--cf-text-primary)] mb-2', props.className)} {...props} />;
 }
 export function DialogDescription(props: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn('text-sm text-slate-600 dark:text-[var(--cf-text-secondary)]', props.className)} {...props} />;
+  return <div className={cn('text-sm text-[var(--cf-text-secondary)] leading-relaxed', props.className)} {...props} />;
 }
