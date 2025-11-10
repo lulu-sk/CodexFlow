@@ -9,6 +9,7 @@ import i18n from "@/i18n/setup";
 import { copyTextCrossPlatform, readTextCrossPlatform } from "@/lib/clipboard";
 import {
   DEFAULT_TERMINAL_FONT_FAMILY,
+  getTerminalTheme,
   normalizeTerminalAppearance,
   type TerminalAppearance,
 } from "@/lib/terminal-appearance";
@@ -84,19 +85,36 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
   const applyAppearanceToTerminal = (next: TerminalAppearance) => {
     appearance = next;
     if (!term) return;
-    let applied = false;
+    const palette = getTerminalTheme(next.theme).palette;
+    let fontApplied = false;
     try {
       const setOption = (term as any).setOption;
       if (typeof setOption === "function") {
         setOption.call(term, "fontFamily", appearance.fontFamily);
-        applied = true;
+        fontApplied = true;
       }
     } catch {}
-    if (!applied) {
+    if (!fontApplied) {
       try {
         const opts: any = (term as any).options;
         if (opts && typeof opts === "object") {
           opts.fontFamily = appearance.fontFamily;
+        }
+      } catch {}
+    }
+    let themeApplied = false;
+    try {
+      const setOption = (term as any).setOption;
+      if (typeof setOption === "function") {
+        setOption.call(term, "theme", palette);
+        themeApplied = true;
+      }
+    } catch {}
+    if (!themeApplied) {
+      try {
+        const opts: any = (term as any).options;
+        if (opts && typeof opts === "object") {
+          opts.theme = palette;
         }
       } catch {}
     }
@@ -195,12 +213,14 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
       const hostHeight = parentRect ? parentRect.height : rect.height;
       const hostH = Math.max(0, Math.floor(hostHeight));
       
-      // 计算整行数，并将容器高度钉为 rows*cellH 的整数像素，避免“半行余数”
+      // 计算整行数，并确保终端容器高度与宿主一致（px -> 100%），再按整数行/列重算
       const rows = Math.max(2, Math.floor(hostH / cellH));
       const pinnedPx = Math.max(0, Math.round(rows * cellH));
-      const want = `${pinnedPx}px`;
-      const prev = (container.style.height || "").trim();
-      if (prev !== want) container.style.height = want;
+      // 旧版本通过将容器直接钉死为 pinnedPx，导致宿主剩余几像素的空隙。这里统一改为 100%，
+      // 既保留整数行策略，又让滚动条视觉上贴合底边。
+      if ((container.style.height || "").trim() !== "100%") {
+        container.style.height = "100%";
+      }
 
       // 第二次 fit：让 xterm 按钉死后的高度重新计算网格
       fitAddon.fit();
@@ -238,6 +258,7 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
   const ensure = () => {
     if (!term) {
       // 终端初始化：尽量与成熟 IDE 的稳定配置对齐
+      const themePalette = getTerminalTheme(appearance.theme).palette;
       term = new Terminal({
         // 光标闪烁提升输入感知
         cursorBlink: true,
@@ -250,8 +271,8 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
         convertEol: false,
         // 关键：启用 Windows 模式，禁用前端 reflow，由 ConPTY 负责软换行/重排
         windowsMode: true,
-        // 明暗对比明确的配色，避免 Windows + 高 DPI 下的次像素渲染脏区
-        theme: { background: "#020617", foreground: "#e2e8f0" },
+        // 根据用户选择应用终端主题
+        theme: themePalette,
         // 与容器 UI 的等宽字体保持一致
         fontFamily: appearance.fontFamily || DEFAULT_TERMINAL_FONT_FAMILY,
         fontSize: 13,
@@ -822,8 +843,9 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
       } catch {}
     },
     setAppearance: (partial) => {
-      const next = normalizeTerminalAppearance(partial);
-      if (next.fontFamily === appearance.fontFamily) return;
+      const next = normalizeTerminalAppearance(partial, appearance);
+      // 仅当字体与主题都未变化时才跳过，保证主题切换能即时落地
+      if (next.fontFamily === appearance.fontFamily && next.theme === appearance.theme) return;
       applyAppearanceToTerminal(next);
     },
     dispose: () => {

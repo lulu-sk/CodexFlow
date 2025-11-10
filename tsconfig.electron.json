@@ -6,7 +6,7 @@
     "rootDir": "electron",
     "types": ["node"]
   },
-  "include": ["electron/**/*"]
+  "include": ["electron/**/*", "web/src/types/**/*.d.ts"]
 }
 
 

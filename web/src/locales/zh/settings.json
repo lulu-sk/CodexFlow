@@ -67,6 +67,20 @@
   "wslDistroHelp": "指定打开 WSL 终端时默认使用的发行版。",
   "codexCmd": "CodexFlow 启动命令",
   "codexCmdHelp": "自定义从终端启动 CodexFlow 时执行的命令。",
+  "terminalTheme": {
+    "label": "终端主题",
+    "help": "为内置终端选择配色方案，所有标签页会即时同步。",
+    "mode": {
+      "dark": "暗色方案",
+      "light": "亮色方案"
+    },
+    "options": {
+      "campbell": "Campbell（暗色，默认）",
+      "dracula": "Dracula（暗色）",
+      "catppuccin-latte": "Catppuccin · Latte（亮色）"
+    },
+    "previewNote": "预览区已应用 {theme} 配色。"
+  },
   "terminalFont": {
     "label": "终端字体",
     "help": "选择终端使用的等宽字体，底部预览区会实时显示当前选中字体的渲染效果。",

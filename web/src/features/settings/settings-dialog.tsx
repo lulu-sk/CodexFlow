@@ -24,9 +24,13 @@ import {
   DEFAULT_TERMINAL_FONT_FAMILY,
   normalizeTerminalFontFamily,
   buildTerminalFontStack,
+  getTerminalTheme,
+  normalizeTerminalTheme,
+  TERMINAL_THEME_OPTIONS,
 } from "@/lib/terminal-appearance";
 import { resolveFirstAvailableFont, parseFontFamilyList } from "@/lib/font-utils";
 import { resolveSystemTheme, subscribeSystemTheme, type ThemeMode, type ThemeSetting } from "@/lib/theme";
+import type { TerminalThemeId } from "@/types/terminal-theme";
 
 type TerminalMode = "wsl" | "windows";
 type SendMode = "write_only" | "write_and_enter";
@@ -62,6 +66,7 @@ export type SettingsDialogProps = {
     notifications: NotificationPrefs;
     network?: NetworkPrefs;
     terminalFontFamily: string;
+    terminalTheme: TerminalThemeId;
   };
   onSave: (v: {
     terminal: TerminalMode;
@@ -74,6 +79,7 @@ export type SettingsDialogProps = {
     notifications: NotificationPrefs;
     network: NetworkPrefs;
     terminalFontFamily: string;
+    terminalTheme: TerminalThemeId;
   }) => void;
 };
 
@@ -132,6 +138,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   const [codexRoots, setCodexRoots] = useState<string[]>([]);
   const [lang, setLang] = useState<string>(values.locale || "en");
   const [theme, setTheme] = useState<ThemeSetting>(normalizeThemeSetting(values.theme));
+  const [terminalTheme, setTerminalTheme] = useState<TerminalThemeId>(values.terminalTheme);
   const [systemTheme, setSystemTheme] = useState<ThemeMode>(() => resolveSystemTheme());
   const [availableDistros, setAvailableDistros] = useState<string[]>([]);
   const [terminalFontFamily, setTerminalFontFamily] = useState<string>(normalizeTerminalFontFamily(values.terminalFontFamily));
@@ -161,6 +168,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     const current = (currentPrimaryFont || "").toLowerCase();
     return visibleFontList.findIndex((name) => name.toLowerCase() === current);
   }, [visibleFontList, currentPrimaryFont]);
+  const previewTheme = useMemo(() => getTerminalTheme(terminalTheme), [terminalTheme]);
   const themeLabel = useCallback((mode: ThemeSetting) => {
     if (mode === "dark") return t("settings:appearance.theme.dark") as string;
     if (mode === "light") return t("settings:appearance.theme.light") as string;
@@ -218,8 +226,9 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         noProxy: values.network?.noProxy ?? "",
       });
       setTerminalFontFamily(normalizeTerminalFontFamily(values.terminalFontFamily));
+      setTerminalTheme(normalizeTerminalTheme(values.terminalTheme));
     }
-  }, [open, values.codexCmd, values.distro, values.locale, values.notifications, values.projectPathStyle, values.sendMode, values.terminal, values.terminalFontFamily, values.theme]);
+  }, [open, values.codexCmd, values.distro, values.locale, values.notifications, values.projectPathStyle, values.sendMode, values.terminal, values.terminalFontFamily, values.terminalTheme, values.theme]);
 
   useEffect(() => {
     if (!open) return;
@@ -764,6 +773,49 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
               </Card>
               <Card>
                 <CardHeader>
+                  <CardTitle>{t("settings:terminalTheme.label")}</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <p className="text-sm text-slate-500">{t("settings:terminalTheme.help")}</p>
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    {TERMINAL_THEME_OPTIONS.map((option) => {
+                      const isActive = option.id === terminalTheme;
+                      const palette = option.palette;
+                      return (
+                        <button
+                          key={option.id}
+                          type="button"
+                          className={cn(
+                            "flex flex-col gap-2 rounded-lg border px-3 py-3 text-left transition-colors",
+                            isActive
+                              ? "border-slate-900 bg-slate-50 shadow-sm dark:border-[var(--cf-accent)] dark:bg-[var(--cf-surface)]"
+                              : "border-slate-200 bg-white hover:border-slate-300 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:hover:border-[var(--cf-border)]"
+                          )}
+                          onClick={() => setTerminalTheme(option.id)}
+                        >
+                          <div
+                            className="rounded-md border border-slate-200/70 px-3 py-2 text-xs font-mono"
+                            style={{
+                              backgroundColor: palette.background,
+                              color: palette.foreground,
+                            }}
+                          >
+                            AaBbCc123
+                          </div>
+                          <div className="text-sm font-medium text-slate-800 dark:text-[var(--cf-text-primary)]">
+                            {t(`settings:terminalTheme.options.${option.id}`)}
+                          </div>
+                          <div className="text-xs text-slate-500 dark:text-[var(--cf-text-secondary)]">
+                            {t(`settings:terminalTheme.mode.${option.tone}`)}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader>
                   <CardTitle>{t("settings:terminalFont.label")}</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
@@ -773,8 +825,12 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                   <div>
                     <div className="text-xs font-medium text-slate-600 mb-2">{t("settings:terminalFont.previewTitle")}</div>
                     <div
-                      className="rounded-lg bg-slate-900 px-4 py-3 font-mono text-xs text-slate-100 overflow-x-auto"
-                      style={{ fontFamily: terminalFontFamily || DEFAULT_TERMINAL_FONT_FAMILY }}
+                      className="rounded-lg border border-slate-200 px-4 py-3 font-mono text-xs overflow-x-auto dark:border-[var(--cf-border)]"
+                      style={{
+                        fontFamily: terminalFontFamily || DEFAULT_TERMINAL_FONT_FAMILY,
+                        backgroundColor: previewTheme.palette.background,
+                        color: previewTheme.palette.foreground,
+                      }}
                     >
                       {t("settings:terminalFont.preview")}
                     </div>
@@ -782,6 +838,9 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                       {resolvedPreviewFont.isFallback
                         ? t("settings:terminalFont.fallback", { name: resolvedPreviewFont.name })
                         : t("settings:terminalFont.effective", { name: resolvedPreviewFont.name })}
+                    </div>
+                    <div className="text-[11px] text-slate-500">
+                      {t("settings:terminalTheme.previewNote", { theme: t(`settings:terminalTheme.options.${terminalTheme}`) })}
                     </div>
                   </div>
                   
@@ -1181,6 +1240,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     t,
     terminal,
     terminalFontFamily,
+    terminalTheme,
     themeLabel,
     systemThemeLabel,
   ]);
@@ -1266,10 +1326,11 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                       sendMode,
                       locale: lang,
                       projectPathStyle: pathStyle,
-                    theme,
+                      theme,
                       notifications,
                       network,
                       terminalFontFamily: normalizeTerminalFontFamily(terminalFontFamily),
+                      terminalTheme,
                     });
                     onOpenChange(false);
                   }}

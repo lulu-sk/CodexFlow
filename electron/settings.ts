@@ -7,6 +7,7 @@ import { app } from 'electron';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { getSessionsRootsFastAsync, listDistros, execInWslAsync } from './wsl';
+import type { TerminalThemeId } from '@/types/terminal-theme';
 import type { DistroInfo } from './wsl';
 
 export type NotificationSettings = {
@@ -34,6 +35,8 @@ export type ThemeSetting = 'light' | 'dark' | 'system';
 export type AppSettings = {
   /** 终端类型：WSL 或 Windows 本地终端 */
   terminal?: 'wsl' | 'windows';
+  /** 终端配色主题 */
+  terminalTheme?: TerminalThemeId;
   /** WSL 发行版名称（当 terminal=wsl 时生效） */
   distro: string;
   /** 启动 CodexFlow 的命令（渲染层会做包装） */
@@ -76,11 +79,21 @@ const DEFAULT_NETWORK: NetworkSettings = {
   noProxy: '',
 };
 const DEFAULT_THEME: ThemeSetting = 'system';
+const DEFAULT_TERMINAL_THEME: TerminalThemeId = 'campbell';
 
 function normalizeTheme(raw: unknown): ThemeSetting {
   const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
   if (value === 'light' || value === 'dark') return value;
   return DEFAULT_THEME;
+}
+
+function normalizeTerminalTheme(raw: unknown): TerminalThemeId {
+  const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  if (value === 'dracula') return 'dracula';
+  if (value === 'catppuccin-latte' || value === 'catppuccinlatte' || value === 'catppuccin latte' || value === 'catppuccin') {
+    return 'catppuccin-latte';
+  }
+  return DEFAULT_TERMINAL_THEME;
 }
 
 function loadDistroList(): DistroInfo[] {
@@ -138,6 +151,7 @@ function mergeWithDefaults(raw: Partial<AppSettings>, preloadedDistros?: DistroI
   const distros = preloadedDistros ?? loadDistroList();
   const defaults: AppSettings = {
     terminal: 'wsl',
+    terminalTheme: DEFAULT_TERMINAL_THEME,
     distro: pickPreferredDistro('', distros),
     // 渲染层会按“每标签独立 tmux 会话”包装该命令；默认仅保存基础命令
     codexCmd: 'codex',
@@ -160,6 +174,7 @@ function mergeWithDefaults(raw: Partial<AppSettings>, preloadedDistros?: DistroI
   };
   merged.distro = pickPreferredDistro(merged.distro, distros);
   merged.theme = normalizeTheme((raw as any)?.theme ?? merged.theme);
+  merged.terminalTheme = normalizeTerminalTheme((raw as any)?.terminalTheme ?? merged.terminalTheme);
   return merged;
 }
 
