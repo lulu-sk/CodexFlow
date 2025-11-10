@@ -49,9 +49,18 @@ import { oscBufferDefaults, trimOscBuffer } from "@/lib/oscNotificationBuffer";
 import HistoryCopyButton from "@/components/history/history-copy-button";
 import { toWSLForInsert } from "@/lib/wsl";
 import SettingsDialog from "@/features/settings/settings-dialog";
-import { DEFAULT_TERMINAL_FONT_FAMILY, normalizeTerminalFontFamily } from "@/lib/terminal-appearance";
+import {
+  DEFAULT_TERMINAL_FONT_FAMILY,
+  DEFAULT_TERMINAL_THEME_ID,
+  getTerminalTheme,
+  buildTerminalChromeColors,
+  normalizeTerminalFontFamily,
+  normalizeTerminalTheme,
+  type TerminalThemeDefinition,
+} from "@/lib/terminal-appearance";
 import { getCachedThemeSetting, useThemeController, writeThemeSettingCache, type ThemeSetting } from "@/lib/theme";
 import type { Project } from "@/types/host";
+import type { TerminalThemeId } from "@/types/terminal-theme";
 
 // ---------- Types ----------
 
@@ -498,10 +507,79 @@ function StatusDot({ ok }: { ok: boolean }) {
   );
 }
 
-function TerminalView({ logs, tabId, ptyId, attachTerminal, onContextMenuDebug }: { logs: string[]; tabId: string; ptyId?: string | null; attachTerminal?: (tabId: string, el: HTMLDivElement) => void; onContextMenuDebug?: (event: React.MouseEvent) => void; }) {
+function TerminalView({
+  logs,
+  tabId,
+  ptyId,
+  attachTerminal,
+  onContextMenuDebug,
+  theme,
+}: {
+  logs: string[];
+  tabId: string;
+  ptyId?: string | null;
+  attachTerminal?: (tabId: string, el: HTMLDivElement) => void;
+  onContextMenuDebug?: (event: React.MouseEvent) => void;
+  theme: TerminalThemeDefinition;
+}) {
   const { t } = useTranslation(['terminal']);
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const chromeRef = useRef<HTMLDivElement | null>(null);
   const [mounted, setMounted] = useState(false);
+  const scrollPulseRef = useRef<number | null>(null);
+  const palette = theme?.palette;
+  const backgroundColor = palette?.background || "var(--cf-surface-muted)";
+  const placeholderColor = palette?.foreground || "var(--cf-text-primary)";
+  const chrome = useMemo(() => buildTerminalChromeColors(theme), [theme]);
+  const frameStyle = useMemo<React.CSSProperties>(
+    () => ({
+      backgroundColor,
+      borderColor: chrome.frameBorder,
+      boxShadow: chrome.frameShadow,
+      ["--cf-scrollbar-thumb" as const]: chrome.scrollbarThumb,
+      ["--cf-scrollbar-thumb-hover" as const]: chrome.scrollbarThumbHover,
+      ["--cf-scrollbar-track" as const]: chrome.scrollbarTrack,
+      ["--cf-terminal-bg" as const]: backgroundColor,
+      ["--cf-terminal-scrollbar-thumb" as const]: chrome.scrollbarThumb,
+      ["--cf-terminal-scrollbar-thumb-hover" as const]: chrome.scrollbarThumbHover,
+      ["--cf-terminal-scrollbar-track" as const]: chrome.scrollbarTrack,
+      ["--cf-terminal-scrollbar-border" as const]: chrome.scrollbarBorder,
+      ["--cf-terminal-scrollbar-glow" as const]: chrome.scrollbarGlow,
+    }),
+    [backgroundColor, chrome]
+  );
+  const deactivateScrollChrome = useCallback(() => {
+    const chromeNode = chromeRef.current;
+    if (!chromeNode) return;
+    if (chromeNode.matches(":hover")) return;
+    chromeNode.removeAttribute("data-scroll-active");
+  }, []);
+  const triggerScrollChrome = useCallback(
+    (holdMs = 900) => {
+      const chromeNode = chromeRef.current;
+      if (!chromeNode || typeof window === "undefined") return;
+      chromeNode.setAttribute("data-scroll-active", "1");
+      if (scrollPulseRef.current) {
+        window.clearTimeout(scrollPulseRef.current);
+      }
+      scrollPulseRef.current = window.setTimeout(() => {
+        deactivateScrollChrome();
+        scrollPulseRef.current = null;
+      }, holdMs);
+    },
+    [deactivateScrollChrome]
+  );
+  const bindViewportScroll = useCallback((): (() => void) | null => {
+    const viewport = hostRef.current?.querySelector(".xterm-viewport") as HTMLDivElement | null;
+    if (!viewport) return null;
+    const handleScroll = () => triggerScrollChrome();
+    viewport.addEventListener("scroll", handleScroll, { passive: true });
+    viewport.addEventListener("wheel", handleScroll, { passive: true });
+    return () => {
+      viewport.removeEventListener("scroll", handleScroll);
+      viewport.removeEventListener("wheel", handleScroll);
+    };
+  }, [triggerScrollChrome]);
   useEffect(() => {
     // 即使 PTY 已退出（无 ptyId），也把持久容器重新挂到宿主，避免"黑屏"
     if (hostRef.current && attachTerminal) {
@@ -509,6 +587,44 @@ function TerminalView({ logs, tabId, ptyId, attachTerminal, onContextMenuDebug }
       setMounted(true);
     }
   }, [attachTerminal, tabId, ptyId]);
+  useEffect(() => {
+    if (!hostRef.current) return;
+    let cleanupViewport: (() => void) | null = bindViewportScroll();
+    if (!cleanupViewport) {
+      const observer = new MutationObserver(() => {
+        if (cleanupViewport) return;
+        cleanupViewport = bindViewportScroll();
+        if (cleanupViewport) {
+          observer.disconnect();
+          triggerScrollChrome(1200);
+        }
+      });
+      observer.observe(hostRef.current, { childList: true, subtree: true });
+      return () => {
+        observer.disconnect();
+        cleanupViewport?.();
+        if (typeof window !== "undefined" && scrollPulseRef.current) {
+          window.clearTimeout(scrollPulseRef.current);
+          scrollPulseRef.current = null;
+        }
+        chromeRef.current?.removeAttribute("data-scroll-active");
+      };
+    }
+    triggerScrollChrome(1200);
+    return () => {
+      cleanupViewport?.();
+      if (typeof window !== "undefined" && scrollPulseRef.current) {
+        window.clearTimeout(scrollPulseRef.current);
+        scrollPulseRef.current = null;
+      }
+      chromeRef.current?.removeAttribute("data-scroll-active");
+    };
+  }, [bindViewportScroll, triggerScrollChrome, theme]);
+  useEffect(() => {
+    if (mounted) {
+      triggerScrollChrome(1000);
+    }
+  }, [mounted, triggerScrollChrome]);
   return (
     <div
       className="relative h-full min-h-0"
@@ -519,11 +635,17 @@ function TerminalView({ logs, tabId, ptyId, attachTerminal, onContextMenuDebug }
       }}
     >
       {/* 外层容器负责视觉（圆角/背景/阴影），并裁剪内部，保证四角对称 */}
-      <div className="h-full min-h-[320px] w-full rounded-lg overflow-hidden bg-slate-950 text-slate-100 shadow-inner">
+      <div
+        ref={chromeRef}
+        className="cf-terminal-chrome h-full min-h-[320px] w-full rounded-lg overflow-hidden border [background-clip:padding-box]"
+        style={frameStyle}
+        onMouseEnter={() => triggerScrollChrome(1400)}
+        onMouseLeave={deactivateScrollChrome}
+      >
         {/* 纯净宿主：无 padding/滚动，避免 fit 计算偏差；xterm 内部自带滚动 */}
         <div ref={hostRef} className="h-full w-full overflow-hidden" />
         {/* 初始占位：终端挂载后隐藏，避免与 xterm 重叠 */}
-        <pre className={`whitespace-pre-wrap font-mono text-sm leading-6 p-3 ${mounted ? 'hidden' : ''}`}>
+        <pre className={`whitespace-pre-wrap font-mono text-sm leading-6 p-3 opacity-70 ${mounted ? 'hidden' : ''}`} style={{ color: placeholderColor }}>
           {logs.length === 0 ? (
             <span className="opacity-60">{t('terminal:readyPlaceholder')}</span>
           ) : (
@@ -777,6 +899,8 @@ export default function CodexFlowManagerUI() {
   // Terminal adapters 与 PTY 状态
   const [terminalMode, setTerminalMode] = useState<'wsl' | 'windows'>('wsl');
   const [terminalFontFamily, setTerminalFontFamily] = useState<string>(DEFAULT_TERMINAL_FONT_FAMILY);
+  const [terminalTheme, setTerminalTheme] = useState<TerminalThemeId>(DEFAULT_TERMINAL_THEME_ID);
+  const terminalThemeDef = useMemo(() => getTerminalTheme(terminalTheme), [terminalTheme]);
   const [codexTraceEnabled, setCodexTraceEnabled] = useState(false);
   const ptyByTabRef = useRef<Record<string, string>>({});
   const [ptyByTab, setPtyByTab] = useState<Record<string, string>>({});
@@ -787,7 +911,7 @@ export default function CodexFlowManagerUI() {
     terminalManagerRef.current = new TerminalManager(
       (tabId: string) => ptyByTabRef.current[tabId],
       undefined,
-      { fontFamily: terminalFontFamily }
+      { fontFamily: terminalFontFamily, theme: terminalTheme }
     );
   }
   const tm = terminalManagerRef.current;
@@ -809,8 +933,8 @@ export default function CodexFlowManagerUI() {
   useEffect(() => { projectsRef.current = projects; }, [projects]);
   useEffect(() => {
     if (!terminalManagerRef.current) return;
-    try { terminalManagerRef.current.setAppearance({ fontFamily: terminalFontFamily }); } catch {}
-  }, [terminalFontFamily]);
+    try { terminalManagerRef.current.setAppearance({ fontFamily: terminalFontFamily, theme: terminalTheme }); } catch {}
+  }, [terminalFontFamily, terminalTheme]);
 
   const injectTraceEnv = React.useCallback((cmd: string | null | undefined) => {
     const raw = String(cmd || "").trim();
@@ -1709,6 +1833,7 @@ export default function CodexFlowManagerUI() {
           writeThemeSettingCache(nextThemeSetting);
           setNotificationPrefs(normalizeCompletionPrefs((s as any).notifications));
           setTerminalFontFamily(normalizeTerminalFontFamily((s as any).terminalFontFamily));
+          setTerminalTheme(normalizeTerminalTheme((s as any).terminalTheme));
           // 同步网络代理偏好
           try {
             const net = (s as any).network || {};
@@ -2709,6 +2834,7 @@ export default function CodexFlowManagerUI() {
                         ptyId={ptyByTab[tab.id]}
                         attachTerminal={attachTerminal}
                         onContextMenuDebug={(event) => openTabContextMenu(event, tab.id, "terminal-body")}
+                        theme={terminalThemeDef}
                       />
                     </div>
 
@@ -3541,7 +3667,7 @@ export default function CodexFlowManagerUI() {
       <SettingsDialog
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
-        values={{ terminal: terminalMode, distro: wslDistro, codexCmd, sendMode, locale, projectPathStyle, theme: themeSetting, notifications: notificationPrefs, network: networkPrefs, terminalFontFamily }}
+        values={{ terminal: terminalMode, distro: wslDistro, codexCmd, sendMode, locale, projectPathStyle, theme: themeSetting, notifications: notificationPrefs, network: networkPrefs, terminalFontFamily, terminalTheme }}
         onSave={async (v) => {
           const nextTerminal = v.terminal;
           const nextDistro = v.distro;
@@ -3551,6 +3677,7 @@ export default function CodexFlowManagerUI() {
           const nextLocale = v.locale;
           const nextNotifications = normalizeCompletionPrefs(v.notifications);
           const nextFontFamily = normalizeTerminalFontFamily(v.terminalFontFamily);
+          const nextTerminalTheme = normalizeTerminalTheme(v.terminalTheme);
           const nextTheme = normalizeThemeSetting(v.theme);
           // 先切换语言（内部会写入 settings 并广播），再持久化其它字段
           try { await (window as any).host?.i18n?.setLocale?.(nextLocale); setLocale(nextLocale); } catch {}
@@ -3565,6 +3692,7 @@ export default function CodexFlowManagerUI() {
               notifications: nextNotifications,
               network: v.network,
               terminalFontFamily: nextFontFamily,
+              terminalTheme: nextTerminalTheme,
             });
           } catch (e) { console.warn('settings.update failed', e); }
           setTerminalMode(nextTerminal);
@@ -3577,6 +3705,7 @@ export default function CodexFlowManagerUI() {
           setNotificationPrefs(nextNotifications);
           setNetworkPrefs(v.network);
           setTerminalFontFamily(nextFontFamily);
+          setTerminalTheme(nextTerminalTheme);
         }}
       />
 

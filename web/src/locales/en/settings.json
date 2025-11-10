@@ -67,6 +67,20 @@
   "wslDistroHelp": "Select the default distribution used when opening a WSL terminal.",
   "codexCmd": "CodexFlow launch command",
   "codexCmdHelp": "Customize the command CodexFlow runs when launching from the terminal.",
+  "terminalTheme": {
+    "label": "Terminal theme",
+    "help": "Pick a color palette for the integrated terminal. Changes apply to every tab immediately.",
+    "mode": {
+      "dark": "Dark palette",
+      "light": "Light palette"
+    },
+    "options": {
+      "campbell": "Campbell (Dark, default)",
+      "dracula": "Dracula (Dark)",
+      "catppuccin-latte": "Catppuccin · Latte (Light)"
+    },
+    "previewNote": "Preview uses {theme} colors."
+  },
   "terminalFont": {
     "label": "Terminal font",
     "help": "Choose the monospaced font for the integrated terminal. The preview below updates in real time.",

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
+import type { TerminalThemeId } from "./terminal-theme";
+
 export {}; // make this a module
 
 // 与主进程约定的类型（仅做声明，不引入运行时依赖）
@@ -8,6 +10,7 @@ export type ThemeSetting = 'light' | 'dark' | 'system';
 
 export type AppSettings = {
   terminal?: 'wsl' | 'windows';
+  terminalTheme?: TerminalThemeId;
   distro: string;
   codexCmd: string;
   historyRoot: string;
