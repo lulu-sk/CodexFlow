@@ -39,6 +39,7 @@ import {
   Minimize2,
   ArrowDownAZ,
   Check,
+  Search,
 } from "lucide-react";
 import AboutSupport from "@/components/about-support";
 import CodexUsageSummary from "@/components/topbar/codex-status";
@@ -3998,8 +3999,49 @@ function EmptyState({ onCreate }: { onCreate: () => void }) {
   );
 }
 
-function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?: string }) {
+type FieldMatch = {
+  matchId: string;
+  start: number;
+  length: number;
+};
+
+type FieldMatchMap = Record<string, FieldMatch[]>;
+
+function highlightSearchMatches(text: string, matches?: FieldMatch[], activeMatchId?: string): React.ReactNode {
+  const value = String(text || "");
+  if (!matches || matches.length === 0) return value;
+  const sorted = [...matches].sort((a, b) => a.start - b.start);
+  const fragments: React.ReactNode[] = [];
+  let cursor = 0;
+  let counter = 0;
+  for (const span of sorted) {
+    const start = Math.max(0, Math.min(span.start, value.length));
+    const end = Math.max(start, Math.min(start + span.length, value.length));
+    if (start > cursor) {
+      fragments.push(<React.Fragment key={`text-${counter++}`}>{value.slice(cursor, start)}</React.Fragment>);
+    }
+    if (start === end) continue;
+    const isActive = span.matchId === activeMatchId;
+    fragments.push(
+      <span
+        key={`match-${counter++}`}
+        className={`rounded-apple px-1 py-0.5 bg-[var(--cf-accent)]/15 text-[var(--cf-text-primary)] font-apple-medium ${isActive ? 'bg-[var(--cf-accent)]/30 ring-1 ring-[var(--cf-accent)]/70 shadow-apple-sm' : ''}`}
+      >
+        {value.slice(start, end)}
+      </span>,
+    );
+    cursor = end;
+  }
+  if (cursor < value.length) {
+    fragments.push(<React.Fragment key={`text-${counter++}`}>{value.slice(cursor)}</React.Fragment>);
+  }
+  return fragments.length > 0 ? fragments : value;
+}
+
+function ContentRenderer({ items, kprefix, fieldMatches, activeMatchId }: { items: MessageContent[]; kprefix?: string; fieldMatches?: FieldMatchMap; activeMatchId?: string }) {
   if (!Array.isArray(items) || items.length === 0) return null;
+  const buildFieldKey = (suffix: string) => `${kprefix || 'itm'}-${suffix}`;
+  const highlightText = (value: string, suffix: string) => highlightSearchMatches(value, fieldMatches?.[buildFieldKey(suffix)], activeMatchId);
   return (
     <div className="space-y-2">
       {items.map((c, i) => {
@@ -4013,7 +4055,7 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
                 <div>user_instructions</div>
                 <HistoryCopyButton text={text} />
               </div>
-              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-apple-regular"><code>{text}</code></pre>
+              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-apple-regular"><code>{highlightText(text, `item-${i}`)}</code></pre>
             </div>
           );
         }
@@ -4026,7 +4068,7 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
                 <div>environment_context</div>
                 <HistoryCopyButton text={text} />
               </div>
-              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-apple-regular"><code>{text}</code></pre>
+              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-apple-regular"><code>{highlightText(text, `item-${i}`)}</code></pre>
             </div>
           );
         }
@@ -4038,7 +4080,7 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
                 <div>instructions</div>
                 <HistoryCopyButton text={text} />
               </div>
-              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-apple-regular"><code>{text}</code></pre>
+              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-apple-regular"><code>{highlightText(text, `item-${i}`)}</code></pre>
             </div>
           );
         }
@@ -4047,7 +4089,7 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
             <div key={`${kprefix || 'itm'}-code-${i}`} className="relative">
               <HistoryCopyButton text={text} variant="secondary" className="absolute right-2 top-2" />
               <pre className="overflow-x-auto rounded-apple bg-[var(--cf-surface-muted)] border border-[var(--cf-border)] p-3 text-xs text-[var(--cf-text-primary)] font-mono shadow-apple-inner">
-                <code>{text}</code>
+                <code>{highlightText(text, `item-${i}`)}</code>
               </pre>
             </div>
           );
@@ -4060,7 +4102,7 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
                 <div>function_call</div>
                 <HistoryCopyButton text={text} />
               </div>
-              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-apple-regular"><code>{text}</code></pre>
+              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-apple-regular"><code>{highlightText(text, `item-${i}`)}</code></pre>
             </div>
           );
         }
@@ -4072,7 +4114,7 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
                 <div>function_output</div>
                 <HistoryCopyButton text={text} />
               </div>
-              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-apple-regular"><code>{text}</code></pre>
+              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-apple-regular"><code>{highlightText(text, `item-${i}`)}</code></pre>
             </div>
           );
         }
@@ -4080,7 +4122,7 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
           return (
             <div key={`${kprefix || 'itm'}-sum-${i}`} className="relative rounded-apple border border-[var(--cf-border)] bg-[var(--cf-purple-light)] p-2 text-xs text-[var(--cf-text-primary)] font-apple-regular">
               <HistoryCopyButton text={text} className="absolute right-2 top-2" />
-              {text}
+              {highlightText(text, `item-${i}`)}
             </div>
           );
         }
@@ -4092,7 +4134,7 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
                 <div>git</div>
                 <HistoryCopyButton text={text} />
               </div>
-              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-apple-regular"><code>{text}</code></pre>
+              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-apple-regular"><code>{highlightText(text, `item-${i}`)}</code></pre>
             </div>
           );
         }
@@ -4103,7 +4145,7 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
                 <span>input</span>
                 <HistoryCopyButton text={text} />
               </div>
-              <div className="whitespace-pre-wrap break-words font-apple-regular">{text}</div>
+              <div className="whitespace-pre-wrap break-words font-apple-regular">{highlightText(text, `item-${i}`)}</div>
             </div>
           );
         }
@@ -4114,7 +4156,7 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
                 <span>output</span>
                 <HistoryCopyButton text={text} />
               </div>
-              <div className="whitespace-pre-wrap break-words font-apple-regular">{text}</div>
+              <div className="whitespace-pre-wrap break-words font-apple-regular">{highlightText(text, `item-${i}`)}</div>
             </div>
           );
         }
@@ -4127,7 +4169,7 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
                 <HistoryCopyButton text={text} />
               </div>
               <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-apple-regular">
-                <code>{text}</code>
+                <code>{highlightText(text, `item-${i}`)}</code>
               </pre>
             </div>
           );
@@ -4140,7 +4182,7 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
                 <div>session_meta</div>
                 <HistoryCopyButton text={text} />
               </div>
-              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-apple-regular"><code>{text}</code></pre>
+              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-apple-regular"><code>{highlightText(text, `item-${i}`)}</code></pre>
             </div>
           );
         }
@@ -4148,7 +4190,7 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
         return (
           <div key={`${kprefix || 'itm'}-txt-${i}`} className="relative">
             <HistoryCopyButton text={text} className="absolute right-0 -top-1" />
-            <p className="whitespace-pre-wrap break-words text-sm leading-6 text-[var(--cf-text-primary)] font-apple-regular">{text}</p>
+            <p className="whitespace-pre-wrap break-words text-sm leading-6 text-[var(--cf-text-primary)] font-apple-regular">{highlightText(text, `item-${i}`)}</p>
           </div>
         );
       })}
@@ -4156,33 +4198,142 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
   );
 }
 
-function renderHistoryBlocks(id: string, sessions: HistorySession[], filter?: Record<string, boolean>) {
-  const s = sessions.find((x) => x.id === id);
-  if (!s) return null;
-  const nonEmptyMessages = (s.messages || [])
-    .map((m) => ({ ...m, content: (m.content || []).filter((it) => {
-      if (!filter) return true;
-      const keys = keysOfItemCanonical(it);
-      for (const k of keys) { if (Object.prototype.hasOwnProperty.call(filter, k) && !!(filter as any)[k]) return true; }
-      return !!(filter as any)['other'];
-    }) }))
-    .filter((m) => Array.isArray(m.content) && m.content.some((it) => String((it as any)?.text ?? '').trim().length > 0));
+type SearchMatch = {
+  id: string;
+  messageKey: string;
+  fieldKey?: string;
+};
+
+type HistoryFilterResult = {
+  messages: HistoryMessage[];
+  matches: SearchMatch[];
+  fieldMatches: FieldMatchMap;
+};
+
+type HistoryRenderOptions = {
+  fieldMatches?: FieldMatchMap;
+  activeMessageKey?: string;
+  activeMatchId?: string;
+  registerMessageRef?: (key: string, node: HTMLDivElement | null) => void;
+};
+
+function renderHistoryBlocks(session: HistorySession, messages: HistoryMessage[], options?: HistoryRenderOptions) {
+  if (!session) return null;
   return (
     <div>
       {/* 详情标题：显示本地时间（优先 rawDate -> date -> 文件名推断），tooltip 同时展示本地与原始信息 */}
-      <h3 className="mb-3 max-w-full truncate text-base font-apple-semibold text-[var(--cf-text-primary)]" title={`${toLocalDisplayTime(s)} ${s.rawDate ? '• ' + s.rawDate : (s.date ? '• ' + s.date : '')}`}>
-        {toLocalDisplayTime(s)}
+      <h3 className="mb-3 max-w-full truncate text-base font-apple-semibold text-[var(--cf-text-primary)]" title={`${toLocalDisplayTime(session)} ${session.rawDate ? '• ' + session.rawDate : (session.date ? '• ' + session.date : '')}`}>
+        {toLocalDisplayTime(session)}
       </h3>
       <div className="space-y-2">
-        {nonEmptyMessages.map((m, i) => (
-          <div key={`${id}-${i}`} className="rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple p-2 shadow-apple-sm text-[var(--cf-text-primary)] transition-all duration-apple hover:shadow-apple dark:shadow-apple-dark-sm dark:hover:shadow-apple-dark">
-            <div className="mb-1 text-xs uppercase tracking-wider font-apple-semibold text-[var(--cf-text-secondary)]">{m.role}</div>
-            <ContentRenderer items={m.content} kprefix={`${id}-${i}`} />
-          </div>
-        ))}
+        {messages.map((m, i) => {
+          const messageKey = `${session.id}-${i}`;
+          const isActive = options?.activeMessageKey === messageKey;
+          const roleFieldKey = `${messageKey}-role`;
+          const roleText = highlightSearchMatches(m.role, options?.fieldMatches?.[roleFieldKey], options?.activeMatchId);
+          return (
+            <div
+              key={messageKey}
+              ref={(node) => options?.registerMessageRef?.(messageKey, node)}
+              className={`rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple p-2 shadow-apple-sm text-[var(--cf-text-primary)] transition-all duration-apple hover:shadow-apple dark:shadow-apple-dark-sm dark:hover:shadow-apple-dark ${isActive ? 'ring-1 ring-[var(--cf-accent)]/70 shadow-apple dark:ring-[var(--cf-accent)]/40' : ''}`}
+            >
+              <div className="mb-1 text-xs uppercase tracking-wider font-apple-semibold text-[var(--cf-text-secondary)]">{roleText}</div>
+              <ContentRenderer items={m.content} kprefix={messageKey} fieldMatches={options?.fieldMatches} activeMatchId={options?.activeMatchId} />
+            </div>
+          );
+        })}
       </div>
     </div>
   );
+}
+
+
+function filterHistoryMessages(session: HistorySession, typeFilter: Record<string, boolean>, normalizedSearch: string): HistoryFilterResult {
+  const allowItem = (item: any) => {
+    if (!typeFilter) return true;
+    const keys = keysOfItemCanonical(item);
+    for (const key of keys) {
+      if (Object.prototype.hasOwnProperty.call(typeFilter, key) && !!(typeFilter as any)[key]) return true;
+    }
+    return !!(typeFilter as any)["other"];
+  };
+
+  const candidateMessages = (session.messages || []).map((m) => ({
+    ...m,
+    content: (m.content || []).filter((item) => allowItem(item)),
+  }));
+
+  const nonEmptyMessages = candidateMessages.filter((m) =>
+    Array.isArray(m.content) && m.content.some((item) => String((item as any)?.text ?? "").trim().length > 0),
+  );
+
+  const matches: SearchMatch[] = [];
+  const fieldMatches: FieldMatchMap = {};
+  let matchCounter = 0;
+
+  const addFieldMatch = (fieldKey: string, matchId: string, start: number, length: number) => {
+    const next = fieldMatches[fieldKey] || [];
+    next.push({ matchId, start, length });
+    fieldMatches[fieldKey] = next;
+  };
+
+  const captureTextMatches = (messageKey: string, fieldKey: string, value: string): boolean => {
+    if (!normalizedSearch) return false;
+    const lower = String(value).toLowerCase();
+    if (!lower) return false;
+    let idx = lower.indexOf(normalizedSearch);
+    let found = false;
+    while (idx !== -1) {
+      found = true;
+      const matchId = `${fieldKey}-${matchCounter++}`;
+      matches.push({ id: matchId, messageKey, fieldKey });
+      addFieldMatch(fieldKey, matchId, idx, normalizedSearch.length);
+      idx = lower.indexOf(normalizedSearch, idx + normalizedSearch.length);
+    }
+    return found;
+  };
+
+  const captureMetaMatch = (messageKey: string, descriptor: string): boolean => {
+    const matchId = `${messageKey}-${descriptor}-${matchCounter++}`;
+    matches.push({ id: matchId, messageKey });
+    return true;
+  };
+
+  const filteredMessages: HistoryMessage[] = [];
+  const searchActive = normalizedSearch.length > 0;
+  for (const message of nonEmptyMessages) {
+    if (!searchActive) {
+      filteredMessages.push(message);
+      continue;
+    }
+    const projectedIndex = filteredMessages.length;
+    const messageKey = `${session.id}-${projectedIndex}`;
+    let hit = false;
+    if (message.role) {
+      if (captureTextMatches(messageKey, `${messageKey}-role`, message.role)) hit = true;
+    }
+    for (let itemIndex = 0; itemIndex < (message.content || []).length; itemIndex += 1) {
+      const item = message.content?.[itemIndex];
+      const fieldKey = `${messageKey}-item-${itemIndex}`;
+      const text = String((item as any)?.text ?? "");
+      if (captureTextMatches(messageKey, fieldKey, text)) hit = true;
+      const type = String((item as any)?.type ?? "").toLowerCase();
+      if (type && type.includes(normalizedSearch)) {
+        hit = captureMetaMatch(messageKey, `type-${itemIndex}`) || hit;
+      }
+      const tags = Array.isArray((item as any)?.tags) ? (item as any).tags : [];
+      for (const tag of tags) {
+        if (String(tag ?? "").toLowerCase().includes(normalizedSearch)) {
+          hit = captureMetaMatch(messageKey, `tag-${itemIndex}-${tag}`) || hit;
+        }
+      }
+    }
+    if (hit) {
+      filteredMessages.push(message);
+    }
+  }
+
+  return { messages: filteredMessages, matches, fieldMatches };
 }
 
 function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResumeExternal, terminalMode }: { sessions: HistorySession[]; selectedHistoryId: string | null; onBack?: () => void; onResume?: (filePath?: string) => void; onResumeExternal?: (filePath?: string) => void; terminalMode: 'wsl' | 'windows' }) {
@@ -4191,6 +4342,7 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
   const [skipped, setSkipped] = useState(0);
   const [localSessions, setLocalSessions] = useState<HistorySession[]>(sessions);
   const [typeFilter, setTypeFilter] = useState<Record<string, boolean>>({});
+  const [detailSearch, setDetailSearch] = useState("");
   const reqSeq = useRef(0);
   const lastLoadedFingerprintRef = useRef<string>("");
   const selectedSession = useMemo(() => sessions.find((x) => x.id === selectedHistoryId) || null, [sessions, selectedHistoryId]);
@@ -4226,6 +4378,106 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
       });
     });
   }, [sessions]);
+
+  useEffect(() => {
+    setDetailSearch("");
+  }, [selectedHistoryId]);
+
+  const detailSession = selectedLocalSession || selectedSession;
+  const normalizedDetailSearch = useMemo(() => detailSearch.trim().toLowerCase(), [detailSearch]);
+  const detailSearchActive = normalizedDetailSearch.length > 0;
+
+  const filteredHistory = useMemo(() => {
+    if (!detailSession) return { messages: [], matches: [], fieldMatches: {} };
+    return filterHistoryMessages(detailSession, typeFilter, normalizedDetailSearch);
+  }, [selectedHistoryId, detailSession, typeFilter, normalizedDetailSearch]);
+
+  const filteredMessages = filteredHistory.messages;
+  const matches = filteredHistory.matches;
+  const fieldMatches = filteredHistory.fieldMatches;
+  const showNoMatch = detailSearchActive && filteredMessages.length === 0;
+
+  const [activeMatchIndex, setActiveMatchIndex] = useState(0);
+  const messageRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const registerMessageRef = useCallback((key: string, node: HTMLDivElement | null) => {
+    if (node) {
+      messageRefs.current[key] = node;
+    } else {
+      delete messageRefs.current[key];
+    }
+  }, []);
+
+  useEffect(() => {
+    messageRefs.current = {};
+  }, [detailSession, filteredMessages.length]);
+
+  useEffect(() => {
+    setActiveMatchIndex(0);
+  }, [detailSearchActive]);
+
+  useEffect(() => {
+    if (matches.length === 0) {
+      if (activeMatchIndex !== 0) setActiveMatchIndex(0);
+      return;
+    }
+    if (activeMatchIndex >= matches.length) {
+      setActiveMatchIndex(matches.length - 1);
+    }
+  }, [matches.length, activeMatchIndex]);
+
+  const normalizedMatchIndex = matches.length === 0 ? 0 : Math.min(activeMatchIndex, matches.length - 1);
+  const activeMatch = matches[normalizedMatchIndex] || null;
+
+  useEffect(() => {
+    if (!detailSearchActive || !activeMatch) return;
+    const node = messageRefs.current[activeMatch.messageKey];
+    if (!node) return;
+    requestAnimationFrame(() => {
+      try {
+        node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      } catch {}
+    });
+  }, [detailSearchActive, activeMatch?.messageKey]);
+
+  const goToNextMatch = useCallback(() => {
+    if (!matches.length) return;
+    setActiveMatchIndex((prev) => (prev + 1) % matches.length);
+  }, [matches.length]);
+
+  const goToPrevMatch = useCallback(() => {
+    if (!matches.length) return;
+    setActiveMatchIndex((prev) => (prev - 1 + matches.length) % matches.length);
+  }, [matches.length]);
+
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if (!detailSearchActive || !matches.length) return;
+      const key = event.key;
+      const isF3 = key === 'F3';
+      const isCtrlG = key.toLowerCase() === 'g' && (event.ctrlKey || event.metaKey);
+      if (isF3 && !event.shiftKey) {
+        event.preventDefault();
+        goToNextMatch();
+        return;
+      }
+      if (isF3 && event.shiftKey) {
+        event.preventDefault();
+        goToPrevMatch();
+        return;
+      }
+      if (isCtrlG && event.shiftKey) {
+        event.preventDefault();
+        goToPrevMatch();
+        return;
+      }
+      if (isCtrlG && !event.shiftKey) {
+        event.preventDefault();
+        goToNextMatch();
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [detailSearchActive, matches.length, goToNextMatch, goToPrevMatch]);
 
   useEffect(() => {
     if (!selectedHistoryId || !selectedSession || !selectedSession.filePath) return;
@@ -4378,13 +4630,40 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
             <span className="text-[var(--cf-text-muted)] font-apple-regular">{t('history:loadingFilters')}</span>
           )}
         </div>
+        <div className="flex flex-col gap-1">
+          <div className="relative">
+            <Input
+              value={detailSearch}
+              onChange={(e) => setDetailSearch((e.target as HTMLInputElement).value)}
+              placeholder={t('history:detailSearchPlaceholder') as string}
+              title={t('history:detailSearchHint') as string}
+              aria-label={t('history:detailSearchHint') as string}
+              className="pl-10"
+            />
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--cf-text-muted)]" />
+          </div>
+          <div className="text-[0.65rem] text-[var(--cf-text-muted)] font-apple-regular">
+            {detailSearchActive && (
+              <span>{t('history:detailSearchMatches', { count: matches.length })}</span>
+            )}
+          </div>
+        </div>
       </div>
       <ScrollArea key={selectedHistoryId || 'none'} className="h-full min-h-0 p-2">
-        {selectedHistoryId ? (
-          <div className="space-y-2">
-            {renderHistoryBlocks(selectedHistoryId, localSessions, typeFilter)}
-            {loaded && skipped > 0 && <div className="text-xs text-[var(--cf-text-secondary)] font-apple-regular">{t('history:skippedLines', { count: skipped })}</div>}
-          </div>
+          {selectedHistoryId ? (
+            showNoMatch ? (
+              <div className="p-4 text-sm text-[var(--cf-text-secondary)] font-apple-regular">{t('history:noMatch')}</div>
+            ) : (
+              <div className="space-y-2">
+                {renderHistoryBlocks(detailSession || selectedSession, filteredMessages, {
+                  fieldMatches,
+                  activeMessageKey: detailSearchActive ? activeMatch?.messageKey : undefined,
+                  activeMatchId: detailSearchActive ? activeMatch?.id : undefined,
+                  registerMessageRef,
+                })}
+                {loaded && skipped > 0 && <div className="text-xs text-[var(--cf-text-secondary)] font-apple-regular">{t('history:skippedLines', { count: skipped })}</div>}
+              </div>
+            )
         ) : (
           <div className="p-4 text-sm text-[var(--cf-text-secondary)] font-apple-regular">{t('history:selectRightToView')}</div>
         )}
