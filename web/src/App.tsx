@@ -87,6 +87,17 @@ type HistorySession = {
   runtimeShell?: 'wsl' | 'windows' | 'unknown';
 };
 
+type HistoryTimelineGroup = {
+  key: string;
+  label: string;
+  bucket: HistoryTimelineBucket;
+  anchor: Date | null;
+  latest: number;
+  latestTitle?: string;
+  latestRaw?: string;
+  sessions: HistorySession[];
+};
+
 type ResumeExecutionMode = 'internal' | 'external';
 type LegacyResumePrompt = { filePath: string; mode: ResumeExecutionMode };
 type ShellLabel = 'PowerShell' | 'WSL';
@@ -239,7 +250,58 @@ const toShellLabel = (mode: 'wsl' | 'windows'): ShellLabel => (mode === 'windows
 
 function normDir(p?: string): string { return canonicalizePath(getDir(p)); }
 
-function historyDirKey(p?: string): string { return normDir(p) || '__unknown__'; }
+const DAY_IN_MS = 24 * 60 * 60 * 1000;
+const HISTORY_UNKNOWN_GROUP_KEY = 'unknown-date';
+
+type HistoryTimelineBucket = 'today' | 'yesterday' | 'last7' | 'month' | 'unknown';
+type HistoryTimelineMeta = { key: string; bucket: HistoryTimelineBucket; anchor: Date | null };
+
+function startOfLocalDay(dt: Date): Date {
+  return new Date(dt.getFullYear(), dt.getMonth(), dt.getDate());
+}
+
+function historySessionDate(session?: HistorySession): Date | null {
+  if (!session) return null;
+  const fromRaw = parseRawDate(session.rawDate);
+  if (fromRaw) return fromRaw;
+  if (session.date) {
+    const dt = new Date(session.date);
+    if (!isNaN(dt.getTime())) return dt;
+  }
+  return parseDateFromFilename(session.filePath);
+}
+
+function resolveHistoryTimelineMeta(session?: HistorySession, base: Date = new Date()): HistoryTimelineMeta {
+  if (!session) return { key: HISTORY_UNKNOWN_GROUP_KEY, bucket: 'unknown', anchor: null };
+  const anchor = historySessionDate(session);
+  if (!anchor) return { key: HISTORY_UNKNOWN_GROUP_KEY, bucket: 'unknown', anchor: null };
+  const todayStart = startOfLocalDay(base);
+  const sessionStart = startOfLocalDay(anchor);
+  const diffDays = Math.floor((todayStart.getTime() - sessionStart.getTime()) / DAY_IN_MS);
+  if (diffDays <= 0) return { key: 'today', bucket: 'today', anchor };
+  if (diffDays === 1) return { key: 'yesterday', bucket: 'yesterday', anchor };
+  if (diffDays < 7) return { key: 'last7', bucket: 'last7', anchor };
+  const month = (anchor.getMonth() + 1).toString().padStart(2, '0');
+  return { key: `month-${anchor.getFullYear()}-${month}`, bucket: 'month', anchor };
+}
+
+function historyTimelineGroupKey(session?: HistorySession, base?: Date): string {
+  return resolveHistoryTimelineMeta(session, base || new Date()).key;
+}
+
+// 统一计算相对时间标签，避免列表渲染时重复做差值
+function describeRelativeAge(anchor: Date | null, base: Date): string {
+  if (!anchor) return '';
+  const safeBase = base.getTime();
+  const diffMs = Math.max(0, safeBase - anchor.getTime());
+  const HOUR_IN_MS = 60 * 60 * 1000;
+  if (diffMs < DAY_IN_MS) {
+    const hours = Math.max(1, Math.floor(diffMs / HOUR_IN_MS));
+    return `${hours}h`;
+  }
+  const days = Math.max(1, Math.floor(diffMs / DAY_IN_MS));
+  return `${days}d`;
+}
 
 // ---------- Helpers ----------
 
@@ -1601,6 +1663,28 @@ export default function CodexFlowManagerUI() {
   // UI 仅显示预览，预览由外部（后端/初始化流程）负责准备和缓存
   const [sessionPreviewMap, setSessionPreviewMap] = useState<Record<string, string>>({});
 
+  const monthFormatter = useMemo(() => {
+    try {
+      return new Intl.DateTimeFormat(i18n.language || undefined, { month: 'short' });
+    } catch {
+      return new Intl.DateTimeFormat(undefined, { month: 'short' });
+    }
+  }, [i18n.language]);
+  const todayKey = new Date().toDateString();
+  const historyNow = useMemo(() => new Date(), [historySessions, todayKey]);
+  const sessionMatchesQuery = useCallback(
+    (session: HistorySession, q: string) => {
+      if (!q) return true;
+      const previewSource = (session.preview || sessionPreviewMap[session.filePath || session.id] || '').toLowerCase();
+      return (
+        (session.title || '').toLowerCase().includes(q) ||
+        (session.filePath || '').toLowerCase().includes(q) ||
+        previewSource.includes(q)
+      );
+    },
+    [sessionPreviewMap]
+  );
+
   // Auto-adjust history context menu position to stay within viewport (pre-paint to avoid visible jump)
   useLayoutEffect(() => {
     if (!historyCtxMenu.show) return;
@@ -2170,13 +2254,15 @@ export default function CodexFlowManagerUI() {
         // 若当前选择无效或为空，重置为缓存中的第一组（除非是点击项目触发的切换）
         if (!skipAuto) {
           const ids = new Set(cached.map((x) => x.id));
-          const dirs = new Set(cached.map((x) => historyDirKey(x.filePath)));
+          const nowRef = new Date();
+          const keyOf = (item?: HistorySession) => historyTimelineGroupKey(item, nowRef);
+          const dirs = new Set(cached.map((x) => keyOf(x)));
           if (!selectedHistoryId || !ids.has(selectedHistoryId) || !selectedHistoryDir || !dirs.has(selectedHistoryDir)) {
-            const firstKey = historyDirKey(cached[0]?.filePath);
-            if (firstKey) {
+            const firstKey = cached.length > 0 ? keyOf(cached[0]) : null;
+            if (firstKey && cached.length > 0) {
               setSelectedHistoryDir(firstKey);
               const firstInDir = cached
-                .filter((x) => historyDirKey(x.filePath) === firstKey)
+                .filter((x) => keyOf(x) === firstKey)
                 .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
               setSelectedHistoryId(firstInDir?.id || null);
               setCenterMode('history');
@@ -2219,22 +2305,19 @@ export default function CodexFlowManagerUI() {
         // 校验并修正当前选择，避免缓存残留导致的空白详情
         if (!skipAuto) {
           const ids = new Set(mapped.map((x) => x.id));
-          const dirs = new Set(mapped.map((x) => historyDirKey(x.filePath)));
+          const nowRef = new Date();
+          const keyOf = (item?: HistorySession) => historyTimelineGroupKey(item, nowRef);
+          const dirs = new Set(mapped.map((x) => keyOf(x)));
           const needResetId = !selectedHistoryId || !ids.has(selectedHistoryId);
           const needResetDir = !selectedHistoryDir || !dirs.has(selectedHistoryDir);
-          if (needResetId || needResetDir) {
-            const firstKey = historyDirKey(mapped[0]?.filePath);
-            if (firstKey) {
-              setSelectedHistoryDir(firstKey);
-              const firstInDir = mapped
-                .filter((x) => historyDirKey(x.filePath) === firstKey)
-                .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
-              setSelectedHistoryId(firstInDir?.id || null);
-              setCenterMode('history');
-            } else if (mapped[0]) {
-              setSelectedHistoryId(mapped[0].id);
-              setCenterMode('history');
-            }
+          if ((needResetId || needResetDir) && mapped.length > 0) {
+            const firstKey = keyOf(mapped[0]);
+            setSelectedHistoryDir(firstKey);
+            const firstInDir = mapped
+              .filter((x) => keyOf(x) === firstKey)
+              .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
+            setSelectedHistoryId(firstInDir?.id || null);
+            setCenterMode('history');
           }
         }
         // 如果抑制了自动选择，需要在处理完加载后重置抑制标志
@@ -2343,18 +2426,21 @@ export default function CodexFlowManagerUI() {
         } catch {}
         // 若当前选中项被移除，选择同组最新一条
         if (selectedHistoryId && !next.some((x) => x.id === selectedHistoryId)) {
-          const key = historyDirKey(filePath);
+          const nowRef = new Date();
+          const keyOf = (item?: HistorySession) => historyTimelineGroupKey(item, nowRef);
+          const removedSession = cur.find((x) => (x.filePath || x.id) === filePath);
+          const key = removedSession ? keyOf(removedSession) : HISTORY_UNKNOWN_GROUP_KEY;
           const restInGroup = next
-            .filter((x) => historyDirKey(x.filePath) === key)
+            .filter((x) => keyOf(x) === key)
             .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
           if (restInGroup.length > 0) setSelectedHistoryId(restInGroup[0].id);
           else {
-            const groups = Array.from(new Set(next.map((x) => historyDirKey(x.filePath))));
+            const groups = Array.from(new Set(next.map((x) => keyOf(x))));
             const firstKey = groups[0] || null;
             setSelectedHistoryDir(firstKey);
             if (firstKey) {
               const firstInDir = next
-                .filter((x) => historyDirKey(x.filePath) === firstKey)
+                .filter((x) => keyOf(x) === firstKey)
                 .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
               setSelectedHistoryId(firstInDir ? firstInDir.id : null);
             } else {
@@ -3125,46 +3211,65 @@ export default function CodexFlowManagerUI() {
     }
   };
 
-  const dirGroups = useMemo(() => {
-    // latestRaw: 原始时间字符串，优先从 rawDate 获取，用于 tooltip/辅助展示
-    type Group = { key: string; label: string; latest: string; latestTitle?: string; latestRaw?: string; count: number };
-    const mp = new Map<string, Group>();
-    for (const s of historySessions) {
-      const key = normDir(s.filePath) || '__unknown__';
-      const label = getDir(s.filePath) || (t('history:ungrouped') as string);
-      const it = mp.get(key) || { key, label, latest: s.date, latestTitle: s.title, latestRaw: (s.rawDate ? String(s.rawDate) : String(s.date)), count: 0 };
-      it.count += 1;
-      if (new Date(s.date).getTime() > new Date(it.latest).getTime()) {
-        it.latest = s.date;
-        it.latestTitle = s.title;
-        it.latestRaw = (s.rawDate ? String(s.rawDate) : String(s.date));
+  const timelineGroups = useMemo<HistoryTimelineGroup[]>(() => {
+    const baseNow = historyNow;
+    const mp = new Map<string, HistoryTimelineGroup>();
+    const labelOf = (bucket: HistoryTimelineBucket, anchor: Date | null, count: number): string => {
+      switch (bucket) {
+        case 'today':
+          return t('history:groupToday') as string;
+        case 'yesterday':
+          return t('history:groupYesterday') as string;
+        case 'last7':
+          return t('history:groupLast7Days') as string;
+        case 'month': {
+          const ref = anchor || baseNow;
+          const monthText = monthFormatter.format(ref);
+          return t('history:groupEarlierInMonth', { month: monthText, year: ref.getFullYear(), count }) as string;
+        }
+        default:
+          return t('history:groupUnknown') as string;
       }
-      // Prefer a friendlier label if encountered later; keep first otherwise
-      if (it.label === key && label !== key) it.label = label;
-      mp.set(key, it);
+    };
+    for (const s of historySessions) {
+      const meta = resolveHistoryTimelineMeta(s, baseNow);
+      const key = meta.key;
+      const group =
+        mp.get(key) ||
+        { key, label: '', bucket: meta.bucket, anchor: meta.anchor || null, latest: Number.NEGATIVE_INFINITY, sessions: [], latestTitle: undefined, latestRaw: undefined };
+      group.anchor = group.anchor || meta.anchor || null;
+      group.sessions.push(s);
+      const anchor = historySessionDate(s);
+      let ts = 0;
+      if (anchor && !isNaN(anchor.getTime())) ts = anchor.getTime();
+      else if (s.date) {
+        const iso = new Date(s.date);
+        if (!isNaN(iso.getTime())) ts = iso.getTime();
+      }
+      if (ts >= group.latest) {
+        group.latest = ts;
+        group.latestTitle = s.title;
+        group.latestRaw = (s.rawDate ? String(s.rawDate) : String(s.date));
+      }
+      mp.set(key, group);
     }
-    return Array.from(mp.values()).sort((a, b) => new Date(b.latest).getTime() - new Date(a.latest).getTime());
-  }, [historySessions]);
+    const sorted = Array.from(mp.values()).sort((a, b) => b.latest - a.latest);
+    for (const g of sorted) {
+      g.label = labelOf(g.bucket, g.anchor, g.sessions.length);
+      g.sessions.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    }
+    return sorted;
+  }, [historySessions, todayKey, monthFormatter, t, historyNow]);
 
-  const filteredDirGroups = useMemo(() => {
+  const filteredTimelineGroups = useMemo(() => {
     const q = historyQuery.trim().toLowerCase();
-    if (!q) return dirGroups;
-    const matchGroup = (g: { key: string; label: string; latestTitle?: string }) => {
+    if (!q) return timelineGroups;
+    return timelineGroups.filter((g) => {
       if ((g.label || '').toLowerCase().includes(q)) return true;
       if ((g.latestTitle || '').toLowerCase().includes(q)) return true;
-      // 如果组内任一会话标题或路径命中，也保留该组
-      const anyInGroup = historySessions.some((s) => {
-        const k = normDir(s.filePath) || '__unknown__';
-        if (k !== g.key) return false;
-        return (
-          (s.title || '').toLowerCase().includes(q) ||
-          (s.filePath || '').toLowerCase().includes(q)
-        );
-      });
-      return anyInGroup;
-    };
-    return dirGroups.filter(matchGroup);
-  }, [dirGroups, historySessions, historyQuery]);
+      return g.sessions.some((s) => sessionMatchesQuery(s, q));
+    });
+  }, [timelineGroups, historyQuery, sessionMatchesQuery]);
 
   // 注意：UI 不应主动发起历史消息读取以构建预览，预览应由项目初始化或后端在 list/read 时提供并缓存。
 
@@ -3181,18 +3286,16 @@ export default function CodexFlowManagerUI() {
           value={historyQuery}
           onChange={(e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setHistoryQuery((e.target as any).value)}
           placeholder={t('history:searchPlaceholder') as string}
+          title={t('history:searchPlaceholderHint') as string}
           onKeyDown={(e: React.KeyboardEvent<any>) => {
             if (e.key === 'Enter') {
               const q = historyQuery.trim().toLowerCase();
               if (!q) return;
               const first = historySessions
-                .filter((s) =>
-                  (s.title || '').toLowerCase().includes(q) ||
-                  (s.filePath || '').toLowerCase().includes(q)
-                )
+                .filter((s) => sessionMatchesQuery(s, q))
                 .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
               if (first) {
-                const key = normDir(first.filePath) || '__unknown__';
+                const key = historyTimelineGroupKey(first, new Date());
                 setSelectedHistoryDir(key);
                 setSelectedHistoryId(first.id);
                 setCenterMode('history');
@@ -3203,111 +3306,105 @@ export default function CodexFlowManagerUI() {
       </div>
       <ScrollArea className="h-full min-h-0 p-2">
         <div className="space-y-1">
-          {filteredDirGroups.map((g) => {
-            const inDir = historySessions
-              .filter((x) => (normDir(x.filePath) || '__unknown__') === g.key)
-              .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+          {filteredTimelineGroups.map((g) => {
+            const inGroup = g.sessions;
             const q = historyQuery.trim().toLowerCase();
-            const match = q
-              ? inDir.find((s) => (s.title || '').toLowerCase().includes(q) || (s.filePath || '').toLowerCase().includes(q))
-              : null;
-            const target = match || inDir[0] || null;
-            const labelName = (() => {
-              if (match && q) {
-                const fp = match.filePath || '';
-                const norm = fp.replace(/\\/g, '/');
-                const parts = norm.split('/');
-                return parts[parts.length - 1] || g.latestTitle || g.label;
+            const match = q ? inGroup.find((s) => sessionMatchesQuery(s, q)) : null;
+            const target = match || inGroup[0] || null;
+            const latestLabel = (() => {
+              if (!target) return '';
+              const candidate = target.filePath || '';
+              const byName = parseDateFromFilename(candidate);
+              if (byName) return formatAsLocal(byName);
+              const fromRaw = parseRawDate(target.rawDate);
+              if (fromRaw) return formatAsLocal(fromRaw);
+              if (target.date) {
+                const dt = new Date(target.date);
+                if (!isNaN(dt.getTime())) return formatAsLocal(dt);
               }
-              const norm = (g.label || '').replace(/\\/g, '/');
-              const parts = norm.split('/');
-              return g.latestTitle || parts[parts.length - 1] || g.label;
+              return timeFromFilename(candidate);
             })();
             const defaultExpanded = (!!q && !!match) || selectedHistoryDir === g.key;
             const expanded = (expandedGroups[g.key] ?? defaultExpanded);
-            const displayList = (() => {
-              if (q) return inDir.filter((s) => (s.title || '').toLowerCase().includes(q) || (s.filePath || '').toLowerCase().includes(q));
-              return inDir.slice(0, 20);
-            })();
+            const displayList = q ? inGroup.filter((s) => sessionMatchesQuery(s, q)) : inGroup;
+            const isSelectedGroup = selectedHistoryDir === g.key;
+            const groupShellClass = `rounded-apple-lg border transition shadow-apple-xs backdrop-blur-apple ${
+              isSelectedGroup
+                ? 'border-[var(--cf-border-strong)] bg-gradient-to-b from-white/90 to-white/70 dark:from-slate-900/70 dark:to-slate-900/50 shadow-apple-sm dark:shadow-apple-dark-sm'
+                : 'border-[var(--cf-border)] bg-white/60 dark:bg-slate-900/30'
+            }`;
+            const headerButtonClass = `sticky top-0 z-10 flex items-center gap-2 px-2 py-2.5 w-full text-left transition rounded-apple-lg bg-transparent ${
+              isSelectedGroup
+                ? 'text-[var(--cf-text-primary)] font-medium'
+                : 'text-[var(--cf-text-secondary)] hover:bg-white/30 dark:hover:bg-slate-900/40 dark:text-[var(--cf-text-secondary)]'
+            }`;
+
             return (
-              <div key={g.key} className={`rounded-lg transition ${selectedHistoryDir === g.key ? 'bg-slate-100' : ''}`}>
-                <div className="flex items-center gap-2 px-2 py-2">
-                  <button
-                    className="h-5 w-5 flex items-center justify-center rounded hover:bg-slate-200"
+              <div key={g.key} className={groupShellClass}>
+                <button
+                  className={headerButtonClass}
+                  onClick={() => {
+                    setSelectedHistoryDir(g.key);
+                    setSelectedHistoryId(target?.id || null);
+                    setCenterMode('history');
+                    setExpandedGroups((m) => ({ ...m, [g.key]: !expanded }));
+                  }}
+                >
+                  <div
+                    className="h-5 w-5 flex items-center justify-center rounded hover:bg-slate-200/50 dark:hover:bg-slate-700/50 shrink-0"
                     aria-label={expanded ? (t('history:collapse') as string) : (t('history:expand') as string)}
-                    onClick={() => setExpandedGroups((m) => ({ ...m, [g.key]: !expanded }))}
-                  >
-                    {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                  </button>
-                  <button
-                    className="flex-1 min-w-0 text-left"
-                    onClick={() => {
+                    onClick={(e) => {
+                      e.stopPropagation();
                       setSelectedHistoryDir(g.key);
                       setSelectedHistoryId(target?.id || null);
                       setCenterMode('history');
-                      setExpandedGroups((m) => ({ ...m, [g.key]: true }));
+                      setExpandedGroups((m) => ({ ...m, [g.key]: !expanded }));
                     }}
                   >
-                    <div className="font-medium max-w-full truncate" title={match ? (match.filePath || match.title) : (g.latestTitle || g.label)}>
-                      {/* 组标题：显示本地时间（按文件名解析，失败则回退 rawDate/date） */}
-                      {clampText(
-                        (() => {
-                          const candidate = (match || target)?.filePath || '';
-                          const byName = parseDateFromFilename(candidate);
-                          if (byName) return formatAsLocal(byName);
-                          const r = (match || target) as any;
-                          if (r?.rawDate) {
-                            const dt = parseRawDate(r.rawDate);
-                            if (dt) return formatAsLocal(dt);
-                          }
-                          if (r?.date) {
-                            const dt = new Date(r.date);
-                            if (!isNaN(dt.getTime())) return formatAsLocal(dt);
-                          }
-                          return timeFromFilename(candidate);
-                        })(),
-                        HISTORY_TITLE_MAX_CHARS
-                      )}
+                    {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium max-w-full truncate" title={g.label}>
+                      {/* 分组标题：直接展示区间文案（Today/Yesterday/...） */}
+                      {clampText(g.label, HISTORY_TITLE_MAX_CHARS)}
                     </div>
-                    <div className="mt-0.5 max-w-full truncate text-[11px] text-slate-500" title={g.latestRaw || g.label}>{g.label}</div>
-                  </button>
-                </div>
+                    <div className="mt-0.5 max-w-full truncate text-[11px] text-slate-500" title={g.latestRaw || latestLabel}>{latestLabel}</div>
+                  </div>
+                </button>
                 {expanded && displayList.length > 0 && (
                   <div className="pb-2 pl-7 pr-2">
                     {displayList.map((s) => {
-                      // 列表项主标题：本地时间（文件名解析优先，其次 rawDate/date）
-                      const fileTimeLabel = (() => {
-                        const byName = parseDateFromFilename(s.filePath);
-                        if (byName) return formatAsLocal(byName);
-                        const fromRaw = parseRawDate(s.rawDate);
-                        if (fromRaw) return formatAsLocal(fromRaw);
-                        if (s.date) {
-                          const dt = new Date(s.date);
-                          if (!isNaN(dt.getTime())) return formatAsLocal(dt);
-                        }
-                        return timeFromFilename(s.filePath);
-                      })();
+                      const anchor = historySessionDate(s);
+                      const absoluteLabel = anchor ? formatAsLocal(anchor) : timeFromFilename(s.filePath);
                       const active = selectedHistoryId === s.id;
-                      // 预览文本仅显示外部预先准备并缓存的数据（sessionPreviewMap），UI 不主动读取历史内容
-                      const preview = sessionPreviewMap[s.filePath || s.id] || '';
+                      const previewSource = sessionPreviewMap[s.filePath || s.id] || s.preview || s.title || s.filePath || '';
+                      const relativeLabel = describeRelativeAge(anchor, historyNow) || '--';
+                      const tooltip = [absoluteLabel, previewSource].filter(Boolean).join('  ');
+                      const itemClass = `block w-full rounded-lg border px-2.5 py-1.5 text-left text-xs transition ${
+                        active
+                          ? 'border-slate-200 bg-white text-slate-900 shadow-sm dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100'
+                          : 'border-transparent bg-white/70 text-slate-800 hover:border-slate-200 hover:bg-white/90 dark:border-slate-800/30 dark:bg-slate-900/20 dark:text-slate-200 dark:hover:border-slate-700 dark:hover:bg-slate-800/40'
+                      }`;
+                      const previewTextClass = active ? 'text-slate-900 dark:text-slate-50' : 'text-slate-800 dark:text-slate-100';
+                      const relativeTextClass = active ? 'text-slate-500 dark:text-slate-300' : 'text-slate-500 dark:text-slate-400';
 
                       return (
                         <button
                           key={s.filePath || s.id}
                           onClick={() => { setSelectedHistoryDir(g.key); setSelectedHistoryId(s.id); setCenterMode('history'); }}
                           onContextMenu={(e) => { e.preventDefault(); setHistoryCtxMenu({ show: true, x: e.clientX, y: e.clientY, item: s, groupKey: g.key }); }}
-                          className={`block w-full rounded px-2 py-1 text-left text-xs ${active ? 'bg-white dark:bg-slate-800 dark:text-slate-100' : 'hover:bg-slate-200 dark:hover:bg-slate-700 dark:text-slate-200'}`}
-                          title={sessionPreviewMap[s.filePath || s.id] || s.filePath || s.title}
+                          className={itemClass}
+                          title={tooltip || s.title || ''}
                         >
-                          <div className="flex flex-col">
-                            <div className="text-sm leading-5 text-slate-800 truncate">{fileTimeLabel}</div>
-                            {!!preview && <div className="mt-0.5 text-xs text-slate-500 truncate">{preview}</div>}
+                          <div className="flex items-center justify-between gap-2">
+                            <span className={`text-sm leading-5 truncate ${previewTextClass}`}>{previewSource || absoluteLabel || '--'}</span>
+                            <span className={`shrink-0 text-[11px] ${relativeTextClass}`}>{relativeLabel}</span>
                           </div>
                         </button>
                       );
                     })}
-                    {!q && inDir.length > displayList.length && (
-                      <div className="px-2 py-1 text-[11px] text-slate-500">{t('history:showing', { total: inDir.length, count: displayList.length })}</div>
+                    {!q && inGroup.length > displayList.length && (
+                      <div className="px-2 py-1 text-[11px] text-slate-500">{t('history:showing', { total: inGroup.length, count: displayList.length })}</div>
                     )}
                   </div>
                 )}
@@ -3317,7 +3414,7 @@ export default function CodexFlowManagerUI() {
           {historySessions.length === 0 && (
             <div className="px-3 py-6 text-center text-sm text-slate-500">{t('history:empty')}</div>
           )}
-          {historySessions.length > 0 && historyQuery.trim().length > 0 && filteredDirGroups.length === 0 && (
+          {historySessions.length > 0 && historyQuery.trim().length > 0 && filteredTimelineGroups.length === 0 && (
             <div className="px-3 py-6 text-center text-sm text-slate-500">{t('history:noMatch')}</div>
           )}
         </div>
@@ -3412,7 +3509,7 @@ export default function CodexFlowManagerUI() {
             <button
               className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-red)] rounded-apple-sm hover:bg-[var(--cf-red-light)] transition-all duration-apple-fast"
               onClick={async () => {
-                const it = historyCtxMenu.item; const key = historyCtxMenu.groupKey || (normDir(it?.filePath) || '__unknown__');
+                const it = historyCtxMenu.item; const key = historyCtxMenu.groupKey || historyTimelineGroupKey(it || undefined, new Date());
                 if (!it?.filePath) { setHistoryCtxMenu((m) => ({ ...m, show: false })); return; }
                 // 改为应用内对话框，避免 window.confirm 引发同步阻塞
                 setConfirmDelete({ open: true, item: it, groupKey: key });
@@ -3442,7 +3539,8 @@ export default function CodexFlowManagerUI() {
             <Button variant="outline" onClick={() => setConfirmDelete((m) => ({ ...m, open: false }))}>{t('common:cancel')}</Button>
             <Button className="border border-red-200 text-red-600 hover:bg-red-50 dark:border-[var(--cf-red-light)] dark:text-[var(--cf-red)] dark:hover:bg-[var(--cf-red-light)]" variant="secondary" onClick={async () => {
               try {
-                const it = confirmDelete.item; const key = confirmDelete.groupKey || (normDir(it?.filePath) || '__unknown__');
+                const it = confirmDelete.item; const fallbackKey = historyTimelineGroupKey(it || undefined, new Date());
+                const key = confirmDelete.groupKey || fallbackKey;
                 if (!it?.filePath) { setConfirmDelete((m) => ({ ...m, open: false })); return; }
                 const res: any = await window.host.history.trash({ filePath: it.filePath });
                 if (!(res && res.ok)) { alert(String(t('history:cannotDelete', { error: res && res.error ? res.error : 'unknown' }))); setConfirmDelete((m) => ({ ...m, open: false })); return; }
@@ -3451,18 +3549,20 @@ export default function CodexFlowManagerUI() {
                   const projectKey = canonicalizePath((selectedProject?.wslPath || selectedProject?.winPath || selectedProject?.id || '') as string);
                   if (projectKey) historyCacheRef.current[projectKey] = list;
                   if (selectedHistoryId === it.id) {
+                    const nowRef = new Date();
+                    const keyOf = (item?: HistorySession) => historyTimelineGroupKey(item, nowRef);
                     const restInGroup = list
-                      .filter((x) => (normDir(x.filePath) || '__unknown__') === key)
+                      .filter((x) => keyOf(x) === key)
                       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
                     if (restInGroup.length > 0) {
                       setSelectedHistoryId(restInGroup[0].id);
                     } else {
-                      const groups = Array.from(new Set(list.map((x) => normDir(x.filePath) || '__unknown__')));
+                      const groups = Array.from(new Set(list.map((x) => keyOf(x))));
                       const firstKey = groups[0] || null;
                       setSelectedHistoryDir(firstKey);
                       if (firstKey) {
                         const firstInDir = list
-                          .filter((x) => (normDir(x.filePath) || '__unknown__') === firstKey)
+                          .filter((x) => keyOf(x) === firstKey)
                           .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
                         setSelectedHistoryId(firstInDir ? firstInDir.id : null);
                       } else {
