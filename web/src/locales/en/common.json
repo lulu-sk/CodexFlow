@@ -4,6 +4,7 @@
   "save": "Save",
   "open": "Open",
   "refresh": "Refresh",
+  "close": "Close",
   "app": {
     "name": "CodexFlow",
     "language": "Language",
