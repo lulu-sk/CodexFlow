@@ -36,7 +36,7 @@ function highlight(text: string, q: string) {
   return (
     <>
       {text.slice(0, idx)}
-      <mark className="rounded bg-yellow-200 px-0.5 text-slate-900 dark:bg-[var(--cf-accent)]/20 dark:text-[var(--cf-accent)]">{text.slice(idx, idx + query.length)}</mark>
+      <mark className="rounded bg-[var(--cf-accent-light)] px-0.5 text-[var(--cf-text-primary)] dark:bg-[var(--cf-accent)]/20 dark:text-[var(--cf-accent)]">{text.slice(idx, idx + query.length)}</mark>
       {text.slice(idx + query.length)}
     </>
   );
@@ -173,19 +173,19 @@ export default function AtCommandPalette(props: AtCommandPaletteProps) {
     <div
       ref={rootRef}
       style={posStyle}
-      className="rounded-lg border border-slate-400 bg-slate-200 shadow-xl select-none dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)] dark:text-[var(--cf-text-primary)] dark:shadow-[0_18px_34px_rgba(0,0,0,0.45)]"
+      className="rounded-lg border border-[var(--cf-border)] bg-[var(--cf-surface-muted)] text-[var(--cf-text-primary)] shadow-xl backdrop-blur-[6px] select-none dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-solid)] dark:text-[var(--cf-text-primary)] dark:shadow-[0_20px_38px_rgba(0,0,0,0.65)]"
     >
       {level === "categories" ? (
         <div className="w-full h-[160px]">
-          <div className="p-2 text-xs text-slate-500 dark:text-[var(--cf-text-muted)]">{t('at:categoriesTitle')}</div>
+          <div className="p-2 text-xs text-[var(--cf-text-muted)] dark:text-[var(--cf-text-muted)]">{t('at:categoriesTitle')}</div>
           <ScrollArea className="h-[120px]">
             <div className="py-1">
               {AT_CATEGORIES.map((c, idx) => (
                 <button
                   key={c.id}
                   className={cn(
-                    "flex w-full items-center justify-between gap-3 px-3 py-2 text-left hover:bg-slate-50 dark:hover:bg-[var(--cf-surface-hover)] rounded-md transition-colors border-b border-slate-300/70 last:border-0 dark:border-[var(--cf-border)]/40",
-                    idx === hiCat ? "bg-slate-50 dark:bg-[var(--cf-surface-hover)]" : ""
+                    "flex w-full items-center justify-between gap-3 px-3 py-2 text-left rounded-md transition-colors border-b border-[var(--cf-border)] last:border-0 hover:bg-[var(--cf-surface-hover)] dark:hover:bg-[var(--cf-surface-hover)] dark:border-[var(--cf-border)]",
+                    idx === hiCat ? "bg-[var(--cf-surface-hover)] dark:bg-[var(--cf-surface-hover)]" : ""
                   )}
                   data-active={idx === hiCat ? '1' : undefined}
                   onMouseEnter={() => setHiCat(idx)}
@@ -194,19 +194,19 @@ export default function AtCommandPalette(props: AtCommandPaletteProps) {
                   onClick={() => onEnterCategory(c.id)}
                 >
                   <div className="flex min-w-0 items-center gap-2">
-                    <IconByName name={c.icon} className="h-4 w-4 text-slate-600 dark:text-[var(--cf-text-secondary)]" />
+                    <IconByName name={c.icon} className="h-4 w-4 text-[var(--cf-text-secondary)]" />
                     <div className="truncate font-medium">{t(`at:category.${c.id}`) || c.name}</div>
                   </div>
-                  <ChevronRight className="h-4 w-4 text-slate-400 dark:text-[var(--cf-text-muted)]" />
+                  <ChevronRight className="h-4 w-4 text-[var(--cf-text-muted)]" />
                 </button>
               ))}
             </div>
           </ScrollArea>
         </div>
       ) : (
-        <div className="w-[360px]">
-          <div className="flex items-center gap-2 border-b border-slate-200 dark:border-[var(--cf-border)] px-3 py-1.5">
-            <div className="text-xs text-slate-500 dark:text-[var(--cf-text-muted)]">
+        <div className="w-[360px] h-[250px]">
+          <div className="flex items-center gap-2 border-b border-[var(--cf-border)] px-3 py-1.5">
+            <div className="text-xs text-[var(--cf-text-muted)]">
               {scope === "all" ? t('at:scopeAll') : t(`at:category.${scope as string}`)}
             </div>
           </div>
@@ -214,7 +214,7 @@ export default function AtCommandPalette(props: AtCommandPaletteProps) {
           <ScrollArea className="h-[210px]">
             <div className="py-1">
               {results.length === 0 && (
-                <div className="px-3 py-4 text-sm text-slate-500 dark:text-[var(--cf-text-secondary)]">{t('at:noResults')}</div>
+                <div className="px-3 py-4 text-sm text-[var(--cf-text-muted)]">{t('at:noResults')}</div>
               )}
               {results.map((r, idx) => {
                 const it = r.item;
@@ -223,18 +223,21 @@ export default function AtCommandPalette(props: AtCommandPaletteProps) {
                 return (
                   <button
                     key={`${it.categoryId}-${it.id}`}
-                    className={cn("flex w-full items-center gap-3 px-3 py-1.5 text-left hover:bg-slate-50 dark:hover:bg-[var(--cf-surface-hover)] rounded-md transition-colors border-b border-slate-300/70 last:border-0 dark:border-[var(--cf-border)]/40", active ? "bg-slate-50 dark:bg-[var(--cf-surface-hover)]" : "")}
+                    className={cn(
+                      "flex w-full items-center gap-3 px-3 py-1.5 text-left rounded-md transition-colors border-b border-[var(--cf-border)] last:border-0 hover:bg-[var(--cf-surface-hover)] dark:hover:bg-[var(--cf-surface-hover)] dark:border-[var(--cf-border)]",
+                      active ? "bg-[var(--cf-surface-hover)] dark:bg-[var(--cf-surface-hover)]" : ""
+                    )}
                     data-active={active ? '1' : undefined}
                     onMouseEnter={() => setHiRes(idx)}
                     // 同样在结果项上阻止鼠标按下导致的默认聚焦行为
                     onMouseDown={(e) => { e.preventDefault(); }}
                     onClick={() => onPickItem(it)}
                   >
-                    <IconByName name={it.icon || cat?.icon} className="h-4 w-4 text-slate-600 dark:text-[var(--cf-text-secondary)]" />
+                    <IconByName name={it.icon || cat?.icon} className="h-4 w-4 text-[var(--cf-text-secondary)]" />
                     <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm font-medium text-slate-900 dark:text-[var(--cf-text-primary)]">{highlight(it.title, query)}</div>
+                      <div className="truncate text-sm font-medium text-[var(--cf-text-primary)]">{highlight(it.title, query)}</div>
                       {it.subtitle && (
-                        <div className="truncate text-xs text-slate-500 dark:text-[var(--cf-text-muted)]">{it.subtitle}</div>
+                        <div className="truncate text-xs text-[var(--cf-text-muted)]">{it.subtitle}</div>
                       )}
                     </div>
                     {/* 去除右侧的分类标签显示，按设计不需要在结果行重复展示 */}
