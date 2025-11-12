@@ -30,12 +30,14 @@ export function TabsTrigger({ value, className, children, ...props }: React.Butt
   return (
     <button
       className={cn(
-        'inline-flex items-center whitespace-nowrap px-4 py-2 text-sm rounded-apple-sm font-apple-medium transition-all duration-apple',
-        active 
-          ? 'bg-[var(--cf-surface-solid)] shadow-apple text-[var(--cf-text-primary)] dark:shadow-apple-dark' 
-          : 'text-[var(--cf-text-secondary)] hover:bg-[var(--cf-surface-hover)] hover:text-[var(--cf-text-primary)]',
+        'group/tab relative inline-flex h-[24px] min-w-[72px] items-center gap-2 whitespace-nowrap rounded-full border border-transparent bg-transparent px-3 pr-6 text-xs font-apple-medium leading-tight text-[var(--cf-text-secondary)] transition-all duration-apple ease-apple ring-1 ring-transparent',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cf-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--cf-app-bg)]',
+        active
+          ? 'bg-gradient-to-b from-[var(--cf-tab-pill-active-top)] to-[var(--cf-tab-pill-active-bottom)] text-[var(--cf-text-primary)] border-[var(--cf-tab-border-strong)] ring-black/10 shadow-[0_6px_14px_rgba(15,23,42,0.12)] dark:ring-white/15 dark:shadow-[0_8px_18px_rgba(0,0,0,0.55)]'
+          : 'hover:text-[var(--cf-text-primary)] hover:bg-[var(--cf-tab-pill-hover)] hover:border-[var(--cf-tab-border)] hover:ring-black/5 dark:hover:ring-white/15 shadow-[0_1px_2px_rgba(15,23,42,0.05)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.45)]',
         className
       )}
+      data-state={active ? 'active' : 'inactive'}
       onClick={(e) => { ctx.setValue?.(value); props.onClick?.(e); }}
       {...props}
     >

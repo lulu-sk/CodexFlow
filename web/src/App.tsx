@@ -115,9 +115,12 @@ type ResumeStartup = {
   resumeHint: 'modern' | 'legacy';
   forceLegacyCli: boolean;
 };
+type InputFullscreenCloseOptions = { immediate?: boolean };
 
 // 项目排序设置在本地存储中的键（命名空间化）
 const PROJECT_SORT_STORAGE_KEY = "codexflow.projectSort";
+// 全屏输入层动画时长（毫秒），需与 CSS 关键帧保持一致
+const INPUT_FULLSCREEN_TRANSITION_MS = 260;
 type ProjectSortKey = "recent" | "name";
 
 function getDir(p?: string): string {
@@ -1774,6 +1777,19 @@ export default function CodexFlowManagerUI() {
   const [chipsByTab, setChipsByTab] = useState<Record<string, PathChip[]>>({});
   const [draftByTab, setDraftByTab] = useState<Record<string, string>>({});
   const [inputFullscreenByTab, setInputFullscreenByTab] = useState<Record<string, boolean>>({});
+  const [inputFullscreenClosingTabs, setInputFullscreenClosingTabs] = useState<Record<string, boolean>>({});
+  const fullscreenCloseTimersRef = useRef<Record<string, number>>({});
+
+  useEffect(() => {
+    return () => {
+      try {
+        const timers = fullscreenCloseTimersRef.current;
+        Object.values(timers).forEach((timerId) => {
+          if (typeof timerId === 'number') window.clearTimeout(timerId);
+        });
+      } catch {}
+    };
+  }, []);
 
   // 防御性清理：当视图中心从历史切回控制台、或窗口可见性发生变化时，强制关闭所有全屏遮罩
   useEffect(() => {
@@ -2530,28 +2546,85 @@ export default function CodexFlowManagerUI() {
     return parts.join("\n");
   }
 
+  const requestInputFullscreenOpen = useCallback((tabId: string) => {
+    if (!tabId) return;
+    const isClosing = !!inputFullscreenClosingTabs[tabId];
+    const stableOpen = !!inputFullscreenByTab[tabId] && !isClosing;
+    if (stableOpen) return;
+    const timers = fullscreenCloseTimersRef.current;
+    if (typeof timers[tabId] === 'number') {
+      window.clearTimeout(timers[tabId]);
+      delete timers[tabId];
+    }
+    setInputFullscreenClosingTabs((m) => {
+      if (!m[tabId]) return m;
+      const next = { ...m };
+      delete next[tabId];
+      return next;
+    });
+    setInputFullscreenByTab((m) => {
+      if (m[tabId]) return m;
+      return { ...m, [tabId]: true };
+    });
+  }, [inputFullscreenByTab, inputFullscreenClosingTabs]);
+
+  const requestInputFullscreenClose = useCallback((tabId: string, options?: InputFullscreenCloseOptions) => {
+    if (!tabId) return;
+    const isOpen = !!inputFullscreenByTab[tabId];
+    const isClosing = !!inputFullscreenClosingTabs[tabId];
+    if (!isOpen && !isClosing) return;
+    const timers = fullscreenCloseTimersRef.current;
+    if (typeof timers[tabId] === 'number') {
+      window.clearTimeout(timers[tabId]);
+      delete timers[tabId];
+    }
+    if (options?.immediate) {
+      setInputFullscreenClosingTabs((m) => {
+        if (!m[tabId]) return m;
+        const next = { ...m };
+        delete next[tabId];
+        return next;
+      });
+      setInputFullscreenByTab((m) => {
+        if (!m[tabId]) return m;
+        const next = { ...m };
+        delete next[tabId];
+        return next;
+      });
+      return;
+    }
+    setInputFullscreenClosingTabs((m) => (m[tabId] ? m : { ...m, [tabId]: true }));
+    const timer = window.setTimeout(() => {
+      setInputFullscreenClosingTabs((m) => {
+        if (!m[tabId]) return m;
+        const next = { ...m };
+        delete next[tabId];
+        return next;
+      });
+      setInputFullscreenByTab((m) => {
+        if (!m[tabId]) return m;
+        const next = { ...m };
+        delete next[tabId];
+        return next;
+      });
+      delete fullscreenCloseTimersRef.current[tabId];
+    }, INPUT_FULLSCREEN_TRANSITION_MS);
+    fullscreenCloseTimersRef.current[tabId] = timer;
+  }, [inputFullscreenByTab, inputFullscreenClosingTabs]);
+
   const setInputFullscreenState = useCallback((tabId: string, next: boolean) => {
     if (!tabId) return;
-    setInputFullscreenByTab((m) => {
-      const cur = !!m[tabId];
-      if (cur === next) return m;
-      const nextMap = { ...m };
-      if (next) nextMap[tabId] = true;
-      else delete nextMap[tabId];
-      return nextMap;
-    });
-  }, [setInputFullscreenByTab]);
+    if (next) requestInputFullscreenOpen(tabId);
+    else requestInputFullscreenClose(tabId);
+  }, [requestInputFullscreenClose, requestInputFullscreenOpen]);
 
   const toggleInputFullscreen = useCallback((tabId: string) => {
     if (!tabId) return;
-    setInputFullscreenByTab((m) => {
-      const has = !!m[tabId];
-      const nextMap = { ...m } as Record<string, boolean>;
-      if (has) delete nextMap[tabId];
-      else nextMap[tabId] = true;
-      return nextMap;
-    });
-  }, [setInputFullscreenByTab]);
+    const isOpen = !!inputFullscreenByTab[tabId];
+    const isClosing = !!inputFullscreenClosingTabs[tabId];
+    if (isOpen && !isClosing) requestInputFullscreenClose(tabId);
+    else requestInputFullscreenOpen(tabId);
+  }, [inputFullscreenByTab, inputFullscreenClosingTabs, requestInputFullscreenClose, requestInputFullscreenOpen]);
 
   function sendCommand() {
     if (!activeTab) return;
@@ -2746,6 +2819,7 @@ export default function CodexFlowManagerUI() {
         return t("about:updateError.unknown");
     }
   }, [t, updateErrorDialog.reason, updateErrorDialog.show]);
+  const closeTabLabel = t('common:close') as string;
   useEffect(() => {
     (async () => {
       try {
@@ -2812,20 +2886,22 @@ export default function CodexFlowManagerUI() {
             {tabs.map((tab) => {
               const pendingCount = pendingCompletions[tab.id] ?? 0;
               const hasPending = pendingCount > 0;
+              const isActiveTab = activeTabId === tab.id;
               return (
                 <div
                   key={tab.id}
-                  className="flex items-center shrink-0 h-6"
+                  className="group/tab relative flex items-center shrink-0 h-6"
+                  data-state={isActiveTab ? 'active' : 'inactive'}
                   onDoubleClick={(e) => { e.preventDefault(); e.stopPropagation(); startEditTab(tab.id, tab.name); }}
                   onContextMenu={(e) => openTabContextMenu(e, tab.id, "tabs-header")}
                 >
                   <TabsTrigger
                     value={tab.id}
-                    className="px-2 py-0.5 text-xs whitespace-nowrap"
+                    className="flex-1 min-w-0"
                     onDoubleClick={(e) => { e.preventDefault(); e.stopPropagation(); startEditTab(tab.id, tab.name); }}
                     onContextMenu={(e) => openTabContextMenu(e, tab.id, "tab-trigger")}
                   >
-                    <TerminalSquare className="mr-2 h-4 w-4" />
+                    <TerminalSquare className="mr-1.5 h-3.5 w-3.5 text-[var(--cf-text-secondary)] group-data-[state=active]/tab:text-[var(--cf-text-primary)]" />
                     {editingTabId === tab.id ? (
                       <input
                         id={`tab-input-${tab.id}`}
@@ -2867,7 +2943,7 @@ export default function CodexFlowManagerUI() {
                         }}
                       />
                     ) : (
-                      <span className="flex items-center gap-1">
+                      <span className="flex min-w-0 flex-1 items-center gap-1">
                         <span id={`tab-label-${tab.id}`} className="truncate max-w-[8rem]">{tab.name}</span>
                         {hasPending ? (
                           <span
@@ -2878,20 +2954,22 @@ export default function CodexFlowManagerUI() {
                       </span>
                     )}
                   </TabsTrigger>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="-ml-1 h-6 w-6"
-                    onClick={() => closeTab(tab.id)}
+                  <button
+                    type="button"
+                    aria-label={closeTabLabel}
+                    title={closeTabLabel}
+                    className={`pointer-events-auto absolute right-1 top-1/2 inline-flex h-[18px] w-[18px] -translate-y-1/2 items-center justify-center rounded-full border border-transparent text-[var(--cf-text-secondary)] transition-all duration-apple ease-apple opacity-0 scale-90 group-hover/tab:opacity-100 group-hover/tab:scale-100 group-focus-within/tab:opacity-100 group-focus-within/tab:scale-100 hover:bg-[var(--cf-tab-pill-hover)] hover:text-[var(--cf-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cf-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--cf-app-bg)] ${isActiveTab ? 'opacity-100 scale-100 bg-[var(--cf-tab-pill-hover)] text-[var(--cf-text-primary)]' : ''}`}
+                    onMouseDown={(e) => { e.stopPropagation(); }}
+                    onClick={(e) => { e.stopPropagation(); closeTab(tab.id); }}
                   >
-                    <X className="h-4 w-4" />
-                  </Button>
+                    <X className="h-3 w-3" />
+                  </button>
                 </div>
               );
             })}
                 {/* Tabs 区右侧的紧凑新建按钮 */}
                 <div className="flex items-center pl-2">
-                  <Button variant="default" size="icon" className="p-0" onClick={openNewConsole} title={t('terminal:newConsole') as string} style={{ height: 21, width: 21, borderRadius: 12, padding: 0 }}>
+                  <Button variant="default" size="icon" className="p-0" onClick={openNewConsole} title={t('terminal:newConsole') as string} style={{ height: 24, width: 24, borderRadius: 12, padding: 0 }}>
                     <Plus className="h-4 w-4" />
                   </Button>
                 </div>
@@ -2901,6 +2979,9 @@ export default function CodexFlowManagerUI() {
         </div>
           {tabs.map((tab) => {
             const isInputFullscreen = !!inputFullscreenByTab[tab.id];
+            const isInputClosing = !!inputFullscreenClosingTabs[tab.id];
+            const showFullscreenInput = isInputFullscreen || isInputClosing;
+            const fullscreenState = isInputClosing ? "closing" : "open";
             const inputPlaceholder = t('terminal:inputPlaceholder') as string;
             const sendLabel = t('terminal:send') as string;
             const expandLabel = isInputFullscreen ? (t('terminal:collapseInput') as string) : (t('terminal:expandInput') as string);
@@ -2925,51 +3006,63 @@ export default function CodexFlowManagerUI() {
                       />
                     </div>
 
-                    {isInputFullscreen ? (
-                      <div className="absolute inset-0 z-20 flex flex-col overflow-auto bg-white/95 p-4 backdrop-blur-sm dark:bg-slate-900/95">
-                        <div className="relative flex-1 flex flex-col rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl dark:border-slate-700 dark:bg-slate-900">
-                          <PathChipsInput
-                            placeholder={inputPlaceholder}
-                            chips={chipsByTab[tab.id] || []}
-                            onChipsChange={(next) => setChipsByTab((m) => ({ ...m, [tab.id]: next }))}
-                            draft={draftByTab[tab.id] || ""}
-                            onDraftChange={(v) => setDraftByTab((m) => ({ ...m, [tab.id]: v }))}
-                            winRoot={selectedProject?.winPath}
-                            projectWslRoot={selectedProject?.wslPath}
-                            projectName={selectedProject?.name}
-                            projectPathStyle={projectPathStyle}
-                            runEnv={terminalMode}
-                            multiline
-                            onKeyDown={(e: any) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { sendCommand(); e.preventDefault(); } }}
-                            className="flex flex-1 flex-col overflow-auto h-full min-h-[24rem] border-0 rounded-none shadow-none focus-visible:ring-0 px-0 py-1"
-                            balancedScrollbarGutter
-                            draftInputClassName="flex-1 min-h-[18rem] border-0 focus:ring-0 focus:outline-none"
-                          />
-
-                          <div className="absolute right-[6px] bottom-[6px] flex flex-row gap-2">
-                            <Button
-                              size="icon"
-                              aria-label={sendLabel}
-                              title={sendLabel}
-                              onClick={sendCommand}
-                              className="h-10 w-10 rounded-full shadow-md"
-                            >
-                              <Send className="h-5 w-5" />
-                            </Button>
-                            <Button
-                              variant="secondary"
-                              size="icon"
-                              aria-label={expandLabel}
-                              title={expandLabel}
-                              onClick={() => toggleInputFullscreen(tab.id)}
-                              className="h-10 w-10 rounded-full shadow-md"
-                            >
-                              {isInputFullscreen ? <Minimize2 className="h-5 w-5" /> : <Maximize2 className="h-5 w-5" />}
-                            </Button>
+                    {showFullscreenInput ? (
+                      <div
+                        data-state={fullscreenState}
+                        className={`absolute inset-0 z-20 flex flex-col rounded-none overflow-hidden p-0 backdrop-blur-apple shadow-apple-xl transition-all bg-transparent ${isInputClosing ? 'pointer-events-none' : 'pointer-events-auto'} animate-[cfFullscreenOverlayEnter_260ms_cubic-bezier(0.4,0,0.2,1)_both] data-[state=closing]:animate-[cfFullscreenOverlayExit_220ms_cubic-bezier(0.4,0,0.2,1)_forwards]`}
+                      >
+                        <div
+                          aria-hidden="true"
+                          className="pointer-events-none absolute inset-0 bg-gradient-to-br from-white/95 via-white/90 to-white/85 dark:from-slate-900/95 dark:via-slate-900/92 dark:to-slate-900/88"
+                        ></div>
+                        <div className="relative z-10 flex flex-1 p-1">
+                          <div
+                            data-state={fullscreenState}
+                          className="relative flex flex-1 flex-col rounded-[26px] bg-[var(--cf-surface-solid)] shadow-apple-lg animate-[cfFullscreenPanelEnter_260ms_cubic-bezier(0.4,0,0.2,1)_both] data-[state=closing]:animate-[cfFullscreenPanelExit_220ms_cubic-bezier(0.4,0,0.2,1)_forwards]"
+                          >
+                            <PathChipsInput
+                              placeholder={inputPlaceholder}
+                              chips={chipsByTab[tab.id] || []}
+                              onChipsChange={(next) => setChipsByTab((m) => ({ ...m, [tab.id]: next }))}
+                              draft={draftByTab[tab.id] || ""}
+                              onDraftChange={(v) => setDraftByTab((m) => ({ ...m, [tab.id]: v }))}
+                              winRoot={selectedProject?.winPath}
+                              projectWslRoot={selectedProject?.wslPath}
+                              projectName={selectedProject?.name}
+                              projectPathStyle={projectPathStyle}
+                              runEnv={terminalMode}
+                              multiline
+                              onKeyDown={(e: any) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { sendCommand(); e.preventDefault(); } }}
+                              className="flex flex-1 flex-col min-h-[24rem] overflow-auto h-full"
+                              balancedScrollbarGutter
+                              draftInputClassName="flex-1 min-h-[18rem]"
+                            />
+                            <div className="pointer-events-auto absolute right-2 bottom-2 flex flex-row gap-2">
+                              <Button
+                                size="icon"
+                                aria-label={sendLabel}
+                                title={sendLabel}
+                                onClick={sendCommand}
+                                className="h-8 w-8 rounded-full shadow-sm"
+                              >
+                                <Send className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                variant="secondary"
+                                size="icon"
+                                aria-label={expandLabel}
+                                title={expandLabel}
+                                onClick={() => toggleInputFullscreen(tab.id)}
+                                className="h-8 w-8 rounded-full shadow-sm"
+                              >
+                                <Minimize2 className="h-4 w-4" />
+                              </Button>
+                            </div>
                           </div>
                         </div>
                       </div>
-                    ) : (
+                    ) : null}
+                    {!isInputFullscreen ? (
                       <div className="mt-3 w-full">
                         <div className="relative w-full">
                           <PathChipsInput
@@ -3011,7 +3104,7 @@ export default function CodexFlowManagerUI() {
                           </div>
                         </div>
                       </div>
-                    )}
+                    ) : null}
                   </CardContent>
                 </Card>
               </TabsContent>
@@ -3272,22 +3365,23 @@ export default function CodexFlowManagerUI() {
     });
   }, [timelineGroups, historyQuery, sessionMatchesQuery]);
 
-  // 注意：UI 不应主动发起历史消息读取以构建预览，预览应由项目初始化或后端在 list/read 时提供并缓存。
-
   const HistorySidebar = (
-    <div className="grid h-full min-w-[240px] grid-rows-[auto_auto_auto_1fr] min-h-0 border-l bg-white/60 dark:border-slate-800 dark:bg-slate-900/50">
-      <div className="flex items-center justify-between px-3 py-3 gap-2">
+    <div className="grid h-full min-w-[240px] grid-rows-[auto_auto_auto_1fr] min-h-0 border-l bg-white/70 backdrop-blur-sm dark:border-slate-800 dark:bg-slate-900/60">
+      {/* Header with enhanced modern styling */}
+      <div className="flex items-center justify-between px-3 py-3 border-b border-slate-100 dark:border-slate-700/50">
         <div className="flex items-center gap-2 font-medium shrink-0">
           <HistoryIcon className="h-4 w-4" /> {t('history:panelTitle')}
         </div>
       </div>
-      <Separator />
+      
+      {/* Enhanced search with original design */}
       <div className="px-3 py-2">
         <Input
           value={historyQuery}
           onChange={(e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setHistoryQuery((e.target as any).value)}
           placeholder={t('history:searchPlaceholder') as string}
           title={t('history:searchPlaceholderHint') as string}
+          className="h-9"
           onKeyDown={(e: React.KeyboardEvent<any>) => {
             if (e.key === 'Enter') {
               const q = historyQuery.trim().toLowerCase();
@@ -3305,8 +3399,8 @@ export default function CodexFlowManagerUI() {
           }}
         />
       </div>
-      <ScrollArea className="h-full min-h-0 p-2">
-        <div className="space-y-1">
+      <ScrollArea className="history-scroll-area h-full min-h-0 px-2 pb-2">
+        <div className="space-y-1 pt-2">
           {filteredTimelineGroups.map((g) => {
             const inGroup = g.sessions;
             const q = historyQuery.trim().toLowerCase();
@@ -3329,16 +3423,12 @@ export default function CodexFlowManagerUI() {
             const expanded = (expandedGroups[g.key] ?? defaultExpanded);
             const displayList = q ? inGroup.filter((s) => sessionMatchesQuery(s, q)) : inGroup;
             const isSelectedGroup = selectedHistoryDir === g.key;
-            const groupShellClass = `rounded-apple-lg border transition shadow-apple-xs backdrop-blur-apple ${
+            const groupShellClass = `transition-all duration-200 rounded-xl bg-transparent overflow-hidden`;
+            const headerButtonClass = `group sticky -top-1 z-20 flex items-center gap-2 px-2 py-1.5 w-full text-left transition-all duration-200 backdrop-blur-sm border border-transparent outline-none focus:outline-none ${
               isSelectedGroup
-                ? 'border-[var(--cf-border-strong)] bg-gradient-to-b from-white/90 to-white/70 dark:from-slate-900/70 dark:to-slate-900/50 shadow-apple-sm dark:shadow-apple-dark-sm'
-                : 'border-[var(--cf-border)] bg-white/60 dark:bg-slate-900/30'
-            }`;
-            const headerButtonClass = `sticky top-0 z-10 flex items-center gap-2 px-2 py-2.5 w-full text-left transition rounded-apple-lg bg-transparent ${
-              isSelectedGroup
-                ? 'text-[var(--cf-text-primary)] font-medium'
-                : 'text-[var(--cf-text-secondary)] hover:bg-white/30 dark:hover:bg-slate-900/40 dark:text-[var(--cf-text-secondary)]'
-            }`;
+                ? 'bg-white/95 dark:bg-slate-800/95 shadow-sm border-slate-200/60 dark:border-slate-600/40 text-[var(--cf-text-primary)] font-medium'
+                : 'bg-white/40 dark:bg-transparent text-[var(--cf-text-secondary)] hover:bg-white/80 hover:shadow-sm hover:border-slate-200/40 dark:hover:bg-slate-800/60 dark:hover:border-slate-600/30'
+            } rounded-lg`;
 
             return (
               <div key={g.key} className={groupShellClass}>
@@ -3366,14 +3456,14 @@ export default function CodexFlowManagerUI() {
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="font-medium max-w-full truncate" title={g.label}>
-                      {/* 分组标题：直接展示区间文案（Today/Yesterday/...） */}
                       {clampText(g.label, HISTORY_TITLE_MAX_CHARS)}
                     </div>
-                    <div className="mt-0.5 max-w-full truncate text-[11px] text-slate-500" title={g.latestRaw || latestLabel}>{latestLabel}</div>
+                    <div className="mt-0 max-w-full truncate text-[11px] text-slate-500" title={g.latestRaw || latestLabel}>{latestLabel}</div>
                   </div>
+                  
                 </button>
                 {expanded && displayList.length > 0 && (
-                  <div className="pb-2 pl-7 pr-2">
+                  <div className="pb-1 pl-2 pr-2 space-y-0.5">
                     {displayList.map((s) => {
                       const anchor = historySessionDate(s);
                       const absoluteLabel = anchor ? formatAsLocal(anchor) : timeFromFilename(s.filePath);
@@ -3381,13 +3471,11 @@ export default function CodexFlowManagerUI() {
                       const previewSource = sessionPreviewMap[s.filePath || s.id] || s.preview || s.title || s.filePath || '';
                       const relativeLabel = describeRelativeAge(anchor, historyNow) || '--';
                       const tooltip = [absoluteLabel, previewSource].filter(Boolean).join('  ');
-                      const itemClass = `block w-full rounded-lg border px-2.5 py-1.5 text-left text-xs transition ${
+                      const itemClass = `block w-full rounded px-2 py-0.5 text-left text-xs transition border outline-none focus:outline-none ${
                         active
-                          ? 'border-slate-200 bg-white text-slate-900 shadow-sm dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100'
-                          : 'border-transparent bg-white/70 text-slate-800 hover:border-slate-200 hover:bg-white/90 dark:border-slate-800/30 dark:bg-slate-900/20 dark:text-slate-200 dark:hover:border-slate-700 dark:hover:bg-slate-800/40'
+                          ? 'bg-slate-200 border-slate-300 dark:bg-slate-700 dark:border-slate-600 dark:text-slate-100'
+                          : 'bg-transparent border-transparent text-slate-800 dark:text-slate-200 hover:bg-slate-100 hover:border-slate-200 dark:hover:bg-slate-900/40 dark:hover:border-slate-700'
                       }`;
-                      const previewTextClass = active ? 'text-slate-900 dark:text-slate-50' : 'text-slate-800 dark:text-slate-100';
-                      const relativeTextClass = active ? 'text-slate-500 dark:text-slate-300' : 'text-slate-500 dark:text-slate-400';
 
                       return (
                         <button
@@ -3395,11 +3483,11 @@ export default function CodexFlowManagerUI() {
                           onClick={() => { setSelectedHistoryDir(g.key); setSelectedHistoryId(s.id); setCenterMode('history'); }}
                           onContextMenu={(e) => { e.preventDefault(); setHistoryCtxMenu({ show: true, x: e.clientX, y: e.clientY, item: s, groupKey: g.key }); }}
                           className={itemClass}
-                          title={tooltip || s.title || ''}
+                          title={tooltip}
                         >
                           <div className="flex items-center justify-between gap-2">
-                            <span className={`text-sm leading-5 truncate ${previewTextClass}`}>{previewSource || absoluteLabel || '--'}</span>
-                            <span className={`shrink-0 text-[11px] ${relativeTextClass}`}>{relativeLabel}</span>
+                            <span className={`text-sm leading-5 truncate ${active ? 'text-slate-900 dark:text-slate-50 font-medium' : 'text-slate-800 dark:text-slate-200'}`}>{previewSource || absoluteLabel || '--'}</span>
+                            <span className={`shrink-0 text-[11px] ${active ? 'text-slate-600 dark:text-slate-400' : 'text-slate-500 dark:text-slate-400'}`}>{relativeLabel}</span>
                           </div>
                         </button>
                       );
@@ -3413,115 +3501,28 @@ export default function CodexFlowManagerUI() {
             );
           })}
           {historySessions.length === 0 && (
-            <div className="px-3 py-6 text-center text-sm text-slate-500">{t('history:empty')}</div>
+            <div className="px-4 py-8 text-center">
+              <div className="mb-3 flex justify-center">
+                <div className="p-3 rounded-xl bg-slate-100/60 dark:bg-slate-800/60">
+                  <FileClock className="h-6 w-6 text-[var(--cf-text-muted)]" />
+                </div>
+              </div>
+              <div className="text-sm text-[var(--cf-text-muted)] font-apple-medium">{t('history:empty')}</div>
+            </div>
           )}
           {historySessions.length > 0 && historyQuery.trim().length > 0 && filteredTimelineGroups.length === 0 && (
-            <div className="px-3 py-6 text-center text-sm text-slate-500">{t('history:noMatch')}</div>
+            <div className="px-4 py-8 text-center">
+              <div className="mb-3 flex justify-center">
+                <div className="p-3 rounded-xl bg-slate-100/60 dark:bg-slate-800/60">
+                  <Search className="h-6 w-6 text-[var(--cf-text-muted)]" />
+                </div>
+              </div>
+              <div className="text-sm text-[var(--cf-text-muted)] font-apple-medium">{t('history:noMatch')}</div>
+            </div>
           )}
         </div>
       </ScrollArea>
 
-      {historyCtxMenu.show && (
-        <div
-          className="fixed inset-0 z-50"
-          onClick={() => setHistoryCtxMenu((m) => ({ ...m, show: false }))}
-          onContextMenu={(e) => { e.preventDefault(); setHistoryCtxMenu((m) => ({ ...m, show: false })); }}
-        >
-          <div
-            ref={historyCtxMenuRef}
-            className="absolute z-50 min-w-[160px] rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple shadow-apple-lg p-1.5 text-sm text-[var(--cf-text-primary)] dark:shadow-apple-dark-lg"
-            style={{ left: historyCtxMenu.x, top: historyCtxMenu.y }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <button
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
-              onClick={async () => {
-                try {
-                  const it = historyCtxMenu.item;
-                  if (!it || !it.filePath || !selectedProject) { setHistoryCtxMenu((m) => ({ ...m, show: false })); return; }
-                  await requestResume(it.filePath, 'internal');
-                } catch (err) {
-                  console.warn('resume session failed', err);
-                }
-                setHistoryCtxMenu((m) => ({ ...m, show: false }));
-              }}
-            >
-              {t('history:continueConversation')}
-            </button>
-            <button
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
-              onClick={async () => {
-                try {
-                  const it = historyCtxMenu.item;
-                  if (!it || !it.filePath || !selectedProject) { setHistoryCtxMenu((m) => ({ ...m, show: false })); return; }
-                  const status = await requestResume(it.filePath, 'external');
-                  if (status === 'error') {
-                    const env = toShellLabel(terminalMode);
-                    setBlockingNotice({ type: 'external-console', env });
-                  }
-                } catch (e) {
-                  console.warn('resume external failed', e);
-                }
-                setHistoryCtxMenu((m) => ({ ...m, show: false }));
-              }}
-            >
-              <ExternalLink className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('history:continueExternalWith', { env: terminalMode === 'windows' ? 'PowerShell' : 'WSL' })}
-            </button>
-            <button
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
-              onClick={async () => {
-                const f = historyCtxMenu.item?.filePath;
-                if (f) { try { await window.host.utils.copyText(f); } catch {} }
-                setHistoryCtxMenu((m) => ({ ...m, show: false }));
-              }}
-            >
-              <CopyIcon className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('history:copyPath')}
-            </button>
-            <button
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
-              onClick={async () => {
-                const f = historyCtxMenu.item?.filePath;
-                if (f) {
-                  try {
-                    const res: any = await window.host.utils.showInFolder(f);
-                    if (!(res && res.ok)) throw new Error(res?.error || 'failed');
-                  } catch (e) { alert(String(t('history:cannotOpenContaining'))); }
-                }
-                setHistoryCtxMenu((m) => ({ ...m, show: false }));
-              }}
-            >
-              <FolderOpen className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('history:openContaining')}
-            </button>
-            <button
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
-              onClick={async () => {
-                const f = historyCtxMenu.item?.filePath;
-                if (f) {
-                  try {
-                    const res: any = await window.host.utils.openPath(f);
-                    if (!(res && res.ok)) throw new Error(res?.error || 'failed');
-                  } catch (e) { alert(String(t('history:cannotOpenDefault'))); }
-                }
-                setHistoryCtxMenu((m) => ({ ...m, show: false }));
-              }}
-            >
-              <ExternalLink className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('history:openWithDefault')}
-            </button>
-            <button
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-red)] rounded-apple-sm hover:bg-[var(--cf-red-light)] transition-all duration-apple-fast"
-              onClick={async () => {
-                const it = historyCtxMenu.item; const key = historyCtxMenu.groupKey || historyTimelineGroupKey(it || undefined, new Date());
-                if (!it?.filePath) { setHistoryCtxMenu((m) => ({ ...m, show: false })); return; }
-                // 改为应用内对话框，避免 window.confirm 引发同步阻塞
-                setConfirmDelete({ open: true, item: it, groupKey: key });
-                setHistoryCtxMenu((m) => ({ ...m, show: false }));
-              }}
-            >
-              <Trash2 className="h-4 w-4" /> {t('history:deleteToTrash')}
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* 历史删除确认弹窗（非阻塞） */}
       <Dialog open={confirmDelete.open} onOpenChange={(v) => {
@@ -3540,7 +3541,7 @@ export default function CodexFlowManagerUI() {
             <Button variant="outline" onClick={() => setConfirmDelete((m) => ({ ...m, open: false }))}>{t('common:cancel')}</Button>
             <Button className="border border-red-200 text-red-600 hover:bg-red-50 dark:border-[var(--cf-red-light)] dark:text-[var(--cf-red)] dark:hover:bg-[var(--cf-red-light)]" variant="secondary" onClick={async () => {
               try {
-                const it = confirmDelete.item; const fallbackKey = historyTimelineGroupKey(it || undefined, new Date());
+                const it = confirmDelete.item; const fallbackKey = it ? historyTimelineGroupKey(it, new Date()) : HISTORY_UNKNOWN_GROUP_KEY;
                 const key = confirmDelete.groupKey || fallbackKey;
                 if (!it?.filePath) { setConfirmDelete((m) => ({ ...m, open: false })); return; }
                 const res: any = await window.host.history.trash({ filePath: it.filePath });
@@ -3642,6 +3643,107 @@ export default function CodexFlowManagerUI() {
         </div>
         {showHistoryPanel && HistorySidebar}
       </div>
+
+      {historyCtxMenu.show && (
+        <div
+          className="fixed inset-0 z-50"
+          onClick={() => setHistoryCtxMenu((m) => ({ ...m, show: false }))}
+          onContextMenu={(e) => { e.preventDefault(); setHistoryCtxMenu((m) => ({ ...m, show: false })); }}
+        >
+          <div
+            ref={historyCtxMenuRef}
+            className="absolute z-50 min-w-[160px] rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple shadow-apple-lg p-1.5 text-sm text-[var(--cf-text-primary)] dark:shadow-apple-dark-lg"
+            style={{ left: historyCtxMenu.x, top: historyCtxMenu.y }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
+              onClick={async () => {
+                try {
+                  const it = historyCtxMenu.item;
+                  if (!it || !it.filePath || !selectedProject) { setHistoryCtxMenu((m) => ({ ...m, show: false })); return; }
+                  await requestResume(it.filePath, 'internal');
+                } catch (err) {
+                  console.warn('resume session failed', err);
+                }
+                setHistoryCtxMenu((m) => ({ ...m, show: false }));
+              }}
+            >
+              {t('history:continueConversation')}
+            </button>
+            <button
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
+              onClick={async () => {
+                try {
+                  const it = historyCtxMenu.item;
+                  if (!it || !it.filePath || !selectedProject) { setHistoryCtxMenu((m) => ({ ...m, show: false })); return; }
+                  const status = await requestResume(it.filePath, 'external');
+                  if (status === 'error') {
+                    const env = toShellLabel(terminalMode);
+                    setBlockingNotice({ type: 'external-console', env });
+                  }
+                } catch (e) {
+                  console.warn('resume external failed', e);
+                }
+                setHistoryCtxMenu((m) => ({ ...m, show: false }));
+              }}
+            >
+              <ExternalLink className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('history:continueExternalWith', { env: terminalMode === 'windows' ? 'PowerShell' : 'WSL' })}
+            </button>
+            <button
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
+              onClick={async () => {
+                const f = historyCtxMenu.item?.filePath;
+                if (f) { try { await window.host.utils.copyText(f); } catch {} }
+                setHistoryCtxMenu((m) => ({ ...m, show: false }));
+              }}
+            >
+              <CopyIcon className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('history:copyPath')}
+            </button>
+            <button
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
+              onClick={async () => {
+                const f = historyCtxMenu.item?.filePath;
+                if (f) {
+                  try {
+                    const res: any = await window.host.utils.showInFolder(f);
+                    if (!(res && res.ok)) throw new Error(res?.error || 'failed');
+                  } catch (e) { alert(String(t('history:cannotOpenContaining'))); }
+                }
+                setHistoryCtxMenu((m) => ({ ...m, show: false }));
+              }}
+            >
+              <FolderOpen className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('history:openContaining')}
+            </button>
+            <button
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
+              onClick={async () => {
+                const f = historyCtxMenu.item?.filePath;
+                if (f) {
+                  try {
+                    const res: any = await window.host.utils.openPath(f);
+                    if (!(res && res.ok)) throw new Error(res?.error || 'failed');
+                  } catch (e) { alert(String(t('history:cannotOpenDefault'))); }
+                }
+                setHistoryCtxMenu((m) => ({ ...m, show: false }));
+              }}
+            >
+              <ExternalLink className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('history:openWithDefault')}
+            </button>
+            <button
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-red)] rounded-apple-sm hover:bg-[var(--cf-red-light)] transition-all duration-apple-fast"
+              onClick={async () => {
+                const it = historyCtxMenu.item; const key = historyCtxMenu.groupKey || (it ? historyTimelineGroupKey(it, new Date()) : HISTORY_UNKNOWN_GROUP_KEY);
+                if (!it?.filePath) { setHistoryCtxMenu((m) => ({ ...m, show: false })); return; }
+                setConfirmDelete({ open: true, item: it, groupKey: key });
+                setHistoryCtxMenu((m) => ({ ...m, show: false }));
+              }}
+            >
+              <Trash2 className="h-4 w-4" /> {t('history:deleteToTrash')}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* 全局项目右键菜单：与历史面板解耦，避免被隐藏 */}
       {projectCtxMenu.show && (
@@ -4650,20 +4752,30 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
         </div>
       </div>
       <ScrollArea key={selectedHistoryId || 'none'} className="h-full min-h-0 p-2">
-          {selectedHistoryId ? (
-            showNoMatch ? (
-              <div className="p-4 text-sm text-[var(--cf-text-secondary)] font-apple-regular">{t('history:noMatch')}</div>
-            ) : (
-              <div className="space-y-2">
-                {renderHistoryBlocks(detailSession || selectedSession, filteredMessages, {
-                  fieldMatches,
-                  activeMessageKey: detailSearchActive ? activeMatch?.messageKey : undefined,
-                  activeMatchId: detailSearchActive ? activeMatch?.id : undefined,
-                  registerMessageRef,
-                })}
-                {loaded && skipped > 0 && <div className="text-xs text-[var(--cf-text-secondary)] font-apple-regular">{t('history:skippedLines', { count: skipped })}</div>}
-              </div>
-            )
+        {selectedHistoryId ? (
+          showNoMatch ? (
+            <div className="p-4 text-sm text-[var(--cf-text-secondary)] font-apple-regular">{t('history:noMatch')}</div>
+          ) : (
+            <div className="space-y-2">
+              {detailSession
+                ? renderHistoryBlocks(detailSession, filteredMessages, {
+                    fieldMatches,
+                    activeMessageKey: detailSearchActive ? activeMatch?.messageKey : undefined,
+                    activeMatchId: detailSearchActive ? activeMatch?.id : undefined,
+                    registerMessageRef,
+                  })
+                : (selectedSession
+                    ? renderHistoryBlocks(selectedSession, filteredMessages, {
+                        fieldMatches,
+                        activeMessageKey: detailSearchActive ? activeMatch?.messageKey : undefined,
+                        activeMatchId: detailSearchActive ? activeMatch?.id : undefined,
+                        registerMessageRef,
+                      })
+                    : null)
+              }
+              {loaded && skipped > 0 && <div className="text-xs text-[var(--cf-text-secondary)] font-apple-regular">{t('history:skippedLines', { count: skipped })}</div>}
+            </div>
+          )
         ) : (
           <div className="p-4 text-sm text-[var(--cf-text-secondary)] font-apple-regular">{t('history:selectRightToView')}</div>
         )}

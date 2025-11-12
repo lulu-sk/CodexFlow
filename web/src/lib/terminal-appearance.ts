@@ -203,8 +203,8 @@ export function buildTerminalChromeColors(theme?: TerminalThemeDefinition | null
       : mixHexColors(normalizedBg, "#000000", 0.18);
   const frameShadow =
     tone === "dark"
-      ? "0 18px 36px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.04)"
-      : "0 18px 36px rgba(15, 23, 42, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.65)";
+      ? "inset 0 1px 0 rgba(255, 255, 255, 0.06)"
+      : "inset 0 1px 0 rgba(255, 255, 255, 0.65)";
   const overlayBase =
     tone === "dark"
       ? mixHexColors(normalizedBg, "#FFFFFF", 0.52)

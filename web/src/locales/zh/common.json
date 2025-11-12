@@ -4,6 +4,7 @@
   "save": "保存",
   "open": "打开",
   "refresh": "刷新",
+  "close": "关闭",
   "app": {
     "name": "CodexFlow",
     "language": "语言",
