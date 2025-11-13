@@ -1623,6 +1623,7 @@ export default function CodexFlowManagerUI() {
 
   // History panel data (fixed sidebar)
   const [historySessions, setHistorySessions] = useState<HistorySession[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [selectedHistoryDir, setSelectedHistoryDir] = useState<string | null>(null);
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
   // 用于在点击项目时抑制自动选中历史的标志
@@ -2253,11 +2254,14 @@ export default function CodexFlowManagerUI() {
 
   // 当项目变更时，加载历史（项目范围）
   useEffect(() => {
+    let cancelled = false;
+
     (async () => {
       if (!selectedProject) {
         setHistorySessions([]);
         setSelectedHistoryDir(null);
         setSelectedHistoryId(null);
+        setHistoryLoading(false);
         return;
       }
       // 如果是用户刚刚通过点击项目触发的切换，则抑制自动选中历史（保持控制台视图）
@@ -2266,24 +2270,23 @@ export default function CodexFlowManagerUI() {
       const ensureIso = (d: any): string => normalizeMsToIso(d);
       // 先显示缓存
       const cached = historyCacheRef.current[projectKey];
-      if (cached && cached.length > 0) {
+      const hasCache = !!(cached && cached.length > 0);
+      setHistoryLoading(!hasCache);
+      if (hasCache) {
         setHistorySessions(cached);
         // 若当前选择无效或为空，重置为缓存中的第一组（除非是点击项目触发的切换）
         if (!skipAuto) {
-          const ids = new Set(cached.map((x) => x.id));
           const nowRef = new Date();
           const keyOf = (item?: HistorySession) => historyTimelineGroupKey(item, nowRef);
           const dirs = new Set(cached.map((x) => keyOf(x)));
-          if (!selectedHistoryId || !ids.has(selectedHistoryId) || !selectedHistoryDir || !dirs.has(selectedHistoryDir)) {
-            const firstKey = cached.length > 0 ? keyOf(cached[0]) : null;
-            if (firstKey && cached.length > 0) {
-              setSelectedHistoryDir(firstKey);
-              const firstInDir = cached
-                .filter((x) => keyOf(x) === firstKey)
-                .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
-              setSelectedHistoryId(firstInDir?.id || null);
-              setCenterMode('history');
-            }
+          const ids = new Set(cached.map((x) => x.id));
+          const invalidSelection = (!selectedHistoryId || !ids.has(selectedHistoryId) || !selectedHistoryDir || !dirs.has(selectedHistoryDir));
+          const firstKey = cached.length > 0 ? keyOf(cached[0]) : null;
+          if (invalidSelection && firstKey) {
+            // 仅优化默认 UI：展开最新分组，不自动选择会话，也不切换到详情
+            setSelectedHistoryDir(null);
+            setSelectedHistoryId(null);
+            setExpandedGroups({ [firstKey]: true });
           }
         }
       } else {
@@ -2294,6 +2297,7 @@ export default function CodexFlowManagerUI() {
       try {
         // 固定为项目范围历史
         const res: any = await window.host.history.list({ projectWslPath: selectedProject.wslPath, projectWinPath: selectedProject.winPath });
+        if (cancelled) return;
         if (!(res && res.ok && Array.isArray(res.sessions))) throw new Error('history.list failed');
         // 映射时：优先将后端提供的 rawDate 作为 title（原始字符串），避免前端再做时区/格式化转换
         // 同时接收后端提供的 preview 字段，并把它同步到前端只读映射 sessionPreviewMap
@@ -2329,20 +2333,24 @@ export default function CodexFlowManagerUI() {
           const needResetDir = !selectedHistoryDir || !dirs.has(selectedHistoryDir);
           if ((needResetId || needResetDir) && mapped.length > 0) {
             const firstKey = keyOf(mapped[0]);
-            setSelectedHistoryDir(firstKey);
-            const firstInDir = mapped
-              .filter((x) => keyOf(x) === firstKey)
-              .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
-            setSelectedHistoryId(firstInDir?.id || null);
-            setCenterMode('history');
+            // 仅优化默认 UI：展开最新分组，不自动选择会话，也不切换到详情
+            setSelectedHistoryDir(null);
+            setSelectedHistoryId(null);
+            setExpandedGroups({ [firstKey]: true });
           }
         }
         // 如果抑制了自动选择，需要在处理完加载后重置抑制标志
         if (skipAuto) suppressAutoSelectRef.current = false;
       } catch (e) {
-        console.warn('history.list failed', e);
+        if (!cancelled) console.warn('history.list failed', e);
+      } finally {
+        if (!cancelled) setHistoryLoading(false);
       }
     })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [selectedProject]);
 
   // 订阅索引器事件：新增/更新/删除时，若属于当前选中项目则立即更新 UI
@@ -3423,8 +3431,8 @@ export default function CodexFlowManagerUI() {
             const expanded = (expandedGroups[g.key] ?? defaultExpanded);
             const displayList = q ? inGroup.filter((s) => sessionMatchesQuery(s, q)) : inGroup;
             const isSelectedGroup = selectedHistoryDir === g.key;
-            const groupShellClass = `transition-all duration-200 rounded-xl bg-transparent overflow-hidden`;
-            const headerButtonClass = `group sticky -top-1 z-20 flex items-center gap-2 px-2 py-1.5 w-full text-left transition-all duration-200 backdrop-blur-sm border border-transparent outline-none focus:outline-none ${
+            const groupShellClass = `rounded-xl bg-transparent overflow-hidden`;
+            const headerButtonClass = `group sticky -top-1 z-20 flex items-center gap-2 px-2 py-1.5 w-full text-left backdrop-blur-sm border border-transparent outline-none focus:outline-none ${
               isSelectedGroup
                 ? 'bg-white/95 dark:bg-slate-800/95 shadow-sm border-slate-200/60 dark:border-slate-600/40 text-[var(--cf-text-primary)] font-medium'
                 : 'bg-white/40 dark:bg-transparent text-[var(--cf-text-secondary)] hover:bg-white/80 hover:shadow-sm hover:border-slate-200/40 dark:hover:bg-slate-800/60 dark:hover:border-slate-600/30'
@@ -3435,9 +3443,6 @@ export default function CodexFlowManagerUI() {
                 <button
                   className={headerButtonClass}
                   onClick={() => {
-                    setSelectedHistoryDir(g.key);
-                    setSelectedHistoryId(target?.id || null);
-                    setCenterMode('history');
                     setExpandedGroups((m) => ({ ...m, [g.key]: !expanded }));
                   }}
                 >
@@ -3446,9 +3451,6 @@ export default function CodexFlowManagerUI() {
                     aria-label={expanded ? (t('history:collapse') as string) : (t('history:expand') as string)}
                     onClick={(e) => {
                       e.stopPropagation();
-                      setSelectedHistoryDir(g.key);
-                      setSelectedHistoryId(target?.id || null);
-                      setCenterMode('history');
                       setExpandedGroups((m) => ({ ...m, [g.key]: !expanded }));
                     }}
                   >
@@ -3463,7 +3465,7 @@ export default function CodexFlowManagerUI() {
                   
                 </button>
                 {expanded && displayList.length > 0 && (
-                  <div className="pb-1 pl-2 pr-2 space-y-0.5">
+                  <div className="pb-1 pl-2 pr-2 space-y-0.5 mt-0.5">
                     {displayList.map((s) => {
                       const anchor = historySessionDate(s);
                       const absoluteLabel = anchor ? formatAsLocal(anchor) : timeFromFilename(s.filePath);
@@ -3471,7 +3473,7 @@ export default function CodexFlowManagerUI() {
                       const previewSource = sessionPreviewMap[s.filePath || s.id] || s.preview || s.title || s.filePath || '';
                       const relativeLabel = describeRelativeAge(anchor, historyNow) || '--';
                       const tooltip = [absoluteLabel, previewSource].filter(Boolean).join('  ');
-                      const itemClass = `block w-full rounded px-2 py-0.5 text-left text-xs transition border outline-none focus:outline-none ${
+                      const itemClass = `block w-full rounded px-2 py-0.5 text-left text-xs border outline-none focus:outline-none ${
                         active
                           ? 'bg-slate-200 border-slate-300 dark:bg-slate-700 dark:border-slate-600 dark:text-slate-100'
                           : 'bg-transparent border-transparent text-slate-800 dark:text-slate-200 hover:bg-slate-100 hover:border-slate-200 dark:hover:bg-slate-900/40 dark:hover:border-slate-700'
@@ -3500,7 +3502,7 @@ export default function CodexFlowManagerUI() {
               </div>
             );
           })}
-          {historySessions.length === 0 && (
+          {historySessions.length === 0 && !historyLoading && (
             <div className="px-4 py-8 text-center">
               <div className="mb-3 flex justify-center">
                 <div className="p-3 rounded-xl bg-slate-100/60 dark:bg-slate-800/60">
@@ -4324,7 +4326,7 @@ function renderHistoryBlocks(session: HistorySession, messages: HistoryMessage[]
   return (
     <div>
       {/* 详情标题：显示本地时间（优先 rawDate -> date -> 文件名推断），tooltip 同时展示本地与原始信息 */}
-      <h3 className="mb-3 max-w-full truncate text-base font-apple-semibold text-[var(--cf-text-primary)]" title={`${toLocalDisplayTime(session)} ${session.rawDate ? '• ' + session.rawDate : (session.date ? '• ' + session.date : '')}`}>
+      <h3 className="mb-1.5 max-w-full truncate text-sm font-apple-medium text-[var(--cf-text-secondary)]" title={`${toLocalDisplayTime(session)} ${session.rawDate ? '• ' + session.rawDate : (session.date ? '• ' + session.date : '')}`}>
         {toLocalDisplayTime(session)}
       </h3>
       <div className="space-y-2">
@@ -4655,17 +4657,20 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
     return lines.join("\n");
   }
 
+  const [filtersExpanded, setFiltersExpanded] = useState(false);
+
   return (
     <>
-      <div className="grid h-full min-h-0 grid-rows-[auto_auto_auto_1fr]">
-      <div className="flex items-center justify-between px-3 py-2">
+      <div className="grid h-full min-h-0 grid-rows-[auto_auto_1fr]">
+      {/* 紧凑的标题栏 - 减少垂直间距 */}
+      <div className="flex items-center justify-between px-3 py-1.5 border-b">
         <div className="flex items-center gap-2 text-sm">
           {/* 返回箭头：点击返回到控制台 */}
           <button className="flex items-center gap-2 text-sm font-apple-medium text-[var(--cf-text-secondary)] hover:text-[var(--cf-text-primary)] transition-colors duration-apple" onClick={() => { if (onBack) onBack(); }} aria-label={t('history:detailTitle') as string}>
             <ChevronLeft className="h-4 w-4" /> <span>{t('history:detailTitle')}</span>
           </button>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           <Button size="sm" variant="secondary" onClick={() => {
             try {
               if (!selectedHistoryId) return;
@@ -4692,65 +4697,149 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
           }}>{t('history:export')}</Button>
         </div>
       </div>
-      <Separator />
-      <div className="flex flex-col gap-2 px-3 py-2 text-xs text-[var(--cf-text-secondary)]">
-        <div className="flex items-center justify-between">
-          <div className="text-[var(--cf-text-muted)] font-apple-medium">{t('history:filterTypes')}</div>
-          <div className="flex items-center gap-2">
-            <Button size="sm" variant="ghost" onClick={() => {
-              const keys = Object.keys(typeFilter);
-              const next: Record<string, boolean> = {};
-              for (const k of keys) next[k] = true;
-              setTypeFilter(next);
-            }}>{t('history:selectAll')}</Button>
-            <Button size="sm" variant="ghost" onClick={() => {
-              const keys = Object.keys(typeFilter);
-              const next: Record<string, boolean> = {};
-              for (const k of keys) next[k] = false;
-              setTypeFilter(next);
-            }}>{t('history:deselectAll')}</Button>
-            <Button size="sm" variant="ghost" onClick={() => {
-              const keys = Object.keys(typeFilter);
-              setTypeFilter((cur) => {
-                const next: Record<string, boolean> = {};
-                for (const k of keys) next[k] = !cur[k];
-                return next;
-              });
-            }}>{t('history:invertSelection')}</Button>
-            <span className="text-[var(--cf-text-muted)] font-apple-medium">{Object.values(typeFilter).filter(Boolean).length}/{Object.keys(typeFilter).length}</span>
-          </div>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {Object.keys(typeFilter).length > 0 ? (
-            Object.keys(typeFilter).sort().map((k) => (
-              <label key={k} className="inline-flex items-center gap-1.5 cursor-pointer hover:text-[var(--cf-text-primary)] transition-colors duration-apple-fast">
-                <input type="checkbox" className="h-3 w-3 rounded accent-[var(--cf-accent)]" checked={!!typeFilter[k]} onChange={(e) => setTypeFilter((cur) => ({ ...cur, [k]: e.target.checked }))} />
-                <span className="font-apple-regular">{k}</span>
-              </label>
-            ))
-          ) : (
-            <span className="text-[var(--cf-text-muted)] font-apple-regular">{t('history:loadingFilters')}</span>
-          )}
-        </div>
-        <div className="flex flex-col gap-1">
-          <div className="relative">
+
+      {/* 紧凑的过滤和搜索区域 */}
+      <div className="flex flex-col gap-1.5 px-3 py-1.5 text-xs text-[var(--cf-text-secondary)] bg-[var(--cf-bg-secondary)]">
+        {/* 第一行：搜索框和过滤器切换 */}
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1 max-w-xs">
             <Input
               value={detailSearch}
               onChange={(e) => setDetailSearch((e.target as HTMLInputElement).value)}
               placeholder={t('history:detailSearchPlaceholder') as string}
               title={t('history:detailSearchHint') as string}
               aria-label={t('history:detailSearchHint') as string}
-              className="pl-10"
+              className="pl-8 h-8 text-xs"
             />
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--cf-text-muted)]" />
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--cf-text-muted)]" />
           </div>
-          <div className="text-[0.65rem] text-[var(--cf-text-muted)] font-apple-regular">
-            {detailSearchActive && (
-              <span>{t('history:detailSearchMatches', { count: matches.length })}</span>
-            )}
+          
+          {detailSearchActive && (
+            <div className="text-[0.65rem] text-[var(--cf-text-muted)] font-apple-regular whitespace-nowrap">
+              {t('history:detailSearchMatches', { count: matches.length })}
+            </div>
+          )}
+
+          <div className="flex items-center gap-1.5 ml-auto">
+            <span className="text-[var(--cf-text-muted)] font-apple-medium whitespace-nowrap">{Object.values(typeFilter).filter(Boolean).length}/{Object.keys(typeFilter).length}</span>
+            <Button 
+              size="sm" 
+              variant="ghost" 
+              className="h-7 px-2 text-xs"
+              onClick={() => setFiltersExpanded(!filtersExpanded)}
+            >
+              {t('history:filterTypes')} {filtersExpanded ? '▼' : '▶'}
+            </Button>
           </div>
         </div>
+
+        {/* 可折叠的过滤器区域 - 苹果风格设计 */}
+        {filtersExpanded && (
+          <div className="animate-in slide-in-from-top-1 duration-300 ease-apple">
+            <div className="mx-2 mt-1 rounded-xl bg-white/5 backdrop-blur-sm border border-white/10 shadow-lg shadow-black/5 p-2">
+              {/* 头部：操作按钮组 + 关闭按钮 */}
+              <div className="flex items-center justify-between gap-1.5 mb-2">
+                <div className="flex items-center gap-1">
+                  <Button 
+                    size="xs"
+                    variant="secondary"
+                    onClick={() => {
+                      const keys = Object.keys(typeFilter);
+                      const next: Record<string, boolean> = {};
+                      for (const k of keys) next[k] = true;
+                      setTypeFilter(next);
+                    }}
+                  >
+                    全选
+                  </Button>
+                  <Button 
+                    size="xs"
+                    variant="secondary"
+                    onClick={() => {
+                      const keys = Object.keys(typeFilter);
+                      const next: Record<string, boolean> = {};
+                      for (const k of keys) next[k] = false;
+                      setTypeFilter(next);
+                    }}
+                  >
+                    清空
+                  </Button>
+                  <Button 
+                    size="xs"
+                    variant="secondary"
+                    onClick={() => {
+                      const keys = Object.keys(typeFilter);
+                      setTypeFilter((cur) => {
+                        const next: Record<string, boolean> = {};
+                        for (const k of keys) next[k] = !cur[k];
+                        return next;
+                      });
+                    }}
+                  >
+                    反选
+                  </Button>
+                </div>
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  onClick={() => setFiltersExpanded(false)}
+                  className="shrink-0"
+                  title={t('common:close') as string}
+                >
+                  <X className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+
+              {/* 紧凑的复选框网格 */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-x-1.5 gap-y-1">
+                {Object.keys(typeFilter).length > 0 ? (
+                  Object.keys(typeFilter).sort().map((k) => (
+                    <label 
+                      key={k} 
+                      className="flex items-center gap-1 cursor-pointer group hover:bg-white/5 rounded-md px-1 py-0.5 transition-all duration-200 ease-apple"
+                    >
+                      {/* 紧凑的复选框 */}
+                      <div className="relative flex-shrink-0">
+                        <input 
+                          type="checkbox" 
+                          className="sr-only peer" 
+                          checked={!!typeFilter[k]} 
+                          onChange={(e) => setTypeFilter((cur) => ({ ...cur, [k]: e.target.checked }))} 
+                        />
+                        <div className={`w-3.5 h-3.5 rounded border transition-all duration-200 ease-apple ${
+                          typeFilter[k] 
+                            ? 'bg-[var(--cf-accent)] border-[var(--cf-accent)] shadow-sm shadow-[var(--cf-accent)]/20' 
+                            : 'border-[var(--cf-border)] group-hover:border-[var(--cf-accent)]/50 bg-transparent'
+                        }`}>
+                          {typeFilter[k] && (
+                            <svg 
+                              className="w-3.5 h-3.5 text-white" 
+                              fill="none" 
+                              stroke="currentColor" 
+                              strokeWidth="3" 
+                              viewBox="0 0 24 24"
+                            >
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                            </svg>
+                          )}
+                        </div>
+                      </div>
+                      <span className="text-[0.68rem] font-apple-regular text-[var(--cf-text-primary)] truncate leading-tight">
+                        {k}
+                      </span>
+                    </label>
+                  ))
+                ) : (
+                  <div className="col-span-full flex items-center justify-center py-2 text-[var(--cf-text-muted)] font-apple-regular text-[0.68rem]">
+                    {t('history:loadingFilters')}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
+
       <ScrollArea key={selectedHistoryId || 'none'} className="h-full min-h-0 p-2">
         {selectedHistoryId ? (
           showNoMatch ? (
