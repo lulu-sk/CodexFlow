@@ -44,7 +44,7 @@ type PersistDetails = {
   savedAt: number;
 };
 
-const VERSION = "v7";
+const VERSION = "v8";
 
 function getUserDataDir(): string {
   try { const { app } = require("electron"); return app.getPath("userData"); } catch { return process.cwd(); }
@@ -229,11 +229,16 @@ function normalizeLineHead(s: string): string {
 }
 
 /**
- * 判断一行是否为 Windows/WSL 风格的路径行：
- * - Windows 盘符路径：C:\\ 或 C:/ 开头
- * - WSL UNC：\\wsl.localhost\\Distro\\... 或 //wsl.localhost/Distro/...
- * - 旧式 WSL 共享：\\wsl$\\Distro\\...
- * - /mnt/<drive>/... 挂载盘路径
+ * 判断一行是否为路径行（用于预览过滤）：
+ * - 绝对路径：
+ *   - Windows 盘符：C:\\ 或 C:/ 开头
+ *   - WSL UNC：\\wsl.localhost\\Distro\\... 或 //wsl.localhost/Distro/...
+ *   - 旧式 WSL 共享：\\wsl$\\Distro\\...
+ *   - /mnt/<drive>/... 或其他以 / 开头的 POSIX 根
+ *   - file: URI（file:/C:/..., file:///mnt/c/... 等）
+ * - 相对路径：
+ *   - 显式相对：./、../、.\\、..\\ 开头
+ *   - 无空格的多段相对路径（允许中英文、数字、下划线、点、连字符）
  */
 function isWinOrWslPathLine(line: string): boolean {
   try {
@@ -250,6 +255,18 @@ function isWinOrWslPathLine(line: string): boolean {
     if (/^\\\\wsl\$\\[^\\\s]+\\/.test(t)) return true;
     if (/^\/\/wsl\.localhost\/[^\s/]+\//.test(t)) return true;
     if (/^\/mnt\/[a-zA-Z]\//.test(t)) return true;
+    // 其他以 / 开头的 POSIX 根（例如 /home/...）也视作绝对路径
+    if (/^\//.test(t)) return true;
+
+    // 相对路径（显式 ./ 或 ../）
+    if (/^\.{1,2}[\\/]/.test(t)) return true;
+
+    // 无空格多段相对路径：使用 Unicode 属性（若运行时不支持则回退到 ASCII+常见中文范围）
+    try {
+      const reU = new RegExp("^[\\p{L}\\p{N}._-]+(?:[\\\\/][\\p{L}\\p{N}._-]+)+$", "u");
+      if (reU.test(t)) return true;
+    } catch {}
+    if (/^[A-Za-z0-9._-\u4E00-\u9FFF]+(?:[\\/][A-Za-z0-9._-\u4E00-\u9FFF]+)+$/.test(t)) return true;
     return false;
   } catch { return false; }
 }
