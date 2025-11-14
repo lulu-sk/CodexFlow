@@ -4671,7 +4671,7 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
     <>
       <div className="grid h-full min-h-0 grid-rows-[auto_auto_1fr]">
       {/* 紧凑的标题栏 - 减少垂直间距 */}
-      <div className="flex items-center justify-between px-3 py-1.5 border-b">
+      <div className="flex items-center justify-between px-3 py-1.5 border-b border-[var(--cf-border)]">
         <div className="flex items-center gap-2 text-sm">
           {/* 返回箭头：点击返回到控制台 */}
           <button className="flex items-center gap-2 text-sm font-apple-medium text-[var(--cf-text-secondary)] hover:text-[var(--cf-text-primary)] transition-colors duration-apple" onClick={() => { if (onBack) onBack(); }} aria-label={t('history:detailTitle') as string}>
