@@ -3433,10 +3433,10 @@ export default function CodexFlowManagerUI() {
             const displayList = q ? inGroup.filter((s) => sessionMatchesQuery(s, q)) : inGroup;
             const isSelectedGroup = selectedHistoryDir === g.key;
             const groupShellClass = `rounded-xl bg-transparent overflow-hidden`;
-            const headerButtonClass = `group sticky -top-1 z-20 flex items-center gap-2 px-2 py-1.5 w-full text-left backdrop-blur-sm border border-transparent outline-none focus:outline-none ${
+            const headerButtonClass = `group sticky -top-1 z-20 flex items-center gap-2 px-2 py-1.5 w-full text-left border border-transparent outline-none focus:outline-none transition-colors ${
               isSelectedGroup
-                ? 'bg-white/95 dark:bg-slate-800/95 shadow-sm border-slate-200/60 dark:border-slate-600/40 text-[var(--cf-text-primary)] font-medium'
-                : 'bg-white/40 dark:bg-transparent text-[var(--cf-text-secondary)] hover:bg-white/80 hover:shadow-sm hover:border-slate-200/40 dark:hover:bg-slate-800/60 dark:hover:border-slate-600/30'
+                ? 'bg-slate-100 border-slate-200/60 text-[var(--cf-text-primary)] font-medium dark:bg-slate-800/80 dark:border-slate-700 dark:text-[var(--cf-text-primary)]'
+                : 'bg-transparent text-[var(--cf-text-secondary)] hover:bg-slate-100 hover:border-slate-200/40 dark:hover:bg-slate-800/60 dark:hover:border-slate-600/30'
             } rounded-lg`;
 
             return (
