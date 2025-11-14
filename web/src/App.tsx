@@ -27,6 +27,7 @@ import {
   MoreVertical,
   FileClock,
   ChevronDown,
+  ChevronUp,
   ChevronRight,
   ChevronLeft,
   ExternalLink,
@@ -4128,8 +4129,9 @@ function highlightSearchMatches(text: string, matches?: FieldMatch[], activeMatc
     const isActive = span.matchId === activeMatchId;
     fragments.push(
       <span
-        key={`match-${counter++}`}
-        className={`rounded-apple px-1 py-0.5 bg-[var(--cf-accent)]/15 text-[var(--cf-text-primary)] font-apple-medium ${isActive ? 'bg-[var(--cf-accent)]/30 ring-1 ring-[var(--cf-accent)]/70 shadow-apple-sm' : ''}`}
+        key={`match-${span.matchId}`}
+        data-match-id={span.matchId}
+        className={`rounded-apple px-1 py-0.5 transition-all duration-200 ${isActive ? 'bg-[var(--cf-accent)] text-white font-apple-semibold ring-2 ring-[var(--cf-accent)]/50 ring-offset-1 shadow-lg' : 'bg-yellow-200/80 dark:bg-yellow-500/30 text-[var(--cf-text-primary)] font-apple-medium'}`}
       >
         {value.slice(start, end)}
       </span>,
@@ -4534,14 +4536,20 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
 
   useEffect(() => {
     if (!detailSearchActive || !activeMatch) return;
-    const node = messageRefs.current[activeMatch.messageKey];
-    if (!node) return;
     requestAnimationFrame(() => {
       try {
-        node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        const el = document.querySelector(`[data-match-id="${activeMatch.id}"]`) as HTMLElement | null;
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+          return;
+        }
+        const node = messageRefs.current[activeMatch.messageKey];
+        if (node) {
+          node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
       } catch {}
     });
-  }, [detailSearchActive, activeMatch?.messageKey]);
+  }, [detailSearchActive, activeMatch?.id, activeMatch?.messageKey]);
 
   const goToNextMatch = useCallback(() => {
     if (!matches.length) return;
@@ -4714,9 +4722,39 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--cf-text-muted)]" />
           </div>
           
-          {detailSearchActive && (
+          {detailSearchActive && matches.length > 0 && (
+            <div className="flex items-center gap-1.5">
+              <div className="text-[0.65rem] text-[var(--cf-text-muted)] font-apple-medium whitespace-nowrap">
+                {normalizedMatchIndex + 1} / {matches.length}
+              </div>
+              <div className="flex items-center gap-0.5">
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  onClick={goToPrevMatch}
+                  disabled={matches.length === 0}
+                  className="h-6 w-6"
+                  title="上一个 (Shift+F3 / Ctrl+Shift+G)"
+                >
+                  <ChevronUp className="h-3.5 w-3.5" />
+                </Button>
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  onClick={goToNextMatch}
+                  disabled={matches.length === 0}
+                  className="h-6 w-6"
+                  title="下一个 (F3 / Ctrl+G)"
+                >
+                  <ChevronDown className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            </div>
+          )}
+          
+          {detailSearchActive && matches.length === 0 && (
             <div className="text-[0.65rem] text-[var(--cf-text-muted)] font-apple-regular whitespace-nowrap">
-              {t('history:detailSearchMatches', { count: matches.length })}
+              {t('history:detailSearchMatches', { count: 0 })}
             </div>
           )}
 
@@ -4739,10 +4777,11 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
             <div className="mx-2 mt-1 rounded-xl bg-white/5 backdrop-blur-sm border border-white/10 shadow-lg shadow-black/5 p-2">
               {/* 头部：操作按钮组 + 关闭按钮 */}
               <div className="flex items-center justify-between gap-1.5 mb-2">
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-2">
                   <Button 
                     size="xs"
-                    variant="secondary"
+                    variant="outline"
+                    className="h-7 px-2 text-xs font-medium"
                     onClick={() => {
                       const keys = Object.keys(typeFilter);
                       const next: Record<string, boolean> = {};
@@ -4750,11 +4789,12 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
                       setTypeFilter(next);
                     }}
                   >
-                    全选
+                    {t('history:selectAll')}
                   </Button>
                   <Button 
                     size="xs"
-                    variant="secondary"
+                    variant="outline"
+                    className="h-7 px-2 text-xs font-medium"
                     onClick={() => {
                       const keys = Object.keys(typeFilter);
                       const next: Record<string, boolean> = {};
@@ -4762,11 +4802,12 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
                       setTypeFilter(next);
                     }}
                   >
-                    清空
+                    {t('history:deselectAll')}
                   </Button>
                   <Button 
                     size="xs"
-                    variant="secondary"
+                    variant="outline"
+                    className="h-7 px-2 text-xs font-medium"
                     onClick={() => {
                       const keys = Object.keys(typeFilter);
                       setTypeFilter((cur) => {
@@ -4776,7 +4817,7 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
                       });
                     }}
                   >
-                    反选
+                    {t('history:invertSelection')}
                   </Button>
                 </div>
                 <Button
