@@ -60,11 +60,18 @@ function pickExtFromMime(mime?: string): string {
 }
 
 function genFileName(prefix?: string, ext?: string): string {
-  const ts = Date.now();
-  const rnd = Math.random().toString(36).slice(2, 8);
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const MM = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const HH = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  const stamp = `${yyyy}${MM}${dd}-${HH}${mm}${ss}`;
+  const rnd = Math.random().toString(36).slice(2, 6);
   const p = (prefix && prefix.trim()) ? prefix.trim() : "image";
   const e = sanitizeExt(ext);
-  return `${p}-${ts}-${rnd}.${e}`;
+  return `${p}-${stamp}-${rnd}.${e}`;
 }
 
 async function writeFileAtomic(p: string, buf: Buffer): Promise<void> {
