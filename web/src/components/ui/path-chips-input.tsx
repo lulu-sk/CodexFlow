@@ -16,7 +16,9 @@ import {
   extractImagesFromFileList,
   isImageFileName,
   persistImages,
+  dedupePastedImagesByFingerprint,
   type SavedImage,
+  type PastedImage,
 } from "@/lib/clipboardImages";
 
 // PathChipsInput：用于以 Chip 形式展示/编辑图片或路径，支持：
@@ -176,6 +178,30 @@ function buildChipDedupeKey(chip: Partial<PathChip>): string {
   } catch { return ""; }
 }
 
+const previewUrlRefCounts = new Map<string, number>();
+
+function retainPreviewUrl(url: string) {
+  try {
+    if (!url || !url.startsWith("blob:")) return;
+    const prev = previewUrlRefCounts.get(url) || 0;
+    previewUrlRefCounts.set(url, prev + 1);
+  } catch {}
+}
+
+function releasePreviewUrl(url: string) {
+  try {
+    if (!url || !url.startsWith("blob:")) return;
+    const prev = previewUrlRefCounts.get(url);
+    if (prev === undefined) return;
+    if (prev <= 1) {
+      previewUrlRefCounts.delete(url);
+      try { URL.revokeObjectURL(url); } catch {}
+    } else {
+      previewUrlRefCounts.set(url, prev - 1);
+    }
+  } catch {}
+}
+
 export default function PathChipsInput({
   chips,
   onChipsChange,
@@ -275,21 +301,29 @@ export default function PathChipsInput({
   // 记录当前使用中的 blob URL，Chip 移除时及时调用 revoke 释放内存
   const previewUrlSetRef = useRef<Set<string>>(new Set());
   useEffect(() => {
+    const prevSet = previewUrlSetRef.current;
     const nextSet = new Set<string>();
     for (const chip of chips) {
       const url = String((chip as any)?.previewUrl || "");
-      if (url && url.startsWith("blob:")) nextSet.add(url);
+      if (url && url.startsWith("blob:")) {
+        nextSet.add(url);
+      }
     }
-    for (const url of Array.from(previewUrlSetRef.current)) {
+    for (const url of Array.from(nextSet)) {
+      if (!prevSet.has(url)) {
+        retainPreviewUrl(url);
+      }
+    }
+    for (const url of Array.from(prevSet)) {
       if (!nextSet.has(url)) {
-        try { URL.revokeObjectURL(url); } catch {}
+        releasePreviewUrl(url);
       }
     }
     previewUrlSetRef.current = nextSet;
   }, [chips]);
   useEffect(() => () => {
     for (const url of Array.from(previewUrlSetRef.current)) {
-      try { URL.revokeObjectURL(url); } catch {}
+      releasePreviewUrl(url);
     }
     previewUrlSetRef.current.clear();
   }, []);
@@ -555,7 +589,12 @@ export default function PathChipsInput({
       const imgs = await extractImagesFromPasteEvent(e.nativeEvent as ClipboardEvent);
       if (imgs.length === 0) return; // 非图片，走默认粘贴
       e.preventDefault();
-      const saved = await persistImages(imgs, winRoot, projectName);
+      // 先与现有 chips 基于 fingerprint 做去重：
+      // - 若剪贴板图片与已有图片完全相同，则不再重复生成/保存
+      // - 这样连续多次粘贴同一张图片也只会保留一份
+      const unique = dedupePastedImagesByFingerprint<PastedImage>(imgs, chips as any);
+      if (!unique || unique.length === 0) return;
+      const saved = await persistImages(unique, winRoot, projectName);
       appendChips(saved);
     } catch {}
   };
@@ -672,8 +711,12 @@ export default function PathChipsInput({
                 const imgs = await extractImagesFromFileList(files);
                 if (imgs.length > 0) {
                   shouldSkipImagePaths = true;
-                  const saved = await persistImages(imgs, winRoot, projectName);
-                  if (saved.length > 0) appendChips(saved);
+                  // 先与当前 chips 基于 fingerprint 做去重，避免重复保存/生成重复图片 Chip
+                  const deduped = dedupePastedImagesByFingerprint<PastedImage>(imgs, chips as any);
+                  if (deduped && deduped.length > 0) {
+                    const saved = await persistImages(deduped, winRoot, projectName);
+                    if (saved.length > 0) appendChips(saved);
+                  }
                 }
               }
             } catch {}
@@ -792,10 +835,18 @@ export default function PathChipsInput({
               (() => {
                 const { rect, chip } = hoverPreview;
                 const centerX = rect.left + rect.width / 2;
-                const preferredTop = rect.top - 8;
-                const fitsAbove = preferredTop >= 24;
-                const top = fitsAbove ? preferredTop : rect.bottom + 8;
-                const translateYClass = fitsAbove ? "-translate-y-full" : "translate-y-0";
+                const viewportHeight = typeof window !== "undefined" ? window.innerHeight : 0;
+                const anchorCenterY = rect.top + rect.height / 2;
+                // 规则：
+                // - 输入区在视口上半部分：优先向下弹出，避免被顶部吃掉（全屏模式下尤为明显）
+                // - 输入区在视口下半部分：优先向上弹出，减少被底部遮挡的概率
+                const preferBelow = !viewportHeight || anchorCenterY < viewportHeight * 0.5;
+                const baseTop = preferBelow ? rect.bottom + 8 : rect.top - 8;
+                const clampedTop = viewportHeight
+                  ? Math.min(Math.max(baseTop, 24), viewportHeight - 24)
+                  : baseTop;
+                const top = clampedTop;
+                const translateYClass = preferBelow ? "translate-y-0" : "-translate-y-full";
                 return (
                   <div
                     className="fixed z-[1200] pointer-events-none"

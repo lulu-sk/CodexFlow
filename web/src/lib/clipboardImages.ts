@@ -15,6 +15,8 @@ export type PastedImage = {
   height?: number;
   type: string;
   size: number;
+  /** 轻量级图片指纹，用于去重：基于 type/width/height/size/name 组合生成 */
+  fingerprint?: string;
 };
 
 export type SavedImage = PastedImage & {
@@ -48,6 +50,53 @@ const IMAGE_EXTS = new Set([
   "heic",
   "heif",
 ]);
+
+// 基于元数据生成轻量级图片指纹：仅使用类型/尺寸/大小/可选名称，避免读取二进制内容
+function buildImageFingerprint(meta: { size?: number; type?: string; width?: number; height?: number; name?: string }): string {
+  try {
+    const size = typeof meta.size === "number" && meta.size > 0 ? meta.size : 0;
+    const width = typeof meta.width === "number" && meta.width > 0 ? meta.width : 0;
+    const height = typeof meta.height === "number" && meta.height > 0 ? meta.height : 0;
+    const type = String(meta.type || "").toLowerCase();
+    const name = meta.name ? String(meta.name).toLowerCase() : "";
+    if (!type && !size && !width && !height && !name) return "";
+    // 结构：mime|WxH|size|name（name 可空）
+    return `${type}|${width}x${height}|${size}${name ? `|${name}` : ""}`;
+  } catch {
+    return "";
+  }
+}
+
+// 基于 fingerprint 做轻量去重：
+// - 先将 existing 中已有的 fingerprint 放入集合
+// - 再遍历 images，若 fingerprint 已存在则跳过；否则加入结果并记录到集合
+// - 若某项缺少 fingerprint，则直接保留（避免误伤）
+export function dedupePastedImagesByFingerprint<T extends { fingerprint?: string | undefined }>(
+  images: T[],
+  existing?: Array<{ fingerprint?: string | undefined }>,
+): T[] {
+  try {
+    if (!images || images.length === 0) return images;
+    const seen = new Set<string>();
+    if (existing && existing.length > 0) {
+      for (const it of existing) {
+        const fp = (it && typeof it.fingerprint === 'string') ? it.fingerprint.trim() : '';
+        if (fp) seen.add(fp);
+      }
+    }
+    const out: T[] = [];
+    for (const img of images) {
+      const fp = (img && typeof img.fingerprint === 'string') ? img.fingerprint.trim() : '';
+      if (!fp) { out.push(img); continue; }
+      if (seen.has(fp)) continue;
+      seen.add(fp);
+      out.push(img);
+    }
+    return out;
+  } catch {
+    return images;
+  }
+}
 
 function guessMimeByExt(name?: string, fallback = "image/png"): string {
   const ext = extractExt(name);
@@ -117,7 +166,8 @@ export async function extractImagesFromFileList(files: ArrayLike<File> | File[])
       let width: number | undefined;
       let height: number | undefined;
       try { ({ width, height } = await probeImageSize(url)); } catch {}
-      out.push({ id, blob, previewUrl: url, width, height, type, size });
+      const fingerprint = buildImageFingerprint({ size, type, width, height, name: file.name });
+      out.push({ id, blob, previewUrl: url, width, height, type, size, fingerprint });
     } catch {}
   }
   return out;
@@ -140,7 +190,9 @@ export async function extractImagesFromPasteEvent(ev: ClipboardEvent): Promise<P
       // 尝试读取尺寸
       let width: number | undefined; let height: number | undefined;
       try { ({ width, height } = await probeImageSize(url)); } catch {}
-      out.push({ id, blob, previewUrl: url, width, height, type, size: (blob as any).size || 0 });
+      const size = (blob as any).size || 0;
+      const fingerprint = buildImageFingerprint({ size, type, width, height });
+      out.push({ id, blob, previewUrl: url, width, height, type, size, fingerprint });
     }
   } catch {}
   return out;
@@ -168,12 +220,13 @@ export async function blobToDataURL(blob: Blob): Promise<string> {
   });
 }
 
-export async function persistImages(images: PastedImage[], projectWinRoot?: string, projectName?: string): Promise<SavedImage[]> {
+export async function persistImages(images: PastedImage[], projectWinRoot?: string, projectName?: string, prefix?: string): Promise<SavedImage[]> {
   const saved: SavedImage[] = [];
-  for (const it of images) {
+  const list = dedupePastedImagesByFingerprint(images);
+  for (const it of list) {
     try {
       const dataURL = await blobToDataURL(it.blob);
-      const res: any = await (window as any).host?.images?.saveDataURL?.({ dataURL, projectWinRoot, projectName });
+      const res: any = await (window as any).host?.images?.saveDataURL?.({ dataURL, projectWinRoot, projectName, prefix });
       if (res && res.ok) {
         saved.push({ ...it, saved: true, winPath: res.winPath, wslPath: res.wslPath, fileName: res.fileName, fromPaste: true });
       } else {
