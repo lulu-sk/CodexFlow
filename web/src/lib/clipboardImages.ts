@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
+import { rememberSavedImages, reuseSavedImageFromFingerprint } from "@/lib/imageResourceRegistry";
+
 // 粘贴图片处理（渲染进程）：
 // - 从 ClipboardEvent 提取图片 Blob
 // - 生成本地预览 URL
@@ -221,22 +223,43 @@ export async function blobToDataURL(blob: Blob): Promise<string> {
 }
 
 export async function persistImages(images: PastedImage[], projectWinRoot?: string, projectName?: string, prefix?: string): Promise<SavedImage[]> {
-  const saved: SavedImage[] = [];
   const list = dedupePastedImagesByFingerprint(images);
+  const slots: Array<SavedImage | null> = [];
+  const pending: PastedImage[] = [];
+  const pendingIndices: number[] = [];
   for (const it of list) {
+    const reused = reuseSavedImageFromFingerprint(it);
+    if (reused) {
+      slots.push(reused);
+      continue;
+    }
+    slots.push(null);
+    pending.push(it);
+    pendingIndices.push(slots.length - 1);
+  }
+  const newlySaved: SavedImage[] = [];
+  for (const it of pending) {
     try {
       const dataURL = await blobToDataURL(it.blob);
       const res: any = await (window as any).host?.images?.saveDataURL?.({ dataURL, projectWinRoot, projectName, prefix });
       if (res && res.ok) {
-        saved.push({ ...it, saved: true, winPath: res.winPath, wslPath: res.wslPath, fileName: res.fileName, fromPaste: true });
+        newlySaved.push({ ...it, saved: true, winPath: res.winPath, wslPath: res.wslPath, fileName: res.fileName, fromPaste: true });
       } else {
-        saved.push({ ...it, saved: false, error: String(res?.error || 'save failed') });
+        newlySaved.push({ ...it, saved: false, error: String(res?.error || 'save failed') });
       }
     } catch (e) {
-      saved.push({ ...it, saved: false, error: String(e) });
+      newlySaved.push({ ...it, saved: false, error: String(e) });
     }
   }
-  return saved;
+  if (newlySaved.length > 0) {
+    const successful = newlySaved.filter((img) => img.saved && img.winPath);
+    if (successful.length > 0) rememberSavedImages(successful);
+  }
+  let cursor = 0;
+  for (const idx of pendingIndices) {
+    slots[idx] = newlySaved[cursor++] || null;
+  }
+  return slots.filter((img): img is SavedImage => !!img);
 }
 
 // 将 Markdown 插入到 textarea/input 当前光标处；若无法获取 caret，退化为末尾追加

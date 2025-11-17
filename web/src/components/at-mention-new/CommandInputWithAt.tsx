@@ -11,6 +11,7 @@ import { toWSLForInsert, toWslRelOrAbsForProject, joinWinAbs } from "@/lib/wsl";
 import { extractWinPathsFromDataTransfer } from "@/lib/dragDrop";
 import { getCaretViewportPosition } from "./caret";
 import { extractImagesFromPasteEvent, persistImages, insertTextAtCursor, type SavedImage, hasToken, removeToken } from "@/lib/clipboardImages";
+import { retainPastedImage, releasePastedImage, requestTrashWinPath } from "@/lib/imageResourceRegistry";
 
 // 文本替换：将从最近一个 @（满足触发规则）到光标处的整段（含 @）替换为给定文本
 // 说明：按需求，“@XXXX” 整段需要被替换掉，@ 也不保留
@@ -56,6 +57,7 @@ export function AtInput({ value, onValueChange, winRoot, projectName, projectPat
   const [pastedImages, setPastedImages] = useState<SavedImage[]>([]);
   // 释放过期的 blob URL，避免内存泄漏
   const urlSetRef = useRef<Set<string>>(new Set());
+  const pastedImageRegistryRef = useRef<Map<string, SavedImage>>(new Map());
   useEffect(() => {
     const nextSet = new Set<string>();
     for (const it of pastedImages) { if (it.previewUrl) nextSet.add(it.previewUrl); }
@@ -75,6 +77,44 @@ export function AtInput({ value, onValueChange, winRoot, projectName, projectPat
         }
         urlSetRef.current.clear();
       } catch {}
+    };
+  }, []);
+  useEffect(() => {
+    const prev = pastedImageRegistryRef.current;
+    const next = new Map<string, SavedImage>();
+    const added: SavedImage[] = [];
+    const removed: SavedImage[] = [];
+    for (const img of pastedImages) {
+      if (!img || !img.id) continue;
+      next.set(img.id, img);
+      if (!prev.has(img.id)) added.push(img);
+    }
+    for (const [imgId, img] of prev.entries()) {
+      if (!next.has(imgId)) removed.push(img);
+    }
+    for (const img of added) {
+      if (img.fromPaste && img.winPath) retainPastedImage(img);
+    }
+    for (const img of removed) {
+      if (!img.fromPaste || !img.winPath) continue;
+      const result = releasePastedImage(img);
+      if (result.shouldTrash) {
+        requestTrashWinPath(result.winPath);
+      }
+    }
+    pastedImageRegistryRef.current = next;
+  }, [pastedImages]);
+  useEffect(() => {
+    return () => {
+      const prev = pastedImageRegistryRef.current;
+      pastedImageRegistryRef.current = new Map();
+      for (const img of prev.values()) {
+        if (!img.fromPaste || !img.winPath) continue;
+        const result = releasePastedImage(img);
+        if (result.shouldTrash) {
+          requestTrashWinPath(result.winPath);
+        }
+      }
     };
   }, []);
   // value 改变时，自动移除“正文中已不存在的图片”
@@ -215,7 +255,7 @@ export function AtInput({ value, onValueChange, winRoot, projectName, projectPat
             if (res && res.ok) {
               const saved: SavedImage = { id: String(Date.now()), blob: new Blob(), previewUrl: '', type: 'image/png', size: 0, saved: true, winPath: res.winPath, wslPath: res.wslPath, fileName: res.fileName, fromPaste: true } as any;
               // 预览排序：新粘贴靠右（追加到末尾，保留最近 6 张）
-              setPastedImages((arr) => [...arr, saved].slice(-6));
+              setPastedImages((arr) => [...arr, saved]);
               const el = ref.current as HTMLTextAreaElement | HTMLInputElement | null;
               if (el) {
                 const ins = (saved.wslPath ? ("`" + saved.wslPath + "`") : "");
@@ -235,7 +275,7 @@ export function AtInput({ value, onValueChange, winRoot, projectName, projectPat
       e.preventDefault();
       const saved = await persistImages(imgs, (rest as any)?.winRoot || winRoot, (rest as any)?.projectName || projectName);
       // 预览排序：新粘贴靠右（追加到末尾，保留最近 6 张）
-      setPastedImages((arr) => [...arr, ...saved].slice(-6));
+      setPastedImages((arr) => [...arr, ...saved]);
       // 将每张图片以“WSL 绝对路径”形式插入文本框（逐张换行）
       const el = ref.current as HTMLTextAreaElement | HTMLInputElement | null;
       if (!el) return;
@@ -365,10 +405,6 @@ export function AtInput({ value, onValueChange, winRoot, projectName, projectPat
                   const pathToken = String(img.wslPath || '');
                   if (!pathToken) { setPastedImages((arr) => arr.filter((x) => x.id !== img.id)); return; }
                   try {
-                    // 若为本次粘贴生成的文件，优先彻底删除
-                    if (img.fromPaste && img.winPath) {
-                      try { await (window as any).host?.images?.trash?.({ winPath: img.winPath }); } catch {}
-                    }
                     const el = ref.current as HTMLTextAreaElement | HTMLInputElement | null;
                     if (!el) { setPastedImages((arr) => arr.filter((x) => x.id !== img.id)); return; }
                     // 优先删除反引号包裹形式，其次删除裸路径（兼容旧记录）
