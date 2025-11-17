@@ -178,30 +178,6 @@ function buildChipDedupeKey(chip: Partial<PathChip>): string {
   } catch { return ""; }
 }
 
-const previewUrlRefCounts = new Map<string, number>();
-
-function retainPreviewUrl(url: string) {
-  try {
-    if (!url || !url.startsWith("blob:")) return;
-    const prev = previewUrlRefCounts.get(url) || 0;
-    previewUrlRefCounts.set(url, prev + 1);
-  } catch {}
-}
-
-function releasePreviewUrl(url: string) {
-  try {
-    if (!url || !url.startsWith("blob:")) return;
-    const prev = previewUrlRefCounts.get(url);
-    if (prev === undefined) return;
-    if (prev <= 1) {
-      previewUrlRefCounts.delete(url);
-      try { URL.revokeObjectURL(url); } catch {}
-    } else {
-      previewUrlRefCounts.set(url, prev - 1);
-    }
-  } catch {}
-}
-
 export default function PathChipsInput({
   chips,
   onChipsChange,
@@ -298,35 +274,6 @@ export default function PathChipsInput({
 
   const [hoverPreview, setHoverPreview] = useState<{ chip: PathChip; rect: DOMRect; key: string } | null>(null);
   const previewAnchorRef = useRef<HTMLElement | null>(null);
-  // 记录当前使用中的 blob URL，Chip 移除时及时调用 revoke 释放内存
-  const previewUrlSetRef = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    const prevSet = previewUrlSetRef.current;
-    const nextSet = new Set<string>();
-    for (const chip of chips) {
-      const url = String((chip as any)?.previewUrl || "");
-      if (url && url.startsWith("blob:")) {
-        nextSet.add(url);
-      }
-    }
-    for (const url of Array.from(nextSet)) {
-      if (!prevSet.has(url)) {
-        retainPreviewUrl(url);
-      }
-    }
-    for (const url of Array.from(prevSet)) {
-      if (!nextSet.has(url)) {
-        releasePreviewUrl(url);
-      }
-    }
-    previewUrlSetRef.current = nextSet;
-  }, [chips]);
-  useEffect(() => () => {
-    for (const url of Array.from(previewUrlSetRef.current)) {
-      releasePreviewUrl(url);
-    }
-    previewUrlSetRef.current.clear();
-  }, []);
   const hidePreview = useCallback(() => {
     previewAnchorRef.current = null;
     setHoverPreview(null);
@@ -811,16 +758,10 @@ export default function PathChipsInput({
                 <button
                   type="button"
                   className="ml-0.5 rounded-apple-sm px-0.5 text-[var(--cf-text-secondary)] hover:text-[var(--cf-text-primary)] hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
-                  onClick={async (ev) => {
+                  onClick={(ev) => {
                     ev.preventDefault(); ev.stopPropagation();
-                    try {
-                      if ((chip as any).fromPaste && chip.winPath) {
-                        try { await (window as any).host?.images?.trash?.({ winPath: chip.winPath }); } catch {}
-                      }
-                    } finally {
-                      const next = chips.filter((c) => c !== chip);
-                      onChipsChange(next);
-                    }
+                    const next = chips.filter((c) => c !== chip);
+                    onChipsChange(next);
                   }}
                 >
                   <span className="text-xs">×</span>

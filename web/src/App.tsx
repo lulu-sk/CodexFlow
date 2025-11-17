@@ -6,6 +6,11 @@ import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import PathChipsInput, { type PathChip } from "@/components/ui/path-chips-input";
+import { retainPreviewUrl, releasePreviewUrl } from "@/lib/previewUrlRegistry";
+import { retainPastedImage, releasePastedImage, requestTrashWinPath } from "@/lib/imageResourceRegistry";
+
+// 发送命令后延迟清理粘贴图片 3 分钟，避免命令执行期间文件提前被删除
+const CHIP_COMMIT_RELEASE_DELAY_MS = 180_000;
 import { setActiveFileIndexRoot } from "@/lib/atSearch";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -1781,6 +1786,10 @@ export default function CodexFlowManagerUI() {
   const [inputFullscreenByTab, setInputFullscreenByTab] = useState<Record<string, boolean>>({});
   const [inputFullscreenClosingTabs, setInputFullscreenClosingTabs] = useState<Record<string, boolean>>({});
   const fullscreenCloseTimersRef = useRef<Record<string, number>>({});
+  const chipPreviewUrlsRef = useRef<Set<string>>(new Set());
+  const chipResourceRef = useRef<Map<string, PathChip>>(new Map());
+  const committedChipSnapshotRef = useRef<Map<string, PathChip>>(new Map());
+  const committedChipReleaseTimersRef = useRef<Record<string, number>>({});
 
   useEffect(() => {
     return () => {
@@ -1791,6 +1800,113 @@ export default function CodexFlowManagerUI() {
         });
       } catch {}
     };
+  }, []);
+
+  const scheduleCommittedChipRelease = useCallback((chip: PathChip) => {
+    if (!chip || !chip.id || !chip.fromPaste || !chip.winPath) return;
+    const chipId = chip.id;
+    committedChipSnapshotRef.current.set(chipId, chip);
+    retainPastedImage(chip);
+    const prevTimer = committedChipReleaseTimersRef.current[chipId];
+    if (typeof prevTimer === 'number') {
+      window.clearTimeout(prevTimer);
+      delete committedChipReleaseTimersRef.current[chipId];
+    }
+    const timerId = window.setTimeout(() => {
+      delete committedChipReleaseTimersRef.current[chipId];
+      const snapshot = committedChipSnapshotRef.current.get(chipId);
+      committedChipSnapshotRef.current.delete(chipId);
+      if (!snapshot) return;
+      const result = releasePastedImage(snapshot);
+      if (result.shouldTrash) requestTrashWinPath(result.winPath);
+    }, CHIP_COMMIT_RELEASE_DELAY_MS);
+    committedChipReleaseTimersRef.current[chipId] = timerId;
+  }, []);
+
+  useEffect(() => {
+    const prev = chipPreviewUrlsRef.current;
+    const next = new Set<string>();
+    const lists = Object.values(chipsByTab);
+    for (const list of lists) {
+      for (const chip of list) {
+        const url = String(chip?.previewUrl || "");
+        if (url && url.startsWith("blob:")) next.add(url);
+      }
+    }
+    for (const url of next) {
+      if (!prev.has(url)) retainPreviewUrl(url);
+    }
+    for (const url of prev) {
+      if (!next.has(url)) releasePreviewUrl(url);
+    }
+    chipPreviewUrlsRef.current = next;
+  }, [chipsByTab]);
+
+  useEffect(() => () => {
+    for (const url of Array.from(chipPreviewUrlsRef.current)) {
+      releasePreviewUrl(url);
+    }
+    chipPreviewUrlsRef.current.clear();
+  }, []);
+
+  useEffect(() => {
+    const prev = chipResourceRef.current;
+    const next = new Map<string, PathChip>();
+    const added: PathChip[] = [];
+    const removed: PathChip[] = [];
+    const lists = Object.values(chipsByTab);
+    for (const list of lists) {
+      for (const chip of list || []) {
+        if (!chip || !chip.id) continue;
+        next.set(chip.id, chip);
+        if (!prev.has(chip.id)) added.push(chip);
+      }
+    }
+    for (const [chipId, chip] of prev.entries()) {
+      if (!next.has(chipId)) removed.push(chip);
+    }
+    if (added.length > 0) {
+      for (const chip of added) {
+        if (chip?.fromPaste && chip.winPath) retainPastedImage(chip);
+      }
+    }
+    if (removed.length > 0) {
+      for (const chip of removed) {
+        if (!chip?.fromPaste || !chip.winPath) continue;
+        const result = releasePastedImage(chip);
+        if (result.shouldTrash) {
+          requestTrashWinPath(result.winPath);
+        }
+      }
+    }
+    chipResourceRef.current = next;
+  }, [chipsByTab]);
+
+  useEffect(() => () => {
+    const prev = chipResourceRef.current;
+    chipResourceRef.current = new Map();
+    for (const chip of prev.values()) {
+      if (!chip?.fromPaste || !chip.winPath) continue;
+      const result = releasePastedImage(chip);
+      if (result.shouldTrash) {
+        requestTrashWinPath(result.winPath);
+      }
+    }
+  }, []);
+
+  useEffect(() => () => {
+    const timers = committedChipReleaseTimersRef.current;
+    committedChipReleaseTimersRef.current = {};
+    Object.values(timers).forEach((timerId) => { if (typeof timerId === 'number') window.clearTimeout(timerId); });
+    const snapshots = committedChipSnapshotRef.current;
+    committedChipSnapshotRef.current = new Map();
+    for (const chip of snapshots.values()) {
+      if (!chip?.fromPaste || !chip.winPath) continue;
+      const result = releasePastedImage(chip);
+      if (result.shouldTrash) {
+        requestTrashWinPath(result.winPath);
+      }
+    }
   }, []);
 
   // 防御性清理：当视图中心从历史切回控制台、或窗口可见性发生变化时，强制关闭所有全屏遮罩
@@ -2637,6 +2753,7 @@ export default function CodexFlowManagerUI() {
 
   function sendCommand() {
     if (!activeTab) return;
+    const chipsSnapshot = chipsByTab[activeTab.id] || [];
     const text = compileTextFromChipsAndDraft(activeTab.id);
     if (!text.trim()) return;
     const pid = ptyByTabRef.current[activeTab.id];
@@ -2649,6 +2766,11 @@ export default function CodexFlowManagerUI() {
       // 兜底：直接写入 PTY（不走 paste），并在需要时单独补 CR
       try { window.host.pty.write(pid, text); } catch {}
       if (sendMode === 'write_and_enter') { try { window.host.pty.write(pid, '\r'); } catch {} }
+    }
+    if (chipsSnapshot.length > 0) {
+      for (const chip of chipsSnapshot) {
+        scheduleCommittedChipRelease(chip);
+      }
     }
     setChipsByTab((m) => ({ ...m, [activeTab.id]: [] }));
     setDraftByTab((m) => ({ ...m, [activeTab.id]: "" }));
