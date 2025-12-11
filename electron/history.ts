@@ -34,6 +34,43 @@ export type HistorySummary = {
 export type MessageContent = { type: string; text: string; tags?: string[] };
 export type Message = { role: string; content: MessageContent[] };
 
+// 历史摘要前缀与缓存上限（控制内存占用）
+const SUMMARY_PREFIX_BYTES = 48 * 1024; // 仅保留文件头 48KB，用于提取 metadata / cwd 提示
+const SUMMARY_CACHE_MAX_ENTRIES = 800;
+
+function trimPrefixForCache(prefix: string): string {
+  if (!prefix) return "";
+  return prefix.length > SUMMARY_PREFIX_BYTES ? prefix.slice(0, SUMMARY_PREFIX_BYTES) : prefix;
+}
+
+function shrinkSummaryCache(cache: Map<string, unknown>, limit = SUMMARY_CACHE_MAX_ENTRIES): void {
+  try {
+    while (cache.size > limit) {
+      const first = cache.keys().next().value as string | undefined;
+      if (!first) break;
+      cache.delete(first);
+    }
+  } catch {}
+}
+
+async function readPrefixChunk(fp: string, maxBytes = SUMMARY_PREFIX_BYTES): Promise<string> {
+  return await new Promise((resolve) => {
+    try {
+      const rs = fs.createReadStream(fp, { encoding: 'utf8', start: 0, end: Math.max(0, maxBytes - 1) });
+      let buf = '';
+      rs.on('data', (c) => {
+        buf += c;
+        if (buf.length >= maxBytes) {
+          try { rs.close(); } catch {}
+          resolve(buf.slice(0, maxBytes));
+        }
+      });
+      rs.on('end', () => resolve(buf.slice(0, maxBytes)));
+      rs.on('error', () => resolve(''));
+    } catch { resolve(''); }
+  });
+}
+
 export function detectRuntimeShell(filePath?: string): RuntimeShell {
   try {
     if (!filePath) return 'unknown';
@@ -574,7 +611,7 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
     return Array.from(new Set(out.filter(Boolean)));
   }
 
-  async function fileContainsAny(fp: string, needles: string[], maxBytes = 128 * 1024, cachedLower?: string): Promise<boolean> {
+  async function fileContainsAny(fp: string, needles: string[], maxBytes = SUMMARY_PREFIX_BYTES, cachedLower?: string): Promise<boolean> {
     if (needles.length === 0) return true;
     if (typeof cachedLower === 'string') {
       const low = cachedLower;
@@ -694,9 +731,15 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
             let resumeId: string | undefined = undefined;
             let runtimeShell: RuntimeShell = 'unknown';
             if (cached) {
+              const trimmed = trimPrefixForCache(cached.prefix || '');
+              if (trimmed !== (cached.prefix || '')) {
+                cached = { ...cached, prefix: trimmed };
+                summaryCache.set(fp, cached);
+                shrinkSummaryCache(summaryCache);
+              }
               id = cached.id;
               timestamp = cached.date;
-              prefix = cached.prefix || '';
+              prefix = trimmed;
               rawDate = cached.rawDate;
               resumeMode = cached.resumeMode ?? 'unknown';
               resumeId = cached.resumeId;
@@ -745,18 +788,13 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
                 }
               }
               if (stat && changed) {
-                const entry: SumCache = { ...cached, rawDate, resumeMode, resumeId: resumeId || cached.resumeId || cached.id, runtimeShell };
+                const entry: SumCache = { ...cached, prefix, rawDate, resumeMode, resumeId: resumeId || cached.resumeId || cached.id, runtimeShell };
                 summaryCache.set(fp, entry);
               }
             } else {
               // 读取文件前缀，尽量只解析首段，减少 IO
-              prefix = await new Promise((resolve) => {
-                const rs = fs.createReadStream(fp, { encoding: 'utf8', start: 0, end: 128 * 1024 - 1 });
-                let buf = '';
-                rs.on('data', (c) => { buf += c; if (buf.length >= 128 * 1024) { try { rs.close(); } catch {} resolve(buf); } });
-                rs.on('end', () => resolve(buf));
-                rs.on('error', () => resolve(''));
-              });
+              prefix = await readPrefixChunk(fp, SUMMARY_PREFIX_BYTES);
+              prefix = trimPrefixForCache(prefix);
               firstLine = (prefix.split(/\r?\n/).find(Boolean) || '').trim();
               try { parsed = JSON.parse(firstLine); } catch { parsed = null; }
               // 兼容新旧头格式：
@@ -787,11 +825,8 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
               // 写入缓存
               if (stat) {
                 const entry: SumCache = { mtimeMs: stat.mtimeMs, size: stat.size, id, title, date: timestamp, prefix, rawDate, resumeMode, resumeId: resumeId || id, runtimeShell };
-                // 简单限长
-                if (summaryCache.size > 2000) {
-                  let i = 0; for (const k of summaryCache.keys()) { summaryCache.delete(k); if (++i >= 200) break; }
-                }
                 summaryCache.set(fp, entry);
+                shrinkSummaryCache(summaryCache);
               }
             }
             if (runtimeShell === 'unknown') runtimeShell = detectRuntimeShell(fp);
@@ -842,8 +877,8 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
                 belongs = cCanon.some((c) => needlesCanon.some((n) => startsWithBoundary(c, n)));
                 logDebug(`belongs[meta] file=${fp} cCanon=${JSON.stringify(cCanon)} match=${belongs}`);
               } else {
-                // 先查找前缀（128KB）中是否包含项目路径子串
-                let hit = await fileContainsAny(fp, needles, 128 * 1024, (prefix || '').toLowerCase());
+                // 先查找前缀中是否包含项目路径子串
+                let hit = await fileContainsAny(fp, needles, SUMMARY_PREFIX_BYTES, (prefix || '').toLowerCase());
                 if (!hit) {
                   // 兜底：流式扫描更大范围，提取 <cwd> / CWD 行后再做前缀匹配
                   try {
@@ -942,9 +977,15 @@ export async function listHistorySplit(project: { wslPath?: string; winPath?: st
               let resumeId: string | undefined = undefined;
               let runtimeShell: RuntimeShell = 'unknown';
               if (cached) {
+                const trimmed = trimPrefixForCache(cached.prefix || '');
+                if (trimmed !== (cached.prefix || '')) {
+                  cached = { ...cached, prefix: trimmed };
+                  summaryCache.set(fp, cached);
+                  shrinkSummaryCache(summaryCache);
+                }
                 id = cached.id;
                 timestamp = cached.date;
-                prefix = cached.prefix || '';
+                prefix = trimmed;
                 rawDate = cached.rawDate;
                 resumeMode = cached.resumeMode ?? 'unknown';
                 resumeId = cached.resumeId;
@@ -995,17 +1036,12 @@ export async function listHistorySplit(project: { wslPath?: string; winPath?: st
                   }
                 }
                 if (stat && changed) {
-                  const entry: SumCache = { ...cached, rawDate, resumeMode, resumeId: resumeId || cached.resumeId || cached.id, runtimeShell };
+                  const entry: SumCache = { ...cached, prefix, rawDate, resumeMode, resumeId: resumeId || cached.resumeId || cached.id, runtimeShell };
                   summaryCache.set(fp, entry);
                 }
               } else {
-                prefix = await new Promise((resolve) => {
-                  const rs = fs.createReadStream(fp, { encoding: 'utf8', start: 0, end: 128 * 1024 - 1 });
-                  let buf = '';
-                  rs.on('data', (c) => { buf += c; if (buf.length >= 128 * 1024) { try { rs.close(); } catch {} resolve(buf); } });
-                  rs.on('end', () => resolve(buf));
-                  rs.on('error', () => resolve(''));
-                });
+                prefix = await readPrefixChunk(fp, SUMMARY_PREFIX_BYTES);
+                prefix = trimPrefixForCache(prefix);
                 firstLine = (prefix.split(/\r?\n/).find(Boolean) || '').trim();
                 try { parsed = JSON.parse(firstLine); } catch { parsed = null; }
                 id = parsed?.id || (parsed?.payload?.id) || id;
@@ -1028,8 +1064,8 @@ export async function listHistorySplit(project: { wslPath?: string; winPath?: st
                 if (runtimeShell === 'unknown') runtimeShell = detectRuntimeShell(fp);
                 if (stat) {
                   const entry: SumCache = { mtimeMs: stat.mtimeMs, size: stat.size, id, title, date: timestamp, prefix, rawDate, resumeMode, resumeId: resumeId || id, runtimeShell };
-                  if (summaryCache.size > 2000) { let i = 0; for (const k of summaryCache.keys()) { summaryCache.delete(k); if (++i >= 200) break; } }
                   summaryCache.set(fp, entry);
+                  shrinkSummaryCache(summaryCache);
                 }
               }
               if (runtimeShell === 'unknown') runtimeShell = detectRuntimeShell(fp);

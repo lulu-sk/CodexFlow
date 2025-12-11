@@ -13,7 +13,7 @@ import opentype from 'opentype.js';
 import iconv from 'iconv-lite';
 import projects, { IMPLEMENTATION_NAME as PROJECTS_IMPL } from "./projects/index";
 import history, { purgeHistoryCacheIfOutdated } from "./history";
-import { startHistoryIndexer, getIndexedSummaries, getIndexedDetails, getLastIndexerRoots, stopHistoryIndexer } from "./indexer";
+import { startHistoryIndexer, getIndexedSummaries, getIndexedDetails, getLastIndexerRoots, stopHistoryIndexer, cacheDetails, getCachedDetails } from "./indexer";
 import { getSessionsRootsFastAsync } from "./wsl";
 import { perfLogger } from "./log";
 import settings, { ensureSettingsAutodetect, ensureFirstRunTerminalSelection, type ThemeSetting as SettingsThemeSetting, type AppSettings } from "./settings";
@@ -1043,10 +1043,19 @@ ipcMain.handle('history.list', async (_e, args: { projectWslPath?: string; proje
 
 ipcMain.handle('history.read', async (_e, { filePath }: { filePath: string }) => {
   try {
-    const det = getIndexedDetails(filePath);
-    if (det) return det;
+    const cached = getCachedDetails(filePath);
+    if (cached) return cached;
   } catch {}
-  return history.readHistoryFile(filePath);
+  try {
+    const det = getIndexedDetails(filePath);
+    if (det) {
+      try { cacheDetails(filePath, det); } catch {}
+      return det;
+    }
+  } catch {}
+  const parsed = await history.readHistoryFile(filePath);
+  try { cacheDetails(filePath, parsed as any); } catch {}
+  return parsed;
 });
 
 // 扫描所有索引的会话，找出"筛选后 input_text/output_text 皆为空"的文件
@@ -1063,6 +1072,7 @@ ipcMain.handle('history.findEmptySessions', async () => {
         let date = Number((s as any).date || 0);
         let id = String((s as any).id || '');
         if (det && det.messages) {
+          try { cacheDetails(s.filePath, det); } catch {}
           messages = det.messages as any[];
           if (!title && (det as any).title) title = String((det as any).title);
           if (!rawDate && (det as any).rawDate) rawDate = String((det as any).rawDate);
@@ -1072,6 +1082,7 @@ ipcMain.handle('history.findEmptySessions', async () => {
           // 兜底读取（性能较差，仅在详情缓存缺失时触发）
           try {
             const r = await history.readHistoryFile(s.filePath);
+            try { cacheDetails(s.filePath, r as any); } catch {}
             messages = r.messages as any[];
             if (!title && (r as any).title) title = String((r as any).title);
             if (!date && (r as any).date) date = Number((r as any).date);
