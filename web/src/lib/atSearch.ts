@@ -22,6 +22,8 @@ let worker: Worker | null = null;
 let workerLoaded = false;
 let currentRoot: string | null = null; // 当前项目根（Windows/UNC）
 let workerRoot: string | null = null;  // Worker 内当前已加载的根
+let lastActiveRoot: string | null = null; // 最近一次激活的项目根（用于后台清理后的恢复）
+let restoreActiveRootPromise: Promise<void> | null = null; // 控制并发恢复，避免竞争
 const cacheByRoot = new Map<string, FileCandidate[]>();
 const loadingByRoot = new Map<string, Promise<FileCandidate[]>>();
 const cacheIndexByRoot = new Map<string, Map<string, FileCandidate>>(); // key: D:/F:+rel
@@ -45,17 +47,40 @@ function ensureWorkerCleanupHook(): void {
   if (typeof window === "undefined") return;
   if (workerCleanupInstalled) return;
   try {
-    window.addEventListener("beforeunload", () => { try { disposeWorker(); } catch {} });
+    window.addEventListener("beforeunload", () => {
+      try { cleanupRendererResources("unload"); } catch {}
+    });
+    window.addEventListener("visibilitychange", () => {
+      try {
+        if (typeof document !== "undefined" && document.hidden) {
+          scheduleHiddenCleanup();
+        } else {
+          clearHiddenCleanupTimer();
+          touchAtUsage(); // 回到前台时延长空闲计时，避免频繁重建索引
+          // 若后台清理已释放索引，恢复最近的项目根，避免回到前台后 @ 面板为空
+          restoreActiveRootIfCleared("visible").catch(() => {});
+        }
+      } catch {}
+    });
     workerCleanupInstalled = true;
   } catch {}
 }
 
-const MAX_CACHE_ROOTS = 6; // 缓存根目录数量上限，防止长期运行内存无限增长
+const MAX_CACHE_ROOTS = 3; // 缓存根目录数量上限，收紧多仓缓存占用
 const KEY_PREFIX_DIR = "D";
 const KEY_PREFIX_FILE = "F";
+const IDLE_DISPOSE_MS = 3 * 60 * 1000; // @ 面板空闲超时回收（ms）
+const HIDDEN_DISPOSE_MS = 90 * 1000; // 页面隐藏后延迟释放资源（ms）
+let idleTimer: number | null = null;
+let hiddenCleanupTimer: number | null = null;
+const loadGenByRoot = new Map<string, number>(); // 用于防止被清理后的旧异步加载回写缓存，并维护代际号
 
 function normalizeRootKey(root: string | null | undefined): string {
   return String(root || "").toLowerCase();
+}
+
+function isSameRoot(a?: string | null, b?: string | null): boolean {
+  return normalizeRootKey(a) === normalizeRootKey(b);
 }
 
 function buildIndexFor(list: FileCandidate[]): Map<string, FileCandidate> {
@@ -72,17 +97,130 @@ function enforceCacheLimit(preserveKey?: string): void {
   const keep = new Set<string>();
   if (preserveKey) keep.add(preserveKey);
   if (currentKey) keep.add(currentKey);
+  let trimmed = false;
   for (const key of Array.from(cacheByRoot.keys())) {
     if (cacheByRoot.size <= MAX_CACHE_ROOTS) break;
     if (keep.has(key)) continue;
-    cacheByRoot.delete(key);
-    cacheIndexByRoot.delete(key);
-    loadingByRoot.delete(key);
+    invalidateRendererRoot(key);
+    trimmed = true;
     if (workerRoot && normalizeRootKey(workerRoot) === key) {
       workerRoot = null;
       workerLoaded = false;
     }
   }
+  // 若发生裁剪，顺带清理已失效根的代际计数，避免 Map 长期增长
+  if (trimmed) pruneLoadGenerations(preserveKey ?? currentRoot);
+}
+
+function bumpLoadGeneration(key: string): number {
+  const next = (loadGenByRoot.get(key) ?? 0) + 1;
+  loadGenByRoot.set(key, next);
+  return next;
+}
+
+function invalidateRendererRoot(key: string): void {
+  cacheByRoot.delete(key);
+  cacheIndexByRoot.delete(key);
+  loadingByRoot.delete(key);
+  bumpLoadGeneration(key);
+}
+
+function trimRendererCaches(keepRoot?: string | null): void {
+  const keepKey = keepRoot ? normalizeRootKey(keepRoot) : null;
+  for (const key of Array.from(cacheByRoot.keys())) {
+    if (keepKey && key === keepKey) continue;
+    invalidateRendererRoot(key);
+  }
+  for (const key of Array.from(loadingByRoot.keys())) {
+    if (keepKey && key === keepKey) continue;
+    invalidateRendererRoot(key);
+  }
+  enforceCacheLimit(keepKey ?? undefined);
+  pruneLoadGenerations(keepRoot);
+}
+
+// 清理已被裁剪的根对应的 load 代际，避免 Map 无限增长
+function pruneLoadGenerations(keepRoot?: string | null): void {
+  const keepKey = keepRoot ? normalizeRootKey(keepRoot) : null;
+  const alive = new Set<string>();
+  if (keepKey) alive.add(keepKey);
+  if (currentRoot) alive.add(normalizeRootKey(currentRoot));
+  if (workerRoot) alive.add(normalizeRootKey(workerRoot));
+  for (const k of cacheByRoot.keys()) alive.add(k);
+  for (const k of loadingByRoot.keys()) alive.add(k);
+  for (const k of Array.from(loadGenByRoot.keys())) {
+    if (!alive.has(k)) loadGenByRoot.delete(k);
+  }
+}
+
+function cleanupRendererResources(reason?: string): void {
+  const prevRoot = currentRoot;
+  if (prevRoot) lastActiveRoot = prevRoot; // 记录最近活跃根，便于恢复
+  try { disposeWorker(); } catch {}
+  // 清理所有缓存（包含当前根），避免在主进程 watcher 已关闭时继续复用陈旧列表
+  trimRendererCaches(null);
+  if (typeof window !== "undefined" && idleTimer !== null) {
+    try { window.clearTimeout(idleTimer); } catch {}
+  }
+  idleTimer = null;
+  if (typeof window !== "undefined" && hiddenCleanupTimer !== null) {
+    try { window.clearTimeout(hiddenCleanupTimer); } catch {}
+  }
+  hiddenCleanupTimer = null;
+  currentRoot = null;
+  workerRoot = null;
+  workerLoaded = false;
+  loadGenByRoot.clear();
+  // 主进程同步收敛：释放 fileIndex watcher 与内存缓存，避免长期驻留
+  try {
+    const p = (window as any).host?.fileIndex?.setActiveRoots?.([]);
+    // 捕获 Promise 拒绝，避免窗口关闭阶段出现未处理异常
+    if (p && typeof (p as any).catch === "function") (p as Promise<unknown>).catch(() => {});
+  } catch {}
+  perfLog(`cleanup reason='${reason || 'idle'}' root='${prevRoot || ''}' caches=${cacheByRoot.size}`);
+}
+
+function touchAtUsage(): void {
+  if (typeof window === "undefined") return;
+  try { if (idleTimer !== null) window.clearTimeout(idleTimer); } catch {}
+  idleTimer = window.setTimeout(() => cleanupRendererResources("idle"), IDLE_DISPOSE_MS);
+  clearHiddenCleanupTimer();
+}
+
+function clearHiddenCleanupTimer(): void {
+  if (typeof window === "undefined") return;
+  if (hiddenCleanupTimer !== null) {
+    try { window.clearTimeout(hiddenCleanupTimer); } catch {}
+  }
+  hiddenCleanupTimer = null;
+}
+
+function scheduleHiddenCleanup(): void {
+  if (typeof window === "undefined" || typeof document === "undefined") return;
+  clearHiddenCleanupTimer();
+  try {
+    if (!document.hidden) return;
+    hiddenCleanupTimer = window.setTimeout(() => cleanupRendererResources("hidden"), HIDDEN_DISPOSE_MS);
+  } catch {}
+}
+
+// 在被后台/空闲清理后，尝试自动恢复最近一次的项目根，减少首次搜索空结果
+async function restoreActiveRootIfCleared(reason?: string): Promise<void> {
+  if (currentRoot || !lastActiveRoot) return;
+  if (restoreActiveRootPromise) {
+    try { await restoreActiveRootPromise; } catch {}
+    return;
+  }
+  const restoringRoot = lastActiveRoot;
+  const p = (async () => {
+    try {
+      if (!restoringRoot || currentRoot) return;
+      await setActiveFileIndexRoot(restoringRoot);
+      perfLog(`restore.root reason='${reason || ''}' root='${restoringRoot || ''}'`);
+    } catch {}
+  })();
+  restoreActiveRootPromise = p.finally(() => { restoreActiveRootPromise = null; });
+  try { await restoreActiveRootPromise; } catch {}
 }
 
 function storeCacheEntry(rootKey: string, list: FileCandidate[], index?: Map<string, FileCandidate>): Map<string, FileCandidate> {
@@ -195,6 +333,7 @@ async function loadCandidatesForRoot(root: string, excludes?: string[]): Promise
   const key = normalizeRootKey(root);
   if (cacheByRoot.has(key)) return cacheByRoot.get(key)!;
   if (loadingByRoot.has(key)) return loadingByRoot.get(key)!;
+  const loadGen = bumpLoadGeneration(key); // 每次加载生成新的代际，便于在清理后阻止旧结果回写
   const p = (async () => {
     try {
       const t0 = Date.now();
@@ -205,6 +344,11 @@ async function loadCandidatesForRoot(root: string, excludes?: string[]): Promise
       const list = await getAllCandidates(root);
       perfLog(`candidates.loaded root='${root}' count=${list.length} dur=${Date.now() - t1}ms`);
       const idx = buildIndexFor(list);
+      // 若在加载期间根被清理（如切换项目或 LRU 收缩），则跳过回写
+      if ((loadGenByRoot.get(key) ?? 0) !== loadGen) {
+        perfLog(`candidates.skip root='${root}' reason='invalidated'`);
+        return list;
+      }
       storeCacheEntry(root, list, idx);
       return list;
     } finally {
@@ -221,7 +365,16 @@ function postToWorkerForRoot(root: string, list: FileCandidate[]) {
 }
 
 export async function setActiveFileIndexRoot(winRoot: string, excludes?: string[]): Promise<void> {
+  touchAtUsage();
+  const prevRoot = currentRoot;
+  lastActiveRoot = winRoot;
   currentRoot = winRoot;
+  const switched = !isSameRoot(prevRoot, winRoot);
+  if (switched) {
+    // 切换项目时主动收敛缓存与 Worker，避免旧大仓库数据常驻
+    trimRendererCaches(winRoot);
+    if (!isSameRoot(workerRoot, winRoot)) disposeWorker();
+  }
   // 切换项目时：通知主进程仅保留当前根的 watcher，避免多项目同时监听带来的负载
   try { await (window as any).host?.fileIndex?.setActiveRoots?.([winRoot]); } catch {}
   // 首次调用时订阅主进程的索引变更事件
@@ -318,6 +471,8 @@ function scoreRule(item: RuleItem, query: string): number {
 export async function searchAtItems(query: string, scope: SearchScope, limit = 30): Promise<SearchResult[]> {
   const q = String(query || "").trim();
   const results: SearchResult[] = [];
+  touchAtUsage();
+  await restoreActiveRootIfCleared("search");
 
   // 规则类：从候选文件中过滤 .cursor 相关规则文件
   const pickRules = async () => {

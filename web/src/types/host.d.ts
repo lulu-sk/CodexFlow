@@ -197,7 +197,7 @@ export interface WslAPI {
 export interface FileIndexAPI {
   ensureIndex(args: { root: string; excludes?: string[] }): Promise<{ ok: boolean; total?: number; updatedAt?: number; error?: string }>;
   getAllCandidates(root: string): Promise<{ ok: boolean; items?: Array<{ rel: string; isDir: boolean }>; error?: string }>;
-  setActiveRoots(roots: string[]): Promise<{ ok: boolean; closed?: number; remain?: number; error?: string }>;
+  setActiveRoots(roots: string[]): Promise<{ ok: boolean; closed?: number; remain?: number; trimmed?: number; error?: string }>;
   onChanged?: (handler: (payload: { root: string; reason?: string; adds?: { rel: string; isDir: boolean }[]; removes?: { rel: string; isDir: boolean }[] }) => void) => () => void;
 }
 

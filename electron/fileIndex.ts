@@ -36,7 +36,7 @@ type MemEntry = {
   dirs: string[];
 };
 
-const MAX_MEM_ENTRIES = 5; // 简易 LRU 上限
+const MAX_MEM_ENTRIES = 3; // 简易 LRU 上限：主动收敛缓存规模，避免大仓库常驻占用
 const memLRU: Map<string, MemEntry> = new Map(); // key -> entry（插入顺序即 LRU）
 
 // 调试与日志开关：环境变量 CODEX_FILEINDEX_DEBUG=1 或在 userData 放置 fileindex-debug.on 文件
@@ -292,7 +292,7 @@ function stopWatcherByKey(key: string) {
   } catch {}
 }
 
-export function setActiveRoots(activeRoots: string[]): { closed: number; remain: number } {
+export function setActiveRoots(activeRoots: string[]): { closed: number; remain: number; trimmed: number } {
   try {
     const allowed = new Set<string>((activeRoots || []).map((r) => canonKey(String(r || ''))));
     let closed = 0;
@@ -301,8 +301,16 @@ export function setActiveRoots(activeRoots: string[]): { closed: number; remain:
         try { stopWatcherByKey(key); closed++; } catch {}
       }
     }
-    return { closed, remain: watchers.size };
-  } catch { return { closed: 0, remain: watchers.size }; }
+    // 同步收敛内存缓存：仅保留当前活跃根对应的条目，避免历史大仓库长期驻留
+    let trimmed = 0;
+    for (const key of Array.from(memLRU.keys())) {
+      if (allowed.has(key)) continue;
+      memLRU.delete(key);
+      trimmed++;
+    }
+    if (trimmed > 0) logDbg(`cache.mem.trim active=${allowed.size} trimmed=${trimmed} remain=${memLRU.size}`);
+    return { closed, remain: watchers.size, trimmed };
+  } catch { return { closed: 0, remain: watchers.size, trimmed: 0 }; }
 }
 
 function toPosixAbs(p: string): string { return String(p || '').replace(/\\/g, '/'); }
