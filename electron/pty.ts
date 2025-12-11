@@ -4,6 +4,7 @@
 import os from 'node:os';
 import wsl from './wsl.js';
 import settings from './settings.js';
+import { resolveWindowsShell } from './shells.js';
 import type { IPty } from '@lydell/node-pty';
 import * as pty from '@lydell/node-pty';
 import { BrowserWindow } from 'electron';
@@ -53,9 +54,10 @@ export class PTYManager {
         cwd: undefined,
         env
       });
-    } else if (termMode === 'windows') {
-      // Windows 本地终端（PowerShell）
-      const shell = 'powershell.exe';
+    } else if (termMode === 'windows' || termMode === 'pwsh') {
+      // Windows 本地终端（PowerShell / PowerShell 7）
+      const resolved = resolveWindowsShell(termMode === 'pwsh' ? 'pwsh' : 'windows');
+      const shell = resolved.command;
       const args: string[] = ['-NoLogo'];
       const cwd = winPath && winPath.trim().length > 0 ? winPath : undefined;
       proc = pty.spawn(shell, args, {
@@ -114,13 +116,14 @@ export class PTYManager {
     if (startupCmd) {
       const isWin = os.platform() === 'win32';
       const mode = isWin ? (termMode || 'wsl') : 'posix';
+      const isWinShell = mode === 'windows' || mode === 'pwsh';
       setImmediate(() => {
         const p = this.sessions.get(id);
         if (!p) return; // PTY 可能已关闭
-        if (mode === 'windows') {
-          // PowerShell 中直接执行命令（cwd 已设置）
+        if (isWinShell) {
+          // PowerShell / PowerShell 7 中直接执行命令（cwd 已设置）
           p.write(`${startupCmd}\r`);
-          dlog(`[pty] startupCmd executed (windows) id=${id}`);
+          dlog(`[pty] startupCmd executed (windows) id=${id} shell=${mode}`);
         } else if (isWin) {
           // WSL：通过 bash -lc 执行
           p.write(`bash -lc "${startupCmd.replace(/"/g, '\\"')}"\r`);

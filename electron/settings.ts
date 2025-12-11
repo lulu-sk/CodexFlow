@@ -6,7 +6,8 @@ import path from 'node:path';
 import { app } from 'electron';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
-import { getSessionsRootsFastAsync, listDistros, execInWslAsync } from './wsl';
+import { getSessionsRootsFastAsync, listDistros, execInWslAsync } from './wsl.js';
+import { hasPwsh, normalizeTerminal, type TerminalMode } from './shells.js';
 import type { TerminalThemeId } from '@/types/terminal-theme';
 import type { DistroInfo } from './wsl';
 
@@ -33,8 +34,8 @@ export type NetworkSettings = {
 export type ThemeSetting = 'light' | 'dark' | 'system';
 
 export type AppSettings = {
-  /** 终端类型：WSL 或 Windows 本地终端 */
-  terminal?: 'wsl' | 'windows';
+  /** 终端类型：WSL 或 Windows 本地终端（PowerShell/PowerShell 7） */
+  terminal?: TerminalMode;
   /** 终端配色主题 */
   terminalTheme?: TerminalThemeId;
   /** WSL 发行版名称（当 terminal=wsl 时生效） */
@@ -164,6 +165,7 @@ function mergeWithDefaults(raw: Partial<AppSettings>, preloadedDistros?: DistroI
     network: { ...DEFAULT_NETWORK },
   };
   const merged = Object.assign({}, defaults, raw);
+  merged.terminal = normalizeTerminal((raw as any)?.terminal ?? merged.terminal);
   merged.notifications = {
     ...DEFAULT_NOTIFICATIONS,
     ...(raw?.notifications ?? {}),
@@ -246,7 +248,7 @@ export async function ensureFirstRunTerminalSelection(): Promise<AppSettings> {
     const hasStore = fs.existsSync(storePath);
     const current = getSettings();
     // 若已有设置且包含明确的 terminal，视为非首次，无需更改
-    if (hasStore && (current.terminal === 'wsl' || current.terminal === 'windows')) {
+    if (hasStore && (current.terminal === 'wsl' || current.terminal === 'windows' || current.terminal === 'pwsh')) {
       return current;
     }
 
@@ -267,6 +269,9 @@ export async function ensureFirstRunTerminalSelection(): Promise<AppSettings> {
         } catch { return false; }
       })());
       if (hasPsCodex && !hasWslCodex) {
+        if (await hasPwsh()) {
+          return updateSettings({ terminal: 'pwsh' });
+        }
         return updateSettings({ terminal: 'windows' });
       }
       return updateSettings({ terminal: 'wsl', distro });
@@ -281,7 +286,7 @@ export async function ensureFirstRunTerminalSelection(): Promise<AppSettings> {
       } catch { return false; }
     })();
     if (hasPsCodex || os.platform() === 'win32') {
-      return updateSettings({ terminal: 'windows' });
+      return updateSettings({ terminal: await hasPwsh() ? 'pwsh' : 'windows' });
     }
 
     // 其他平台兜底：保持当前合并默认

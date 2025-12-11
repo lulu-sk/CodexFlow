@@ -266,6 +266,9 @@ contextBridge.exposeInMainWorld('host', {
         return [];
       } catch { return []; }
     }
+    , detectPwsh: async (): Promise<{ ok: boolean; available?: boolean; path?: string; error?: string }> => {
+      try { return await ipcRenderer.invoke('utils.detectPwsh'); } catch (e: any) { return { ok: false, available: false, error: String(e) }; }
+    }
   }
   , images: {
     saveDataURL: async (args: { dataURL: string; projectWinRoot?: string; projectName?: string; ext?: string; prefix?: string }) => {

@@ -17,6 +17,7 @@ import { startHistoryIndexer, getIndexedSummaries, getIndexedDetails, getLastInd
 import { getSessionsRootsFastAsync } from "./wsl";
 import { perfLogger } from "./log";
 import settings, { ensureSettingsAutodetect, ensureFirstRunTerminalSelection, type ThemeSetting as SettingsThemeSetting, type AppSettings } from "./settings";
+import { resolveWindowsShell, detectPwshExecutable } from "./shells";
 import i18n from "./i18n";
 import wsl from "./wsl";
 import fileIndex from "./fileIndex";
@@ -854,7 +855,7 @@ ipcMain.handle('utils.openExternalConsole', async (_e, args: { wslPath?: string;
     const startupCmd = String(args?.startupCmd || cfg.codexCmd || 'codex');
     const requestedDistro = String(args?.distro || cfg.distro || 'Ubuntu-24.04');
 
-    if (platform === 'win32' && terminal === 'windows') {
+    if (platform === 'win32' && (terminal === 'windows' || terminal === 'pwsh')) {
       // 计算工作目录：优先使用 winPath，其次从 wslPath 推导
       let cwd = String(args?.winPath || '').trim();
       const wslPathRaw = String(args?.wslPath || '').trim();
@@ -869,17 +870,18 @@ ipcMain.handle('utils.openExternalConsole', async (_e, args: { wslPath?: string;
       const trySpawn = (file: string, argv: string[]): Promise<boolean> => new Promise((resolve) => {
         try { const child = spawn(file, argv, { detached: true, stdio: 'ignore', windowsHide: true }); child.on('error', () => resolve(false)); child.unref(); resolve(true); } catch { resolve(false); }
       });
+      const resolvedShell = resolveWindowsShell(terminal === 'pwsh' ? 'pwsh' : 'windows');
       // PowerShell 字符串经常包含引号与分号；为彻底避免转义问题，改用 -EncodedCommand（UTF-16LE -> Base64）
       const toPsEncoded = (s: string) => Buffer.from(s, 'utf16le').toString('base64');
       // 使用 Windows Terminal：指定起始目录，由 WT 负责切换目录；PowerShell 仅执行命令
       // 必须加入 `--`，将后续命令行完整传入新标签，而不被 wt 解析
-      const wtArgs = ['-w', '0', 'new-tab', '--title', 'Codex', '--startingDirectory', cwd, '--', 'powershell', '-NoExit', '-NoProfile', '-EncodedCommand', toPsEncoded(startupCmd)];
+      const wtArgs = ['-w', '0', 'new-tab', '--title', 'Codex', '--startingDirectory', cwd, '--', resolvedShell.command, '-NoExit', '-NoProfile', '-EncodedCommand', toPsEncoded(startupCmd)];
       if (await trySpawn('wt.exe', wtArgs)) return { ok: true } as const;
       if (await trySpawn('WindowsTerminal.exe', wtArgs)) return { ok: true } as const;
       // 回退：cmd /c start 一个 PowerShell 窗口，使用 -EncodedCommand，先切换目录再执行
       const psScript = `Set-Location -Path \"${cwd.replace(/"/g, '\\"')}\"; ${startupCmd}`;
       const psEncoded = toPsEncoded(psScript);
-      if (await trySpawn('cmd.exe', ['/c', 'start', '', 'powershell.exe', '-NoExit', '-NoProfile', '-EncodedCommand', psEncoded])) return { ok: true } as const;
+      if (await trySpawn('cmd.exe', ['/c', 'start', '', resolvedShell.command, '-NoExit', '-NoProfile', '-EncodedCommand', psEncoded])) return { ok: true } as const;
       return { ok: false, error: 'failed to launch external Windows console' } as const;
     }
 
@@ -1635,6 +1637,14 @@ ipcMain.handle('utils.getWindowsInfo', async () => {
     return { ok: true, platform, buildNumber, backend, conptyAvailable } as const;
   } catch (e: any) {
     return { ok: false, error: String(e) } as const;
+  }
+});
+ipcMain.handle('utils.detectPwsh', async () => {
+  try {
+    const path = await detectPwshExecutable();
+    return { ok: true, available: !!path, path: path || undefined } as const;
+  } catch (e: any) {
+    return { ok: false, error: String(e), available: false } as const;
   }
 });
 

@@ -66,11 +66,12 @@ import {
   type TerminalThemeDefinition,
 } from "@/lib/terminal-appearance";
 import { getCachedThemeSetting, useThemeController, writeThemeSettingCache, type ThemeSetting } from "@/lib/theme";
-import type { Project } from "@/types/host";
+import type { AppSettings, Project } from "@/types/host";
 import type { TerminalThemeId } from "@/types/terminal-theme";
 
 // ---------- Types ----------
 
+type TerminalMode = NonNullable<AppSettings["terminal"]>;
 type ConsoleTab = {
   id: string;
   name: string;
@@ -107,7 +108,7 @@ type HistoryTimelineGroup = {
 
 type ResumeExecutionMode = 'internal' | 'external';
 type LegacyResumePrompt = { filePath: string; mode: ResumeExecutionMode };
-type ShellLabel = 'PowerShell' | 'WSL';
+type ShellLabel = 'PowerShell' | 'PowerShell 7' | 'WSL';
 type BlockingNotice =
   | { type: 'shell-mismatch'; expected: ShellLabel; current: ShellLabel }
   | { type: 'external-console'; env: ShellLabel };
@@ -256,7 +257,18 @@ function canonicalizePath(p: string): string {
   return s.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 }
 
-const toShellLabel = (mode: 'wsl' | 'windows'): ShellLabel => (mode === 'windows' ? 'PowerShell' : 'WSL');
+const toShellLabel = (mode: TerminalMode): ShellLabel => {
+  if (mode === 'pwsh') return 'PowerShell 7';
+  if (mode === 'windows') return 'PowerShell';
+  return 'WSL';
+};
+const normalizeTerminalMode = (raw: any): TerminalMode => {
+  const v = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  if (v === 'pwsh') return 'pwsh';
+  if (v === 'windows') return 'windows';
+  return 'wsl';
+};
+const isWindowsLike = (mode: TerminalMode): boolean => mode !== 'wsl';
 
 function normDir(p?: string): string { return canonicalizePath(getDir(p)); }
 
@@ -969,7 +981,7 @@ export default function CodexFlowManagerUI() {
     notifyLog(`ctx.menu.open source=${source} tab=${id} x=${Math.round(event.clientX)} y=${Math.round(event.clientY)}`);
   }, [notifyLog, setTabCtxMenu, showNotifDebugMenu]);
   // Terminal adapters 与 PTY 状态
-  const [terminalMode, setTerminalMode] = useState<'wsl' | 'windows'>('wsl');
+  const [terminalMode, setTerminalMode] = useState<TerminalMode>('wsl');
   const [terminalFontFamily, setTerminalFontFamily] = useState<string>(DEFAULT_TERMINAL_FONT_FAMILY);
   const [terminalTheme, setTerminalTheme] = useState<TerminalThemeId>(DEFAULT_TERMINAL_THEME_ID);
   const terminalThemeDef = useMemo(() => getTerminalTheme(terminalTheme), [terminalTheme]);
@@ -1012,7 +1024,7 @@ export default function CodexFlowManagerUI() {
     const raw = String(cmd || "").trim();
     const base = raw.length > 0 ? raw : "codex";
     if (!codexTraceEnabled) return base;
-    if (terminalMode === "windows") {
+    if (isWindowsLike(terminalMode)) {
       if (/RUST_LOG\s*=/.test(base) || base.includes("$env:RUST_LOG")) {
         return base;
       }
@@ -2042,7 +2054,7 @@ export default function CodexFlowManagerUI() {
       try {
         const s = await window.host.settings.get();
         if (s) {
-          setTerminalMode((s as any).terminal || 'wsl');
+          setTerminalMode(normalizeTerminalMode((s as any).terminal));
           setWslDistro(s.distro || wslDistro);
           setCodexCmd(s.codexCmd || codexCmd);
           setSendMode(s.sendMode || 'write_and_enter');
@@ -2258,9 +2270,12 @@ export default function CodexFlowManagerUI() {
 
   async function openConsoleForProject(project: Project) {
     if (!project) return;
+    const tabName = isWindowsLike(terminalMode)
+      ? toShellLabel(terminalMode)
+      : (wslDistro || `Console ${((tabsByProject[project.id] || []).length + 1).toString()}`);
     const tab: ConsoleTab = {
       id: uid(),
-      name: String(terminalMode === 'windows' ? 'PowerShell' : (wslDistro || `Console ${((tabsByProject[project.id] || []).length + 1).toString()}`)),
+      name: String(tabName),
       logs: [],
       createdAt: Date.now(),
     };
@@ -2334,10 +2349,13 @@ export default function CodexFlowManagerUI() {
 
   async function openNewConsole() {
     if (!selectedProject) return;
+    const tabName = isWindowsLike(terminalMode)
+      ? toShellLabel(terminalMode)
+      : (wslDistro || `Console ${((tabsByProject[selectedProject.id] || []).length + 1).toString()}`);
     const tab: ConsoleTab = {
       id: uid(),
       // 默认使用当前设置中的终端名称
-      name: String(terminalMode === 'windows' ? 'PowerShell' : (wslDistro || `Console ${((tabsByProject[selectedProject.id] || []).length + 1).toString()}`)),
+      name: String(tabName),
       logs: [],
       createdAt: Date.now(),
     };
@@ -2648,7 +2666,7 @@ export default function CodexFlowManagerUI() {
       parts.push(
         chips
           .map((c) => {
-            if (terminalMode === 'windows') {
+            if (isWindowsLike(terminalMode)) {
               // 优先 Windows 路径；若不存在，则从 WSL 路径推导
               let wp = String(c.winPath || '').trim();
               if (!wp) {
@@ -2821,7 +2839,7 @@ export default function CodexFlowManagerUI() {
     <div className="flex h-full min-w-[240px] flex-col border-r bg-white/50 dark:border-slate-800 dark:bg-slate-900/40">
       <div className="flex items-center gap-2 px-3 py-3">
         <Badge variant="secondary" className="gap-2">
-          <PlugZap className="h-4 w-4" /> {terminalMode === 'windows' ? 'PowerShell' : 'WSL'} <StatusDot ok={true} />
+          <PlugZap className="h-4 w-4" /> {toShellLabel(terminalMode)} <StatusDot ok={true} />
         </Badge>
         {terminalMode === 'wsl' && (
           <span className="text-xs text-slate-500">{wslDistro}</span>
@@ -3264,7 +3282,7 @@ export default function CodexFlowManagerUI() {
     return historySessions.find((x) => x.id === filePath);
   };
 
-  const buildResumeStartup = (filePath: string, mode: 'wsl' | 'windows', options?: { forceLegacyCli?: boolean }): ResumeStartup => {
+  const buildResumeStartup = (filePath: string, mode: TerminalMode, options?: { forceLegacyCli?: boolean }): ResumeStartup => {
     const session = findSessionForFile(filePath);
     const preferredId = typeof session?.resumeId === 'string' ? session.resumeId : null;
     const guessedId = inferSessionUuid(session, filePath);
@@ -3275,7 +3293,7 @@ export default function CodexFlowManagerUI() {
     const preferLegacyOnly = forceLegacyCli || resumeModeHint === 'legacy';
     const cmdRaw = String(codexCmd || 'codex').trim();
     const baseCmd = cmdRaw.length > 0 ? cmdRaw : 'codex';
-    if (mode === 'windows') {
+    if (isWindowsLike(mode)) {
       const resumePath = toWindowsResumePath(filePath);
       if (forceLegacyCli) {
         const escapedResume = resumePath.replace(/"/g, '\"');
@@ -3338,9 +3356,12 @@ export default function CodexFlowManagerUI() {
         await (window as any).host?.utils?.perfLog?.(`[ui] history.resume ${mode} mode=${terminalMode} strategy=${strategy} resumeHint=${resumeHint} forceLegacy=${finalForceLegacy ? '1' : '0'} sessionId=${sessionId || 'none'} sessionRaw=${session?.id || 'n/a'} path=${resumePath}`);
       } catch {}
       if (mode === 'internal') {
+        const tabName = isWindowsLike(terminalMode)
+          ? toShellLabel(terminalMode)
+          : (wslDistro || `Console ${((tabsByProject[selectedProject.id] || []).length + 1).toString()}`);
         const tab: ConsoleTab = {
           id: uid(),
-          name: String(terminalMode === 'windows' ? 'PowerShell' : (wslDistro || `Console ${((tabsByProject[selectedProject.id] || []).length + 1).toString()}`)),
+          name: String(tabName),
           logs: [],
           createdAt: Date.now(),
         };
@@ -3416,11 +3437,14 @@ export default function CodexFlowManagerUI() {
     const enforceShell = sessionMode !== 'legacy' && !options?.forceLegacyCli;
     if (enforceShell) {
       const sessionShell = session?.runtimeShell === 'windows' ? 'windows' : (session?.runtimeShell === 'wsl' ? 'wsl' : null);
-      if (sessionShell && sessionShell !== terminalMode) {
-        const expected = toShellLabel(sessionShell);
-        const current = toShellLabel(terminalMode);
-        setBlockingNotice({ type: 'shell-mismatch', expected, current });
-        return 'blocked-shell';
+      if (sessionShell) {
+        const mismatch = sessionShell === 'wsl' ? terminalMode !== 'wsl' : !isWindowsLike(terminalMode);
+        if (mismatch) {
+          const expected = toShellLabel(sessionShell === 'wsl' ? 'wsl' : 'windows');
+          const current = toShellLabel(terminalMode);
+          setBlockingNotice({ type: 'shell-mismatch', expected, current });
+          return 'blocked-shell';
+        }
       }
     }
     const needPrompt = !options?.forceLegacyCli && !options?.skipPrompt && isLegacyHistory(filePath);
@@ -3836,7 +3860,7 @@ export default function CodexFlowManagerUI() {
                 setHistoryCtxMenu((m) => ({ ...m, show: false }));
               }}
             >
-              <ExternalLink className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('history:continueExternalWith', { env: terminalMode === 'windows' ? 'PowerShell' : 'WSL' })}
+              <ExternalLink className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('history:continueExternalWith', { env: toShellLabel(terminalMode) })}
             </button>
             <button
               className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
@@ -3938,7 +3962,7 @@ export default function CodexFlowManagerUI() {
                   setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
                 }}
               >
-                <ExternalLink className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('projects:ctxOpenExternalConsoleWith', { env: terminalMode === 'windows' ? 'PowerShell' : 'WSL' })}
+                <ExternalLink className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('projects:ctxOpenExternalConsoleWith', { env: toShellLabel(terminalMode) })}
               </button>
             );
             if (isDevEnvironment) {
@@ -4213,7 +4237,7 @@ export default function CodexFlowManagerUI() {
             <div className="rounded bg-slate-100 px-3 py-2 font-mono text-xs text-slate-700">npx --yes @openai/codex@0.31.0</div>
             <p>
               {legacyResumePrompt?.mode === 'external'
-                ? t('history:legacyResumeExternalHint', { env: terminalMode === 'windows' ? 'PowerShell' : 'WSL' })
+                ? t('history:legacyResumeExternalHint', { env: toShellLabel(terminalMode) })
                 : t('history:legacyResumeInternalHint')}
             </p>
           </div>
@@ -4587,7 +4611,7 @@ function filterHistoryMessages(session: HistorySession, typeFilter: Record<strin
   return { messages: filteredMessages, matches, fieldMatches };
 }
 
-function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResumeExternal, terminalMode }: { sessions: HistorySession[]; selectedHistoryId: string | null; onBack?: () => void; onResume?: (filePath?: string) => void; onResumeExternal?: (filePath?: string) => void; terminalMode: 'wsl' | 'windows' }) {
+function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResumeExternal, terminalMode }: { sessions: HistorySession[]; selectedHistoryId: string | null; onBack?: () => void; onResume?: (filePath?: string) => void; onResumeExternal?: (filePath?: string) => void; terminalMode: TerminalMode }) {
   const { t } = useTranslation(['history', 'common']);
   const MAX_HISTORY_MESSAGE_CACHE = 5;
   const [loaded, setLoaded] = useState(false);
@@ -4863,7 +4887,7 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
               if (!s || !s.filePath) return;
               onResumeExternal?.(s.filePath);
             } catch {}
-          }}>{t('history:continueExternalWith', { env: terminalMode === 'windows' ? 'PowerShell' : 'WSL' })}</Button>
+          }}>{t('history:continueExternalWith', { env: toShellLabel(terminalMode) })}</Button>
           <Button size="sm" variant="secondary" onClick={async () => {
             const text = buildFilteredText();
             try { await window.host.utils.copyText(text); } catch { try { await navigator.clipboard.writeText(text); } catch {} }

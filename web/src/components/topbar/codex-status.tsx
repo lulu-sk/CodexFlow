@@ -7,7 +7,7 @@ import type { TFunction } from "i18next";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Gauge, RotateCcw } from "lucide-react";
-import type { CodexAccountInfo, CodexRateLimitSnapshot } from "@/types/host";
+import type { AppSettings, CodexAccountInfo, CodexRateLimitSnapshot } from "@/types/host";
 import {
   computeRefreshInterval,
   formatPercent,
@@ -31,6 +31,8 @@ type HoverHandlers = {
   onEnter: () => void;
   onLeave: () => void;
 };
+
+type TerminalMode = NonNullable<AppSettings["terminal"]>;
 
 function useHoverCard(): HoverHandlers {
   const [open, setOpen] = useState(false);
@@ -163,13 +165,14 @@ function describePlan(plan: string | null, t: TFunction): string {
   return key ? t(key) : plan;
 }
 
-const CodexUsageHoverButton: React.FC<{ className?: string; terminalMode?: "wsl" | "windows"; distro?: string }> = ({ className, terminalMode, distro }) => {
+const CodexUsageHoverButton: React.FC<{ className?: string; terminalMode?: TerminalMode; distro?: string }> = ({ className, terminalMode, distro }) => {
   const { t, i18n } = useTranslation(["common"]);
   const [rateState, reloadRate] = useCodexRate(true);
   const rateHover = useHoverCard();
   const lastManualRefreshAtRef = useRef<number>(0);
   const envKey = useMemo(() => {
     if (terminalMode === "wsl") return `wsl:${distro ?? ""}`;
+    if (terminalMode === "pwsh") return "windows-pwsh";
     if (terminalMode === "windows") return "windows";
     return "default";
   }, [terminalMode, distro]);
@@ -322,7 +325,7 @@ const CodexUsageHoverButton: React.FC<{ className?: string; terminalMode?: "wsl"
 export const CodexAccountInline: React.FC<{
   className?: string;
   auto?: boolean;
-  terminalMode?: "wsl" | "windows";
+  terminalMode?: TerminalMode;
   distro?: string;
   expanded?: boolean;
 }> = ({ className, auto = true, terminalMode, distro, expanded = false }) => {
@@ -347,6 +350,7 @@ export const CodexAccountInline: React.FC<{
   const hover = useHoverCard();
   const envKey = useMemo(() => {
     if (terminalMode === "wsl") return `wsl:${distro ?? ""}`;
+    if (terminalMode === "pwsh") return "windows-pwsh";
     if (terminalMode === "windows") return "windows";
     return "default";
   }, [terminalMode, distro]);

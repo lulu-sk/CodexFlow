@@ -222,7 +222,7 @@ diagnostics.md
 ## ⚙️ 运行时要点与索引
 
 * 发行版默认：`distro = 'Ubuntu-24.04'`
-* 终端模式：`terminal = 'wsl' | 'windows'`(PowerShell)
+* 终端模式：`terminal = 'wsl' | 'windows' | 'pwsh'`
 * 启动命令：仅保存基础 `codexCmd = 'codex'`,当前实现不再做 tmux 包装
 
 * WSL：`bash -lc "<codexCmd>"`

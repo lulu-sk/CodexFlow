@@ -49,8 +49,8 @@ export interface PathChipsInputProps extends Omit<React.InputHTMLAttributes<HTML
   projectPathStyle?: 'absolute' | 'relative';
   /** 是否渲染为“多行区域”的外观与高度（保持原 UI 习惯） */
   multiline?: boolean;
-  /** 运行环境：决定鼠标悬停时 title 显示路径风格（windows 显示 Windows 路径；wsl 显示 WSL 路径） */
-  runEnv?: 'wsl' | 'windows';
+  /** 运行环境：决定鼠标悬停时 title 显示路径风格（默认 windows） */
+  runEnv?: 'wsl' | 'windows' | 'pwsh';
   /** 自定义草稿输入区域（textarea/input）的附加类名 */
   draftInputClassName?: string;
   /** 是否为滚动条预留左右对称边距，仅在全屏输入时开启以保持视觉等宽 */
@@ -189,7 +189,7 @@ export default function PathChipsInput({
   projectName,
   projectPathStyle = 'absolute',
   multiline,
-  runEnv = 'wsl',
+  runEnv = 'windows',
   onKeyDown: externalOnKeyDown,
   draftInputClassName,
   balancedScrollbarGutter = false,
@@ -719,9 +719,9 @@ export default function PathChipsInput({
             const isRule = chipAny.chipKind === "rule";
             const tooltip = isRule
               ? chipAny.rulePath || chipAny.winPath || chipAny.wslPath || ""
-              : (runEnv === 'windows'
-                ? (resolveChipWindowsFullPath(chipAny) || String((chipAny as any)?.winPath || (chipAny as any)?.wslPath || ""))
-                : String((chipAny as any)?.wslPath || (chipAny as any)?.winPath || ""));
+              : (runEnv === 'wsl'
+                ? String((chipAny as any)?.wslPath || (chipAny as any)?.winPath || "")
+                : (resolveChipWindowsFullPath(chipAny) || String((chipAny as any)?.winPath || (chipAny as any)?.wslPath || "")));
             const ruleLabel = chipAny.rulePath?.split(/[/\\]/).pop() || chipAny.rulePath || chipAny.fileName || t('common:files.rule');
             const labelText = isRule
               ? ruleLabel

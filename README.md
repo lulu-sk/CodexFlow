@@ -222,7 +222,7 @@ npm run i18n:check
 ## ⚙️ Runtime Notes & Indexes
 
 * Default distro: `distro = 'Ubuntu-24.04'`
-* Terminal modes: `terminal = 'wsl' | 'windows'` (PowerShell)
+* Terminal modes: `terminal = 'wsl' | 'windows' | 'pwsh'`
 * Launch command: stores base `codexCmd = 'codex'`; no tmux wrapping in the current implementation
 
 * WSL: `bash -lc "<codexCmd>"`

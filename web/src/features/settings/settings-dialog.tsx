@@ -31,8 +31,9 @@ import {
 import { resolveFirstAvailableFont, parseFontFamilyList } from "@/lib/font-utils";
 import { resolveSystemTheme, subscribeSystemTheme, type ThemeMode, type ThemeSetting } from "@/lib/theme";
 import type { TerminalThemeId } from "@/types/terminal-theme";
+import type { AppSettings } from "@/types/host";
 
-type TerminalMode = "wsl" | "windows";
+type TerminalMode = NonNullable<AppSettings["terminal"]>;
 type SendMode = "write_only" | "write_and_enter";
 type PathStyle = "absolute" | "relative";
 type NotificationPrefs = {
@@ -123,6 +124,48 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   const [activeSection, setActiveSection] = useState<SectionKey>("basic");
   const [availableLangs, setAvailableLangs] = useState<string[]>(DEFAULT_LANGS);
   const [terminal, setTerminal] = useState<TerminalMode>(values.terminal || "wsl");
+  const [pwshAvailable, setPwshAvailable] = useState<boolean | null>(null);
+  const [pwshPath, setPwshPath] = useState<string>("");
+  const terminalLabel = useMemo(() => {
+    if (terminal === "pwsh") return t("settings:terminalMode.pwsh");
+    if (terminal === "windows") return t("settings:terminalMode.windows");
+    return t("settings:terminalMode.wsl");
+  }, [terminal, t]);
+  const pwshDetectedText = useMemo(() => {
+    const label = t("settings:terminalMode.pwshDetected");
+    const path = pwshPath || "pwsh";
+    return `${label} ${path}`;
+  }, [pwshPath, t]);
+  const detectPwshAvailability = useCallback(async (): Promise<boolean> => {
+    try {
+      const res = await window.host.utils.detectPwsh();
+      if (res && res.ok) {
+        setPwshAvailable(!!res.available);
+        setPwshPath(res.path || "");
+        return !!res.available;
+      }
+    } catch (e) { console.warn("detectPwsh failed", e); }
+    setPwshAvailable(false);
+    setPwshPath("");
+    return false;
+  }, []);
+  useEffect(() => {
+    if (!open) return;
+    if (pwshAvailable === null) {
+      detectPwshAvailability();
+    }
+  }, [open, pwshAvailable, detectPwshAvailability]);
+  const handleTerminalChange = useCallback(async (next: TerminalMode) => {
+    if (next === "pwsh") {
+      const ok = (pwshAvailable === true) || await detectPwshAvailability();
+      if (!ok) {
+        alert(t("settings:terminalMode.pwshUnavailable"));
+        setTerminal("windows");
+        return;
+      }
+    }
+    setTerminal(next);
+  }, [detectPwshAvailability, pwshAvailable, t]);
   const [distro, setDistro] = useState<string>("");
   const [codexCmd, setCodexCmd] = useState(values.codexCmd);
   
@@ -718,19 +761,27 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                 <CardContent className="space-y-3">
                   <p className="text-sm text-slate-500">{t("settings:terminalMode.help")}</p>
                   <div className="max-w-xs">
-                    <Select value={terminal} onValueChange={(v) => setTerminal(v as TerminalMode)}>
+                    <Select value={terminal} onValueChange={(v) => handleTerminalChange(v as TerminalMode)}>
                       <SelectTrigger>
                         <span className="truncate text-left">
-                          {terminal === "windows"
-                            ? t("settings:terminalMode.windows")
-                            : t("settings:terminalMode.wsl")}
+                          {terminalLabel}
                         </span>
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="wsl">{t("settings:terminalMode.wsl")}</SelectItem>
+                        <SelectItem value="pwsh" disabled={pwshAvailable === false}>
+                          {t("settings:terminalMode.pwsh")}
+                        </SelectItem>
                         <SelectItem value="windows">{t("settings:terminalMode.windows")}</SelectItem>
                       </SelectContent>
                     </Select>
+                    <p className="text-xs text-slate-500">
+                      {pwshAvailable === null
+                        ? t("settings:terminalMode.pwshDetecting")
+                        : pwshAvailable
+                      ? pwshDetectedText
+                          : t("settings:terminalMode.pwshUnavailable")}
+                    </p>
                   </div>
                 </CardContent>
               </Card>
