@@ -47,6 +47,19 @@ const ptyManager = new PTYManager(() => mainWindow);
 const sessionPastedImages = new Set<string>();
 const codexBridges = new Map<string, CodexBridge>();
 
+// 记录每个渲染进程声明的活跃根集合，统一合并后再驱动 fileIndex，避免多窗口互相清空 watcher
+const activeRootsBySender = new Map<number, Set<string>>();
+const activeRootsSenderHooked = new Set<number>();
+
+function applyMergedActiveRoots(): { closed: number; remain: number; trimmed: number } {
+  const merged = new Set<string>();
+  for (const roots of activeRootsBySender.values()) {
+    for (const r of roots) merged.add(r);
+  }
+  const mergedList = Array.from(merged);
+  return (fileIndex as any).setActiveRoots ? (fileIndex as any).setActiveRoots(mergedList) : { closed: 0, remain: 0, trimmed: 0 };
+}
+
 type CodexBridgeDescriptor = { key: string; options: CodexBridgeOptions };
 
 function deriveCodexBridgeDescriptor(cfg: AppSettings): CodexBridgeDescriptor {
@@ -933,10 +946,29 @@ ipcMain.handle('fileIndex.candidates', async (_e, { root }: { root: string }) =>
   }
 });
 
-ipcMain.handle('fileIndex.activeRoots', async (_e, { roots }: { roots: string[] }) => {
+ipcMain.handle('fileIndex.activeRoots', async (event, { roots }: { roots: string[] }) => {
   try {
     const list = Array.isArray(roots) ? roots.filter((x) => typeof x === 'string') : [];
-    const res = (fileIndex as any).setActiveRoots ? (fileIndex as any).setActiveRoots(list) : { closed: 0, remain: 0 };
+    const senderId = (event as any)?.sender?.id;
+    if (typeof senderId !== 'number') {
+      const res = (fileIndex as any).setActiveRoots ? (fileIndex as any).setActiveRoots(list) : { closed: 0, remain: 0, trimmed: 0 };
+      return { ok: true, ...res };
+    }
+
+    // 记录当前窗口的活跃根集合，并在窗口销毁时自动移除，避免跨窗口互相“清空” watcher
+    activeRootsBySender.set(senderId, new Set(list));
+    if (!activeRootsSenderHooked.has(senderId)) {
+      activeRootsSenderHooked.add(senderId);
+      try {
+        (event as any)?.sender?.once?.('destroyed', () => {
+          activeRootsBySender.delete(senderId);
+          activeRootsSenderHooked.delete(senderId);
+          try { applyMergedActiveRoots(); } catch {}
+        });
+      } catch {}
+    }
+
+    const res = applyMergedActiveRoots();
     return { ok: true, ...res };
   } catch (e: any) {
     return { ok: false, error: String(e) };
