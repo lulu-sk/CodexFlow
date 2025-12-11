@@ -9,7 +9,7 @@ export {}; // make this a module
 export type ThemeSetting = 'light' | 'dark' | 'system';
 
 export type AppSettings = {
-  terminal?: 'wsl' | 'windows';
+  terminal?: 'wsl' | 'windows' | 'pwsh';
   terminalTheme?: TerminalThemeId;
   distro: string;
   codexCmd: string;
@@ -185,6 +185,8 @@ export interface UtilsAPI {
   listFonts(): Promise<string[]>;
   /** 列出系统字体详情：包含路径与是否等宽（基于字体表元数据判定）。 */
   listFontsDetailed(): Promise<Array<{ name: string; file?: string; monospace: boolean }>>;
+  /** 检测系统是否安装 PowerShell 7（pwsh）。仅 Windows 返回可用性与路径。 */
+  detectPwsh(): Promise<{ ok: boolean; available?: boolean; path?: string; error?: string }>;
 }
 
 // 仅声明渲染层使用到的最小 API（与 preload.ts 暴露保持一致）

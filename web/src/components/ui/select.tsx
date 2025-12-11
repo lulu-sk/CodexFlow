@@ -206,7 +206,7 @@ export function SelectContent({ children }: { children: React.ReactNode }) {
   );
 }
 
-export function SelectItem({ value, children }: { value: string; children: React.ReactNode }) {
+export function SelectItem({ value, children, disabled }: { value: string; children: React.ReactNode; disabled?: boolean }) {
   const ctx = React.useContext(SelectCtx)!;
   // 记录 value -> 可见标签 的映射，便于 SelectValue 展示中文标签
   React.useEffect(() => {
@@ -214,8 +214,18 @@ export function SelectItem({ value, children }: { value: string; children: React
   }, [value, children]);
   return (
     <div
-      className={cn('cursor-pointer rounded-apple-sm px-3 py-2 text-sm transition-all duration-apple-fast hover:bg-[var(--cf-surface-hover)]', ctx.value === value && 'bg-[var(--cf-surface-hover)] font-apple-medium')}
-      onClick={() => { ctx.setValue?.(value); ctx.setOpen(false); }}
+      className={cn(
+        'rounded-apple-sm px-3 py-2 text-sm transition-all duration-apple-fast',
+        disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:bg-[var(--cf-surface-hover)]',
+        ctx.value === value && !disabled && 'bg-[var(--cf-surface-hover)] font-apple-medium',
+      )}
+      role="option"
+      aria-disabled={disabled ? 'true' : 'false'}
+      onClick={() => {
+        if (disabled) return;
+        ctx.setValue?.(value);
+        ctx.setOpen(false);
+      }}
     >
       {children}
     </div>

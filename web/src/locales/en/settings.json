@@ -60,8 +60,12 @@
   "terminalMode": {
     "label": "Execution Environment",
     "wsl": "WSL",
+    "pwsh": "Windows (PowerShell 7)",
     "windows": "Windows (PowerShell)",
-    "help": "Switch between WSL and PowerShell execution environments."
+    "help": "Switch between WSL, PowerShell 7, and Windows PowerShell.",
+    "pwshDetecting": "Detecting PowerShell 7 availability...",
+    "pwshDetected": "PowerShell 7 detected:",
+    "pwshUnavailable": "PowerShell 7 is not available. Falling back to Windows PowerShell."
   },
   "wslDistro": "WSL Distro",
   "wslDistroHelp": "Select the default distribution used when opening a WSL terminal.",

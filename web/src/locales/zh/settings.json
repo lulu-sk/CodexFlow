@@ -60,8 +60,12 @@
   "terminalMode": {
     "label": "执行环境",
     "wsl": "WSL 终端",
+    "pwsh": "Windows（PowerShell 7）",
     "windows": "Windows（PowerShell）",
-    "help": "在 WSL 与 PowerShell 之间切换命令执行环境。"
+    "help": "在 WSL、PowerShell 7 与传统 PowerShell 之间切换命令执行环境。",
+    "pwshDetecting": "正在检测 PowerShell 7 可用性…",
+    "pwshDetected": "已检测到 PowerShell 7：",
+    "pwshUnavailable": "未检测到 PowerShell 7，已回退到传统 PowerShell。"
   },
   "wslDistro": "WSL 发行版",
   "wslDistroHelp": "指定打开 WSL 终端时默认使用的发行版。",
