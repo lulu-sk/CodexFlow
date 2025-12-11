@@ -31,6 +31,7 @@
   "resumeShellMismatch": "This conversation was recorded in {expected} mode and cannot run while {current} is active. Switch to {expected} mode and try again.",
   "resumeShellMismatchExpectedLabel": "Session mode",
   "resumeShellMismatchCurrentLabel": "Active mode",
+  "resumeFailed": "Failed to resume conversation: {error}",
   "panelTitle": "Project History",
   "searchPlaceholder": "Search history…",
   "searchPlaceholderHint": "Search history by title, path, or first prompt",

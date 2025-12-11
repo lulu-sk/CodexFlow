@@ -6,6 +6,7 @@
   "expandInput": "Expand composer",
   "collapseInput": "Exit expand",
   "readyPlaceholder": "# Terminal ready. Embedded console placeholder (UI prototype; no real PTY yet).",
+  "openFailed": "Failed to start console: {error}",
   "ctx": {
     "copy": "Copy",
     "copyLine": "Copy Line",

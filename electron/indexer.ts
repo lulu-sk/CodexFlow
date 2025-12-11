@@ -44,6 +44,53 @@ type PersistDetails = {
   savedAt: number;
 };
 
+// 单次偏好的详情缓存大小：保留最近查看的几条，防止无限增长
+const DETAILS_CACHE_LIMIT = 8;
+
+const g: any = global as any;
+if (!g.__indexer) g.__indexer = {};
+if (!g.__indexer.retries) g.__indexer.retries = new Map<string, { count: number; timer?: NodeJS.Timeout }>();
+// 周期性重扫的节流参数：避免频繁解析大文件导致内存/CPU 激增
+const RESCAN_INTERVAL_MS = 60_000;
+const RESCAN_COOLDOWN_MS = 30_000;
+const RESCAN_COOLDOWN_MAX = 512;
+
+function getRescanCooldownMap(): Map<string, number> {
+  if (!g.__indexer) g.__indexer = {};
+  if (!g.__indexer.rescanCooldown) g.__indexer.rescanCooldown = new Map<string, number>();
+  return g.__indexer.rescanCooldown as Map<string, number>;
+}
+
+function shouldThrottleRescan(key: string, now: number): boolean {
+  try {
+    const last = getRescanCooldownMap().get(key);
+    return typeof last === "number" && now - last < RESCAN_COOLDOWN_MS;
+  } catch {
+    return false;
+  }
+}
+
+function markRescanCooldown(key: string, now: number): void {
+  try {
+    const map = getRescanCooldownMap();
+    map.set(key, now);
+    while (map.size > RESCAN_COOLDOWN_MAX) {
+      const first = map.keys().next().value as string | undefined;
+      if (!first) break;
+      map.delete(first);
+    }
+  } catch {}
+}
+
+function clearRescanCooldown(): void {
+  try { getRescanCooldownMap().clear(); } catch {}
+}
+
+function stripDetailsForPersist(details: Details): Details {
+  const { messages, ...rest } = details as Details & { messages?: Message[] };
+  return { ...rest, messages: [] };
+}
+
 const VERSION = "v8";
 
 function getUserDataDir(): string {
@@ -93,13 +140,37 @@ function loadDetails(): PersistDetails {
   try {
     const p = detailsPath();
     if (!fs.existsSync(p)) return { version: VERSION, files: {}, savedAt: 0 };
-    const obj = JSON.parse(fs.readFileSync(p, "utf8"));
-    return { version: VERSION, files: obj.files || {}, savedAt: Number(obj.savedAt || 0) } as PersistDetails;
+    const obj = JSON.parse(fs.readFileSync(p, "utf8")) as any;
+    const normalized: PersistDetails = { version: VERSION, files: {}, savedAt: Number(obj.savedAt || 0) };
+    let trimmed = false;
+    const files = (obj && obj.files) ? obj.files as Record<string, { sig: FileSig; details: Details }> : {};
+    for (const [k, entry] of Object.entries(files)) {
+      if (!entry || !entry.details || !entry.sig) continue;
+      const slim = stripDetailsForPersist(entry.details);
+      if (Array.isArray((entry.details as any).messages) && (entry.details as any).messages.length > 0) {
+        trimmed = true;
+      }
+      normalized.files[k] = { sig: entry.sig, details: slim };
+    }
+    if (trimmed) {
+      try { saveDetails(normalized); } catch {}
+    }
+    return normalized;
   } catch { return { version: VERSION, files: {}, savedAt: 0 }; }
 }
 
 function saveDetails(d: PersistDetails) {
-  try { fs.writeFileSync(detailsPath(), JSON.stringify(d, null, 2), "utf8"); } catch {}
+  try {
+    const normalized: PersistDetails = { version: VERSION, files: {}, savedAt: Number(d.savedAt || Date.now()) };
+    const entries = d.files || {};
+    for (const [k, entry] of Object.entries(entries)) {
+      if (!entry || !entry.details || !entry.sig) continue;
+      normalized.files[k] = { sig: entry.sig, details: stripDetailsForPersist(entry.details) };
+    }
+    fs.writeFileSync(detailsPath(), JSON.stringify(normalized, null, 2), "utf8");
+    d.files = normalized.files;
+    d.savedAt = normalized.savedAt;
+  } catch {}
 }
 
 // 并发限制器
@@ -124,6 +195,44 @@ function pLimit(max: number) {
 
 function canonicalKey(filePath: string): string {
   try { return path.normalize(filePath).replace(/\\/g, "/").toLowerCase(); } catch { return String(filePath || "").toLowerCase(); }
+}
+
+function getDetailsCache(): Map<string, Details> {
+  if (!g.__indexer) g.__indexer = {};
+  if (!g.__indexer.detailsCache) g.__indexer.detailsCache = new Map<string, Details>();
+  return g.__indexer.detailsCache as Map<string, Details>;
+}
+
+export function cacheDetails(filePath: string, details: Details): void {
+  try {
+    if (!details || !Array.isArray(details.messages) || details.messages.length === 0) return;
+    const cache = getDetailsCache();
+    const key = canonicalKey(filePath);
+    const shell = details.runtimeShell && details.runtimeShell !== "unknown" ? details.runtimeShell : detectRuntimeShell(filePath);
+    const normalized: Details = { ...details, runtimeShell: shell };
+    cache.delete(key);
+    cache.set(key, normalized);
+    while (cache.size > DETAILS_CACHE_LIMIT) {
+      const oldest = cache.keys().next().value as string | undefined;
+      if (!oldest) break;
+      cache.delete(oldest);
+    }
+  } catch {}
+}
+
+export function getCachedDetails(filePath: string): Details | null {
+  try {
+    const cache = getDetailsCache();
+    const key = canonicalKey(filePath);
+    const hit = cache.get(key);
+    if (!hit) return null;
+    cache.delete(key);
+    cache.set(key, hit);
+    const shell = hit.runtimeShell && hit.runtimeShell !== "unknown" ? hit.runtimeShell : detectRuntimeShell(filePath);
+    return { ...hit, runtimeShell: shell };
+  } catch {
+    return null;
+  }
 }
 
 // 规范化/清理从日志中提取的路径候选（例如 <cwd>、"Current working directory:" 行）
@@ -437,7 +546,8 @@ async function parseSummary(fp: string, stat: fs.Stats): Promise<IndexSummary> {
   return { id, title, date, filePath: fp, rawDate, dirKey, resumeMode, resumeId, runtimeShell };
 }
 
-async function parseDetails(fp: string, stat: fs.Stats): Promise<Details> {
+async function parseDetails(fp: string, stat: fs.Stats, opts?: { summaryOnly?: boolean }): Promise<Details> {
+  const summaryOnly = !!opts?.summaryOnly; // 索引阶段可跳过完整消息体，降低内存/GC 压力
   let id = path.basename(fp).replace(/\.jsonl$/i, "");
   let title = titleFromFilename(fp);
   const date = stat.mtimeMs || 0;
@@ -455,6 +565,9 @@ async function parseDetails(fp: string, stat: fs.Stats): Promise<Details> {
   // 说明类去重：会话头 instructions 与用户 <user_instructions> 可能重复
   const __seenInstructions = new Set<string>();
   const __normInstr = (s: string) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const pushMessage = (msg: Message) => {
+    if (!summaryOnly) messages.push(msg);
+  };
   return await new Promise<Details>((resolve) => {
     try {
       const rs = fs.createReadStream(fp, { encoding: "utf8", highWaterMark: chunk });
@@ -553,11 +666,11 @@ async function parseDetails(fp: string, stat: fs.Stats): Promise<Details> {
                     const k = __normInstr(t);
                     if (!__seenInstructions.has(k)) {
                       __seenInstructions.add(k);
-                      messages.push({ role: 'system', content: [{ type: 'instructions', text: t, tags: ['session_meta.instructions','session_instructions','instructions'] as any }] });
+                      pushMessage({ role: 'system', content: [{ type: 'instructions', text: t, tags: ['session_meta.instructions','session_instructions','instructions'] as any }] });
                     }
                   }
                   if (payload.git) {
-                    messages.push({ role: 'state', content: [{ type: 'git', text: pretty(payload.git), tags: ['session_meta.git'] as any }] });
+                    pushMessage({ role: 'state', content: [{ type: 'git', text: pretty(payload.git), tags: ['session_meta.git'] as any }] });
                   }
                 } else {
                   if (obj.id) id = String(obj.id);
@@ -575,11 +688,11 @@ async function parseDetails(fp: string, stat: fs.Stats): Promise<Details> {
                     const k = __normInstr(t);
                     if (!__seenInstructions.has(k)) {
                       __seenInstructions.add(k);
-                      messages.push({ role: 'system', content: [{ type: 'instructions', text: t, tags: ['session_instructions','instructions'] as any }] });
+                      pushMessage({ role: 'system', content: [{ type: 'instructions', text: t, tags: ['session_instructions','instructions'] as any }] });
                     }
                   }
                   if ((obj as any).git) {
-                    messages.push({ role: 'state', content: [{ type: 'git', text: pretty((obj as any).git) }] });
+                    pushMessage({ role: 'state', content: [{ type: 'git', text: pretty((obj as any).git) }] });
                   }
                 }
               } catch {}
@@ -687,7 +800,7 @@ async function parseDetails(fp: string, stat: fs.Stats): Promise<Details> {
                     }
                   } catch {}
                 }
-                messages.push({ role, content: items });
+                pushMessage({ role, content: items });
               }
             } else if (obj.type === 'function_call' || obj.record_type === 'tool_call' || ((obj as any).type === 'response_item' && (obj as any).payload && (((obj as any).payload.type === 'function_call') || ((obj as any).payload.record_type === 'tool_call')))) {
               const src: any = ((obj as any).type === 'response_item' && (obj as any).payload) ? (obj as any).payload : obj;
@@ -703,7 +816,7 @@ async function parseDetails(fp: string, stat: fs.Stats): Promise<Details> {
                 }
               } catch {}
               const text = `name: ${name}\n${argsPretty ? 'arguments:\n' + argsPretty : ''}${(src as any).call_id ? `\ncall_id: ${(src as any).call_id}` : ''}`.trim();
-              messages.push({ role: 'tool', content: [{ type: 'function_call', text, tags: ['function_call'] as any }] });
+              pushMessage({ role: 'tool', content: [{ type: 'function_call', text, tags: ['function_call'] as any }] });
             } else if (obj.type === 'function_call_output' || ((obj as any).type === 'response_item' && (obj as any).payload && (obj as any).payload.type === 'function_call_output')) {
               let out = '';
               try {
@@ -714,7 +827,7 @@ async function parseDetails(fp: string, stat: fs.Stats): Promise<Details> {
               } catch {}
               const meta = (obj as any).metadata ? `\nmetadata:\n${pretty((obj as any).metadata)}` : '';
               const text = `${out}${meta}`.trim();
-              messages.push({ role: 'tool', content: [{ type: 'function_output', text, tags: ['function_output'] as any }] });
+              pushMessage({ role: 'tool', content: [{ type: 'function_output', text, tags: ['function_output'] as any }] });
             } else if (obj.type === 'reasoning' || ((obj as any).type === 'response_item' && (obj as any).payload && (obj as any).payload.type === 'reasoning')) {
               const items: { type: string; text: string; tags?: string[] }[] = [];
               try {
@@ -727,15 +840,15 @@ async function parseDetails(fp: string, stat: fs.Stats): Promise<Details> {
                 }
                 if ((src as any).encrypted_content) items.push({ type: 'summary', text: '[encrypted_reasoning omitted]', tags: ['reasoning.summary'] as any });
               } catch {}
-              if (items.length) messages.push({ role: 'reasoning', content: items });
+              if (items.length) pushMessage({ role: 'reasoning', content: items });
             } else if (obj.type === 'state' || obj.record_type === 'state' || ((obj as any).type === 'response_item' && (obj as any).payload && (((obj as any).payload.type === 'state') || ((obj as any).payload.record_type === 'state')))) {
               const src: any = ((obj as any).type === 'response_item' && (obj as any).payload) ? (obj as any).payload : obj;
-              messages.push({ role: 'state', content: [{ type: 'state', text: JSON.stringify(src), tags: ['state'] as any }] });
+              pushMessage({ role: 'state', content: [{ type: 'state', text: JSON.stringify(src), tags: ['state'] as any }] });
             } else if (isSessionHeader) {
               const meta = { id: obj.id, timestamp: obj.timestamp, git: obj.git };
-              messages.push({ role: 'meta', content: [{ type: 'session_meta', text: pretty(meta) }] });
+              pushMessage({ role: 'meta', content: [{ type: 'session_meta', text: pretty(meta) }] });
             } else {
-              messages.push({ role: String(obj.role || obj.type || 'unknown'), content: [{ type: String(obj.type || 'unknown'), text: pretty(obj) }] });
+              pushMessage({ role: String(obj.role || obj.type || 'unknown'), content: [{ type: String(obj.type || 'unknown'), text: pretty(obj) }] });
             }
           } catch { skipped++; }
           lineIndex++;
@@ -811,10 +924,7 @@ async function parseDetails(fp: string, stat: fs.Stats): Promise<Details> {
   });
 }
 
-// 全局索引
-const g: any = global as any;
-if (!g.__indexer) g.__indexer = {};
-if (!g.__indexer.retries) g.__indexer.retries = new Map<string, { count: number; timer?: NodeJS.Timeout }>();
+// 全局索引状态在文件头部初始化
 
 export function getIndexedSummaries(): IndexSummary[] {
   const ix: PersistIndex = g.__indexer.index || { version: VERSION, files: {}, savedAt: 0 };
@@ -828,10 +938,12 @@ export function getIndexedSummaries(): IndexSummary[] {
 }
 
 export function getIndexedDetails(filePath: string): Details | null {
+  const cached = getCachedDetails(filePath);
+  if (cached) return cached;
   const det: PersistDetails = g.__indexer.details || { version: VERSION, files: {}, savedAt: 0 };
   const k = canonicalKey(filePath);
   const v = det.files[k]?.details;
-  if (!v) return null;
+  if (!v || !Array.isArray(v.messages) || v.messages.length === 0) return null;
   const shell = v.runtimeShell && v.runtimeShell !== 'unknown' ? v.runtimeShell : detectRuntimeShell(filePath);
   return { ...v, runtimeShell: shell };
 }
@@ -846,6 +958,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
     purgeLegacyPersistFiles();
     g.__indexer.index = loadIndex();
     g.__indexer.details = loadDetails();
+    try { getDetailsCache().clear(); } catch {}
 
     // 2) 计算根目录（不扫描）
     const rootCandidates = await getSessionsRootCandidatesFastAsync();
@@ -910,10 +1023,11 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
             if (!stat) { retries.delete(key); return; }
             const k = canonicalKey(fp);
             const sig: FileSig = { mtimeMs: stat.mtimeMs, size: stat.size };
-            const details = await parseDetails(fp, stat);
+            const details = await parseDetails(fp, stat, { summaryOnly: true });
             const fallbackDir = dirKeyOf(fp);
             const hasCwd = !!(details.cwd && String(details.cwd).trim());
             const gotProjectDir = hasCwd && (details.dirKey && details.dirKey !== fallbackDir);
+            const slimDetails = stripDetailsForPersist(details);
             const summary: IndexSummary = {
               id: details.id,
               title: details.title,
@@ -926,7 +1040,8 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
               resumeId: details.resumeId,
               runtimeShell: details.runtimeShell && details.runtimeShell !== 'unknown' ? details.runtimeShell : detectRuntimeShell(fp),
             } as any;
-            det.files[k] = { sig, details };
+            try { getDetailsCache().delete(k); } catch {}
+            det.files[k] = { sig, details: slimDetails };
             ix.files[k] = { sig, summary };
             ix.savedAt = Date.now(); det.savedAt = Date.now();
             saveIndex(ix); saveDetails(det);
@@ -957,8 +1072,10 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
         const prev = ix.files[k]?.sig;
         const same = prev && prev.mtimeMs === sig.mtimeMs && prev.size === sig.size;
         if (!same) {
-          const details = await parseDetails(fp, stat);
-          det.files[k] = { sig, details };
+          const details = await parseDetails(fp, stat, { summaryOnly: true });
+          const slimDetails = stripDetailsForPersist(details);
+          try { getDetailsCache().delete(k); } catch {}
+          det.files[k] = { sig, details: slimDetails };
           updatedDetails++;
           const summary: IndexSummary = {
             id: details.id,
@@ -1001,8 +1118,10 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
             const k = canonicalKey(fp);
             const sig: FileSig = { mtimeMs: stat.mtimeMs, size: stat.size };
             // 先解析 details 并直接构造 summary，零额外 IO
-            const details = await parseDetails(fp, stat);
-            det.files[k] = { sig, details };
+            const details = await parseDetails(fp, stat, { summaryOnly: true });
+            const slimDetails = stripDetailsForPersist(details);
+            try { getDetailsCache().delete(k); } catch {}
+            det.files[k] = { sig, details: slimDetails };
             const summary: IndexSummary = {
               id: details.id,
               title: details.title,
@@ -1031,6 +1150,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
           try {
             const k = canonicalKey(fp);
             const removed = ix.files[k]?.summary;
+            try { getDetailsCache().delete(k); } catch {}
             delete ix.files[k]; delete det.files[k];
             ix.savedAt = Date.now(); det.savedAt = Date.now(); saveIndex(ix); saveDetails(det);
             if (removed) try { win?.webContents.send('history:index:remove', { filePath: fp }); } catch {}
@@ -1103,7 +1223,8 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
         g.__indexer.watchers = watchers;
         perfLogger.log(`[watch] enabled using chokidar (local=${localRoots.length}, unc=${uncRoots.length})`);
         // 5) 周期性轻量重扫：仅扫描当天与前一天目录，弥补 UNC 监听遗漏的新增/变更
-        try {
+        const rescanRoots = uncRoots.length > 0 ? uncRoots : [];
+        if (rescanRoots.length > 0) try {
           const upsertQuick = async (fp: string) => {
             try {
               idxLog(`[rescan] checking file='${fp}'`);
@@ -1114,8 +1235,16 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
               const prev = ix.files[k]?.sig;
               const same = prev && prev.mtimeMs === sig.mtimeMs && prev.size === sig.size;
               if (same) return;
-              const details = await parseDetails(fp, stat);
-              det.files[k] = { sig, details };
+              const now = Date.now();
+              if (shouldThrottleRescan(k, now)) {
+                idxLog(`[rescan] skip.cooldown file='${fp}'`);
+                return;
+              }
+              markRescanCooldown(k, now);
+              const details = await parseDetails(fp, stat, { summaryOnly: true });
+              const slimDetails = stripDetailsForPersist(details);
+              try { getDetailsCache().delete(k); } catch {}
+              det.files[k] = { sig, details: slimDetails };
               const summary: IndexSummary = {
                 id: details.id,
                 title: details.title,
@@ -1164,16 +1293,17 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
               const today = new Date();
               const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
               const limit2 = pLimit(6);
-              for (const r of roots) {
+              for (const r of rescanRoots) {
                 const filesToday = await listDayDir(r, today);
                 const filesYest = await listDayDir(r, yesterday);
                 const files = Array.from(new Set([...filesToday, ...filesYest]));
                 await Promise.all(files.map((fp) => limit2(() => upsertQuick(fp))));
               }
             } catch (e) { idxLog(`[rescan:error] err=${String(e)}`); }
-          }, 6000);
+          }, RESCAN_INTERVAL_MS);
           try { (g.__indexer as any).rescanTimer = timer; } catch {}
         } catch (e) { idxLog(`[rescan:init failed] ${String(e)}`); }
+        else { idxLog("[rescan] skipped (no UNC roots)"); }
       } else { perfLogger.log(`[watch] disabled (no chokidar)`); }
   });
 }
@@ -1189,6 +1319,7 @@ export function removeFromIndex(filePath: string): boolean {
     const det: PersistDetails = g.__indexer.details || { version: VERSION, files: {}, savedAt: 0 };
     const k = canonicalKey(filePath);
     const existed = !!ix.files[k] || !!det.files[k];
+    try { getDetailsCache().delete(k); } catch {}
     if (ix.files[k]) delete ix.files[k];
     if (det.files[k]) delete det.files[k];
     if (existed) {
@@ -1237,4 +1368,5 @@ export async function stopHistoryIndexer(): Promise<void> {
       retries.clear();
     }
   } catch {}
+  try { clearRescanCooldown(); } catch {}
 }

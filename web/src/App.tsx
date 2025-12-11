@@ -2264,24 +2264,30 @@ export default function CodexFlowManagerUI() {
       logs: [],
       createdAt: Date.now(),
     };
-    registerTabProject(tab.id, project.id);
-    setTabsByProject((m) => ({ ...m, [project.id]: [...(m[project.id] || []), tab] }));
-    setActiveTab(tab.id, { focusMode: 'immediate', allowDuringRename: true, delay: 0 });
+    let ptyId: string | undefined;
     try {
       const startupCmd = injectTraceEnv(codexCmd);
       const { id } = await window.host.pty.openWSLConsole({ distro: wslDistro, wslPath: project.wslPath, winPath: project.winPath, cols: 80, rows: 24, startupCmd });
-      ptyByTabRef.current[tab.id] = id;
-      setPtyByTab((m) => ({ ...m, [tab.id]: id }));
-      ptyAliveRef.current[tab.id] = true;
-      setPtyAlive((m) => ({ ...m, [tab.id]: true }));
-      registerPtyForTab(tab.id, id);
-      try { tm.setPty(tab.id, id); } catch (err) { console.warn('tm.setPty failed', err); }
-      try { window.host.projects.touch(project.id); } catch {}
-      // 打开控制台后，立即在内存中更新最近使用时间，保证"最近使用优先"实时生效
-      markProjectUsed(project.id);
+      ptyId = id;
     } catch (e) {
       console.error('Failed to open PTY for project', e);
+      alert(String(t('terminal:openFailed', { error: String((e as any)?.message || e) })));
+      return;
     }
+    registerTabProject(tab.id, project.id);
+    setTabsByProject((m) => ({ ...m, [project.id]: [...(m[project.id] || []), tab] }));
+    setActiveTab(tab.id, { focusMode: 'immediate', allowDuringRename: true, delay: 0 });
+    if (ptyId) {
+      ptyByTabRef.current[tab.id] = ptyId;
+      setPtyByTab((m) => ({ ...m, [tab.id]: ptyId }));
+      ptyAliveRef.current[tab.id] = true;
+      setPtyAlive((m) => ({ ...m, [tab.id]: true }));
+      registerPtyForTab(tab.id, ptyId);
+      try { tm.setPty(tab.id, ptyId); } catch (err) { console.warn('tm.setPty failed', err); }
+    }
+    try { window.host.projects.touch(project.id); } catch {}
+    // 打开控制台后，立即在内存中更新最近使用时间，保证"最近使用优先"实时生效
+    markProjectUsed(project.id);
     // 确保视图停留在控制台
     try { setCenterMode('console'); } catch {}
   }
@@ -2335,10 +2341,7 @@ export default function CodexFlowManagerUI() {
       logs: [],
       createdAt: Date.now(),
     };
-    registerTabProject(tab.id, selectedProject.id);
-    setTabsByProject((m) => ({ ...m, [selectedProject.id]: [...(m[selectedProject.id] || []), tab] }));
-    setActiveTab(tab.id, { focusMode: 'immediate', allowDuringRename: true, delay: 0 });
-
+    let ptyId: string | undefined;
     // Open PTY in main (WSL)
     try {
       try { await (window as any).host?.utils?.perfLog?.(`[ui] openNewConsole start project=${selectedProject?.name}`); } catch {}
@@ -2352,21 +2355,30 @@ export default function CodexFlowManagerUI() {
         startupCmd,
       });
       try { await (window as any).host?.utils?.perfLog?.(`[ui] openNewConsole pty=${id}`); } catch {}
-      ptyByTabRef.current[tab.id] = id;
-      setPtyByTab((m) => ({ ...m, [tab.id]: id }));
-      ptyAliveRef.current[tab.id] = true;
-      setPtyAlive((m) => ({ ...m, [tab.id]: true }));
-      registerPtyForTab(tab.id, id);
-      // inform manager about PTY so it can wire bridges
-      try { tm.setPty(tab.id, id); } catch (err) { console.warn('tm.setPty failed', err); }
-      // touch project lastOpenedAt
-      try { window.host.projects.touch(selectedProject.id); } catch {}
-      // 同步更新内存，触发排序刷新；并抑制历史面板自动切换
-      markProjectUsed(selectedProject.id);
+      ptyId = id;
     } catch (e) {
       console.error('Failed to open PTY', e);
       try { await (window as any).host?.utils?.perfLog?.(`[ui] openNewConsole error ${String((e as any)?.stack || e)}`); } catch {}
+      alert(String(t('terminal:openFailed', { error: String((e as any)?.message || e) })));
+      return;
     }
+
+    registerTabProject(tab.id, selectedProject.id);
+    setTabsByProject((m) => ({ ...m, [selectedProject.id]: [...(m[selectedProject.id] || []), tab] }));
+    setActiveTab(tab.id, { focusMode: 'immediate', allowDuringRename: true, delay: 0 });
+    if (ptyId) {
+      ptyByTabRef.current[tab.id] = ptyId;
+      setPtyByTab((m) => ({ ...m, [tab.id]: ptyId }));
+      ptyAliveRef.current[tab.id] = true;
+      setPtyAlive((m) => ({ ...m, [tab.id]: true }));
+      registerPtyForTab(tab.id, ptyId);
+      // inform manager about PTY so it can wire bridges
+      try { tm.setPty(tab.id, ptyId); } catch (err) { console.warn('tm.setPty failed', err); }
+    }
+    // touch project lastOpenedAt
+    try { window.host.projects.touch(selectedProject.id); } catch {}
+    // 同步更新内存，触发排序刷新；并抑制历史面板自动切换
+    markProjectUsed(selectedProject.id);
   }
 
   // 当项目变更时，加载历史（项目范围）
@@ -3332,6 +3344,28 @@ export default function CodexFlowManagerUI() {
           logs: [],
           createdAt: Date.now(),
         };
+        let ptyId: string | undefined;
+        try {
+          await (window as any).host?.utils?.perfLog?.(`[ui] history.resume openWSLConsole start tab=${tab.id}`);
+        } catch {}
+        try {
+          const { id } = await window.host.pty.openWSLConsole({
+          distro: wslDistro,
+          wslPath: selectedProject.wslPath,
+          winPath: selectedProject.winPath,
+          cols: 80,
+          rows: 24,
+          startupCmd,
+        });
+          try {
+            await (window as any).host?.utils?.perfLog?.(`[ui] history.resume pty=${id} tab=${tab.id} - registering listener`);
+          } catch {}
+          ptyId = id;
+        } catch (err) {
+          console.warn('executeResume failed', err);
+          alert(String(t('history:resumeFailed', { error: String((err as any)?.message || err) })));
+          return false;
+        }
         registerTabProject(tab.id, selectedProject.id);
         setTabsByProject((m) => ({ ...m, [selectedProject.id]: [...(m[selectedProject.id] || []), tab] }));
         setActiveTab(tab.id, { focusMode: 'immediate', allowDuringRename: true, delay: 0 });
@@ -3341,29 +3375,17 @@ export default function CodexFlowManagerUI() {
             try { scheduleFocusForTab(tab.id, { immediate: true, allowDuringRename: true }); } catch {}
           });
         } catch {}
-        try {
-          await (window as any).host?.utils?.perfLog?.(`[ui] history.resume openWSLConsole start tab=${tab.id}`);
-        } catch {}
-        const { id } = await window.host.pty.openWSLConsole({
-          distro: wslDistro,
-          wslPath: selectedProject.wslPath,
-          winPath: selectedProject.winPath,
-          cols: 80,
-          rows: 24,
-          startupCmd,
-        });
-        try {
-          await (window as any).host?.utils?.perfLog?.(`[ui] history.resume pty=${id} tab=${tab.id} - registering listener`);
-        } catch {}
-        ptyByTabRef.current[tab.id] = id;
-        setPtyByTab((m) => ({ ...m, [tab.id]: id }));
-        ptyAliveRef.current[tab.id] = true;
-        setPtyAlive((m) => ({ ...m, [tab.id]: true }));
-        registerPtyForTab(tab.id, id);
-        try {
-          await (window as any).host?.utils?.perfLog?.(`[ui] history.resume pty=${id} tab=${tab.id} - listener registered`);
-        } catch {}
-        try { tm.setPty(tab.id, id); } catch (err) { console.warn('tm.setPty failed', err); }
+        if (ptyId) {
+          ptyByTabRef.current[tab.id] = ptyId;
+          setPtyByTab((m) => ({ ...m, [tab.id]: ptyId }));
+          ptyAliveRef.current[tab.id] = true;
+          setPtyAlive((m) => ({ ...m, [tab.id]: true }));
+          registerPtyForTab(tab.id, ptyId);
+          try {
+            await (window as any).host?.utils?.perfLog?.(`[ui] history.resume pty=${ptyId} tab=${tab.id} - listener registered`);
+          } catch {}
+          try { tm.setPty(tab.id, ptyId); } catch (err) { console.warn('tm.setPty failed', err); }
+        }
         try { window.host.projects.touch(selectedProject.id); } catch {}
         // 内存也更新最近使用时间，并抑制历史面板自动切换
         markProjectUsed(selectedProject.id);
@@ -3382,6 +3404,7 @@ export default function CodexFlowManagerUI() {
       try {
         await (window as any).host?.utils?.perfLog?.(`[ui] history.resume ${mode} error ${String((err as any)?.stack || err)}`);
       } catch {}
+      alert(String(t('history:resumeFailed', { error: String((err as any)?.message || err) })));
       return false;
     }
   };
@@ -4566,9 +4589,24 @@ function filterHistoryMessages(session: HistorySession, typeFilter: Record<strin
 
 function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResumeExternal, terminalMode }: { sessions: HistorySession[]; selectedHistoryId: string | null; onBack?: () => void; onResume?: (filePath?: string) => void; onResumeExternal?: (filePath?: string) => void; terminalMode: 'wsl' | 'windows' }) {
   const { t } = useTranslation(['history', 'common']);
+  const MAX_HISTORY_MESSAGE_CACHE = 5;
   const [loaded, setLoaded] = useState(false);
   const [skipped, setSkipped] = useState(0);
-  const [localSessions, setLocalSessions] = useState<HistorySession[]>(sessions);
+  const [localSessions, setLocalSessions] = useState<HistorySession[]>(() => sessions.map((s) => ({ ...s, messages: [] })));
+  const messageCacheIdsRef = useRef<string[]>([]);
+  const pruneMessages = useCallback((list: HistorySession[], allowed: Set<string>) => {
+    if (!Array.isArray(list) || list.length === 0) return list;
+    if (allowed.size === 0) return list.map((s) => ({ ...s, messages: [] }));
+    return list.map((s) => (allowed.has(s.id) ? s : { ...s, messages: [] }));
+  }, []);
+  const touchMessageCache = useCallback((id?: string | null) => {
+    if (!id) return messageCacheIdsRef.current;
+    const next = messageCacheIdsRef.current.filter((x) => x !== id);
+    next.unshift(id);
+    if (next.length > MAX_HISTORY_MESSAGE_CACHE) next.length = MAX_HISTORY_MESSAGE_CACHE;
+    messageCacheIdsRef.current = next;
+    return messageCacheIdsRef.current;
+  }, [MAX_HISTORY_MESSAGE_CACHE]);
   const [typeFilter, setTypeFilter] = useState<Record<string, boolean>>({});
   const [detailSearch, setDetailSearch] = useState("");
   const reqSeq = useRef(0);
@@ -4594,18 +4632,23 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
 
   // 刷新列表时保留已加载的消息内容，避免详情面板闪烁
   useEffect(() => {
+    const filteredIds = messageCacheIdsRef.current.filter((id) => sessions.some((s) => s.id === id));
+    messageCacheIdsRef.current = filteredIds;
+    const allowed = new Set(filteredIds);
     setLocalSessions((cur) => {
       const prevMap = new Map(cur.map((x) => [x.id, x]));
-      return sessions.map((s) => {
+      const merged = sessions.map((s) => {
         const prev = prevMap.get(s.id);
-        if (!prev) return s;
+        if (!prev) return allowed.has(s.id) ? s : { ...s, messages: [] };
         const prevMsgs = Array.isArray(prev.messages) ? prev.messages : [];
         const nextMsgs = Array.isArray(s.messages) ? s.messages : [];
-        if (nextMsgs.length === 0 && prevMsgs.length > 0) return { ...s, messages: prevMsgs };
+        if (allowed.has(s.id) && nextMsgs.length === 0 && prevMsgs.length > 0) return { ...s, messages: prevMsgs };
+        if (!allowed.has(s.id)) return { ...s, messages: [] };
         return s;
       });
+      return pruneMessages(merged, allowed);
     });
-  }, [sessions]);
+  }, [sessions, pruneMessages]);
 
   useEffect(() => {
     setDetailSearch("");
@@ -4725,7 +4768,11 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
         const res: any = await window.host.history.read({ filePath: String(selectedSession.filePath || '') });
         const msgs = (res.messages || []).map((m: any) => ({ role: m.role as any, content: m.content }));
         if (seq === reqSeq.current) {
-          setLocalSessions((cur) => cur.map((x) => (x.id === selectedHistoryId ? { ...x, messages: msgs } : x)));
+          const allowedIds = new Set(touchMessageCache(selectedHistoryId));
+          setLocalSessions((cur) => {
+            const next = cur.map((x) => (x.id === selectedHistoryId ? { ...x, messages: msgs } : x));
+            return pruneMessages(next, allowedIds);
+          });
           setSkipped(res.skippedLines || 0);
           setLoaded(true);
           lastLoadedFingerprintRef.current = signature;
@@ -4757,7 +4804,7 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
         if (seq === reqSeq.current) setLoaded(true);
       }
     })();
-  }, [selectedHistoryId, selectedSession, selectedSessionFingerprint, selectedLocalSession]);
+  }, [selectedHistoryId, selectedSession, selectedSessionFingerprint, selectedLocalSession, pruneMessages, touchMessageCache]);
 
   function buildFilteredText(): string {
     if (!selectedHistoryId) return '';

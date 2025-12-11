@@ -31,6 +31,7 @@
   "resumeShellMismatch": "该会话来自 {expected} 模式，当前运行环境为 {current}，暂不支持跨环境恢复。请切换到 {expected} 模式后再试。",
   "resumeShellMismatchExpectedLabel": "会话模式",
   "resumeShellMismatchCurrentLabel": "当前模式",
+  "resumeFailed": "恢复会话失败：{error}",
   "panelTitle": "项目历史",
   "searchPlaceholder": "搜索历史记录…",
   "searchPlaceholderHint": "按标题、路径或输入首条历史内容搜索历史记录",
