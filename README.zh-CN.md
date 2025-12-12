@@ -206,7 +206,7 @@ adapters/TerminalAdapter.tsx
 components/ui/*
 lib/*
 types/host.d.ts
-vite.config.ts
+vite.config.mts
 /tailwind.config.js
 /postcss.config.js
 /package.json
