@@ -5,21 +5,52 @@
       "title": "Basic experience",
       "desc": "Language preferences, theme mode, and general settings."
     },
+    "providers": {
+      "title": "Custom Engine",
+      "desc": "Configure Codex / Claude / Gemini, and add custom engines (icon + startup command + isolated environment)."
+    },
     "notifications": {
       "title": "Notifications",
-      "desc": "Choose how CodexFlow reminds you when agents finish their tasks."
+      "desc": "Choose how CodexFlow reminds you when agents finish their tasks. (Currently only supports Codex.)"
     },
     "terminal": {
       "title": "Terminal & input",
-      "desc": "Configure input field behavior and how CodexFlow runs commands."
+      "desc": "Configure input field behavior and the built-in terminal appearance."
     },
     "networkAccount": {
       "title": "Network & Account",
-      "desc": "Manage network proxy settings and review your ChatGPT account status."
+      "desc": "Manage network proxy settings and review your ChatGPT account status. (Account features currently only support Codex.)"
     },
     "data": {
       "title": "Data & storage",
       "desc": "Inspect cached files and clean redundant histories."
+    }
+  },
+  "providers": {
+    "active": {
+      "label": "Default engine",
+      "help": "Used for subsequent new consoles / launches."
+    },
+    "defaultName": "Custom Engine",
+    "listTitle": "Engines",
+    "listHelp": "Built-in engines can override startup command and icon; custom engines can be added/removed.",
+    "add": "Add engine",
+    "remove": "Remove",
+    "setActive": "Set default",
+    "editTitle": "Edit: {name}",
+    "fields": {
+      "id": "ID",
+      "name": "Name",
+      "nameHelp": "Custom engines can rename; built-in names follow UI language.",
+      "startupCmd": "Startup command",
+      "startupCmdPlaceholder": "e.g. codex / claude / gemini",
+      "startupCmdHelp": "Executed when creating a new console; you can provide a full command if needed.",
+      "icon": "Icon",
+      "iconUpload": "Choose icon",
+      "iconHelp": "Upload SVG/PNG etc; stored as a DataURL in settings.",
+      "iconClear": "Clear icon override",
+      "envTerminal": "Environment",
+      "envDistro": "WSL distro"
     }
   },
   "network": {

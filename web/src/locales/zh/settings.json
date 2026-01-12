@@ -5,21 +5,52 @@
       "title": "基础体验",
       "desc": "界面语言、主题模式等通用设置。"
     },
+    "providers": {
+      "title": "自定义引擎",
+      "desc": "配置 Codex / Claude / Gemini，并可新增自定义引擎（图标 + 启动命令 + 环境隔离）。"
+    },
     "notifications": {
       "title": "通知提醒",
-      "desc": "配置代理完成任务时的提醒方式。"
+      "desc": "配置代理完成任务时的提醒方式。（目前仅支持 Codex）"
     },
     "terminal": {
       "title": "终端与输入框",
-      "desc": "配置输入框行为与 CodexFlow 执行命令的默认环境。"
+      "desc": "配置输入框行为与内置终端外观。"
     },
     "networkAccount": {
       "title": "网络与账号",
-      "desc": "管理应用内网络代理设置，查看 ChatGPT 账号状态。"
+      "desc": "管理应用内网络代理设置，查看 ChatGPT 账号状态。（账号功能目前仅支持 Codex）"
     },
     "data": {
       "title": "数据与存储",
       "desc": "查看缓存目录并清理冗余历史记录。"
+    }
+  },
+  "providers": {
+    "active": {
+      "label": "默认引擎",
+      "help": "决定后续新建控制台/启动时使用的引擎。"
+    },
+    "defaultName": "自定义引擎",
+    "listTitle": "引擎列表",
+    "listHelp": "内置引擎可覆盖启动命令与图标；自定义引擎可自由增删。",
+    "add": "新增引擎",
+    "remove": "删除",
+    "setActive": "设为默认",
+    "editTitle": "编辑：{name}",
+    "fields": {
+      "id": "ID",
+      "name": "名称",
+      "nameHelp": "自定义引擎可修改名称；内置引擎名称由界面语言决定。",
+      "startupCmd": "启动命令",
+      "startupCmdPlaceholder": "例如：codex / claude / gemini",
+      "startupCmdHelp": "会在新建控制台时自动执行；可根据安装方式填写完整命令。",
+      "icon": "图标",
+      "iconUpload": "选择图标",
+      "iconHelp": "支持上传 SVG/PNG 等图片；会以 DataURL 形式存入设置。",
+      "iconClear": "清除图标覆盖",
+      "envTerminal": "执行环境",
+      "envDistro": "WSL 发行版"
     }
   },
   "network": {

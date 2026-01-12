@@ -33,6 +33,35 @@ export type NetworkSettings = {
 
 export type ThemeSetting = 'light' | 'dark' | 'system';
 
+export type ProviderId = string;
+
+export type ProviderItem = {
+  /** Provider 唯一标识（内置：codex/claude/gemini；自定义：任意非空字符串） */
+  id: ProviderId;
+  /** 展示名称：仅用于自定义 Provider（内置 Provider 优先由渲染层 i18n 决定） */
+  displayName?: string;
+  /** 图标（DataURL，如 data:image/svg+xml;base64,...）；为空则使用内置默认图标 */
+  iconDataUrl?: string;
+  /** 启动命令（例如 codex / claude / gemini），可覆盖内置默认值 */
+  startupCmd?: string;
+};
+
+export type ProviderEnv = {
+  /** 该 Provider 的默认运行环境（与其它 Provider 隔离） */
+  terminal?: TerminalMode;
+  /** 当 terminal=wsl 时使用的发行版名称 */
+  distro?: string;
+};
+
+export type ProvidersSettings = {
+  /** 当前选中的 Provider（决定后续新建/启动使用的命令拼装方式） */
+  activeId: ProviderId;
+  /** Provider 列表（包含内置与自定义；内置项用于保存覆盖配置） */
+  items: ProviderItem[];
+  /** Provider 环境配置（按 id 隔离） */
+  env: Record<ProviderId, ProviderEnv>;
+};
+
 export type AppSettings = {
   /** 终端类型：WSL 或 Windows 本地终端（PowerShell/PowerShell 7） */
   terminal?: TerminalMode;
@@ -42,6 +71,8 @@ export type AppSettings = {
   distro: string;
   /** 启动 CodexFlow 的命令（渲染层会做包装） */
   codexCmd: string;
+  /** Provider 设置（可扩展；用于实现多 Provider 与隔离环境） */
+  providers?: ProvidersSettings;
   /** 历史根目录（自动探测） */
   historyRoot: string;
   /** 发送行为：仅写入(write_only) 或 写入并回车(write_and_enter) */
@@ -81,6 +112,7 @@ const DEFAULT_NETWORK: NetworkSettings = {
 };
 const DEFAULT_THEME: ThemeSetting = 'system';
 const DEFAULT_TERMINAL_THEME: TerminalThemeId = 'campbell';
+const DEFAULT_PROVIDER_ACTIVE_ID = 'codex';
 
 function normalizeTheme(raw: unknown): ThemeSetting {
   const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
@@ -148,6 +180,80 @@ function pickPreferredDistro(preferred: unknown, distros: DistroInfo[]): string 
   return normalized || DEFAULT_WSL_DISTRO;
 }
 
+/**
+ * 生成内置 Provider 列表（仅用于默认值与迁移兜底；渲染层会基于 i18n 决定展示文案）。
+ */
+function defaultProviderItems(): ProviderItem[] {
+  return [
+    { id: 'codex' },
+    { id: 'claude' },
+    { id: 'gemini' },
+  ];
+}
+
+/**
+ * 将 providers 字段归一化为稳定结构，并对旧版本的 terminal/distro/codexCmd 做迁移映射。
+ */
+function normalizeProviders(raw: Partial<AppSettings>, distros: DistroInfo[]): ProvidersSettings {
+  const legacyTerminal = normalizeTerminal((raw as any)?.terminal ?? 'wsl');
+  const legacyDistro = pickPreferredDistro((raw as any)?.distro, distros);
+  const legacyCodexCmd =
+    typeof (raw as any)?.codexCmd === 'string' && String((raw as any).codexCmd).trim().length > 0
+      ? String((raw as any).codexCmd).trim()
+      : 'codex';
+
+  const input = (raw as any)?.providers as Partial<ProvidersSettings> | undefined;
+  const activeId =
+    typeof input?.activeId === 'string' && input.activeId.trim().length > 0
+      ? input.activeId.trim()
+      : DEFAULT_PROVIDER_ACTIVE_ID;
+
+  const itemsInput = Array.isArray(input?.items) ? input!.items : [];
+  const items: ProviderItem[] = [];
+  const seen = new Set<string>();
+  for (const it of itemsInput) {
+    const id = typeof (it as any)?.id === 'string' ? String((it as any).id).trim() : '';
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    items.push({
+      id,
+      displayName: typeof (it as any)?.displayName === 'string' ? String((it as any).displayName).trim() : undefined,
+      iconDataUrl: typeof (it as any)?.iconDataUrl === 'string' ? String((it as any).iconDataUrl).trim() : undefined,
+      startupCmd: typeof (it as any)?.startupCmd === 'string' ? String((it as any).startupCmd).trim() : undefined,
+    });
+  }
+  for (const builtIn of defaultProviderItems()) {
+    if (seen.has(builtIn.id)) continue;
+    seen.add(builtIn.id);
+    items.push(builtIn);
+  }
+
+  const envInput = (input && typeof input.env === 'object' && input.env) ? (input.env as any) : {};
+  const env: Record<string, ProviderEnv> = {};
+  for (const [id, val] of Object.entries(envInput || {})) {
+    const key = String(id || '').trim();
+    if (!key) continue;
+    const t = normalizeTerminal((val as any)?.terminal ?? legacyTerminal);
+    const d = pickPreferredDistro((val as any)?.distro ?? legacyDistro, distros);
+    env[key] = { terminal: t, distro: d };
+  }
+
+  // 迁移策略：
+  // - codex：使用旧版 terminal/distro/codexCmd 作为默认；允许 providers 覆盖
+  // - 其它内置/自定义：若缺失则继承旧版 terminal/distro（仅做初始填充，保证不为空）
+  if (!env.codex) env.codex = { terminal: legacyTerminal, distro: legacyDistro };
+  if (!env.claude) env.claude = { terminal: legacyTerminal, distro: legacyDistro };
+  if (!env.gemini) env.gemini = { terminal: legacyTerminal, distro: legacyDistro };
+
+  // 将 legacyCodexCmd 写入 codex 的 startupCmd 兜底（仅当 providers 未显式覆盖）
+  const codexItem = items.find((x) => x.id === 'codex');
+  if (codexItem && (!codexItem.startupCmd || codexItem.startupCmd.trim().length === 0)) {
+    codexItem.startupCmd = legacyCodexCmd;
+  }
+
+  return { activeId, items, env };
+}
+
 function mergeWithDefaults(raw: Partial<AppSettings>, preloadedDistros?: DistroInfo[]): AppSettings {
   const distros = preloadedDistros ?? loadDistroList();
   const defaults: AppSettings = {
@@ -156,6 +262,11 @@ function mergeWithDefaults(raw: Partial<AppSettings>, preloadedDistros?: DistroI
     distro: pickPreferredDistro('', distros),
     // 渲染层会按“每标签独立 tmux 会话”包装该命令；默认仅保存基础命令
     codexCmd: 'codex',
+    providers: {
+      activeId: DEFAULT_PROVIDER_ACTIVE_ID,
+      items: defaultProviderItems(),
+      env: {},
+    },
     historyRoot: path.join(os.homedir(), '.codex', 'sessions'),
     sendMode: 'write_and_enter',
     // 默认：发送给 Codex 的项目内文件路径使用“全路径”（WSL 绝对路径）
@@ -177,6 +288,16 @@ function mergeWithDefaults(raw: Partial<AppSettings>, preloadedDistros?: DistroI
   merged.distro = pickPreferredDistro(merged.distro, distros);
   merged.theme = normalizeTheme((raw as any)?.theme ?? merged.theme);
   merged.terminalTheme = normalizeTerminalTheme((raw as any)?.terminalTheme ?? merged.terminalTheme);
+  merged.providers = normalizeProviders(merged, distros);
+
+  // 与旧字段保持双写兼容：codex provider 的 env/cmd 同步写回 legacy 字段
+  try {
+    const codexEnv = merged.providers?.env?.codex;
+    if (codexEnv?.terminal) merged.terminal = normalizeTerminal(codexEnv.terminal);
+    if (codexEnv?.distro) merged.distro = pickPreferredDistro(codexEnv.distro, distros);
+    const codexCmd = merged.providers?.items?.find((x) => x.id === 'codex')?.startupCmd;
+    if (typeof codexCmd === 'string' && codexCmd.trim().length > 0) merged.codexCmd = codexCmd.trim();
+  } catch {}
   return merged;
 }
 

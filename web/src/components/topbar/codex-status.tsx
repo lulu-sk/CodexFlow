@@ -4,7 +4,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
-import { Button } from "@/components/ui/button";
+import { Button, type ButtonProps } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Gauge, RotateCcw } from "lucide-react";
 import type { AppSettings, CodexAccountInfo, CodexRateLimitSnapshot } from "@/types/host";
@@ -56,6 +56,35 @@ function useHoverCard(): HoverHandlers {
   }, []);
   useEffect(() => () => clear(), []);
   return { open, onEnter, onLeave };
+}
+
+/**
+ * 解析 Codex 用量请求的运行环境键，用于在终端模式/发行版变化时触发重新拉取。
+ */
+function resolveCodexEnvKey(terminalMode?: TerminalMode, distro?: string): string {
+  if (terminalMode === "wsl") return `wsl:${distro ?? ""}`;
+  if (terminalMode === "pwsh") return "windows-pwsh";
+  if (terminalMode === "windows") return "windows";
+  return "default";
+}
+
+type CodexRateCacheEntry = {
+  attemptedAt: number | null;
+  data: CodexRateLimitSnapshot | null;
+  error: string | null;
+};
+
+const CODEX_RATE_CACHE = new Map<string, CodexRateCacheEntry>();
+
+/**
+ * 读取 Codex 用量缓存（按 envKey 区分），用于避免频繁的自动刷新。
+ */
+function readCodexRateCache(envKey: string): CodexRateCacheEntry {
+  const cached = CODEX_RATE_CACHE.get(envKey);
+  if (cached) return cached;
+  const empty: CodexRateCacheEntry = { attemptedAt: null, data: null, error: null };
+  CODEX_RATE_CACHE.set(envKey, empty);
+  return empty;
 }
 
 function useCodexAccount(
@@ -141,58 +170,123 @@ function useCodexRate(auto = true): [FetchState<CodexRateLimitSnapshot>, () => v
   return [state, fetchRate];
 }
 
-const PLAN_KEYS: Record<string, string> = {
-  free: "settings:codexAccount.plan.free",
-  plus: "settings:codexAccount.plan.plus",
-  pro: "settings:codexAccount.plan.pro",
-  team: "settings:codexAccount.plan.team",
-  business: "settings:codexAccount.plan.business",
-  deprecated_enterprise: "settings:codexAccount.plan.business",
-  education: "settings:codexAccount.plan.education",
-  deprecated_edu: "settings:codexAccount.plan.education",
+type CodexRateLoadPolicy = "always" | "ifMissing" | "never";
+
+/**
+ * 使用带缓存的 Codex 用量状态：避免组件反复挂载时重复拉取；支持“仅首次无缓存时自动拉取”。
+ */
+function useCodexRateCached(envKey: string): [
+  FetchState<CodexRateLimitSnapshot>,
+  () => void,
+  { attempted: boolean },
+] {
+  const { t } = useTranslation(["common"]);
+  const resolveErrorMessage = useCallback(
+    (error: unknown) => translateRateLimitError(error, t),
+    [t],
+  );
+
+  const [attempted, setAttempted] = useState<boolean>(() => readCodexRateCache(envKey).attemptedAt != null);
+  const [state, setState] = useState<FetchState<CodexRateLimitSnapshot>>(() => {
+    const cached = readCodexRateCache(envKey);
+    return {
+      loading: false,
+      error: cached.error,
+      data: cached.data,
+    };
+  });
+
+  useEffect(() => {
+    const cached = readCodexRateCache(envKey);
+    setAttempted(cached.attemptedAt != null);
+    setState({
+      loading: false,
+      error: cached.error,
+      data: cached.data,
+    });
+  }, [envKey]);
+
+  const fetchRate = useCallback(async () => {
+    const now = Date.now();
+    setAttempted(true);
+    setState((prev) => ({ ...prev, loading: true, error: null }));
+    try {
+      const res = await window.host.codex.getRateLimit();
+      if (res.ok) {
+        const entry: CodexRateCacheEntry = { attemptedAt: now, error: null, data: res.snapshot ?? null };
+        CODEX_RATE_CACHE.set(envKey, entry);
+        setState({ loading: false, error: null, data: entry.data });
+      } else {
+        const errorText = resolveErrorMessage(res.error);
+        const entry: CodexRateCacheEntry = { attemptedAt: now, error: errorText, data: null };
+        CODEX_RATE_CACHE.set(envKey, entry);
+        setState({ loading: false, error: errorText, data: null });
+      }
+    } catch (err) {
+      const errorText = resolveErrorMessage(err);
+      const entry: CodexRateCacheEntry = { attemptedAt: now, error: errorText, data: null };
+      CODEX_RATE_CACHE.set(envKey, entry);
+      setState({ loading: false, error: errorText, data: null });
+    }
+  }, [envKey, resolveErrorMessage]);
+
+  return [state, fetchRate, { attempted }];
+}
+
+type CodexUsageHoverCardTriggerArgs = {
+  rateState: FetchState<CodexRateLimitSnapshot>;
+  percentLabel: string;
+  summaryLabel: string;
 };
 
-function resolveAccountLabel(account: CodexAccountInfo | null, t: TFunction): string {
-  if (!account) return t("settings:codexAccount.statusUnknown", "未登录");
-  if (account.email) return account.email;
-  if (account.accountId) return account.accountId;
-  return t("settings:codexAccount.statusUnknown", "未登录");
-}
+export type CodexUsageHoverCardProps = {
+  className?: string;
+  terminalMode?: TerminalMode;
+  distro?: string;
+  renderTrigger: (args: CodexUsageHoverCardTriggerArgs) => React.ReactNode;
+  panelAlign?: "start" | "end";
+  loadPolicy?: CodexRateLoadPolicy;
+  enableAutoRefreshInterval?: boolean;
+  enableGlobalRefreshEvent?: boolean;
+};
 
-function describePlan(plan: string | null, t: TFunction): string {
-  if (!plan) return t("settings:codexAccount.plan.unknown", "未知套餐");
-  const key = PLAN_KEYS[plan];
-  return key ? t(key) : plan;
-}
-
-const CodexUsageHoverButton: React.FC<{ className?: string; terminalMode?: TerminalMode; distro?: string }> = ({ className, terminalMode, distro }) => {
+/**
+ * Codex 用量 Hover Card：提供统一的 hover 行为与用量面板渲染，触发器由调用方自定义。
+ */
+export const CodexUsageHoverCard: React.FC<CodexUsageHoverCardProps> = ({
+  className,
+  terminalMode,
+  distro,
+  renderTrigger,
+  panelAlign = "start",
+  loadPolicy = "always",
+  enableAutoRefreshInterval = true,
+  enableGlobalRefreshEvent = true,
+}) => {
   const { t, i18n } = useTranslation(["common"]);
-  const [rateState, reloadRate] = useCodexRate(true);
-  const rateHover = useHoverCard();
+  const envKey = useMemo(() => resolveCodexEnvKey(terminalMode, distro), [terminalMode, distro]);
+  const [rateState, reloadRate] = useCodexRateCached(envKey);
+  const hover = useHoverCard();
   const lastManualRefreshAtRef = useRef<number>(0);
-  const envKey = useMemo(() => {
-    if (terminalMode === "wsl") return `wsl:${distro ?? ""}`;
-    if (terminalMode === "pwsh") return "windows-pwsh";
-    if (terminalMode === "windows") return "windows";
-    return "default";
-  }, [terminalMode, distro]);
-  const lastEnvKeyRef = useRef(envKey);
+  const lastAutoLoadKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (lastEnvKeyRef.current === envKey) return;
-    lastEnvKeyRef.current = envKey;
-    reloadRate();
-  }, [envKey, reloadRate]);
-
-  useEffect(() => {
-    if (!rateState.data) return undefined;
-    const interval = computeRefreshInterval(rateState.data);
-    const timer = window.setTimeout(() => reloadRate(), interval);
-    return () => window.clearTimeout(timer);
-  }, [rateState.data, reloadRate]);
+    if (loadPolicy === "never") return;
+    if (lastAutoLoadKeyRef.current === envKey) return;
+    lastAutoLoadKeyRef.current = envKey;
+    if (loadPolicy === "always") {
+      reloadRate();
+      return;
+    }
+    const attemptedInCache = readCodexRateCache(envKey).attemptedAt != null;
+    if (loadPolicy === "ifMissing" && !attemptedInCache) {
+      reloadRate();
+    }
+  }, [envKey, loadPolicy, reloadRate]);
 
   // 监听渲染进程全局的“用量刷新请求”事件；冷却时间 1 分钟
   useEffect(() => {
+    if (!enableGlobalRefreshEvent) return undefined;
     const onRefresh = () => {
       try {
         const now = Date.now();
@@ -203,7 +297,15 @@ const CodexUsageHoverButton: React.FC<{ className?: string; terminalMode?: Termi
     };
     window.addEventListener(CODEX_RATE_REFRESH_EVENT, onRefresh as any);
     return () => window.removeEventListener(CODEX_RATE_REFRESH_EVENT, onRefresh as any);
-  }, [reloadRate]);
+  }, [enableGlobalRefreshEvent, reloadRate]);
+
+  useEffect(() => {
+    if (!enableAutoRefreshInterval) return undefined;
+    if (!rateState.data) return undefined;
+    const interval = computeRefreshInterval(rateState.data);
+    const timer = window.setTimeout(() => reloadRate(), interval);
+    return () => window.clearTimeout(timer);
+  }, [enableAutoRefreshInterval, rateState.data, reloadRate]);
 
   const dominantWindow = useMemo(
     () => resolveDominantUsageWindow(rateState.data ?? null),
@@ -217,6 +319,9 @@ const CodexUsageHoverButton: React.FC<{ className?: string; terminalMode?: Termi
     ].filter((v): v is number => typeof v === "number" && Number.isFinite(v));
     return values.length > 0 ? Math.max(...values) : null;
   }, [rateState.data]);
+  const percentLabel = dominantWindow
+    ? formatPercent(dominantWindow.usedPercent ?? null)
+    : formatPercent(percentUsed);
 
   const summaryLabel = rateState.loading
     ? t("common:codexUsage.loading", "加载用量…")
@@ -231,15 +336,14 @@ const CodexUsageHoverButton: React.FC<{ className?: string; terminalMode?: Termi
   return (
     <div
       className={`relative ${className ?? ""}`}
-      onMouseEnter={rateHover.onEnter}
-      onMouseLeave={rateHover.onLeave}
+      onMouseEnter={hover.onEnter}
+      onMouseLeave={hover.onLeave}
     >
-      <Button variant="ghost" size="sm" className="flex items-center gap-2 px-2">
-        <Gauge className="h-4 w-4" />
-        <span className="truncate max-w-[200px]">{summaryLabel}</span>
-      </Button>
-      {rateHover.open && (
-        <div className="absolute left-0 top-full z-[70] mt-2 w-[320px] rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple-lg p-4 text-sm text-[var(--cf-text-primary)] shadow-apple-xl dark:shadow-apple-dark-xl">
+      {renderTrigger({ rateState, percentLabel, summaryLabel })}
+      {hover.open && (
+        <div
+          className={`absolute top-full z-[70] mt-2 w-[320px] rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple-lg p-4 text-sm text-[var(--cf-text-primary)] shadow-apple-xl dark:shadow-apple-dark-xl ${panelAlign === "end" ? "right-0" : "left-0"}`}
+        >
           {rateState.error ? (
             <div className="text-[var(--cf-red)]">{rateState.error}</div>
           ) : rateState.data ? (
@@ -319,6 +423,80 @@ const CodexUsageHoverButton: React.FC<{ className?: string; terminalMode?: Termi
         </div>
       )}
     </div>
+  );
+};
+
+const PLAN_KEYS: Record<string, string> = {
+  free: "settings:codexAccount.plan.free",
+  plus: "settings:codexAccount.plan.plus",
+  pro: "settings:codexAccount.plan.pro",
+  team: "settings:codexAccount.plan.team",
+  business: "settings:codexAccount.plan.business",
+  deprecated_enterprise: "settings:codexAccount.plan.business",
+  education: "settings:codexAccount.plan.education",
+  deprecated_edu: "settings:codexAccount.plan.education",
+};
+
+function resolveAccountLabel(account: CodexAccountInfo | null, t: TFunction): string {
+  if (!account) return t("settings:codexAccount.statusUnknown", "未登录");
+  if (account.email) return account.email;
+  if (account.accountId) return account.accountId;
+  return t("settings:codexAccount.statusUnknown", "未登录");
+}
+
+function describePlan(plan: string | null, t: TFunction): string {
+  if (!plan) return t("settings:codexAccount.plan.unknown", "未知套餐");
+  const key = PLAN_KEYS[plan];
+  return key ? t(key) : plan;
+}
+
+/**
+ * 顶部栏 Codex 用量按钮：显示摘要文案，悬停展开详情并允许手动刷新。
+ */
+const CodexUsageHoverButton: React.FC<{ className?: string; terminalMode?: TerminalMode; distro?: string }> = ({ className, terminalMode, distro }) => {
+  return (
+    <CodexUsageHoverCard
+      className={className}
+      terminalMode={terminalMode}
+      distro={distro}
+      renderTrigger={({ summaryLabel }) => (
+        <Button variant="ghost" size="sm" className="flex items-center gap-2 px-2">
+          <Gauge className="h-4 w-4" />
+          <span className="truncate max-w-[200px]">{summaryLabel}</span>
+        </Button>
+      )}
+    />
+  );
+};
+
+export type CodexUsageInlinePercentProps = {
+  terminalMode?: TerminalMode;
+  distro?: string;
+  className?: string;
+  triggerVariant?: ButtonProps["variant"];
+  triggerSize?: ButtonProps["size"];
+  triggerClassName?: string;
+};
+
+/**
+ * 顶部栏内联用量展示：仅显示百分比（选中 Codex 时可见），悬停可展开详情并允许手动刷新。
+ */
+export const CodexUsageInlinePercent: React.FC<CodexUsageInlinePercentProps> = ({ className, terminalMode, distro, triggerVariant = "secondary", triggerSize = "sm", triggerClassName }) => {
+  return (
+    <CodexUsageHoverCard
+      className={className}
+      terminalMode={terminalMode}
+      distro={distro}
+      renderTrigger={({ rateState, percentLabel }) => (
+        <Button
+          variant={triggerVariant}
+          size={triggerSize}
+          className={`h-8 w-[52px] justify-center px-2 tabular-nums ${rateState.error ? "text-[var(--cf-red)]" : ""} ${triggerClassName ?? ""}`}
+        >
+          {percentLabel}
+        </Button>
+      )}
+    />
   );
 };
 

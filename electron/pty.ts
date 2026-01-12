@@ -4,7 +4,7 @@
 import os from 'node:os';
 import wsl from './wsl.js';
 import settings from './settings.js';
-import { resolveWindowsShell } from './shells.js';
+import { resolveWindowsShell, type TerminalMode } from './shells.js';
 import type { IPty } from '@lydell/node-pty';
 import * as pty from '@lydell/node-pty';
 import { BrowserWindow } from 'electron';
@@ -28,7 +28,11 @@ export class PTYManager {
     this.getWindow = getWindow;
   }
 
-  openWSLConsole(opts: { distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string }): string {
+  /**
+   * 打开一个 PTY 会话。
+   * - 允许通过 opts.terminal 覆盖全局 settings.terminal，用于实现 Provider 级别环境隔离。
+   */
+  openWSLConsole(opts: { terminal?: TerminalMode; distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string }): string {
     const distro = opts.distro || 'Ubuntu-22.04';
     const wslPath = opts.wslPath || '~';
     const winPath = String(opts.winPath || '').trim();
@@ -41,7 +45,7 @@ export class PTYManager {
     const env = { ...process.env } as Record<string, string>;
 
     // 根据设置选择 WSL 或 Windows 本地终端
-    const termMode = (settings.getSettings().terminal || 'wsl');
+    const termMode = (opts.terminal || settings.getSettings().terminal || 'wsl');
     let proc: IPty;
     if (os.platform() !== 'win32') {
       // 在非 Windows 环境使用本地 shell 便于开发调试
