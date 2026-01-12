@@ -1,0 +1,10 @@
+{
+  "items": {
+    "codex": "Codex",
+    "claude": "Claude",
+    "gemini": "Gemini"
+  },
+  "customEngine": "自定义引擎",
+  "more": "更多引擎",
+  "customList": "自定义引擎"
+}

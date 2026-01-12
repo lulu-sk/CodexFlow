@@ -19,7 +19,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn, formatBytes } from "@/lib/utils";
 import { listAvailableLanguages, changeAppLanguage } from "@/i18n/setup";
 import { CodexAccountInline } from "@/components/topbar/codex-status";
-import { Trash2, Power, ChevronUp, ChevronDown } from "lucide-react";
+import { Trash2, Power, ChevronUp, ChevronDown, Plus, Image as ImageIcon, Star } from "lucide-react";
+import { getBuiltInProviders, isBuiltInProviderId } from "@/lib/providers/builtins";
 import {
   DEFAULT_TERMINAL_FONT_FAMILY,
   normalizeTerminalFontFamily,
@@ -31,7 +32,7 @@ import {
 import { resolveFirstAvailableFont, parseFontFamilyList } from "@/lib/font-utils";
 import { resolveSystemTheme, subscribeSystemTheme, type ThemeMode, type ThemeSetting } from "@/lib/theme";
 import type { TerminalThemeId } from "@/types/terminal-theme";
-import type { AppSettings } from "@/types/host";
+import type { AppSettings, ProviderEnv, ProviderItem } from "@/types/host";
 
 type TerminalMode = NonNullable<AppSettings["terminal"]>;
 type SendMode = "write_only" | "write_and_enter";
@@ -57,9 +58,11 @@ export type SettingsDialogProps = {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   values: {
-    terminal: TerminalMode;
-    distro: string;
-    codexCmd: string;
+    providers: {
+      activeId: string;
+      items: Array<{ id: string; displayName?: string; iconDataUrl?: string; startupCmd?: string }>;
+      env: Record<string, { terminal?: TerminalMode; distro?: string }>;
+    };
     sendMode: SendMode;
     locale: string;
     projectPathStyle: PathStyle;
@@ -70,9 +73,11 @@ export type SettingsDialogProps = {
     terminalTheme: TerminalThemeId;
   };
   onSave: (v: {
-    terminal: TerminalMode;
-    distro: string;
-    codexCmd: string;
+    providers: {
+      activeId: string;
+      items: Array<{ id: string; displayName?: string; iconDataUrl?: string; startupCmd?: string }>;
+      env: Record<string, { terminal?: TerminalMode; distro?: string }>;
+    };
     sendMode: SendMode;
     locale: string;
     projectPathStyle: PathStyle;
@@ -107,12 +112,60 @@ type AppDataInfo = {
   collectedAt: number;
 };
 
-type SectionKey = "basic" | "notifications" | "terminal" | "networkAccount" | "data";
+type SectionKey = "basic" | "providers" | "notifications" | "terminal" | "networkAccount" | "data";
 
-const NAV_ORDER: SectionKey[] = ["basic", "notifications", "terminal", "networkAccount", "data"];
+const NAV_ORDER: SectionKey[] = ["basic", "providers", "terminal", "notifications", "networkAccount", "data"];
 
 const DEFAULT_LANGS = ["zh", "en"];
 // 移除推荐逻辑：仅保留纯字母序
+
+type ProviderEnvMap = Record<string, { terminal: TerminalMode; distro: string }>;
+
+/**
+ * 将 Provider 环境表归一化：补齐 terminal/distro，并确保内置 Provider 至少存在默认条目。
+ */
+function normalizeProviderEnvMap(
+  input: Record<string, { terminal?: TerminalMode; distro?: string }> | undefined,
+  fallback: { terminal: TerminalMode; distro: string },
+): ProviderEnvMap {
+  const env: ProviderEnvMap = {};
+  const src = input && typeof input === "object" ? input : {};
+  for (const [id, v] of Object.entries(src)) {
+    const key = String(id || "").trim();
+    if (!key) continue;
+    const terminal: TerminalMode =
+      v?.terminal === "wsl" || v?.terminal === "windows" || v?.terminal === "pwsh"
+        ? v.terminal
+        : fallback.terminal;
+    const distro = String(v?.distro || fallback.distro).trim() || fallback.distro;
+    env[key] = { terminal, distro };
+  }
+
+  for (const builtIn of getBuiltInProviders()) {
+    if (env[builtIn.id]) continue;
+    env[builtIn.id] = { terminal: fallback.terminal, distro: fallback.distro };
+  }
+
+  return env;
+}
+
+/**
+ * 生成一个新的自定义 Provider id（保证尽量可读且不与现有 id 冲突）。
+ */
+function createCustomProviderId(name: string, existingIds: Set<string>): string {
+  const base = String(name || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  const prefix = base && !existingIds.has(base) ? base : "custom";
+  if (!existingIds.has(prefix)) return prefix;
+  for (let i = 2; i < 1000; i++) {
+    const candidate = `${prefix}-${i}`;
+    if (!existingIds.has(candidate)) return candidate;
+  }
+  return `custom-${Date.now()}`;
+}
 
 export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   open,
@@ -120,17 +173,31 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   values,
   onSave,
 }) => {
-  const { t } = useTranslation(["settings", "common"]);
+  const { t } = useTranslation(["settings", "common", "providers"]);
   const [activeSection, setActiveSection] = useState<SectionKey>("basic");
   const [availableLangs, setAvailableLangs] = useState<string[]>(DEFAULT_LANGS);
-  const [terminal, setTerminal] = useState<TerminalMode>(values.terminal || "wsl");
   const [pwshAvailable, setPwshAvailable] = useState<boolean | null>(null);
   const [pwshPath, setPwshPath] = useState<string>("");
-  const terminalLabel = useMemo(() => {
-    if (terminal === "pwsh") return t("settings:terminalMode.pwsh");
-    if (terminal === "windows") return t("settings:terminalMode.windows");
+
+  const [providersActiveId, setProvidersActiveId] = useState<string>(values.providers?.activeId || "codex");
+  const [providerEditingId, setProviderEditingId] = useState<string>(values.providers?.activeId || "codex");
+  const iconFileInputRef = useRef<HTMLInputElement | null>(null);
+  const [providerItems, setProviderItems] = useState<ProviderItem[]>(
+    Array.isArray(values.providers?.items) ? (values.providers.items as any) : [],
+  );
+  const [providerEnvMap, setProviderEnvMap] = useState<ProviderEnvMap>(() => {
+    const fallback = { terminal: "wsl" as TerminalMode, distro: "Ubuntu-24.04" };
+    return normalizeProviderEnvMap(values.providers?.env, fallback);
+  });
+
+  const editingEnv = useMemo(() => {
+    return providerEnvMap[providerEditingId] || providerEnvMap[providersActiveId] || { terminal: "wsl" as TerminalMode, distro: "Ubuntu-24.04" };
+  }, [providerEditingId, providerEnvMap, providersActiveId]);
+  const editingTerminalLabel = useMemo(() => {
+    if (editingEnv.terminal === "pwsh") return t("settings:terminalMode.pwsh");
+    if (editingEnv.terminal === "windows") return t("settings:terminalMode.windows");
     return t("settings:terminalMode.wsl");
-  }, [terminal, t]);
+  }, [editingEnv.terminal, t]);
   const pwshDetectedText = useMemo(() => {
     const label = t("settings:terminalMode.pwshDetected");
     const path = pwshPath || "pwsh";
@@ -155,19 +222,145 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
       detectPwshAvailability();
     }
   }, [open, pwshAvailable, detectPwshAvailability]);
+
+  /**
+   * 更新指定 Provider 的运行环境（terminal/distro）。
+   */
+  const updateProviderEnv = useCallback((providerId: string, patch: Partial<ProviderEnv>) => {
+    const id = String(providerId || "").trim();
+    if (!id) return;
+    setProviderEnvMap((prev) => {
+      const cur = prev[id] || prev[providersActiveId] || { terminal: "wsl" as TerminalMode, distro: "Ubuntu-24.04" };
+      const next: ProviderEnvMap = { ...prev };
+      next[id] = {
+        terminal: (patch.terminal === "wsl" || patch.terminal === "windows" || patch.terminal === "pwsh") ? patch.terminal : cur.terminal,
+        distro: typeof patch.distro === "string" && patch.distro.trim().length > 0 ? patch.distro.trim() : cur.distro,
+      };
+      return next;
+    });
+  }, [providersActiveId]);
+
+  /**
+   * 更新指定 Provider 的 item 字段（启动命令、图标、展示名）。
+   */
+  const updateProviderItem = useCallback((providerId: string, patch: Partial<ProviderItem>) => {
+    const id = String(providerId || "").trim();
+    if (!id) return;
+    setProviderItems((prev) => {
+      const idx = prev.findIndex((x) => x.id === id);
+      if (idx < 0) return [...prev, { id, ...patch }];
+      const next = prev.slice();
+      next[idx] = { ...next[idx], ...patch, id };
+      return next;
+    });
+  }, []);
+
+  /**
+   * 读取指定 Provider 的 item（不存在则返回最小占位对象）。
+   */
+  const getProviderItem = useCallback((providerId: string): ProviderItem => {
+    const id = String(providerId || "").trim();
+    return providerItems.find((x) => x.id === id) || { id };
+  }, [providerItems]);
+
+  /**
+   * 处理“终端类型”切换（对 pwsh 做可用性检测）。
+   */
   const handleTerminalChange = useCallback(async (next: TerminalMode) => {
     if (next === "pwsh") {
       const ok = (pwshAvailable === true) || await detectPwshAvailability();
       if (!ok) {
         alert(t("settings:terminalMode.pwshUnavailable"));
-        setTerminal("windows");
+        updateProviderEnv(providerEditingId, { terminal: "windows" });
         return;
       }
     }
-    setTerminal(next);
-  }, [detectPwshAvailability, pwshAvailable, t]);
-  const [distro, setDistro] = useState<string>("");
-  const [codexCmd, setCodexCmd] = useState(values.codexCmd);
+    updateProviderEnv(providerEditingId, { terminal: next });
+  }, [detectPwshAvailability, pwshAvailable, providerEditingId, t, updateProviderEnv]);
+
+  /**
+   * Provider 列表：内置优先，其余按字母序展示。
+   */
+  const orderedProviders = useMemo(() => {
+    const builtInOrder = getBuiltInProviders().map((x) => x.id);
+    const builtInSet = new Set(builtInOrder);
+    const byId = new Map<string, ProviderItem>();
+    for (const it of providerItems || []) {
+      const id = String(it?.id || "").trim();
+      if (!id || byId.has(id)) continue;
+      byId.set(id, it);
+    }
+    const builtIns = builtInOrder.map((id) => byId.get(id) || { id });
+    const customs = Array.from(byId.values())
+      .filter((x) => x.id && !builtInSet.has(x.id as any))
+      .sort((a, b) => String(a.id).toLowerCase().localeCompare(String(b.id).toLowerCase()));
+    return [...builtIns, ...customs];
+  }, [providerItems]);
+
+  /**
+   * 设置某个 Provider 为默认（仅更新对话框内状态，最终由“保存”落盘）。
+   */
+  const setActiveProvider = useCallback((providerId: string) => {
+    const id = String(providerId || "").trim();
+    if (!id) return;
+    setProvidersActiveId(id);
+    if (!providerEditingId) setProviderEditingId(id);
+  }, [providerEditingId]);
+
+  /**
+   * 新增一个自定义 Provider，并自动切换到编辑状态。
+   */
+  const addCustomProvider = useCallback(() => {
+    const existing = new Set<string>((providerItems || []).map((x) => String(x?.id || "").trim()).filter(Boolean));
+    const id = createCustomProviderId("custom", existing);
+    const defaultName = String(t("settings:providers.defaultName", "自定义引擎") || "").trim() || "自定义引擎";
+    setProviderItems((prev) => [...prev, { id, displayName: defaultName, startupCmd: "" }]);
+    setProviderEnvMap((prev) => ({ ...prev, [id]: prev[providersActiveId] || { terminal: "wsl", distro: "Ubuntu-24.04" } }));
+    setProviderEditingId(id);
+  }, [providerItems, providersActiveId, t]);
+
+  /**
+   * 触发图标选择器（隐藏 input 的 click），用于统一按钮风格。
+   */
+  const triggerIconPicker = useCallback(() => {
+    try { iconFileInputRef.current?.click(); } catch {}
+  }, []);
+
+  /**
+   * 删除自定义 Provider（内置 Provider 不允许删除）。
+   */
+  const removeCustomProvider = useCallback((providerId: string) => {
+    const id = String(providerId || "").trim();
+    if (!id || isBuiltInProviderId(id)) return;
+    setProviderItems((prev) => prev.filter((x) => x.id !== id));
+    setProviderEnvMap((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    if (providersActiveId === id) {
+      setProvidersActiveId("codex");
+      setProviderEditingId("codex");
+    } else if (providerEditingId === id) {
+      setProviderEditingId(providersActiveId || "codex");
+    }
+  }, [providerEditingId, providersActiveId]);
+
+  /**
+   * 读取文件并转为 DataURL（用于保存到 settings.json 作为 Provider 图标）。
+   */
+  const readFileAsDataUrl = useCallback((file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      try {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(new Error("read icon failed"));
+        reader.readAsDataURL(file);
+      } catch (e) {
+        reject(e);
+      }
+    });
+  }, []);
   
   const [sendMode, setSendMode] = useState<SendMode>(values.sendMode);
   const [pathStyle, setPathStyle] = useState<PathStyle>(values.projectPathStyle || "absolute");
@@ -253,25 +446,27 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   }, []);
 
   useEffect(() => {
-    setCodexCmd(values.codexCmd);
-    setTerminal(values.terminal || "wsl");
-    if (open) {
-      setDistro(values.distro || "");
-      setSendMode(values.sendMode || "write_and_enter");
-      setPathStyle(values.projectPathStyle || "absolute");
-      setLang(values.locale || "en");
-      setTheme(normalizeThemeSetting(values.theme));
-      setNotifications(values.notifications);
-      setNetwork({
-        proxyEnabled: values.network?.proxyEnabled ?? true,
-        proxyMode: values.network?.proxyMode ?? "system",
-        proxyUrl: values.network?.proxyUrl ?? "",
-        noProxy: values.network?.noProxy ?? "",
-      });
-      setTerminalFontFamily(normalizeTerminalFontFamily(values.terminalFontFamily));
-      setTerminalTheme(normalizeTerminalTheme(values.terminalTheme));
-    }
-  }, [open, values.codexCmd, values.distro, values.locale, values.notifications, values.projectPathStyle, values.sendMode, values.terminal, values.terminalFontFamily, values.terminalTheme, values.theme]);
+    if (!open) return;
+    const activeId = String(values.providers?.activeId || "codex").trim() || "codex";
+    setProvidersActiveId(activeId);
+    setProviderEditingId(activeId);
+    setProviderItems(Array.isArray(values.providers?.items) ? (values.providers.items as any) : []);
+    setProviderEnvMap(normalizeProviderEnvMap(values.providers?.env, { terminal: "wsl", distro: "Ubuntu-24.04" }));
+
+    setSendMode(values.sendMode || "write_and_enter");
+    setPathStyle(values.projectPathStyle || "absolute");
+    setLang(values.locale || "en");
+    setTheme(normalizeThemeSetting(values.theme));
+    setNotifications(values.notifications);
+    setNetwork({
+      proxyEnabled: values.network?.proxyEnabled ?? true,
+      proxyMode: values.network?.proxyMode ?? "system",
+      proxyUrl: values.network?.proxyUrl ?? "",
+      noProxy: values.network?.noProxy ?? "",
+    });
+    setTerminalFontFamily(normalizeTerminalFontFamily(values.terminalFontFamily));
+    setTerminalTheme(normalizeTerminalTheme(values.terminalTheme));
+  }, [open, values]);
 
   useEffect(() => {
     if (!open) return;
@@ -372,16 +567,12 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
             })
             .filter((item): item is string => !!item);
           setAvailableDistros(names);
-          const preferred = values.distro && names.includes(values.distro) ? values.distro : names[names.length - 1] || "";
-          if (!distro && preferred) {
-            setDistro(preferred);
-          }
         }
       } catch {
         setAvailableDistros([]);
       }
     })();
-  }, [open, distro, values.distro]);
+  }, [open]);
 
   // 旧的纯名称枚举逻辑已移除（改为使用系统级元数据）
 
@@ -625,6 +816,191 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
           ),
         };
       }
+      if (key === "providers") {
+        const builtInMeta = new Map(getBuiltInProviders().map((x) => [x.id, x]));
+        const editingItem = getProviderItem(providerEditingId);
+        const editingBuiltIn = builtInMeta.get(providerEditingId as any);
+        const effectiveIcon = (editingItem.iconDataUrl && editingItem.iconDataUrl.trim().length > 0)
+          ? editingItem.iconDataUrl.trim()
+          : (editingBuiltIn?.iconUrl || "");
+        const defaultStartupCmd = editingBuiltIn?.defaultStartupCmd || "";
+        const effectiveLabel = isBuiltInProviderId(providerEditingId)
+          ? (t(`providers:items.${providerEditingId}`) as string)
+          : (String(editingItem.displayName || "").trim() || String(t("settings:providers.defaultName", "自定义引擎") || "").trim() || "自定义引擎");
+        return {
+          key,
+          title: t("settings:sections.providers.title"),
+          description: t("settings:sections.providers.desc"),
+          content: (
+            <div className="space-y-6">
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between">
+                  <div>
+                    <CardTitle>{t("settings:providers.listTitle")}</CardTitle>
+                    <p className="text-sm text-slate-500">{t("settings:providers.listHelp")}</p>
+                  </div>
+                  <Button variant="secondary" size="sm" onClick={addCustomProvider}>
+                    <Plus className="mr-2 h-4 w-4" /> {t("settings:providers.add")}
+                  </Button>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  {orderedProviders.map((p) => {
+                    const isActive = p.id === providersActiveId;
+                    const isEditing = p.id === providerEditingId;
+                    const label = isBuiltInProviderId(p.id)
+                      ? (t(`providers:items.${p.id}`) as string)
+                      : (String(p.displayName || "").trim() || String(t("settings:providers.defaultName", "自定义引擎") || "").trim() || "自定义引擎");
+                    const meta = builtInMeta.get(p.id as any);
+                    const iconSrc = (p.iconDataUrl && p.iconDataUrl.trim().length > 0) ? p.iconDataUrl.trim() : (meta?.iconUrl || "");
+                    return (
+                      <div
+                        key={p.id}
+                        className={cn(
+                          "flex items-center justify-between gap-3 rounded-lg border px-3 py-2",
+                          isEditing ? "border-slate-900 dark:border-[var(--cf-accent)]" : "border-slate-200 dark:border-[var(--cf-border)]",
+                        )}
+                      >
+                        <button
+                          type="button"
+                          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                          onClick={() => setProviderEditingId(p.id)}
+                        >
+                          {iconSrc ? <img src={iconSrc} className="h-4 w-4" alt={label} /> : <ImageIcon className="h-4 w-4 text-slate-400" />}
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="truncate font-medium">{label}</span>
+                              {isActive ? <Star className="h-3.5 w-3.5 text-amber-500" /> : null}
+                            </div>
+                          </div>
+                        </button>
+                        <div className="flex items-center gap-2">
+                          <Button variant="outline" size="sm" onClick={() => setActiveProvider(p.id)}>
+                            {t("settings:providers.setActive")}
+                          </Button>
+                          {!isBuiltInProviderId(p.id) ? (
+                            <Button variant="outline" size="sm" onClick={() => removeCustomProvider(p.id)}>
+                              {t("settings:providers.remove")}
+                            </Button>
+                          ) : null}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>{t("settings:providers.editTitle", { name: effectiveLabel })}</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="space-y-2">
+                      <div className="text-sm font-medium">{t("settings:providers.fields.name")}</div>
+                      <Input
+                        value={isBuiltInProviderId(providerEditingId) ? (t(`providers:items.${providerEditingId}`) as string) : (editingItem.displayName || "")}
+                        disabled={isBuiltInProviderId(providerEditingId)}
+                        onChange={(e: any) => updateProviderItem(providerEditingId, { displayName: String(e?.target?.value || "") })}
+                      />
+                      <div className="text-xs text-slate-500">{t("settings:providers.fields.nameHelp")}</div>
+                    </div>
+                    <div className="space-y-2">
+                      <div className="text-sm font-medium">{t("settings:providers.fields.startupCmd")}</div>
+                      <Input
+                        value={editingItem.startupCmd || ""}
+                        placeholder={defaultStartupCmd || t("settings:providers.fields.startupCmdPlaceholder")}
+                        onChange={(e: any) => updateProviderItem(providerEditingId, { startupCmd: String(e?.target?.value || "") })}
+                      />
+                      <div className="text-xs text-slate-500">{t("settings:providers.fields.startupCmdHelp")}</div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="text-sm font-medium">{t("settings:providers.fields.icon")}</div>
+                    <div className="flex items-center gap-3">
+                      <div className="h-10 w-10 rounded-md border border-slate-200 dark:border-[var(--cf-border)] flex items-center justify-center overflow-hidden bg-white dark:bg-[var(--cf-surface)]">
+                        {effectiveIcon ? <img src={effectiveIcon} className="h-6 w-6" alt={effectiveLabel} /> : <ImageIcon className="h-5 w-5 text-slate-400" />}
+                      </div>
+                      <input
+                        ref={iconFileInputRef}
+                        type="file"
+                        className="hidden"
+                        accept="image/*,.svg"
+                        onChange={async (e) => {
+                          const f = (e.target as HTMLInputElement)?.files?.[0];
+                          if (!f) return;
+                          try {
+                            const dataUrl = await readFileAsDataUrl(f);
+                            updateProviderItem(providerEditingId, { iconDataUrl: dataUrl });
+                          } catch {
+                            // ignore
+                          } finally {
+                            try { (e.target as HTMLInputElement).value = ""; } catch {}
+                          }
+                        }}
+                      />
+                      <Button variant="outline" size="sm" onClick={triggerIconPicker}>
+                        {t("settings:providers.fields.iconUpload")}
+                      </Button>
+                      <Button variant="outline" size="sm" onClick={() => updateProviderItem(providerEditingId, { iconDataUrl: "" })}>
+                        {t("settings:providers.fields.iconClear")}
+                      </Button>
+                    </div>
+                    <div className="text-xs text-slate-500">{t("settings:providers.fields.iconHelp")}</div>
+                  </div>
+
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="space-y-2">
+                      <div className="text-sm font-medium">{t("settings:providers.fields.envTerminal")}</div>
+                      <Select value={editingEnv.terminal} onValueChange={(v) => handleTerminalChange(v as TerminalMode)}>
+                        <SelectTrigger>
+                          <span className="truncate text-left">{editingTerminalLabel}</span>
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="wsl">{t("settings:terminalMode.wsl")}</SelectItem>
+                          <SelectItem value="pwsh" disabled={pwshAvailable === false}>
+                            {t("settings:terminalMode.pwsh")}
+                          </SelectItem>
+                          <SelectItem value="windows">{t("settings:terminalMode.windows")}</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <div className="text-xs text-slate-500">
+                        {pwshAvailable === null
+                          ? t("settings:terminalMode.pwshDetecting")
+                          : pwshAvailable
+                            ? pwshDetectedText
+                            : t("settings:terminalMode.pwshUnavailable")}
+                      </div>
+                    </div>
+
+                    {editingEnv.terminal === "wsl" ? (
+                      <div className="space-y-2">
+                        <div className="text-sm font-medium">{t("settings:providers.fields.envDistro")}</div>
+                        <Select value={editingEnv.distro} onValueChange={(v) => updateProviderEnv(providerEditingId, { distro: v })}>
+                          <SelectTrigger>
+                            <SelectValue placeholder={t("settings:terminalPlaceholder") as string} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {availableDistros.length > 0 ? (
+                              availableDistros.map((name) => (
+                                <SelectItem key={name} value={name}>
+                                  {name}
+                                </SelectItem>
+                              ))
+                            ) : (
+                              <SelectItem value={editingEnv.distro || ""}>{editingEnv.distro || t("settings:noTerminalDetected")}</SelectItem>
+                            )}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    ) : null}
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          ),
+        };
+      }
       if (key === "notifications") {
         return {
           key,
@@ -752,74 +1128,6 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                       </SelectContent>
                     </Select>
                   </div>
-                </CardContent>
-              </Card>
-              <Card>
-                <CardHeader>
-                  <CardTitle>{t("settings:terminalMode.label")}</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <p className="text-sm text-slate-500">{t("settings:terminalMode.help")}</p>
-                  <div className="max-w-xs">
-                    <Select value={terminal} onValueChange={(v) => handleTerminalChange(v as TerminalMode)}>
-                      <SelectTrigger>
-                        <span className="truncate text-left">
-                          {terminalLabel}
-                        </span>
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="wsl">{t("settings:terminalMode.wsl")}</SelectItem>
-                        <SelectItem value="pwsh" disabled={pwshAvailable === false}>
-                          {t("settings:terminalMode.pwsh")}
-                        </SelectItem>
-                        <SelectItem value="windows">{t("settings:terminalMode.windows")}</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <p className="text-xs text-slate-500">
-                      {pwshAvailable === null
-                        ? t("settings:terminalMode.pwshDetecting")
-                        : pwshAvailable
-                      ? pwshDetectedText
-                          : t("settings:terminalMode.pwshUnavailable")}
-                    </p>
-                  </div>
-                </CardContent>
-              </Card>
-              {terminal === "wsl" && (
-                <Card>
-                  <CardHeader>
-                    <CardTitle>{t("settings:wslDistro")}</CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-3">
-                    <p className="text-sm text-slate-500">{t("settings:wslDistroHelp")}</p>
-                    <div className="max-w-xs">
-                      <Select value={distro} onValueChange={setDistro}>
-                        <SelectTrigger>
-                          <SelectValue placeholder={t("settings:terminalPlaceholder") as string} />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {availableDistros.length > 0 ? (
-                            availableDistros.map((name) => (
-                              <SelectItem key={name} value={name}>
-                                {name}
-                              </SelectItem>
-                            ))
-                          ) : (
-                            <SelectItem value="">{t("settings:noTerminalDetected")}</SelectItem>
-                          )}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </CardContent>
-                </Card>
-              )}
-              <Card>
-                <CardHeader>
-                  <CardTitle>{t("settings:codexCmd")}</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <p className="text-sm text-slate-500">{t("settings:codexCmdHelp")}</p>
-                  <Input value={codexCmd} onChange={(event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setCodexCmd((event.target as any).value)} />
                 </CardContent>
               </Card>
               <Card>
@@ -1065,8 +1373,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                   <CodexAccountInline
                     className="w-full"
                     auto={open}
-                    terminalMode={terminal}
-                    distro={terminal === "wsl" ? distro : undefined}
+                    terminalMode={providerEnvMap["codex"]?.terminal || "wsl"}
+                    distro={(providerEnvMap["codex"]?.terminal || "wsl") === "wsl" ? (providerEnvMap["codex"]?.distro || "Ubuntu-24.04") : undefined}
                     expanded
                   />
                 </CardContent>
@@ -1262,19 +1570,18 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
       };
     });
   }, [
+    open,
     availableDistros,
     availableLangs,
     cleanupResult,
     cleanupRunning,
     cleanupScanning,
-    codexCmd,
     codexRoots,
     // 字体与显示相关依赖，确保“显示所有字体”等交互即时生效
     installedFonts,
     monospaceFonts,
     installedLoading,
     showAllFonts,
-    distro,
     labelOf,
     lang,
     theme,
@@ -1289,11 +1596,27 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     storageError,
     refreshAppDataInfo,
     t,
-    terminal,
     terminalFontFamily,
     terminalTheme,
     themeLabel,
     systemThemeLabel,
+    providersActiveId,
+    providerEditingId,
+    providerItems,
+    providerEnvMap,
+    orderedProviders,
+    addCustomProvider,
+    removeCustomProvider,
+    setActiveProvider,
+    updateProviderItem,
+    updateProviderEnv,
+    handleTerminalChange,
+    editingEnv,
+    editingTerminalLabel,
+    pwshAvailable,
+    pwshDetectedText,
+    readFileAsDataUrl,
+    getProviderItem,
   ]);
 
   useEffect(() => {
@@ -1371,9 +1694,11 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                 <Button
                   onClick={() => {
                     onSave({
-                      terminal,
-                      distro: distro || values.distro || "",
-                      codexCmd,
+                      providers: {
+                        activeId: providersActiveId,
+                        items: providerItems,
+                        env: providerEnvMap,
+                      },
                       sendMode,
                       locale: lang,
                       projectPathStyle: pathStyle,

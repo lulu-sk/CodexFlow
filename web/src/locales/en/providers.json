@@ -1,0 +1,10 @@
+{
+  "items": {
+    "codex": "Codex",
+    "claude": "Claude",
+    "gemini": "Gemini"
+  },
+  "customEngine": "Custom Engine",
+  "more": "More engines",
+  "customList": "Custom engines"
+}

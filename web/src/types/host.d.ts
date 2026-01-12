@@ -8,11 +8,32 @@ export {}; // make this a module
 // 与主进程约定的类型（仅做声明，不引入运行时依赖）
 export type ThemeSetting = 'light' | 'dark' | 'system';
 
+export type ProviderId = string;
+
+export type ProviderItem = {
+  id: ProviderId;
+  displayName?: string;
+  iconDataUrl?: string;
+  startupCmd?: string;
+};
+
+export type ProviderEnv = {
+  terminal?: 'wsl' | 'windows' | 'pwsh';
+  distro?: string;
+};
+
+export type ProvidersSettings = {
+  activeId: ProviderId;
+  items: ProviderItem[];
+  env: Record<ProviderId, ProviderEnv>;
+};
+
 export type AppSettings = {
   terminal?: 'wsl' | 'windows' | 'pwsh';
   terminalTheme?: TerminalThemeId;
   distro: string;
   codexCmd: string;
+  providers?: ProvidersSettings;
   historyRoot: string;
   sendMode?: 'write_only' | 'write_and_enter';
   locale?: string;
@@ -62,7 +83,7 @@ export type HistoryMessage = { role: string; content: MessageContent[] };
 
 // ---- Host API 声明 ----
 export interface PtyAPI {
-  openWSLConsole(args: { distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string }): Promise<{ id: string }>;
+  openWSLConsole(args: { terminal?: 'wsl' | 'windows' | 'pwsh'; distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string }): Promise<{ id: string }>;
   write(id: string, data: string): void;
   resize(id: string, cols: number, rows: number): void;
   close(id: string): void;
@@ -174,7 +195,7 @@ export interface UtilsAPI {
   showInFolder(p: string): Promise<{ ok: boolean; openedDir?: string; error?: string }>;
   openPath(p: string): Promise<{ ok: boolean; error?: string }>;
   openExternalUrl(url: string): Promise<{ ok: boolean; error?: string }>;
-  openExternalConsole(args: { wslPath?: string; winPath?: string; distro?: string; startupCmd?: string }): Promise<{ ok: boolean; error?: string }>;
+  openExternalConsole(args: { terminal?: 'wsl' | 'windows' | 'pwsh'; wslPath?: string; winPath?: string; distro?: string; startupCmd?: string }): Promise<{ ok: boolean; error?: string }>;
   // 兼容旧名
   openExternalWSLConsole?(args: { wslPath?: string; winPath?: string; distro?: string; startupCmd?: string }): Promise<{ ok: boolean; error?: string }>;
   pathExists(p: string, dirOnly?: boolean): Promise<{ ok: boolean; exists?: boolean; isDirectory?: boolean; isFile?: boolean; error?: string }>;

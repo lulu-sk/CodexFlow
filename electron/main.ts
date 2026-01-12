@@ -813,9 +813,10 @@ function setupAppMenu() {
 
 // -------- IPC: PTY bridge (I/O only) --------
 ipcMain.handle('pty:open', async (_event, args: {
-  distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string;
+  terminal?: 'wsl' | 'windows' | 'pwsh'; distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string;
 }) => {
   const id = ptyManager.openWSLConsole({
+    terminal: args?.terminal as any,
     distro: args?.distro,
     wslPath: args?.wslPath,
     winPath: args?.winPath,
@@ -860,11 +861,11 @@ ipcMain.handle('fileIndex.ensure', async (_e, { root, excludes }: { root: string
 });
 
 // 打开外部控制台（根据设置选择 WSL 或 Windows 终端）
-ipcMain.handle('utils.openExternalConsole', async (_e, args: { wslPath?: string; winPath?: string; distro?: string; startupCmd?: string }) => {
+ipcMain.handle('utils.openExternalConsole', async (_e, args: { terminal?: 'wsl' | 'windows' | 'pwsh'; wslPath?: string; winPath?: string; distro?: string; startupCmd?: string }) => {
   try {
     const platform = process.platform;
     const cfg = settings.getSettings();
-    const terminal = cfg.terminal || 'wsl';
+    const terminal = (args as any)?.terminal || cfg.terminal || 'wsl';
     const startupCmd = String(args?.startupCmd || cfg.codexCmd || 'codex');
     const requestedDistro = String(args?.distro || cfg.distro || 'Ubuntu-24.04');
 

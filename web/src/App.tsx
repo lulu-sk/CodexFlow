@@ -18,7 +18,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   FolderOpen,
@@ -48,13 +48,16 @@ import {
   Search,
 } from "lucide-react";
 import AboutSupport from "@/components/about-support";
-import CodexUsageSummary from "@/components/topbar/codex-status";
+import { ProviderSwitcher } from "@/components/topbar/provider-switcher";
 import { emitCodexRateRefresh } from "@/lib/codex-status";
 import { checkForUpdate, type UpdateCheckErrorType } from "@/lib/about";
 import TerminalManager from "@/lib/TerminalManager";
 import { oscBufferDefaults, trimOscBuffer } from "@/lib/oscNotificationBuffer";
 import HistoryCopyButton from "@/components/history/history-copy-button";
 import { toWSLForInsert } from "@/lib/wsl";
+import { normalizeProvidersSettings } from "@/lib/providers/normalize";
+import { resolveProvider } from "@/lib/providers/resolve";
+import { injectCodexTraceEnv } from "@/providers/codex/commands";
 import SettingsDialog from "@/features/settings/settings-dialog";
 import {
   DEFAULT_TERMINAL_FONT_FAMILY,
@@ -66,7 +69,7 @@ import {
   type TerminalThemeDefinition,
 } from "@/lib/terminal-appearance";
 import { getCachedThemeSetting, useThemeController, writeThemeSettingCache, type ThemeSetting } from "@/lib/theme";
-import type { AppSettings, Project } from "@/types/host";
+import type { AppSettings, Project, ProviderItem, ProviderEnv } from "@/types/host";
 import type { TerminalThemeId } from "@/types/terminal-theme";
 
 // ---------- Types ----------
@@ -75,9 +78,35 @@ type TerminalMode = NonNullable<AppSettings["terminal"]>;
 type ConsoleTab = {
   id: string;
   name: string;
+  /** 创建该标签页时使用的引擎（Provider）id，用于标签图标等展示。 */
+  providerId: string;
   logs: string[]; // kept for visual compatibility; no longer used once terminal mounts
   createdAt: number;
 };
+
+/**
+ * 构建 ProviderItem 的 id -> item 索引，避免在标签渲染时重复线性扫描。
+ */
+function buildProviderItemIndex(items: ProviderItem[]): Record<string, ProviderItem> {
+  const map: Record<string, ProviderItem> = {};
+  for (const it of items || []) {
+    const id = String(it?.id || "").trim();
+    if (!id) continue;
+    if (map[id]) continue;
+    map[id] = it;
+  }
+  return map;
+}
+
+/**
+ * 获取某个 Provider 的图标 src（DataURL 或内置资源）。
+ */
+function getProviderIconSrc(providerId: string, providerItemById: Record<string, ProviderItem>): string {
+  const id = String(providerId || "").trim();
+  if (!id) return "";
+  const resolved = resolveProvider(providerItemById[id] ?? { id });
+  return resolved.iconSrc || "";
+}
 
 // 渲染端消息内容，支持可选 tags（用于嵌套类型筛选，如 message.input_text）
 type MessageContent = { type: string; text: string; tags?: string[] };
@@ -1021,19 +1050,7 @@ export default function CodexFlowManagerUI() {
   }, [terminalFontFamily, terminalTheme]);
 
   const injectTraceEnv = React.useCallback((cmd: string | null | undefined) => {
-    const raw = String(cmd || "").trim();
-    const base = raw.length > 0 ? raw : "codex";
-    if (!codexTraceEnabled) return base;
-    if (isWindowsLike(terminalMode)) {
-      if (/RUST_LOG\s*=/.test(base) || base.includes("$env:RUST_LOG")) {
-        return base;
-      }
-      return `$env:RUST_LOG='codex_tui=trace'; ${base}`;
-    }
-    if (/RUST_LOG\s*=/.test(base) || (base.startsWith("export ") && base.includes("RUST_LOG="))) {
-      return base;
-    }
-    return `export RUST_LOG=codex_tui=trace; ${base}`;
+    return injectCodexTraceEnv({ cmd, traceEnabled: codexTraceEnabled, terminalMode });
   }, [terminalMode, codexTraceEnabled]);
 
   // 从统一调试配置读取 Codex TUI trace 开关，并监听热更新
@@ -1766,6 +1783,19 @@ export default function CodexFlowManagerUI() {
 
   // Settings
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Provider：决定后续“新建/启动”的命令与环境（与设置面板一致，且可扩展）
+  const [activeProviderId, setActiveProviderId] = useState<string>("codex");
+  const [providerItems, setProviderItems] = useState<ProviderItem[]>([
+    { id: "codex" },
+    { id: "claude" },
+    { id: "gemini" },
+  ]);
+  const providerItemById = useMemo(() => buildProviderItemIndex(providerItems), [providerItems]);
+  const [providerEnvById, setProviderEnvById] = useState<Record<string, Required<ProviderEnv>>>(() => ({
+    codex: { terminal: "wsl", distro: "Ubuntu-24.04" },
+    claude: { terminal: "wsl", distro: "Ubuntu-24.04" },
+    gemini: { terminal: "wsl", distro: "Ubuntu-24.04" },
+  }));
   const [wslDistro, setWslDistro] = useState("Ubuntu-24.04");
   // 基础命令（默认 'codex'），不做 tmux 包装，直接在 WSL 中执行。
   const [codexCmd, setCodexCmd] = useState("codex");
@@ -1786,6 +1816,79 @@ export default function CodexFlowManagerUI() {
   useEffect(() => {
     writeThemeSettingCache(themeSetting);
   }, [themeSetting]);
+
+  /**
+   * 统一写入 Provider 设置（同时对 codex 做 legacy 字段双写，保持旧逻辑兼容）。
+   */
+  const persistProviders = useCallback(async (next: { activeId: string; items: ProviderItem[]; env: Record<string, Required<ProviderEnv>> }) => {
+    const codexItem = next.items.find((x) => x.id === "codex");
+    const codexResolved = resolveProvider(codexItem ?? { id: "codex" });
+    const codexEnv = next.env["codex"] || { terminal: "wsl", distro: wslDistro };
+    try {
+      await window.host.settings.update({
+        providers: next as any,
+        terminal: codexEnv.terminal,
+        distro: codexEnv.distro,
+        codexCmd: codexResolved.startupCmd || "codex",
+      } as any);
+    } catch (e) {
+      console.warn("settings.update providers failed", e);
+    }
+  }, [wslDistro]);
+
+  /**
+   * 获取指定 Provider 的环境（缺失时回退到 codex 或当前状态）。
+   */
+  const getProviderEnv = useCallback((providerId: string): Required<ProviderEnv> => {
+    const hit = providerEnvById[providerId];
+    if (hit) return hit;
+    const fallback = providerEnvById["codex"];
+    if (fallback) return fallback;
+    return { terminal: terminalMode, distro: wslDistro };
+  }, [providerEnvById, terminalMode, wslDistro]);
+
+  /**
+   * 构造某个 Provider 的启动命令（Codex 会按调试开关注入 trace 环境变量）。
+   */
+  const buildProviderStartupCmd = useCallback((providerId: string, env: Required<ProviderEnv>): string => {
+    const item = providerItems.find((x) => x.id === providerId) ?? { id: providerId };
+    const resolved = resolveProvider(item);
+    if (providerId === "codex") {
+      return injectCodexTraceEnv({ cmd: resolved.startupCmd || codexCmd, traceEnabled: codexTraceEnabled, terminalMode: env.terminal as any });
+    }
+    return resolved.startupCmd;
+  }, [providerItems, codexCmd, codexTraceEnabled]);
+
+  /**
+   * 切换当前 Provider，并将其环境同步到“当前默认环境”状态（仅影响后续新建/启动）。
+   */
+  const changeActiveProvider = useCallback(async (nextId: string) => {
+    const id = String(nextId || "").trim();
+    if (!id || id === activeProviderId) return;
+    const env = getProviderEnv(id);
+    setActiveProviderId(id);
+    setTerminalMode(env.terminal as any);
+    setWslDistro(env.distro);
+    await persistProviders({ activeId: id, items: providerItems, env: providerEnvById });
+  }, [activeProviderId, getProviderEnv, persistProviders, providerEnvById, providerItems]);
+
+  // WSL 发行版列表：供环境下拉与设置面板复用（缓存到内存，避免重复请求）
+  const [availableDistros, setAvailableDistros] = useState<string[]>([]);
+  useEffect(() => {
+    (async () => {
+      try {
+        const result: any = await (window.host as any).wsl?.listDistros?.();
+        if (result && result.ok && Array.isArray(result.distros)) {
+          const names = (result.distros as any[])
+            .map((item) => (typeof item === "string" ? item : (item && typeof item.name === "string" ? item.name : null)))
+            .filter((item): item is string => !!item);
+          setAvailableDistros(names);
+        }
+      } catch {
+        setAvailableDistros([]);
+      }
+    })();
+  }, []);
 
   // 命令输入改为 Chips + 草稿：按 Tab 隔离
   useEffect(() => {
@@ -2054,9 +2157,25 @@ export default function CodexFlowManagerUI() {
       try {
         const s = await window.host.settings.get();
         if (s) {
-          setTerminalMode(normalizeTerminalMode((s as any).terminal));
-          setWslDistro(s.distro || wslDistro);
-          setCodexCmd(s.codexCmd || codexCmd);
+          const legacyTerminal = normalizeTerminalMode((s as any).terminal);
+          const legacyDistro = String(s.distro || wslDistro);
+          const legacyCodexCmd = String(s.codexCmd || codexCmd);
+          const normalizedProviders = normalizeProvidersSettings((s as any).providers, {
+            terminal: legacyTerminal,
+            distro: legacyDistro,
+            codexCmd: legacyCodexCmd,
+          });
+          setProviderItems(normalizedProviders.items);
+          setProviderEnvById(normalizedProviders.env);
+          setActiveProviderId(normalizedProviders.activeId);
+
+          const activeEnv = normalizedProviders.env[normalizedProviders.activeId] || { terminal: legacyTerminal, distro: legacyDistro };
+          setTerminalMode(activeEnv.terminal);
+          setWslDistro(activeEnv.distro);
+
+          const codexItem = normalizedProviders.items.find((x) => x.id === "codex");
+          const codexResolved = resolveProvider(codexItem ?? { id: "codex" });
+          setCodexCmd(codexResolved.startupCmd || legacyCodexCmd);
           setSendMode(s.sendMode || 'write_and_enter');
           setProjectPathStyle((s as any).projectPathStyle || 'absolute');
           const nextThemeSetting = normalizeThemeSetting((s as any).theme);
@@ -2276,13 +2395,23 @@ export default function CodexFlowManagerUI() {
     const tab: ConsoleTab = {
       id: uid(),
       name: String(tabName),
+      providerId: activeProviderId,
       logs: [],
       createdAt: Date.now(),
     };
     let ptyId: string | undefined;
     try {
-      const startupCmd = injectTraceEnv(codexCmd);
-      const { id } = await window.host.pty.openWSLConsole({ distro: wslDistro, wslPath: project.wslPath, winPath: project.winPath, cols: 80, rows: 24, startupCmd });
+      const env = getProviderEnv(activeProviderId);
+      const startupCmd = buildProviderStartupCmd(activeProviderId, env);
+      const { id } = await window.host.pty.openWSLConsole({
+        terminal: env.terminal,
+        distro: env.distro,
+        wslPath: project.wslPath,
+        winPath: project.winPath,
+        cols: 80,
+        rows: 24,
+        startupCmd
+      });
       ptyId = id;
     } catch (e) {
       console.error('Failed to open PTY for project', e);
@@ -2356,6 +2485,7 @@ export default function CodexFlowManagerUI() {
       id: uid(),
       // 默认使用当前设置中的终端名称
       name: String(tabName),
+      providerId: activeProviderId,
       logs: [],
       createdAt: Date.now(),
     };
@@ -2363,9 +2493,11 @@ export default function CodexFlowManagerUI() {
     // Open PTY in main (WSL)
     try {
       try { await (window as any).host?.utils?.perfLog?.(`[ui] openNewConsole start project=${selectedProject?.name}`); } catch {}
-      const startupCmd = injectTraceEnv(codexCmd);
+      const env = getProviderEnv(activeProviderId);
+      const startupCmd = buildProviderStartupCmd(activeProviderId, env);
       const { id } = await window.host.pty.openWSLConsole({
-        distro: wslDistro,
+        terminal: env.terminal,
+        distro: env.distro,
         wslPath: selectedProject.wslPath,
         winPath: selectedProject.winPath,
         cols: 80,
@@ -2838,12 +2970,86 @@ export default function CodexFlowManagerUI() {
   const Sidebar = (
     <div className="flex h-full min-w-[240px] flex-col border-r bg-white/50 dark:border-slate-800 dark:bg-slate-900/40">
       <div className="flex items-center gap-2 px-3 py-3">
-        <Badge variant="secondary" className="gap-2">
-          <PlugZap className="h-4 w-4" /> {toShellLabel(terminalMode)} <StatusDot ok={true} />
-        </Badge>
-        {terminalMode === 'wsl' && (
-          <span className="text-xs text-slate-500">{wslDistro}</span>
-        )}
+        <DropdownMenu>
+          <DropdownMenuTrigger>
+            <button className="flex items-center gap-2" title={t("settings:terminalMode.label") as string}>
+              <Badge variant="secondary" className="gap-2">
+                <PlugZap className="h-4 w-4" /> {toShellLabel(terminalMode)} <StatusDot ok={true} />
+              </Badge>
+              {terminalMode === "wsl" ? (
+                <span className="text-xs text-slate-500">{wslDistro}</span>
+              ) : null}
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start">
+            <DropdownMenuLabel className="text-xs text-slate-500">
+              {t("settings:terminalMode.label")}
+            </DropdownMenuLabel>
+            <DropdownMenuItem
+              className="flex items-center justify-between gap-2"
+              onClick={async () => {
+                const nextEnv: Required<ProviderEnv> = { ...getProviderEnv(activeProviderId), terminal: "wsl" };
+                const nextMap = { ...providerEnvById, [activeProviderId]: nextEnv };
+                setProviderEnvById(nextMap);
+                setTerminalMode("wsl");
+                setWslDistro(nextEnv.distro);
+                await persistProviders({ activeId: activeProviderId, items: providerItems, env: nextMap });
+              }}
+            >
+              <span>{t("settings:terminalMode.wsl")}</span>
+              {terminalMode === "wsl" ? <Check className="h-4 w-4 text-slate-600" /> : null}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              className="flex items-center justify-between gap-2"
+              onClick={async () => {
+                const nextEnv: Required<ProviderEnv> = { ...getProviderEnv(activeProviderId), terminal: "windows" };
+                const nextMap = { ...providerEnvById, [activeProviderId]: nextEnv };
+                setProviderEnvById(nextMap);
+                setTerminalMode("windows" as any);
+                await persistProviders({ activeId: activeProviderId, items: providerItems, env: nextMap });
+              }}
+            >
+              <span>{t("settings:terminalMode.windows")}</span>
+              {terminalMode === "windows" ? <Check className="h-4 w-4 text-slate-600" /> : null}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              className="flex items-center justify-between gap-2"
+              onClick={async () => {
+                const nextEnv: Required<ProviderEnv> = { ...getProviderEnv(activeProviderId), terminal: "pwsh" };
+                const nextMap = { ...providerEnvById, [activeProviderId]: nextEnv };
+                setProviderEnvById(nextMap);
+                setTerminalMode("pwsh" as any);
+                await persistProviders({ activeId: activeProviderId, items: providerItems, env: nextMap });
+              }}
+            >
+              <span>{t("settings:terminalMode.pwsh")}</span>
+              {terminalMode === "pwsh" ? <Check className="h-4 w-4 text-slate-600" /> : null}
+            </DropdownMenuItem>
+
+            {terminalMode === "wsl" ? (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel className="text-xs text-slate-500">{t("settings:wslDistro")}</DropdownMenuLabel>
+                {(availableDistros.length > 0 ? availableDistros : [wslDistro]).map((name) => (
+                  <DropdownMenuItem
+                    key={name}
+                    className="flex items-center justify-between gap-2"
+                    onClick={async () => {
+                      const nextEnv: Required<ProviderEnv> = { ...getProviderEnv(activeProviderId), distro: name };
+                      const nextMap = { ...providerEnvById, [activeProviderId]: nextEnv };
+                      setProviderEnvById(nextMap);
+                      setWslDistro(name);
+                      await persistProviders({ activeId: activeProviderId, items: providerItems, env: nextMap });
+                    }}
+                  >
+                    <span className="truncate">{name}</span>
+                    {wslDistro === name ? <Check className="h-4 w-4 text-slate-600" /> : null}
+                  </DropdownMenuItem>
+                ))}
+              </>
+            ) : null}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
       <div className="px-3 pb-2">
         <div className="flex items-center gap-2">
@@ -2991,12 +3197,18 @@ export default function CodexFlowManagerUI() {
     })();
   }, [selectedProject?.winPath]);
 
-  const TopBar = (
-    <div className="relative z-40 flex items-center justify-between border-b bg-white/70 px-4 py-3 backdrop-blur dark:border-slate-800 dark:bg-slate-900/60">
-      <div className="flex min-w-0 items-center gap-3">
-        <CodexUsageSummary className="min-w-0" terminalMode={terminalMode} distro={terminalMode === "wsl" ? wslDistro : undefined} />
-      </div>
-      <div className="flex items-center gap-2">
+	  const TopBar = (
+	    <div className="relative z-40 flex items-center justify-between border-b bg-white/70 px-4 py-3 backdrop-blur dark:border-slate-800 dark:bg-slate-900/60">
+	      <div className="flex min-w-0 items-center gap-3">
+	        <ProviderSwitcher
+	          activeId={activeProviderId}
+	          providers={providerItems}
+	          onChange={changeActiveProvider}
+	          terminalMode={terminalMode}
+	          distro={terminalMode === "wsl" ? wslDistro : undefined}
+	        />
+	      </div>
+	      <div className="flex items-center gap-2">
         {/* 目录缺失提示：若选中项目的 Windows 路径不存在则提示 */}
         {selectedProject?.winPath && (
           <span className="hidden" data-proj-path={selectedProject.winPath}></span>
@@ -3048,6 +3260,7 @@ export default function CodexFlowManagerUI() {
               const pendingCount = pendingCompletions[tab.id] ?? 0;
               const hasPending = pendingCount > 0;
               const isActiveTab = activeTabId === tab.id;
+              const providerIconSrc = getProviderIconSrc(tab.providerId, providerItemById);
               return (
                 <div
                   key={tab.id}
@@ -3062,7 +3275,15 @@ export default function CodexFlowManagerUI() {
                     onDoubleClick={(e) => { e.preventDefault(); e.stopPropagation(); startEditTab(tab.id, tab.name); }}
                     onContextMenu={(e) => openTabContextMenu(e, tab.id, "tab-trigger")}
                   >
-                    <TerminalSquare className="mr-1.5 h-3.5 w-3.5 text-[var(--cf-text-secondary)] group-data-[state=active]/tab:text-[var(--cf-text-primary)]" />
+                    {providerIconSrc ? (
+                      <img
+                        src={providerIconSrc}
+                        className="mr-1.5 h-3.5 w-3.5 shrink-0 object-contain"
+                        alt={tab.providerId}
+                      />
+                    ) : (
+                      <TerminalSquare className="mr-1.5 h-3.5 w-3.5 text-[var(--cf-text-secondary)] group-data-[state=active]/tab:text-[var(--cf-text-primary)]" />
+                    )}
                     {editingTabId === tab.id ? (
                       <input
                         id={`tab-input-${tab.id}`}
@@ -3362,6 +3583,7 @@ export default function CodexFlowManagerUI() {
         const tab: ConsoleTab = {
           id: uid(),
           name: String(tabName),
+          providerId: "codex",
           logs: [],
           createdAt: Date.now(),
         };
@@ -3371,13 +3593,14 @@ export default function CodexFlowManagerUI() {
         } catch {}
         try {
           const { id } = await window.host.pty.openWSLConsole({
-          distro: wslDistro,
-          wslPath: selectedProject.wslPath,
-          winPath: selectedProject.winPath,
-          cols: 80,
-          rows: 24,
-          startupCmd,
-        });
+            terminal: terminalMode,
+            distro: wslDistro,
+            wslPath: selectedProject.wslPath,
+            winPath: selectedProject.winPath,
+            cols: 80,
+            rows: 24,
+            startupCmd,
+          });
           try {
             await (window as any).host?.utils?.perfLog?.(`[ui] history.resume pty=${id} tab=${tab.id} - registering listener`);
           } catch {}
@@ -3413,6 +3636,7 @@ export default function CodexFlowManagerUI() {
         return true;
       }
       const res: any = await (window.host.utils as any).openExternalConsole({
+        terminal: terminalMode,
         wslPath: selectedProject.wslPath,
         winPath: selectedProject.winPath,
         distro: wslDistro,
@@ -3952,11 +4176,19 @@ export default function CodexFlowManagerUI() {
                   const proj = projectCtxMenu.project;
                   if (proj) {
                     try {
-                      const res: any = await (window.host.utils as any).openExternalConsole({ wslPath: proj.wslPath, winPath: proj.winPath, distro: wslDistro, startupCmd: injectTraceEnv(codexCmd) });
+                      const env = getProviderEnv(activeProviderId);
+                      const startupCmd = buildProviderStartupCmd(activeProviderId, env);
+                      const res: any = await (window.host.utils as any).openExternalConsole({
+                        terminal: env.terminal,
+                        wslPath: proj.wslPath,
+                        winPath: proj.winPath,
+                        distro: env.distro,
+                        startupCmd
+                      });
                       if (!(res && res.ok)) throw new Error(res?.error || 'failed');
                     } catch (e) {
-                      const env = toShellLabel(terminalMode);
-                      setBlockingNotice({ type: 'external-console', env });
+                      const envLabel = toShellLabel(terminalMode);
+                      setBlockingNotice({ type: 'external-console', env: envLabel });
                     }
                   }
                   setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
@@ -4042,11 +4274,19 @@ export default function CodexFlowManagerUI() {
       <SettingsDialog
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
-        values={{ terminal: terminalMode, distro: wslDistro, codexCmd, sendMode, locale, projectPathStyle, theme: themeSetting, notifications: notificationPrefs, network: networkPrefs, terminalFontFamily, terminalTheme }}
+        values={{
+          providers: { activeId: activeProviderId, items: providerItems, env: providerEnvById },
+          sendMode,
+          locale,
+          projectPathStyle,
+          theme: themeSetting,
+          notifications: notificationPrefs,
+          network: networkPrefs,
+          terminalFontFamily,
+          terminalTheme
+        }}
         onSave={async (v) => {
-          const nextTerminal = v.terminal;
-          const nextDistro = v.distro;
-          const nextCmd = v.codexCmd;
+          const nextProviders = v.providers as any;
           const nextSend = v.sendMode;
           const nextStyle = v.projectPathStyle || 'absolute';
           const nextLocale = v.locale;
@@ -4057,10 +4297,14 @@ export default function CodexFlowManagerUI() {
           // 先切换语言（内部会写入 settings 并广播），再持久化其它字段
           try { await (window as any).host?.i18n?.setLocale?.(nextLocale); setLocale(nextLocale); } catch {}
           try {
+            const codexItem = Array.isArray(nextProviders?.items) ? nextProviders.items.find((x: any) => x && x.id === "codex") : null;
+            const codexResolved = resolveProvider(codexItem ?? { id: "codex" });
+            const codexEnv = (nextProviders?.env && nextProviders.env.codex) ? nextProviders.env.codex : (providerEnvById.codex || { terminal: "wsl", distro: wslDistro });
             await window.host.settings.update({
-              terminal: nextTerminal,
-              distro: nextDistro,
-              codexCmd: nextCmd,
+              providers: nextProviders,
+              terminal: codexEnv.terminal,
+              distro: codexEnv.distro,
+              codexCmd: codexResolved.startupCmd || "codex",
               sendMode: nextSend,
               projectPathStyle: nextStyle,
               theme: nextTheme,
@@ -4070,9 +4314,24 @@ export default function CodexFlowManagerUI() {
               terminalTheme: nextTerminalTheme,
             });
           } catch (e) { console.warn('settings.update failed', e); }
-          setTerminalMode(nextTerminal);
-          setWslDistro(nextDistro);
-          setCodexCmd(nextCmd);
+          try {
+            const legacyTerminal = normalizeTerminalMode((nextProviders as any)?.env?.codex?.terminal ?? providerEnvById.codex?.terminal ?? terminalMode);
+            const legacyDistro = String((nextProviders as any)?.env?.codex?.distro ?? providerEnvById.codex?.distro ?? wslDistro);
+            const legacyCodexCmd = String(resolveProvider((nextProviders as any)?.items?.find((x: any) => x && x.id === "codex") ?? { id: "codex" }).startupCmd || codexCmd);
+            const normalizedProviders = normalizeProvidersSettings(nextProviders, {
+              terminal: legacyTerminal,
+              distro: legacyDistro,
+              codexCmd: legacyCodexCmd,
+            });
+            setProviderItems(normalizedProviders.items);
+            setProviderEnvById(normalizedProviders.env);
+            setActiveProviderId(normalizedProviders.activeId);
+            const activeEnv = normalizedProviders.env[normalizedProviders.activeId] || { terminal: legacyTerminal, distro: legacyDistro };
+            setTerminalMode(activeEnv.terminal);
+            setWslDistro(activeEnv.distro);
+            const codexItem = normalizedProviders.items.find((x) => x.id === "codex");
+            setCodexCmd(resolveProvider(codexItem ?? { id: "codex" }).startupCmd || legacyCodexCmd);
+          } catch {}
           setSendMode(nextSend);
           setProjectPathStyle(nextStyle);
           setThemeSetting(nextTheme);

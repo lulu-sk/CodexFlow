@@ -3,7 +3,7 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 
-type OpenArgs = { distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string };
+type OpenArgs = { terminal?: 'wsl' | 'windows' | 'pwsh'; distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string };
 
 contextBridge.exposeInMainWorld('host', {
   app: {
