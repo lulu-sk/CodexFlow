@@ -36,6 +36,7 @@ import {
   ChevronRight,
   ChevronLeft,
   ExternalLink,
+  Eye,
   EyeOff,
   Trash2,
   X,
@@ -75,6 +76,7 @@ import {
   type TerminalThemeDefinition,
 } from "@/lib/terminal-appearance";
 import { getCachedThemeSetting, useThemeController, writeThemeSettingCache, type ThemeSetting } from "@/lib/theme";
+import { loadHiddenProjectIds, loadShowHiddenProjects, saveHiddenProjectIds, saveShowHiddenProjects } from "@/lib/projects-hidden";
 import type { AppSettings, Project, ProviderItem, ProviderEnv } from "@/types/host";
 import type { TerminalThemeId } from "@/types/terminal-theme";
 
@@ -897,13 +899,16 @@ export default function CodexFlowManagerUI() {
   }, [uiLog, uiDebugEnabled]);
   // ---------- App State ----------
   const [projects, setProjects] = useState<Project[]>([]);
-  const [hiddenProjectIds, setHiddenProjectIds] = useState<string[]>([]);
+  const [projectsHydrated, setProjectsHydrated] = useState<boolean>(false);
+  const [hiddenProjectIds, setHiddenProjectIds] = useState<string[]>(() => loadHiddenProjectIds());
+  const [showHiddenProjects, setShowHiddenProjects] = useState<boolean>(() => loadShowHiddenProjects());
   const [query, setQuery] = useState("");
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
-  const visibleProjects = useMemo(
-    () => projects.filter((p) => !hiddenProjectIds.includes(p.id)),
-    [projects, hiddenProjectIds]
-  );
+  const hiddenProjectIdSet = useMemo(() => new Set(hiddenProjectIds), [hiddenProjectIds]);
+  const visibleProjects = useMemo(() => {
+    if (showHiddenProjects) return projects;
+    return projects.filter((p) => !hiddenProjectIdSet.has(p.id));
+  }, [projects, showHiddenProjects, hiddenProjectIdSet]);
   const selectedProject = useMemo(
     () => visibleProjects.find((p) => p.id === selectedProjectId) || null,
     [visibleProjects, selectedProjectId]
@@ -955,9 +960,23 @@ export default function CodexFlowManagerUI() {
   }, [projectSort, t]);
 
   useEffect(() => {
-    if (hiddenProjectIds.length === 0) return;
-    setProjects((prev) => prev.filter((p) => !hiddenProjectIds.includes(p.id)));
+    saveHiddenProjectIds(hiddenProjectIds);
   }, [hiddenProjectIds]);
+
+  useEffect(() => {
+    saveShowHiddenProjects(showHiddenProjects);
+  }, [showHiddenProjects]);
+
+  useEffect(() => {
+    // 清理已不存在的项目 id，避免隐藏列表长期积累脏数据
+    if (!projectsHydrated) return;
+    if (hiddenProjectIds.length === 0) return;
+    const exists = new Set(projects.map((p) => p.id));
+    setHiddenProjectIds((prev) => {
+      const next = prev.filter((id) => exists.has(id));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [projectsHydrated, projects, hiddenProjectIds.length]);
 
   useEffect(() => {
     // 如果没有可见项目，清空选择
@@ -2249,6 +2268,8 @@ export default function CodexFlowManagerUI() {
         }
       } catch (e) {
         console.warn('projects.scan failed', e);
+      } finally {
+        setProjectsHydrated(true);
       }
       // 启动静默检查更新（仅提示）
       try {
@@ -2344,7 +2365,10 @@ export default function CodexFlowManagerUI() {
 
   // ---------- Actions ----------
 
-  const hideProjectTemporarily = useCallback((project: Project | null) => {
+  /**
+   * 隐藏项目：关闭该项目下的所有控制台/PTY，并将其加入隐藏列表（会持久化）。
+   */
+  const hideProject = useCallback((project: Project | null) => {
     if (!project) return;
     const projectTabs = tabsByProject[project.id] || [];
     const tabIds = projectTabs.map((tab) => tab.id);
@@ -2410,6 +2434,14 @@ export default function CodexFlowManagerUI() {
     setHideProjectConfirm({ open: false, project: null });
     setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
   }, [activeTabId, setActiveTab, tabsByProject, tm]);
+
+  /**
+   * 取消隐藏项目：从隐藏列表移除该项目 id。
+   */
+  const unhideProject = useCallback((project: Project | null) => {
+    if (!project) return;
+    setHiddenProjectIds((prev) => prev.filter((id) => id !== project.id));
+  }, []);
 
   function markProjectUsed(projectId: string | null | undefined) {
     try { suppressAutoSelectRef.current = true; } catch {}
@@ -2480,9 +2512,9 @@ export default function CodexFlowManagerUI() {
       // 若该路径已在项目列表中，行为等同于点击对应项目
       const exists = projects.find((x) => String(x.winPath || '').replace(/\\/g, '/').toLowerCase() === winPath.replace(/\\/g, '/').toLowerCase());
       if (exists) {
-        if (hiddenProjectIds.includes(exists.id)) {
-          alert(String(t('projects:hiddenProjectBlocked')));
-          return;
+        // 用户显式打开：若该项目处于隐藏状态，自动取消隐藏，避免“已选中但列表不可见”的矛盾状态
+        if (hiddenProjectIdSet.has(exists.id)) {
+          setHiddenProjectIds((prev) => prev.filter((id) => id !== exists.id));
         }
         try { suppressAutoSelectRef.current = true; } catch {}
         setSelectedProjectId(exists.id);
@@ -2492,9 +2524,8 @@ export default function CodexFlowManagerUI() {
       const added: any = await window.host.projects.add({ winPath });
       if (added && added.ok && added.project) {
         const p = added.project as Project;
-        if (hiddenProjectIds.includes(p.id)) {
-          alert(String(t('projects:hiddenProjectBlocked')));
-          return;
+        if (hiddenProjectIdSet.has(p.id)) {
+          setHiddenProjectIds((prev) => prev.filter((id) => id !== p.id));
         }
         // 在选中项目前抑制自动选中历史详情
         try { suppressAutoSelectRef.current = true; } catch {}
@@ -3175,6 +3206,16 @@ export default function CodexFlowManagerUI() {
               
             </DropdownMenuContent>
           </DropdownMenu>
+          <Button
+            size="icon"
+            variant="ghost"
+            className="h-7 w-7 shrink-0"
+            onClick={() => setShowHiddenProjects((prev) => !prev)}
+            title={(showHiddenProjects ? t('projects:hideHiddenProjects') : t('projects:showHiddenProjects')) as string}
+          >
+            {showHiddenProjects ? <Eye className="h-3.5 w-3.5 text-slate-600" /> : <EyeOff className="h-3.5 w-3.5 text-slate-600" />}
+            <span className="sr-only">{(showHiddenProjects ? t('projects:hideHiddenProjects') : t('projects:showHiddenProjects')) as string}</span>
+          </Button>
           {/* 统一入口：打开项目并自动创建控制台 */}
           <Button
             size="icon"
@@ -3194,10 +3235,11 @@ export default function CodexFlowManagerUI() {
             const tabsInProject = tabsByProject[p.id] || [];
             const liveCount = tabsInProject.filter((tab) => !!ptyAlive[tab.id]).length;
             const pendingCount = pendingByProject[p.id] ?? 0;
+            const isHidden = hiddenProjectIdSet.has(p.id);
             return (
               <div
                 key={p.id}
-                className={`group flex cursor-pointer items-center justify-between rounded-lg px-3 py-2 transition hover:bg-slate-100 dark:hover:bg-slate-800 ${
+                className={`group flex cursor-pointer items-center justify-between rounded-lg px-3 py-2 transition hover:bg-slate-100 dark:hover:bg-slate-800 ${isHidden ? 'opacity-60' : ''} ${
                   p.id === selectedProjectId ? 'bg-slate-100 dark:bg-slate-800/80 dark:text-slate-100' : ''
                 }`}
                 onClick={() => {
@@ -3218,6 +3260,14 @@ export default function CodexFlowManagerUI() {
                   <div className="flex items-center gap-2 font-medium dark:text-[var(--cf-text-primary)]">
                     <FolderOpen className="h-4 w-4 text-slate-500 dark:text-[var(--cf-text-secondary)]" />
                     <span className="truncate max-w-[16rem]" title={p.name}>{p.name}</span>
+                    {isHidden ? (
+                      <span
+                        className="inline-flex items-center"
+                        title={t('projects:hiddenTag') as string}
+                      >
+                        <EyeOff className="h-3.5 w-3.5 text-slate-500 dark:text-[var(--cf-text-muted)]" />
+                      </span>
+                    ) : null}
                   </div>
                   <div className="text-xs text-slate-500 dark:text-[var(--cf-text-muted)] overflow-x-auto no-scrollbar whitespace-nowrap pr-1" title={p.winPath}>{p.winPath}</div>
                 </div>
@@ -4351,20 +4401,36 @@ export default function CodexFlowManagerUI() {
 	                <ExternalLink className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('projects:ctxOpenExternalConsoleWith', { env: toShellLabel(getProviderEnv(activeProviderId).terminal as any), provider: getProviderLabel(activeProviderId) })}
 	              </button>
 	            );
-            if (isDevEnvironment) {
-              menuItems.push(
-                <button
-                  key="hide-temporary"
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
-                  onClick={() => {
-                    const proj = projectCtxMenu.project;
-                    if (proj) setHideProjectConfirm({ open: true, project: proj });
-                    setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
-                  }}
-                >
-                  <EyeOff className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('projects:ctxHideTemporarily')}
-                </button>
-              );
+            const proj = projectCtxMenu.project;
+            if (proj) {
+              const isHidden = hiddenProjectIdSet.has(proj.id);
+              if (isHidden) {
+                menuItems.push(
+                  <button
+                    key="unhide-project"
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
+                    onClick={() => {
+                      unhideProject(proj);
+                      setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
+                    }}
+                  >
+                    <Eye className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('projects:ctxUnhideProject')}
+                  </button>
+                );
+              } else {
+                menuItems.push(
+                  <button
+                    key="hide-project"
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
+                    onClick={() => {
+                      setHideProjectConfirm({ open: true, project: proj });
+                      setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
+                    }}
+                  >
+                    <EyeOff className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('projects:ctxHideTemporarily')}
+                  </button>
+                );
+              }
             }
             return (
               <div
@@ -4400,7 +4466,7 @@ export default function CodexFlowManagerUI() {
             <Button variant="outline" onClick={() => setHideProjectConfirm({ open: false, project: null })}>{t('common:cancel')}</Button>
             <Button
               variant="secondary"
-              onClick={() => hideProjectTemporarily(hideProjectConfirm.project)}
+              onClick={() => hideProject(hideProjectConfirm.project)}
               disabled={!hideProjectConfirm.project}
             >
               {t('projects:hideTemporaryConfirm')}
