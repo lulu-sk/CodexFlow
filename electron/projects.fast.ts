@@ -6,7 +6,7 @@ import { promises as fsp } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { app } from "electron";
-import { wslToUNC, isUNCPath, uncToWsl, getCodexRootsFastAsync } from "./wsl";
+import { wslToUNC, isUNCPath, uncToWsl, getCodexRootsFastAsync, normalizeWinPath } from "./wsl";
 import { getClaudeRootCandidatesFastAsync, discoverClaudeSessionFiles } from "./agentSessions/claude/discovery";
 import { getGeminiRootCandidatesFastAsync, discoverGeminiSessionFiles } from "./agentSessions/gemini/discovery";
 import { parseClaudeSessionFile } from "./agentSessions/claude/parser";
@@ -26,6 +26,58 @@ export type Project = {
 };
 
 const uid = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+/**
+ * 判断是否为 Windows 盘符路径（如 C:\Users\you）。
+ */
+function isDriveLetterWinPath(p: string): boolean {
+  return /^[A-Za-z]:\\/.test(String(p || ""));
+}
+
+/**
+ * 若 wslPath 为 /mnt/<drive>/...，推导对应的 Windows 盘符路径。
+ */
+function winPathFromWslMount(wslPath: string): string {
+  try {
+    const m = String(wslPath || "").match(/^\/mnt\/([a-zA-Z])\/(.*)$/);
+    if (!m) return "";
+    return `${m[1].toUpperCase()}:\\${m[2].replace(/\//g, "\\")}`;
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * 选择更适合作为项目展示/启动的 Windows 路径：优先盘符路径，其次从 /mnt 推导，最后回退 UNC。
+ */
+function pickPreferredWinPath(prevWinPath: string, nextWinPath: string, wslPath: string): string {
+  const prev = normalizeWinPath(prevWinPath || "");
+  const next = normalizeWinPath(nextWinPath || "");
+  const derived = winPathFromWslMount(wslPath || "");
+  if (isDriveLetterWinPath(prev)) return prev;
+  if (isDriveLetterWinPath(next)) return next;
+  if (derived) return derived;
+  return prev || next;
+}
+
+/**
+ * 仅基于规则将 Windows/UNC 路径转换为 WSL 路径（不调用 wsl.exe）。
+ */
+function ruleWinPathToWslPath(winPath: string): string {
+  try {
+    const s = normalizeWinPath(winPath || "");
+    if (!s) return "";
+    if (isUNCPath(s)) {
+      const u = uncToWsl(s);
+      if (u?.wslPath) return u.wslPath;
+    }
+    const m = s.match(/^([a-zA-Z]):\\(.*)$/);
+    if (m) return `/mnt/${m[1].toLowerCase()}/${m[2].replace(/\\/g, "/")}`;
+    return s;
+  } catch {
+    return String(winPath || "");
+  }
+}
 
 function getStorePath() { const dir = app.getPath('userData'); return path.join(dir, 'projects.json'); }
 function loadStore(): Project[] { try { const p = getStorePath(); if (!fs.existsSync(p)) return []; return JSON.parse(fs.readFileSync(p, 'utf8')) as Project[]; } catch { return []; } }
@@ -77,8 +129,9 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
   // 去重键：在 norm 基础上转为小写
   const normWslKey = (p?: string): string => normWsl(p).toLowerCase();
   const canonKey = (winPath?: string, wslPath?: string): string => {
-    const w = wslPath && wslPath.trim().length > 0 ? normWslKey(wslPath) : normWslKey(winPath ? ruleWinToWsl(winPath) : '');
-    return w || (winPath ? winPath.replace(/\\/g, '/').toLowerCase() : '');
+    const wp = winPath ? normalizeWinPath(winPath) : "";
+    const w = wslPath && wslPath.trim().length > 0 ? normWslKey(wslPath) : normWslKey(wp ? ruleWinToWsl(wp) : '');
+    return w || (wp ? wp.replace(/\\/g, '/').toLowerCase() : '');
   };
   // 仅做真实存在性校验（交给 fs.stat 判定），不过度限制路径格式
   const ensureDirExists = async (p?: string) => {
@@ -89,7 +142,17 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
   const readPrefix = async (fp: string) => await new Promise<string>((resolve) => {
     try { const rs = fs.createReadStream(fp, { encoding: 'utf8', start: 0, end: 128 * 1024 - 1 }); let buf = ''; rs.on('data', (c) => { buf += c; if (buf.length >= 128 * 1024) { try { rs.close(); } catch {} resolve(buf); } }); rs.on('end', () => resolve(buf)); rs.on('error', () => resolve('')); } catch { resolve(''); }
   });
-  const ruleWinToWsl = (p: string): string => { try { if (isUNCPath(p)) { const u = uncToWsl(p); if (u) return u.wslPath; } const m = p.match(/^([a-zA-Z]):\\(.*)$/); if (m) return `/mnt/${m[1].toLowerCase()}/${m[2].replace(/\\/g, '/')}`; return p; } catch { return p; } };
+  const ruleWinToWsl = (p: string): string => {
+    try {
+      const s = normalizeWinPath(p);
+      if (isUNCPath(s)) { const u = uncToWsl(s); if (u) return u.wslPath; }
+      const m = s.match(/^([a-zA-Z]):\\(.*)$/);
+      if (m) return `/mnt/${m[1].toLowerCase()}/${m[2].replace(/\\/g, '/')}`;
+      return s;
+    } catch {
+      return p;
+    }
+  };
   const storeMap = new Map<string, Project>();
   for (const item of store) {
     try {
@@ -121,18 +184,21 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
       raw = raw.replace(/[\\/]+$/g, '');
       if (!raw) return;
       if (/\(\?:/.test(raw) || /\\r\?/.test(raw)) return;
+      // 兼容 PowerShell Provider 前缀（如 Microsoft.PowerShell.Core\\FileSystem::C:\\...）
+      if (!raw.startsWith('/')) raw = normalizeWinPath(raw);
 
       let winPathGuess = '';
       let wslPathGuess = '';
       if (/^\//.test(raw)) {
         wslPathGuess = normWsl(raw);
-        if (isUNCPath(ctx.root)) {
+        // 优先识别 /mnt/<drive>/...（可映射回盘符路径，更美观也更通用）
+        const mnt = raw.match(/^\/mnt\/([a-zA-Z])\/(.*)$/);
+        if (mnt) {
+          winPathGuess = `${mnt[1].toUpperCase()}:\\${mnt[2].replace(/\//g, '\\')}`;
+        } else if (isUNCPath(ctx.root)) {
           const info = uncToWsl(ctx.root);
           const distroName = info?.distro || ctx.distro || 'Ubuntu-24.04';
           winPathGuess = wslToUNC(wslPathGuess, distroName);
-        } else {
-          const mnt = raw.match(/^\/mnt\/([a-zA-Z])\/(.*)$/);
-          if (mnt) winPathGuess = `${mnt[1].toUpperCase()}:\\${mnt[2].replace(/\//g, '\\')}`;
         }
       } else if (/^[A-Za-z]:\\/.test(raw) || /^\\\\[^\s"'\\]+\\[^\s"'\\]+/.test(raw)) {
         winPathGuess = raw;
@@ -141,7 +207,7 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
         return;
       }
 
-      const cleanWin = (winPathGuess || '').trim();
+      const cleanWin = normalizeWinPath((winPathGuess || '').trim());
       const cleanWsl = normWsl((wslPathGuess || '').trim());
       if (!cleanWin) return;
 
@@ -202,17 +268,19 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
                     raw = s;
                   }
                   if (!raw) continue;
+                  // 兼容 PowerShell Provider 前缀（如 Microsoft.PowerShell.Core\\FileSystem::C:\\...）
+                  if (!raw.startsWith('/')) raw = normalizeWinPath(raw);
                   let winPathGuess = '';
                   let wslPathGuess = '';
                   if (/^\//.test(raw)) {
                     wslPathGuess = normWsl(raw);
-                    if (isUNCPath(root)) {
+                    const mnt = raw.match(/^\/mnt\/([a-zA-Z])\/(.*)$/);
+                    if (mnt) {
+                      winPathGuess = `${mnt[1].toUpperCase()}:\\${mnt[2].replace(/\//g, '\\')}`;
+                    } else if (isUNCPath(root)) {
                       const info = uncToWsl(root);
                       const distroName = info?.distro || distro || 'Ubuntu-24.04';
                       winPathGuess = wslToUNC(wslPathGuess, distroName);
-                    } else {
-                      const mnt = raw.match(/^\/mnt\/([a-zA-Z])\/(.*)$/);
-                      if (mnt) winPathGuess = `${mnt[1].toUpperCase()}:\\${mnt[2].replace(/\//g, '\\')}`;
                     }
                   } else if (/^[A-Za-z]:\\/.test(raw) || /^\\\\[^\s"'\\]+\\[^\s"'\\]+/.test(raw)) {
                     winPathGuess = raw;
@@ -234,7 +302,7 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
                   // 降噪：计数并采样匹配样本
                   agg.matched++;
                   if (agg.samples.matched.length < DBG_MAX_SAMPLES) agg.samples.matched.push(`file='${fp}' wsl='${wslPathGuess}' win='${winPathGuess}'`);
-                  const cleanWin = (winPathGuess || '').trim();
+                  const cleanWin = normalizeWinPath((winPathGuess || '').trim());
                   const cleanWsl = normWsl((wslPathGuess || '').trim());
                   // 优先接受真实存在的目录；若不存在，也依据会话记录纳入（"会话即真相"），避免漏掉历史项目
                   const exists = await ensureDirExists(cleanWin);
@@ -332,17 +400,20 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
       if (prev) {
         const preservedCreatedAt = typeof prev.createdAt === "number" && !Number.isNaN(prev.createdAt) ? prev.createdAt : p.createdAt;
         const preservedLastOpenedAt = typeof prev.lastOpenedAt === "number" && !Number.isNaN(prev.lastOpenedAt) ? prev.lastOpenedAt : p.lastOpenedAt;
-        uniqueMap.set(k, {
+        const merged: Project = {
           ...prev,
           ...p,
           id: prev.id || p.id,
           createdAt: preservedCreatedAt,
           lastOpenedAt: preservedLastOpenedAt,
           name: fixedName || prev.name || p.name,
-        });
+        };
+        // 保持展示路径尽量为盘符路径（避免被 UNC 覆盖导致不美观/部分场景不可用）
+        merged.winPath = pickPreferredWinPath(prev.winPath, p.winPath, merged.wslPath);
+        uniqueMap.set(k, merged);
         continue;
       }
-      uniqueMap.set(k, { ...p, name: fixedName || p.name });
+      uniqueMap.set(k, { ...p, winPath: pickPreferredWinPath("", p.winPath, p.wslPath), name: fixedName || p.name });
     }
     const unique = Array.from(uniqueMap.values());
     try { await saveStoreAsync(unique); } catch {}
@@ -352,9 +423,10 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
   const cleaned: Project[] = [];
   for (const s of store) {
     try {
-      if (await ensureDirExists(s.winPath)) {
-        const fixedName = s.winPath ? path.basename(s.winPath) : (s.wslPath ? s.wslPath.split('/').pop() || s.name : s.name);
-        cleaned.push({ ...s, name: fixedName || s.name });
+      const cleanWin = normalizeWinPath(s.winPath);
+      if (await ensureDirExists(cleanWin)) {
+        const fixedName = cleanWin ? path.basename(cleanWin) : (s.wslPath ? s.wslPath.split('/').pop() || s.name : s.name);
+        cleaned.push({ ...s, winPath: pickPreferredWinPath(s.winPath, cleanWin, s.wslPath), name: fixedName || s.name });
       }
     } catch {}
   }
@@ -366,10 +438,9 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
 
 export function addProjectByWinPath(winPath: string): Project | null {
   try {
-    const normalized = path.resolve(winPath);
+    const normalized = normalizeWinPath(path.resolve(winPath));
     // 仅规则转换，避免唤起 wsl.exe
-    const m = normalized.match(/^([a-zA-Z]):\\(.*)$/);
-    const wslPath = m ? `/mnt/${m[1].toLowerCase()}/${m[2].replace(/\\/g, '/')}` : normalized;
+    const wslPath = ruleWinPathToWslPath(normalized);
     const store = loadStore();
     const exists = store.find((s) => s.winPath === normalized);
     if (exists) return exists;
