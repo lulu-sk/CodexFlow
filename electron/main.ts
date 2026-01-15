@@ -21,6 +21,7 @@ import { parseClaudeSessionFile } from "./agentSessions/claude/parser";
 import { parseGeminiSessionFile, extractGeminiProjectHashFromPath, normalizeGeminiPathForHash } from "./agentSessions/gemini/parser";
 import { sha256Hex } from "./agentSessions/shared/crypto";
 import { tidyPathCandidate } from "./agentSessions/shared/path";
+import { hasNonEmptyIOFromMessages } from "./agentSessions/shared/empty";
 import { perfLogger } from "./log";
 import settings, { ensureSettingsAutodetect, ensureFirstRunTerminalSelection, type ThemeSetting as SettingsThemeSetting, type AppSettings } from "./settings";
 import { resolveWindowsShell, detectPwshExecutable } from "./shells";
@@ -1257,76 +1258,123 @@ ipcMain.handle('history.read', async (_e, args: { filePath: string; providerId?:
   return withMeta;
 });
 
-// 扫描所有索引的会话，找出"筛选后 input_text/output_text 皆为空"的文件
+// 扫描所有索引的会话，找出“有效输入/输出均为空”的文件（安全优先：解析失败不纳入可清理候选）
 ipcMain.handle('history.findEmptySessions', async () => {
   try {
     const sums = getIndexedSummaries();
-    const candidates: { id: string; title: string; rawDate?: string; date: number; filePath: string }[] = [];
-    for (const s of (sums || [])) {
+    const candidates: { id: string; title: string; rawDate?: string; date: number; filePath: string; sizeKB?: number }[] = [];
+    const MAX_CANDIDATES = 200;
+    const SAFE_MAX_BYTES = 64 * 1024 * 1024; // 保护：避免对极端大文件做“判空”
+
+    /**
+     * 构建用于 fs 操作的路径候选（兼容 Windows/WSL 路径互转）。
+     */
+    const buildFsPathCandidates = (filePath: string): string[] => {
+      const list: string[] = [];
+      const push = (p?: string) => { if (p && !list.includes(p)) list.push(p); };
+      const p0 = String(filePath || "");
+      const normSlashes = (p: string) => (process.platform === "win32" ? p.replace(/\//g, "\\") : p);
+      if (process.platform === "win32") {
+        // Windows 下：优先把 POSIX(/home|/mnt) 转为可访问的 UNC/盘符路径
+        if (/^\//.test(p0)) {
+          try { push(wsl.wslToUNC(p0, settings.getSettings().distro || "Ubuntu-24.04")); } catch {}
+          const m = p0.match(/^\/mnt\/([a-zA-Z])\/(.*)$/);
+          if (m) push(`${m[1].toUpperCase()}:\\${m[2].replace(/\//g, "\\")}`);
+        }
+      }
+      push(normSlashes(p0));
+      return list;
+    };
+
+    /**
+     * 推断 providerId（优先使用索引字段，其次按路径特征兜底）。
+     */
+    const inferProviderId = (summary: any, filePath: string): "codex" | "claude" | "gemini" => {
+      const hinted = String(summary?.providerId || "").trim().toLowerCase();
+      if (hinted === "codex" || hinted === "claude" || hinted === "gemini") return hinted as any;
       try {
-        const det = getIndexedDetails(s.filePath) || null;
-        let messages: any[] = [];
-        let title = String((s as any).title || '');
+        const fp = String(filePath || "").replace(/\\/g, "/").toLowerCase();
+        const base = fp.split("/").pop() || "";
+        if (fp.includes("/.claude/")) return "claude";
+        if (fp.includes("/.gemini/")) return "gemini";
+        if (base.endsWith(".ndjson")) return "claude";
+        if (base.startsWith("session-") && base.endsWith(".json")) return "gemini";
+      } catch {}
+      return "codex";
+    };
+
+    for (const s of (sums || [])) {
+      if (candidates.length >= MAX_CANDIDATES) break;
+      try {
+        const filePath = String((s as any)?.filePath || "");
+        if (!filePath) continue;
+
+        // 优先使用索引阶段生成的 preview：有 preview 说明至少存在有效用户输入
+        const preview = typeof (s as any)?.preview === "string" ? String((s as any).preview).trim() : "";
+        if (preview) continue;
+
+        let title = String((s as any).title || "");
         let rawDate = (s as any).rawDate ? String((s as any).rawDate) : undefined;
         let date = Number((s as any).date || 0);
-        let id = String((s as any).id || '');
-        if (det && det.messages) {
-          try { cacheDetails(s.filePath, det); } catch {}
-          messages = det.messages as any[];
-          if (!title && (det as any).title) title = String((det as any).title);
-          if (!rawDate && (det as any).rawDate) rawDate = String((det as any).rawDate);
-          if (!date && (det as any).date) date = Number((det as any).date);
-          if (!id && (det as any).id) id = String((det as any).id);
-        } else {
-          // 兜底读取（性能较差，仅在详情缓存缺失时触发）
+        let id = String((s as any).id || "");
+        const providerId = inferProviderId(s, filePath);
+
+        // 解析/判空前，先解析出可访问路径与文件大小；文件不存在则跳过（避免把“不存在”误判为“空”）
+        const statCandidates = buildFsPathCandidates(filePath);
+        let resolvedPath: string | null = null;
+        let st: fs.Stats | null = null;
+        for (const cand of statCandidates) {
           try {
-            const r = await history.readHistoryFile(s.filePath);
-            try { cacheDetails(s.filePath, r as any); } catch {}
-            messages = r.messages as any[];
-            if (!title && (r as any).title) title = String((r as any).title);
-            if (!date && (r as any).date) date = Number((r as any).date);
-            if (!id && (r as any).id) id = String((r as any).id);
+            if (fs.existsSync(cand)) {
+              resolvedPath = cand;
+              st = fs.statSync(cand);
+              break;
+            }
           } catch {}
         }
-        // 判定：仅统计 input_text / output_text，且需非空白文本
-        let hasNonEmptyIO = false;
-        for (const m of (messages || [])) {
-          const items = Array.isArray((m as any).content) ? (m as any).content : [];
-          for (const it of items) {
-            const ty = String((it as any)?.type || '').toLowerCase();
-            if (ty !== 'input_text' && ty !== 'output_text') continue;
-            const txt = String((it as any)?.text || '').trim();
-            if (txt.length > 0) { hasNonEmptyIO = true; break; }
+        if (!resolvedPath || !st) continue;
+
+        const sizeBytes = Number((st as any)?.size ?? 0);
+        const sizeKB = Math.max(0, Math.round(sizeBytes / 1024));
+        if (sizeBytes === 0) {
+          candidates.push({ id, title, rawDate, date, filePath, sizeKB } as any);
+          continue;
+        }
+        // 超大文件默认不判空（安全优先 + 性能保护）
+        if (sizeBytes > SAFE_MAX_BYTES) continue;
+
+        let messages: any[] = [];
+        let skippedLines = 0;
+        let parsed: any = null;
+        try {
+          if (providerId === "claude") {
+            parsed = await parseClaudeSessionFile(resolvedPath, st, { summaryOnly: false, maxLines: 8000 });
+          } else if (providerId === "gemini") {
+            parsed = await parseGeminiSessionFile(resolvedPath, st, { summaryOnly: false, maxBytes: SAFE_MAX_BYTES });
+          } else {
+            parsed = await history.readHistoryFile(resolvedPath, { maxLines: 80_000 });
           }
-          if (hasNonEmptyIO) break;
+          messages = Array.isArray(parsed?.messages) ? parsed.messages : [];
+          skippedLines = Number(parsed?.skippedLines || 0);
+          // 仅用于展示：尽量补齐缺失的摘要字段
+          if (!title && parsed?.title) title = String(parsed.title);
+          if (!rawDate && parsed?.rawDate) rawDate = String(parsed.rawDate);
+          if (!date && parsed?.date) date = Number(parsed.date);
+          if (!id && parsed?.id) id = String(parsed.id);
+        } catch {
+          // 解析失败：为安全起见，不纳入“可清理”候选（避免误删非空历史）
+          continue;
         }
-        if (!hasNonEmptyIO) {
-          // 尝试获取文件大小（KB）以便前端显示
-          let sizeKB = 0;
-          try {
-            const statCandidates: string[] = [];
-            const push = (p?: string) => { if (p && !statCandidates.includes(p)) statCandidates.push(p); };
-            const p0 = String(s.filePath);
-            const normSlashes = (p: string) => (process.platform === 'win32' ? p.replace(/\//g, '\\') : p);
-            if (process.platform === 'win32') {
-              if (/^\//.test(p0)) {
-                try { push(wsl.wslToUNC(p0, settings.getSettings().distro || 'Ubuntu-24.04')); } catch {}
-                const m = p0.match(/^\/mnt\/([a-zA-Z])\/(.*)$/);
-                if (m) push(`${m[1].toUpperCase()}:\\${m[2].replace(/\//g, '\\')}`);
-              }
-            }
-            push(normSlashes(p0));
-            for (const cand of statCandidates) {
-              try {
-                if (fs.existsSync(cand)) {
-                  const st = fs.statSync(cand);
-                  if (st && typeof st.size === 'number') { sizeKB = Math.max(0, Math.round(st.size / 1024)); break; }
-                }
-              } catch {}
-            }
-          } catch {}
-          candidates.push({ id, title, rawDate, date, filePath: s.filePath, sizeKB } as any);
-        }
+
+        const hasNonEmptyIO = hasNonEmptyIOFromMessages(messages);
+        if (hasNonEmptyIO) continue;
+
+        // Claude parser 在超过 maxLines 时会累计 skippedLines：此时无法保证后续不存在有效内容，避免误删。
+        if (providerId === "claude" && skippedLines > 0) continue;
+        // Codex：若文件明显不小，避免仅凭前若干行就判空（安全优先）
+        if (providerId === "codex" && sizeBytes > 256 * 1024) continue;
+
+        candidates.push({ id, title, rawDate, date, filePath, sizeKB } as any);
       } catch {}
     }
     return { ok: true, candidates } as any;
