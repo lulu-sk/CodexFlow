@@ -114,29 +114,68 @@ export async function readFileInWslAsync(distro: string | undefined, wslPath: st
   return cleaned;
 }
 
+/**
+ * 规范化 Windows/PowerShell 路径字符串（仅字符串处理，不访问文件系统）。
+ * - 去除 PowerShell Provider 前缀：Microsoft.PowerShell.Core\\FileSystem::C:\\...
+ * - 兼容长路径前缀：\\\\?\\C:\\... / \\\\?\\UNC\\server\\share\\...
+ * - 统一分隔符为 Windows 反斜杠
+ */
+export function normalizeWinPath(input: string): string {
+  try {
+    let s = String(input || "").trim();
+    if (!s) return "";
+    // 去掉外层引号
+    s = s.replace(/^["']|["']$/g, "").trim();
+    // 合并重复反斜杠：保留 UNC/长路径前缀的起始双反斜杠
+    if (s.startsWith("\\\\")) {
+      s = "\\\\" + s.slice(2).replace(/\\{2,}/g, "\\");
+    } else {
+      s = s.replace(/\\{2,}/g, "\\");
+    }
+    // 去除 PowerShell FileSystem Provider 前缀
+    s = s.replace(/^(?:Microsoft\.PowerShell\.Core\\)?FileSystem::/i, "");
+    // 去除 Win32 长路径前缀
+    if (s.startsWith("\\\\?\\UNC\\")) {
+      s = "\\\\" + s.slice("\\\\?\\UNC\\".length);
+    } else if (s.startsWith("\\\\?\\")) {
+      s = s.slice("\\\\?\\".length);
+    } else if (s.startsWith("\\\\.\\")) {
+      s = s.slice("\\\\.\\".length);
+    }
+    // 统一分隔符
+    s = s.replace(/\//g, "\\");
+    return s;
+  } catch {
+    return String(input || "").trim();
+  }
+}
+
 export async function winToWslAsync(winPath: string, preferredDistro?: string): Promise<string> {
   if (!winPath) return '';
   if (os.platform() !== 'win32') return winPath;
+  // 已是 POSIX/WSL 路径，直接返回
+  if (/^\//.test(String(winPath).trim())) return String(winPath).trim();
+  const normalizedWinPath = normalizeWinPath(winPath);
   try {
-    if (/^\\\\wsl\.localhost\\/.test(winPath)) {
-      const u = uncToWsl(winPath);
+    if (isUNCPath(normalizedWinPath)) {
+      const u = uncToWsl(normalizedWinPath);
       if (u) return u.wslPath;
     }
   } catch {}
   try {
     const distroArg = preferredDistro ? ['-d', preferredDistro, '--'] : ['--'];
-    const cmdArgs = [...distroArg, 'wslpath', '-a', winPath];
+    const cmdArgs = [...distroArg, 'wslpath', '-a', normalizedWinPath];
     const { stdout } = await execFilePromise('wsl.exe', cmdArgs);
     const out = (stdout?.toString('utf8') || '').trim();
     if (out) return out;
   } catch {}
-  const m = winPath.match(/^([a-zA-Z]):\\(.*)$/);
+  const m = normalizedWinPath.match(/^([a-zA-Z]):\\(.*)$/);
   if (m) {
     const drive = m[1].toLowerCase();
     const rest = m[2].replace(/\\/g, '/');
     return `/mnt/${drive}/${rest}`;
   }
-  return winPath;
+  return normalizedWinPath;
 }
 
 export async function getDistroHomeAsync(distro?: string): Promise<string | null> {
@@ -184,10 +223,13 @@ export function readFileInWsl(distro: string | undefined, wslPath: string): stri
 export function winToWsl(winPath: string, preferredDistro?: string): string {
   if (!winPath) return '';
   if (os.platform() !== 'win32') return winPath;
+  // 已是 POSIX/WSL 路径，直接返回
+  if (/^\//.test(String(winPath).trim())) return String(winPath).trim();
+  const normalizedWinPath = normalizeWinPath(winPath);
   // 如果传入的是 UNC 路径，直接转换为 WSL 路径
   try {
-    if (/^\\\\wsl\.localhost\\/.test(winPath)) {
-      const u = uncToWsl(winPath);
+    if (isUNCPath(normalizedWinPath)) {
+      const u = uncToWsl(normalizedWinPath);
       if (u) return u.wslPath;
     }
   } catch (e) {
@@ -199,7 +241,7 @@ export function winToWsl(winPath: string, preferredDistro?: string): string {
     // 如果没有指定发行版，直接调用 wslpath via wsl.exe -e wslpath ???
     // 更可靠的方式：使用 wsl.exe -d <distro> -- wslpath -a "C:\..."
     const distroArg = preferredDistro ? ['-d', preferredDistro, '--'] : ['--'];
-    const cmdArgs = [...distroArg, 'wslpath', '-a', winPath];
+    const cmdArgs = [...distroArg, 'wslpath', '-a', normalizedWinPath];
     const out = execFileSync('wsl.exe', cmdArgs, { encoding: 'utf8' }).trim();
     if (out) return out;
   } catch (e) {
@@ -207,14 +249,14 @@ export function winToWsl(winPath: string, preferredDistro?: string): string {
   }
 
   // 规则转换: C:\Users\you -> /mnt/c/Users/you
-  const m = winPath.match(/^([a-zA-Z]):\\(.*)$/);
+  const m = normalizedWinPath.match(/^([a-zA-Z]):\\(.*)$/);
   if (m) {
     const drive = m[1].toLowerCase();
     const rest = m[2].replace(/\\/g, '/');
     return `/mnt/${drive}/${rest}`;
   }
   // 网络路径或特殊路径，返回原值
-  return winPath;
+  return normalizedWinPath;
 }
 
 /**
@@ -226,27 +268,32 @@ export function wslToUNC(wslPath: string, distro = 'Ubuntu-24.04'): string {
   // 移除前导/
   let p = wslPath;
   if (p.startsWith('/')) p = p.slice(1);
-  // 把 / 替换为 \\ 并拼接
-  const winPath = p.split('/').map((s) => s).join('\\\\');
-  return `\\\\wsl.localhost\\\\${distro}\\\\${winPath}`;
+  // 把 / 替换为 \ 并拼接（UNC 分隔符为单反斜杠）
+  const winPath = p.split('/').filter(Boolean).join('\\');
+  return `\\\\wsl.localhost\\${distro}\\${winPath}`;
 }
 
 /**
- * 判断是否为 WSL UNC 路径（\\wsl.localhost\\Distro\\...）
+ * 判断是否为 WSL UNC 路径（\\wsl.localhost\\Distro\\... 或 \\wsl$\\Distro\\...）
  */
 export function isUNCPath(p: string): boolean {
   if (!p) return false;
-  return /^\\\\wsl\.localhost\\\\[^\\\\]+\\\\/.test(p);
+  // 兼容：
+  // - 标准 UNC：\\wsl.localhost\Distro\path（分隔符为单反斜杠）
+  // - 历史/内部构造：\\wsl.localhost\\Distro\\path（分隔符为双反斜杠）
+  return /^\\\\wsl(?:\.localhost|\$)\\+[^\\]+\\+/i.test(p);
 }
 
 /**
- * 将 UNC 路径转换为 WSL 绝对路径: \\wsl.localhost\Distro\home\you -> /home/you
+ * 将 UNC 路径转换为 WSL 绝对路径:
+ * - \\wsl.localhost\Distro\home\you -> /home/you
+ * - \\wsl$\Distro\home\you -> /home/you
  */
 export function uncToWsl(uncPath: string): { distro: string; wslPath: string } | null {
   if (!isUNCPath(uncPath)) return null;
-  // 去掉前导\\\\
-  const stripped = uncPath.replace(/^\\\\\\\\/, '');
-  const parts = stripped.split('\\\\');
+  // 去掉前导 \\（允许多个反斜杠，兼容单双分隔符混用的历史数据）
+  const stripped = uncPath.replace(/^\\\\+/, '');
+  const parts = stripped.split(/\\+/).filter(Boolean);
   if (parts.length < 3) return null;
   const distro = parts[1];
   const rest = parts.slice(2).join('/');
@@ -353,6 +400,7 @@ export default {
   wslToUNC,
   isUNCPath,
   uncToWsl,
+  normalizeWinPath,
   getDistroHome,
   getDistroHomeAsync,
   getDefaultRoots,

@@ -946,6 +946,17 @@ ipcMain.handle('utils.openExternalConsole', async (_e, args: { terminal?: 'wsl' 
     const requestedDistro = String(args?.distro || cfg.distro || 'Ubuntu-24.04');
     const title = String((args as any)?.title || '').trim() || 'Codex';
 
+    const extLog = (msg: string) => {
+      // 默认关闭：仅在 debug.config.jsonc 启用 global.diagLog 时记录
+      if (!DIAG) return;
+      try { perfLogger.log(msg); } catch {}
+    };
+    try {
+      const rawWin = String(args?.winPath ?? '');
+      const rawWsl = String(args?.wslPath ?? '');
+      extLog(`[external] openExternalConsole req platform=${platform} terminal=${terminal} distro=${requestedDistro} title=${title} winPath='${rawWin}' wslPath='${rawWsl}' startupLen=${startupCmd.length}`);
+    } catch {}
+
     const guardKey = [
       platform,
       terminal,
@@ -966,7 +977,9 @@ ipcMain.handle('utils.openExternalConsole', async (_e, args: { terminal?: 'wsl' 
         if (m) cwd = `${m[1].toUpperCase()}:\\${m[2].replace(/\//g, '\\')}`;
         if (!cwd) { try { cwd = wsl.wslToUNC(wslPathRaw, requestedDistro); } catch {} }
       }
+      try { cwd = wsl.normalizeWinPath(cwd); } catch {}
       if (!cwd) { try { cwd = require('node:os').homedir(); } catch { cwd = process.cwd(); } }
+      extLog(`[external] windows-shell cwd='${cwd}'`);
 
       // 优先 Windows Terminal
       const resolvedShell = resolveWindowsShell(terminal === 'pwsh' ? 'pwsh' : 'windows');
@@ -975,42 +988,127 @@ ipcMain.handle('utils.openExternalConsole', async (_e, args: { terminal?: 'wsl' 
       // 使用 Windows Terminal：指定起始目录，由 WT 负责切换目录；PowerShell 仅执行命令
       // 必须加入 `--`，将后续命令行完整传入新标签，而不被 wt 解析
       const wtArgs = ['-w', '0', 'new-tab', '--title', title, '--startingDirectory', cwd, '--', resolvedShell.command, '-NoExit', '-NoProfile', '-EncodedCommand', toPsEncoded(startupCmd)];
-      if (await spawnDetachedSafe('wt.exe', wtArgs)) return { ok: true } as const;
-      if (await spawnDetachedSafe('WindowsTerminal.exe', wtArgs)) return { ok: true } as const;
+      {
+        const ok = await spawnDetachedSafe('wt.exe', wtArgs);
+        extLog(`[external] launch wt.exe ok=${ok ? 1 : 0}`);
+        if (ok) return { ok: true } as const;
+      }
+      {
+        const ok = await spawnDetachedSafe('WindowsTerminal.exe', wtArgs);
+        extLog(`[external] launch WindowsTerminal.exe ok=${ok ? 1 : 0}`);
+        if (ok) return { ok: true } as const;
+      }
       // 回退：cmd /c start 一个 PowerShell 窗口，使用 -EncodedCommand，先切换目录再执行
       const psScript = `Set-Location -Path \"${cwd.replace(/"/g, '\\"')}\"; ${startupCmd}`;
       const psEncoded = toPsEncoded(psScript);
       // 注意：cmd 的 start 需要显式传入“窗口标题”参数；最稳妥的方式是传空标题 `""`，避免把第一个参数当作命令执行。
       // 例如：start Codex wsl.exe ... 会错误地执行 codex，并把后续参数（含 -d）传给 codex。
-      if (await spawnDetachedSafe('cmd.exe', ['/c', 'start', '', resolvedShell.command, '-NoExit', '-NoProfile', '-EncodedCommand', psEncoded])) return { ok: true } as const;
+      {
+        const ok = await spawnDetachedSafe('cmd.exe', ['/c', 'start', '', resolvedShell.command, '-NoExit', '-NoProfile', '-EncodedCommand', psEncoded]);
+        extLog(`[external] launch cmd.exe(start ${resolvedShell.command}) ok=${ok ? 1 : 0}`);
+        if (ok) return { ok: true } as const;
+      }
       return { ok: false, error: 'failed to launch external Windows console' } as const;
     }
 
-    // 否则：WSL 路径与逻辑
-    let wslPath = String(args?.wslPath || '').trim();
-    const winPath = String(args?.winPath || '').trim();
-    if (!wslPath && winPath) { try { wslPath = wsl.winToWsl(winPath, requestedDistro); } catch {} }
-    if (!wslPath) wslPath = '~';
-    const esc = (s: string) => s.replace(/\"/g, '\\\"');
-    const cdCmd = wslPath === '~' ? 'cd ~' : `cd \"${esc(wslPath)}\"`;
-    // 注意：避免在这里拼接 `;`，否则 Windows Terminal `wt.exe` 可能把 `;` 当作命令分隔符解析，
-    // 进而把脚本拆成多段（如 if/then/else/fi），导致连开多个窗口并报错。
-    const bashScript = `(${cdCmd} || true) && (${startupCmd} || true) && exec bash`;
+    // 否则：WSL 路径与逻辑（优先使用 wsl.exe --cd，参考“新建代理”的定位策略）
+    let wslCwd = "";
+    let wslCwdSource = "";
+    const rawWinPath = String(args?.winPath || "").trim().replace(/\\n/g, "").replace(/\r?\n/g, "").replace(/^"|"$/g, "").trim();
+    const rawWslPath = String(args?.wslPath || "").trim().replace(/\\n/g, "").replace(/\r?\n/g, "").replace(/^"|"$/g, "").trim();
+    const normalizedWinPath = platform === "win32" ? wsl.normalizeWinPath(rawWinPath) : rawWinPath;
+    const normalizedWslWinLike = (platform === "win32" && rawWslPath && !rawWslPath.startsWith("/")) ? wsl.normalizeWinPath(rawWslPath) : rawWslPath;
+
+    if (rawWslPath && rawWslPath.startsWith("/")) {
+      wslCwd = rawWslPath;
+      wslCwdSource = "args.wslPath(posix)";
+    } else if (rawWslPath === "~") {
+      wslCwd = "~";
+      wslCwdSource = "args.wslPath(~)";
+    } else if (platform === "win32") {
+      // 兼容：wslPath 误填入 Windows/UNC/PowerShell 路径
+      try {
+        const fromWslArg = rawWslPath ? wsl.winToWsl(normalizedWslWinLike, requestedDistro) : "";
+        if (fromWslArg && fromWslArg.startsWith("/")) {
+          wslCwd = fromWslArg;
+          wslCwdSource = "args.wslPath(winToWsl)";
+        }
+      } catch {}
+      if (!wslCwd && normalizedWinPath) {
+        try {
+          const fromWinArg = wsl.winToWsl(normalizedWinPath, requestedDistro);
+          if (fromWinArg && fromWinArg.startsWith("/")) {
+            wslCwd = fromWinArg;
+            wslCwdSource = "args.winPath(winToWsl)";
+          }
+        } catch {}
+      }
+    } else {
+      // 非 Windows：保持原样（主要用于开发调试）
+      if (rawWslPath) { wslCwd = rawWslPath; wslCwdSource = "args.wslPath(raw)"; }
+      else if (normalizedWinPath) { wslCwd = normalizedWinPath; wslCwdSource = "args.winPath(raw)"; }
+    }
+    if (!wslCwd) { wslCwd = "~"; wslCwdSource = "fallback(~)"; }
+
+    // 注意：避免在这里拼接 `;`，否则 Windows Terminal `wt.exe` 可能把 `;` 当作命令分隔符解析。
+    // 同时：即使 `--cd` 未生效，也要通过 bash 内部再次 `cd`，避免落在应用工作目录。
+    const esc = (s: string) => String(s || "").replace(/\"/g, '\\\"');
+    const cdCmd = (wslCwd && wslCwd !== '~') ? `cd \"${esc(wslCwd)}\" 2>/dev/null || cd ~` : 'cd ~';
+    // 关键：不要把 cd 放在 `(...)` 子 shell 中，否则目录切换不会影响后续命令
+    // 使用换行分隔命令，避免引入 `;`（Windows Terminal 可能把 `;` 当作分隔符解析）
+    const bashScript = `${cdCmd}\n${startupCmd}\nexec bash`;
+    extLog(`[external] wsl-shell cwd='${wslCwd}' source=${wslCwdSource}`);
 
     if (platform === 'win32') {
       const hasDistro = (() => { try { return wsl.distroExists(requestedDistro); } catch { return false; } })();
       const distroArgv = hasDistro ? ['-d', requestedDistro] as string[] : [];
       const canUseWt = !bashScript.includes(';');
-      const wtArgs = ['-w', '0', 'new-tab', '--title', title, '--', 'wsl.exe', ...distroArgv, '--', 'bash', '-lic', bashScript];
+      // 若 Windows 侧目录不存在，则不传 --cd，避免 WSL 输出 chdir failed 噪声；目录切换由 bashScript 兜底
+      const shouldUseCdArgv = (() => {
+        try {
+          if (!wslCwd || wslCwd === '~') return false;
+          if (!normalizedWinPath) return true; // 无法校验，保守传入
+          // 仅对盘符路径做存在性校验
+          if (!/^[A-Za-z]:\\/.test(normalizedWinPath)) return true;
+          return fs.existsSync(normalizedWinPath);
+        } catch {
+          return true;
+        }
+      })();
+      const cdArgv = shouldUseCdArgv ? ['--cd', wslCwd] as string[] : [];
+      const wtArgs = ['-w', '0', 'new-tab', '--title', title, '--', 'wsl.exe', ...distroArgv, ...cdArgv, '--', 'bash', '-lic', bashScript];
       if (canUseWt) {
-        if (await spawnDetachedSafe('wt.exe', wtArgs)) return { ok: true } as const;
-        if (await spawnDetachedSafe('WindowsTerminal.exe', wtArgs)) return { ok: true } as const;
+        {
+          const ok = await spawnDetachedSafe('wt.exe', wtArgs);
+          extLog(`[external] launch wt.exe(wsl) ok=${ok ? 1 : 0}`);
+          if (ok) return { ok: true } as const;
+        }
+        {
+          const ok = await spawnDetachedSafe('WindowsTerminal.exe', wtArgs);
+          extLog(`[external] launch WindowsTerminal.exe(wsl) ok=${ok ? 1 : 0}`);
+          if (ok) return { ok: true } as const;
+        }
       }
-      const psArgListParts = [ ...(hasDistro ? [`'-d'`, `'${requestedDistro.replace(/'/g, "''")}'`] : []), `'--'`, `'bash'`, `'-lic'`, `'${bashScript.replace(/'/g, "''")}'` ];
+      const psArgListParts = [
+        ...(hasDistro ? [`'-d'`, `'${requestedDistro.replace(/'/g, "''")}'`] : []),
+        ...(wslCwd && wslCwd !== "~" ? [`'--cd'`, `'${wslCwd.replace(/'/g, "''")}'`] : []),
+        `'--'`,
+        `'bash'`,
+        `'-lic'`,
+        `'${bashScript.replace(/'/g, "''")}'`
+      ];
       const psCmd = `Start-Process -FilePath wsl.exe -ArgumentList @(${psArgListParts.join(',')})`;
-      if (await spawnDetachedSafe('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psCmd])) return { ok: true } as const;
+      {
+        const ok = await spawnDetachedSafe('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psCmd]);
+        extLog(`[external] launch powershell.exe(Start-Process wsl) ok=${ok ? 1 : 0}`);
+        if (ok) return { ok: true } as const;
+      }
       // cmd start 同样需要显式传入空标题 `""`，避免把第一个参数当作命令执行
-      if (await spawnDetachedSafe('cmd.exe', ['/c', 'start', '', 'wsl.exe', ...distroArgv, '--', 'bash', '-lic', bashScript])) return { ok: true } as const;
+      {
+        const ok = await spawnDetachedSafe('cmd.exe', ['/c', 'start', '', 'wsl.exe', ...distroArgv, ...(wslCwd && wslCwd !== '~' ? ['--cd', wslCwd] : []), '--', 'bash', '-lic', bashScript]);
+        extLog(`[external] launch cmd.exe(start wsl.exe) ok=${ok ? 1 : 0}`);
+        if (ok) return { ok: true } as const;
+      }
       return { ok: false, error: 'failed to launch external WSL console' } as const;
     }
 
