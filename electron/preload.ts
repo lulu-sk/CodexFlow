@@ -113,6 +113,10 @@ contextBridge.exposeInMainWorld('host', {
     },
   },
   projects: {
+    /** 读取缓存项目列表（不触发扫描） */
+    list: async () => {
+      return await ipcRenderer.invoke('projects.list');
+    },
     scan: async (args: { roots?: string[] } = {}) => {
       return await ipcRenderer.invoke('projects.scan', args);
     },

@@ -108,6 +108,8 @@ export interface PtyAPI {
 }
 
 export interface ProjectsAPI {
+  /** 读取缓存项目列表（不触发扫描） */
+  list(): Promise<{ ok: boolean; projects?: Project[]; error?: string }>;
   scan(args?: { roots?: string[] }): Promise<{ ok: boolean; projects?: Project[]; error?: string }>;
   add(args: { winPath: string }): Promise<{ ok: boolean; project?: Project | null; error?: string }>;
   touch(id: string): void;
