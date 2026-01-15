@@ -96,23 +96,50 @@ function shouldSkipExternalConsoleLaunch(key: string, windowMs: number = 1200): 
 }
 
 /**
- * 以 detached 方式启动外部进程，并使用 spawn/error 事件判断是否真正启动成功。
- * - 只在收到 `spawn` 事件后才认为成功（避免文件不存在时误判成功）
+ * 解析 Windows 系统目录中的可执行文件路径，避免 PATH 缺失导致找不到。
+ */
+function resolveSystemBinary(bin: string): string {
+  if (process.platform !== "win32") return bin;
+  const root = process.env.SystemRoot || process.env.WINDIR || "C:\\Windows";
+  const full = path.join(root, "System32", bin);
+  try {
+    if (fs.existsSync(full)) return full;
+  } catch {}
+  return bin;
+}
+
+type SpawnDetachedSafeOptions = {
+  timeoutMs?: number;
+  detached?: boolean;
+  windowsHide?: boolean;
+  minAliveMs?: number;
+};
+
+/**
+ * 启动外部进程，并用 spawn/exit/error 判断是否真正启动成功。
+ * - 若进程存活超过 minAliveMs，视为成功
+ * - 若提前退出且 exitCode !== 0，视为失败
  * - 必须有超时，避免极端情况下 promise 悬挂
  */
-function spawnDetachedSafe(file: string, argv: string[], options?: { timeoutMs?: number }): Promise<boolean> {
+function spawnDetachedSafe(file: string, argv: string[], options?: SpawnDetachedSafeOptions): Promise<boolean> {
   const timeoutMs = Math.max(200, Math.min(5000, Number(options?.timeoutMs ?? 1200)));
+  const detached = options?.detached ?? true;
+  const windowsHide = options?.windowsHide ?? true;
+  const minAliveMs = Math.max(0, Math.min(2000, Number(options?.minAliveMs ?? 200)));
   return new Promise<boolean>((resolve) => {
     let done = false;
+    let spawned = false;
+    let aliveTimer: ReturnType<typeof setTimeout> | null = null;
     const finish = (ok: boolean) => {
       if (done) return;
       done = true;
+      if (aliveTimer) clearTimeout(aliveTimer);
       resolve(ok);
     };
 
     let child: ReturnType<typeof spawn> | null = null;
     try {
-      child = spawn(file, argv, { detached: true, stdio: "ignore", windowsHide: true });
+      child = spawn(file, argv, { detached, stdio: "ignore", windowsHide });
     } catch {
       finish(false);
       return;
@@ -123,11 +150,28 @@ function spawnDetachedSafe(file: string, argv: string[], options?: { timeoutMs?:
 
     try {
       child.once("spawn", () => {
+        spawned = true;
         try { child?.unref(); } catch {}
-        finish(true);
+        if (minAliveMs <= 0) {
+          finish(true);
+          return;
+        }
+        aliveTimer = setTimeout(() => finish(true), minAliveMs);
+        try { (aliveTimer as any).unref?.(); } catch {}
       });
       child.once("error", () => {
         try { child?.unref(); } catch {}
+        finish(false);
+      });
+      child.once("exit", (code) => {
+        if (!spawned) {
+          finish(false);
+          return;
+        }
+        if (code === 0) {
+          finish(true);
+          return;
+        }
         finish(false);
       });
     } catch {
@@ -1088,7 +1132,8 @@ ipcMain.handle('utils.openExternalConsole', async (_e, args: { terminal?: 'wsl' 
       // 注意：cmd 的 start 需要显式传入“窗口标题”参数；最稳妥的方式是传空标题 `""`，避免把第一个参数当作命令执行。
       // 例如：start Codex wsl.exe ... 会错误地执行 codex，并把后续参数（含 -d）传给 codex。
       {
-        const ok = await spawnDetachedSafe('cmd.exe', ['/c', 'start', '', resolvedShell.command, '-NoExit', '-NoProfile', '-EncodedCommand', psEncoded]);
+        const cmdExe = resolveSystemBinary('cmd.exe');
+        const ok = await spawnDetachedSafe(cmdExe, ['/c', 'start', '', resolvedShell.command, '-NoExit', '-NoProfile', '-EncodedCommand', psEncoded], { windowsHide: false });
         extLog(`[external] launch cmd.exe(start ${resolvedShell.command}) ok=${ok ? 1 : 0}`);
         if (ok) return { ok: true } as const;
       }
@@ -1160,7 +1205,8 @@ ipcMain.handle('utils.openExternalConsole', async (_e, args: { terminal?: 'wsl' 
         }
       })();
       const cdArgv = shouldUseCdArgv ? ['--cd', wslCwd] as string[] : [];
-      const wtArgs = ['-w', '0', 'new-tab', '--title', title, '--', 'wsl.exe', ...distroArgv, ...cdArgv, '--', 'bash', '-lic', bashScript];
+      const wslExe = resolveSystemBinary('wsl.exe');
+      const wtArgs = ['-w', '0', 'new-tab', '--title', title, '--', wslExe, ...distroArgv, ...cdArgv, '--', 'bash', '-lic', bashScript];
       if (canUseWt) {
         {
           const ok = await spawnDetachedSafe('wt.exe', wtArgs);
@@ -1181,15 +1227,18 @@ ipcMain.handle('utils.openExternalConsole', async (_e, args: { terminal?: 'wsl' 
         `'-lic'`,
         `'${bashScript.replace(/'/g, "''")}'`
       ];
-      const psCmd = `Start-Process -FilePath wsl.exe -ArgumentList @(${psArgListParts.join(',')})`;
+      const wslExePs = wslExe.replace(/'/g, "''");
+      const psCmd = `Start-Process -FilePath '${wslExePs}' -ArgumentList @(${psArgListParts.join(',')}) -WindowStyle Normal`;
       {
-        const ok = await spawnDetachedSafe('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psCmd]);
+        const powershellExe = resolveSystemBinary('powershell.exe');
+        const ok = await spawnDetachedSafe(powershellExe, ['-NoProfile', '-NonInteractive', '-Command', psCmd], { windowsHide: false });
         extLog(`[external] launch powershell.exe(Start-Process wsl) ok=${ok ? 1 : 0}`);
         if (ok) return { ok: true } as const;
       }
       // cmd start 同样需要显式传入空标题 `""`，避免把第一个参数当作命令执行
       {
-        const ok = await spawnDetachedSafe('cmd.exe', ['/c', 'start', '', 'wsl.exe', ...distroArgv, ...(wslCwd && wslCwd !== '~' ? ['--cd', wslCwd] : []), '--', 'bash', '-lic', bashScript]);
+        const cmdExe = resolveSystemBinary('cmd.exe');
+        const ok = await spawnDetachedSafe(cmdExe, ['/c', 'start', '', wslExe, ...distroArgv, ...(wslCwd && wslCwd !== '~' ? ['--cd', wslCwd] : []), '--', 'bash', '-lic', bashScript], { windowsHide: false });
         extLog(`[external] launch cmd.exe(start wsl.exe) ok=${ok ? 1 : 0}`);
         if (ok) return { ok: true } as const;
       }
@@ -2151,7 +2200,8 @@ ipcMain.handle('utils.openExternalWSLConsole', async (_e, args: { wslPath?: stri
 
       // 方案 A：Windows Terminal（new-tab，避免旧别名 nt），若存在则直接新开标签
       const canUseWt = !bashScript.includes(';');
-      const wtArgs = ['-w', '0', 'new-tab', '--title', 'Codex', '--', 'wsl.exe', ...distroArgv, '--', 'bash', '-lic', bashScript];
+      const wslExe = resolveSystemBinary('wsl.exe');
+      const wtArgs = ['-w', '0', 'new-tab', '--title', 'Codex', '--', wslExe, ...distroArgv, '--', 'bash', '-lic', bashScript];
       if (canUseWt) {
         if (await spawnDetachedSafe('wt.exe', wtArgs)) return { ok: true } as const;
         if (await spawnDetachedSafe('WindowsTerminal.exe', wtArgs)) return { ok: true } as const;
@@ -2162,11 +2212,18 @@ ipcMain.handle('utils.openExternalWSLConsole', async (_e, args: { wslPath?: stri
         ...(hasDistro ? [`'-d'`, `'${requestedDistro.replace(/'/g, "''")}'`] : []),
         `'--'`, `'bash'`, `'-lic'`, `'${bashScript.replace(/'/g, "''")}'`
       ];
-      const psCmd = `Start-Process -FilePath wsl.exe -ArgumentList @(${psArgListParts.join(',')})`;
-      if (await spawnDetachedSafe('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psCmd])) return { ok: true } as const;
+      const wslExePs = wslExe.replace(/'/g, "''");
+      const psCmd = `Start-Process -FilePath '${wslExePs}' -ArgumentList @(${psArgListParts.join(',')}) -WindowStyle Normal`;
+      {
+        const powershellExe = resolveSystemBinary('powershell.exe');
+        if (await spawnDetachedSafe(powershellExe, ['-NoProfile', '-NonInteractive', '-Command', psCmd], { windowsHide: false })) return { ok: true } as const;
+      }
 
       // 方案 C：cmd.exe /c start（最后兜底，且必须传空标题 `""`）
-      if (await spawnDetachedSafe('cmd.exe', ['/c', 'start', '', 'wsl.exe', ...distroArgv, '--', 'bash', '-lic', bashScript])) return { ok: true } as const;
+      {
+        const cmdExe = resolveSystemBinary('cmd.exe');
+        if (await spawnDetachedSafe(cmdExe, ['/c', 'start', '', wslExe, ...distroArgv, '--', 'bash', '-lic', bashScript], { windowsHide: false })) return { ok: true } as const;
+      }
 
       throw new Error('failed to launch external WSL console');
     }
