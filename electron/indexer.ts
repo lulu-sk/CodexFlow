@@ -65,6 +65,41 @@ const RESCAN_INTERVAL_MS = 60_000;
 const RESCAN_COOLDOWN_MS = 30_000;
 const RESCAN_COOLDOWN_MAX = 512;
 
+// Watch 去抖/批处理：避免 Claude 等 CLI 启动阶段频繁写入触发重复解析，导致主进程 CPU/内存瞬时飙升
+const WATCH_DEBOUNCE_MS = 800;
+const WATCH_BATCH_LIMIT = 48;
+const WATCH_CONCURRENCY = 2;
+
+type WatchQueueEntry = { filePath: string; dueAt: number };
+type WatchQueueState = { timer: NodeJS.Timeout | null; flushing: boolean; queue: Map<string, WatchQueueEntry> };
+
+/**
+ * 获取文件变更监听的队列状态（挂到 global.__indexer，便于 stopHistoryIndexer 统一清理）。
+ */
+function getWatchQueueState(): WatchQueueState {
+  if (!g.__indexer) g.__indexer = {};
+  if (!g.__indexer.watchQueueState) {
+    g.__indexer.watchQueueState = { timer: null, flushing: false, queue: new Map<string, WatchQueueEntry>() } as WatchQueueState;
+  }
+  return g.__indexer.watchQueueState as WatchQueueState;
+}
+
+/**
+ * 清理文件变更监听队列（防止重启索引器后残留定时器/闭包）。
+ */
+function clearWatchQueueState(): void {
+  try {
+    const st = (g.__indexer && g.__indexer.watchQueueState) ? (g.__indexer.watchQueueState as WatchQueueState) : null;
+    if (st?.timer) {
+      try { clearTimeout(st.timer); } catch {}
+    }
+  } catch {}
+  try {
+    if (!g.__indexer) g.__indexer = {};
+    g.__indexer.watchQueueState = { timer: null, flushing: false, queue: new Map<string, WatchQueueEntry>() } as WatchQueueState;
+  } catch {}
+}
+
 function getRescanCooldownMap(): Map<string, number> {
   if (!g.__indexer) g.__indexer = {};
   if (!g.__indexer.rescanCooldown) g.__indexer.rescanCooldown = new Map<string, number>();
@@ -1342,7 +1377,15 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
 
     // 4) 文件变化监听（可选）
     if (chokidar && rootEntriesExisting.length > 0) {
-      const onChange = async (fp: string) => {
+      // 每次启动索引器先清空 watch 队列（防止上一轮残留 timer 触发）
+      try { clearWatchQueueState(); } catch {}
+
+      const watchLimit = pLimit(WATCH_CONCURRENCY);
+
+      /**
+       * 执行一次“文件变更 -> 索引 upsert”的核心逻辑（不做去抖/合并）。
+       */
+      async function upsertFromWatch(fp: string): Promise<void> {
         try {
           const providerId = resolveProviderIdForFile(fp);
           if (!shouldIndexFile(providerId, fp)) return;
@@ -1388,17 +1431,75 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
             }
           } catch {}
         } catch {}
+      }
+
+      /**
+       * flush watch 队列：对同一文件的短时间频繁变更进行合并（去抖 + 批处理 + 限并发）。
+       */
+      async function flushWatchQueue(): Promise<void> {
+        const st = getWatchQueueState();
+        if (st.flushing) return;
+        st.flushing = true;
+        try {
+          while (true) {
+            const now = Date.now();
+            const due: string[] = [];
+            for (const [k, v] of Array.from(st.queue.entries())) {
+              if (v.dueAt > now) continue;
+              st.queue.delete(k);
+              due.push(v.filePath);
+            }
+            if (due.length === 0) break;
+            for (let i = 0; i < due.length; i += WATCH_BATCH_LIMIT) {
+              const batch = due.slice(i, i + WATCH_BATCH_LIMIT);
+              await Promise.all(batch.map((p) => watchLimit(() => upsertFromWatch(p))));
+              // 让出事件循环，避免主进程长时间被占用导致 UI 卡顿
+              await new Promise<void>((r) => setImmediate(r));
+            }
+          }
+        } catch {
+          // ignore
+        } finally {
+          st.flushing = false;
+          if (st.queue.size > 0) scheduleWatchFlush();
+        }
+      }
+
+      /**
+       * 安排一次 watch flush（始终最多挂一个 timer）。
+       */
+      function scheduleWatchFlush(): void {
+        const st = getWatchQueueState();
+        if (st.timer) return;
+        st.timer = setTimeout(() => {
+          try { const st2 = getWatchQueueState(); st2.timer = null; } catch {}
+          flushWatchQueue().catch(() => {});
+        }, WATCH_DEBOUNCE_MS);
+      }
+
+      /**
+       * 监听事件入队：对同一文件路径做去抖合并，避免频繁 change/add 触发重复解析。
+       */
+      function enqueueWatchChange(fp: string): void {
+        try {
+          const k = canonicalKey(fp);
+          const st = getWatchQueueState();
+          st.queue.set(k, { filePath: fp, dueAt: Date.now() + WATCH_DEBOUNCE_MS });
+          scheduleWatchFlush();
+        } catch {}
+      }
+
+      const onUnlink = (fp: string) => {
+        try {
+          try { getWatchQueueState().queue.delete(canonicalKey(fp)); } catch {}
+          const k = canonicalKey(fp);
+          const removed = ix.files[k]?.summary;
+          try { getDetailsCache().delete(k); } catch {}
+          delete ix.files[k]; delete det.files[k];
+          ix.savedAt = Date.now(); det.savedAt = Date.now(); saveIndex(ix); saveDetails(det);
+          if (removed) try { win?.webContents.send('history:index:remove', { filePath: fp }); } catch {}
+        } catch {}
       };
-        const onUnlink = (fp: string) => {
-          try {
-            const k = canonicalKey(fp);
-            const removed = ix.files[k]?.summary;
-            try { getDetailsCache().delete(k); } catch {}
-            delete ix.files[k]; delete det.files[k];
-            ix.savedAt = Date.now(); det.savedAt = Date.now(); saveIndex(ix); saveDetails(det);
-            if (removed) try { win?.webContents.send('history:index:remove', { filePath: fp }); } catch {}
-          } catch {}
-        };
 
         const isUNC = (p: string) => {
           try {
@@ -1416,8 +1517,27 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
           return ["*.jsonl"];
         };
 
-        const localEntries = rootEntriesExisting.filter((e) => !isUNC(e.root));
-        const uncEntries = rootEntriesExisting.filter((e) => isUNC(e.root));
+        /**
+         * 计算 Provider 的监听根目录，减少无关扫描：
+         * - Claude：优先监听 `<root>/projects`（与 discovery 行为一致，避免拾取 root 下无关 JSONL）。
+         */
+        const resolveWatchRootForProvider = async (providerId: ProviderId, root: string): Promise<string> => {
+          if (providerId !== "claude") return root;
+          try {
+            const projectsRoot = path.join(root, "projects");
+            const st = await fsp.stat(projectsRoot).catch(() => null as any);
+            if (st && st.isDirectory()) return projectsRoot;
+          } catch {}
+          return root;
+        };
+
+        const watchEntriesExisting = (await Promise.all(rootEntriesExisting.map(async (e) => {
+          const r = await resolveWatchRootForProvider(e.providerId, e.root);
+          return { providerId: e.providerId, root: r };
+        }))).filter((e) => !!e.root);
+
+        const localEntries = watchEntriesExisting.filter((e) => !isUNC(e.root));
+        const uncEntries = watchEntriesExisting.filter((e) => isUNC(e.root));
 
         const makeGlobs = (entries: Array<{ providerId: ProviderId; root: string }>) => {
           const out: string[] = [];
@@ -1448,8 +1568,10 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
               ignoreInitial: true,
               awaitWriteFinish: { stabilityThreshold: 500, pollInterval: 100 },
               depth: 10,
+              followSymlinks: false,
+              ignored: ['**/node_modules/**', '**/.git/**'],
             });
-            w1.on('add', onChange).on('change', onChange).on('unlink', onUnlink).on('error', (e: any) => { perfLogger.log(`[watch:error local] ${String(e)}`); });
+            w1.on('add', enqueueWatchChange).on('change', enqueueWatchChange).on('unlink', onUnlink).on('error', (e: any) => { perfLogger.log(`[watch:error local] ${String(e)}`); });
             // ready 时记录
             try { w1.on('ready', () => { idxLog(`[watch:ready local] paths=${JSON.stringify(localEntries.map((x) => x.root))}`); }); } catch {}
             watchers.push(w1);
@@ -1468,8 +1590,9 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
               interval: 2500,
               binaryInterval: 4000,
               followSymlinks: false,
+              ignored: ['**/node_modules/**', '**/.git/**'],
             });
-            w2.on('add', onChange).on('change', onChange).on('unlink', onUnlink).on('error', (e: any) => { perfLogger.log(`[watch:error unc] ${String(e)}`); });
+            w2.on('add', enqueueWatchChange).on('change', enqueueWatchChange).on('unlink', onUnlink).on('error', (e: any) => { perfLogger.log(`[watch:error unc] ${String(e)}`); });
             try { w2.on('ready', () => { idxLog(`[watch:ready unc] paths=${JSON.stringify(uncEntries.map((x) => x.root))}`); }); } catch {}
             watchers.push(w2);
           }
@@ -1640,4 +1763,5 @@ export async function stopHistoryIndexer(): Promise<void> {
     }
   } catch {}
   try { clearRescanCooldown(); } catch {}
+  try { clearWatchQueueState(); } catch {}
 }

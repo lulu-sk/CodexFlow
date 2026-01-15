@@ -15,6 +15,8 @@ export type ClaudeParseOptions = {
   summaryOnly?: boolean;
   /** 最大解析行数（防止超大文件导致内存/CPU 激增）。 */
   maxLines?: number;
+  /** 单行最大字符数（防止某一行异常巨大导致内存爆炸）。 */
+  maxLineChars?: number;
 };
 
 export type ClaudeSessionDetails = {
@@ -40,6 +42,7 @@ export type ClaudeSessionDetails = {
 export async function parseClaudeSessionFile(filePath: string, stat: Stats, opts?: ClaudeParseOptions): Promise<ClaudeSessionDetails> {
   const summaryOnly = !!opts?.summaryOnly;
   const maxLines = Math.max(1, Math.min(200_000, Number(opts?.maxLines ?? (summaryOnly ? 400 : 20_000))));
+  const maxLineChars = Math.max(8 * 1024, Math.min(2_000_000, Number(opts?.maxLineChars ?? 1_000_000)));
 
   const id = `claude:${sha256Hex(filePath)}`;
   const date = Number(stat?.mtimeMs || 0);
@@ -105,6 +108,7 @@ export async function parseClaudeSessionFile(filePath: string, stat: Stats, opts
       let buf = "";
       let lineCount = 0;
       let done = false;
+      let skippingLongLine = false;
 
       const finish = () => {
         if (done) return;
@@ -117,10 +121,7 @@ export async function parseClaudeSessionFile(filePath: string, stat: Stats, opts
 
       const handleLine = (line: string) => {
         if (done) return;
-        if (lineCount >= maxLines) {
-          skippedLines++;
-          return;
-        }
+        if (lineCount >= maxLines) { skippedLines++; finish(); return; }
         const trimmed = line.trim();
         if (!trimmed) return;
         lineCount++;
@@ -161,9 +162,28 @@ export async function parseClaudeSessionFile(filePath: string, stat: Stats, opts
         }
       };
 
-      rs.on("data", (chunk) => {
+      rs.on("data", (chunk: string | Buffer) => {
         if (done) return;
-        buf += chunk;
+        const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+        // 跳过异常超长行：避免 buf 在“无换行”场景下无限增长导致内存暴涨。
+        if (skippingLongLine) {
+          const nl = text.indexOf("\n");
+          if (nl < 0) return; // 仍在长行内，继续丢弃
+          skippingLongLine = false;
+          buf = text.slice(nl + 1);
+        } else {
+          buf += text;
+        }
+
+        // 若当前缓冲区仍未出现换行且已超过阈值，则视为“超长行”，丢弃到下一次换行。
+        if (!skippingLongLine && buf.length > maxLineChars && buf.indexOf("\n") < 0) {
+          lineCount++;
+          skippedLines++;
+          if (lineCount >= maxLines) { finish(); return; }
+          buf = "";
+          skippingLongLine = true;
+          return;
+        }
         let idx: number;
         while ((idx = buf.indexOf("\n")) >= 0) {
           const line = buf.slice(0, idx);
@@ -171,10 +191,19 @@ export async function parseClaudeSessionFile(filePath: string, stat: Stats, opts
           handleLine(line);
           if (done) return;
         }
+
+        // 处理完已有换行后，若剩余尾部仍是“无换行超长行”，继续进入丢弃模式。
+        if (!done && !skippingLongLine && buf.length > maxLineChars && buf.indexOf("\n") < 0) {
+          lineCount++;
+          skippedLines++;
+          if (lineCount >= maxLines) { finish(); return; }
+          buf = "";
+          skippingLongLine = true;
+        }
       });
       rs.on("end", () => {
         if (done) return;
-        if (buf) handleLine(buf);
+        if (buf && !skippingLongLine) handleLine(buf);
         finish();
       });
       rs.on("error", () => finish());
