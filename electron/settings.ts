@@ -45,8 +45,10 @@ export type ProviderItem = {
   id: ProviderId;
   /** 展示名称：仅用于自定义 Provider（内置 Provider 优先由渲染层 i18n 决定） */
   displayName?: string;
-  /** 图标（DataURL，如 data:image/svg+xml;base64,...）；为空则使用内置默认图标 */
+  /** 图标（亮色/默认，DataURL，如 data:image/svg+xml;base64,...）；为空则使用内置默认图标 */
   iconDataUrl?: string;
+  /** 图标（暗色模式，DataURL）；为空则回退到 iconDataUrl 或内置默认暗色图标 */
+  iconDataUrlDark?: string;
   /** 启动命令（例如 codex / claude / gemini），可覆盖内置默认值 */
   startupCmd?: string;
 };
@@ -243,6 +245,7 @@ function normalizeProviders(raw: Partial<AppSettings>, distros: DistroInfo[]): P
       id,
       displayName: typeof (it as any)?.displayName === 'string' ? String((it as any).displayName).trim() : undefined,
       iconDataUrl: typeof (it as any)?.iconDataUrl === 'string' ? String((it as any).iconDataUrl).trim() : undefined,
+      iconDataUrlDark: typeof (it as any)?.iconDataUrlDark === 'string' ? String((it as any).iconDataUrlDark).trim() : undefined,
       startupCmd: typeof (it as any)?.startupCmd === 'string' ? String((it as any).startupCmd).trim() : undefined,
     });
   }

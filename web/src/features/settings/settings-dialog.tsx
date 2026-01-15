@@ -21,6 +21,7 @@ import { listAvailableLanguages, changeAppLanguage } from "@/i18n/setup";
 import { CodexAccountInline } from "@/components/topbar/codex-status";
 import { Trash2, Power, ChevronUp, ChevronDown, Plus, Image as ImageIcon, Star } from "lucide-react";
 import { getBuiltInProviders, isBuiltInProviderId } from "@/lib/providers/builtins";
+import { resolveProvider } from "@/lib/providers/resolve";
 import {
   DEFAULT_TERMINAL_FONT_FAMILY,
   normalizeTerminalFontFamily,
@@ -60,7 +61,7 @@ export type SettingsDialogProps = {
   values: {
     providers: {
       activeId: string;
-      items: Array<{ id: string; displayName?: string; iconDataUrl?: string; startupCmd?: string }>;
+      items: Array<{ id: string; displayName?: string; iconDataUrl?: string; iconDataUrlDark?: string; startupCmd?: string }>;
       env: Record<string, { terminal?: TerminalMode; distro?: string }>;
     };
     sendMode: SendMode;
@@ -76,7 +77,7 @@ export type SettingsDialogProps = {
   onSave: (v: {
     providers: {
       activeId: string;
-      items: Array<{ id: string; displayName?: string; iconDataUrl?: string; startupCmd?: string }>;
+      items: Array<{ id: string; displayName?: string; iconDataUrl?: string; iconDataUrlDark?: string; startupCmd?: string }>;
       env: Record<string, { terminal?: TerminalMode; distro?: string }>;
     };
     sendMode: SendMode;
@@ -183,7 +184,9 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
 
   const [providersActiveId, setProvidersActiveId] = useState<string>(values.providers?.activeId || "codex");
   const [providerEditingId, setProviderEditingId] = useState<string>(values.providers?.activeId || "codex");
-  const iconFileInputRef = useRef<HTMLInputElement | null>(null);
+  const iconFileInputRefLight = useRef<HTMLInputElement | null>(null);
+  const iconFileInputRefDark = useRef<HTMLInputElement | null>(null);
+  const [showDarkIconOverride, setShowDarkIconOverride] = useState<boolean>(false);
   const [providerItems, setProviderItems] = useState<ProviderItem[]>(
     Array.isArray(values.providers?.items) ? (values.providers.items as any) : [],
   );
@@ -322,10 +325,17 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   }, [providerItems, providersActiveId, t]);
 
   /**
-   * 触发图标选择器（隐藏 input 的 click），用于统一按钮风格。
+   * 触发亮色图标选择器（隐藏 input 的 click），用于统一按钮风格。
    */
-  const triggerIconPicker = useCallback(() => {
-    try { iconFileInputRef.current?.click(); } catch {}
+  const triggerLightIconPicker = useCallback(() => {
+    try { iconFileInputRefLight.current?.click(); } catch {}
+  }, []);
+
+  /**
+   * 触发暗色图标选择器（隐藏 input 的 click），用于统一按钮风格。
+   */
+  const triggerDarkIconPicker = useCallback(() => {
+    try { iconFileInputRefDark.current?.click(); } catch {}
   }, []);
 
   /**
@@ -457,6 +467,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     setProviderEditingId(activeId);
     setProviderItems(Array.isArray(values.providers?.items) ? (values.providers.items as any) : []);
     setProviderEnvMap(normalizeProviderEnvMap(values.providers?.env, { terminal: "wsl", distro: "Ubuntu-24.04" }));
+    // 默认不展开“暗色图标”设置，避免用户误解必须配置两张图标
+    setShowDarkIconOverride(false);
 
     setSendMode(values.sendMode || "write_and_enter");
     setPathStyle(values.projectPathStyle || "absolute");
@@ -861,11 +873,14 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
       }
       if (key === "providers") {
         const builtInMeta = new Map(getBuiltInProviders().map((x) => [x.id, x]));
+        const effectiveThemeMode: ThemeMode = theme === "system" ? systemTheme : theme;
         const editingItem = getProviderItem(providerEditingId);
         const editingBuiltIn = builtInMeta.get(providerEditingId as any);
-        const effectiveIcon = (editingItem.iconDataUrl && editingItem.iconDataUrl.trim().length > 0)
-          ? editingItem.iconDataUrl.trim()
-          : (editingBuiltIn?.iconUrl || "");
+        const effectiveIcon = resolveProvider(editingItem, { themeMode: effectiveThemeMode }).iconSrc || "";
+        const effectiveIconDarkPreview = resolveProvider(editingItem, { themeMode: "dark" }).iconSrc || "";
+        const hasLightOverride = typeof editingItem.iconDataUrl === "string" && editingItem.iconDataUrl.trim().length > 0;
+        const hasDarkOverride = typeof editingItem.iconDataUrlDark === "string" && editingItem.iconDataUrlDark.trim().length > 0;
+        const darkOverrideEnabled = providerEditingId === "codex" ? true : showDarkIconOverride;
         const defaultStartupCmd = editingBuiltIn?.defaultStartupCmd || "";
         const effectiveLabel = isBuiltInProviderId(providerEditingId)
           ? (t(`providers:items.${providerEditingId}`) as string)
@@ -893,8 +908,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                     const label = isBuiltInProviderId(p.id)
                       ? (t(`providers:items.${p.id}`) as string)
                       : (String(p.displayName || "").trim() || String(t("settings:providers.defaultName", "自定义引擎") || "").trim() || "自定义引擎");
-                    const meta = builtInMeta.get(p.id as any);
-                    const iconSrc = (p.iconDataUrl && p.iconDataUrl.trim().length > 0) ? p.iconDataUrl.trim() : (meta?.iconUrl || "");
+                    const iconSrc = resolveProvider(p, { themeMode: effectiveThemeMode }).iconSrc;
                     return (
                       <div
                         key={p.id}
@@ -960,35 +974,99 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
 
                   <div className="space-y-2">
                     <div className="text-sm font-medium">{t("settings:providers.fields.icon")}</div>
-                    <div className="flex items-center gap-3">
-                      <div className="h-10 w-10 rounded-md border border-slate-200 dark:border-[var(--cf-border)] flex items-center justify-center overflow-hidden bg-white dark:bg-[var(--cf-surface)]">
-                        {effectiveIcon ? <img src={effectiveIcon} className="h-6 w-6" alt={effectiveLabel} /> : <ImageIcon className="h-5 w-5 text-slate-400" />}
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-3">
+                          <div className="h-10 w-10 rounded-md border border-slate-200 dark:border-[var(--cf-border)] flex items-center justify-center overflow-hidden bg-white">
+                            {effectiveIcon ? <img src={effectiveIcon} className="h-6 w-6 object-contain" alt={effectiveLabel} /> : <ImageIcon className="h-5 w-5 text-slate-400" />}
+                          </div>
+                          <input
+                            ref={iconFileInputRefLight}
+                            type="file"
+                            className="hidden"
+                            accept="image/*,.svg"
+                            onChange={async (e) => {
+                              const f = (e.target as HTMLInputElement)?.files?.[0];
+                              if (!f) return;
+                              try {
+                                const dataUrl = await readFileAsDataUrl(f);
+                                updateProviderItem(providerEditingId, { iconDataUrl: dataUrl });
+                              } catch {
+                                // ignore
+                              } finally {
+                                try { (e.target as HTMLInputElement).value = ""; } catch {}
+                              }
+                            }}
+                          />
+                          <Button variant="outline" size="sm" onClick={triggerLightIconPicker}>
+                            {t("settings:providers.fields.iconUpload")}
+                          </Button>
+                          {hasLightOverride ? (
+                            <Button variant="outline" size="sm" onClick={() => updateProviderItem(providerEditingId, { iconDataUrl: "" })}>
+                              {t("settings:providers.fields.iconClear")}
+                            </Button>
+                          ) : null}
+                        </div>
                       </div>
-                      <input
-                        ref={iconFileInputRef}
-                        type="file"
-                        className="hidden"
-                        accept="image/*,.svg"
-                        onChange={async (e) => {
-                          const f = (e.target as HTMLInputElement)?.files?.[0];
-                          if (!f) return;
-                          try {
-                            const dataUrl = await readFileAsDataUrl(f);
-                            updateProviderItem(providerEditingId, { iconDataUrl: dataUrl });
-                          } catch {
-                            // ignore
-                          } finally {
-                            try { (e.target as HTMLInputElement).value = ""; } catch {}
-                          }
-                        }}
-                      />
-                      <Button variant="outline" size="sm" onClick={triggerIconPicker}>
-                        {t("settings:providers.fields.iconUpload")}
-                      </Button>
-                      <Button variant="outline" size="sm" onClick={() => updateProviderItem(providerEditingId, { iconDataUrl: "" })}>
-                        {t("settings:providers.fields.iconClear")}
-                      </Button>
+
+                    <div className="flex items-center justify-between rounded-lg border border-slate-200/70 bg-white/60 px-3 py-2 shadow-sm dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)]">
+                      <div className="text-sm text-slate-700 dark:text-[var(--cf-text-primary)]">
+                        {t("settings:providers.fields.iconDark")}
+                        {providerEditingId !== "codex" ? (
+                          <span className="ml-2 text-xs text-slate-500 dark:text-[var(--cf-text-secondary)]">
+                            {t("settings:providers.fields.iconDarkOptional")}
+                          </span>
+                        ) : null}
+                      </div>
+                      <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-[var(--cf-text-secondary)]">
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 rounded border-slate-300 text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)] dark:checked:bg-[var(--cf-accent)] dark:focus-visible:ring-[var(--cf-accent)]/40"
+                          checked={darkOverrideEnabled}
+                          disabled={providerEditingId === "codex"}
+                          onChange={(e) => {
+                            if (providerEditingId === "codex") return;
+                            setShowDarkIconOverride(e.target.checked);
+                          }}
+                        />
+                        {t("settings:providers.fields.iconDarkEnable")}
+                      </label>
                     </div>
+
+                    {darkOverrideEnabled ? (
+                      <div className="mt-3 space-y-2">
+                        <div className="flex items-center gap-3">
+                          <div className="h-10 w-10 rounded-md border border-slate-200 dark:border-[var(--cf-border)] flex items-center justify-center overflow-hidden bg-slate-900">
+                            {effectiveIconDarkPreview ? <img src={effectiveIconDarkPreview} className="h-6 w-6 object-contain" alt={effectiveLabel} /> : <ImageIcon className="h-5 w-5 text-slate-400" />}
+                          </div>
+                          <input
+                            ref={iconFileInputRefDark}
+                            type="file"
+                            className="hidden"
+                            accept="image/*,.svg"
+                            onChange={async (e) => {
+                              const f = (e.target as HTMLInputElement)?.files?.[0];
+                              if (!f) return;
+                              try {
+                                const dataUrl = await readFileAsDataUrl(f);
+                                updateProviderItem(providerEditingId, { iconDataUrlDark: dataUrl });
+                              } catch {
+                                // ignore
+                              } finally {
+                                try { (e.target as HTMLInputElement).value = ""; } catch {}
+                              }
+                            }}
+                          />
+                          <Button variant="outline" size="sm" onClick={triggerDarkIconPicker}>
+                            {t("settings:providers.fields.iconUpload")}
+                          </Button>
+                          {hasDarkOverride ? (
+                            <Button variant="outline" size="sm" onClick={() => updateProviderItem(providerEditingId, { iconDataUrlDark: "" })}>
+                              {t("settings:providers.fields.iconClear")}
+                            </Button>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
                     <div className="text-xs text-slate-500">{t("settings:providers.fields.iconHelp")}</div>
                   </div>
 
@@ -1705,10 +1783,12 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     labelOf,
     lang,
     theme,
+    systemTheme,
     pathStyle,
     notifications,
     network,
     sendMode,
+    showDarkIconOverride,
     storageInfo,
     storageLoading,
     storageClearing,
@@ -1736,6 +1816,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     pwshAvailable,
     pwshDetectedText,
     readFileAsDataUrl,
+    triggerLightIconPicker,
+    triggerDarkIconPicker,
     getProviderItem,
     claudeCodeReadAgentHistory,
   ]);

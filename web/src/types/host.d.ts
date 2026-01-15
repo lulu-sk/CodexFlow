@@ -14,6 +14,7 @@ export type ProviderItem = {
   id: ProviderId;
   displayName?: string;
   iconDataUrl?: string;
+  iconDataUrlDark?: string;
   startupCmd?: string;
 };
 

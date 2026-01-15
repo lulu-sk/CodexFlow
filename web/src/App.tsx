@@ -75,7 +75,7 @@ import {
   normalizeTerminalTheme,
   type TerminalThemeDefinition,
 } from "@/lib/terminal-appearance";
-import { getCachedThemeSetting, useThemeController, writeThemeSettingCache, type ThemeSetting } from "@/lib/theme";
+import { getCachedThemeSetting, useThemeController, writeThemeSettingCache, type ThemeMode, type ThemeSetting } from "@/lib/theme";
 import { loadHiddenProjectIds, loadShowHiddenProjects, saveHiddenProjectIds, saveShowHiddenProjects } from "@/lib/projects-hidden";
 import type { AppSettings, Project, ProviderItem, ProviderEnv } from "@/types/host";
 import type { TerminalThemeId } from "@/types/terminal-theme";
@@ -109,10 +109,10 @@ function buildProviderItemIndex(items: ProviderItem[]): Record<string, ProviderI
 /**
  * 获取某个 Provider 的图标 src（DataURL 或内置资源）。
  */
-function getProviderIconSrc(providerId: string, providerItemById: Record<string, ProviderItem>): string {
+function getProviderIconSrc(providerId: string, providerItemById: Record<string, ProviderItem>, themeMode?: ThemeMode): string {
   const id = String(providerId || "").trim();
   if (!id) return "";
-  const resolved = resolveProvider(providerItemById[id] ?? { id });
+  const resolved = resolveProvider(providerItemById[id] ?? { id }, { themeMode });
   return resolved.iconSrc || "";
 }
 
@@ -3335,13 +3335,14 @@ export default function CodexFlowManagerUI() {
 	  const TopBar = (
 	    <div className="relative z-40 flex items-center justify-between border-b bg-white/70 px-4 py-3 backdrop-blur dark:border-slate-800 dark:bg-slate-900/60">
 	      <div className="flex min-w-0 items-center gap-3">
-	        <ProviderSwitcher
-	          activeId={activeProviderId}
-	          providers={providerItems}
-	          onChange={changeActiveProvider}
-	          terminalMode={terminalMode}
-	          distro={terminalMode === "wsl" ? wslDistro : undefined}
-	        />
+		        <ProviderSwitcher
+		          activeId={activeProviderId}
+		          providers={providerItems}
+		          onChange={changeActiveProvider}
+		          terminalMode={terminalMode}
+		          distro={terminalMode === "wsl" ? wslDistro : undefined}
+		          themeMode={themeMode}
+		        />
 	      </div>
 	      <div className="flex items-center gap-2">
         {/* 目录缺失提示：若选中项目的 Windows 路径不存在则提示 */}
@@ -3395,7 +3396,7 @@ export default function CodexFlowManagerUI() {
               const pendingCount = pendingCompletions[tab.id] ?? 0;
               const hasPending = pendingCount > 0;
               const isActiveTab = activeTabId === tab.id;
-              const providerIconSrc = getProviderIconSrc(tab.providerId, providerItemById);
+              const providerIconSrc = getProviderIconSrc(tab.providerId, providerItemById, themeMode);
               return (
                 <div
                   key={tab.id}
@@ -4060,7 +4061,7 @@ export default function CodexFlowManagerUI() {
                       const absoluteLabel = anchor ? formatAsLocal(anchor) : timeFromFilename(s.filePath);
                       const active = selectedHistoryId === s.id;
                       const previewSource = sessionPreviewMap[s.filePath || s.id] || s.preview || s.title || s.filePath || '';
-                      const providerIconSrc = getProviderIconSrc(s.providerId, providerItemById);
+                      const providerIconSrc = getProviderIconSrc(s.providerId, providerItemById, themeMode);
                       const relativeLabel = describeRelativeAge(anchor, historyNow) || '--';
                       const tooltip = [absoluteLabel, previewSource].filter(Boolean).join('  ');
                       const itemClass = `block w-full rounded px-2 py-0.5 text-left text-xs border outline-none focus:outline-none ${
