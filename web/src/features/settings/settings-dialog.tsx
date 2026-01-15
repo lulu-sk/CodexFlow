@@ -19,6 +19,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn, formatBytes } from "@/lib/utils";
 import { listAvailableLanguages, changeAppLanguage } from "@/i18n/setup";
 import { CodexAccountInline } from "@/components/topbar/codex-status";
+import { CodexAuthSwitch } from "./codex-auth-switch";
 import { Trash2, Power, ChevronUp, ChevronDown, Plus, Image as ImageIcon, Star } from "lucide-react";
 import { getBuiltInProviders, isBuiltInProviderId } from "@/lib/providers/builtins";
 import { resolveProvider } from "@/lib/providers/resolve";
@@ -49,6 +50,9 @@ type NetworkPrefs = {
   proxyUrl: string;
   noProxy: string;
 };
+type CodexAccountPrefs = {
+  recordEnabled: boolean;
+};
 
 const normalizeThemeSetting = (value: any): ThemeSetting => {
   if (value === "light" || value === "dark") return value;
@@ -70,6 +74,7 @@ export type SettingsDialogProps = {
     theme: ThemeSetting;
     notifications: NotificationPrefs;
     network?: NetworkPrefs;
+    codexAccount: CodexAccountPrefs;
     terminalFontFamily: string;
     terminalTheme: TerminalThemeId;
     claudeCodeReadAgentHistory: boolean;
@@ -86,6 +91,7 @@ export type SettingsDialogProps = {
     theme: ThemeSetting;
     notifications: NotificationPrefs;
     network: NetworkPrefs;
+    codexAccount: CodexAccountPrefs;
     terminalFontFamily: string;
     terminalTheme: TerminalThemeId;
     claudeCodeReadAgentHistory: boolean;
@@ -383,6 +389,9 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     proxyUrl: values.network?.proxyUrl ?? "",
     noProxy: values.network?.noProxy ?? "",
   });
+  const [codexAccount, setCodexAccount] = useState<CodexAccountPrefs>(() => ({
+    recordEnabled: !!values.codexAccount?.recordEnabled,
+  }));
   const [claudeCodeReadAgentHistory, setClaudeCodeReadAgentHistory] = useState<boolean>(!!values.claudeCodeReadAgentHistory);
   const [codexRoots, setCodexRoots] = useState<string[]>([]);
   const [claudeRoots, setClaudeRoots] = useState<string[]>([]);
@@ -481,6 +490,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
       proxyUrl: values.network?.proxyUrl ?? "",
       noProxy: values.network?.noProxy ?? "",
     });
+    setCodexAccount({ recordEnabled: !!values.codexAccount?.recordEnabled });
     setClaudeCodeReadAgentHistory(!!values.claudeCodeReadAgentHistory);
     setTerminalFontFamily(normalizeTerminalFontFamily(values.terminalFontFamily));
     setTerminalTheme(normalizeTerminalTheme(values.terminalTheme));
@@ -1527,6 +1537,12 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                     distro={(providerEnvMap["codex"]?.terminal || "wsl") === "wsl" ? (providerEnvMap["codex"]?.distro || "Ubuntu-24.04") : undefined}
                     expanded
                   />
+                  <Separator className="my-4" />
+                  <CodexAuthSwitch
+                    open={open}
+                    recordEnabled={codexAccount.recordEnabled}
+                    onRecordEnabledChange={(enabled) => setCodexAccount({ recordEnabled: enabled })}
+                  />
                 </CardContent>
               </Card>
             </div>
@@ -1787,6 +1803,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     pathStyle,
     notifications,
     network,
+    codexAccount,
     sendMode,
     showDarkIconOverride,
     storageInfo,
@@ -1908,6 +1925,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                       theme,
                       notifications,
                       network,
+                      codexAccount,
                       terminalFontFamily: normalizeTerminalFontFamily(terminalFontFamily),
                       terminalTheme,
                       claudeCodeReadAgentHistory,

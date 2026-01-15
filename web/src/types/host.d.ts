@@ -58,6 +58,11 @@ export type AppSettings = {
     proxyUrl?: string;
     noProxy?: string;
   };
+  /** ChatGPT/Codex 账号相关设置（记录账号、切换备份等） */
+  codexAccount?: {
+    recordEnabled?: boolean;
+    lastSeenSignatureByRuntime?: Record<string, string>;
+  };
   /** 终端字体栈 */
   terminalFontFamily?: string;
 };
@@ -183,6 +188,20 @@ export type CodexRateLimitSnapshot = {
   secondary: CodexRateLimitWindow | null;
 };
 
+export type CodexAuthBackupItem = {
+  id: string;
+  createdAt: number;
+  updatedAt: number;
+  runtimeKey: string;
+  signature: string;
+  status: "signed_in" | "signed_out";
+  accountId: string | null;
+  userId: string | null;
+  email: string | null;
+  plan: string | null;
+  reason: string;
+};
+
 export type ClaudeUsageWindow = {
   remainingPercent: number | null;
   usedPercent: number | null;
@@ -221,6 +240,9 @@ export type GeminiQuotaSnapshot = {
 export interface CodexAPI {
   getAccountInfo(): Promise<{ ok: boolean; info?: CodexAccountInfo; error?: string }>;
   getRateLimit(): Promise<{ ok: boolean; snapshot?: CodexRateLimitSnapshot; error?: string }>;
+  listAuthBackups(): Promise<{ ok: boolean; items?: CodexAuthBackupItem[]; error?: string }>;
+  applyAuthBackup(args: { id: string }): Promise<{ ok: boolean; error?: string }>;
+  deleteAuthBackup(args: { id: string }): Promise<{ ok: boolean; error?: string }>;
 }
 
 export interface ClaudeAPI {

@@ -207,6 +207,35 @@
       "business": "企业",
       "education": "教育",
       "unknown": "未知套餐"
+    },
+    "record": {
+      "label": "记录账号",
+      "desc": "启用后，每次刷新账号信息时若检测到账号变化，会自动备份当前环境的 auth.json。"
+    },
+    "switch": {
+      "selectPlaceholder": "选择一个备份…",
+      "refreshList": "刷新备份",
+      "switch": "切换",
+      "switching": "切换中…",
+      "delete": "删除",
+      "deleting": "删除中…",
+      "deleteConfirm": "确定删除该备份？\n\n{label}",
+      "deleteSuccess": "备份已删除",
+      "deleteFailed": "删除失败",
+      "empty": "暂无备份",
+      "status": {
+        "signed_in": "已登录",
+        "signed_out": "未登录"
+      },
+      "reason": {
+        "unknown": "未知状态",
+        "autoRecord": "自动记录",
+        "autoRecordInit": "首次自动记录",
+        "beforeSwitch": "切换前备份"
+      },
+      "loadFailed": "备份列表获取失败",
+      "switchSuccess": "已覆盖写入 auth.json",
+      "switchFailed": "切换失败"
     }
   },
   "codexRoots": {

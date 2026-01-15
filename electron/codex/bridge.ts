@@ -312,8 +312,12 @@ export class CodexBridge {
     this.wslDistro = options.wslDistro;
   }
 
-  async getAccountInfo(): Promise<CodexAccountInfo> {
-    const token = await this.ensureToken(false);
+  /**
+   * 获取当前 ChatGPT 账号信息。
+   * - `forceRefresh=true` 时强制刷新 token（用于“记录账号”等需要及时感知切换的场景）。
+   */
+  async getAccountInfo(forceRefresh: boolean = false): Promise<CodexAccountInfo> {
+    const token = await this.ensureToken(!!forceRefresh);
     return this.decodeAccount(token);
   }
 
