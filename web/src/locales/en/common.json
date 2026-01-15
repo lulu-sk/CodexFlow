@@ -5,6 +5,7 @@
   "open": "Open",
   "refresh": "Refresh",
   "close": "Close",
+  "account": "Account",
   "app": {
     "name": "CodexFlow",
     "language": "Language",
@@ -47,6 +48,69 @@
     "refreshTokenFailed": "Unable to refresh ChatGPT login status",
     "wslNotSupported": "WSL mode is not supported on this platform",
     "wslPathConversionFailed": "Unable to convert Codex CLI path for WSL usage"
+  },
+  "claudeUsage": {
+    "loading": "Loading usage…",
+    "unavailable": "Usage unavailable",
+    "title": "Usage",
+    "fiveHour": "5h",
+    "sevenDay": "7d",
+    "sourceCache": "Cache",
+    "sourceLive": "Live",
+    "source": "Source {source}",
+    "remainingLabel": "Remaining",
+    "remaining": "Left {percent}",
+    "resetAt": "Resets {time}",
+    "updatedAt": "Updated {time}",
+    "empty": "No usage data",
+    "errorFetchFailed": "Unable to fetch Claude usage",
+    "errors": {
+      "default": {
+        "title": "Unable to fetch Claude usage",
+        "hint": "Make sure Claude Code is installed and signed in, then try again"
+      },
+      "tmuxNotFound": {
+        "title": "tmux is required for Claude usage",
+        "hint": "Install tmux in the current environment and try again"
+      },
+      "cliNotFound": {
+        "title": "Claude Code CLI not found",
+        "hint": "Install `claude` and finish sign-in in the current environment"
+      },
+      "authRequired": {
+        "title": "Claude is not signed in",
+        "hint": "Sign in from your terminal, then try again"
+      },
+      "manualSetup": {
+        "title": "Claude needs one-time setup",
+        "hint": "Run `claude` once in your terminal to complete setup"
+      }
+    }
+  },
+  "geminiUsage": {
+    "loading": "Loading usage…",
+    "unavailable": "Usage unavailable",
+    "title": "Usage",
+    "bucket": "Bucket {index}",
+    "remainingLabel": "Remaining",
+    "remaining": "Left {percent}",
+    "resetAt": "Resets {time}",
+    "empty": "No usage data",
+    "errorFetchFailed": "Unable to fetch Gemini usage",
+    "errors": {
+      "default": {
+        "title": "Unable to fetch Gemini usage",
+        "hint": "Make sure Gemini is signed in, then try again"
+      },
+      "notLoggedIn": {
+        "title": "Gemini is not signed in",
+        "hint": "Sign in or switch environment in Settings, then try again"
+      },
+      "projectRequired": {
+        "title": "Gemini setup required",
+        "hint": "Finish Gemini setup in Settings, then try again"
+      }
+    }
   },
   "notifications": {
     "taskCompleted": "{tab} completed",

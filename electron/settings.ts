@@ -35,6 +35,11 @@ export type ThemeSetting = 'light' | 'dark' | 'system';
 
 export type ProviderId = string;
 
+export type ClaudeCodeSettings = {
+  /** 是否读取 Claude Code 的 Agent 历史（agent-*.jsonl 等，不推荐）。 */
+  readAgentHistory?: boolean;
+};
+
 export type ProviderItem = {
   /** Provider 唯一标识（内置：codex/claude/gemini；自定义：任意非空字符串） */
   id: ProviderId;
@@ -89,6 +94,8 @@ export type AppSettings = {
   network?: NetworkSettings;
   /** 终端字体栈（CSS font-family 字符串） */
   terminalFontFamily?: string;
+  /** Claude Code 本地会话读取策略（仅影响索引/预览，不影响 CLI 本身）。 */
+  claudeCode?: ClaudeCodeSettings;
 };
 
 function getStorePath() {
@@ -110,6 +117,9 @@ const DEFAULT_NETWORK: NetworkSettings = {
   proxyUrl: '',
   noProxy: '',
 };
+const DEFAULT_CLAUDE_CODE: ClaudeCodeSettings = {
+  readAgentHistory: false,
+};
 const DEFAULT_THEME: ThemeSetting = 'system';
 const DEFAULT_TERMINAL_THEME: TerminalThemeId = 'campbell';
 const DEFAULT_PROVIDER_ACTIVE_ID = 'codex';
@@ -127,6 +137,20 @@ function normalizeTerminalTheme(raw: unknown): TerminalThemeId {
     return 'catppuccin-latte';
   }
   return DEFAULT_TERMINAL_THEME;
+}
+
+/**
+ * 归一化 Claude Code 配置：保持结构稳定，避免旧版本缺字段导致逻辑分支散落。
+ */
+function normalizeClaudeCodeSettings(raw: unknown): ClaudeCodeSettings {
+  try {
+    const obj = raw && typeof raw === 'object' ? (raw as any) : {};
+    return {
+      readAgentHistory: obj.readAgentHistory === true,
+    };
+  } catch {
+    return { ...DEFAULT_CLAUDE_CODE };
+  }
 }
 
 function loadDistroList(): DistroInfo[] {
@@ -274,6 +298,7 @@ function mergeWithDefaults(raw: Partial<AppSettings>, preloadedDistros?: DistroI
     theme: DEFAULT_THEME,
     notifications: { ...DEFAULT_NOTIFICATIONS },
     network: { ...DEFAULT_NETWORK },
+    claudeCode: { ...DEFAULT_CLAUDE_CODE },
   };
   const merged = Object.assign({}, defaults, raw);
   merged.terminal = normalizeTerminal((raw as any)?.terminal ?? merged.terminal);
@@ -289,6 +314,7 @@ function mergeWithDefaults(raw: Partial<AppSettings>, preloadedDistros?: DistroI
   merged.theme = normalizeTheme((raw as any)?.theme ?? merged.theme);
   merged.terminalTheme = normalizeTerminalTheme((raw as any)?.terminalTheme ?? merged.terminalTheme);
   merged.providers = normalizeProviders(merged, distros);
+  merged.claudeCode = normalizeClaudeCodeSettings((merged as any).claudeCode);
 
   // 与旧字段保持双写兼容：codex provider 的 env/cmd 同步写回 legacy 字段
   try {

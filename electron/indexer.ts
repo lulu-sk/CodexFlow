@@ -10,17 +10,27 @@ import { getDebugConfig } from "./debugConfig";
 import { getSessionsRootCandidatesFastAsync, isUNCPath, uncToWsl } from "./wsl";
 import { detectResumeInfo, detectRuntimeShell, detectRuntimeShellFromContent } from "./history";
 import type { HistorySummary, Message, RuntimeShell } from "./history";
+import settings from "./settings";
+import { getClaudeRootCandidatesFastAsync, discoverClaudeSessionFiles } from "./agentSessions/claude/discovery";
+import { getGeminiRootCandidatesFastAsync, discoverGeminiSessionFiles } from "./agentSessions/gemini/discovery";
+import { parseClaudeSessionFile } from "./agentSessions/claude/parser";
+import { parseGeminiSessionFile, normalizeGeminiPathForHash } from "./agentSessions/gemini/parser";
+import { sha256Hex } from "./agentSessions/shared/crypto";
+import { filterHistoryPreviewText } from "./agentSessions/shared/preview";
 
 // 仅在存在时使用 chokidar；否则跳过监听
 let chokidar: any = null;
 try { chokidar = require("chokidar"); } catch {}
 
+type ProviderId = "codex" | "claude" | "gemini";
 type FileSig = { mtimeMs: number; size: number };
-type IndexSummary = HistorySummary & { dirKey: string };
+type IndexSummary = HistorySummary & { providerId: ProviderId; dirKey: string };
 type Details = {
+  providerId: ProviderId;
   id: string;
   title: string;
   date: number;
+  filePath: string;
   messages: Message[];
   skippedLines?: number;
   rawDate?: string;
@@ -92,6 +102,48 @@ function stripDetailsForPersist(details: Details): Details {
 }
 
 const VERSION = "v8";
+
+/**
+ * 读取 Claude Code 的 Agent 历史开关（默认 false）。
+ */
+function getClaudeCodeReadAgentHistorySetting(): boolean {
+  try {
+    return !!(settings.getSettings() as any)?.claudeCode?.readAgentHistory;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 判断是否为 Claude Code 的 Agent 历史文件（agent-*.jsonl）。
+ */
+function isClaudeAgentHistoryFilePath(filePath: string): boolean {
+  try {
+    const base = path.basename(String(filePath || "")).toLowerCase();
+    return base.startsWith("agent-") && base.endsWith(".jsonl");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 默认过滤：判断 Claude 会话是否应被忽略（不读取/不缓存）。
+ */
+function shouldIgnoreClaudeSession(details: { filePath?: string; title?: string; preview?: string }, includeAgentHistory: boolean): boolean {
+  if (includeAgentHistory) return false;
+  try {
+    if (isClaudeAgentHistoryFilePath(String(details?.filePath || ""))) return true;
+    const preview = typeof details?.preview === "string" ? details.preview.trim() : "";
+    if (preview) return false;
+    const fp = String(details?.filePath || "");
+    const base = fp ? path.basename(fp) : "";
+    const title = typeof details?.title === "string" ? details.title : "";
+    // 仅当“标题=文件名 且无 preview”时，判定为仅包含助手输出的记录（无用户输入）。
+    return !!base && (!title || title === base);
+  } catch {
+    return false;
+  }
+}
 
 function getUserDataDir(): string {
   try { const { app } = require("electron"); return app.getPath("userData"); } catch { return process.cwd(); }
@@ -317,85 +369,8 @@ async function readPrefix(fp: string, maxBytes = 128 * 1024): Promise<string> {
 }
 
 // ------------------------------
-// 预览文本过滤：跳过路径或空行，取第一段有效内容
+// 预览文本过滤：跳过路径或空行，取第一段有效内容（已抽至 shared/preview）
 // ------------------------------
-
-/**
- * 规范化单行文本（去除首尾空白与成对包裹符）
- */
-function normalizeLineHead(s: string): string {
-  try {
-    let t = String(s || "").trim();
-    // 去除反引号/引号包裹（例如 `...`、"..."、'...')
-    const stripPairs = (ch: string) => {
-      if (t.startsWith(ch) && t.endsWith(ch) && t.length >= 2) t = t.slice(1, -1).trim();
-    };
-    stripPairs("`");
-    stripPairs("\"");
-    stripPairs("'");
-    return t;
-  } catch { return String(s || "").trim(); }
-}
-
-/**
- * 判断一行是否为路径行（用于预览过滤）：
- * - 绝对路径：
- *   - Windows 盘符：C:\\ 或 C:/ 开头
- *   - WSL UNC：\\wsl.localhost\\Distro\\... 或 //wsl.localhost/Distro/...
- *   - 旧式 WSL 共享：\\wsl$\\Distro\\...
- *   - /mnt/<drive>/... 或其他以 / 开头的 POSIX 根
- *   - file: URI（file:/C:/..., file:///mnt/c/... 等）
- * - 相对路径：
- *   - 显式相对：./、../、.\\、..\\ 开头
- *   - 无空格的多段相对路径（允许中英文、数字、下划线、点、连字符）
- */
-function isWinOrWslPathLine(line: string): boolean {
-  try {
-    const t = normalizeLineHead(line);
-    if (!t) return false;
-    // 支持 file: URI 形式的路径（例如：file:/C:/..., file:///C:/..., file://wsl.localhost/..., file:/mnt/c/...）
-    if (/^file:\//i.test(t)) {
-      if (/^file:\/+[A-Za-z]:[\\/]/i.test(t)) return true; // 盘符形式
-      if (/^file:\/+wsl\.localhost\//i.test(t)) return true; // wsl.localhost 共享
-      if (/^file:\/+mnt\/[a-zA-Z]\//i.test(t)) return true; // /mnt/<drive>
-    }
-    if (/^[A-Za-z]:[\\/]/.test(t)) return true;
-    if (/^\\\\wsl\.localhost\\[^\\\s]+\\/.test(t)) return true;
-    if (/^\\\\wsl\$\\[^\\\s]+\\/.test(t)) return true;
-    if (/^\/\/wsl\.localhost\/[^\s/]+\//.test(t)) return true;
-    if (/^\/mnt\/[a-zA-Z]\//.test(t)) return true;
-    // 其他以 / 开头的 POSIX 根（例如 /home/...）也视作绝对路径
-    if (/^\//.test(t)) return true;
-
-    // 相对路径（显式 ./ 或 ../）
-    if (/^\.{1,2}[\\/]/.test(t)) return true;
-
-    // 无空格多段相对路径：使用 Unicode 属性（若运行时不支持则回退到 ASCII+常见中文范围）
-    try {
-      const reU = new RegExp("^[\\p{L}\\p{N}._-]+(?:[\\\\/][\\p{L}\\p{N}._-]+)+$", "u");
-      if (reU.test(t)) return true;
-    } catch {}
-    if (/^[A-Za-z0-9._-\u4E00-\u9FFF]+(?:[\\/][A-Za-z0-9._-\u4E00-\u9FFF]+)+$/.test(t)) return true;
-    return false;
-  } catch { return false; }
-}
-
-/**
- * 过滤预览文本：
- * - 按行拆分，跳过空行与路径行，返回首个有效内容行（trim 后）。
- * - 若找不到有效内容，返回空串。
- */
-function filterPreviewText(raw: string): string {
-  try {
-    const lines = String(raw || "").split(/\r?\n/);
-    for (const ln of lines) {
-      if (!ln || /^\s*$/.test(ln)) continue;
-      if (isWinOrWslPathLine(ln)) continue;
-      return normalizeLineHead(ln);
-    }
-    return "";
-  } catch { return ""; }
-}
 
 function titleFromFilename(filePath: string): string {
   try {
@@ -543,10 +518,10 @@ async function parseSummary(fp: string, stat: fs.Stats): Promise<IndexSummary> {
   // 预览字段由详情解析阶段统一生成（避免与详情筛选逻辑重复/偏差）
   if (!resumeId) resumeId = id;
   if (runtimeShell === 'unknown') runtimeShell = detectRuntimeShell(fp);
-  return { id, title, date, filePath: fp, rawDate, dirKey, resumeMode, resumeId, runtimeShell };
+  return { providerId: "codex", id, title, date, filePath: fp, rawDate, dirKey, resumeMode, resumeId, runtimeShell } as any;
 }
 
-async function parseDetails(fp: string, stat: fs.Stats, opts?: { summaryOnly?: boolean }): Promise<Details> {
+async function parseCodexDetails(fp: string, stat: fs.Stats, opts?: { summaryOnly?: boolean }): Promise<Details> {
   const summaryOnly = !!opts?.summaryOnly; // 索引阶段可跳过完整消息体，降低内存/GC 压力
   let id = path.basename(fp).replace(/\.jsonl$/i, "");
   let title = titleFromFilename(fp);
@@ -761,7 +736,7 @@ async function parseDetails(fp: string, stat: fs.Stats, opts?: { summaryOnly?: b
                       const t = String((it as any)?.text || '').trim();
                       if (t) {
                         // 预览行级过滤：跳过路径/空行，直到遇到有效内容
-                        const filtered = filterPreviewText(t);
+                        const filtered = filterHistoryPreviewText(t);
                         if (filtered) { preview = filtered.slice(0, 40); break; }
                       }
                     }
@@ -772,7 +747,7 @@ async function parseDetails(fp: string, stat: fs.Stats, opts?: { summaryOnly?: b
                       if (ty === 'instructions' || ty === 'environment_context') continue;
                       const t = String((it as any)?.text || '').trim();
                       if (t) {
-                        const filtered = filterPreviewText(t);
+                        const filtered = filterHistoryPreviewText(t);
                         if (filtered) { preview = filtered.slice(0, 40); break; }
                       }
                     }
@@ -909,17 +884,17 @@ async function parseDetails(fp: string, stat: fs.Stats, opts?: { summaryOnly?: b
         if (cwd) dirKey = dirKeyFromCwd(cwd); else dirKey = dirKeyOf(fp);
         if (runtimeShell === 'unknown') runtimeShell = detectRuntimeShell(fp);
         const finalResumeId = resumeId || id;
-        resolve({ id, title, date, messages, skippedLines: skipped, rawDate, cwd, dirKey, preview, resumeMode, resumeId: finalResumeId, runtimeShell });
+        resolve({ providerId: "codex", id, title, date, filePath: fp, messages, skippedLines: skipped, rawDate, cwd, dirKey, preview, resumeMode, resumeId: finalResumeId, runtimeShell });
       });
       rs.on('error', () => {
         if (runtimeShell === 'unknown') runtimeShell = detectRuntimeShell(fp);
         const finalResumeId = resumeId || id;
-        resolve({ id, title, date, messages, skippedLines: skipped, rawDate, cwd, dirKey, preview, resumeMode, resumeId: finalResumeId, runtimeShell });
+        resolve({ providerId: "codex", id, title, date, filePath: fp, messages, skippedLines: skipped, rawDate, cwd, dirKey, preview, resumeMode, resumeId: finalResumeId, runtimeShell });
       });
     } catch {
       if (runtimeShell === 'unknown') runtimeShell = detectRuntimeShell(fp);
       const finalResumeId = resumeId || id;
-      resolve({ id, title, date, messages, skippedLines: skipped, resumeMode, resumeId: finalResumeId, runtimeShell });
+      resolve({ providerId: "codex", id, title, date, filePath: fp, messages, skippedLines: skipped, resumeMode, resumeId: finalResumeId, runtimeShell });
     }
   });
 }
@@ -930,9 +905,12 @@ export function getIndexedSummaries(): IndexSummary[] {
   const ix: PersistIndex = g.__indexer.index || { version: VERSION, files: {}, savedAt: 0 };
   return Object.values(ix.files)
     .map((x) => {
-      const summary = x.summary;
+      const summary = x.summary as any;
+      const providerId: ProviderId = (summary && typeof summary.providerId === "string")
+        ? (summary.providerId as ProviderId)
+        : "codex";
       const shell = summary.runtimeShell && summary.runtimeShell !== 'unknown' ? summary.runtimeShell : detectRuntimeShell(summary.filePath);
-      return { ...summary, runtimeShell: shell };
+      return { ...summary, providerId, runtimeShell: shell } as IndexSummary;
     })
     .sort((a, b) => b.date - a.date);
 }
@@ -945,7 +923,9 @@ export function getIndexedDetails(filePath: string): Details | null {
   const v = det.files[k]?.details;
   if (!v || !Array.isArray(v.messages) || v.messages.length === 0) return null;
   const shell = v.runtimeShell && v.runtimeShell !== 'unknown' ? v.runtimeShell : detectRuntimeShell(filePath);
-  return { ...v, runtimeShell: shell };
+  const providerId: ProviderId = (v && typeof (v as any).providerId === "string") ? ((v as any).providerId as ProviderId) : "codex";
+  const fp = (v && typeof (v as any).filePath === "string" && String((v as any).filePath).trim()) ? String((v as any).filePath) : filePath;
+  return { ...v, providerId, filePath: fp, runtimeShell: shell };
 }
 
 export async function startHistoryIndexer(getWindow: () => BrowserWindow | null) {
@@ -960,44 +940,257 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
     g.__indexer.details = loadDetails();
     try { getDetailsCache().clear(); } catch {}
 
+    // 1.5) 读取 Claude Code 过滤开关，并在启动阶段快速清理“默认应忽略”的历史项
+    const claudeCodeReadAgentHistory = getClaudeCodeReadAgentHistorySetting();
+    try { (g.__indexer as any).claudeCodeReadAgentHistory = claudeCodeReadAgentHistory; } catch {}
+    if (!claudeCodeReadAgentHistory) {
+      try {
+        const ix: PersistIndex = g.__indexer.index;
+        const det: PersistDetails = g.__indexer.details;
+        let removed = 0;
+        for (const [k, entry] of Object.entries(ix.files || {})) {
+          const summary: any = (entry as any)?.summary;
+          const pid = String(summary?.providerId || "").toLowerCase();
+          if (pid !== "claude") continue;
+          const fp = String(summary?.filePath || "");
+          const preview = typeof summary?.preview === "string" ? summary.preview.trim() : "";
+          const title = typeof summary?.title === "string" ? summary.title : "";
+          const base = fp ? path.basename(fp) : "";
+          const assistantOnly = !preview && !!base && (!title || title === base);
+          if (isClaudeAgentHistoryFilePath(fp) || assistantOnly) {
+            delete ix.files[k];
+            if ((det.files as any)[k]) delete (det.files as any)[k];
+            removed++;
+          }
+        }
+        if (removed > 0) {
+          ix.savedAt = Date.now();
+          det.savedAt = Date.now();
+          saveIndex(ix);
+          saveDetails(det);
+          idxLog(`[purge] removed=${removed} (claude agent/assistant-only) because readAgentHistory=false`);
+        }
+      } catch {}
+    }
+
     // 2) 计算根目录（不扫描）
-    const rootCandidates = await getSessionsRootCandidatesFastAsync();
-    const roots = Array.from(new Set(rootCandidates.map((c) => c.path)));
-    const rootsExisting = rootCandidates.filter((c) => c.exists).map((c) => c.path);
-    const rootsMissing = rootCandidates.filter((c) => !c.exists).map((c) => c.path);
-    perfLogger.log(`[roots] existing=${JSON.stringify(rootsExisting)} missing=${JSON.stringify(rootsMissing)}`);
+    const codexRootCandidates = await getSessionsRootCandidatesFastAsync();
+    const claudeRootCandidates = await getClaudeRootCandidatesFastAsync();
+    const geminiRootCandidates = await getGeminiRootCandidatesFastAsync();
+
+    const uniq = (xs: string[]) => Array.from(new Set(xs.filter(Boolean)));
+    const rootsByProviderAll: Record<ProviderId, string[]> = {
+      codex: uniq(codexRootCandidates.map((c) => c.path)),
+      claude: uniq(claudeRootCandidates.map((c) => c.path)),
+      gemini: uniq(geminiRootCandidates.map((c) => c.path)),
+    };
+    const rootsByProviderExisting: Record<ProviderId, string[]> = {
+      codex: uniq(codexRootCandidates.filter((c) => c.exists).map((c) => c.path)),
+      claude: uniq(claudeRootCandidates.filter((c) => c.exists).map((c) => c.path)),
+      gemini: uniq(geminiRootCandidates.filter((c) => c.exists).map((c) => c.path)),
+    };
+    const rootsByProviderMissing: Record<ProviderId, string[]> = {
+      codex: uniq(codexRootCandidates.filter((c) => !c.exists).map((c) => c.path)),
+      claude: uniq(claudeRootCandidates.filter((c) => !c.exists).map((c) => c.path)),
+      gemini: uniq(geminiRootCandidates.filter((c) => !c.exists).map((c) => c.path)),
+    };
+
+    const rootsExisting = uniq([
+      ...rootsByProviderExisting.codex,
+      ...rootsByProviderExisting.claude,
+      ...rootsByProviderExisting.gemini,
+    ]);
+    const rootsMissing = uniq([
+      ...rootsByProviderMissing.codex,
+      ...rootsByProviderMissing.claude,
+      ...rootsByProviderMissing.gemini,
+    ]);
+
+    perfLogger.log(`[roots] codex.existing=${JSON.stringify(rootsByProviderExisting.codex)} codex.missing=${JSON.stringify(rootsByProviderMissing.codex)}`);
+    perfLogger.log(`[roots] claude.existing=${JSON.stringify(rootsByProviderExisting.claude)} claude.missing=${JSON.stringify(rootsByProviderMissing.claude)}`);
+    perfLogger.log(`[roots] gemini.existing=${JSON.stringify(rootsByProviderExisting.gemini)} gemini.missing=${JSON.stringify(rootsByProviderMissing.gemini)}`);
+
     try {
-      (g.__indexer as any).roots = roots.slice();
-      (g.__indexer as any).missingRoots = rootsMissing.slice();
-      (g.__indexer as any).existingRoots = rootsExisting.slice();
+      // 兼容旧字段：roots 仍指向 Codex sessions roots（供 settings.codexRoots 等旧逻辑复用）
+      (g.__indexer as any).roots = rootsByProviderAll.codex.slice();
+      (g.__indexer as any).existingRoots = rootsByProviderExisting.codex.slice();
+      (g.__indexer as any).missingRoots = rootsByProviderMissing.codex.slice();
+      (g.__indexer as any).rootsByProvider = rootsByProviderAll;
+      (g.__indexer as any).existingRootsByProvider = rootsByProviderExisting;
+      (g.__indexer as any).missingRootsByProvider = rootsByProviderMissing;
     } catch {}
 
-    // 3) 枚举所有 .jsonl 文件并比对签名，增量更新
-    const files: string[] = [];
+    // 3) 枚举所有会话文件并比对签名，增量更新（按 Provider 聚合）
+    type ProviderFile = { providerId: ProviderId; filePath: string };
+    const files: ProviderFile[] = [];
     const scanLimit = pLimit(8);
-    await Promise.all(roots.map((root) => scanLimit(async () => {
+
+    const addFiles = (providerId: ProviderId, list: string[]) => {
+      for (const fp of list) {
+        if (!fp) continue;
+        files.push({ providerId, filePath: fp });
+      }
+    };
+
+    await Promise.all(rootsByProviderExisting.codex.map((root) => scanLimit(async () => {
       try {
-        const years = await fsp.readdir(root, { withFileTypes: true }).then((ds) => ds.filter((d) => d.isDirectory()).map((d) => d.name)).catch(() => [] as string[]);
+        const years = await fsp.readdir(root, { withFileTypes: true })
+          .then((ds) => ds.filter((d) => d.isDirectory()).map((d) => d.name))
+          .catch(() => [] as string[]);
         for (const y of years) {
           const ydir = path.join(root, y);
-          const months = await fsp.readdir(ydir, { withFileTypes: true }).then((ds) => ds.filter((d) => d.isDirectory()).map((d) => d.name)).catch(() => [] as string[]);
+          const months = await fsp.readdir(ydir, { withFileTypes: true })
+            .then((ds) => ds.filter((d) => d.isDirectory()).map((d) => d.name))
+            .catch(() => [] as string[]);
           for (const m of months) {
             const mdir = path.join(ydir, m);
-            const days = await fsp.readdir(mdir, { withFileTypes: true }).then((ds) => ds.filter((d) => d.isDirectory()).map((d) => d.name)).catch(() => [] as string[]);
+            const days = await fsp.readdir(mdir, { withFileTypes: true })
+              .then((ds) => ds.filter((d) => d.isDirectory()).map((d) => d.name))
+              .catch(() => [] as string[]);
             for (const d of days) {
               const ddir = path.join(mdir, d);
-              const fsx = await fsp.readdir(ddir).then((fs0) => fs0.filter((f) => f.endsWith('.jsonl'))).catch(() => [] as string[]);
-              for (const f of fsx) files.push(path.join(ddir, f));
+              const fsx = await fsp.readdir(ddir)
+                .then((fs0) => fs0.filter((f) => f.endsWith(".jsonl")))
+                .catch(() => [] as string[]);
+              for (const f of fsx) files.push({ providerId: "codex", filePath: path.join(ddir, f) });
             }
           }
         }
       } catch {}
     })));
-    perfLogger.log(`[files] count=${files.length}`);
+
+    await Promise.all(rootsByProviderExisting.claude.map((root) => scanLimit(async () => {
+      try { addFiles("claude", await discoverClaudeSessionFiles(root, { includeAgentHistory: claudeCodeReadAgentHistory })); } catch {}
+    })));
+
+    await Promise.all(rootsByProviderExisting.gemini.map((root) => scanLimit(async () => {
+      try { addFiles("gemini", await discoverGeminiSessionFiles(root)); } catch {}
+    })));
+
+    perfLogger.log(`[files] codex=${files.filter((f) => f.providerId === "codex").length} claude=${files.filter((f) => f.providerId === "claude").length} gemini=${files.filter((f) => f.providerId === "gemini").length} total=${files.length}`);
 
     const ix: PersistIndex = g.__indexer.index;
     const det: PersistDetails = g.__indexer.details;
     const win = getWindow();
+
+    const rootEntriesExisting: Array<{ providerId: ProviderId; root: string }> = [
+      ...rootsByProviderExisting.codex.map((root) => ({ providerId: "codex" as ProviderId, root })),
+      ...rootsByProviderExisting.claude.map((root) => ({ providerId: "claude" as ProviderId, root })),
+      ...rootsByProviderExisting.gemini.map((root) => ({ providerId: "gemini" as ProviderId, root })),
+    ];
+
+    const normPath = (p: string): string => {
+      return String(p || "").replace(/\\/g, "/").replace(/\/+/g, "/").replace(/\/+$/, "").toLowerCase();
+    };
+
+    /**
+     * 根据 filePath 归属到 Provider（优先按 root 前缀最长匹配；再用特征子串兜底）。
+     */
+    const resolveProviderIdForFile = (filePath: string): ProviderId => {
+      try {
+        const f = normPath(filePath);
+        let best: { providerId: ProviderId; len: number } | null = null;
+        for (const entry of rootEntriesExisting) {
+          const r = normPath(entry.root);
+          if (!r) continue;
+          if (f === r || f.startsWith(r + "/")) {
+            if (!best || r.length > best.len) best = { providerId: entry.providerId, len: r.length };
+          }
+        }
+        if (best) return best.providerId;
+        if (f.includes("/.claude/")) return "claude";
+        if (f.includes("/.gemini/")) return "gemini";
+        if (f.includes("/.codex/")) return "codex";
+      } catch {}
+      return "codex";
+    };
+
+    /**
+     * 判断是否为 Provider 支持的会话文件。
+     */
+    const shouldIndexFile = (providerId: ProviderId, filePath: string): boolean => {
+      try {
+        const base = path.basename(String(filePath || "")).toLowerCase();
+        if (providerId === "codex") return base.endsWith(".jsonl");
+        if (providerId === "claude") {
+          if (!claudeCodeReadAgentHistory && base.startsWith("agent-") && base.endsWith(".jsonl")) return false;
+          return base.endsWith(".jsonl") || base.endsWith(".ndjson");
+        }
+        if (providerId === "gemini") return base.endsWith(".json") && base.startsWith("session-");
+        return false;
+      } catch {
+        return false;
+      }
+    };
+
+    /**
+     * Gemini 的项目目录名为 projectHash；这里通过“已知项目路径”反推 hash -> cwd 映射。
+     * - 来源：CodexFlow 的 `projects.json`（用户打开/扫描过的项目）
+     * - 策略：对同一路径计算多种 hash 变体，覆盖 Windows/WSL 的分隔符差异
+     */
+    const geminiHashToCwd = new Map<string, string>();
+    try {
+      const projectsPath = path.join(getUserDataDir(), "projects.json");
+      if (fs.existsSync(projectsPath)) {
+        const raw = JSON.parse(fs.readFileSync(projectsPath, "utf8")) as any;
+        const items: any[] = Array.isArray(raw) ? raw : [];
+        const register = (p?: unknown) => {
+          try {
+            if (typeof p !== "string") return;
+            const t = tidyPathCandidate(p);
+            if (!t) return;
+            const h1 = sha256Hex(normalizeGeminiPathForHash(t));
+            const h2 = sha256Hex(t);
+            if (h1 && !geminiHashToCwd.has(h1)) geminiHashToCwd.set(h1, t);
+            if (h2 && !geminiHashToCwd.has(h2)) geminiHashToCwd.set(h2, t);
+          } catch {}
+        };
+        for (const it of items) {
+          register(it?.wslPath);
+          register(it?.winPath);
+        }
+      }
+    } catch {}
+
+    /**
+     * 统一入口：按 Provider 解析详情（索引阶段可启用 summaryOnly）。
+     */
+    const parseDetailsByProvider = async (providerId: ProviderId, fp: string, stat: fs.Stats, opts?: { summaryOnly?: boolean }): Promise<Details> => {
+      if (providerId === "claude") {
+        const summaryOnly = !!opts?.summaryOnly;
+        const maxLines = summaryOnly ? (claudeCodeReadAgentHistory ? 400 : 200) : 50_000;
+        return await parseClaudeSessionFile(fp, stat, { ...(opts as any), maxLines } as any);
+      }
+      if (providerId === "gemini") {
+        const parsed = await parseGeminiSessionFile(fp, stat, opts as any);
+        try {
+          const hash = String((parsed as any)?.projectHash || "").toLowerCase();
+          const hasCwd = !!(parsed && (parsed as any).cwd && String((parsed as any).cwd).trim());
+          if (hash && !hasCwd) {
+            const mapped = geminiHashToCwd.get(hash);
+            if (mapped) {
+              const dirKey = dirKeyFromCwd(mapped);
+              return { ...(parsed as any), cwd: mapped, dirKey } as any;
+            }
+          }
+        } catch {}
+        return parsed as any;
+      }
+      return await parseCodexDetails(fp, stat, opts);
+    };
+
+    // 去重：同一路径仅保留一份（按 canonicalKey）
+    const uniqFiles = (() => {
+      const mp = new Map<string, ProviderFile>();
+      for (const f of files) {
+        try {
+          const k = canonicalKey(f.filePath);
+          if (!k) continue;
+          if (!mp.has(k)) mp.set(k, f);
+        } catch {}
+      }
+      return Array.from(mp.values());
+    })();
 
     const workLimit = pLimit(8);
     let updatedSummaries = 0;
@@ -1023,12 +1216,28 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
             if (!stat) { retries.delete(key); return; }
             const k = canonicalKey(fp);
             const sig: FileSig = { mtimeMs: stat.mtimeMs, size: stat.size };
-            const details = await parseDetails(fp, stat, { summaryOnly: true });
+            const providerId = resolveProviderIdForFile(fp);
+            if (!shouldIndexFile(providerId, fp)) { retries.delete(key); return; }
+            const details = await parseDetailsByProvider(providerId, fp, stat, { summaryOnly: true });
+            if (providerId === "claude" && shouldIgnoreClaudeSession(details as any, claudeCodeReadAgentHistory)) {
+              const existed = !!ix.files[k] || !!det.files[k];
+              try { getDetailsCache().delete(k); } catch {}
+              if (ix.files[k]) delete ix.files[k];
+              if (det.files[k]) delete det.files[k];
+              ix.savedAt = Date.now(); det.savedAt = Date.now();
+              saveIndex(ix); saveDetails(det);
+              if (existed) {
+                try { win?.webContents.send('history:index:remove', { filePath: fp }); } catch {}
+              }
+              retries.delete(key);
+              return;
+            }
             const fallbackDir = dirKeyOf(fp);
             const hasCwd = !!(details.cwd && String(details.cwd).trim());
             const gotProjectDir = hasCwd && (details.dirKey && details.dirKey !== fallbackDir);
             const slimDetails = stripDetailsForPersist(details);
             const summary: IndexSummary = {
+              providerId,
               id: details.id,
               title: details.title,
               date: details.date,
@@ -1063,8 +1272,9 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
       } catch {}
     }
 
-    await Promise.all(files.map((fp) => workLimit(async () => {
+    await Promise.all(uniqFiles.map(({ providerId, filePath: fp }) => workLimit(async () => {
       try {
+        if (!shouldIndexFile(providerId, fp)) return;
         const stat = await fsp.stat(fp).catch(() => null as any);
         if (!stat) return;
         const k = canonicalKey(fp);
@@ -1072,12 +1282,19 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
         const prev = ix.files[k]?.sig;
         const same = prev && prev.mtimeMs === sig.mtimeMs && prev.size === sig.size;
         if (!same) {
-          const details = await parseDetails(fp, stat, { summaryOnly: true });
+          const details = await parseDetailsByProvider(providerId, fp, stat, { summaryOnly: true });
+          if (providerId === "claude" && shouldIgnoreClaudeSession(details as any, claudeCodeReadAgentHistory)) {
+            try { getDetailsCache().delete(k); } catch {}
+            if (ix.files[k]) delete ix.files[k];
+            if (det.files[k]) delete det.files[k];
+            return;
+          }
           const slimDetails = stripDetailsForPersist(details);
           try { getDetailsCache().delete(k); } catch {}
           det.files[k] = { sig, details: slimDetails };
           updatedDetails++;
           const summary: IndexSummary = {
+            providerId,
             id: details.id,
             title: details.title,
             date: details.date,
@@ -1110,42 +1327,54 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
     perfLogger.log(`[indexer] updated summaries=${updatedSummaries} details=${updatedDetails}`);
 
     // 4) 文件变化监听（可选）
-    if (chokidar && roots.length > 0) {
+    if (chokidar && rootEntriesExisting.length > 0) {
       const onChange = async (fp: string) => {
-          try {
-            const stat = await fsp.stat(fp).catch(() => null as any);
-            if (!stat) return;
-            const k = canonicalKey(fp);
-            const sig: FileSig = { mtimeMs: stat.mtimeMs, size: stat.size };
-            // 先解析 details 并直接构造 summary，零额外 IO
-            const details = await parseDetails(fp, stat, { summaryOnly: true });
-            const slimDetails = stripDetailsForPersist(details);
+        try {
+          const providerId = resolveProviderIdForFile(fp);
+          if (!shouldIndexFile(providerId, fp)) return;
+          const stat = await fsp.stat(fp).catch(() => null as any);
+          if (!stat) return;
+          const k = canonicalKey(fp);
+          const sig: FileSig = { mtimeMs: stat.mtimeMs, size: stat.size };
+          // 先解析 details 并直接构造 summary，零额外 IO
+          const details = await parseDetailsByProvider(providerId, fp, stat, { summaryOnly: true });
+          if (providerId === "claude" && shouldIgnoreClaudeSession(details as any, claudeCodeReadAgentHistory)) {
+            const existed = !!ix.files[k] || !!det.files[k];
             try { getDetailsCache().delete(k); } catch {}
-            det.files[k] = { sig, details: slimDetails };
-            const summary: IndexSummary = {
-              id: details.id,
-              title: details.title,
-              date: details.date,
-              filePath: fp,
-              rawDate: details.rawDate,
-              dirKey: details.dirKey || dirKeyOf(fp),
-              preview: details.preview,
-              resumeMode: details.resumeMode,
-              resumeId: details.resumeId,
-              runtimeShell: details.runtimeShell && details.runtimeShell !== 'unknown' ? details.runtimeShell : detectRuntimeShell(fp),
-            } as any;
-            ix.files[k] = { sig, summary };
+            if (ix.files[k]) delete ix.files[k];
+            if (det.files[k]) delete det.files[k];
             ix.savedAt = Date.now(); det.savedAt = Date.now(); saveIndex(ix); saveDetails(det);
-            try { win?.webContents.send('history:index:update', { item: summary }); } catch {}
-            try {
-              const fallbackDir = dirKeyOf(fp);
-              const hasCwd = !!(details.cwd && String(details.cwd).trim());
-              if (!hasCwd || (summary.dirKey === fallbackDir)) {
-                await scheduleReparse(fp, 2000, hasCwd ? 'dirKey=fallback(change)' : 'no-cwd(change)');
-              }
-            } catch {}
+            if (existed) try { win?.webContents.send('history:index:remove', { filePath: fp }); } catch {}
+            return;
+          }
+          const slimDetails = stripDetailsForPersist(details);
+          try { getDetailsCache().delete(k); } catch {}
+          det.files[k] = { sig, details: slimDetails };
+          const summary: IndexSummary = {
+            providerId,
+            id: details.id,
+            title: details.title,
+            date: details.date,
+            filePath: fp,
+            rawDate: details.rawDate,
+            dirKey: details.dirKey || dirKeyOf(fp),
+            preview: details.preview,
+            resumeMode: details.resumeMode,
+            resumeId: details.resumeId,
+            runtimeShell: details.runtimeShell && details.runtimeShell !== 'unknown' ? details.runtimeShell : detectRuntimeShell(fp),
+          } as any;
+          ix.files[k] = { sig, summary };
+          ix.savedAt = Date.now(); det.savedAt = Date.now(); saveIndex(ix); saveDetails(det);
+          try { win?.webContents.send('history:index:update', { item: summary }); } catch {}
+          try {
+            const fallbackDir = dirKeyOf(fp);
+            const hasCwd = !!(details.cwd && String(details.cwd).trim());
+            if (!hasCwd || (summary.dirKey === fallbackDir)) {
+              await scheduleReparse(fp, 2000, hasCwd ? 'dirKey=fallback(change)' : 'no-cwd(change)');
+            }
           } catch {}
-        };
+        } catch {}
+      };
         const onUnlink = (fp: string) => {
           try {
             const k = canonicalKey(fp);
@@ -1166,20 +1395,31 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
             return /^\\\\wsl\.localhost\\/i.test(s);
           } catch { return false; }
         };
-        const uncRoots = roots.filter((r) => isUNC(r));
-        const localRoots = roots.filter((r) => !isUNC(r));
+        const patternsForProvider = (providerId: ProviderId): string[] => {
+          if (providerId === "codex") return ["*.jsonl"];
+          if (providerId === "claude") return ["*.jsonl", "*.ndjson"];
+          if (providerId === "gemini") return ["session-*.json"];
+          return ["*.jsonl"];
+        };
 
-        const makeGlobs = (rs: string[]) => {
+        const localEntries = rootEntriesExisting.filter((e) => !isUNC(e.root));
+        const uncEntries = rootEntriesExisting.filter((e) => isUNC(e.root));
+
+        const makeGlobs = (entries: Array<{ providerId: ProviderId; root: string }>) => {
           const out: string[] = [];
-          for (const r of rs) {
-            try {
-              // 同时提供反斜杠样式与 POSIX 样式的 glob，提升 UNC/Windows 兼容性
-              const back = path.join(r, '**', '*.jsonl');
-              out.push(back);
-              const posix = r.replace(/\\/g, '/').replace(/\/+$/g, '') + '/**/*.jsonl';
-              out.push(posix);
-            } catch {
-              try { out.push(path.join(r, '**', '*.jsonl')); } catch {}
+          for (const entry of entries) {
+            const r = entry.root;
+            const pats = patternsForProvider(entry.providerId);
+            for (const pat of pats) {
+              try {
+                // 同时提供反斜杠样式与 POSIX 样式的 glob，提升 UNC/Windows 兼容性
+                const back = path.join(r, "**", pat);
+                out.push(back);
+                const posix = r.replace(/\\/g, "/").replace(/\/+$/g, "") + `/**/${pat}`;
+                out.push(posix);
+              } catch {
+                try { out.push(path.join(r, "**", pat)); } catch {}
+              }
             }
           }
           return out;
@@ -1187,43 +1427,45 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
 
         const watchers: any[] = [];
         try {
-          if (localRoots.length > 0) {
-            const globsLocal = makeGlobs(localRoots);
+          if (localEntries.length > 0) {
+            const globsLocal = makeGlobs(localEntries);
             idxLog(`[watch:init local] globs=${JSON.stringify(globsLocal)}`);
             const w1 = chokidar.watch(globsLocal, {
               ignoreInitial: true,
               awaitWriteFinish: { stabilityThreshold: 500, pollInterval: 100 },
-              depth: 6,
+              depth: 10,
             });
             w1.on('add', onChange).on('change', onChange).on('unlink', onUnlink).on('error', (e: any) => { perfLogger.log(`[watch:error local] ${String(e)}`); });
             // ready 时记录
-            try { w1.on('ready', () => { idxLog(`[watch:ready local] paths=${JSON.stringify(localRoots)}`); }); } catch {}
+            try { w1.on('ready', () => { idxLog(`[watch:ready local] paths=${JSON.stringify(localEntries.map((x) => x.root))}`); }); } catch {}
             watchers.push(w1);
           }
         } catch (e) { perfLogger.log(`[watch:init local failed] ${String(e)}`); }
         try {
-          if (uncRoots.length > 0) {
+          if (uncEntries.length > 0) {
             // UNC 到 WSL 的共享不可靠，使用轮询模式
-            const globsUNC = makeGlobs(uncRoots);
+            const globsUNC = makeGlobs(uncEntries);
             idxLog(`[watch:init unc] globs=${JSON.stringify(globsUNC)}`);
             const w2 = chokidar.watch(globsUNC, {
               ignoreInitial: true,
               awaitWriteFinish: { stabilityThreshold: 800, pollInterval: 200 },
-              depth: 6,
+              depth: 10,
               usePolling: true,
               interval: 2500,
               binaryInterval: 4000,
               followSymlinks: false,
             });
             w2.on('add', onChange).on('change', onChange).on('unlink', onUnlink).on('error', (e: any) => { perfLogger.log(`[watch:error unc] ${String(e)}`); });
-            try { w2.on('ready', () => { idxLog(`[watch:ready unc] paths=${JSON.stringify(uncRoots)}`); }); } catch {}
+            try { w2.on('ready', () => { idxLog(`[watch:ready unc] paths=${JSON.stringify(uncEntries.map((x) => x.root))}`); }); } catch {}
             watchers.push(w2);
           }
         } catch (e) { perfLogger.log(`[watch:init unc failed] ${String(e)}`); }
         g.__indexer.watchers = watchers;
-        perfLogger.log(`[watch] enabled using chokidar (local=${localRoots.length}, unc=${uncRoots.length})`);
+        perfLogger.log(`[watch] enabled using chokidar (local=${localEntries.length}, unc=${uncEntries.length})`);
         // 5) 周期性轻量重扫：仅扫描当天与前一天目录，弥补 UNC 监听遗漏的新增/变更
-        const rescanRoots = uncRoots.length > 0 ? uncRoots : [];
+        const rescanRoots = uncEntries
+          .filter((e) => e.providerId === "codex")
+          .map((e) => e.root);
         if (rescanRoots.length > 0) try {
           const upsertQuick = async (fp: string) => {
             try {
@@ -1241,11 +1483,12 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
                 return;
               }
               markRescanCooldown(k, now);
-              const details = await parseDetails(fp, stat, { summaryOnly: true });
+              const details = await parseDetailsByProvider("codex", fp, stat, { summaryOnly: true });
               const slimDetails = stripDetailsForPersist(details);
               try { getDetailsCache().delete(k); } catch {}
               det.files[k] = { sig, details: slimDetails };
               const summary: IndexSummary = {
+                providerId: "codex",
                 id: details.id,
                 title: details.title,
                 date: details.date,
@@ -1310,6 +1553,20 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
 
 export function getLastIndexerRoots(): string[] {
   try { const roots: string[] = (g.__indexer && g.__indexer.roots) ? g.__indexer.roots : []; return Array.isArray(roots) ? roots : []; } catch { return []; }
+}
+
+/**
+ * 获取索引器最近一次探测到的指定 Provider 根目录（优先返回“存在的 roots”）。
+ */
+export function getLastIndexerRootsByProvider(providerId: string): string[] {
+  try {
+    const id = String(providerId || "codex").trim().toLowerCase();
+    const map = (g.__indexer && (g.__indexer.existingRootsByProvider || g.__indexer.rootsByProvider)) ? (g.__indexer.existingRootsByProvider || g.__indexer.rootsByProvider) : {};
+    const roots = map && Object.prototype.hasOwnProperty.call(map, id) ? (map as any)[id] : [];
+    return Array.isArray(roots) ? roots : [];
+  } catch {
+    return [];
+  }
 }
 
 // 供主进程在删除文件后主动清理索引与详情缓存，避免切换项目时已删除项回流

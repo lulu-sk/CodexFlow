@@ -19,6 +19,7 @@ import {
   translateCodexBridgeError,
   CODEX_RATE_REFRESH_EVENT,
 } from "@/lib/codex-status";
+import { useHoverCard } from "@/components/topbar/hover-card";
 
 type FetchState<T> = {
   loading: boolean;
@@ -26,37 +27,7 @@ type FetchState<T> = {
   data: T | null;
 };
 
-type HoverHandlers = {
-  open: boolean;
-  onEnter: () => void;
-  onLeave: () => void;
-};
-
 type TerminalMode = NonNullable<AppSettings["terminal"]>;
-
-function useHoverCard(): HoverHandlers {
-  const [open, setOpen] = useState(false);
-  const timerRef = useRef<number | null>(null);
-  const clear = () => {
-    if (timerRef.current != null) {
-      window.clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
-  };
-  const onEnter = useCallback(() => {
-    clear();
-    setOpen(true);
-  }, []);
-  const onLeave = useCallback(() => {
-    clear();
-    timerRef.current = window.setTimeout(() => {
-      setOpen(false);
-      timerRef.current = null;
-    }, 120);
-  }, []);
-  useEffect(() => () => clear(), []);
-  return { open, onEnter, onLeave };
-}
 
 /**
  * 解析 Codex 用量请求的运行环境键，用于在终端模式/发行版变化时触发重新拉取。
@@ -85,6 +56,73 @@ function readCodexRateCache(envKey: string): CodexRateCacheEntry {
   const empty: CodexRateCacheEntry = { attemptedAt: null, data: null, error: null };
   CODEX_RATE_CACHE.set(envKey, empty);
   return empty;
+}
+
+type CodexAccountCacheEntry = {
+  attemptedAt: number | null;
+  data: CodexAccountInfo | null;
+  error: string | null;
+};
+
+const CODEX_ACCOUNT_CACHE = new Map<string, CodexAccountCacheEntry>();
+
+/**
+ * 读取 Codex 账号缓存（按 envKey 区分），用于避免重复拉取账号信息。
+ */
+function readCodexAccountCache(envKey: string): CodexAccountCacheEntry {
+  const cached = CODEX_ACCOUNT_CACHE.get(envKey);
+  if (cached) return cached;
+  const empty: CodexAccountCacheEntry = { attemptedAt: null, data: null, error: null };
+  CODEX_ACCOUNT_CACHE.set(envKey, empty);
+  return empty;
+}
+
+/**
+ * 使用带缓存的 Codex 账号状态：用于在顶部栏用量面板展示“状态/套餐”。
+ */
+function useCodexAccountCached(envKey: string): [
+  FetchState<CodexAccountInfo>,
+  () => void,
+  { attempted: boolean },
+] {
+  const { t } = useTranslation(["settings"]);
+  const [attempted, setAttempted] = useState<boolean>(() => readCodexAccountCache(envKey).attemptedAt != null);
+  const [state, setState] = useState<FetchState<CodexAccountInfo>>(() => {
+    const cached = readCodexAccountCache(envKey);
+    return { loading: false, error: cached.error, data: cached.data };
+  });
+
+  useEffect(() => {
+    const cached = readCodexAccountCache(envKey);
+    setAttempted(cached.attemptedAt != null);
+    setState({ loading: false, error: cached.error, data: cached.data });
+  }, [envKey]);
+
+  const fetchAccount = useCallback(async () => {
+    const now = Date.now();
+    setAttempted(true);
+    setState((prev) => ({ ...prev, loading: true, error: null }));
+    try {
+      const res = await window.host.codex.getAccountInfo();
+      if (res.ok) {
+        const entry: CodexAccountCacheEntry = { attemptedAt: now, error: null, data: res.info ?? null };
+        CODEX_ACCOUNT_CACHE.set(envKey, entry);
+        setState({ loading: false, error: null, data: entry.data });
+      } else {
+        const errorText = t("settings:codexAccount.statusError", "账号信息不可用") as string;
+        const entry: CodexAccountCacheEntry = { attemptedAt: now, error: errorText, data: null };
+        CODEX_ACCOUNT_CACHE.set(envKey, entry);
+        setState({ loading: false, error: errorText, data: null });
+      }
+    } catch {
+      const errorText = t("settings:codexAccount.statusError", "账号信息不可用") as string;
+      const entry: CodexAccountCacheEntry = { attemptedAt: now, error: errorText, data: null };
+      CODEX_ACCOUNT_CACHE.set(envKey, entry);
+      setState({ loading: false, error: errorText, data: null });
+    }
+  }, [envKey, t]);
+
+  return [state, fetchAccount, { attempted }];
 }
 
 function useCodexAccount(
@@ -263,12 +301,19 @@ export const CodexUsageHoverCard: React.FC<CodexUsageHoverCardProps> = ({
   enableAutoRefreshInterval = true,
   enableGlobalRefreshEvent = true,
 }) => {
-  const { t, i18n } = useTranslation(["common"]);
+  const { t, i18n } = useTranslation(["common", "settings"]);
   const envKey = useMemo(() => resolveCodexEnvKey(terminalMode, distro), [terminalMode, distro]);
   const [rateState, reloadRate] = useCodexRateCached(envKey);
+  const [accountState, reloadAccount, accountMeta] = useCodexAccountCached(envKey);
   const hover = useHoverCard();
   const lastManualRefreshAtRef = useRef<number>(0);
   const lastAutoLoadKeyRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!hover.open) return;
+    if (accountMeta.attempted) return;
+    reloadAccount();
+  }, [accountMeta.attempted, hover.open, reloadAccount]);
 
   useEffect(() => {
     if (loadPolicy === "never") return;
@@ -329,9 +374,49 @@ export const CodexUsageHoverCard: React.FC<CodexUsageHoverCardProps> = ({
       ? t("common:codexUsage.unavailable", "用量不可用")
       : dominantWindow
         ? formatUsageSummaryLabel(dominantWindow, dominantWindow.usedPercent ?? null, t)
-        : percentUsed != null
-          ? formatUsageSummaryLabel(null, percentUsed, t)
-          : t("common:codexUsage.title", "用量");
+      : percentUsed != null
+        ? formatUsageSummaryLabel(null, percentUsed, t)
+        : t("common:codexUsage.title", "用量");
+
+  const signedIn = useMemo(() => {
+    const account = accountState.data;
+    if (!account) return false;
+    return !!(account.email || account.accountId || account.userId);
+  }, [accountState.data]);
+
+  const accountStatusText = useMemo(() => {
+    if (!accountMeta.attempted && hover.open) {
+      return t("settings:codexAccount.statusLoading", "正在读取账号信息…") as string;
+    }
+    if (accountState.loading && !accountState.data) {
+      return t("settings:codexAccount.statusLoading", "正在读取账号信息…") as string;
+    }
+    if (accountState.error) {
+      return t("settings:codexAccount.statusError", "账号信息不可用") as string;
+    }
+    return resolveAccountLabel(accountState.data, t);
+  }, [accountMeta.attempted, accountState.data, accountState.error, accountState.loading, hover.open, t]);
+
+  const planText = useMemo(() => {
+    if (!signedIn) return "";
+    return describePlan(accountState.data?.plan ?? null, t);
+  }, [accountState.data?.plan, signedIn, t]);
+
+  const planBadgeText = useMemo(() => {
+    if (!accountMeta.attempted && hover.open) return "…";
+    if (accountState.loading && !accountState.data) return "…";
+    if (accountState.error) return "—";
+    if (!signedIn) return "—";
+    return planText;
+  }, [
+    accountMeta.attempted,
+    accountState.data,
+    accountState.error,
+    accountState.loading,
+    hover.open,
+    planText,
+    signedIn,
+  ]);
 
   return (
     <div
@@ -344,6 +429,31 @@ export const CodexUsageHoverCard: React.FC<CodexUsageHoverCardProps> = ({
         <div
           className={`absolute top-full z-[70] mt-2 w-[320px] rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple-lg p-4 text-sm text-[var(--cf-text-primary)] shadow-apple-xl dark:shadow-apple-dark-xl ${panelAlign === "end" ? "right-0" : "left-0"}`}
         >
+          <div className="mb-3 flex flex-col gap-2">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-xs font-apple-medium text-[var(--cf-text-secondary)]">
+                {t("common:account", "账号")}
+              </span>
+              <span
+                className={`min-w-0 truncate text-right ${accountState.error ? "text-[var(--cf-red)]" : ""}`}
+                title={accountStatusText}
+              >
+                {accountStatusText}
+              </span>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-xs font-apple-medium text-[var(--cf-text-secondary)]">
+                {t("settings:codexAccount.planLabel", "套餐")}
+              </span>
+              <Badge
+                variant={signedIn ? "secondary" : "outline"}
+                className={`shrink-0 ${signedIn ? "" : "opacity-70"}`}
+                title={signedIn ? planText : ""}
+              >
+                {planBadgeText}
+              </Badge>
+            </div>
+          </div>
           {rateState.error ? (
             <div className="text-[var(--cf-red)]">{rateState.error}</div>
           ) : rateState.data ? (
@@ -414,6 +524,7 @@ export const CodexUsageHoverCard: React.FC<CodexUsageHoverCardProps> = ({
               onClick={(e) => {
                 e.preventDefault();
                 reloadRate();
+                reloadAccount();
               }}
             >
               <RotateCcw className="h-3.5 w-3.5" />
@@ -441,6 +552,7 @@ function resolveAccountLabel(account: CodexAccountInfo | null, t: TFunction): st
   if (!account) return t("settings:codexAccount.statusUnknown", "未登录");
   if (account.email) return account.email;
   if (account.accountId) return account.accountId;
+  if (account.userId) return account.userId;
   return t("settings:codexAccount.statusUnknown", "未登录");
 }
 

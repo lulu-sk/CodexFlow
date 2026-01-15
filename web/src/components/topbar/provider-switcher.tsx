@@ -10,6 +10,8 @@ import type { AppSettings, ProviderItem } from "@/types/host";
 import { getBuiltInProviders } from "@/lib/providers/builtins";
 import { resolveProvider } from "@/lib/providers/resolve";
 import { CodexUsageHoverCard } from "@/components/topbar/codex-status";
+import { ClaudeUsageHoverCard } from "@/components/topbar/claude-status";
+import { GeminiUsageHoverCard } from "@/components/topbar/gemini-status";
 import { MoreHorizontal } from "lucide-react";
 
 type TerminalMode = NonNullable<AppSettings["terminal"]>;
@@ -62,6 +64,8 @@ export const ProviderSwitcher: React.FC<ProviderSwitcherProps> = ({ activeId, pr
         const label = p.labelKey ? (t(p.labelKey) as string) : (p.displayName || p.id);
         const selected = p.id === activeId;
         const isCodex = p.id === "codex";
+        const isClaude = p.id === "claude";
+        const isGemini = p.id === "gemini";
         return (
           <div key={p.id} className="flex items-center">
             {isCodex ? (
@@ -79,6 +83,78 @@ export const ProviderSwitcher: React.FC<ProviderSwitcherProps> = ({ activeId, pr
                       className={cn(
                         "h-8 gap-2 px-2.5 border border-[var(--cf-border)] bg-slate-100 text-[var(--cf-text-primary)] dark:bg-slate-800 active:scale-100 shadow-apple-xs dark:shadow-apple-dark-xs",
                         rateState.error && "text-[var(--cf-red)]",
+                      )}
+                      title={label}
+                      aria-label={label}
+                      onClick={() => onChange(p.id)}
+                    >
+                      {p.iconSrc ? <img src={p.iconSrc} className="h-4 w-4 shrink-0" alt={label} /> : <span className="text-xs">{label[0] || "?"}</span>}
+                      <span className="tabular-nums text-xs text-[var(--cf-text-secondary)]">{percentLabel}</span>
+                    </Button>
+                  )}
+                />
+              ) : (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className={cn("h-8 w-8 rounded-md", selected && "bg-slate-100 dark:bg-slate-800")}
+                  title={label}
+                  aria-label={label}
+                  onClick={() => onChange(p.id)}
+                >
+                  {p.iconSrc ? <img src={p.iconSrc} className="h-4 w-4" alt={label} /> : <span className="text-xs">{label[0] || "?"}</span>}
+                </Button>
+              )
+            ) : isClaude ? (
+              selected ? (
+                <ClaudeUsageHoverCard
+                  terminalMode={terminalMode}
+                  distro={terminalMode === "wsl" ? distro : undefined}
+                  loadPolicy="ifMissing"
+                  enableGlobalRefreshEvent={true}
+                  renderTrigger={({ percentLabel, usageState }) => (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className={cn(
+                        "h-8 gap-2 px-2.5 border border-[var(--cf-border)] bg-slate-100 text-[var(--cf-text-primary)] dark:bg-slate-800 active:scale-100 shadow-apple-xs dark:shadow-apple-dark-xs",
+                        usageState.error && "text-[var(--cf-red)]",
+                      )}
+                      title={label}
+                      aria-label={label}
+                      onClick={() => onChange(p.id)}
+                    >
+                      {p.iconSrc ? <img src={p.iconSrc} className="h-4 w-4 shrink-0" alt={label} /> : <span className="text-xs">{label[0] || "?"}</span>}
+                      <span className="tabular-nums text-xs text-[var(--cf-text-secondary)]">{percentLabel}</span>
+                    </Button>
+                  )}
+                />
+              ) : (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className={cn("h-8 w-8 rounded-md", selected && "bg-slate-100 dark:bg-slate-800")}
+                  title={label}
+                  aria-label={label}
+                  onClick={() => onChange(p.id)}
+                >
+                  {p.iconSrc ? <img src={p.iconSrc} className="h-4 w-4" alt={label} /> : <span className="text-xs">{label[0] || "?"}</span>}
+                </Button>
+              )
+            ) : isGemini ? (
+              selected ? (
+                <GeminiUsageHoverCard
+                  terminalMode={terminalMode}
+                  distro={terminalMode === "wsl" ? distro : undefined}
+                  loadPolicy="ifMissing"
+                  enableGlobalRefreshEvent={true}
+                  renderTrigger={({ percentLabel, usageState }) => (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className={cn(
+                        "h-8 gap-2 px-2.5 border border-[var(--cf-border)] bg-slate-100 text-[var(--cf-text-primary)] dark:bg-slate-800 active:scale-100 shadow-apple-xs dark:shadow-apple-dark-xs",
+                        usageState.error && "text-[var(--cf-red)]",
                       )}
                       title={label}
                       aria-label={label}

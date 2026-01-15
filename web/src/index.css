@@ -197,6 +197,35 @@ body {
   display: none; /* Chrome/Safari */
 }
 
+/* 通用 ScrollArea 滚动条：更接近 macOS Overlay 的轻量样式 */
+.cf-scroll-area {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+.cf-scroll-area:hover {
+  scrollbar-color: var(--cf-scrollbar-thumb) transparent;
+}
+.cf-scroll-area::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.cf-scroll-area::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border-radius: 9999px;
+  border: 1px solid transparent;
+  background-clip: padding-box;
+  transition: background-color 0.2s ease;
+}
+.cf-scroll-area:hover::-webkit-scrollbar-thumb {
+  background-color: var(--cf-scrollbar-thumb);
+}
+.cf-scroll-area:hover::-webkit-scrollbar-thumb:hover {
+  background-color: var(--cf-scrollbar-thumb-hover);
+}
+.cf-scroll-area::-webkit-scrollbar-track {
+  background: transparent;
+}
+
 /* 历史面板滚动条进一步压缩宽度，减少内容被挤压 */
 .history-scroll-area {
   scrollbar-width: thin;

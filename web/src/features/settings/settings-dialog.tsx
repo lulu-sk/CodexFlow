@@ -71,6 +71,7 @@ export type SettingsDialogProps = {
     network?: NetworkPrefs;
     terminalFontFamily: string;
     terminalTheme: TerminalThemeId;
+    claudeCodeReadAgentHistory: boolean;
   };
   onSave: (v: {
     providers: {
@@ -86,6 +87,7 @@ export type SettingsDialogProps = {
     network: NetworkPrefs;
     terminalFontFamily: string;
     terminalTheme: TerminalThemeId;
+    claudeCodeReadAgentHistory: boolean;
   }) => void;
 };
 
@@ -371,7 +373,10 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     proxyUrl: values.network?.proxyUrl ?? "",
     noProxy: values.network?.noProxy ?? "",
   });
+  const [claudeCodeReadAgentHistory, setClaudeCodeReadAgentHistory] = useState<boolean>(!!values.claudeCodeReadAgentHistory);
   const [codexRoots, setCodexRoots] = useState<string[]>([]);
+  const [claudeRoots, setClaudeRoots] = useState<string[]>([]);
+  const [geminiRoots, setGeminiRoots] = useState<string[]>([]);
   const [lang, setLang] = useState<string>(values.locale || "en");
   const [theme, setTheme] = useState<ThemeSetting>(normalizeThemeSetting(values.theme));
   const [terminalTheme, setTerminalTheme] = useState<TerminalThemeId>(values.terminalTheme);
@@ -464,9 +469,41 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
       proxyUrl: values.network?.proxyUrl ?? "",
       noProxy: values.network?.noProxy ?? "",
     });
+    setClaudeCodeReadAgentHistory(!!values.claudeCodeReadAgentHistory);
     setTerminalFontFamily(normalizeTerminalFontFamily(values.terminalFontFamily));
     setTerminalTheme(normalizeTerminalTheme(values.terminalTheme));
   }, [open, values]);
+
+  /**
+   * 拉取指定引擎的会话根路径列表（优先使用 settings.sessionRoots；旧版本仅支持 codexRoots）。
+   */
+  const fetchSessionRoots = useCallback(async (providerId: "codex" | "claude" | "gemini"): Promise<string[]> => {
+    try {
+      if (window.host.settings.sessionRoots) {
+        const roots = await window.host.settings.sessionRoots({ providerId });
+        return Array.isArray(roots) ? roots : [];
+      }
+      if (providerId === "codex") {
+        const roots = await window.host.settings.codexRoots();
+        return Array.isArray(roots) ? roots : [];
+      }
+    } catch {}
+    return [];
+  }, []);
+
+  /**
+   * 在系统文件管理器中打开一个会话根路径（失败则给出统一提示）。
+   */
+  const openSessionRootPath = useCallback(async (root: string) => {
+    const p = String(root || "").trim();
+    if (!p) return;
+    try {
+      const res: any = await window.host.utils.openPath(p);
+      if (!(res && res.ok)) throw new Error(res?.error || "failed");
+    } catch {
+      alert(String(t("common:files.cannotOpenPath")));
+    }
+  }, [t]);
 
   useEffect(() => {
     if (!open) return;
@@ -549,12 +586,18 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     if (!open) return;
     (async () => {
       try {
-        const roots = await (window.host.settings as any).codexRoots?.();
-        if (Array.isArray(roots)) {
-          setCodexRoots(roots);
-        }
+        const [codex, claude, gemini] = await Promise.all([
+          fetchSessionRoots("codex"),
+          fetchSessionRoots("claude"),
+          fetchSessionRoots("gemini"),
+        ]);
+        setCodexRoots(codex);
+        setClaudeRoots(claude);
+        setGeminiRoots(gemini);
       } catch {
         setCodexRoots([]);
+        setClaudeRoots([]);
+        setGeminiRoots([]);
       }
       try {
         const result: any = await (window.host as any).wsl?.listDistros?.();
@@ -572,7 +615,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         setAvailableDistros([]);
       }
     })();
-  }, [open]);
+  }, [open, fetchSessionRoots]);
 
   // 旧的纯名称枚举逻辑已移除（改为使用系统级元数据）
 
@@ -997,6 +1040,35 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                   </div>
                 </CardContent>
               </Card>
+
+              {providerEditingId === "claude" ? (
+                <Card>
+                  <CardHeader>
+                    <CardTitle>{t("settings:providers.claudeCode.title")}</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <p className="text-sm text-slate-500 dark:text-[var(--cf-text-secondary)]">
+                      {t("settings:providers.claudeCode.desc")}
+                    </p>
+                    <label className="flex items-start gap-3 rounded-lg border border-slate-200/70 bg-white/60 px-3 py-3 shadow-sm dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:text-[var(--cf-text-primary)]">
+                      <input
+                        type="checkbox"
+                        className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)] dark:checked:bg-[var(--cf-accent)] dark:focus-visible:ring-[var(--cf-accent)]/40"
+                        checked={claudeCodeReadAgentHistory}
+                        onChange={(event) => setClaudeCodeReadAgentHistory(event.target.checked)}
+                      />
+                      <div>
+                        <div className="text-sm font-medium text-slate-800 dark:text-[var(--cf-text-primary)]">
+                          {t("settings:providers.claudeCode.readAgentHistory.label")}
+                        </div>
+                        <p className="text-xs text-slate-500 dark:text-[var(--cf-text-secondary)]">
+                          {t("settings:providers.claudeCode.readAgentHistory.desc")}
+                        </p>
+                      </div>
+                    </label>
+                  </CardContent>
+                </Card>
+              ) : null}
             </div>
           ),
         };
@@ -1399,14 +1471,59 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                   <div className="max-h-48 overflow-auto rounded border bg-slate-50 p-2 text-xs">
                     <ul className="space-y-1">
                       {codexRoots.map((root) => (
-                        <li key={root} className="truncate" title={root}>
-                          {root}
+                        <li key={root} className="flex items-center gap-2" title={root}>
+                          <span className="flex-1 min-w-0 truncate">{root}</span>
+                          <Button size="xs" variant="ghost" className="h-6 px-2" onClick={() => openSessionRootPath(root)}>{t("common:open")}</Button>
                         </li>
                       ))}
                     </ul>
                   </div>
                 ) : (
                   <div className="text-xs text-slate-400">{t("settings:codexRoots.empty")}</div>
+                )}
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader>
+                <CardTitle>{t("settings:claudeRoots.label")}</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <p className="text-sm text-slate-500">{t("settings:claudeRoots.help")}</p>
+                {claudeRoots.length > 0 ? (
+                  <div className="max-h-48 overflow-auto rounded border bg-slate-50 p-2 text-xs">
+                    <ul className="space-y-1">
+                      {claudeRoots.map((root) => (
+                        <li key={root} className="flex items-center gap-2" title={root}>
+                          <span className="flex-1 min-w-0 truncate">{root}</span>
+                          <Button size="xs" variant="ghost" className="h-6 px-2" onClick={() => openSessionRootPath(root)}>{t("common:open")}</Button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : (
+                  <div className="text-xs text-slate-400">{t("settings:claudeRoots.empty")}</div>
+                )}
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader>
+                <CardTitle>{t("settings:geminiRoots.label")}</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <p className="text-sm text-slate-500">{t("settings:geminiRoots.help")}</p>
+                {geminiRoots.length > 0 ? (
+                  <div className="max-h-48 overflow-auto rounded border bg-slate-50 p-2 text-xs">
+                    <ul className="space-y-1">
+                      {geminiRoots.map((root) => (
+                        <li key={root} className="flex items-center gap-2" title={root}>
+                          <span className="flex-1 min-w-0 truncate">{root}</span>
+                          <Button size="xs" variant="ghost" className="h-6 px-2" onClick={() => openSessionRootPath(root)}>{t("common:open")}</Button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : (
+                  <div className="text-xs text-slate-400">{t("settings:geminiRoots.empty")}</div>
                 )}
               </CardContent>
             </Card>
@@ -1577,6 +1694,9 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     cleanupRunning,
     cleanupScanning,
     codexRoots,
+    claudeRoots,
+    geminiRoots,
+    openSessionRootPath,
     // 字体与显示相关依赖，确保“显示所有字体”等交互即时生效
     installedFonts,
     monospaceFonts,
@@ -1617,6 +1737,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     pwshDetectedText,
     readFileAsDataUrl,
     getProviderItem,
+    claudeCodeReadAgentHistory,
   ]);
 
   useEffect(() => {
@@ -1707,6 +1828,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                       network,
                       terminalFontFamily: normalizeTerminalFontFamily(terminalFontFamily),
                       terminalTheme,
+                      claudeCodeReadAgentHistory,
                     });
                     onOpenChange(false);
                   }}

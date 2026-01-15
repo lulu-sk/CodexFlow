@@ -22,6 +22,10 @@ export type ProviderEnv = {
   distro?: string;
 };
 
+export type ClaudeCodeSettings = {
+  readAgentHistory?: boolean;
+};
+
 export type ProvidersSettings = {
   activeId: ProviderId;
   items: ProviderItem[];
@@ -34,6 +38,7 @@ export type AppSettings = {
   distro: string;
   codexCmd: string;
   providers?: ProvidersSettings;
+  claudeCode?: ClaudeCodeSettings;
   historyRoot: string;
   sendMode?: 'write_only' | 'write_and_enter';
   locale?: string;
@@ -67,6 +72,7 @@ export type Project = {
 };
 
 export type HistorySummary = {
+  providerId: "codex" | "claude" | "gemini";
   id: string;
   title: string;
   date: number | string; // 主进程用 mtimeMs（number），前端常转成 ISO string
@@ -103,19 +109,21 @@ export interface ProjectsAPI {
 
 export interface HistoryAPI {
   list(args: { projectWslPath?: string; projectWinPath?: string; limit?: number; offset?: number; historyRoot?: string }): Promise<{ ok: boolean; sessions?: HistorySummary[]; error?: string }>;
-  read(args: { filePath: string }): Promise<{ id: string; title: string; date: number; messages: HistoryMessage[]; skippedLines: number }>;
+  read(args: { filePath: string; providerId?: "codex" | "claude" | "gemini" }): Promise<{ id: string; title: string; date: number; messages: HistoryMessage[]; skippedLines: number; providerId?: "codex" | "claude" | "gemini" }>;
   findEmptySessions(): Promise<{ ok: boolean; candidates?: Array<{ id: string; title: string; rawDate?: string; date: number; filePath: string; sizeKB?: number }>; error?: string }>;
   trash(args: { filePath: string }): Promise<{ ok: true; notFound?: boolean } | { ok: false; error: string }>;
   trashMany(args: { filePaths: string[] }): Promise<{ ok: boolean; results?: Array<{ filePath: string; ok: boolean; notFound?: boolean; error?: string }>; summary?: { ok: number; notFound: number; failed: number }; error?: string }>;
   onIndexAdd?(handler: (payload: { items: HistorySummary[] }) => void): () => void;
   onIndexUpdate?(handler: (payload: { item: HistorySummary }) => void): () => void;
   onIndexRemove?(handler: (payload: { filePath: string }) => void): () => void;
+  onIndexInvalidate?(handler: (payload: { reason?: string }) => void): () => void;
 }
 
 export interface SettingsAPI {
   get(): Promise<AppSettings>;
   update(partial: Partial<AppSettings>): Promise<AppSettings>;
   codexRoots(): Promise<string[]>;
+  sessionRoots?(args: { providerId: "codex" | "claude" | "gemini" }): Promise<string[]>;
 }
 
 export interface StorageAPI {
@@ -174,9 +182,52 @@ export type CodexRateLimitSnapshot = {
   secondary: CodexRateLimitWindow | null;
 };
 
+export type ClaudeUsageWindow = {
+  remainingPercent: number | null;
+  usedPercent: number | null;
+  resetText?: string | null;
+};
+
+export type ClaudeUsageSnapshot = {
+  providerId: "claude";
+  source: "ccline-cache" | "tmux-capture";
+  collectedAt: number;
+  cachedAt?: number | null;
+  resetAt?: number | null;
+  windows: {
+    fiveHour: ClaudeUsageWindow;
+    sevenDay: ClaudeUsageWindow;
+    weekOpus?: ClaudeUsageWindow | null;
+  };
+};
+
+export type GeminiQuotaBucket = {
+  remainingAmount?: string;
+  remainingFraction?: number;
+  resetTime?: string;
+  tokenType?: string;
+  modelId?: string;
+};
+
+export type GeminiQuotaSnapshot = {
+  providerId: "gemini";
+  collectedAt: number;
+  projectId?: string | null;
+  tierId?: string | null;
+  buckets: GeminiQuotaBucket[];
+};
+
 export interface CodexAPI {
   getAccountInfo(): Promise<{ ok: boolean; info?: CodexAccountInfo; error?: string }>;
   getRateLimit(): Promise<{ ok: boolean; snapshot?: CodexRateLimitSnapshot; error?: string }>;
+}
+
+export interface ClaudeAPI {
+  getUsage(): Promise<{ ok: boolean; snapshot?: ClaudeUsageSnapshot; error?: string }>;
+}
+
+export interface GeminiAPI {
+  getUsage(): Promise<{ ok: boolean; snapshot?: GeminiQuotaSnapshot; error?: string }>;
 }
 
 export interface NotificationsAPI {
@@ -195,7 +246,7 @@ export interface UtilsAPI {
   showInFolder(p: string): Promise<{ ok: boolean; openedDir?: string; error?: string }>;
   openPath(p: string): Promise<{ ok: boolean; error?: string }>;
   openExternalUrl(url: string): Promise<{ ok: boolean; error?: string }>;
-  openExternalConsole(args: { terminal?: 'wsl' | 'windows' | 'pwsh'; wslPath?: string; winPath?: string; distro?: string; startupCmd?: string }): Promise<{ ok: boolean; error?: string }>;
+  openExternalConsole(args: { terminal?: 'wsl' | 'windows' | 'pwsh'; wslPath?: string; winPath?: string; distro?: string; startupCmd?: string; title?: string }): Promise<{ ok: boolean; error?: string }>;
   // 兼容旧名
   openExternalWSLConsole?(args: { wslPath?: string; winPath?: string; distro?: string; startupCmd?: string }): Promise<{ ok: boolean; error?: string }>;
   pathExists(p: string, dirOnly?: boolean): Promise<{ ok: boolean; exists?: boolean; isDirectory?: boolean; isFile?: boolean; error?: string }>;
@@ -264,6 +315,8 @@ declare global {
       utils: UtilsAPI;
       i18n: I18nAPI;
       codex: CodexAPI;
+      claude: ClaudeAPI;
+      gemini: GeminiAPI;
       notifications: NotificationsAPI;
       wsl?: WslAPI;
       fileIndex?: FileIndexAPI;

@@ -28,6 +28,7 @@ export function injectCodexTraceEnv(args: {
   if (/RUST_LOG\s*=/.test(base) || (base.startsWith("export ") && base.includes("RUST_LOG="))) {
     return base;
   }
-  return `export RUST_LOG=codex_tui=trace; ${base}`;
+  // WSL 下避免使用 `export ...; cmd` 这种带分号的形式：Windows Terminal 的 `wt.exe` 会把 `;` 当作命令分隔符，
+  // 可能导致外部控制台启动时把脚本拆成多个“命令”，从而连开多个窗口并报错。
+  return `RUST_LOG=codex_tui=trace ${base}`;
 }
-

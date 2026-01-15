@@ -51,6 +51,14 @@
       "iconClear": "清除图标覆盖",
       "envTerminal": "执行环境",
       "envDistro": "WSL 发行版"
+    },
+    "claudeCode": {
+      "title": "Claude Code",
+      "desc": "控制从 ~/.claude 读取会话历史的过滤规则。",
+      "readAgentHistory": {
+        "label": "读取 ClaudeCode Agent 历史记录（不推荐）",
+        "desc": "启用后将解析 agent-*.jsonl 等文件以及仅包含助手输出的记录；可能带来噪声并影响性能。"
+      }
     }
   },
   "network": {
@@ -201,6 +209,16 @@
     "label": ".codex 根路径（只读）",
     "help": "显示磁盘上检测到的 .codex 根目录，方便排查问题。",
     "empty": "未检测到 .codex 根路径"
+  },
+  "claudeRoots": {
+    "label": ".claude 根路径（只读）",
+    "help": "显示磁盘上检测到的 .claude 根目录，方便排查问题。",
+    "empty": "未检测到 .claude 根路径"
+  },
+  "geminiRoots": {
+    "label": ".gemini 根路径（只读）",
+    "help": "显示磁盘上检测到的 .gemini 根目录，方便排查问题。",
+    "empty": "未检测到 .gemini 根路径"
   },
   "appData": {
     "label": "应用数据目录",
