@@ -12,6 +12,7 @@ import crypto from 'node:crypto';
 import wsl, { isUNCPath, uncToWsl, getSessionsRootsFastAsync } from './wsl';
 import { perfLogger } from './log';
 import settings from './settings';
+import { extractTaggedPrefix } from './agentSessions/shared/taggedPrefix';
 
 /**
  * History 读取模块: 支持逐行解析 JSONL, list/read 接口
@@ -1181,74 +1182,14 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
         Object.prototype.hasOwnProperty.call(obj, 'timestamp')
       );
       if (obj.type === 'message' || obj.record_type === 'message' || (obj.type === 'response_item' && obj.payload && (obj.payload.type === 'message' || obj.payload.record_type === 'message'))) {
-        const src: any = (obj.type === 'response_item' && obj.payload) ? obj.payload : obj;
-        const role = src.role || src.actor || src.from || 'user';
-        const contentArr: MessageContent[] = [];
-        // 仅“前缀”匹配提取 <user_instructions>/<environment_context>，不做全文搜索
-        const extractTaggedPrefix = (s: string) => {
-          const src = String(s || '');
-          const picked: MessageContent[] = [];
-          const leading = (src.match(/^\s*/) || [''])[0].length;
-          const s2 = src.slice(leading);
-          const lower = s2.toLowerCase();
-          const openU = '<user_instructions>';
-          const closeU = '</user_instructions>';
-          const openE = '<environment_context>';
-          const closeE = '</environment_context>';
-          // 优先匹配 user_instructions 前缀
-          if (lower.startsWith(openU)) {
-            const endTag = lower.indexOf(closeU);
-            if (endTag >= 0) {
-              const inner = s2.slice(openU.length, endTag);
-              picked.push({ type: 'instructions', text: inner });
-              const rest = s2.slice(endTag + closeU.length);
-              return { rest: rest.trim(), picked };
-            }
-            const inner = s2.slice(openU.length);
-            picked.push({ type: 'instructions', text: inner });
-            return { rest: '', picked };
-          }
-          // 匹配 environment_context 前缀
-          if (lower.startsWith(openE)) {
-            const endTag = lower.indexOf(closeE);
-            if (endTag >= 0) {
-              const inner = s2.slice(openE.length, endTag);
-              picked.push({ type: 'environment_context', text: inner });
-              const rest = s2.slice(endTag + closeE.length);
-              return { rest: rest.trim(), picked };
-            }
-            const inner = s2.slice(openE.length);
-            picked.push({ type: 'environment_context', text: inner });
-            return { rest: '', picked };
-          }
-          const agentsPrefix = '# agents.md instructions for';
-          if (lower.startsWith(agentsPrefix)) {
-            const openTag = '<instructions>';
-            const closeTag = '</instructions>';
-            const openIdx = lower.indexOf(openTag);
-            if (openIdx >= 0) {
-              const closeIdx = lower.indexOf(closeTag, openIdx + openTag.length);
-              if (closeIdx >= 0) {
-                const inner = s2.slice(openIdx + openTag.length, closeIdx);
-                picked.push({ type: 'instructions', text: inner });
-                const rest = s2.slice(closeIdx + closeTag.length);
-                return { rest: rest.trim(), picked };
-              }
-            }
-            const afterHeader = s2.split(/\r?\n/).slice(1).join('\n').trim();
-            if (afterHeader) {
-              picked.push({ type: 'instructions', text: afterHeader });
-              return { rest: '', picked };
-            }
-            picked.push({ type: 'instructions', text: s2 });
-            return { rest: '', picked };
-          }
-          return { rest: src, picked };
-        };
-        if (Array.isArray(src.content)) {
-          for (const c of src.content) {
-            if (!c) continue;
-            if (c.type && (c.text || c.code || c.payload)) {
+	        const src: any = (obj.type === 'response_item' && obj.payload) ? obj.payload : obj;
+	        const role = src.role || src.actor || src.from || 'user';
+	        const contentArr: MessageContent[] = [];
+	        // 仅“前缀”匹配提取 <user_instructions>/<permissions instructions>/<environment_context> 等，不做全文搜索（性能考虑）
+	        if (Array.isArray(src.content)) {
+	          for (const c of src.content) {
+	            if (!c) continue;
+	            if (c.type && (c.text || c.code || c.payload)) {
               const text = c.text ?? c.code ?? pretty(c.payload ?? '');
               const s = String(text ?? '');
               if (s.trim().length === 0) continue;

@@ -550,32 +550,46 @@ async function parseCodexDetails(fp: string, stat: fs.Stats, opts?: { summaryOnl
       let buf = "";
 
       const pretty = (v: any) => { try { return JSON.stringify(v, null, 2); } catch { return String(v); } };
-      const extractTaggedPrefix = (s: string) => {
-        const src = String(s || '');
-        const picked: { type: string; text: string; tags?: string[] }[] = [];
-        const leading = (src.match(/^\s*/) || [''])[0].length;
-        const s2 = src.slice(leading);
-        const lower = s2.toLowerCase();
-        const openU = '<user_instructions>';
-        const closeU = '</user_instructions>';
-        const openE = '<environment_context>';
-        const closeE = '</environment_context>';
-        if (lower.startsWith(openU)) {
-          const idx = lower.indexOf(closeU);
-          if (idx >= 0) {
-            const inner = s2.slice(openU.length, idx);
-            picked.push({ type: 'instructions', text: inner });
-            const rest = s2.slice(idx + closeU.length);
-            return { rest: rest.trim(), picked };
-          }
-          picked.push({ type: 'instructions', text: s2.slice(openU.length) });
-          return { rest: '', picked };
-        }
-        if (lower.startsWith(openE)) {
-          const idx = lower.indexOf(closeE);
-          if (idx >= 0) {
-            const inner = s2.slice(openE.length, idx);
-            picked.push({ type: 'environment_context', text: inner });
+	      const extractTaggedPrefix = (s: string) => {
+	        const src = String(s || '');
+	        const picked: { type: string; text: string; tags?: string[] }[] = [];
+	        const leading = (src.match(/^\s*/) || [''])[0].length;
+	        const s2 = src.slice(leading);
+	        const lower = s2.toLowerCase();
+	        const openU = '<user_instructions>';
+	        const closeU = '</user_instructions>';
+	        const openP = '<permissions instructions>';
+	        const closeP = '</permissions instructions>';
+	        const openE = '<environment_context>';
+	        const closeE = '</environment_context>';
+	        if (lower.startsWith(openU)) {
+	          const idx = lower.indexOf(closeU);
+	          if (idx >= 0) {
+	            const inner = s2.slice(openU.length, idx);
+	            picked.push({ type: 'instructions', text: inner });
+	            const rest = s2.slice(idx + closeU.length);
+	            return { rest: rest.trim(), picked };
+	          }
+	          picked.push({ type: 'instructions', text: s2.slice(openU.length) });
+	          return { rest: '', picked };
+	        }
+	        // 匹配 permissions instructions 前缀（用于沙盒/审批策略等运行权限说明）
+	        if (lower.startsWith(openP)) {
+	          const idx = lower.indexOf(closeP);
+	          if (idx >= 0) {
+	            const inner = s2.slice(openP.length, idx);
+	            picked.push({ type: 'instructions', text: inner });
+	            const rest = s2.slice(idx + closeP.length);
+	            return { rest: rest.trim(), picked };
+	          }
+	          picked.push({ type: 'instructions', text: s2.slice(openP.length) });
+	          return { rest: '', picked };
+	        }
+	        if (lower.startsWith(openE)) {
+	          const idx = lower.indexOf(closeE);
+	          if (idx >= 0) {
+	            const inner = s2.slice(openE.length, idx);
+	            picked.push({ type: 'environment_context', text: inner });
             const rest = s2.slice(idx + closeE.length);
             return { rest: rest.trim(), picked };
           }
