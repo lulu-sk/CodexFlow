@@ -127,7 +127,7 @@ contextBridge.exposeInMainWorld('host', {
     list: async (args: { projectWslPath?: string; projectWinPath?: string; limit?: number; offset?: number; historyRoot?: string }) => {
       return await ipcRenderer.invoke('history.list', args);
     },
-    read: async (args: { filePath: string }) => {
+    read: async (args: { filePath: string; providerId?: "codex" | "claude" | "gemini" }) => {
       return await ipcRenderer.invoke('history.read', args);
     },
     findEmptySessions: async () => {
@@ -154,6 +154,11 @@ contextBridge.exposeInMainWorld('host', {
       ipcRenderer.on('history:index:remove', listener);
       return () => ipcRenderer.removeListener('history:index:remove', listener);
     },
+    onIndexInvalidate: (handler: (payload: { reason?: string }) => void) => {
+      const listener = (_: unknown, payload: { reason?: string }) => handler(payload || {} as any);
+      ipcRenderer.on('history:index:invalidate', listener);
+      return () => ipcRenderer.removeListener('history:index:invalidate', listener);
+    },
     
   },
   settings: {
@@ -165,6 +170,11 @@ contextBridge.exposeInMainWorld('host', {
     },
     codexRoots: async () => {
       const res = await ipcRenderer.invoke('settings.codexRoots');
+      if (res && res.ok && Array.isArray(res.roots)) return res.roots as string[];
+      return [] as string[];
+    },
+    sessionRoots: async (args: { providerId: "codex" | "claude" | "gemini" }) => {
+      const res = await ipcRenderer.invoke('settings.sessionRoots', args);
       if (res && res.ok && Array.isArray(res.roots)) return res.roots as string[];
       return [] as string[];
     },
@@ -193,6 +203,16 @@ contextBridge.exposeInMainWorld('host', {
     },
     getRateLimit: async () => {
       return await ipcRenderer.invoke('codex.rateLimit');
+    }
+  }
+  , claude: {
+    getUsage: async () => {
+      return await ipcRenderer.invoke('claude.usage');
+    }
+  }
+  , gemini: {
+    getUsage: async () => {
+      return await ipcRenderer.invoke('gemini.usage');
     }
   }
   , notifications: {
@@ -243,11 +263,11 @@ contextBridge.exposeInMainWorld('host', {
     openExternalUrl: async (url: string) => {
       return await ipcRenderer.invoke('utils.openExternalUrl', { url });
     },
-    openExternalConsole: async (args: { wslPath?: string; winPath?: string; distro?: string; startupCmd?: string }) => {
+    openExternalConsole: async (args: { terminal?: 'wsl' | 'windows' | 'pwsh'; wslPath?: string; winPath?: string; distro?: string; startupCmd?: string; title?: string }) => {
       return await ipcRenderer.invoke('utils.openExternalConsole', args);
     },
     // 兼容旧调用名
-    openExternalWSLConsole: async (args: { wslPath?: string; winPath?: string; distro?: string; startupCmd?: string }) => {
+    openExternalWSLConsole: async (args: { terminal?: 'wsl' | 'windows' | 'pwsh'; wslPath?: string; winPath?: string; distro?: string; startupCmd?: string; title?: string }) => {
       return await ipcRenderer.invoke('utils.openExternalConsole', args);
     },
     pathExists: async (p: string, dirOnly?: boolean) => {

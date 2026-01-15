@@ -51,6 +51,14 @@
       "iconClear": "Clear icon override",
       "envTerminal": "Environment",
       "envDistro": "WSL distro"
+    },
+    "claudeCode": {
+      "title": "Claude Code",
+      "desc": "Controls the filtering rules when reading session history from ~/.claude.",
+      "readAgentHistory": {
+        "label": "Read Claude Code Agent history (not recommended)",
+        "desc": "When enabled, CodexFlow will parse agent-*.jsonl and assistant-output-only sessions. This may add noise and impact performance."
+      }
     }
   },
   "network": {
@@ -201,6 +209,16 @@
     "label": ".codex roots (read-only)",
     "help": "Reference directories detected on disk. Useful for troubleshooting.",
     "empty": "No .codex roots detected"
+  },
+  "claudeRoots": {
+    "label": ".claude roots (read-only)",
+    "help": "Reference directories detected on disk. Useful for troubleshooting.",
+    "empty": "No .claude roots detected"
+  },
+  "geminiRoots": {
+    "label": ".gemini roots (read-only)",
+    "help": "Reference directories detected on disk. Useful for troubleshooting.",
+    "empty": "No .gemini roots detected"
   },
   "appData": {
     "label": "App data directory",

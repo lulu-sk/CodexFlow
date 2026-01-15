@@ -50,14 +50,20 @@ import {
 import AboutSupport from "@/components/about-support";
 import { ProviderSwitcher } from "@/components/topbar/provider-switcher";
 import { emitCodexRateRefresh } from "@/lib/codex-status";
+import { emitClaudeUsageRefresh } from "@/lib/claude-status";
+import { emitGeminiUsageRefresh } from "@/lib/gemini-status";
 import { checkForUpdate, type UpdateCheckErrorType } from "@/lib/about";
 import TerminalManager from "@/lib/TerminalManager";
 import { oscBufferDefaults, trimOscBuffer } from "@/lib/oscNotificationBuffer";
 import HistoryCopyButton from "@/components/history/history-copy-button";
 import { toWSLForInsert } from "@/lib/wsl";
+import { extractGeminiProjectHashFromPath, normalizeGeminiPathForHash, sha256Hex, tidyPathCandidate } from "@/lib/gemini-hash";
 import { normalizeProvidersSettings } from "@/lib/providers/normalize";
 import { resolveProvider } from "@/lib/providers/resolve";
 import { injectCodexTraceEnv } from "@/providers/codex/commands";
+import { buildClaudeResumeStartupCmd } from "@/providers/claude/commands";
+import { buildGeminiResumeStartupCmd } from "@/providers/gemini/commands";
+import { buildPowerShellCall, splitCommandLineToArgv } from "@/lib/shell";
 import SettingsDialog from "@/features/settings/settings-dialog";
 import {
   DEFAULT_TERMINAL_FONT_FAMILY,
@@ -112,6 +118,7 @@ function getProviderIconSrc(providerId: string, providerItemById: Record<string,
 type MessageContent = { type: string; text: string; tags?: string[] };
 type HistoryMessage = { role: string; content: MessageContent[] };
 type HistorySession = {
+  providerId: "codex" | "claude" | "gemini";
   id: string;
   title: string;
   date: string; // ISO
@@ -143,13 +150,16 @@ type BlockingNotice =
   | { type: 'external-console'; env: ShellLabel };
 type ResumeStrategy = 'legacy-only' | 'experimental_resume' | 'resume+fallback' | 'force-legacy-cli';
 type ResumeStartup = {
+  providerId: HistorySession["providerId"];
   startupCmd: string;
   session?: HistorySession;
-  resumePath: string;
-  sessionId: string | null;
-  strategy: ResumeStrategy;
-  resumeHint: 'modern' | 'legacy';
-  forceLegacyCli: boolean;
+  /** 用于日志/调试展示的“恢复目标”标识（路径 / sessionId / latest 等）。 */
+  resumeLabel: string;
+  /** 以下字段主要用于 Codex 的 resume 诊断与旧版兼容。 */
+  sessionId?: string | null;
+  strategy?: ResumeStrategy;
+  resumeHint?: 'modern' | 'legacy';
+  forceLegacyCli?: boolean;
 };
 type InputFullscreenCloseOptions = { immediate?: boolean };
 
@@ -582,6 +592,7 @@ const mockHistory: Record<string, HistorySession[]> = {
 for (const p of mockProjects) {
   mockHistory[p.id] = [
     {
+      providerId: "codex",
       id: uid(),
       title: `Refactor ${p.name} auth flow`,
       date: new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString(),
@@ -598,6 +609,7 @@ for (const p of mockProjects) {
       ],
     },
     {
+      providerId: "codex",
       id: uid(),
       title: `Optimize ${p.name} build size`,
       date: new Date(Date.now() - 1000 * 60 * 60 * 48).toISOString(),
@@ -1429,6 +1441,8 @@ export default function CodexFlowManagerUI() {
     void playCompletionChime();
     // 无论通知开关如何，均请求刷新 Codex 用量（由顶部栏组件自行做 1 分钟冷却）
     try { emitCodexRateRefresh('agent-complete'); } catch {}
+    try { emitClaudeUsageRefresh('agent-complete'); } catch {}
+    try { emitGeminiUsageRefresh('agent-complete'); } catch {}
   }
 
   function processPtyNotificationChunk(ptyId: string, chunk: string) {
@@ -1695,11 +1709,15 @@ export default function CodexFlowManagerUI() {
   const historyCtxMenuRef = useRef<HTMLDivElement | null>(null);
   // 历史删除确认（应用内对话框，替代 window.confirm，避免同步阻塞导致的焦点/指针异常）
   const [confirmDelete, setConfirmDelete] = useState<{ open: boolean; item: HistorySession | null; groupKey: string | null }>({ open: false, item: null, groupKey: null });
+  // 历史索引失效计数：用于在不切换项目的情况下触发强制刷新。
+  const [historyInvalidateNonce, setHistoryInvalidateNonce] = useState<number>(0);
   const [projectCtxMenu, setProjectCtxMenu] = useState<{ show: boolean; x: number; y: number; project: Project | null }>({ show: false, x: 0, y: 0, project: null });
   const [hideProjectConfirm, setHideProjectConfirm] = useState<{ open: boolean; project: Project | null }>({ open: false, project: null });
   const projectCtxMenuRef = useRef<HTMLDivElement | null>(null);
   // Simple in-memory cache to show previous results instantly when switching projects
   const historyCacheRef = useRef<Record<string, HistorySession[]>>({});
+  // Gemini：基于项目路径计算 projectHash，用于在会话缺失 cwd 时仍能正确归属到项目。
+  const geminiProjectHashNeedlesRef = useRef<Set<string>>(new Set());
   // UI 仅显示预览，预览由外部（后端/初始化流程）负责准备和缓存
   const [sessionPreviewMap, setSessionPreviewMap] = useState<Record<string, string>>({});
 
@@ -1799,6 +1817,8 @@ export default function CodexFlowManagerUI() {
   const [wslDistro, setWslDistro] = useState("Ubuntu-24.04");
   // 基础命令（默认 'codex'），不做 tmux 包装，直接在 WSL 中执行。
   const [codexCmd, setCodexCmd] = useState("codex");
+  // Claude Code：是否读取 agent-*.jsonl 等不推荐历史（仅影响历史索引/预览）。
+  const [claudeCodeReadAgentHistory, setClaudeCodeReadAgentHistory] = useState<boolean>(false);
   // 网络代理设置（用于设置对话框初始值与回显）
   const [networkPrefs, setNetworkPrefs] = useState<NetworkPrefs>({ proxyEnabled: true, proxyMode: "system", proxyUrl: "", noProxy: "" });
   const [sendMode, setSendMode] = useState<'write_only' | 'write_and_enter'>("write_and_enter");
@@ -1858,6 +1878,20 @@ export default function CodexFlowManagerUI() {
     }
     return resolved.startupCmd;
   }, [providerItems, codexCmd, codexTraceEnabled]);
+
+  /**
+   * 获取 Provider 的展示名称（用于菜单文案与外部终端标题）。
+   */
+  const getProviderLabel = useCallback((providerId: string): string => {
+    const id = String(providerId || "").trim();
+    if (!id) return "";
+    const resolved = resolveProvider(providerItemById[id] ?? { id });
+    if (resolved.labelKey) {
+      try { return String(t(resolved.labelKey as any)); } catch {}
+    }
+    const displayName = String(resolved.displayName || "").trim();
+    return displayName || id;
+  }, [providerItemById, t]);
 
   /**
    * 切换当前 Provider，并将其环境同步到“当前默认环境”状态（仅影响后续新建/启动）。
@@ -2184,6 +2218,7 @@ export default function CodexFlowManagerUI() {
           setNotificationPrefs(normalizeCompletionPrefs((s as any).notifications));
           setTerminalFontFamily(normalizeTerminalFontFamily((s as any).terminalFontFamily));
           setTerminalTheme(normalizeTerminalTheme((s as any).terminalTheme));
+          setClaudeCodeReadAgentHistory(!!(s as any)?.claudeCode?.readAgentHistory);
           // 同步网络代理偏好
           try {
             const net = (s as any).network || {};
@@ -2531,6 +2566,39 @@ export default function CodexFlowManagerUI() {
     markProjectUsed(selectedProject.id);
   }
 
+  // 计算当前项目的 Gemini projectHash 候选（用于索引事件归属判断）
+  useEffect(() => {
+    let cancelled = false;
+    const next = new Set<string>();
+    geminiProjectHashNeedlesRef.current = next;
+    if (!selectedProject) return;
+
+    (async () => {
+      /**
+       * 将项目路径加入 hash 候选集合（兼容 WSL/Windows 的路径字符串差异）。
+       */
+      const addCandidate = async (p?: string) => {
+        const raw = typeof p === "string" ? p.trim() : "";
+        if (!raw) return;
+        try {
+          const h1 = await sha256Hex(normalizeGeminiPathForHash(raw));
+          const h2 = await sha256Hex(tidyPathCandidate(raw));
+          if (h1) next.add(h1);
+          if (h2) next.add(h2);
+        } catch {}
+      };
+      await Promise.all([
+        addCandidate(selectedProject.wslPath),
+        addCandidate(selectedProject.winPath),
+      ]);
+      if (!cancelled) geminiProjectHashNeedlesRef.current = next;
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedProject]);
+
   // 当项目变更时，加载历史（项目范围）
   useEffect(() => {
     let cancelled = false;
@@ -2581,6 +2649,7 @@ export default function CodexFlowManagerUI() {
         // 映射时：优先将后端提供的 rawDate 作为 title（原始字符串），避免前端再做时区/格式化转换
         // 同时接收后端提供的 preview 字段，并把它同步到前端只读映射 sessionPreviewMap
         const mapped: HistorySession[] = res.sessions.map((h: any) => ({
+          providerId: (h.providerId === "claude" || h.providerId === "gemini") ? h.providerId : "codex",
           id: h.id,
           title: (typeof h.rawDate === 'string' ? String(h.rawDate) : h.title),
           date: ensureIso(h.date),
@@ -2630,7 +2699,7 @@ export default function CodexFlowManagerUI() {
     return () => {
       cancelled = true;
     };
-  }, [selectedProject]);
+  }, [selectedProject, historyInvalidateNonce]);
 
   // 订阅索引器事件：新增/更新/删除时，若属于当前选中项目则立即更新 UI
   useEffect(() => {
@@ -2654,6 +2723,13 @@ export default function CodexFlowManagerUI() {
         if (dirKey) return projectNeedles.some((n) => startsWithBoundary(dirKey, n));
       } catch {}
       try {
+        const pid = String(item?.providerId || '').toLowerCase();
+        if (pid === 'gemini') {
+          const h = extractGeminiProjectHashFromPath(String(item?.filePath || ''));
+          if (h && geminiProjectHashNeedlesRef.current.has(h)) return true;
+        }
+      } catch {}
+      try {
         const fp = String(item?.filePath || '');
         if (!fp) return false;
         const dir = normDir(fp);
@@ -2664,6 +2740,7 @@ export default function CodexFlowManagerUI() {
     const toSession = (it: any): HistorySession => {
       const ensureIso = (d: any): string => normalizeMsToIso(d);
       return {
+        providerId: (it.providerId === "claude" || it.providerId === "gemini") ? it.providerId : "codex",
         id: String(it.id || ''),
         title: typeof it.rawDate === 'string' ? String(it.rawDate) : String(it.title || ''),
         date: ensureIso(it.date),
@@ -2689,6 +2766,7 @@ export default function CodexFlowManagerUI() {
           const prev = mp.get(key);
           if (
             !prev ||
+            prev.providerId !== s.providerId ||
             prev.date !== s.date ||
             prev.title !== s.title ||
             prev.rawDate !== s.rawDate ||
@@ -2765,7 +2843,14 @@ export default function CodexFlowManagerUI() {
     const unsubRem = window.host.history.onIndexRemove?.((payload: { filePath: string }) => {
       try { removeOne(String(payload?.filePath || '')); } catch {}
     }) || (() => {});
-    return () => { try { unsubAdd(); } catch {}; try { unsubUpd(); } catch {}; try { unsubRem(); } catch {}; };
+    const unsubInvalidate = window.host.history.onIndexInvalidate?.((_payload: { reason?: string }) => {
+      try {
+        const projectKey = canonicalizePath(selectedProject.wslPath || selectedProject.winPath || selectedProject.id);
+        delete historyCacheRef.current[projectKey];
+      } catch {}
+      try { setHistoryInvalidateNonce((x) => x + 1); } catch {}
+    }) || (() => {});
+    return () => { try { unsubAdd(); } catch {}; try { unsubUpd(); } catch {}; try { unsubRem(); } catch {}; try { unsubInvalidate(); } catch {}; };
   }, [selectedProject, selectedHistoryId, selectedHistoryDir]);
 
   // Subscribe to PTY exit/error events：标记退出并更新计数（不修改标签名）
@@ -2968,17 +3053,17 @@ export default function CodexFlowManagerUI() {
   // ---------- Renderers ----------
 
   const Sidebar = (
-    <div className="flex h-full min-w-[240px] flex-col border-r bg-white/50 dark:border-slate-800 dark:bg-slate-900/40">
-      <div className="flex items-center gap-2 px-3 py-3">
-        <DropdownMenu>
-          <DropdownMenuTrigger>
-            <button className="flex items-center gap-2" title={t("settings:terminalMode.label") as string}>
-              <Badge variant="secondary" className="gap-2">
-                <PlugZap className="h-4 w-4" /> {toShellLabel(terminalMode)} <StatusDot ok={true} />
-              </Badge>
-              {terminalMode === "wsl" ? (
-                <span className="text-xs text-slate-500">{wslDistro}</span>
-              ) : null}
+    <div className="flex h-full min-h-0 min-w-[240px] flex-col border-r bg-white/50 dark:border-slate-800 dark:bg-slate-900/40">
+	      <div className="flex items-center gap-2 px-3 py-3">
+	        <DropdownMenu>
+	          <DropdownMenuTrigger>
+	            <button className="flex items-center gap-2 cursor-pointer select-none" title={t("settings:terminalMode.label") as string}>
+	              <Badge variant="secondary" className="gap-2">
+	                <PlugZap className="h-4 w-4" /> {toShellLabel(terminalMode)} <StatusDot ok={true} /> <ChevronDown className="h-3.5 w-3.5 opacity-70" />
+	              </Badge>
+	              {terminalMode === "wsl" ? (
+	                <span className="text-xs text-slate-500">{wslDistro}</span>
+	              ) : null}
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start">
@@ -3496,94 +3581,153 @@ export default function CodexFlowManagerUI() {
     </div>
   );
 
-  const findSessionForFile = (filePath?: string): HistorySession | undefined => {
-    if (!filePath) return undefined;
-    const direct = historySessions.find((x) => x.filePath === filePath);
-    if (direct) return direct;
-    return historySessions.find((x) => x.id === filePath);
-  };
+	  const findSessionForFile = (filePath?: string): HistorySession | undefined => {
+	    if (!filePath) return undefined;
+	    const direct = historySessions.find((x) => x.filePath === filePath);
+	    if (direct) return direct;
+	    return historySessions.find((x) => x.id === filePath);
+	  };
 
-  const buildResumeStartup = (filePath: string, mode: TerminalMode, options?: { forceLegacyCli?: boolean }): ResumeStartup => {
-    const session = findSessionForFile(filePath);
+	  /**
+	   * 从历史会话中解析出稳定的 ProviderId（避免脏数据导致分支异常）。
+	   */
+	  const resolveHistoryProviderId = (session?: HistorySession | null): HistorySession["providerId"] => {
+	    const id = session?.providerId;
+	    if (id === "claude" || id === "gemini" || id === "codex") return id;
+	    return "codex";
+	  };
+
+	  /**
+	   * 获取“继续对话”应使用的执行环境：始终以该会话所属 Provider 的记忆环境为准。
+	   * 说明：这里不读取当前 activeProviderId / terminalMode，避免切换引擎后误用环境。
+	   */
+	  const resolveResumeEnv = (filePath?: string, preferredSession?: HistorySession | null): { session?: HistorySession; providerId: HistorySession["providerId"]; env: Required<ProviderEnv> } => {
+	    const session = preferredSession ?? findSessionForFile(filePath);
+	    const providerId = resolveHistoryProviderId(session ?? null);
+	    return { session: session ?? undefined, providerId, env: getProviderEnv(providerId) };
+	  };
+
+	  /**
+	   * 获取“继续对话（外部）”按钮显示用的环境文案（保证与实际执行环境一致）。
+	   */
+	  const resolveResumeShellLabel = (filePath?: string, preferredSession?: HistorySession | null): ShellLabel => {
+	    const { env } = resolveResumeEnv(filePath, preferredSession);
+	    return toShellLabel(env.terminal as any);
+	  };
+
+	  /**
+	   * 构造“继续对话”的启动命令（按 provider 分流）。
+	   * - Codex：优先 resume <id>，失败回退 experimental_resume
+	   * - Claude：优先 --resume <sessionId>，失败回退 --continue
+	   * - Gemini：优先 --resume <sessionId>，缺失则 --resume latest
+	   */
+	  const buildResumeStartup = (filePath: string, mode: TerminalMode, options?: { forceLegacyCli?: boolean }): ResumeStartup => {
+	    const session = findSessionForFile(filePath);
+	    const providerId = resolveHistoryProviderId(session ?? null);
+
+	    // ---- Claude ----
+	    if (providerId === "claude") {
+      const baseName = (() => {
+        try {
+          const raw = String(filePath || "").replace(/\\/g, "/");
+          const last = raw.split("/").pop() || "";
+          const noExt = last.replace(/\.(jsonl|ndjson)$/i, "");
+          return noExt.trim();
+        } catch {
+          return "";
+        }
+      })();
+      const sessionId = String(session?.resumeId || baseName || "").trim() || null;
+      const providerCmd = resolveProvider(providerItemById["claude"] ?? { id: "claude" }).startupCmd || "claude";
+      const startupCmd = buildClaudeResumeStartupCmd({ cmd: providerCmd, terminalMode: mode, sessionId });
+      return { providerId: "claude", startupCmd, session, resumeLabel: sessionId || "continue" };
+    }
+
+    // ---- Gemini ----
+    if (providerId === "gemini") {
+      const sessionId = String(session?.resumeId || "").trim() || null;
+      const providerCmd = resolveProvider(providerItemById["gemini"] ?? { id: "gemini" }).startupCmd || "gemini";
+      const startupCmd = buildGeminiResumeStartupCmd({ cmd: providerCmd, terminalMode: mode, sessionId });
+      return { providerId: "gemini", startupCmd, session, resumeLabel: sessionId || "latest" };
+    }
+
+    // ---- Codex ----
     const preferredId = typeof session?.resumeId === 'string' ? session.resumeId : null;
     const guessedId = inferSessionUuid(session, filePath);
     const resumeSessionId = [preferredId, guessedId].find((v) => isUuidLike(v)) || null;
     const resumeModeHintRaw: 'modern' | 'legacy' | 'unknown' = session?.resumeMode || 'unknown';
     const resumeModeHint: 'modern' | 'legacy' = resumeModeHintRaw === 'modern' ? 'modern' : 'legacy';
-    const forceLegacyCli = !!options?.forceLegacyCli;
-    const preferLegacyOnly = forceLegacyCli || resumeModeHint === 'legacy';
-    const cmdRaw = String(codexCmd || 'codex').trim();
-    const baseCmd = cmdRaw.length > 0 ? cmdRaw : 'codex';
-    if (isWindowsLike(mode)) {
-      const resumePath = toWindowsResumePath(filePath);
-      if (forceLegacyCli) {
-        const escapedResume = resumePath.replace(/"/g, '\"');
-        const startupCmd = `npx --yes @openai/codex@0.31.0 -c experimental_resume="${escapedResume}"`;
-        return { startupCmd, session, resumePath, sessionId: resumeSessionId, strategy: 'force-legacy-cli', resumeHint: 'legacy', forceLegacyCli: true };
+	    const forceLegacyCli = !!options?.forceLegacyCli;
+	    const preferLegacyOnly = forceLegacyCli || resumeModeHint === 'legacy';
+	    const cmdRaw = String(codexCmd || 'codex').trim();
+	    const baseCmd = cmdRaw.length > 0 ? cmdRaw : 'codex';
+	    const injectTrace = (cmd: string | null | undefined) => injectCodexTraceEnv({ cmd, traceEnabled: codexTraceEnabled, terminalMode: mode });
+	    if (isWindowsLike(mode)) {
+	      const resumePath = toWindowsResumePath(filePath);
+	      if (forceLegacyCli) {
+	        const escapedResume = resumePath.replace(/"/g, '\"');
+	        const startupCmd = `npx --yes @openai/codex@0.31.0 -c experimental_resume="${escapedResume}"`;
+        return { providerId: "codex", startupCmd, session, resumeLabel: resumePath, sessionId: resumeSessionId, strategy: 'force-legacy-cli', resumeHint: 'legacy', forceLegacyCli: true };
       }
-      const escapedCmd = baseCmd.replace(/'/g, "''");
-      const resumeArg = `experimental_resume="${resumePath}"`;
-      const escapedArg = resumeArg.replace(/'/g, "''");
-      if (!preferLegacyOnly && resumeSessionId) {
-        const escapedSession = resumeSessionId.replace(/'/g, "''");
-        const psLines = [
-          `$__codex = '${escapedCmd}'`,
-          `$__resumeArg = '${escapedArg}'`,
-          `$__session = '${escapedSession}'`,
-          `if ($__session -and ($__session -match '${UUID_REGEX_TEXT}')) {`,
-          `  & $__codex resume $__session`,
-          `  if ($LASTEXITCODE -ne 0) { & $__codex -c $__resumeArg }`,
-          `} else {`,
-          `  & $__codex -c $__resumeArg`,
-          `}`,
-        ];
-        return { startupCmd: psLines.join('; '), session, resumePath, sessionId: resumeSessionId, strategy: 'resume+fallback', resumeHint: resumeModeHint, forceLegacyCli: false };
-      }
-      const psLines = [
-        `$__codex = '${escapedCmd}'`,
-        `$__resumeArg = '${escapedArg}'`,
-        `& $__codex -c $__resumeArg`,
-      ];
+	      const resumeArg = `experimental_resume="${resumePath.replace(/"/g, '\\"')}"`;
+	      const baseArgv = splitCommandLineToArgv(baseCmd);
+	      const base = baseArgv.length > 0 ? baseArgv : ["codex"];
+	      const fallbackCall = buildPowerShellCall([...base, "-c", resumeArg]);
+	      const fallbackCmd = injectTrace(fallbackCall);
+	      if (!preferLegacyOnly && resumeSessionId) {
+	        const resumeCall = buildPowerShellCall([...base, "resume", resumeSessionId]);
+	        const resumeCmd = injectTrace(resumeCall);
+	        const startupCmd = `${resumeCmd}; if ($LASTEXITCODE -ne 0) { ${fallbackCmd} }`;
+	        return { providerId: "codex", startupCmd, session, resumeLabel: resumePath, sessionId: resumeSessionId, strategy: 'resume+fallback', resumeHint: resumeModeHint, forceLegacyCli: false };
+	      }
       const strategy = preferLegacyOnly ? 'legacy-only' : 'experimental_resume';
-      return { startupCmd: psLines.join('; '), session, resumePath, sessionId: resumeSessionId, strategy, resumeHint: resumeModeHint, forceLegacyCli: false };
-    }
-    const resumePath = toWSLForInsert(filePath);
-    if (forceLegacyCli) {
-      const escapedResume = resumePath.replace(/"/g, '\"');
-      const startupCmd = injectTraceEnv(`npx --yes @openai/codex@0.31.0 -c experimental_resume=\"${escapedResume}\"`);
-      return { startupCmd, session, resumePath, sessionId: resumeSessionId, strategy: 'force-legacy-cli', resumeHint: 'legacy', forceLegacyCli: true };
-    }
-    const fallbackCmd = injectTraceEnv(`${baseCmd} -c experimental_resume="${resumePath}"`);
-    if (!preferLegacyOnly && resumeSessionId) {
-      const resumeCmd = injectTraceEnv(`${baseCmd} resume ${resumeSessionId}`);
-      const startupCmd = `if ${resumeCmd}; then :; else ${fallbackCmd}; fi`;
-      return { startupCmd, session, resumePath, sessionId: resumeSessionId, strategy: 'resume+fallback', resumeHint: resumeModeHint, forceLegacyCli: false };
-    }
-    const strategy = preferLegacyOnly ? 'legacy-only' : 'experimental_resume';
-    return { startupCmd: fallbackCmd, session, resumePath, sessionId: resumeSessionId, strategy, resumeHint: resumeModeHint, forceLegacyCli: false };
-  };
+      return { providerId: "codex", startupCmd: fallbackCmd, session, resumeLabel: resumePath, sessionId: resumeSessionId, strategy, resumeHint: resumeModeHint, forceLegacyCli: false };
+	    }
+	    const resumePath = toWSLForInsert(filePath);
+	    if (forceLegacyCli) {
+	      const escapedResume = resumePath.replace(/"/g, '\"');
+	      const startupCmd = injectTrace(`npx --yes @openai/codex@0.31.0 -c experimental_resume=\"${escapedResume}\"`);
+	      return { providerId: "codex", startupCmd, session, resumeLabel: resumePath, sessionId: resumeSessionId, strategy: 'force-legacy-cli', resumeHint: 'legacy', forceLegacyCli: true };
+	    }
+	    const fallbackCmd = injectTrace(`${baseCmd} -c experimental_resume="${resumePath}"`);
+	    if (!preferLegacyOnly && resumeSessionId) {
+	      const resumeCmd = injectTrace(`${baseCmd} resume ${resumeSessionId}`);
+	      // 避免使用 `if ...; then ...; else ...; fi`（包含分号），以兼容 Windows Terminal `wt.exe` 的参数解析。
+	      const startupCmd = `${resumeCmd} || ${fallbackCmd}`;
+	      return { providerId: "codex", startupCmd, session, resumeLabel: resumePath, sessionId: resumeSessionId, strategy: 'resume+fallback', resumeHint: resumeModeHint, forceLegacyCli: false };
+	    }
+	    const strategy = preferLegacyOnly ? 'legacy-only' : 'experimental_resume';
+	    return { providerId: "codex", startupCmd: fallbackCmd, session, resumeLabel: resumePath, sessionId: resumeSessionId, strategy, resumeHint: resumeModeHint, forceLegacyCli: false };
+	  };
 
   const isLegacyHistory = (filePath?: string): boolean => {
     if (!filePath) return false;
     const session = findSessionForFile(filePath);
-    return (session?.resumeMode || 'unknown') === 'legacy';
-  };
+	    return (session?.resumeMode || 'unknown') === 'legacy';
+	  };
 
-  const executeResume = async (filePath: string, mode: ResumeExecutionMode, forceLegacyCli: boolean): Promise<boolean> => {
-    try {
-      if (!filePath || !selectedProject) return false;
-      const { startupCmd, session, sessionId, resumePath, strategy, resumeHint, forceLegacyCli: finalForceLegacy } = buildResumeStartup(filePath, terminalMode, { forceLegacyCli });
-      try {
-        await (window as any).host?.utils?.perfLog?.(`[ui] history.resume ${mode} mode=${terminalMode} strategy=${strategy} resumeHint=${resumeHint} forceLegacy=${finalForceLegacy ? '1' : '0'} sessionId=${sessionId || 'none'} sessionRaw=${session?.id || 'n/a'} path=${resumePath}`);
-      } catch {}
-      if (mode === 'internal') {
-        const tabName = isWindowsLike(terminalMode)
-          ? toShellLabel(terminalMode)
-          : (wslDistro || `Console ${((tabsByProject[selectedProject.id] || []).length + 1).toString()}`);
-        const tab: ConsoleTab = {
-          id: uid(),
-          name: String(tabName),
-          providerId: "codex",
+	  /**
+	   * 执行“继续对话”。注意：执行环境必须由调用方显式传入（通常来自会话所属 Provider 的记忆环境）。
+	   */
+	  const executeResume = async (filePath: string, mode: ResumeExecutionMode, execEnv: Required<ProviderEnv>, forceLegacyCli: boolean): Promise<boolean> => {
+	    try {
+	      if (!filePath || !selectedProject) return false;
+	      const { providerId, startupCmd, session, sessionId, resumeLabel, strategy, resumeHint, forceLegacyCli: finalForceLegacy } = buildResumeStartup(filePath, execEnv.terminal as any, { forceLegacyCli });
+	      try {
+	        const base = `[ui] history.resume ${mode} provider=${providerId} terminal=${execEnv.terminal} target=${resumeLabel}`;
+	        const extra = providerId === "codex"
+	          ? ` strategy=${strategy} resumeHint=${resumeHint} forceLegacy=${finalForceLegacy ? '1' : '0'} sessionId=${sessionId || 'none'} sessionRaw=${session?.id || 'n/a'}`
+	          : ` sessionRaw=${session?.id || 'n/a'}`;
+	        await (window as any).host?.utils?.perfLog?.(`${base}${extra}`);
+	      } catch {}
+	      if (mode === 'internal') {
+	        const tabName = isWindowsLike(execEnv.terminal as any)
+	          ? toShellLabel(execEnv.terminal as any)
+	          : (execEnv.distro || `Console ${((tabsByProject[selectedProject.id] || []).length + 1).toString()}`);
+	        const tab: ConsoleTab = {
+	          id: uid(),
+	          name: String(tabName),
+	          providerId,
           logs: [],
           createdAt: Date.now(),
         };
@@ -3591,14 +3735,14 @@ export default function CodexFlowManagerUI() {
         try {
           await (window as any).host?.utils?.perfLog?.(`[ui] history.resume openWSLConsole start tab=${tab.id}`);
         } catch {}
-        try {
-          const { id } = await window.host.pty.openWSLConsole({
-            terminal: terminalMode,
-            distro: wslDistro,
-            wslPath: selectedProject.wslPath,
-            winPath: selectedProject.winPath,
-            cols: 80,
-            rows: 24,
+	        try {
+	          const { id } = await window.host.pty.openWSLConsole({
+	            terminal: execEnv.terminal as any,
+	            distro: execEnv.distro,
+	            wslPath: selectedProject.wslPath,
+	            winPath: selectedProject.winPath,
+	            cols: 80,
+	            rows: 24,
             startupCmd,
           });
           try {
@@ -3634,15 +3778,16 @@ export default function CodexFlowManagerUI() {
         // 内存也更新最近使用时间，并抑制历史面板自动切换
         markProjectUsed(selectedProject.id);
         return true;
-      }
-      const res: any = await (window.host.utils as any).openExternalConsole({
-        terminal: terminalMode,
-        wslPath: selectedProject.wslPath,
-        winPath: selectedProject.winPath,
-        distro: wslDistro,
-        startupCmd,
-      });
-      if (!(res && res.ok)) throw new Error(res?.error || 'failed');
+	      }
+	      const res: any = await (window.host.utils as any).openExternalConsole({
+	        terminal: execEnv.terminal,
+	        wslPath: selectedProject.wslPath,
+	        winPath: selectedProject.winPath,
+	        distro: execEnv.distro,
+	        startupCmd,
+	        title: getProviderLabel(providerId),
+	      });
+	      if (!(res && res.ok)) throw new Error(res?.error || 'failed');
       return true;
     } catch (err) {
       console.warn('executeResume failed', err);
@@ -3652,34 +3797,34 @@ export default function CodexFlowManagerUI() {
       alert(String(t('history:resumeFailed', { error: String((err as any)?.message || err) })));
       return false;
     }
-  };
+	  };
 
-  const requestResume = async (filePath?: string, mode: ResumeExecutionMode = 'internal', options?: { skipPrompt?: boolean; forceLegacyCli?: boolean }): Promise<'prompt' | 'ok' | 'blocked-shell' | 'error'> => {
-    if (!filePath) return 'error';
-    const session = findSessionForFile(filePath);
-    const sessionMode = session?.resumeMode || 'unknown';
-    const enforceShell = sessionMode !== 'legacy' && !options?.forceLegacyCli;
-    if (enforceShell) {
-      const sessionShell = session?.runtimeShell === 'windows' ? 'windows' : (session?.runtimeShell === 'wsl' ? 'wsl' : null);
-      if (sessionShell) {
-        const mismatch = sessionShell === 'wsl' ? terminalMode !== 'wsl' : !isWindowsLike(terminalMode);
-        if (mismatch) {
-          const expected = toShellLabel(sessionShell === 'wsl' ? 'wsl' : 'windows');
-          const current = toShellLabel(terminalMode);
-          setBlockingNotice({ type: 'shell-mismatch', expected, current });
-          return 'blocked-shell';
-        }
-      }
-    }
+	  const requestResume = async (filePath?: string, mode: ResumeExecutionMode = 'internal', options?: { skipPrompt?: boolean; forceLegacyCli?: boolean }): Promise<'prompt' | 'ok' | 'blocked-shell' | 'error'> => {
+	    if (!filePath) return 'error';
+	    const { session, env } = resolveResumeEnv(filePath);
+	    const sessionMode = session?.resumeMode || 'unknown';
+	    const enforceShell = sessionMode !== 'legacy' && !options?.forceLegacyCli;
+	    if (enforceShell) {
+	      const sessionShell = session?.runtimeShell === 'windows' ? 'windows' : (session?.runtimeShell === 'wsl' ? 'wsl' : null);
+	      if (sessionShell) {
+	        const mismatch = sessionShell === 'wsl' ? env.terminal !== 'wsl' : !isWindowsLike(env.terminal as any);
+	        if (mismatch) {
+	          const expected = toShellLabel(sessionShell === 'wsl' ? 'wsl' : 'windows');
+	          const current = toShellLabel(env.terminal as any);
+	          setBlockingNotice({ type: 'shell-mismatch', expected, current });
+	          return 'blocked-shell';
+	        }
+	      }
+	    }
     const needPrompt = !options?.forceLegacyCli && !options?.skipPrompt && isLegacyHistory(filePath);
     if (needPrompt) {
       setLegacyResumePrompt({ filePath, mode });
       return 'prompt';
-    }
-    const useLegacy = !!options?.forceLegacyCli || isLegacyHistory(filePath);
-    const ok = await executeResume(filePath, mode, useLegacy);
-    return ok ? 'ok' : 'error';
-  };
+	    }
+	    const useLegacy = !!options?.forceLegacyCli || isLegacyHistory(filePath);
+	    const ok = await executeResume(filePath, mode, env, useLegacy);
+	    return ok ? 'ok' : 'error';
+	  };
 
   const cancelLegacyResume = () => {
     if (legacyResumeLoading) return;
@@ -3693,13 +3838,13 @@ export default function CodexFlowManagerUI() {
     try {
       const status = await requestResume(payload.filePath, payload.mode, { skipPrompt: true, forceLegacyCli: true });
       if (status === 'blocked-shell') return;
-      if (status === 'error') {
-        if (payload.mode === 'external') {
-          const env = toShellLabel(terminalMode);
-          setBlockingNotice({ type: 'external-console', env });
-        } else {
-          console.warn('legacy resume failed');
-        }
+	      if (status === 'error') {
+	        if (payload.mode === 'external') {
+	          const env = resolveResumeShellLabel(payload.filePath);
+	          setBlockingNotice({ type: 'external-console', env });
+	        } else {
+	          console.warn('legacy resume failed');
+	        }
       }
     } finally {
       setLegacyResumeLoading(false);
@@ -3865,6 +4010,7 @@ export default function CodexFlowManagerUI() {
                       const absoluteLabel = anchor ? formatAsLocal(anchor) : timeFromFilename(s.filePath);
                       const active = selectedHistoryId === s.id;
                       const previewSource = sessionPreviewMap[s.filePath || s.id] || s.preview || s.title || s.filePath || '';
+                      const providerIconSrc = getProviderIconSrc(s.providerId, providerItemById);
                       const relativeLabel = describeRelativeAge(anchor, historyNow) || '--';
                       const tooltip = [absoluteLabel, previewSource].filter(Boolean).join('  ');
                       const itemClass = `block w-full rounded px-2 py-0.5 text-left text-xs border outline-none focus:outline-none ${
@@ -3882,7 +4028,10 @@ export default function CodexFlowManagerUI() {
                           title={tooltip}
                         >
                           <div className="flex items-center justify-between gap-2">
-                            <span className={`text-sm leading-5 truncate ${active ? 'text-slate-900 dark:text-slate-50 font-medium' : 'text-slate-800 dark:text-slate-200'}`}>{previewSource || absoluteLabel || '--'}</span>
+                            <div className="flex items-center gap-2 min-w-0">
+                              {providerIconSrc ? <img src={providerIconSrc} className="h-3.5 w-3.5 shrink-0 opacity-90" alt={s.providerId} /> : null}
+                              <span className={`text-sm leading-5 truncate ${active ? 'text-slate-900 dark:text-slate-50 font-medium' : 'text-slate-800 dark:text-slate-200'}`}>{previewSource || absoluteLabel || '--'}</span>
+                            </div>
                             <span className={`shrink-0 text-[11px] ${active ? 'text-slate-600 dark:text-slate-400' : 'text-slate-500 dark:text-slate-400'}`}>{relativeLabel}</span>
                           </div>
                         </button>
@@ -3991,7 +4140,7 @@ export default function CodexFlowManagerUI() {
 
   return (
     <TooltipProvider>
-      <div className={`grid h-screen overflow-hidden ${showHistoryPanel ? 'grid-cols-[240px_1fr_240px]' : 'grid-cols-[240px_1fr]'}`}>
+      <div className={`grid h-screen min-h-0 grid-rows-[minmax(0,1fr)] overflow-hidden ${showHistoryPanel ? 'grid-cols-[240px_1fr_240px]' : 'grid-cols-[240px_1fr]'}`}>
         {Sidebar}
         <div className="grid h-full min-w-0 grid-rows-[auto_1fr] bg-white/60 min-h-0 overflow-hidden dark:bg-slate-900/40 dark:text-slate-100">
           {TopBar}
@@ -4019,16 +4168,16 @@ export default function CodexFlowManagerUI() {
                       dumpOverlayDiagnostics('onBack.afterFocus');
                     });
                   } catch {}
-                }} onResume={(fp) => requestResume(fp, 'internal')} terminalMode={terminalMode} onResumeExternal={async (filePath?: string) => {
-                  try {
-                    if (!filePath || !selectedProject) return;
-                    const status = await requestResume(filePath, 'external');
-                    if (status === 'error') {
-                      const env = toShellLabel(terminalMode);
-                      setBlockingNotice({ type: 'external-console', env });
-                    }
-                  } catch (e) {
-                    console.warn('resume external panel failed', e);
+	                }} onResume={(fp) => requestResume(fp, 'internal')} getResumeShellLabel={resolveResumeShellLabel} onResumeExternal={async (filePath?: string) => {
+	                  try {
+	                    if (!filePath || !selectedProject) return;
+	                    const status = await requestResume(filePath, 'external');
+	                    if (status === 'error') {
+	                      const env = resolveResumeShellLabel(filePath);
+	                      setBlockingNotice({ type: 'external-console', env });
+	                    }
+	                  } catch (e) {
+	                    console.warn('resume external panel failed', e);
                   }
                 }} />
               )}
@@ -4052,40 +4201,44 @@ export default function CodexFlowManagerUI() {
             style={{ left: historyCtxMenu.x, top: historyCtxMenu.y }}
             onClick={(e) => e.stopPropagation()}
           >
-            <button
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
-              onClick={async () => {
-                try {
-                  const it = historyCtxMenu.item;
-                  if (!it || !it.filePath || !selectedProject) { setHistoryCtxMenu((m) => ({ ...m, show: false })); return; }
-                  await requestResume(it.filePath, 'internal');
-                } catch (err) {
-                  console.warn('resume session failed', err);
-                }
-                setHistoryCtxMenu((m) => ({ ...m, show: false }));
-              }}
-            >
-              {t('history:continueConversation')}
-            </button>
-            <button
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
-              onClick={async () => {
-                try {
-                  const it = historyCtxMenu.item;
-                  if (!it || !it.filePath || !selectedProject) { setHistoryCtxMenu((m) => ({ ...m, show: false })); return; }
-                  const status = await requestResume(it.filePath, 'external');
-                  if (status === 'error') {
-                    const env = toShellLabel(terminalMode);
-                    setBlockingNotice({ type: 'external-console', env });
-                  }
-                } catch (e) {
-                  console.warn('resume external failed', e);
-                }
-                setHistoryCtxMenu((m) => ({ ...m, show: false }));
-              }}
-            >
-              <ExternalLink className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('history:continueExternalWith', { env: toShellLabel(terminalMode) })}
-            </button>
+            {historyCtxMenu.item?.filePath ? (
+              <>
+                <button
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
+                  onClick={async () => {
+                    try {
+                      const it = historyCtxMenu.item;
+                      if (!it || !it.filePath || !selectedProject) { setHistoryCtxMenu((m) => ({ ...m, show: false })); return; }
+                      await requestResume(it.filePath, 'internal');
+                    } catch (err) {
+                      console.warn('resume session failed', err);
+                    }
+                    setHistoryCtxMenu((m) => ({ ...m, show: false }));
+                  }}
+                >
+                  {t('history:continueConversation')}
+                </button>
+                <button
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
+                  onClick={async () => {
+                    try {
+	                      const it = historyCtxMenu.item;
+	                      if (!it || !it.filePath || !selectedProject) { setHistoryCtxMenu((m) => ({ ...m, show: false })); return; }
+	                      const status = await requestResume(it.filePath, 'external');
+	                      if (status === 'error') {
+	                        const env = resolveResumeShellLabel(it.filePath, it);
+	                        setBlockingNotice({ type: 'external-console', env });
+	                      }
+	                    } catch (e) {
+	                      console.warn('resume external failed', e);
+                    }
+                    setHistoryCtxMenu((m) => ({ ...m, show: false }));
+                  }}
+	                >
+	                  <ExternalLink className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('history:continueExternalWith', { env: resolveResumeShellLabel(historyCtxMenu.item?.filePath, historyCtxMenu.item) })}
+	                </button>
+	              </>
+	            ) : null}
             <button
               className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
               onClick={async () => {
@@ -4174,29 +4327,30 @@ export default function CodexFlowManagerUI() {
                 className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
                 onClick={async () => {
                   const proj = projectCtxMenu.project;
-                  if (proj) {
-                    try {
-                      const env = getProviderEnv(activeProviderId);
-                      const startupCmd = buildProviderStartupCmd(activeProviderId, env);
-                      const res: any = await (window.host.utils as any).openExternalConsole({
-                        terminal: env.terminal,
-                        wslPath: proj.wslPath,
-                        winPath: proj.winPath,
-                        distro: env.distro,
-                        startupCmd
-                      });
-                      if (!(res && res.ok)) throw new Error(res?.error || 'failed');
-                    } catch (e) {
-                      const envLabel = toShellLabel(terminalMode);
-                      setBlockingNotice({ type: 'external-console', env: envLabel });
-                    }
-                  }
-                  setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
-                }}
-              >
-                <ExternalLink className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('projects:ctxOpenExternalConsoleWith', { env: toShellLabel(terminalMode) })}
-              </button>
-            );
+	                  if (proj) {
+	                    try {
+	                      const env = getProviderEnv(activeProviderId);
+	                      const startupCmd = buildProviderStartupCmd(activeProviderId, env);
+	                      const res: any = await (window.host.utils as any).openExternalConsole({
+	                        terminal: env.terminal,
+	                        wslPath: proj.wslPath,
+	                        winPath: proj.winPath,
+	                        distro: env.distro,
+	                        startupCmd,
+	                        title: getProviderLabel(activeProviderId),
+	                      });
+	                      if (!(res && res.ok)) throw new Error(res?.error || 'failed');
+	                    } catch (e) {
+	                      const envLabel = toShellLabel(getProviderEnv(activeProviderId).terminal as any);
+	                      setBlockingNotice({ type: 'external-console', env: envLabel });
+	                    }
+	                  }
+	                  setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
+	                }}
+	              >
+	                <ExternalLink className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('projects:ctxOpenExternalConsoleWith', { env: toShellLabel(getProviderEnv(activeProviderId).terminal as any), provider: getProviderLabel(activeProviderId) })}
+	              </button>
+	            );
             if (isDevEnvironment) {
               menuItems.push(
                 <button
@@ -4283,7 +4437,8 @@ export default function CodexFlowManagerUI() {
           notifications: notificationPrefs,
           network: networkPrefs,
           terminalFontFamily,
-          terminalTheme
+          terminalTheme,
+          claudeCodeReadAgentHistory,
         }}
         onSave={async (v) => {
           const nextProviders = v.providers as any;
@@ -4294,6 +4449,7 @@ export default function CodexFlowManagerUI() {
           const nextFontFamily = normalizeTerminalFontFamily(v.terminalFontFamily);
           const nextTerminalTheme = normalizeTerminalTheme(v.terminalTheme);
           const nextTheme = normalizeThemeSetting(v.theme);
+          const nextClaudeAgentHistory = !!v.claudeCodeReadAgentHistory;
           // 先切换语言（内部会写入 settings 并广播），再持久化其它字段
           try { await (window as any).host?.i18n?.setLocale?.(nextLocale); setLocale(nextLocale); } catch {}
           try {
@@ -4312,6 +4468,7 @@ export default function CodexFlowManagerUI() {
               network: v.network,
               terminalFontFamily: nextFontFamily,
               terminalTheme: nextTerminalTheme,
+              claudeCode: { readAgentHistory: nextClaudeAgentHistory },
             });
           } catch (e) { console.warn('settings.update failed', e); }
           try {
@@ -4340,6 +4497,7 @@ export default function CodexFlowManagerUI() {
           setNetworkPrefs(v.network);
           setTerminalFontFamily(nextFontFamily);
           setTerminalTheme(nextTerminalTheme);
+          setClaudeCodeReadAgentHistory(nextClaudeAgentHistory);
         }}
       />
 
@@ -4494,12 +4652,12 @@ export default function CodexFlowManagerUI() {
           <div className="space-y-2 text-sm text-slate-600">
             <p>{t('history:legacyResumeBody')}</p>
             <div className="rounded bg-slate-100 px-3 py-2 font-mono text-xs text-slate-700">npx --yes @openai/codex@0.31.0</div>
-            <p>
-              {legacyResumePrompt?.mode === 'external'
-                ? t('history:legacyResumeExternalHint', { env: toShellLabel(terminalMode) })
-                : t('history:legacyResumeInternalHint')}
-            </p>
-          </div>
+	            <p>
+	              {legacyResumePrompt?.mode === 'external'
+	                ? t('history:legacyResumeExternalHint', { env: resolveResumeShellLabel(legacyResumePrompt?.filePath) })
+	                : t('history:legacyResumeInternalHint')}
+	            </p>
+	          </div>
           <div className="flex justify-end gap-2 pt-4">
             <Button variant="outline" onClick={cancelLegacyResume} disabled={legacyResumeLoading}>
               {t('history:legacyResumeCancel')}
@@ -4870,7 +5028,7 @@ function filterHistoryMessages(session: HistorySession, typeFilter: Record<strin
   return { messages: filteredMessages, matches, fieldMatches };
 }
 
-function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResumeExternal, terminalMode }: { sessions: HistorySession[]; selectedHistoryId: string | null; onBack?: () => void; onResume?: (filePath?: string) => void; onResumeExternal?: (filePath?: string) => void; terminalMode: TerminalMode }) {
+function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResumeExternal, getResumeShellLabel }: { sessions: HistorySession[]; selectedHistoryId: string | null; onBack?: () => void; onResume?: (filePath?: string) => void; onResumeExternal?: (filePath?: string) => void; getResumeShellLabel: (filePath?: string) => ShellLabel }) {
   const { t } = useTranslation(['history', 'common']);
   const MAX_HISTORY_MESSAGE_CACHE = 5;
   const [loaded, setLoaded] = useState(false);
@@ -4902,6 +5060,7 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
   const selectedSessionFingerprint = useMemo(() => {
     if (!selectedSession) return "none";
     return [
+      selectedSession.providerId,
       selectedSession.id,
       selectedSession.filePath || "",
       selectedSession.date || "",
@@ -5048,7 +5207,7 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
     const seq = ++reqSeq.current;
     (async () => {
       try {
-        const res: any = await window.host.history.read({ filePath: String(selectedSession.filePath || '') });
+        const res: any = await window.host.history.read({ filePath: String(selectedSession.filePath || ''), providerId: selectedSession.providerId });
         const msgs = (res.messages || []).map((m: any) => ({ role: m.role as any, content: m.content }));
         if (seq === reqSeq.current) {
           const allowedIds = new Set(touchMessageCache(selectedHistoryId));
@@ -5131,22 +5290,26 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
           </button>
         </div>
         <div className="flex items-center gap-1.5">
-          <Button size="sm" variant="secondary" onClick={() => {
-            try {
-              if (!selectedHistoryId) return;
-              const s = localSessions.find((x) => x.id === selectedHistoryId);
-              if (!s || !s.filePath) return;
-              onResume?.(s.filePath);
-            } catch {}
-          }}>{t('history:continueConversation')}</Button>
-          <Button size="sm" variant="secondary" onClick={() => {
-            try {
-              if (!selectedHistoryId) return;
-              const s = localSessions.find((x) => x.id === selectedHistoryId);
-              if (!s || !s.filePath) return;
-              onResumeExternal?.(s.filePath);
-            } catch {}
-          }}>{t('history:continueExternalWith', { env: toShellLabel(terminalMode) })}</Button>
+          {detailSession?.filePath ? (
+            <>
+              <Button size="sm" variant="secondary" onClick={() => {
+                try {
+                  if (!selectedHistoryId) return;
+                  const s = localSessions.find((x) => x.id === selectedHistoryId);
+                  if (!s || !s.filePath) return;
+                  onResume?.(s.filePath);
+                } catch {}
+              }}>{t('history:continueConversation')}</Button>
+              <Button size="sm" variant="secondary" onClick={() => {
+                try {
+                  if (!selectedHistoryId) return;
+                  const s = localSessions.find((x) => x.id === selectedHistoryId);
+                  if (!s || !s.filePath) return;
+                  onResumeExternal?.(s.filePath);
+                } catch {}
+              }}>{t('history:continueExternalWith', { env: getResumeShellLabel(detailSession?.filePath) })}</Button>
+            </>
+          ) : null}
           <Button size="sm" variant="secondary" onClick={async () => {
             const text = buildFilteredText();
             try { await window.host.utils.copyText(text); } catch { try { await navigator.clipboard.writeText(text); } catch {} }

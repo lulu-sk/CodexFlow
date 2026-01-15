@@ -7,8 +7,13 @@ import path from "node:path";
 import os from "node:os";
 import { app } from "electron";
 import { wslToUNC, isUNCPath, uncToWsl, getCodexRootsFastAsync } from "./wsl";
+import { getClaudeRootCandidatesFastAsync, discoverClaudeSessionFiles } from "./agentSessions/claude/discovery";
+import { getGeminiRootCandidatesFastAsync, discoverGeminiSessionFiles } from "./agentSessions/gemini/discovery";
+import { parseClaudeSessionFile } from "./agentSessions/claude/parser";
+import { parseGeminiSessionFile, extractGeminiProjectHashFromPath } from "./agentSessions/gemini/parser";
 import { perfLogger } from "./log";
 import { getDebugConfig } from "./debugConfig";
+import settings from "./settings";
 
 export type Project = {
   id: string;
@@ -103,6 +108,56 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
     return dbgAgg[key];
   };
 
+  /**
+   * 从会话解析得到的 cwd 推导项目并入库（统一去重 + 兼容 WSL/UNC/Windows 路径）。
+   */
+  const addProjectFromCwd = async (rawCwd: string, ctx: { root: string; distro?: string }) => {
+    try {
+      let raw = String(rawCwd || '').trim();
+      if (!raw) return;
+      raw = raw.replace(/^\"|\"$/g, '').trim();
+      raw = raw.split(/\\n|\r?\n|<\/?[a-zA-Z_:-]+>/)[0].trim();
+      raw = raw.replace(/\\\\/g, '\\');
+      raw = raw.replace(/[\\/]+$/g, '');
+      if (!raw) return;
+      if (/\(\?:/.test(raw) || /\\r\?/.test(raw)) return;
+
+      let winPathGuess = '';
+      let wslPathGuess = '';
+      if (/^\//.test(raw)) {
+        wslPathGuess = normWsl(raw);
+        if (isUNCPath(ctx.root)) {
+          const info = uncToWsl(ctx.root);
+          const distroName = info?.distro || ctx.distro || 'Ubuntu-24.04';
+          winPathGuess = wslToUNC(wslPathGuess, distroName);
+        } else {
+          const mnt = raw.match(/^\/mnt\/([a-zA-Z])\/(.*)$/);
+          if (mnt) winPathGuess = `${mnt[1].toUpperCase()}:\\${mnt[2].replace(/\//g, '\\')}`;
+        }
+      } else if (/^[A-Za-z]:\\/.test(raw) || /^\\\\[^\s"'\\]+\\[^\s"'\\]+/.test(raw)) {
+        winPathGuess = raw;
+        wslPathGuess = normWsl(ruleWinToWsl(raw));
+      } else {
+        return;
+      }
+
+      const cleanWin = (winPathGuess || '').trim();
+      const cleanWsl = normWsl((wslPathGuess || '').trim());
+      if (!cleanWin) return;
+
+      const key = canonKey(cleanWin, cleanWsl);
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+
+      // 优先接受真实存在的目录；若不存在，也依据会话记录纳入（"会话即真相"）
+      await ensureDirExists(cleanWin);
+
+      const name = (cleanWin ? path.basename(cleanWin) : (cleanWsl ? cleanWsl.split('/').pop() : '')) || 'project';
+      const hasDot = (await pathExists(path.join(cleanWin, '.codex'))) || (await pathExists(path.join(cleanWin, 'codex.json')));
+      projects.push({ id: uid(), name, winPath: cleanWin, wslPath: cleanWsl, hasDotCodex: hasDot, createdAt: Date.now() });
+    } catch {}
+  };
+
   await perfLogger.time('projectsFast.enumerate', async () => {
     await Promise.all(sessionRoots.map(({ root, distro }) => limit(async () => {
       try {
@@ -124,7 +179,14 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
                   const prefix = await readPrefix(fp);
                   const first = (prefix.split(/\r?\n/).find(Boolean) || '').trim();
                   let raw = '';
-                  try { const obj = JSON.parse(first); if (typeof obj?.cwd === 'string') raw = obj.cwd; } catch {}
+                  // Codex 新版 JSONL：首行通常为 { type:'session_meta', payload:{ cwd } }（而非顶层 cwd）
+                  try {
+                    const obj = JSON.parse(first);
+                    if (typeof obj?.cwd === 'string') raw = obj.cwd;
+                    else if (typeof obj?.payload?.cwd === 'string') raw = obj.payload.cwd;
+                    else if (typeof obj?.working_dir === 'string') raw = obj.working_dir;
+                    else if (typeof obj?.payload?.working_dir === 'string') raw = obj.payload.working_dir;
+                  } catch {}
                   if (!raw) {
                     const m1 = (prefix || '').match(/Current\s+working\s+directory:\s*([^\r\n]+)/i); if (m1?.[1]) raw = m1[1];
                     const m2 = (prefix || '').match(/<cwd>\s*([^<]+?)\s*<\/cwd>/i); if (!raw && m2?.[1]) raw = m2[1];
@@ -191,6 +253,57 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
         }
       } catch {}
     })));
+  });
+
+  // Claude Code：从会话中提取 cwd 以补全项目列表（Windows + WSL）
+  await perfLogger.time('projectsFast.enumerateClaude', async () => {
+    try {
+      const includeAgentHistory = !!(settings.getSettings() as any)?.claudeCode?.readAgentHistory;
+      const roots = (await getClaudeRootCandidatesFastAsync()).filter((c) => c.exists);
+      await Promise.all(roots.map(({ path: root, distro }) => limit(async () => {
+        try {
+          const files = await discoverClaudeSessionFiles(root, { includeAgentHistory });
+          for (const fp of files) {
+            try {
+              const stat = await fsp.stat(fp).catch(() => null as any);
+              if (!stat) continue;
+              const maxLines = includeAgentHistory ? 2000 : 400;
+              const det = await parseClaudeSessionFile(fp, stat, { summaryOnly: true, maxLines });
+              if (!includeAgentHistory && !det?.preview) continue;
+              if (det?.cwd) await addProjectFromCwd(String(det.cwd), { root, distro });
+            } catch {}
+          }
+        } catch {}
+      })));
+    } catch {}
+  });
+
+  // Gemini CLI：尝试从 session JSON 中提取 cwd（若无法解析则跳过）
+  await perfLogger.time('projectsFast.enumerateGemini', async () => {
+    try {
+      const roots = (await getGeminiRootCandidatesFastAsync()).filter((c) => c.exists);
+      await Promise.all(roots.map(({ path: root, distro }) => limit(async () => {
+        try {
+          const files = await discoverGeminiSessionFiles(root);
+          const picked: string[] = [];
+          const seenHash = new Set<string>();
+          for (const fp of files) {
+            const h = extractGeminiProjectHashFromPath(fp);
+            if (!h || seenHash.has(h)) continue;
+            seenHash.add(h);
+            picked.push(fp);
+          }
+          for (const fp of picked) {
+            try {
+              const stat = await fsp.stat(fp).catch(() => null as any);
+              if (!stat) continue;
+              const det = await parseGeminiSessionFile(fp, stat, { summaryOnly: true, maxBytes: 2 * 1024 * 1024 });
+              if (det?.cwd) await addProjectFromCwd(String(det.cwd), { root, distro });
+            } catch {}
+          }
+        } catch {}
+      })));
+    } catch {}
   });
 
   // 输出聚合摘要（一次性、低噪声）

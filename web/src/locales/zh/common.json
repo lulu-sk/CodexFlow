@@ -5,6 +5,7 @@
   "open": "打开",
   "refresh": "刷新",
   "close": "关闭",
+  "account": "账号",
   "app": {
     "name": "CodexFlow",
     "language": "语言",
@@ -47,6 +48,69 @@
     "refreshTokenFailed": "无法刷新 ChatGPT 登录状态",
     "wslNotSupported": "当前环境不支持 WSL 模式",
     "wslPathConversionFailed": "无法转换 codex CLI 路径以供 WSL 使用"
+  },
+  "claudeUsage": {
+    "loading": "正在同步用量…",
+    "unavailable": "用量信息不可用",
+    "title": "用量",
+    "fiveHour": "5 小时",
+    "sevenDay": "7 天",
+    "sourceCache": "缓存",
+    "sourceLive": "实时",
+    "source": "来源 {source}",
+    "remainingLabel": "剩余",
+    "remaining": "剩余{percent}",
+    "resetAt": "重置时间 {time}",
+    "updatedAt": "更新时间 {time}",
+    "empty": "暂无用量信息",
+    "errorFetchFailed": "无法获取 Claude 用量",
+    "errors": {
+      "default": {
+        "title": "无法获取 Claude 用量",
+        "hint": "请确认已安装并登录 Claude Code，然后重试"
+      },
+      "tmuxNotFound": {
+        "title": "Claude 用量需要 tmux",
+        "hint": "请在当前运行环境安装 tmux 后重试"
+      },
+      "cliNotFound": {
+        "title": "未检测到 Claude Code CLI",
+        "hint": "请在当前运行环境安装 claude 并完成登录"
+      },
+      "authRequired": {
+        "title": "Claude 未登录",
+        "hint": "请先在终端完成登录，然后重试"
+      },
+      "manualSetup": {
+        "title": "Claude 需要初始化",
+        "hint": "请先在终端运行 claude 完成一次初始化"
+      }
+    }
+  },
+  "geminiUsage": {
+    "loading": "正在同步用量…",
+    "unavailable": "用量信息不可用",
+    "title": "用量",
+    "bucket": "配额 {index}",
+    "remainingLabel": "剩余",
+    "remaining": "剩余{percent}",
+    "resetAt": "重置时间 {time}",
+    "empty": "暂无用量信息",
+    "errorFetchFailed": "无法获取 Gemini 用量",
+    "errors": {
+      "default": {
+        "title": "无法获取 Gemini 用量",
+        "hint": "请确认 Gemini 已登录后重试"
+      },
+      "notLoggedIn": {
+        "title": "Gemini 未登录",
+        "hint": "请在设置中登录或切换运行环境后重试"
+      },
+      "projectRequired": {
+        "title": "Gemini 未完成配置",
+        "hint": "请在设置中完成 Gemini 配置后重试"
+      }
+    }
   },
   "notifications": {
     "taskCompleted": "{tab} 已完成",

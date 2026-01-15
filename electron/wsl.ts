@@ -408,6 +408,40 @@ export async function getDistroCodexUNCAsync(distro: string): Promise<string> {
   }
 }
 
+/**
+ * 获取单个发行版 `$HOME/<subPath>` 的 UNC 路径（通过 `wslpath -w`），失败返回空串。
+ * - `subPath` 支持形如 `.claude`、`.gemini/tmp`、`.codex`
+ */
+export async function getDistroHomeSubPathUNCAsync(distro: string, subPath: string): Promise<string> {
+  if (os.platform() !== "win32") return "";
+  try {
+    const safeSub = String(subPath || "").trim().replace(/^\/+/, "");
+    if (!safeSub) return "";
+    const target = `$HOME/${safeSub}`;
+    const args = ["-d", distro, "--", "sh", "-lc", `wslpath -w "${target}"`];
+    const { stdout } = await (function execFilePromiseLocal() {
+      return new Promise<{ stdout: Buffer; stderr: Buffer }>((resolve, reject) => {
+        try {
+          execFile("wsl.exe", args, { windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+            if (err) return reject(err);
+            resolve({
+              stdout: Buffer.isBuffer(stdout) ? stdout : Buffer.from(String(stdout || "")),
+              stderr: Buffer.isBuffer(stderr) ? stderr : Buffer.from(String(stderr || "")),
+            });
+          });
+        } catch (e) {
+          reject(e);
+        }
+      });
+    })();
+    const raw = decodeBuffer(stdout).trim();
+    if (!raw) return "";
+    return normalizeUNC(raw);
+  } catch {
+    return "";
+  }
+}
+
 /** 获取所有 Windows 本地与 WSL 发行版的 .codex/.sessions 根（无需扫描） */
 export async function getCodexRootsFastAsync(): Promise<{ windowsCodex: string; windowsSessions: string; wsl: { distro: string; codexUNC: string; sessionsUNC: string }[] }> {
   const windowsCodex = path.join(os.homedir(), '.codex');

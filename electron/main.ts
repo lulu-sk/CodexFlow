@@ -13,8 +13,14 @@ import opentype from 'opentype.js';
 import iconv from 'iconv-lite';
 import projects, { IMPLEMENTATION_NAME as PROJECTS_IMPL } from "./projects/index";
 import history, { purgeHistoryCacheIfOutdated } from "./history";
-import { startHistoryIndexer, getIndexedSummaries, getIndexedDetails, getLastIndexerRoots, stopHistoryIndexer, cacheDetails, getCachedDetails } from "./indexer";
+import { startHistoryIndexer, getIndexedSummaries, getIndexedDetails, getLastIndexerRoots, getLastIndexerRootsByProvider, stopHistoryIndexer, cacheDetails, getCachedDetails } from "./indexer";
 import { getSessionsRootsFastAsync } from "./wsl";
+import { getClaudeRootCandidatesFastAsync } from "./agentSessions/claude/discovery";
+import { getGeminiRootCandidatesFastAsync } from "./agentSessions/gemini/discovery";
+import { parseClaudeSessionFile } from "./agentSessions/claude/parser";
+import { parseGeminiSessionFile, extractGeminiProjectHashFromPath, normalizeGeminiPathForHash } from "./agentSessions/gemini/parser";
+import { sha256Hex } from "./agentSessions/shared/crypto";
+import { tidyPathCandidate } from "./agentSessions/shared/path";
 import { perfLogger } from "./log";
 import settings, { ensureSettingsAutodetect, ensureFirstRunTerminalSelection, type ThemeSetting as SettingsThemeSetting, type AppSettings } from "./settings";
 import { resolveWindowsShell, detectPwshExecutable } from "./shells";
@@ -25,6 +31,8 @@ import images from "./images";
 import { installInputContextMenu } from "./contextMenu";
 import { CodexBridge, type CodexBridgeOptions } from "./codex/bridge";
 import { ensureAllCodexNotifications } from "./codex/config";
+import { getClaudeUsageSnapshotAsync } from "./claude/usage";
+import { getGeminiQuotaSnapshotAsync } from "./gemini/usage";
 import storage from "./storage";
 import { registerNotificationIPC, unregisterNotificationIPC } from "./notifications";
 import { readDebugConfig, getDebugConfig, onDebugChanged, watchDebugConfig, updateDebugConfig, resetDebugConfig, unwatchDebugConfig } from "./debugConfig";
@@ -58,6 +66,73 @@ function applyMergedActiveRoots(): { closed: number; remain: number; trimmed: nu
   }
   const mergedList = Array.from(merged);
   return (fileIndex as any).setActiveRoots ? (fileIndex as any).setActiveRoots(mergedList) : { closed: 0, remain: 0, trimmed: 0 };
+}
+
+/**
+ * 外部控制台启动的短时间去重（防止重复点击/重复触发导致瞬间弹出多个窗口）。
+ */
+const externalConsoleLaunchGuard = new Map<string, number>();
+
+/**
+ * 判断是否需要跳过本次外部控制台启动（命中去重窗口则返回 true）。
+ */
+function shouldSkipExternalConsoleLaunch(key: string, windowMs: number = 1200): boolean {
+  const now = Date.now();
+  const win = Math.max(200, Math.min(10_000, Number(windowMs) || 0));
+  const prev = externalConsoleLaunchGuard.get(key);
+  if (typeof prev === "number" && now - prev >= 0 && now - prev < win) return true;
+  externalConsoleLaunchGuard.set(key, now);
+  // 轻量清理：避免 key 无限增长
+  if (externalConsoleLaunchGuard.size > 500) {
+    const threshold = now - 10 * 60_000;
+    for (const [k, ts] of externalConsoleLaunchGuard.entries()) {
+      if (ts < threshold) externalConsoleLaunchGuard.delete(k);
+    }
+    if (externalConsoleLaunchGuard.size > 800) externalConsoleLaunchGuard.clear();
+  }
+  return false;
+}
+
+/**
+ * 以 detached 方式启动外部进程，并使用 spawn/error 事件判断是否真正启动成功。
+ * - 只在收到 `spawn` 事件后才认为成功（避免文件不存在时误判成功）
+ * - 必须有超时，避免极端情况下 promise 悬挂
+ */
+function spawnDetachedSafe(file: string, argv: string[], options?: { timeoutMs?: number }): Promise<boolean> {
+  const timeoutMs = Math.max(200, Math.min(5000, Number(options?.timeoutMs ?? 1200)));
+  return new Promise<boolean>((resolve) => {
+    let done = false;
+    const finish = (ok: boolean) => {
+      if (done) return;
+      done = true;
+      resolve(ok);
+    };
+
+    let child: ReturnType<typeof spawn> | null = null;
+    try {
+      child = spawn(file, argv, { detached: true, stdio: "ignore", windowsHide: true });
+    } catch {
+      finish(false);
+      return;
+    }
+
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    try { (timer as any).unref?.(); } catch {}
+
+    try {
+      child.once("spawn", () => {
+        try { child?.unref(); } catch {}
+        finish(true);
+      });
+      child.once("error", () => {
+        try { child?.unref(); } catch {}
+        finish(false);
+      });
+    } catch {
+      try { child?.unref(); } catch {}
+      finish(false);
+    }
+  });
 }
 
 type CodexBridgeDescriptor = { key: string; options: CodexBridgeOptions };
@@ -861,13 +936,25 @@ ipcMain.handle('fileIndex.ensure', async (_e, { root, excludes }: { root: string
 });
 
 // 打开外部控制台（根据设置选择 WSL 或 Windows 终端）
-ipcMain.handle('utils.openExternalConsole', async (_e, args: { terminal?: 'wsl' | 'windows' | 'pwsh'; wslPath?: string; winPath?: string; distro?: string; startupCmd?: string }) => {
+ipcMain.handle('utils.openExternalConsole', async (_e, args: { terminal?: 'wsl' | 'windows' | 'pwsh'; wslPath?: string; winPath?: string; distro?: string; startupCmd?: string; title?: string }) => {
   try {
     const platform = process.platform;
     const cfg = settings.getSettings();
     const terminal = (args as any)?.terminal || cfg.terminal || 'wsl';
     const startupCmd = String(args?.startupCmd || cfg.codexCmd || 'codex');
     const requestedDistro = String(args?.distro || cfg.distro || 'Ubuntu-24.04');
+    const title = String((args as any)?.title || '').trim() || 'Codex';
+
+    const guardKey = [
+      platform,
+      terminal,
+      requestedDistro,
+      String(args?.wslPath || ''),
+      String(args?.winPath || ''),
+      title,
+      startupCmd,
+    ].join("|");
+    if (shouldSkipExternalConsoleLaunch(guardKey)) return { ok: true, skipped: true } as const;
 
     if (platform === 'win32' && (terminal === 'windows' || terminal === 'pwsh')) {
       // 计算工作目录：优先使用 winPath，其次从 wslPath 推导
@@ -881,21 +968,20 @@ ipcMain.handle('utils.openExternalConsole', async (_e, args: { terminal?: 'wsl' 
       if (!cwd) { try { cwd = require('node:os').homedir(); } catch { cwd = process.cwd(); } }
 
       // 优先 Windows Terminal
-      const trySpawn = (file: string, argv: string[]): Promise<boolean> => new Promise((resolve) => {
-        try { const child = spawn(file, argv, { detached: true, stdio: 'ignore', windowsHide: true }); child.on('error', () => resolve(false)); child.unref(); resolve(true); } catch { resolve(false); }
-      });
       const resolvedShell = resolveWindowsShell(terminal === 'pwsh' ? 'pwsh' : 'windows');
       // PowerShell 字符串经常包含引号与分号；为彻底避免转义问题，改用 -EncodedCommand（UTF-16LE -> Base64）
       const toPsEncoded = (s: string) => Buffer.from(s, 'utf16le').toString('base64');
       // 使用 Windows Terminal：指定起始目录，由 WT 负责切换目录；PowerShell 仅执行命令
       // 必须加入 `--`，将后续命令行完整传入新标签，而不被 wt 解析
-      const wtArgs = ['-w', '0', 'new-tab', '--title', 'Codex', '--startingDirectory', cwd, '--', resolvedShell.command, '-NoExit', '-NoProfile', '-EncodedCommand', toPsEncoded(startupCmd)];
-      if (await trySpawn('wt.exe', wtArgs)) return { ok: true } as const;
-      if (await trySpawn('WindowsTerminal.exe', wtArgs)) return { ok: true } as const;
+      const wtArgs = ['-w', '0', 'new-tab', '--title', title, '--startingDirectory', cwd, '--', resolvedShell.command, '-NoExit', '-NoProfile', '-EncodedCommand', toPsEncoded(startupCmd)];
+      if (await spawnDetachedSafe('wt.exe', wtArgs)) return { ok: true } as const;
+      if (await spawnDetachedSafe('WindowsTerminal.exe', wtArgs)) return { ok: true } as const;
       // 回退：cmd /c start 一个 PowerShell 窗口，使用 -EncodedCommand，先切换目录再执行
       const psScript = `Set-Location -Path \"${cwd.replace(/"/g, '\\"')}\"; ${startupCmd}`;
       const psEncoded = toPsEncoded(psScript);
-      if (await trySpawn('cmd.exe', ['/c', 'start', '', resolvedShell.command, '-NoExit', '-NoProfile', '-EncodedCommand', psEncoded])) return { ok: true } as const;
+      // 注意：cmd 的 start 需要显式传入“窗口标题”参数；最稳妥的方式是传空标题 `""`，避免把第一个参数当作命令执行。
+      // 例如：start Codex wsl.exe ... 会错误地执行 codex，并把后续参数（含 -d）传给 codex。
+      if (await spawnDetachedSafe('cmd.exe', ['/c', 'start', '', resolvedShell.command, '-NoExit', '-NoProfile', '-EncodedCommand', psEncoded])) return { ok: true } as const;
       return { ok: false, error: 'failed to launch external Windows console' } as const;
     }
 
@@ -906,21 +992,24 @@ ipcMain.handle('utils.openExternalConsole', async (_e, args: { terminal?: 'wsl' 
     if (!wslPath) wslPath = '~';
     const esc = (s: string) => s.replace(/\"/g, '\\\"');
     const cdCmd = wslPath === '~' ? 'cd ~' : `cd \"${esc(wslPath)}\"`;
-    const bashScript = `${cdCmd}; ${startupCmd}; exec bash`;
+    // 注意：避免在这里拼接 `;`，否则 Windows Terminal `wt.exe` 可能把 `;` 当作命令分隔符解析，
+    // 进而把脚本拆成多段（如 if/then/else/fi），导致连开多个窗口并报错。
+    const bashScript = `(${cdCmd} || true) && (${startupCmd} || true) && exec bash`;
 
     if (platform === 'win32') {
       const hasDistro = (() => { try { return wsl.distroExists(requestedDistro); } catch { return false; } })();
       const distroArgv = hasDistro ? ['-d', requestedDistro] as string[] : [];
-      const trySpawn = (file: string, argv: string[]): Promise<boolean> => new Promise((resolve) => {
-        try { const child = spawn(file, argv, { detached: true, stdio: 'ignore', windowsHide: true }); child.on('error', () => resolve(false)); child.unref(); resolve(true); } catch { resolve(false); }
-      });
-      if (await trySpawn('cmd.exe', ['/c', 'start', '', 'wsl.exe', ...distroArgv, '--', 'bash', '-lic', bashScript])) return { ok: true } as const;
-      const wtArgs = ['-w', '0', 'new-tab', '--title', 'Codex', '--', 'wsl.exe', ...distroArgv, '--', 'bash', '-lic', bashScript];
-      if (await trySpawn('wt.exe', wtArgs)) return { ok: true } as const;
-      if (await trySpawn('WindowsTerminal.exe', wtArgs)) return { ok: true } as const;
+      const canUseWt = !bashScript.includes(';');
+      const wtArgs = ['-w', '0', 'new-tab', '--title', title, '--', 'wsl.exe', ...distroArgv, '--', 'bash', '-lic', bashScript];
+      if (canUseWt) {
+        if (await spawnDetachedSafe('wt.exe', wtArgs)) return { ok: true } as const;
+        if (await spawnDetachedSafe('WindowsTerminal.exe', wtArgs)) return { ok: true } as const;
+      }
       const psArgListParts = [ ...(hasDistro ? [`'-d'`, `'${requestedDistro.replace(/'/g, "''")}'`] : []), `'--'`, `'bash'`, `'-lic'`, `'${bashScript.replace(/'/g, "''")}'` ];
       const psCmd = `Start-Process -FilePath wsl.exe -ArgumentList @(${psArgListParts.join(',')})`;
-      if (await trySpawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psCmd])) return { ok: true } as const;
+      if (await spawnDetachedSafe('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psCmd])) return { ok: true } as const;
+      // cmd start 同样需要显式传入空标题 `""`，避免把第一个参数当作命令执行
+      if (await spawnDetachedSafe('cmd.exe', ['/c', 'start', '', 'wsl.exe', ...distroArgv, '--', 'bash', '-lic', bashScript])) return { ok: true } as const;
       return { ok: false, error: 'failed to launch external WSL console' } as const;
     }
 
@@ -1018,6 +1107,35 @@ ipcMain.handle('history.list', async (_e, args: { projectWslPath?: string; proje
       } catch { return String(p || '').toLowerCase(); }
     };
     const needles = Array.from(new Set([canon(args.projectWslPath), canon(args.projectWinPath)].filter(Boolean)));
+
+    /**
+     * 兼容 Gemini 的 projectHash：部分会话缺失 cwd 时，需用项目路径反推 hash 来做归属过滤。
+     */
+    const geminiHashNeedles = new Set<string>();
+    const deriveWslFromWinPath = (p?: string): string => {
+      try {
+        const s = String(p || '').trim();
+        if (!s) return '';
+        const m = s.match(/^([a-zA-Z]):\\(.*)$/);
+        if (!m) return '';
+        return `/mnt/${m[1].toLowerCase()}/${m[2].replace(/\\/g, '/')}`;
+      } catch {
+        return '';
+      }
+    };
+    const addGeminiHashCandidate = (p?: string) => {
+      try {
+        const raw = typeof p === 'string' ? p.trim() : '';
+        if (!raw) return;
+        const h1 = sha256Hex(normalizeGeminiPathForHash(raw));
+        const h2 = sha256Hex(tidyPathCandidate(raw));
+        if (h1) geminiHashNeedles.add(h1);
+        if (h2) geminiHashNeedles.add(h2);
+      } catch {}
+    };
+    addGeminiHashCandidate(args.projectWslPath);
+    addGeminiHashCandidate(args.projectWinPath);
+    addGeminiHashCandidate(deriveWslFromWinPath(args.projectWinPath));
     const all = getIndexedSummaries();
     // Minimal probe logging (opt-in): only when CODEX_HISTORY_DEBUG=1
     const dbg = () => { try { return !!getDebugConfig().history.debug; } catch { return false; } };
@@ -1034,7 +1152,14 @@ ipcMain.handle('history.list', async (_e, args: { projectWslPath?: string; proje
       };
       const filtered = needles.length === 0
         ? all
-        : all.filter((s) => needles.some((n) => startsWithBoundary(s.dirKey, n)));
+        : all.filter((s) => {
+            if (needles.some((n) => startsWithBoundary(s.dirKey, n))) return true;
+            if (s.providerId === 'gemini' && geminiHashNeedles.size > 0) {
+              const h = extractGeminiProjectHashFromPath(String(s.filePath || ''));
+              if (h && geminiHashNeedles.has(h)) return true;
+            }
+            return false;
+          });
       try {
         if (dbg()) {
           const foundIdx = dbgFile ? all.some((x: any) => String(x.filePath || '').toLowerCase().includes(dbgFile)) : false;
@@ -1055,6 +1180,7 @@ ipcMain.handle('history.list', async (_e, args: { projectWslPath?: string; proje
       const end = args.limit ? offset + Number(args.limit) : undefined;
       const sliced = sorted.slice(offset, end);
       const mapped = sliced.map((x) => ({
+        providerId: (x as any).providerId || "codex",
         id: x.id,
         title: x.title,
         date: x.date,
@@ -1076,7 +1202,9 @@ ipcMain.handle('history.list', async (_e, args: { projectWslPath?: string; proje
   }
 });
 
-ipcMain.handle('history.read', async (_e, { filePath }: { filePath: string }) => {
+ipcMain.handle('history.read', async (_e, args: { filePath: string; providerId?: string }) => {
+  const filePath = String(args?.filePath || '');
+  const providerHint = String(args?.providerId || '').trim().toLowerCase();
   try {
     const cached = getCachedDetails(filePath);
     if (cached) return cached;
@@ -1088,9 +1216,45 @@ ipcMain.handle('history.read', async (_e, { filePath }: { filePath: string }) =>
       return det;
     }
   } catch {}
+
+  const inferProviderId = (): "codex" | "claude" | "gemini" => {
+    const hint = providerHint;
+    if (hint === 'codex' || hint === 'claude' || hint === 'gemini') return hint as any;
+    try {
+      const found = getIndexedSummaries().find((s: any) => String(s?.filePath || '') === filePath);
+      const pid = String((found as any)?.providerId || '').trim().toLowerCase();
+      if (pid === 'codex' || pid === 'claude' || pid === 'gemini') return pid as any;
+    } catch {}
+    try {
+      const fp = filePath.replace(/\\/g, '/').toLowerCase();
+      const base = fp.split('/').pop() || '';
+      if (fp.includes('/.claude/')) return 'claude';
+      if (fp.includes('/.gemini/')) return 'gemini';
+      if (base.endsWith('.ndjson')) return 'claude';
+      if (base.startsWith('session-') && base.endsWith('.json')) return 'gemini';
+    } catch {}
+    return 'codex';
+  };
+
+  const providerId = inferProviderId();
+
+  if (providerId === "claude") {
+    const stat = await fsp.stat(filePath);
+    const parsed = await parseClaudeSessionFile(filePath, stat, { summaryOnly: false, maxLines: 50_000 });
+    try { cacheDetails(filePath, parsed as any); } catch {}
+    return parsed as any;
+  }
+  if (providerId === "gemini") {
+    const stat = await fsp.stat(filePath);
+    const parsed = await parseGeminiSessionFile(filePath, stat, { summaryOnly: false, maxBytes: 64 * 1024 * 1024 });
+    try { cacheDetails(filePath, parsed as any); } catch {}
+    return parsed as any;
+  }
+
   const parsed = await history.readHistoryFile(filePath);
-  try { cacheDetails(filePath, parsed as any); } catch {}
-  return parsed;
+  const withMeta = { ...(parsed as any), providerId: "codex", filePath };
+  try { cacheDetails(filePath, withMeta as any); } catch {}
+  return withMeta;
 });
 
 // 扫描所有索引的会话，找出"筛选后 input_text/output_text 皆为空"的文件
@@ -1717,6 +1881,16 @@ ipcMain.handle('utils.openExternalWSLConsole', async (_e, args: { wslPath?: stri
     const winPath = String(args?.winPath || '').trim();
     const startupCmd = String(args?.startupCmd || settings.getSettings().codexCmd || 'codex');
 
+    const guardKey = [
+      "openExternalWSLConsole",
+      platform,
+      requestedDistro,
+      wslPath,
+      winPath,
+      startupCmd,
+    ].join("|");
+    if (shouldSkipExternalConsoleLaunch(guardKey)) return { ok: true, skipped: true } as const;
+
     // 路径转换：若仅给了 Windows 路径，转换为 WSL 路径；均为空则使用 ~
     if (!wslPath && winPath) {
       try { wslPath = wsl.winToWsl(winPath, requestedDistro); } catch {}
@@ -1726,57 +1900,33 @@ ipcMain.handle('utils.openExternalWSLConsole', async (_e, args: { wslPath?: stri
     // 组装 bash -lic 脚本：进入目录 -> 执行 codex -> 保持会话
     const esc = (s: string) => s.replace(/"/g, '\\"'); // 用于双引号内转义
     const cdCmd = wslPath === '~' ? 'cd ~' : `cd "${esc(wslPath)}"`;
-    const bashScript = `${cdCmd}; ${startupCmd}; exec bash`;
+    // 注意：避免在这里拼接 `;`，否则 Windows Terminal `wt.exe` 可能把 `;` 当作命令分隔符解析，
+    // 进而把脚本拆成多段（如 if/then/else/fi），导致连开多个窗口并报错。
+    const bashScript = `(${cdCmd} || true) && (${startupCmd} || true) && exec bash`;
 
     if (platform === 'win32') {
       // 仅当发行版存在时才附加 -d <distro>，否则回退到默认发行版
       const hasDistro = (() => { try { return wsl.distroExists(requestedDistro); } catch { return false; } })();
       const distroArgv = hasDistro ? ['-d', requestedDistro] as string[] : [];
-      // 方案 A：cmd.exe /c start 直接开启新控制台，使用系统默认终端宿主（Windows 11 下通常是 Windows Terminal）
-      const okCmdStart = await new Promise<boolean>((resolve) => {
-        try {
-          const child = spawn('cmd.exe', ['/c', 'start', '', 'wsl.exe', ...distroArgv, '--', 'bash', '-lic', bashScript], {
-            detached: true,
-            stdio: 'ignore',
-            windowsHide: true,
-          });
-          child.on('error', () => resolve(false));
-          child.unref();
-          resolve(true);
-        } catch {
-          resolve(false);
-        }
-      });
-      if (okCmdStart) return { ok: true } as const;
 
-      // 方案 B：Windows Terminal（new-tab，避免旧别名 nt），若存在则直接新开标签
-      const trySpawn = (file: string, argv: string[]): Promise<boolean> => new Promise((resolve) => {
-        try {
-          const child = spawn(file, argv, { detached: true, stdio: 'ignore', windowsHide: true });
-          child.on('error', () => resolve(false));
-          child.unref();
-          resolve(true);
-        } catch { resolve(false); }
-      });
+      // 方案 A：Windows Terminal（new-tab，避免旧别名 nt），若存在则直接新开标签
+      const canUseWt = !bashScript.includes(';');
       const wtArgs = ['-w', '0', 'new-tab', '--title', 'Codex', '--', 'wsl.exe', ...distroArgv, '--', 'bash', '-lic', bashScript];
-      if (await trySpawn('wt.exe', wtArgs)) return { ok: true } as const;
-      if (await trySpawn('WindowsTerminal.exe', wtArgs)) return { ok: true } as const;
+      if (canUseWt) {
+        if (await spawnDetachedSafe('wt.exe', wtArgs)) return { ok: true } as const;
+        if (await spawnDetachedSafe('WindowsTerminal.exe', wtArgs)) return { ok: true } as const;
+      }
 
-      // 方案 C：PowerShell Start-Process（不依赖 --cd，直接在 bash 中 cd）
+      // 方案 B：PowerShell Start-Process（不依赖 --cd，直接在 bash 中 cd）
       const psArgListParts = [
         ...(hasDistro ? [`'-d'`, `'${requestedDistro.replace(/'/g, "''")}'`] : []),
         `'--'`, `'bash'`, `'-lic'`, `'${bashScript.replace(/'/g, "''")}'`
       ];
       const psCmd = `Start-Process -FilePath wsl.exe -ArgumentList @(${psArgListParts.join(',')})`;
-      const okPS = await new Promise<boolean>((resolve) => {
-        try {
-          const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psCmd], { detached: true, stdio: 'ignore', windowsHide: true });
-          child.on('error', () => resolve(false));
-          child.unref();
-          resolve(true);
-        } catch { resolve(false); }
-      });
-      if (okPS) return { ok: true } as const;
+      if (await spawnDetachedSafe('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psCmd])) return { ok: true } as const;
+
+      // 方案 C：cmd.exe /c start（最后兜底，且必须传空标题 `""`）
+      if (await spawnDetachedSafe('cmd.exe', ['/c', 'start', '', 'wsl.exe', ...distroArgv, '--', 'bash', '-lic', bashScript])) return { ok: true } as const;
 
       throw new Error('failed to launch external WSL console');
     }
@@ -1854,6 +2004,39 @@ ipcMain.handle("codex.rateLimit", async () => {
   }
 });
 
+/**
+ * 读取设置中的 Provider 环境（若缺失则回退到全局 terminal/distro）。
+ */
+function resolveProviderRuntimeEnv(providerId: "claude" | "gemini"): { terminal: "wsl" | "windows" | "pwsh"; distro?: string } {
+  const cfg = settings.getSettings() as any;
+  const globalTerminal = (cfg?.terminal as any) || "wsl";
+  const globalDistro = (cfg?.distro as any) || undefined;
+  const env = (cfg?.providers?.env && cfg.providers.env[providerId]) ? cfg.providers.env[providerId] : {};
+  const terminal = (env?.terminal as any) || globalTerminal || "wsl";
+  const distro = (env?.distro as any) || globalDistro || undefined;
+  return { terminal, distro };
+}
+
+ipcMain.handle("claude.usage", async () => {
+  try {
+    const env = resolveProviderRuntimeEnv("claude");
+    const snapshot = await getClaudeUsageSnapshotAsync(env);
+    return { ok: true, snapshot };
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+ipcMain.handle("gemini.usage", async () => {
+  try {
+    const env = resolveProviderRuntimeEnv("gemini");
+    const snapshot = await getGeminiQuotaSnapshotAsync(env);
+    return { ok: true, snapshot };
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
+  }
+});
+
 // Settings
 ipcMain.handle('settings.get', async () => {
   try { await ensureSettingsAutodetect(); } catch {}
@@ -1863,14 +2046,17 @@ ipcMain.handle('settings.get', async () => {
 
 ipcMain.handle('settings.update', async (_e, partial: any) => {
   let prevDescriptor: CodexBridgeDescriptor | null = null;
+  let prevClaudeAgentHistory = false;
   try {
     prevDescriptor = deriveCodexBridgeDescriptor(settings.getSettings());
+    prevClaudeAgentHistory = !!(settings.getSettings() as any)?.claudeCode?.readAgentHistory;
     if (partial && typeof partial.locale === 'string' && partial.locale.trim()) {
       // 使用 i18n 通道更新并广播语言，同时继续保存其它设置字段
       try { i18n.setCurrentLocale(String(partial.locale)); } catch {}
     }
   } catch {}
   const next = settings.updateSettings(partial || {});
+  const nextClaudeAgentHistory = !!(next as any)?.claudeCode?.readAgentHistory;
   try {
     const nextDescriptor = deriveCodexBridgeDescriptor(next);
     if (!prevDescriptor || nextDescriptor.key !== prevDescriptor.key) {
@@ -1880,6 +2066,13 @@ ipcMain.handle('settings.update', async (_e, partial: any) => {
   // 设置更新后尝试刷新代理
   try { await configureOrUpdateProxy(); } catch {}
   try { await ensureAllCodexNotifications(); } catch {}
+  // Claude Code 过滤开关变更：重启历史索引器以立即生效（包含增量移除/新增）。
+  try {
+    if (prevClaudeAgentHistory !== nextClaudeAgentHistory) {
+      startHistoryIndexer(() => mainWindow).catch(() => {});
+      try { mainWindow?.webContents.send('history:index:invalidate', { reason: 'settings' }); } catch {}
+    }
+  } catch {}
   return next;
 });
 
@@ -1898,6 +2091,37 @@ ipcMain.handle('settings.codexRoots', async () => {
   try {
     const roots = await getSessionsRootsFastAsync();
     return { ok: true, roots };
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+// Read-only: return the detected session roots for a given provider (codex/claude/gemini)
+ipcMain.handle('settings.sessionRoots', async (_e, args: { providerId?: string }) => {
+  const id = String(args?.providerId || 'codex').trim().toLowerCase();
+  try {
+    const fromIndexer = getLastIndexerRootsByProvider(id);
+    if (fromIndexer && fromIndexer.length > 0) {
+      const fs = await import('node:fs/promises');
+      const filtered: string[] = [];
+      for (const r of fromIndexer) { try { const st = await fs.stat(r); if (st.isDirectory()) filtered.push(r); } catch {} }
+      return { ok: true, roots: filtered };
+    }
+  } catch {}
+  try {
+    if (id === 'codex') {
+      const roots = await getSessionsRootsFastAsync();
+      return { ok: true, roots };
+    }
+    if (id === 'claude') {
+      const cands = await getClaudeRootCandidatesFastAsync();
+      return { ok: true, roots: cands.filter((c) => c.exists).map((c) => c.path) };
+    }
+    if (id === 'gemini') {
+      const cands = await getGeminiRootCandidatesFastAsync();
+      return { ok: true, roots: cands.filter((c) => c.exists).map((c) => c.path) };
+    }
+    return { ok: true, roots: [] as string[] };
   } catch (e: any) {
     return { ok: false, error: String(e) };
   }

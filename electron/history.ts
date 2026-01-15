@@ -19,7 +19,10 @@ import settings from './settings';
 
 export type RuntimeShell = 'wsl' | 'windows' | 'unknown';
 
+export type ProviderId = 'codex' | 'claude' | 'gemini';
+
 export type HistorySummary = {
+  providerId: ProviderId;
   id: string;
   title: string;
   date: number;
@@ -71,6 +74,10 @@ async function readPrefixChunk(fp: string, maxBytes = SUMMARY_PREFIX_BYTES): Pro
   });
 }
 
+/**
+ * 从历史文件路径推断运行环境（WSL / Windows / unknown）。
+ * 用途：用于“继续对话”时的跨环境阻断提示，需要兼容 Windows 盘符路径与 UNC 路径的多种写法。
+ */
 export function detectRuntimeShell(filePath?: string): RuntimeShell {
   try {
     if (!filePath) return 'unknown';
@@ -84,9 +91,13 @@ export function detectRuntimeShell(filePath?: string): RuntimeShell {
       return 'wsl';
     }
     const replaced = lowered.replace(/\\/g, '/');
-    if (replaced.startsWith('/mnt/')) return 'wsl';
-    if (replaced.startsWith('/home/') || replaced.startsWith('/root/')) return 'wsl';
-    if (/^[a-z]:\\/.test(raw)) return 'windows';
+    const collapsed = replaced.replace(/\/+/g, '/');
+    if (collapsed.startsWith('/mnt/')) return 'wsl';
+    if (collapsed.startsWith('/home/') || collapsed.startsWith('/root/')) return 'wsl';
+    // Windows 盘符路径：兼容 C:\... 与 C:/... 两种分隔符
+    if (/^[a-z]:[\\/]/i.test(raw) || /^[a-z]:\//i.test(collapsed)) return 'windows';
+    // 其他 UNC / 网络共享：归类为 Windows（例如 \\server\share\... 或 //server/share/...）
+    if (raw.startsWith('\\\\') || replaced.startsWith('//')) return 'windows';
     return 'unknown';
   } catch {
     return 'unknown';
@@ -898,7 +909,7 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
             }
             // 构造基础条目（用于回退展示）
             if (!resumeId) resumeId = id;
-            const basic: HistorySummary = { id, title, date: (stat?.mtimeMs || 0), filePath: fp, rawDate, resumeMode, resumeId, runtimeShell };
+            const basic: HistorySummary = { providerId: 'codex', id, title, date: (stat?.mtimeMs || 0), filePath: fp, rawDate, resumeMode, resumeId, runtimeShell };
             if (!seenAll.has(key)) { summariesAll.push(basic); seenAll.add(key); }
             if (belongs && !seenBelongs.has(key)) { summaries.push(basic); seenBelongs.add(key); }
           } catch (e) {
@@ -1070,7 +1081,7 @@ export async function listHistorySplit(project: { wslPath?: string; winPath?: st
               }
               if (runtimeShell === 'unknown') runtimeShell = detectRuntimeShell(fp);
               if (!resumeId) resumeId = id;
-              all.push({ id, title, date: (stat?.mtimeMs || 0), filePath: fp, rawDate, resumeMode, resumeId, runtimeShell });
+              all.push({ providerId: 'codex', id, title, date: (stat?.mtimeMs || 0), filePath: fp, rawDate, resumeMode, resumeId, runtimeShell });
             } catch {}
           }
         }
