@@ -1249,6 +1249,16 @@ ipcMain.handle('fileIndex.activeRoots', async (event, { roots }: { roots: string
 });
 
 // Projects API
+/** 快速读取项目缓存列表（不触发扫描） */
+ipcMain.handle('projects.list', async () => {
+  try {
+    const res = projects.listProjectsFromStore();
+    return { ok: true, projects: res };
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
+  }
+});
+
 ipcMain.handle('projects.scan', async (_e, { roots }: { roots?: string[] }) => {
   try {
     const res = await projects.scanProjectsAsync(roots, true);

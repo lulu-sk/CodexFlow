@@ -2265,6 +2265,17 @@ export default function CodexFlowManagerUI() {
         if (res && res.ok && res.locale) setLocale(String(res.locale));
       } catch {}
       try {
+        const res: any = await window.host.projects.list();
+        if (res && res.ok && Array.isArray(res.projects)) {
+          setProjects(res.projects);
+          setSelectedProjectId((prev) => (res.projects.some((p: any) => p.id === prev) ? prev : ""));
+        } else {
+          console.warn('projects.list returned', res);
+        }
+      } catch (e) {
+        console.warn('projects.list failed', e);
+      }
+      try {
         const res: any = await window.host.projects.scan();
         if (res && res.ok && Array.isArray(res.projects)) {
           setProjects(res.projects);

@@ -85,6 +85,13 @@ function saveStore(list: Project[]) { try { fs.writeFileSync(getStorePath(), JSO
 async function saveStoreAsync(list: Project[]) { try { await fsp.writeFile(getStorePath(), JSON.stringify(list, null, 2), 'utf8'); } catch {} }
 async function pathExists(p: string): Promise<boolean> { try { await fsp.access(p); return true; } catch { return false; } }
 
+/**
+ * 快速读取本地缓存的项目列表（不触发扫描）。
+ */
+export function listProjectsFromStore(): Project[] {
+  return loadStore();
+}
+
 // 防抖：短时间内的并发调用合并为一次
 let __scanPromise: Promise<Project[]> | null = null;
 let __scanStamp = 0;
@@ -465,4 +472,4 @@ export function touchProject(id: string) {
   if (p) { p.lastOpenedAt = Date.now(); saveStore(store); }
 }
 
-export default { scanProjectsAsync, addProjectByWinPath, touchProject };
+export default { scanProjectsAsync, addProjectByWinPath, touchProject, listProjectsFromStore };
