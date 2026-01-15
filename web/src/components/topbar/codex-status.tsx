@@ -18,6 +18,7 @@ import {
   translateRateLimitError,
   translateCodexBridgeError,
   CODEX_RATE_REFRESH_EVENT,
+  CODEX_AUTH_CHANGED_EVENT,
 } from "@/lib/codex-status";
 import { useHoverCard } from "@/components/topbar/hover-card";
 
@@ -122,6 +123,20 @@ function useCodexAccountCached(envKey: string): [
     }
   }, [envKey, t]);
 
+  // 监听“账号已切换”事件：清空缓存并立即重新拉取
+  useEffect(() => {
+    const onAuthChanged = () => {
+      try {
+        CODEX_ACCOUNT_CACHE.set(envKey, { attemptedAt: null, data: null, error: null });
+        setAttempted(false);
+        setState({ loading: false, error: null, data: null });
+        fetchAccount();
+      } catch {}
+    };
+    window.addEventListener(CODEX_AUTH_CHANGED_EVENT, onAuthChanged as any);
+    return () => window.removeEventListener(CODEX_AUTH_CHANGED_EVENT, onAuthChanged as any);
+  }, [envKey, fetchAccount]);
+
   return [state, fetchAccount, { attempted }];
 }
 
@@ -167,6 +182,16 @@ function useCodexAccount(
   useEffect(() => {
     if (auto) fetchAccount();
   }, [auto, fetchAccount]);
+
+  // 监听“账号已切换”事件：立即重新拉取账号信息
+  useEffect(() => {
+    const onAuthChanged = () => {
+      try { fetchAccount(); } catch {}
+    };
+    window.addEventListener(CODEX_AUTH_CHANGED_EVENT, onAuthChanged as any);
+    return () => window.removeEventListener(CODEX_AUTH_CHANGED_EVENT, onAuthChanged as any);
+  }, [fetchAccount]);
+
   return [state, fetchAccount];
 }
 
@@ -267,6 +292,20 @@ function useCodexRateCached(envKey: string): [
       setState({ loading: false, error: errorText, data: null });
     }
   }, [envKey, resolveErrorMessage]);
+
+  // 监听“账号已切换”事件：清空缓存并立即重新拉取用量
+  useEffect(() => {
+    const onAuthChanged = () => {
+      try {
+        CODEX_RATE_CACHE.set(envKey, { attemptedAt: null, data: null, error: null });
+        setAttempted(false);
+        setState({ loading: false, error: null, data: null });
+        fetchRate();
+      } catch {}
+    };
+    window.addEventListener(CODEX_AUTH_CHANGED_EVENT, onAuthChanged as any);
+    return () => window.removeEventListener(CODEX_AUTH_CHANGED_EVENT, onAuthChanged as any);
+  }, [envKey, fetchRate]);
 
   return [state, fetchRate, { attempted }];
 }

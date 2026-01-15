@@ -441,7 +441,7 @@ export async function getDistroCodexUNCAsync(distro: string): Promise<string> {
     const { stdout } = await (function execFilePromiseLocal() {
       return new Promise<{ stdout: Buffer; stderr: Buffer }>((resolve, reject) => {
         try {
-          execFile('wsl.exe', args, { windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+          execFile('wsl.exe', args, { windowsHide: true, timeout: 5000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
             if (err) return reject(err);
             resolve({ stdout: Buffer.isBuffer(stdout) ? stdout : Buffer.from(String(stdout || '')), stderr: Buffer.isBuffer(stderr) ? stderr : Buffer.from(String(stderr || '')) });
           });
@@ -470,7 +470,7 @@ export async function getDistroHomeSubPathUNCAsync(distro: string, subPath: stri
     const { stdout } = await (function execFilePromiseLocal() {
       return new Promise<{ stdout: Buffer; stderr: Buffer }>((resolve, reject) => {
         try {
-          execFile("wsl.exe", args, { windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+          execFile("wsl.exe", args, { windowsHide: true, timeout: 5000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
             if (err) return reject(err);
             resolve({
               stdout: Buffer.isBuffer(stdout) ? stdout : Buffer.from(String(stdout || "")),

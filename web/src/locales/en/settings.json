@@ -207,6 +207,35 @@
       "business": "Business",
       "education": "Education",
       "unknown": "Unknown plan"
+    },
+    "record": {
+      "label": "Record accounts",
+      "desc": "When enabled, CodexFlow backs up auth.json whenever it detects an account change during refresh."
+    },
+    "switch": {
+      "selectPlaceholder": "Select a backup…",
+      "refreshList": "Refresh backups",
+      "switch": "Switch",
+      "switching": "Switching…",
+      "delete": "Delete",
+      "deleting": "Deleting…",
+      "deleteConfirm": "Delete this backup?\n\n{label}",
+      "deleteSuccess": "Backup deleted",
+      "deleteFailed": "Delete failed",
+      "empty": "No backups yet",
+      "status": {
+        "signed_in": "Signed in",
+        "signed_out": "Signed out"
+      },
+      "reason": {
+        "unknown": "Unknown",
+        "autoRecord": "Auto record",
+        "autoRecordInit": "Auto record (first)",
+        "beforeSwitch": "Before switch"
+      },
+      "loadFailed": "Failed to load backups",
+      "switchSuccess": "auth.json updated",
+      "switchFailed": "Switch failed"
     }
   },
   "codexRoots": {

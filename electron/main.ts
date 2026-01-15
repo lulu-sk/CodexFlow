@@ -31,6 +31,7 @@ import fileIndex from "./fileIndex";
 import images from "./images";
 import { installInputContextMenu } from "./contextMenu";
 import { CodexBridge, type CodexBridgeOptions } from "./codex/bridge";
+import { applyCodexAuthBackupAsync, deleteCodexAuthBackupAsync, isSafeAuthBackupId, listCodexAuthBackupsAsync, readCodexAuthBackupMetaAsync, resolveCodexAccountSignature, resolveCodexAuthJsonPathAsync, upsertCodexAuthBackupAsync, upsertCodexAuthBackupMetaOnlyAsync } from "./codex/authBackups";
 import { ensureAllCodexNotifications } from "./codex/config";
 import { getClaudeUsageSnapshotAsync } from "./claude/usage";
 import { getGeminiQuotaSnapshotAsync } from "./gemini/usage";
@@ -260,6 +261,89 @@ function ensureCodexBridge(): CodexBridge {
     codexBridges.set(key, bridge);
   }
   return bridge;
+}
+
+/**
+ * 启用“记录账号”时：在刷新账号信息的同时检测账号签名变化，并自动备份当前环境的 `.codex/auth.json`。
+ */
+async function maybeAutoBackupCodexAuthJsonOnAccountRefresh(info: any, runtime: CodexBridgeDescriptor): Promise<void> {
+  try {
+    const cfg = settings.getSettings() as any;
+    const recordEnabled = !!cfg?.codexAccount?.recordEnabled;
+    if (!recordEnabled) return;
+
+    const runtimeKey = String(runtime?.key || "").trim() || "native";
+    const { status, accountId, signature } = resolveCodexAccountSignature(info);
+
+    const lastMapRaw = cfg?.codexAccount?.lastSeenSignatureByRuntime;
+    const lastMap = (lastMapRaw && typeof lastMapRaw === "object") ? (lastMapRaw as Record<string, string>) : {};
+    const lastSig = String(lastMap[runtimeKey] || "").trim();
+
+    const normalizeOptionalField = (value: any): string | undefined => {
+      const s = String(value ?? "").trim();
+      return s ? s : undefined;
+    };
+    const userId = normalizeOptionalField(info?.userId);
+    const email = normalizeOptionalField(info?.email);
+    const plan = normalizeOptionalField(info?.plan);
+
+    // 未登录：仅记录签名，避免反复尝试备份
+    if (status === "signed_out") {
+      const nextMap = { ...lastMap, [runtimeKey]: signature };
+      settings.updateSettings({ codexAccount: { ...cfg?.codexAccount, recordEnabled: true, lastSeenSignatureByRuntime: nextMap } as any });
+      return;
+    }
+
+    const authRes = await resolveCodexAuthJsonPathAsync({ key: runtimeKey, options: runtime.options });
+    if (!authRes.ok) return;
+
+    // 同一签名：优先补齐备份 meta（例如套餐/邮箱还没拿到时），若备份被删除则降级为重建。
+    if (lastSig && lastSig === signature) {
+      const metaRes = await upsertCodexAuthBackupMetaOnlyAsync({
+        runtimeKey,
+        signature,
+        status,
+        accountId,
+        userId,
+        email,
+        plan,
+      });
+      if (!metaRes.ok) {
+        const backupRes = await upsertCodexAuthBackupAsync({
+          runtimeKey,
+          authJsonPath: authRes.authJsonPath,
+          signature,
+          status,
+          accountId,
+          userId: userId ?? null,
+          email: email ?? null,
+          plan: plan ?? null,
+          reason: "auto-record",
+        });
+        if (!backupRes.ok) return;
+      }
+      const nextMap = { ...lastMap, [runtimeKey]: signature };
+      settings.updateSettings({ codexAccount: { ...cfg?.codexAccount, recordEnabled: true, lastSeenSignatureByRuntime: nextMap } as any });
+      return;
+    }
+
+    const reason = lastSig ? "auto-record" : "auto-record-init";
+    const backupRes = await upsertCodexAuthBackupAsync({
+      runtimeKey,
+      authJsonPath: authRes.authJsonPath,
+      signature,
+      status,
+      accountId,
+      userId: userId ?? null,
+      email: email ?? null,
+      plan: plan ?? null,
+      reason,
+    });
+    if (!backupRes.ok) return;
+
+    const nextMap = { ...lastMap, [runtimeKey]: signature };
+    settings.updateSettings({ codexAccount: { ...cfg?.codexAccount, recordEnabled: true, lastSeenSignatureByRuntime: nextMap } as any });
+  } catch {}
 }
 
 // 统一配置/更新全局代理（支持：自定义/系统代理；并同步给 CLI 及 WSL 环境变量）
@@ -2133,8 +2217,115 @@ ipcMain.handle('utils.pathExists', async (_e, args: { path: string; dirOnly?: bo
 ipcMain.handle("codex.accountInfo", async () => {
   try {
     const bridge = ensureCodexBridge();
-    const info = await bridge.getAccountInfo();
+    const cfg = settings.getSettings() as any;
+    const recordEnabled = !!cfg?.codexAccount?.recordEnabled;
+    const info = await bridge.getAccountInfo(recordEnabled);
+    try { await maybeAutoBackupCodexAuthJsonOnAccountRefresh(info, resolveCodexBridgeTarget()); } catch {}
     return { ok: true, info };
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+ipcMain.handle("codex.authBackups.list", async () => {
+  try {
+    const runtime = resolveCodexBridgeTarget();
+    const items = await listCodexAuthBackupsAsync(runtime.key);
+    return { ok: true, items };
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+ipcMain.handle("codex.authBackups.apply", async (_e, args: { id: string }) => {
+  try {
+    const runtime = resolveCodexBridgeTarget();
+    const backupId = String(args?.id || "").trim().toLowerCase();
+    if (!isSafeAuthBackupId(backupId)) return { ok: false, error: "invalid backup id" };
+
+    const authRes = await resolveCodexAuthJsonPathAsync(runtime);
+    if (!authRes.ok) return { ok: false, error: authRes.error };
+
+    const cfg = settings.getSettings() as any;
+    const recordEnabled = !!cfg?.codexAccount?.recordEnabled;
+
+    // 若启用了“记录账号”，切换前先备份一次当前 auth.json，避免覆盖丢失
+    if (recordEnabled) {
+      try {
+        const bridge = ensureCodexBridge();
+        const current = await bridge.getAccountInfo(true);
+        const sig = resolveCodexAccountSignature(current);
+        if (sig.status === "signed_in") {
+          await upsertCodexAuthBackupAsync({
+            runtimeKey: runtime.key,
+            authJsonPath: authRes.authJsonPath,
+            signature: sig.signature,
+            status: sig.status,
+            accountId: sig.accountId,
+            userId: current?.userId ?? null,
+            email: current?.email ?? null,
+            plan: current?.plan ?? null,
+            reason: "before-switch",
+          });
+        }
+      } catch {}
+    }
+
+    const applyRes = await applyCodexAuthBackupAsync({
+      runtimeKey: runtime.key,
+      backupId,
+      targetAuthJsonPath: authRes.authJsonPath,
+    });
+    if (!applyRes.ok) return { ok: false, error: applyRes.error };
+
+    // 切换后强制重启 bridge，避免旧 token 缓存影响账号识别/用量拉取
+    try { disposeCodexBridges(); } catch {}
+
+    // 同步更新“最近识别签名”，避免下一次刷新重复触发备份
+    if (recordEnabled) {
+      try {
+        const meta = await readCodexAuthBackupMetaAsync(runtime.key, backupId);
+        if (meta && meta.signature) {
+          const lastMapRaw = cfg?.codexAccount?.lastSeenSignatureByRuntime;
+          const lastMap = (lastMapRaw && typeof lastMapRaw === "object") ? (lastMapRaw as Record<string, string>) : {};
+          const nextMap = { ...lastMap, [runtime.key]: String(meta.signature || "").trim() };
+          settings.updateSettings({ codexAccount: { ...cfg?.codexAccount, recordEnabled: true, lastSeenSignatureByRuntime: nextMap } as any });
+        }
+      } catch {}
+    }
+
+    return { ok: true };
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+ipcMain.handle("codex.authBackups.delete", async (_e, args: { id: string }) => {
+  try {
+    const runtime = resolveCodexBridgeTarget();
+    const backupId = String(args?.id || "").trim().toLowerCase();
+    if (!isSafeAuthBackupId(backupId)) return { ok: false, error: "invalid backup id" };
+
+    const cfg = settings.getSettings() as any;
+    const recordEnabled = !!cfg?.codexAccount?.recordEnabled;
+
+    const delRes = await deleteCodexAuthBackupAsync({ runtimeKey: runtime.key, backupId });
+    if (!delRes.ok) return delRes;
+
+    // 用户手动删除后：强制清空该运行环境的“最近识别签名”，保证下次刷新可重新备份/补齐 meta。
+    if (recordEnabled) {
+      try {
+        const lastMapRaw = cfg?.codexAccount?.lastSeenSignatureByRuntime;
+        const lastMap = (lastMapRaw && typeof lastMapRaw === "object") ? (lastMapRaw as Record<string, string>) : {};
+        if (lastMap[runtime.key]) {
+          const nextMap = { ...lastMap };
+          delete nextMap[runtime.key];
+          settings.updateSettings({ codexAccount: { ...cfg?.codexAccount, recordEnabled: true, lastSeenSignatureByRuntime: nextMap } as any });
+        }
+      } catch {}
+    }
+
+    return { ok: true };
   } catch (e: any) {
     return { ok: false, error: String(e) };
   }
@@ -2193,9 +2384,11 @@ ipcMain.handle('settings.get', async () => {
 ipcMain.handle('settings.update', async (_e, partial: any) => {
   let prevDescriptor: CodexBridgeDescriptor | null = null;
   let prevClaudeAgentHistory = false;
+  let prevCodexAccountRecordEnabled = false;
   try {
     prevDescriptor = deriveCodexBridgeDescriptor(settings.getSettings());
     prevClaudeAgentHistory = !!(settings.getSettings() as any)?.claudeCode?.readAgentHistory;
+    prevCodexAccountRecordEnabled = !!(settings.getSettings() as any)?.codexAccount?.recordEnabled;
     if (partial && typeof partial.locale === 'string' && partial.locale.trim()) {
       // 使用 i18n 通道更新并广播语言，同时继续保存其它设置字段
       try { i18n.setCurrentLocale(String(partial.locale)); } catch {}
@@ -2203,6 +2396,7 @@ ipcMain.handle('settings.update', async (_e, partial: any) => {
   } catch {}
   const next = settings.updateSettings(partial || {});
   const nextClaudeAgentHistory = !!(next as any)?.claudeCode?.readAgentHistory;
+  const nextCodexAccountRecordEnabled = !!(next as any)?.codexAccount?.recordEnabled;
   try {
     const nextDescriptor = deriveCodexBridgeDescriptor(next);
     if (!prevDescriptor || nextDescriptor.key !== prevDescriptor.key) {
@@ -2212,6 +2406,15 @@ ipcMain.handle('settings.update', async (_e, partial: any) => {
   // 设置更新后尝试刷新代理
   try { await configureOrUpdateProxy(); } catch {}
   try { await ensureAllCodexNotifications(); } catch {}
+  // 若刚开启“记录账号”，立即刷新一次账号信息并触发初始备份（便于立刻出现在备份列表）
+  try {
+    if (!prevCodexAccountRecordEnabled && nextCodexAccountRecordEnabled) {
+      const runtime = deriveCodexBridgeDescriptor(next);
+      const bridge = ensureCodexBridge();
+      const info = await bridge.getAccountInfo(true);
+      await maybeAutoBackupCodexAuthJsonOnAccountRefresh(info, runtime);
+    }
+  } catch {}
   // Claude Code 过滤开关变更：重启历史索引器以立即生效（包含增量移除/新增）。
   try {
     if (prevClaudeAgentHistory !== nextClaudeAgentHistory) {

@@ -1840,6 +1840,8 @@ export default function CodexFlowManagerUI() {
   const [claudeCodeReadAgentHistory, setClaudeCodeReadAgentHistory] = useState<boolean>(false);
   // 网络代理设置（用于设置对话框初始值与回显）
   const [networkPrefs, setNetworkPrefs] = useState<NetworkPrefs>({ proxyEnabled: true, proxyMode: "system", proxyUrl: "", noProxy: "" });
+  // ChatGPT/Codex：是否启用“记录账号”（用于自动备份与快速切换）
+  const [codexAccountRecordEnabled, setCodexAccountRecordEnabled] = useState<boolean>(false);
   const [sendMode, setSendMode] = useState<'write_only' | 'write_and_enter'>("write_and_enter");
   // 项目内路径样式：absolute=全路径；relative=相对路径（默认全路径）
   const [projectPathStyle, setProjectPathStyle] = useState<'absolute' | 'relative'>('absolute');
@@ -2247,6 +2249,10 @@ export default function CodexFlowManagerUI() {
               proxyUrl: String(net.proxyUrl || ''),
               noProxy: String(net.noProxy || ''),
             });
+          } catch {}
+          // 同步“记录账号”偏好
+          try {
+            setCodexAccountRecordEnabled(!!(s as any)?.codexAccount?.recordEnabled);
           } catch {}
           // historyRoot 自动计算，无需显示设置
         }
@@ -4503,6 +4509,7 @@ export default function CodexFlowManagerUI() {
           theme: themeSetting,
           notifications: notificationPrefs,
           network: networkPrefs,
+          codexAccount: { recordEnabled: codexAccountRecordEnabled },
           terminalFontFamily,
           terminalTheme,
           claudeCodeReadAgentHistory,
@@ -4533,6 +4540,7 @@ export default function CodexFlowManagerUI() {
               theme: nextTheme,
               notifications: nextNotifications,
               network: v.network,
+              codexAccount: v.codexAccount as any,
               terminalFontFamily: nextFontFamily,
               terminalTheme: nextTerminalTheme,
               claudeCode: { readAgentHistory: nextClaudeAgentHistory },
@@ -4562,6 +4570,7 @@ export default function CodexFlowManagerUI() {
           writeThemeSettingCache(nextTheme);
           setNotificationPrefs(nextNotifications);
           setNetworkPrefs(v.network);
+          setCodexAccountRecordEnabled(!!v.codexAccount?.recordEnabled);
           setTerminalFontFamily(nextFontFamily);
           setTerminalTheme(nextTerminalTheme);
           setClaudeCodeReadAgentHistory(nextClaudeAgentHistory);

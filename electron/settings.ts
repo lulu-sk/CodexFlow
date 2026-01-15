@@ -31,6 +31,13 @@ export type NetworkSettings = {
   noProxy?: string;
 };
 
+export type CodexAccountSettings = {
+  /** 是否启用“记录账号”（自动备份 ~/.codex/auth.json，用于快速切换） */
+  recordEnabled?: boolean;
+  /** 按运行环境记录最近一次识别到的“状态+账号ID”签名（避免重复备份） */
+  lastSeenSignatureByRuntime?: Record<string, string>;
+};
+
 export type ThemeSetting = 'light' | 'dark' | 'system';
 
 export type ProviderId = string;
@@ -94,6 +101,8 @@ export type AppSettings = {
   notifications?: NotificationSettings;
   /** 网络代理设置（供主进程与渲染层共享） */
   network?: NetworkSettings;
+  /** ChatGPT/Codex 账号相关设置（记录账号、切换备份等） */
+  codexAccount?: CodexAccountSettings;
   /** 终端字体栈（CSS font-family 字符串） */
   terminalFontFamily?: string;
   /** Claude Code 本地会话读取策略（仅影响索引/预览，不影响 CLI 本身）。 */
@@ -118,6 +127,10 @@ const DEFAULT_NETWORK: NetworkSettings = {
   proxyMode: 'system',
   proxyUrl: '',
   noProxy: '',
+};
+const DEFAULT_CODEX_ACCOUNT: CodexAccountSettings = {
+  recordEnabled: false,
+  lastSeenSignatureByRuntime: {},
 };
 const DEFAULT_CLAUDE_CODE: ClaudeCodeSettings = {
   readAgentHistory: false,
@@ -301,6 +314,7 @@ function mergeWithDefaults(raw: Partial<AppSettings>, preloadedDistros?: DistroI
     theme: DEFAULT_THEME,
     notifications: { ...DEFAULT_NOTIFICATIONS },
     network: { ...DEFAULT_NETWORK },
+    codexAccount: { ...DEFAULT_CODEX_ACCOUNT },
     claudeCode: { ...DEFAULT_CLAUDE_CODE },
   };
   const merged = Object.assign({}, defaults, raw);
@@ -313,6 +327,26 @@ function mergeWithDefaults(raw: Partial<AppSettings>, preloadedDistros?: DistroI
     ...DEFAULT_NETWORK,
     ...(raw as any)?.network,
   };
+  merged.codexAccount = (() => {
+    try {
+      const src = (raw as any)?.codexAccount && typeof (raw as any).codexAccount === 'object' ? (raw as any).codexAccount : {};
+      const mapSrc = src.lastSeenSignatureByRuntime && typeof src.lastSeenSignatureByRuntime === 'object' ? src.lastSeenSignatureByRuntime : {};
+      const lastSeenSignatureByRuntime: Record<string, string> = {};
+      for (const [k, v] of Object.entries(mapSrc)) {
+        const key = String(k || '').trim();
+        const val = String(v || '').trim();
+        if (key && val) lastSeenSignatureByRuntime[key] = val;
+      }
+      return {
+        ...DEFAULT_CODEX_ACCOUNT,
+        ...src,
+        recordEnabled: src.recordEnabled === true,
+        lastSeenSignatureByRuntime,
+      } as CodexAccountSettings;
+    } catch {
+      return { ...DEFAULT_CODEX_ACCOUNT };
+    }
+  })();
   merged.distro = pickPreferredDistro(merged.distro, distros);
   merged.theme = normalizeTheme((raw as any)?.theme ?? merged.theme);
   merged.terminalTheme = normalizeTerminalTheme((raw as any)?.terminalTheme ?? merged.terminalTheme);
@@ -352,7 +386,22 @@ export function updateSettings(partial: Partial<AppSettings>) {
   try {
     const distros = loadDistroList();
     const cur = mergeWithDefaults(getSettings(), distros);
-    const next = mergeWithDefaults(Object.assign({}, cur, partial), distros);
+    const mergedRaw: Partial<AppSettings> = Object.assign({}, cur, partial);
+    // 对 codexAccount 做浅层合并 + map 合并，避免渲染层只更新 recordEnabled 时意外清空历史签名表
+    try {
+      const curCodex = (cur as any)?.codexAccount && typeof (cur as any).codexAccount === "object" ? (cur as any).codexAccount : {};
+      const nextCodex = (partial as any)?.codexAccount && typeof (partial as any).codexAccount === "object" ? (partial as any).codexAccount : null;
+      if (nextCodex) {
+        const curMap = curCodex.lastSeenSignatureByRuntime && typeof curCodex.lastSeenSignatureByRuntime === "object" ? curCodex.lastSeenSignatureByRuntime : {};
+        const nextMap = nextCodex.lastSeenSignatureByRuntime && typeof nextCodex.lastSeenSignatureByRuntime === "object" ? nextCodex.lastSeenSignatureByRuntime : {};
+        (mergedRaw as any).codexAccount = {
+          ...curCodex,
+          ...nextCodex,
+          lastSeenSignatureByRuntime: { ...curMap, ...nextMap },
+        };
+      }
+    } catch {}
+    const next = mergeWithDefaults(mergedRaw, distros);
     fs.writeFileSync(getStorePath(), JSON.stringify(next, null, 2), 'utf8');
     return next;
   } catch (e) {

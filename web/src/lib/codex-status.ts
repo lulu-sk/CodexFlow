@@ -245,6 +245,17 @@ export function translateRateLimitError(raw: unknown, t: TFunction): string {
   });
 }
 
+// 触发 Codex “账号已切换/认证已变化”刷新（渲染进程全局事件）
+// 说明：当 auth.json 被切换/覆盖写入后，账号信息与用量都需要立即重新拉取。
+export const CODEX_AUTH_CHANGED_EVENT = "codex:auth-changed";
+export type CodexAuthChangedDetail = { source?: string };
+export function emitCodexAuthChanged(source?: string): void {
+  try {
+    const detail: CodexAuthChangedDetail | undefined = source ? { source } : undefined;
+    window.dispatchEvent(new CustomEvent<CodexAuthChangedDetail>(CODEX_AUTH_CHANGED_EVENT as any, { detail } as any));
+  } catch {}
+}
+
 // 触发 Codex 用量刷新（渲染进程全局事件）
 // 说明：终端任务完成后会派发本事件；顶部栏用量组件监听并在 1 分钟冷却后触发刷新。
 export const CODEX_RATE_REFRESH_EVENT = "codex:rate-refresh-request";

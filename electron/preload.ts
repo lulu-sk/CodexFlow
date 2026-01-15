@@ -204,6 +204,16 @@ contextBridge.exposeInMainWorld('host', {
     getRateLimit: async () => {
       return await ipcRenderer.invoke('codex.rateLimit');
     }
+    ,
+    listAuthBackups: async () => {
+      return await ipcRenderer.invoke('codex.authBackups.list');
+    },
+    applyAuthBackup: async (args: { id: string }) => {
+      return await ipcRenderer.invoke('codex.authBackups.apply', args);
+    },
+    deleteAuthBackup: async (args: { id: string }) => {
+      return await ipcRenderer.invoke('codex.authBackups.delete', args);
+    }
   }
   , claude: {
     getUsage: async () => {
