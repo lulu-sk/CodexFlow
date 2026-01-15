@@ -2,8 +2,10 @@
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
 import openaiIconUrl from "@/assets/providers/openai.svg";
+import openaiDarkIconUrl from "@/assets/providers/openai-dark.png";
 import claudeIconUrl from "@/assets/providers/claude-color.svg";
 import geminiIconUrl from "@/assets/providers/gemini-color.svg";
+import type { ThemeMode } from "@/lib/theme";
 
 export type BuiltInProviderId = "codex" | "claude" | "gemini";
 
@@ -13,9 +15,23 @@ export type BuiltInProviderMeta = {
   defaultStartupCmd: string;
   /** 内置默认图标（用户可在设置中覆盖为 DataURL） */
   iconUrl: string;
+  /** 内置暗色模式图标（用户可在设置中覆盖为 DataURL）；为空则回退到 iconUrl */
+  iconUrlDark?: string;
   /** i18n key（显示名称） */
   labelKey: string;
 };
+
+/** 默认 Provider 图标（亮色/默认）。 */
+export const DEFAULT_PROVIDER_ICON_URL = openaiIconUrl;
+/** 默认 Provider 图标（暗色）。 */
+export const DEFAULT_PROVIDER_ICON_URL_DARK = openaiDarkIconUrl;
+
+/**
+ * 获取默认 Provider 图标（按主题模式）。
+ */
+export function getDefaultProviderIconUrl(themeMode?: ThemeMode): string {
+  return themeMode === "dark" ? DEFAULT_PROVIDER_ICON_URL_DARK : DEFAULT_PROVIDER_ICON_URL;
+}
 
 /**
  * 判断是否为内置 Provider id。
@@ -29,8 +45,8 @@ export function isBuiltInProviderId(id: string): id is BuiltInProviderId {
  */
 export function getBuiltInProviders(): BuiltInProviderMeta[] {
   return [
-    { id: "codex", defaultStartupCmd: "codex", iconUrl: openaiIconUrl, labelKey: "providers:items.codex" },
-    { id: "claude", defaultStartupCmd: "claude", iconUrl: claudeIconUrl, labelKey: "providers:items.claude" },
-    { id: "gemini", defaultStartupCmd: "gemini", iconUrl: geminiIconUrl, labelKey: "providers:items.gemini" },
+    { id: "codex", defaultStartupCmd: "codex", iconUrl: openaiIconUrl, iconUrlDark: openaiDarkIconUrl, labelKey: "providers:items.codex" },
+    { id: "claude", defaultStartupCmd: "claude", iconUrl: claudeIconUrl, iconUrlDark: claudeIconUrl, labelKey: "providers:items.claude" },
+    { id: "gemini", defaultStartupCmd: "gemini", iconUrl: geminiIconUrl, iconUrlDark: geminiIconUrl, labelKey: "providers:items.gemini" },
   ];
 }

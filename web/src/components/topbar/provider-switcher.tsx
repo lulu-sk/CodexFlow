@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import type { AppSettings, ProviderItem } from "@/types/host";
 import { getBuiltInProviders } from "@/lib/providers/builtins";
 import { resolveProvider } from "@/lib/providers/resolve";
+import type { ThemeMode } from "@/lib/theme";
 import { CodexUsageHoverCard } from "@/components/topbar/codex-status";
 import { ClaudeUsageHoverCard } from "@/components/topbar/claude-status";
 import { GeminiUsageHoverCard } from "@/components/topbar/gemini-status";
@@ -22,13 +23,14 @@ export type ProviderSwitcherProps = {
   onChange: (id: string) => void;
   terminalMode?: TerminalMode;
   distro?: string;
+  themeMode?: ThemeMode;
   className?: string;
 };
 
 /**
  * 顶部栏引擎切换器：固定展示 Codex/Claude/Gemini 三个图标，额外引擎通过“更多”菜单选择。
  */
-export const ProviderSwitcher: React.FC<ProviderSwitcherProps> = ({ activeId, providers, onChange, terminalMode, distro, className }) => {
+export const ProviderSwitcher: React.FC<ProviderSwitcherProps> = ({ activeId, providers, onChange, terminalMode, distro, themeMode, className }) => {
   const { t } = useTranslation(["providers", "common"]);
 
   const byId = useMemo(() => {
@@ -43,20 +45,20 @@ export const ProviderSwitcher: React.FC<ProviderSwitcherProps> = ({ activeId, pr
   }, [providers]);
 
   const builtIns = useMemo(() => {
-    return getBuiltInProviders().map((meta) => resolveProvider(byId.get(meta.id) ?? { id: meta.id }));
-  }, [byId]);
+    return getBuiltInProviders().map((meta) => resolveProvider(byId.get(meta.id) ?? { id: meta.id }, { themeMode }));
+  }, [byId, themeMode]);
 
   const extras = useMemo(() => {
     const builtInIds = new Set(getBuiltInProviders().map((x) => x.id));
     const list: Array<{ id: string; label: string; iconSrc: string }> = [];
     for (const it of providers || []) {
-      const resolved = resolveProvider(it);
+      const resolved = resolveProvider(it, { themeMode });
       if (!resolved.id || builtInIds.has(resolved.id as any)) continue;
       const label = String(resolved.displayName || "").trim() || (t("providers:customEngine", "Custom Engine") as string);
       list.push({ id: resolved.id, label, iconSrc: resolved.iconSrc });
     }
     return list;
-  }, [providers, t]);
+  }, [providers, themeMode, t]);
 
   return (
     <div className={cn("flex items-center gap-1.5", className)}>

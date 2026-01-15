@@ -29,6 +29,7 @@ export function normalizeProvidersSettings(
       id,
       displayName: typeof it.displayName === "string" ? it.displayName.trim() : undefined,
       iconDataUrl: typeof it.iconDataUrl === "string" ? it.iconDataUrl.trim() : undefined,
+      iconDataUrlDark: typeof it.iconDataUrlDark === "string" ? it.iconDataUrlDark.trim() : undefined,
       startupCmd: typeof it.startupCmd === "string" ? it.startupCmd.trim() : undefined,
     });
   }
