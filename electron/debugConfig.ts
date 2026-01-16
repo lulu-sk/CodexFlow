@@ -51,6 +51,13 @@ let debugWatcher: fs.FSWatcher | null = null;
 
 function getConfigPath(): string { return path.join(app.getPath("userData"), "debug.config.jsonc"); }
 
+/**
+ * 将 debug.config.jsonc 的全局开关同步到运行时（避免多处读取/分叉逻辑）。
+ */
+function applyRuntimeFlagsFromDebugConfig(cfg: DebugConfig): void {
+  try { perfLogger.setEnabled(!!cfg?.global?.diagLog); } catch {}
+}
+
 function stripJsonComments(input: string): string {
   try {
     const src = String(input || "");
@@ -246,6 +253,7 @@ export function readDebugConfig(): DebugConfig {
       fs.writeFileSync(p, text, "utf8");
       cached = def;
       lastMtime = Date.now();
+      applyRuntimeFlagsFromDebugConfig(def);
       return def;
     }
     const raw = fs.readFileSync(p, "utf8");
@@ -253,11 +261,13 @@ export function readDebugConfig(): DebugConfig {
     const merged = merge(getDefaultDebugConfig(), json);
     cached = merged;
     try { lastMtime = fs.statSync(p).mtimeMs || Date.now(); } catch { lastMtime = Date.now(); }
+    applyRuntimeFlagsFromDebugConfig(merged);
     return merged;
   } catch (e) {
     try { perfLogger.log(`[debug.config] read failed: ${String((e as any)?.message || e)}`); } catch {}
     const d = getDefaultDebugConfig();
     cached = d;
+    applyRuntimeFlagsFromDebugConfig(d);
     return d;
   }
 }
@@ -275,6 +285,7 @@ export function saveDebugConfig(next: DebugConfig): void {
     fs.writeFileSync(p, text, "utf8");
     cached = next;
     try { lastMtime = fs.statSync(p).mtimeMs || Date.now(); } catch { lastMtime = Date.now(); }
+    applyRuntimeFlagsFromDebugConfig(next);
     notifyChanged();
   } catch (e) {
     try { perfLogger.log(`[debug.config] save failed: ${String((e as any)?.message || e)}`); } catch {}
@@ -336,5 +347,4 @@ export function resetDebugConfig(): DebugConfig {
   saveDebugConfig(def);
   return def;
 }
-
 

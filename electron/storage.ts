@@ -8,6 +8,7 @@ import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { app, session, BrowserWindow, webContents } from 'electron';
 import type { Session } from 'electron';
+import { getBaseUserDataDir } from './featureFlags';
 
 type AppDataInfo = {
   ok: boolean;
@@ -37,6 +38,43 @@ type ClearResult = {
   note?: string;
 };
 
+type AutoProfileDirInfo = {
+  profileId: string;
+  dirName: string;
+  path: string;
+  totalBytes: number;
+  dirCount: number;
+  fileCount: number;
+  collectedAt: number;
+  isCurrent: boolean;
+};
+
+type AutoProfilesInfo = {
+  ok: boolean;
+  baseUserData: string;
+  currentUserData: string;
+  count: number;
+  totalBytes: number;
+  items: AutoProfileDirInfo[];
+  error?: string;
+};
+
+type PurgeAutoProfilesOptions = {
+  includeCurrent?: boolean;
+};
+
+type PurgeAutoProfilesResult = {
+  ok: boolean;
+  total: number;
+  removed: number;
+  skipped: number;
+  busy: number;
+  notFound: number;
+  bytesFreed: number;
+  errors?: Array<{ profileId: string; path: string; message: string }>;
+  error?: string;
+};
+
 const SETTINGS_FILE = 'settings.json';
 const KNOWN_LOCK_NAMES = new Set<string>(['lockfile', 'SingletonLock', 'LOCK', 'LOCKFILE']);
 const RETRIABLE_ERROR_CODES = new Set<string>(['EBUSY', 'EPERM', 'EACCES', 'ENOTEMPTY']);
@@ -53,6 +91,41 @@ function getUserDataPath(): string {
     return app.getPath('userData');
   } catch {
     return path.join(process.cwd(), 'userData');
+  }
+}
+
+/**
+ * 获取基础 userData 目录（跨 profile 共用），用于扫描 profile 子目录。
+ */
+function getBaseUserDataPath(): string {
+  const fallback = getUserDataPath();
+  const fromEnv = (() => {
+    try { return String(process.env.CODEXFLOW_BASE_USERDATA || '').trim(); } catch { return ''; }
+  })();
+  const base = (() => {
+    try { return String(getBaseUserDataDir() || '').trim(); } catch { return ''; }
+  })();
+  const candidate = fromEnv || base || fallback;
+  try {
+    const name = path.basename(candidate);
+    const marker = '-profile-';
+    const idx = name.indexOf(marker);
+    if (idx > 0) {
+      const stripped = name.slice(0, idx);
+      if (stripped) return path.join(path.dirname(candidate), stripped);
+    }
+  } catch {}
+  return candidate;
+}
+
+/**
+ * 将路径归一化成用于比较的 key（忽略分隔符与大小写差异）。
+ */
+function normalizePathKey(p: string): string {
+  try {
+    return String(p || '').replace(/[\\/]+/g, '/').toLowerCase();
+  } catch {
+    return '';
   }
 }
 
@@ -189,6 +262,66 @@ function makeTempName(base: string): string {
   const safe = base.replace(/[\\/:*?"<>|]/g, '_');
   const suffix = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   return `${safe || 'entry'}.tmp-${suffix}`;
+}
+
+/**
+ * 扫描并返回 auto-* profile 的 userData 目录列表。
+ */
+async function listAutoProfileDirs(baseUserDataDir: string): Promise<Array<{ profileId: string; dirName: string; fullPath: string }>> {
+  const base = String(baseUserDataDir || '').trim();
+  if (!base) return [];
+  const parent = path.dirname(base);
+  const baseName = path.basename(base);
+  const profilePrefix = `${baseName}-profile-`;
+  const autoPrefix = `${profilePrefix}auto-`;
+  const out: Array<{ profileId: string; dirName: string; fullPath: string }> = [];
+  const entries = await safeReaddir(parent);
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const dirName = String(entry.name || '');
+    if (!dirName.startsWith(autoPrefix)) continue;
+    const profileId = dirName.slice(profilePrefix.length);
+    if (!profileId) continue;
+    out.push({ profileId, dirName, fullPath: path.join(parent, dirName) });
+  }
+  out.sort((a, b) => a.profileId.localeCompare(b.profileId));
+  return out;
+}
+
+/**
+ * 尝试彻底删除一个目录（先 rename 再 rm，避免“半删半留”）。
+ * - busy 时回退原路径并返回 busy=true
+ */
+async function purgeDirectorySafely(dirPath: string): Promise<{ ok: boolean; busy?: boolean; notFound?: boolean; error?: string }> {
+  const root = String(dirPath || '').trim();
+  if (!root) return { ok: false, error: 'invalid path' };
+  const exists = (() => {
+    try { return fs.existsSync(root); } catch { return false; }
+  })();
+  if (!exists) return { ok: false, notFound: true, error: 'not found' };
+  const parent = path.dirname(root);
+  const temp = path.join(parent, makeTempName(path.basename(root)));
+  try {
+    await fsp.rename(root, temp);
+  } catch (e) {
+    const kind = classifyFsError(e);
+    if (kind === 'missing') return { ok: false, notFound: true, error: formatFsError(e) };
+    if (kind === 'busy') return { ok: false, busy: true, error: formatFsError(e) };
+    return { ok: false, error: formatFsError(e) };
+  }
+  try {
+    await fsp.rm(temp, { recursive: true, force: true, maxRetries: 2, retryDelay: 120 });
+    return { ok: true };
+  } catch (e) {
+    const kind = classifyFsError(e);
+    if (kind === 'busy') {
+      try { await fsp.rename(temp, root).catch(() => undefined); } catch {}
+      return { ok: false, busy: true, error: formatFsError(e) };
+    }
+    try { await fsp.rename(temp, root).catch(() => undefined); } catch {}
+    try { await fsp.rm(temp, { recursive: true, force: true }).catch(() => undefined); } catch {}
+    return { ok: false, error: formatFsError(e) };
+  }
 }
 
 type DirectPurgeResult = {
@@ -482,6 +615,100 @@ async function getAppDataInfo(): Promise<AppDataInfo> {
   }
 }
 
+/**
+ * 获取所有 auto-* Profile 目录占用信息（只读统计）。
+ */
+async function getAutoProfilesInfo(): Promise<AutoProfilesInfo> {
+  try {
+    const baseUserData = getBaseUserDataPath();
+    const currentUserData = getUserDataPath();
+    const currentKey = normalizePathKey(currentUserData);
+    const dirs = await listAutoProfileDirs(baseUserData);
+    const items: AutoProfileDirInfo[] = [];
+    let totalBytes = 0;
+    for (const d of dirs) {
+      const info = await summarize(d.fullPath);
+      const isCurrent = normalizePathKey(d.fullPath) === currentKey;
+      items.push({
+        profileId: d.profileId,
+        dirName: d.dirName,
+        path: d.fullPath,
+        totalBytes: info.totalBytes,
+        dirCount: info.dirCount,
+        fileCount: info.fileCount,
+        collectedAt: info.collectedAt,
+        isCurrent,
+      });
+      totalBytes += info.totalBytes;
+    }
+    return { ok: true, baseUserData, currentUserData, count: items.length, totalBytes, items };
+  } catch (e) {
+    return {
+      ok: false,
+      baseUserData: getBaseUserDataPath(),
+      currentUserData: getUserDataPath(),
+      count: 0,
+      totalBytes: 0,
+      items: [],
+      error: e instanceof Error ? e.message : String(e),
+    };
+  }
+}
+
+/**
+ * 一键回收（删除）所有 auto-* Profile 目录（默认跳过当前实例目录与占用目录）。
+ */
+async function purgeAutoProfiles(options: PurgeAutoProfilesOptions = {}): Promise<PurgeAutoProfilesResult> {
+  const baseUserData = getBaseUserDataPath();
+  const currentUserData = getUserDataPath();
+  const currentKey = normalizePathKey(currentUserData);
+  void options;
+  const dirs = await listAutoProfileDirs(baseUserData);
+  const errors: Array<{ profileId: string; path: string; message: string }> = [];
+  let removed = 0;
+  let skipped = 0;
+  let busy = 0;
+  let notFound = 0;
+  let bytesFreed = 0;
+
+  for (const d of dirs) {
+    const isCurrent = normalizePathKey(d.fullPath) === currentKey;
+    // 安全保护：绝不删除当前实例正在使用的 userData 目录
+    if (isCurrent) {
+      skipped += 1;
+      continue;
+    }
+    const before = await summarize(d.fullPath).catch(() => null);
+    const bytesBefore = before ? before.totalBytes : 0;
+    const res = await purgeDirectorySafely(d.fullPath);
+    if (res.notFound) {
+      notFound += 1;
+      continue;
+    }
+    if (res.busy) {
+      busy += 1;
+      skipped += 1;
+      continue;
+    }
+    if (res.ok) {
+      removed += 1;
+      bytesFreed += Math.max(0, bytesBefore);
+      continue;
+    }
+    skipped += 1;
+    errors.push({ profileId: d.profileId, path: d.fullPath, message: res.error || 'failed' });
+  }
+
+  const total = dirs.length;
+  const ok = errors.length === 0;
+  const result: PurgeAutoProfilesResult = { ok, total, removed, skipped, busy, notFound, bytesFreed };
+  if (!ok) {
+    result.errors = errors;
+    result.error = errors.map((x) => `${x.profileId}: ${x.message}`).join('; ');
+  }
+  return result;
+}
+
 async function clearAppData(options: ClearOptions = {}): Promise<ClearResult> {
   const root = getUserDataPath();
   await ensureDir(root);
@@ -596,4 +823,6 @@ export default {
   getAppDataInfo,
   clearAppData,
   purgeAppDataAndQuit,
+  getAutoProfilesInfo,
+  purgeAutoProfiles,
 };

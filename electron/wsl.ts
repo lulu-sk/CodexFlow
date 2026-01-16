@@ -10,6 +10,11 @@ import path from 'node:path';
 
 export type DistroInfo = { name: string; state?: string; version?: string; isDefault?: boolean };
 
+/** wsl.exe 调用的默认超时（毫秒），避免在 WSL 异常时主进程无限挂起。 */
+const DEFAULT_WSL_EXEC_TIMEOUT_MS = 5000;
+/** wsl.exe 调用的默认缓冲区上限，避免输出较大时截断。 */
+const DEFAULT_WSL_EXEC_MAX_BUFFER = 16 * 1024 * 1024;
+
 
 function decodeBuffer(buf: Buffer): string {
   // 首选 UTF-8
@@ -52,12 +57,12 @@ function parseListDistrosOutput(raw: string): DistroInfo[] {
 }
 
 /**
- * 运行 wsl.exe -l -v 获取可用发行版列表，失败返回空数组
+ * 运行 `wsl.exe -l -v` 获取可用发行版列表（带超时），失败返回空数组。
  */
 export function listDistros(): DistroInfo[] {
   if (os.platform() !== 'win32') return [];
   try {
-    const outBuf = execFileSync('wsl.exe', ['-l', '-v']);
+    const outBuf = execFileSync('wsl.exe', ['-l', '-v'], { windowsHide: true, timeout: DEFAULT_WSL_EXEC_TIMEOUT_MS, maxBuffer: DEFAULT_WSL_EXEC_MAX_BUFFER });
     const out = decodeBuffer(Buffer.isBuffer(outBuf) ? outBuf : Buffer.from(String(outBuf)));
     return parseListDistrosOutput(out);
   } catch (e) {
@@ -67,10 +72,30 @@ export function listDistros(): DistroInfo[] {
 
 // ---- Async variants (non-blocking main thread) ----
 
-function execFilePromise(cmd: string, args: string[], opts?: any): Promise<{ stdout: Buffer; stderr: Buffer }> {
+type ExecFilePromiseOptions = {
+  /** 超时毫秒数（优先级高于 opts.timeout）。 */
+  timeoutMs?: number;
+  /** 兼容 Node 原生字段（秒级/毫秒级均由调用方保证）。 */
+  timeout?: number;
+  /** 是否隐藏窗口（Windows）。 */
+  windowsHide?: boolean;
+  /** stdout/stderr 缓冲区上限。 */
+  maxBuffer?: number;
+};
+
+/**
+ * 以 Promise 方式执行外部命令（默认带超时），避免主进程无限期等待。
+ */
+function execFilePromise(cmd: string, args: string[], opts?: ExecFilePromiseOptions): Promise<{ stdout: Buffer; stderr: Buffer }> {
   return new Promise((resolve, reject) => {
     try {
-      execFile(cmd, args, { ...opts, windowsHide: true, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+      const timeout = Math.max(
+        200,
+        Math.min(60_000, Number(opts?.timeoutMs ?? opts?.timeout ?? DEFAULT_WSL_EXEC_TIMEOUT_MS)),
+      );
+      const maxBuffer = Math.max(1024 * 1024, Math.min(64 * 1024 * 1024, Number(opts?.maxBuffer ?? DEFAULT_WSL_EXEC_MAX_BUFFER)));
+      const windowsHide = opts?.windowsHide ?? true;
+      execFile(cmd, args, { ...opts, windowsHide, timeout, maxBuffer }, (err, stdout, stderr) => {
         if (err) return reject(err);
         const outBuf = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout || '');
         const errBuf = Buffer.isBuffer(stderr) ? stderr : Buffer.from(stderr || '');
@@ -93,11 +118,18 @@ export async function listDistrosAsync(): Promise<DistroInfo[]> {
   }
 }
 
-export async function execInWslAsync(distro: string | undefined, cmd: string): Promise<string | null> {
+/**
+ * 在 WSL 发行版中执行命令并返回 stdout（默认带超时；失败返回 null）。
+ */
+export async function execInWslAsync(
+  distro: string | undefined,
+  cmd: string,
+  options?: { timeoutMs?: number },
+): Promise<string | null> {
   if (os.platform() !== 'win32') return null;
   try {
     const args = distro ? ['-d', distro, '--', 'sh', '-lc', cmd] : ['--', 'sh', '-lc', cmd];
-    const { stdout } = await execFilePromise('wsl.exe', args);
+    const { stdout } = await execFilePromise('wsl.exe', args, { timeoutMs: options?.timeoutMs });
     const raw = decodeBuffer(stdout);
     const cleaned = raw.replace(/\x1B\[[0-9;]*[A-Za-z]/g, '');
     return cleaned.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').trim();
@@ -197,7 +229,7 @@ export function execInWsl(distro: string | undefined, cmd: string): string | nul
   try {
     // 使用 sh -lc 以兼容更广泛的发行版 shell 权限（部分发行版可能对 bash 存在限制）
     const args = distro ? ['-d', distro, '--', 'sh', '-lc', cmd] : ['--', 'sh', '-lc', cmd];
-    const outBuf = execFileSync('wsl.exe', args, { maxBuffer: 16 * 1024 * 1024 });
+    const outBuf = execFileSync('wsl.exe', args, { windowsHide: true, timeout: DEFAULT_WSL_EXEC_TIMEOUT_MS, maxBuffer: DEFAULT_WSL_EXEC_MAX_BUFFER });
     const raw = decodeBuffer(Buffer.isBuffer(outBuf) ? outBuf : Buffer.from(String(outBuf)));
     // 去掉 ANSI 控制序列与不可见字符，避免渲染为方块
     const cleaned = raw.replace(/\x1B\[[0-9;]*[A-Za-z]/g, '');

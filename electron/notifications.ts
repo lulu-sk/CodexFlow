@@ -362,6 +362,7 @@ function shouldMuteSystemNotificationSound(): boolean {
 type NotificationOptions = {
   appUserModelId?: string;
   protocolScheme?: string;
+  profileId?: string;
 };
 
 export function registerNotificationIPC(getWindow: () => BrowserWindow | null, options?: NotificationOptions) {
@@ -372,6 +373,10 @@ export function registerNotificationIPC(getWindow: () => BrowserWindow | null, o
   const protocolScheme = (() => {
     const scheme = typeof options?.protocolScheme === 'string' ? options.protocolScheme.trim() : '';
     return scheme || 'codexflow';
+  })();
+  const profileId = (() => {
+    const p = typeof options?.profileId === 'string' ? options.profileId.trim() : '';
+    return p;
   })();
   logNotification(`register IPC appUserModelId=${appUserModelId || 'none'}`);
   const updateBadge = (count: number) => {
@@ -435,7 +440,17 @@ export function registerNotificationIPC(getWindow: () => BrowserWindow | null, o
     if (process.platform === 'win32') {
       // Windows 通知中心对 click 事件存在长期缺陷，采用协议激活保证 Action Center 点击能回传 tabId
       const scheme = protocolScheme.toLowerCase();
-      const launchUrl = `${scheme}://focus-tab?tabId=${encodeURIComponent(payload.tabId)}`;
+      const launchUrl = (() => {
+        try {
+          const u = new URL(`${scheme}://focus-tab`);
+          u.searchParams.set('tabId', String(payload.tabId));
+          if (profileId) u.searchParams.set('profile', profileId);
+          return u.toString();
+        } catch {
+          const extra = profileId ? `&profile=${encodeURIComponent(profileId)}` : '';
+          return `${scheme}://focus-tab?tabId=${encodeURIComponent(payload.tabId)}${extra}`;
+        }
+      })();
       const parts: string[] = [];
       parts.push(`<toast launch="${escapeXml(launchUrl)}" activationType="protocol">`);
       parts.push('<visual><binding template="ToastGeneric">');

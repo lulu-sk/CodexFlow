@@ -78,6 +78,7 @@ export type SettingsDialogProps = {
     terminalFontFamily: string;
     terminalTheme: TerminalThemeId;
     claudeCodeReadAgentHistory: boolean;
+    multiInstanceEnabled: boolean;
   };
   onSave: (v: {
     providers: {
@@ -95,6 +96,7 @@ export type SettingsDialogProps = {
     terminalFontFamily: string;
     terminalTheme: TerminalThemeId;
     claudeCodeReadAgentHistory: boolean;
+    multiInstanceEnabled: boolean;
   }) => void;
 };
 
@@ -119,6 +121,25 @@ type AppDataInfo = {
   dirCount: number;
   fileCount: number;
   collectedAt: number;
+};
+
+type AutoProfileDirInfo = {
+  profileId: string;
+  dirName: string;
+  path: string;
+  totalBytes: number;
+  dirCount: number;
+  fileCount: number;
+  collectedAt: number;
+  isCurrent: boolean;
+};
+
+type AutoProfilesInfo = {
+  baseUserData: string;
+  currentUserData: string;
+  count: number;
+  totalBytes: number;
+  items: AutoProfileDirInfo[];
 };
 
 type SectionKey = "basic" | "providers" | "notifications" | "terminal" | "networkAccount" | "data";
@@ -398,6 +419,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   const [geminiRoots, setGeminiRoots] = useState<string[]>([]);
   const [lang, setLang] = useState<string>(values.locale || "en");
   const [theme, setTheme] = useState<ThemeSetting>(normalizeThemeSetting(values.theme));
+  const [multiInstanceEnabled, setMultiInstanceEnabled] = useState<boolean>(!!values.multiInstanceEnabled);
   const [terminalTheme, setTerminalTheme] = useState<TerminalThemeId>(values.terminalTheme);
   const [systemTheme, setSystemTheme] = useState<ThemeMode>(() => resolveSystemTheme());
   const [availableDistros, setAvailableDistros] = useState<string[]>([]);
@@ -452,8 +474,15 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   const [storagePurgeConfirmOpen, setStoragePurgeConfirmOpen] = useState(false);
   const [storageFeedback, setStorageFeedback] = useState<{ open: boolean; message: string; isError: boolean }>({ open: false, message: "", isError: false });
   const [storageError, setStorageError] = useState<string | null>(null);
+  const [autoProfilesInfo, setAutoProfilesInfo] = useState<AutoProfilesInfo | null>(null);
+  const [autoProfilesLoading, setAutoProfilesLoading] = useState(false);
+  const [autoProfilesCleaning, setAutoProfilesCleaning] = useState(false);
+  const [autoProfilesConfirmOpen, setAutoProfilesConfirmOpen] = useState(false);
+  const [autoProfilesFeedback, setAutoProfilesFeedback] = useState<{ open: boolean; message: string; isError: boolean }>({ open: false, message: "", isError: false });
+  const [autoProfilesError, setAutoProfilesError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const storageLoadedRef = useRef(false);
+  const autoProfilesLoadedRef = useRef(false);
 
   const labelOf = useCallback((lng: string) => {
     const map: Record<string, string> = { zh: "简体中文", en: "English" };
@@ -483,6 +512,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     setPathStyle(values.projectPathStyle || "absolute");
     setLang(values.locale || "en");
     setTheme(normalizeThemeSetting(values.theme));
+    setMultiInstanceEnabled(!!values.multiInstanceEnabled);
     setNotifications(values.notifications);
     setNetwork({
       proxyEnabled: values.network?.proxyEnabled ?? true,
@@ -796,6 +826,96 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     }
   }, [t]);
 
+  /**
+   * 刷新自动实例（auto-* Profile）用户数据目录列表。
+   */
+  const refreshAutoProfilesInfo = useCallback(async () => {
+    const api = (window as any).host?.storage?.listAutoProfiles;
+    if (!api) {
+      setAutoProfilesInfo(null);
+      setAutoProfilesError(t("settings:autoProfiles.notSupported") as string);
+      return;
+    }
+    setAutoProfilesLoading(true);
+    setAutoProfilesError(null);
+    try {
+      const res: any = await api();
+      if (res && res.ok) {
+        const items = Array.isArray(res.items) ? (res.items as any[]) : [];
+        const mapped: AutoProfileDirInfo[] = items.map((item) => ({
+          profileId: typeof item?.profileId === "string" ? item.profileId : String(item?.profileId || ""),
+          dirName: typeof item?.dirName === "string" ? item.dirName : String(item?.dirName || ""),
+          path: typeof item?.path === "string" ? item.path : String(item?.path || ""),
+          totalBytes: typeof item?.totalBytes === "number" ? item.totalBytes : Number(item?.totalBytes || 0),
+          dirCount: typeof item?.dirCount === "number" ? item.dirCount : Number(item?.dirCount || 0),
+          fileCount: typeof item?.fileCount === "number" ? item.fileCount : Number(item?.fileCount || 0),
+          collectedAt: typeof item?.collectedAt === "number" ? item.collectedAt : Date.now(),
+          isCurrent: !!item?.isCurrent,
+        }));
+        setAutoProfilesInfo({
+          baseUserData: typeof res.baseUserData === "string" ? res.baseUserData : String(res.baseUserData || ""),
+          currentUserData: typeof res.currentUserData === "string" ? res.currentUserData : String(res.currentUserData || ""),
+          count: typeof res.count === "number" ? res.count : mapped.length,
+          totalBytes: typeof res.totalBytes === "number" ? res.totalBytes : Number(res.totalBytes || 0),
+          items: mapped,
+        });
+      } else {
+        const message = res && res.error ? String(res.error) : (t("settings:autoProfiles.loadFailed") as string);
+        setAutoProfilesInfo(null);
+        setAutoProfilesError(message);
+      }
+    } catch (error: any) {
+      setAutoProfilesInfo(null);
+      setAutoProfilesError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setAutoProfilesLoading(false);
+    }
+  }, [t]);
+
+  /**
+   * 一键回收所有自动实例（auto-* Profile）用户数据目录（默认跳过当前实例与占用目录）。
+   */
+  const handlePurgeAutoProfiles = useCallback(async () => {
+    setAutoProfilesConfirmOpen(false);
+    const api = (window as any).host?.storage?.purgeAutoProfiles;
+    if (!api) {
+      setAutoProfilesFeedback({ open: true, message: t("settings:autoProfiles.cleanupFailed") as string, isError: true });
+      return;
+    }
+    setAutoProfilesCleaning(true);
+    try {
+      const res: any = await api({ includeCurrent: false });
+      if (res && res.ok) {
+        await refreshAutoProfilesInfo();
+        const removed = typeof res.removed === "number" ? res.removed : Number(res.removed || 0);
+        const skipped = typeof res.skipped === "number" ? res.skipped : Number(res.skipped || 0);
+        const busy = typeof res.busy === "number" ? res.busy : Number(res.busy || 0);
+        const notFound = typeof res.notFound === "number" ? res.notFound : Number(res.notFound || 0);
+        const freedRaw = typeof res.bytesFreed === "number" ? res.bytesFreed : Number(res.bytesFreed || 0);
+        setAutoProfilesFeedback({
+          open: true,
+          message: String(
+            t("settings:autoProfiles.cleanupSuccess", {
+              removed,
+              skipped,
+              busy,
+              notFound,
+              freed: formatBytes(freedRaw),
+            }),
+          ),
+          isError: false,
+        });
+      } else {
+        const message = res && res.error ? String(res.error) : (t("settings:autoProfiles.cleanupFailed") as string);
+        setAutoProfilesFeedback({ open: true, message, isError: true });
+      }
+    } catch {
+      setAutoProfilesFeedback({ open: true, message: t("settings:autoProfiles.cleanupFailed") as string, isError: true });
+    } finally {
+      setAutoProfilesCleaning(false);
+    }
+  }, [refreshAutoProfilesInfo, t]);
+
   useEffect(() => {
     if (!open) {
       storageLoadedRef.current = false;
@@ -808,6 +928,19 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
       refreshAppDataInfo();
     }
   }, [open, refreshAppDataInfo]);
+
+  useEffect(() => {
+    if (!open) {
+      autoProfilesLoadedRef.current = false;
+      setAutoProfilesInfo(null);
+      setAutoProfilesError(null);
+      return;
+    }
+    if (!autoProfilesLoadedRef.current) {
+      autoProfilesLoadedRef.current = true;
+      refreshAutoProfilesInfo();
+    }
+  }, [open, refreshAutoProfilesInfo]);
 
   const sections = useMemo(() => {
     return NAV_ORDER.map((key) => {
@@ -875,6 +1008,50 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                   <div className="text-xs text-slate-500">
                     {t("settings:appearance.theme.note", { current: themeLabel(normalizeThemeSetting(theme === "system" ? systemTheme : theme)) })}
                   </div>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardTitle>{t("settings:experimental.title")}</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <p className="text-sm text-slate-500 dark:text-[var(--cf-text-secondary)]">
+                    {t("settings:experimental.desc")}
+                  </p>
+                  <label className="flex items-start gap-3 rounded-lg border border-slate-200/70 bg-white/60 px-3 py-3 shadow-sm dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:text-[var(--cf-text-primary)]">
+                    <input
+                      type="checkbox"
+                      className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)] dark:checked:bg-[var(--cf-accent)] dark:focus-visible:ring-[var(--cf-accent)]/40"
+                      checked={multiInstanceEnabled}
+                      onChange={(event) => setMultiInstanceEnabled(event.target.checked)}
+                    />
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium text-slate-800 dark:text-[var(--cf-text-primary)]">
+                        {t("settings:experimental.multiInstance.label")}
+                      </div>
+                      <p className="text-xs text-slate-500 dark:text-[var(--cf-text-secondary)]">
+                        {t("settings:experimental.multiInstance.desc")}
+                      </p>
+                      <div className="mt-3">
+                        <div className="text-xs font-medium text-slate-700 dark:text-[var(--cf-text-primary)]">
+                          {t("settings:experimental.multiInstance.howToTitle")}
+                        </div>
+                        <ul className="mt-1 list-disc space-y-1 pl-5 text-xs text-slate-500 dark:text-[var(--cf-text-secondary)]">
+                          <li>{t("settings:experimental.multiInstance.howTo1")}</li>
+                          <li>{t("settings:experimental.multiInstance.howTo2")}</li>
+                        </ul>
+                      </div>
+                      <div className="mt-3">
+                        <div className="text-xs font-medium text-slate-700 dark:text-[var(--cf-text-primary)]">
+                          {t("settings:experimental.multiInstance.warningsTitle")}
+                        </div>
+                        <ul className="mt-1 list-disc space-y-1 pl-5 text-xs text-slate-500 dark:text-[var(--cf-text-secondary)]">
+                          <li>{t("settings:experimental.multiInstance.warning1")}</li>
+                          <li>{t("settings:experimental.multiInstance.warning2")}</li>
+                        </ul>
+                      </div>
+                    </div>
+                  </label>
                 </CardContent>
               </Card>
             </div>
@@ -1743,6 +1920,77 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
             </Card>
             <Card>
               <CardHeader>
+                <CardTitle>{t("settings:autoProfiles.label")}</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <p className="text-sm text-slate-500">{t("settings:autoProfiles.desc")}</p>
+                <div className="space-y-3 rounded border bg-slate-50 p-3 text-xs">
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <div>
+                      <div className="text-slate-500">{t("settings:autoProfiles.countLabel")}</div>
+                      <div className="mt-1 text-sm font-medium text-slate-700">
+                        {autoProfilesLoading && !autoProfilesInfo
+                          ? (t("settings:autoProfiles.loading") as string)
+                          : autoProfilesInfo ? autoProfilesInfo.count : "—"}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-slate-500">{t("settings:autoProfiles.sizeLabel")}</div>
+                      <div className="mt-1 text-sm font-medium text-slate-700">
+                        {autoProfilesLoading && !autoProfilesInfo
+                          ? (t("settings:autoProfiles.loading") as string)
+                          : formatBytes(autoProfilesInfo?.totalBytes ?? 0)}
+                      </div>
+                    </div>
+                  </div>
+                  {autoProfilesInfo && autoProfilesInfo.items.length > 0 ? (
+                    <div className="mt-2 max-h-48 overflow-auto rounded border bg-white p-2 text-xs">
+                      <ul className="space-y-1">
+                        {autoProfilesInfo.items.map((item) => (
+                          <li key={item.path} className="flex items-center gap-2" title={item.path}>
+                            <span className="w-20 shrink-0 font-medium text-slate-700">{item.profileId}</span>
+                            <span className="flex-1 min-w-0 truncate select-all font-mono text-[11px] text-slate-700">{item.path}</span>
+                            <span className="shrink-0 text-slate-500">{formatBytes(item.totalBytes)}</span>
+                            {item.isCurrent && (
+                              <span className="shrink-0 rounded bg-slate-200 px-1 text-[10px] text-slate-600">
+                                {t("settings:autoProfiles.current")}
+                              </span>
+                            )}
+                            <Button size="xs" variant="ghost" className="h-6 px-2" onClick={() => openSessionRootPath(item.path)}>{t("common:open")}</Button>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : (
+                    <div className="text-[11px] text-slate-500">
+                      {autoProfilesLoading
+                        ? (t("settings:autoProfiles.loading") as string)
+                        : t("settings:autoProfiles.empty")}
+                    </div>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    variant="outline"
+                    disabled={autoProfilesLoading || autoProfilesCleaning}
+                    onClick={refreshAutoProfilesInfo}
+                  >
+                    {autoProfilesLoading ? t("settings:autoProfiles.refreshing") : t("settings:autoProfiles.refresh")}
+                  </Button>
+                  <Button
+                    variant="danger"
+                    disabled={autoProfilesCleaning || autoProfilesLoading || !!(autoProfilesInfo && autoProfilesInfo.items.length === 0)}
+                    onClick={() => setAutoProfilesConfirmOpen(true)}
+                  >
+                    <Trash2 className="mr-2 h-4 w-4" />{" "}
+                    {autoProfilesCleaning ? t("settings:autoProfiles.cleaning") : t("settings:autoProfiles.cleanup")}
+                  </Button>
+                </div>
+                {autoProfilesError && <div className="text-sm text-red-600 dark:text-[var(--cf-red)]">{autoProfilesError}</div>}
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader>
                 <CardTitle>{t("settings:debug.label")}</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -1799,6 +2047,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     labelOf,
     lang,
     theme,
+    multiInstanceEnabled,
     systemTheme,
     pathStyle,
     notifications,
@@ -1811,7 +2060,12 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     storageClearing,
     storagePurging,
     storageError,
+    autoProfilesInfo,
+    autoProfilesLoading,
+    autoProfilesCleaning,
+    autoProfilesError,
     refreshAppDataInfo,
+    refreshAutoProfilesInfo,
     t,
     terminalFontFamily,
     terminalTheme,
@@ -1923,6 +2177,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                       locale: lang,
                       projectPathStyle: pathStyle,
                       theme,
+                      multiInstanceEnabled,
                       notifications,
                       network,
                       codexAccount,
@@ -2009,6 +2264,53 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
           )}
           <div className="flex justify-end pt-4">
             <Button onClick={() => setStorageFeedback((prev) => ({ ...prev, open: false }))}>
+              {t("common:ok")}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={autoProfilesConfirmOpen} onOpenChange={setAutoProfilesConfirmOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>{t("settings:autoProfiles.cleanupConfirmTitle")}</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-slate-500">
+            {t("settings:autoProfiles.cleanupConfirmDesc")}
+          </p>
+          <p className="mt-3 text-xs text-red-600">
+            {t("settings:autoProfiles.cleanupConfirmNote")}
+          </p>
+          <div className="flex justify-end gap-2 pt-4">
+            <Button variant="outline" onClick={() => setAutoProfilesConfirmOpen(false)} disabled={autoProfilesCleaning}>
+              {t("common:cancel")}
+            </Button>
+            <Button
+              variant="danger"
+              disabled={autoProfilesCleaning}
+              onClick={handlePurgeAutoProfiles}
+            >
+              <Trash2 className="mr-2 h-4 w-4" />{" "}
+              {autoProfilesCleaning ? t("settings:autoProfiles.cleaning") : t("settings:autoProfiles.cleanupConfirmAction")}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={autoProfilesFeedback.open} onOpenChange={(openState) => setAutoProfilesFeedback((prev) => ({ ...prev, open: openState }))}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>
+              {autoProfilesFeedback.isError
+                ? t("settings:autoProfiles.feedbackErrorTitle")
+                : t("settings:autoProfiles.feedbackSuccessTitle")}
+            </DialogTitle>
+          </DialogHeader>
+          {autoProfilesFeedback.message && (
+            <p className={cn("text-sm", autoProfilesFeedback.isError ? "text-red-600" : "text-slate-600")}>
+              {autoProfilesFeedback.message}
+            </p>
+          )}
+          <div className="flex justify-end pt-4">
+            <Button onClick={() => setAutoProfilesFeedback((prev) => ({ ...prev, open: false }))}>
               {t("common:ok")}
             </Button>
           </div>

@@ -65,6 +65,11 @@ export type AppSettings = {
   };
   /** 终端字体栈 */
   terminalFontFamily?: string;
+  /** 实验性功能开关（全局共享，不随 profile 隔离） */
+  experimental?: {
+    /** 是否启用多实例（Profile）（实验性） */
+    multiInstanceEnabled?: boolean;
+  };
 };
 
 export type Project = {
@@ -169,6 +174,35 @@ export interface StorageAPI {
     error?: string;
     scheduled?: boolean;
     note?: string;
+  }>;
+  listAutoProfiles(): Promise<{
+    ok: boolean;
+    baseUserData: string;
+    currentUserData: string;
+    count: number;
+    totalBytes: number;
+    items: Array<{
+      profileId: string;
+      dirName: string;
+      path: string;
+      totalBytes: number;
+      dirCount: number;
+      fileCount: number;
+      collectedAt: number;
+      isCurrent: boolean;
+    }>;
+    error?: string;
+  }>;
+  purgeAutoProfiles(args?: { includeCurrent?: boolean }): Promise<{
+    ok: boolean;
+    total: number;
+    removed: number;
+    skipped: number;
+    busy: number;
+    notFound: number;
+    bytesFreed: number;
+    errors?: Array<{ profileId: string; path: string; message: string }>;
+    error?: string;
   }>;
 }
 

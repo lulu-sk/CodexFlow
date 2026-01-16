@@ -37,6 +37,8 @@ import { getClaudeUsageSnapshotAsync } from "./claude/usage";
 import { getGeminiQuotaSnapshotAsync } from "./gemini/usage";
 import storage from "./storage";
 import { registerNotificationIPC, unregisterNotificationIPC } from "./notifications";
+import { applyInstanceProfile, normalizeProfileId, resolveProfileUserDataDir } from "./instance";
+import { getBaseUserDataDir, getFeatureFlags, updateFeatureFlags } from "./featureFlags";
 import { readDebugConfig, getDebugConfig, onDebugChanged, watchDebugConfig, updateDebugConfig, resetDebugConfig, unwatchDebugConfig } from "./debugConfig";
 
 // 使用 CommonJS 编译输出时，运行时环境会提供 `__dirname`，直接使用即可
@@ -113,6 +115,7 @@ type SpawnDetachedSafeOptions = {
   detached?: boolean;
   windowsHide?: boolean;
   minAliveMs?: number;
+  acceptExit0BeforeMinAliveMs?: boolean;
 };
 
 /**
@@ -126,9 +129,11 @@ function spawnDetachedSafe(file: string, argv: string[], options?: SpawnDetached
   const detached = options?.detached ?? true;
   const windowsHide = options?.windowsHide ?? true;
   const minAliveMs = Math.max(0, Math.min(2000, Number(options?.minAliveMs ?? 200)));
+  const acceptExit0BeforeMinAliveMs = options?.acceptExit0BeforeMinAliveMs ?? true;
   return new Promise<boolean>((resolve) => {
     let done = false;
     let spawned = false;
+    let aliveSatisfied = minAliveMs <= 0;
     let aliveTimer: ReturnType<typeof setTimeout> | null = null;
     const finish = (ok: boolean) => {
       if (done) return;
@@ -153,10 +158,14 @@ function spawnDetachedSafe(file: string, argv: string[], options?: SpawnDetached
         spawned = true;
         try { child?.unref(); } catch {}
         if (minAliveMs <= 0) {
+          aliveSatisfied = true;
           finish(true);
           return;
         }
-        aliveTimer = setTimeout(() => finish(true), minAliveMs);
+        aliveTimer = setTimeout(() => {
+          aliveSatisfied = true;
+          finish(true);
+        }, minAliveMs);
         try { (aliveTimer as any).unref?.(); } catch {}
       });
       child.once("error", () => {
@@ -169,7 +178,8 @@ function spawnDetachedSafe(file: string, argv: string[], options?: SpawnDetached
           return;
         }
         if (code === 0) {
-          finish(true);
+          if (aliveSatisfied || acceptExit0BeforeMinAliveMs) finish(true);
+          else finish(false);
           return;
         }
         finish(false);
@@ -179,6 +189,87 @@ function spawnDetachedSafe(file: string, argv: string[], options?: SpawnDetached
       finish(false);
     }
   });
+}
+
+/**
+ * 从 argv 中移除 profile 参数，避免“从当前实例继承 profile”。
+ */
+function stripProfileArgs(argv: readonly string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--profile") {
+      i += 1;
+      continue;
+    }
+    if (typeof arg === "string" && arg.startsWith("--profile=")) {
+      continue;
+    }
+    out.push(arg);
+  }
+  return out;
+}
+
+/**
+ * 从 argv 中移除实例隔离相关参数（--profile / --user-data-dir），避免“从当前实例继承隔离参数”导致冲突。
+ */
+function stripInstanceIsolationArgs(argv: readonly string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--profile") {
+      i += 1;
+      continue;
+    }
+    if (typeof arg === "string" && arg.startsWith("--profile=")) {
+      continue;
+    }
+    if (arg === "--user-data-dir") {
+      i += 1;
+      continue;
+    }
+    if (typeof arg === "string" && arg.startsWith("--user-data-dir=")) {
+      continue;
+    }
+    out.push(arg);
+  }
+  return out;
+}
+
+/**
+ * 生成一个自动 profileId（用于“一键打开新实例”）。
+ */
+/** 自动 profile 槽位数量：用于复用数据目录，避免每次双击都生成新目录导致磁盘无限增长。 */
+const AUTO_PROFILE_POOL_SIZE = 4;
+/** 自动 profile 下次优先尝试的槽位（轮询），减少反复探测同一槽位导致的“唤醒旧窗口”干扰。 */
+let autoProfileNextSlot = 1;
+
+/**
+ * 生成一个固定槽位的自动 profileId（用于复用 userData 目录）。
+ * 说明：同一槽位在不同启动间会复用同一份数据；并发占用时会尝试下一个槽位。
+ */
+function generateAutoProfileIdForSlot(slot: number): string {
+  const n = Math.max(1, Math.min(64, Math.floor(Number(slot) || 1)));
+  return `auto-${n}`;
+}
+
+/**
+ * 构建自动多开时的 profile 候选列表：
+ * - 优先尝试固定槽位 `auto-1...auto-N`（减少无意义的数据目录膨胀）
+ * - 槽位都被占用时回退随机 profile，保证仍可继续多开
+ */
+function buildAutoProfileCandidates(): string[] {
+  const ids: string[] = [];
+  const total = Math.max(1, Math.min(64, Math.floor(Number(AUTO_PROFILE_POOL_SIZE) || 1)));
+  const start = Math.max(1, Math.min(total, Math.floor(Number(autoProfileNextSlot) || 1)));
+  autoProfileNextSlot = (start % total) + 1;
+  for (let offset = 0; offset < total; offset++) {
+    const slot = ((start - 1 + offset) % total) + 1;
+    ids.push(normalizeProfileId(generateAutoProfileIdForSlot(slot)));
+  }
+  const fallback = normalizeProfileId(`auto-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
+  if (!ids.includes(fallback)) ids.push(fallback);
+  return ids;
 }
 
 // Windows Terminal 启动参数：禁用隐藏，适度延长超时以兼容冷启动
@@ -422,11 +513,30 @@ function chooseFromElectronProxyString(spec: string): string | null {
   return null;
 }
 
+/**
+ * 为 Promise 添加超时保护：超时或失败返回 null，避免启动阶段因系统代理解析等操作无限期等待。
+ */
+async function promiseWithTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
+  const ms = Math.max(200, Math.min(10_000, Number(timeoutMs) || 0));
+  return await new Promise<T | null>((resolve) => {
+    let done = false;
+    const finish = (value: T | null) => {
+      if (done) return;
+      done = true;
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(null), ms);
+    try { (timer as any).unref?.(); } catch {}
+    promise.then((v) => { try { clearTimeout(timer); } catch {} finish(v); }).catch(() => { try { clearTimeout(timer); } catch {} finish(null); });
+  });
+}
+
 async function detectSystemProxyUrl(): Promise<string | null> {
   try {
     const s = session.defaultSession;
     if (!s) return null;
-    const spec = await s.resolveProxy('https://chatgpt.com');
+    const spec = await promiseWithTimeout(s.resolveProxy('https://chatgpt.com'), 1500);
+    if (!spec) return null;
     const uri = chooseFromElectronProxyString(spec);
     return uri;
   } catch {
@@ -504,6 +614,42 @@ function rectsOverlap(a: Electron.Rectangle, b: Electron.Rectangle): boolean {
   const horizontal = a.x < b.x + b.width && a.x + a.width > b.x;
   const vertical = a.y < b.y + b.height && a.y + a.height > b.y;
   return horizontal && vertical;
+}
+
+/**
+ * 确保窗口落在可见屏幕范围内（多显示器/分辨率变更后，窗口可能跑到屏幕外）。
+ */
+function ensureWindowInView(win: BrowserWindow): void {
+  try {
+    const bounds = win.getBounds();
+    const displays = screen.getAllDisplays();
+    const visible = displays.some((d) => rectsOverlap(bounds, d.workArea));
+    if (visible) return;
+
+    const workArea = screen.getPrimaryDisplay().workArea;
+    const width = Math.min(Math.max(bounds.width || 1280, 640), workArea.width);
+    const height = Math.min(Math.max(bounds.height || 800, 480), workArea.height);
+    const x = workArea.x + Math.floor((workArea.width - width) / 2);
+    const y = workArea.y + Math.floor((workArea.height - height) / 2);
+    win.setBounds({ x, y, width, height });
+    try { perfLogger.log(`[WIN] ensureInView moved bounds=${JSON.stringify({ x, y, width, height })}`); } catch {}
+  } catch {}
+}
+
+/**
+ * 强制显示并聚焦窗口：处理 Windows “从快捷方式以最小化启动”或“未抢到前台”的情况。
+ */
+function forceShowWindow(win: BrowserWindow, reason: string): void {
+  try {
+    const minimized = (() => { try { return win.isMinimized(); } catch { return false; } })();
+    const visible = (() => { try { return win.isVisible(); } catch { return false; } })();
+    try { perfLogger.log(`[WIN] forceShow reason=${reason} minimized=${minimized ? 1 : 0} visible=${visible ? 1 : 0}`); } catch {}
+    try { if (minimized) win.restore(); } catch {}
+    try { win.show(); } catch {}
+    try { win.focus(); } catch {}
+    try { (win as any).moveTop?.(); } catch {}
+    try { app.focus({ steal: true } as any); } catch { try { app.focus(); } catch {} }
+  } catch {}
 }
 
 function ensureDetachedDevtoolsInView(): void {
@@ -722,6 +868,7 @@ function focusTabFromProtocol(rawUrl?: string | null) {
 
 function createWindow() {
   const windowIcon = resolveAppIcon();
+  try { perfLogger.log(`[WIN] create pid=${process.pid} userData=${app.getPath('userData')}`); } catch {}
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -745,13 +892,24 @@ function createWindow() {
   // 安装输入框右键菜单（撤销/重做/剪切/复制/粘贴/全选，支持多语言）
   try { installInputContextMenu(mainWindow.webContents); } catch {}
 
-  // 初始按已保存主题设置原生主题与标题栏颜色
+  // 窗口可见性兜底：避免多开实例“只有进程没窗口”的误感知
   try {
-    const s = settings.getSettings();
-    const src: any = (s as any)?.theme;
-    const themeSource: SettingsThemeSetting = (src === 'light' || src === 'dark') ? src : 'system';
+    const win = mainWindow;
+    win.once('ready-to-show', () => {
+      try { ensureWindowInView(win); } catch {}
+      try { forceShowWindow(win, 'ready-to-show'); } catch {}
+    });
+    const t = setTimeout(() => {
+      try { ensureWindowInView(win); } catch {}
+      try { forceShowWindow(win, 'timeout'); } catch {}
+    }, 800);
+    try { (t as any).unref?.(); } catch {}
+  } catch {}
+
+  // 初始按系统主题设置原生主题与标题栏颜色（避免启动阶段因同步设置/WSL 探测阻塞而不出窗口）
+  try {
     const fallbackMode: 'light' | 'dark' = nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
-    applyTitleBarTheme(fallbackMode, themeSource);
+    applyTitleBarTheme(fallbackMode, 'system');
   } catch {}
 
   const devUrl = process.env.DEV_SERVER_URL;
@@ -846,36 +1004,77 @@ ipcMain.handle('app.setTitleBarTheme', async (_e, payload: { mode?: string; sour
 });
 
 // Single instance lock
-const gotLock = app.requestSingleInstanceLock();
+const instanceProfile = applyInstanceProfile();
+const gotLock = app.requestSingleInstanceLock({ profileId: instanceProfile.profileId } as any);
+try { perfLogger.log(`[INSTANCE] pid=${process.pid} profile=${instanceProfile.profileId} userData=${instanceProfile.userDataDir} gotLock=${gotLock ? 1 : 0}`); } catch {}
 if (!gotLock) {
-  app.quit();
+  // 锁获取失败：必须尽快退出
+  // - 避免残留为无窗口后台进程
+  // - 避免被“自动多开”探测误判为成功（否则会只唤醒已有实例，无法继续打开第三/第四个实例）
+  try { perfLogger.log(`[INSTANCE] lock denied -> quitting pid=${process.pid}`); } catch {}
+  // 立即强制退出（app.quit 在少数环境下可能被句柄拖住）
+  try { app.exit(0); } catch {}
+  try {
+    const t = setTimeout(() => {
+      try { process.exit(0); } catch {}
+    }, 200);
+    try { (t as any).unref?.(); } catch {}
+  } catch {}
+  try { app.quit(); } catch {}
 } else {
-  app.on('second-instance', (_event, argv) => {
+  /**
+   * 处理“二次启动”：
+   * - 优先处理协议激活（如 Windows 通知点击）
+   * - 若启用实验性多实例：当二次启动未指定 `--profile` 时，自动拉起一个新的 profile 实例
+   * - 否则聚焦现有窗口（保持单实例体验）
+   */
+  async function handleSecondInstance(argv: readonly string[]): Promise<void> {
     const url = extractProtocolUrl(argv as any);
     if (url) {
       focusTabFromProtocol(url);
       return;
     }
+    try {
+      const flags = getFeatureFlags();
+      const enabled = !!flags.multiInstanceEnabled;
+      if (enabled) {
+        const hasProfileArg = stripProfileArgs(argv).length !== argv.length;
+        if (!hasProfileArg) {
+          const baseArgs = stripInstanceIsolationArgs(process.argv.slice(1));
+          const baseUserDataDir = getBaseUserDataDir();
+          const candidates = buildAutoProfileCandidates();
+          for (const profileId of candidates) {
+            const userDataDir = resolveProfileUserDataDir(baseUserDataDir, profileId);
+            const spawnArgs = [...baseArgs, "--profile", profileId, "--user-data-dir", userDataDir];
+            try { perfLogger.log(`[INSTANCE] spawn profile=${profileId} userData=${userDataDir}`); } catch {}
+            const launched = await spawnDetachedSafe(process.execPath, spawnArgs, { timeoutMs: 2000, minAliveMs: 250, windowsHide: true, acceptExit0BeforeMinAliveMs: false });
+            if (launched) {
+              try { perfLogger.log(`[INSTANCE] spawn ok profile=${profileId}`); } catch {}
+              return;
+            }
+            try { perfLogger.log(`[INSTANCE] spawn failed profile=${profileId}`); } catch {}
+          }
+        }
+      }
+    } catch {}
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
     }
+  }
+
+  app.on("second-instance", (_event, argv) => {
+    void handleSecondInstance(argv as any);
   });
 
-  app.whenReady().then(async () => {
+  app.whenReady().then(() => {
     // 加载统一调试配置并建立监听
     try { readDebugConfig(); applyDebugGlobalsFromConfig(); watchDebugConfig(); } catch {}
-    // 一次性迁移：旧版 settings.json 中的 codexTraceEnabled -> debug.config.jsonc.codex.tuiTrace
+    // Windows：尽早设置 AUMID（建议在创建窗口前完成）
     try {
-      const s = settings.getSettings() as any;
-      if (Object.prototype.hasOwnProperty.call(s, 'codexTraceEnabled')) {
-        const wanted = !!s.codexTraceEnabled;
-        const cur = getDebugConfig();
-        if (!!cur?.codex?.tuiTrace !== wanted) {
-          try { updateDebugConfig({ codex: { tuiTrace: wanted } } as any); } catch {}
-        }
-        // 清理旧字段：通过将其置为 undefined 来覆盖并从 JSON 中移除
-        try { settings.updateSettings({ codexTraceEnabled: undefined } as any); } catch {}
+      if (process.platform === 'win32') {
+        const appUserModelId = app.isPackaged ? APP_USER_MODEL_ID : DEV_APP_USER_MODEL_ID;
+        if (appUserModelId) app.setAppUserModelId(appUserModelId);
       }
     } catch {}
     try {
@@ -889,30 +1088,49 @@ if (!gotLock) {
         try { const cfg = getDebugConfig(); if (cfg?.global?.openDevtools) mainWindow?.webContents.openDevTools({ mode: 'detach' }); } catch {}
       });
     } catch {}
-    // 统一配置/更新全局代理（支持 Codex、fetch 等所有 undici 请求）
-    try { await configureOrUpdateProxy(); } catch {}
-    const appUserModelId = setupWindowsNotifications();
-    registerProtocol();
-    try { perfLogger.log(`[BOOT] Using projects implementation: ${PROJECTS_IMPL}`); } catch {}
-    if (DIAG) { try { perfLogger.log(`[BOOT] userData=${app.getPath('userData')}`); } catch {} }
-    // 首次运行：优先选择 WSL/Ubuntu，其次 PowerShell（不提示安装）
-    try { await ensureFirstRunTerminalSelection(); } catch {}
-    try { await ensureSettingsAutodetect(); } catch {}
-    try { await ensureAllCodexNotifications(); } catch {}
     try { i18n.registerI18nIPC(); } catch {}
-    if (DIAG) { try { perfLogger.log(`[BOOT] Locale: ${i18n.getCurrentLocale?.()}`); } catch {} }
     // 构建应用菜单（包含 Toggle Developer Tools）
     try { setupAppMenu(); } catch {}
-    try { registerNotificationIPC(() => mainWindow, { appUserModelId, protocolScheme: PROTOCOL_SCHEME }); } catch {}
     try { createWindow(); } catch (e) { if (DIAG) { try { perfLogger.log(`[BOOT] createWindow error: ${String(e)}`); } catch {} } }
     focusTabFromProtocol(extractProtocolUrl(process.argv));
-    // 启动时静默检查更新由渲染进程完成（仅提示，不下载）
-    try { setTermDebug(!!getDebugConfig().terminal.pty.debug); } catch {}
-    // 启动历史索引器：后台并发解析、缓存、监听变更
-    try { purgeHistoryCacheIfOutdated(); } catch {}
-    try { await startHistoryIndexer(() => mainWindow); } catch (e) { console.warn('indexer start failed', e); }
-    // 启动后立刻触发一次 UI 强制刷新，确保首次 ready 后显示索引内容
-    try { mainWindow?.webContents.send('history:index:add', { items: [] }); } catch {}
+    // 启动时的耗时初始化放到后台执行：避免新实例因外部命令/代理探测阻塞而“无窗口常驻后台”
+    void (async () => {
+      try { perfLogger.log(`[BOOT] background init start pid=${process.pid}`); } catch {}
+      // 一次性迁移：旧版 settings.json 中的 codexTraceEnabled -> debug.config.jsonc.codex.tuiTrace
+      try {
+        const s = settings.getSettings() as any;
+        if (Object.prototype.hasOwnProperty.call(s, 'codexTraceEnabled')) {
+          const wanted = !!s.codexTraceEnabled;
+          const cur = getDebugConfig();
+          if (!!cur?.codex?.tuiTrace !== wanted) {
+            try { updateDebugConfig({ codex: { tuiTrace: wanted } } as any); } catch {}
+          }
+          // 清理旧字段：通过将其置为 undefined 来覆盖并从 JSON 中移除
+          try { settings.updateSettings({ codexTraceEnabled: undefined } as any); } catch {}
+        }
+      } catch {}
+      // 统一配置/更新全局代理（支持 Codex、fetch 等所有 undici 请求）
+      try { await configureOrUpdateProxy(); } catch {}
+      try { perfLogger.log(`[BOOT] proxy ready`); } catch {}
+      const appUserModelId = setupWindowsNotifications();
+      registerProtocol();
+      try { perfLogger.log(`[BOOT] Using projects implementation: ${PROJECTS_IMPL}`); } catch {}
+      if (DIAG) { try { perfLogger.log(`[BOOT] userData=${app.getPath('userData')}`); } catch {} }
+      // 首次运行：优先选择 WSL/Ubuntu，其次 PowerShell（不提示安装）
+      try { await ensureFirstRunTerminalSelection(); } catch {}
+      try { await ensureSettingsAutodetect(); } catch {}
+      try { await ensureAllCodexNotifications(); } catch {}
+      if (DIAG) { try { perfLogger.log(`[BOOT] Locale: ${i18n.getCurrentLocale?.()}`); } catch {} }
+      try { registerNotificationIPC(() => mainWindow, { appUserModelId, protocolScheme: PROTOCOL_SCHEME, profileId: instanceProfile.profileId }); } catch {}
+      // 启动时静默检查更新由渲染进程完成（仅提示，不下载）
+      try { setTermDebug(!!getDebugConfig().terminal.pty.debug); } catch {}
+      // 启动历史索引器：后台并发解析、缓存、监听变更
+      try { purgeHistoryCacheIfOutdated(); } catch {}
+      try { await startHistoryIndexer(() => mainWindow); } catch (e) { console.warn('indexer start failed', e); }
+      // 启动后立刻触发一次 UI 强制刷新，确保首次 ready 后显示索引内容
+      try { mainWindow?.webContents.send('history:index:add', { items: [] }); } catch {}
+      try { perfLogger.log(`[BOOT] background init done`); } catch {}
+    })();
   });
 
   const tryStopIndexer = () => {
@@ -2450,7 +2668,12 @@ ipcMain.handle("gemini.usage", async () => {
 ipcMain.handle('settings.get', async () => {
   try { await ensureSettingsAutodetect(); } catch {}
   try { await ensureAllCodexNotifications(); } catch {}
-  return settings.getSettings();
+  const cfg = settings.getSettings() as any;
+  try {
+    const flags = getFeatureFlags();
+    cfg.experimental = { ...(cfg.experimental || {}), multiInstanceEnabled: !!flags.multiInstanceEnabled };
+  } catch {}
+  return cfg;
 });
 
 ipcMain.handle('settings.update', async (_e, partial: any) => {
@@ -2466,7 +2689,27 @@ ipcMain.handle('settings.update', async (_e, partial: any) => {
       try { i18n.setCurrentLocale(String(partial.locale)); } catch {}
     }
   } catch {}
-  const next = settings.updateSettings(partial || {});
+  // 处理实验性功能开关（全局共享，不随 profile 隔离）
+  let updatedMultiInstance: boolean | null = null;
+  try {
+    const exp = partial && typeof partial === "object" ? (partial as any).experimental : null;
+    if (exp && typeof exp === "object" && Object.prototype.hasOwnProperty.call(exp, "multiInstanceEnabled")) {
+      updatedMultiInstance = updateFeatureFlags({ multiInstanceEnabled: !!exp.multiInstanceEnabled }).multiInstanceEnabled;
+    }
+  } catch {}
+  // experimental 不写入 profile settings.json（保持全局一致）
+  const cleanPartial = (() => {
+    try {
+      if (!partial || typeof partial !== "object") return {};
+      const clone = { ...(partial as any) };
+      if (Object.prototype.hasOwnProperty.call(clone, "experimental")) delete (clone as any).experimental;
+      return clone;
+    } catch {
+      return partial || {};
+    }
+  })();
+
+  const next = settings.updateSettings(cleanPartial || {});
   const nextClaudeAgentHistory = !!(next as any)?.claudeCode?.readAgentHistory;
   const nextCodexAccountRecordEnabled = !!(next as any)?.codexAccount?.recordEnabled;
   try {
@@ -2494,7 +2737,13 @@ ipcMain.handle('settings.update', async (_e, partial: any) => {
       try { mainWindow?.webContents.send('history:index:invalidate', { reason: 'settings' }); } catch {}
     }
   } catch {}
-  return next;
+  const merged = next as any;
+  try {
+    const flags = getFeatureFlags();
+    const enabled = updatedMultiInstance == null ? !!flags.multiInstanceEnabled : !!updatedMultiInstance;
+    merged.experimental = { ...(merged.experimental || {}), multiInstanceEnabled: enabled };
+  } catch {}
+  return merged;
 });
 
 // Read-only: return the .codex/sessions roots that are currently in use (or can be detected quickly)
@@ -2594,6 +2843,37 @@ ipcMain.handle('storage.appData.purgeAndQuit', async () => {
       bytesFreed: 0,
       removedEntries: 0,
       skippedEntries: 0,
+      error: String(e),
+    };
+  }
+});
+ipcMain.handle('storage.autoProfiles.info', async () => {
+  try {
+    return await (storage as any).getAutoProfilesInfo();
+  } catch (e: any) {
+    return {
+      ok: false,
+      baseUserData: '',
+      currentUserData: '',
+      count: 0,
+      totalBytes: 0,
+      items: [],
+      error: String(e),
+    };
+  }
+});
+ipcMain.handle('storage.autoProfiles.purge', async (_e, args: { includeCurrent?: boolean } = {}) => {
+  try {
+    return await (storage as any).purgeAutoProfiles(args);
+  } catch (e: any) {
+    return {
+      ok: false,
+      total: 0,
+      removed: 0,
+      skipped: 0,
+      busy: 0,
+      notFound: 0,
+      bytesFreed: 0,
       error: String(e),
     };
   }

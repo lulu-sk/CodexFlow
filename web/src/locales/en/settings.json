@@ -97,6 +97,20 @@
       }
     }
   },
+  "experimental": {
+    "title": "Experimental",
+    "desc": "These features are still evolving and may cause unexpected issues.",
+    "multiInstance": {
+      "label": "Allow multiple instances (Experimental)",
+      "desc": "Bypass the single-window limit and run multiple fully isolated CodexFlow instances. Requires restart after saving.",
+      "howToTitle": "How to use",
+      "howTo1": "Launch the app again (auto assigns an isolated profile).",
+      "howTo2": "Start a named profile with \"CodexFlow.exe\" --profile work.",
+      "warningsTitle": "Potential impact",
+      "warning1": "Resource usage: each instance runs its own index, increasing memory and disk usage.",
+      "warning2": "Compatibility: in rare cases, notifications or external open may focus a different window."
+    }
+  },
   "terminal": "Terminal",
   "terminalPlaceholder": "Select terminal",
   "noTerminalDetected": "No terminal detected",
@@ -255,7 +269,7 @@
   },
   "appData": {
     "label": "App data directory",
-    "desc": "Inspect CodexFlow's user data footprint and clean it when necessary.",
+    "desc": "Inspect the current instance (profile) user data footprint and clean it when necessary. Multi-instance mode uses separate directories per profile.",
     "pathLabel": "Path",
     "pathUnknown": "Path unavailable",
     "sizeLabel": "Disk usage",
@@ -283,6 +297,29 @@
     "fullConfirmDesc": "This deletes everything inside {path} and then closes CodexFlow.",
     "fullConfirmNote": "The action cannot be undone. Back up anything important first.",
     "fullConfirmAction": "Delete and quit",
+    "feedbackErrorTitle": "Operation failed",
+    "feedbackSuccessTitle": "Operation completed"
+  },
+  "autoProfiles": {
+    "label": "Auto profile directories (auto-*)",
+    "desc": "Multi-instance mode creates a separate user data directory for each auto-* profile. Inspect and reclaim unused directories here.",
+    "countLabel": "Folders",
+    "sizeLabel": "Disk usage",
+    "current": "Current",
+    "empty": "No auto-* profile directories found.",
+    "loading": "Loading…",
+    "refresh": "Refresh list",
+    "refreshing": "Refreshing…",
+    "cleanup": "Reclaim directories",
+    "cleaning": "Processing…",
+    "notSupported": "Auto profile directory management is not available in this build.",
+    "loadFailed": "Unable to load auto profile directory info.",
+    "cleanupConfirmTitle": "Reclaim auto profile directories",
+    "cleanupConfirmDesc": "This deletes all unused auto-* profile user data directories (the current instance is not affected).",
+    "cleanupConfirmNote": "This cannot be undone. Directories will be recreated and bootstrapped from the base config when needed.",
+    "cleanupConfirmAction": "Reclaim now",
+    "cleanupSuccess": "Reclaimed {removed} directories. Skipped {skipped} (busy {busy}, missing {notFound}). Estimated freed {freed}.",
+    "cleanupFailed": "Failed to reclaim auto profile directories.",
     "feedbackErrorTitle": "Operation failed",
     "feedbackSuccessTitle": "Operation completed"
   },

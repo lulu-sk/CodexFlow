@@ -1842,6 +1842,8 @@ export default function CodexFlowManagerUI() {
   const [networkPrefs, setNetworkPrefs] = useState<NetworkPrefs>({ proxyEnabled: true, proxyMode: "system", proxyUrl: "", noProxy: "" });
   // ChatGPT/Codex：是否启用“记录账号”（用于自动备份与快速切换）
   const [codexAccountRecordEnabled, setCodexAccountRecordEnabled] = useState<boolean>(false);
+  // 实验性：是否允许多实例（Profile）（需要重启后生效）
+  const [multiInstanceEnabled, setMultiInstanceEnabled] = useState<boolean>(false);
   const [sendMode, setSendMode] = useState<'write_only' | 'write_and_enter'>("write_and_enter");
   // 项目内路径样式：absolute=全路径；relative=相对路径（默认全路径）
   const [projectPathStyle, setProjectPathStyle] = useState<'absolute' | 'relative'>('absolute');
@@ -2240,6 +2242,7 @@ export default function CodexFlowManagerUI() {
           setTerminalFontFamily(normalizeTerminalFontFamily((s as any).terminalFontFamily));
           setTerminalTheme(normalizeTerminalTheme((s as any).terminalTheme));
           setClaudeCodeReadAgentHistory(!!(s as any)?.claudeCode?.readAgentHistory);
+          setMultiInstanceEnabled(!!(s as any)?.experimental?.multiInstanceEnabled);
           // 同步网络代理偏好
           try {
             const net = (s as any).network || {};
@@ -4518,6 +4521,7 @@ export default function CodexFlowManagerUI() {
           locale,
           projectPathStyle,
           theme: themeSetting,
+          multiInstanceEnabled,
           notifications: notificationPrefs,
           network: networkPrefs,
           codexAccount: { recordEnabled: codexAccountRecordEnabled },
@@ -4535,6 +4539,7 @@ export default function CodexFlowManagerUI() {
           const nextTerminalTheme = normalizeTerminalTheme(v.terminalTheme);
           const nextTheme = normalizeThemeSetting(v.theme);
           const nextClaudeAgentHistory = !!v.claudeCodeReadAgentHistory;
+          const nextMultiInstanceEnabled = !!v.multiInstanceEnabled;
           // 先切换语言（内部会写入 settings 并广播），再持久化其它字段
           try { await (window as any).host?.i18n?.setLocale?.(nextLocale); setLocale(nextLocale); } catch {}
           try {
@@ -4549,6 +4554,7 @@ export default function CodexFlowManagerUI() {
               sendMode: nextSend,
               projectPathStyle: nextStyle,
               theme: nextTheme,
+              experimental: { multiInstanceEnabled: nextMultiInstanceEnabled },
               notifications: nextNotifications,
               network: v.network,
               codexAccount: v.codexAccount as any,
@@ -4582,6 +4588,7 @@ export default function CodexFlowManagerUI() {
           setNotificationPrefs(nextNotifications);
           setNetworkPrefs(v.network);
           setCodexAccountRecordEnabled(!!v.codexAccount?.recordEnabled);
+          setMultiInstanceEnabled(nextMultiInstanceEnabled);
           setTerminalFontFamily(nextFontFamily);
           setTerminalTheme(nextTerminalTheme);
           setClaudeCodeReadAgentHistory(nextClaudeAgentHistory);

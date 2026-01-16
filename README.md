@@ -106,6 +106,7 @@
 - **Filter & copy**: Filter the timeline and copy the content you need.
 - **Input booster**: Pasted images appear inline as previews; referenced files stay discoverable.
 - **Multi-project switching**: The sidebar shows active session counts per project to keep workloads balanced.
+- **Multiple instances (profiles, experimental)**: enable it in Settings → Experimental (restart required). Then you can simply launch the app again to open another instance; for a stable profile, use `--profile <name>` (e.g. `CodexFlow.exe --profile work`).
 
 ---
 
