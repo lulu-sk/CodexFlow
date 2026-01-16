@@ -24,5 +24,5 @@
   "sortLabel": "Sort",
   "sortRecent": "Recently used",
   "sortName": "Name (A-Z)",
-  "sortTitle": "Sort: {{label}}"
+  "sortTitle": "Sort: {label}"
 }
