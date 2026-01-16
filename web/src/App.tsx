@@ -59,7 +59,7 @@ import TerminalManager from "@/lib/TerminalManager";
 import { oscBufferDefaults, trimOscBuffer } from "@/lib/oscNotificationBuffer";
 import HistoryCopyButton from "@/components/history/history-copy-button";
 import { toWSLForInsert } from "@/lib/wsl";
-import { extractGeminiProjectHashFromPath, normalizeGeminiPathForHash, sha256Hex, tidyPathCandidate } from "@/lib/gemini-hash";
+import { extractGeminiProjectHashFromPath, deriveGeminiProjectHashCandidatesFromPath } from "@/lib/gemini-hash";
 import { normalizeProvidersSettings } from "@/lib/providers/normalize";
 import { resolveProvider } from "@/lib/providers/resolve";
 import { injectCodexTraceEnv } from "@/providers/codex/commands";
@@ -555,73 +555,6 @@ function keysOfItemCanonical(it: any): string[] {
     }
   } catch {}
   return Array.from(new Set(out));
-}
-
-const mockProjects: Project[] = [
-  {
-    id: uid(),
-    name: "web-admin",
-    winPath: "C:\\\\Users\\you\\code\\web-admin",
-    wslPath: "/mnt/c/Users/you/code/web-admin",
-    hasDotCodex: true,
-    createdAt: Date.now() - 1000 * 60 * 60 * 24 * 30,
-    lastOpenedAt: Date.now() - 1000 * 60 * 60 * 2,
-  },
-  {
-    id: uid(),
-    name: "ml-pipeline",
-    winPath: "D:\\\\work\\ml-pipeline",
-    wslPath: "/mnt/d/work/ml-pipeline",
-    hasDotCodex: true,
-    createdAt: Date.now() - 1000 * 60 * 60 * 24 * 7,
-    lastOpenedAt: Date.now() - 1000 * 60 * 30,
-  },
-  {
-    id: uid(),
-    name: "notes",
-    winPath: "C:\\\\Users\\you\\notes",
-    wslPath: "/mnt/c/Users/you/notes",
-    hasDotCodex: false,
-    createdAt: Date.now() - 1000 * 60 * 60 * 10,
-    lastOpenedAt: Date.now() - 1000 * 60 * 10,
-  },
-];
-
-const mockHistory: Record<string, HistorySession[]> = {
-  // keyed by projectId
-};
-
-// Seed some history per project
-for (const p of mockProjects) {
-  mockHistory[p.id] = [
-    {
-      providerId: "codex",
-      id: uid(),
-      title: `Refactor ${p.name} auth flow`,
-      date: new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString(),
-      messages: [
-        { role: "user", content: [{ type: 'text', text: "帮我把登录后的重定向逻辑抽出来，做成中间件。" }] },
-        {
-          role: "assistant",
-          content: [
-            { type: 'text', text: "可以抽象为 `ensureAuthed` 中间件，在路由进入前检查 token 并统一处理 302...（示例仅展示，UI 只读）" }
-          ],
-        },
-        { role: "user", content: [{ type: 'text', text: "给我一个 react-router 的实现示例。" }] },
-        { role: "assistant", content: [{ type: 'text', text: "示例代码略（这里仅做历史 UI 展示）。" }] },
-      ],
-    },
-    {
-      providerId: "codex",
-      id: uid(),
-      title: `Optimize ${p.name} build size`,
-      date: new Date(Date.now() - 1000 * 60 * 60 * 48).toISOString(),
-      messages: [
-        { role: "user", content: [{ type: 'text', text: "如何去掉 moment 的多语言包？" }] },
-        { role: "assistant", content: [{ type: 'text', text: "使用 webpack IgnorePlugin 或 dayjs 替代。" }] },
-      ],
-    },
-  ];
 }
 
 // ---------- UI Components ----------
@@ -2386,25 +2319,6 @@ export default function CodexFlowManagerUI() {
     return () => { try { off && off(); } catch {} };
   }, [respondQuitConfirm]);
 
-  // Basic smoke tests (non-blocking)
-  useEffect(() => {
-    try {
-      console.assert(mockProjects.length > 0, "[SMOKE] mockProjects should not be empty");
-      console.assert(Array.isArray(historySessions), "[SMOKE] historySessions must be an array");
-    } catch (e) {
-      console.warn("Smoke tests warning:", e);
-    }
-  }, [historySessions]);
-
-  // Alignment test for tabs list (ensure left-justified)
-  useEffect(() => {
-    if (tabsListRef.current) {
-      const cls = tabsListRef.current.className;
-      console.assert(cls.includes('justify-start'), '[TEST] TabsList should be left-justified (has justify-start)');
-      console.assert(!cls.includes('justify-center'), '[TEST] TabsList should not be center-justified');
-    }
-  }, []);
-
   // Filtered projects
   const pendingByProject = useMemo(() => {
     const map: Record<string, number> = {};
@@ -2679,10 +2593,10 @@ export default function CodexFlowManagerUI() {
         const raw = typeof p === "string" ? p.trim() : "";
         if (!raw) return;
         try {
-          const h1 = await sha256Hex(normalizeGeminiPathForHash(raw));
-          const h2 = await sha256Hex(tidyPathCandidate(raw));
-          if (h1) next.add(h1);
-          if (h2) next.add(h2);
+          const hashes = await deriveGeminiProjectHashCandidatesFromPath(raw);
+          for (const h of hashes) {
+            if (h) next.add(h);
+          }
         } catch {}
       };
       await Promise.all([

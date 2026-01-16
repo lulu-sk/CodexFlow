@@ -36,6 +36,86 @@ export type GeminiSessionDetails = {
 };
 
 /**
+ * 将路径规范化为更接近 Windows 侧 projectHash 计算的输入：
+ * - 分隔符统一为反斜杠
+ * - 折叠重复分隔符（保留 UNC 起始双反斜杠）
+ * - 去除尾部分隔符
+ */
+function normalizeGeminiWinPathForHash(p: string): string {
+  try {
+    let s = tidyPathCandidate(p).replace(/\//g, "\\");
+    if (!s) return "";
+    if (s.startsWith("\\\\")) {
+      s = "\\\\" + s.slice(2).replace(/\\{2,}/g, "\\");
+    } else {
+      s = s.replace(/\\{2,}/g, "\\");
+    }
+    s = s.replace(/\\+$/, "");
+    return s;
+  } catch {
+    return tidyPathCandidate(p);
+  }
+}
+
+/**
+ * 根据“项目绝对路径字符串”推导 Gemini 的 projectHash 候选集合（SHA-256 hex）。
+ *
+ * 兼容点：
+ * - Windows：盘符大小写差异、`/` 与 `\\` 分隔符差异
+ * - UNC：`\\\\server\\share\\...`（仅做轻量归一）
+ * - POSIX：仅做 `/` 规范化（不强行转成 Windows 形态，避免误匹配）
+ */
+export function deriveGeminiProjectHashCandidatesFromPath(pathCandidate: string): string[] {
+  try {
+    const raw = typeof pathCandidate === "string" ? pathCandidate.trim() : "";
+    if (!raw) return [];
+
+    const base = tidyPathCandidate(raw);
+    if (!base) return [];
+
+    const forms = new Set<string>();
+    const add = (v: string) => {
+      const t = tidyPathCandidate(v);
+      if (!t) return;
+      forms.add(t);
+    };
+
+    add(base);
+
+    const baseSlash = base.replace(/\\/g, "/");
+    const isDrive = /^[a-zA-Z]:\//.test(baseSlash);
+    const isUNC = base.startsWith("\\\\") || baseSlash.startsWith("//");
+    const isPosix = base.startsWith("/");
+
+    if (isPosix) {
+      add(normalizeGeminiPathForHash(base));
+    } else if (isDrive || isUNC) {
+      add(normalizeGeminiPathForHash(base));
+      add(normalizeGeminiWinPathForHash(base));
+    } else {
+      // 未知形态：保守处理；仅当明显包含 Windows 特征时才生成 Windows 形态
+      add(normalizeGeminiPathForHash(base));
+      if (base.includes("\\") || /^[a-zA-Z]:/.test(base)) add(normalizeGeminiWinPathForHash(base));
+    }
+
+    // 盘符大小写兼容（仅对盘符，不对整串做 lower/upper，避免 POSIX 误匹配）
+    for (const v of Array.from(forms)) {
+      const m = v.match(/^([a-zA-Z]):([\\/].*)$/);
+      if (!m) continue;
+      const rest = m[2];
+      add(`${m[1].toUpperCase()}:${rest}`);
+      add(`${m[1].toLowerCase()}:${rest}`);
+    }
+
+    const hashes = new Set<string>();
+    for (const v of forms) hashes.add(sha256Hex(v));
+    return Array.from(hashes);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Gemini CLI 会话 JSON 解析（支持索引阶段 summaryOnly）。
  */
 export async function parseGeminiSessionFile(filePath: string, stat: Stats, opts?: GeminiParseOptions): Promise<GeminiSessionDetails> {
@@ -112,9 +192,8 @@ export async function parseGeminiSessionFile(filePath: string, stat: Stats, opts
   cwd = tryExtractGeminiCwdFromAny(any, items) || undefined;
   if (cwd && projectHash) {
     const want = projectHash.toLowerCase();
-    const normSlash = normalizeGeminiPathForHash(cwd);
-    const normRaw = tidyPathCandidate(cwd);
-    const ok = sha256Hex(normSlash) === want || sha256Hex(normRaw) === want;
+    const cands = deriveGeminiProjectHashCandidatesFromPath(cwd);
+    const ok = cands.includes(want);
     if (!ok) cwd = undefined;
   }
 

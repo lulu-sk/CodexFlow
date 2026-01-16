@@ -14,8 +14,7 @@ import settings from "./settings";
 import { getClaudeRootCandidatesFastAsync, discoverClaudeSessionFiles } from "./agentSessions/claude/discovery";
 import { getGeminiRootCandidatesFastAsync, discoverGeminiSessionFiles } from "./agentSessions/gemini/discovery";
 import { parseClaudeSessionFile } from "./agentSessions/claude/parser";
-import { parseGeminiSessionFile, normalizeGeminiPathForHash } from "./agentSessions/gemini/parser";
-import { sha256Hex } from "./agentSessions/shared/crypto";
+import { parseGeminiSessionFile, deriveGeminiProjectHashCandidatesFromPath } from "./agentSessions/gemini/parser";
 import { filterHistoryPreviewText } from "./agentSessions/shared/preview";
 
 // 仅在存在时使用 chokidar；否则跳过监听
@@ -1183,20 +1182,33 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
       if (fs.existsSync(projectsPath)) {
         const raw = JSON.parse(fs.readFileSync(projectsPath, "utf8")) as any;
         const items: any[] = Array.isArray(raw) ? raw : [];
-        const register = (p?: unknown) => {
+        /**
+         * 将项目路径注册进 `hash -> cwd` 映射（用于 Gemini 会话缺失 cwd 时的归属与继续对话）。
+         */
+        const register = (p?: unknown, kind?: "win" | "wsl") => {
           try {
             if (typeof p !== "string") return;
             const t = tidyPathCandidate(p);
             if (!t) return;
-            const h1 = sha256Hex(normalizeGeminiPathForHash(t));
-            const h2 = sha256Hex(t);
-            if (h1 && !geminiHashToCwd.has(h1)) geminiHashToCwd.set(h1, t);
-            if (h2 && !geminiHashToCwd.has(h2)) geminiHashToCwd.set(h2, t);
+            // 直接用路径字符串推导 hash（兼容盘符大小写与 /、\\ 分隔符差异）
+            for (const h of deriveGeminiProjectHashCandidatesFromPath(t)) {
+              if (h && !geminiHashToCwd.has(h)) geminiHashToCwd.set(h, t);
+            }
+            // 额外：当仅有 WSL 的 /mnt/<drive> 路径时，派生 Windows 盘符路径以覆盖 Windows 侧 Gemini hash
+            if (kind === "wsl") {
+              const m = t.match(/^\/mnt\/([a-zA-Z])\/(.*)$/);
+              if (m) {
+                const win = `${m[1].toUpperCase()}:\\${m[2].replace(/\//g, "\\")}`;
+                for (const h of deriveGeminiProjectHashCandidatesFromPath(win)) {
+                  if (h && !geminiHashToCwd.has(h)) geminiHashToCwd.set(h, win);
+                }
+              }
+            }
           } catch {}
         };
         for (const it of items) {
-          register(it?.wslPath);
-          register(it?.winPath);
+          register(it?.wslPath, "wsl");
+          register(it?.winPath, "win");
         }
       }
     } catch {}

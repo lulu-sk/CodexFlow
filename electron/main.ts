@@ -18,9 +18,7 @@ import { getSessionsRootsFastAsync } from "./wsl";
 import { getClaudeRootCandidatesFastAsync } from "./agentSessions/claude/discovery";
 import { getGeminiRootCandidatesFastAsync } from "./agentSessions/gemini/discovery";
 import { parseClaudeSessionFile } from "./agentSessions/claude/parser";
-import { parseGeminiSessionFile, extractGeminiProjectHashFromPath, normalizeGeminiPathForHash } from "./agentSessions/gemini/parser";
-import { sha256Hex } from "./agentSessions/shared/crypto";
-import { tidyPathCandidate } from "./agentSessions/shared/path";
+import { parseGeminiSessionFile, extractGeminiProjectHashFromPath, deriveGeminiProjectHashCandidatesFromPath } from "./agentSessions/gemini/parser";
 import { hasNonEmptyIOFromMessages } from "./agentSessions/shared/empty";
 import { perfLogger } from "./log";
 import settings, { ensureSettingsAutodetect, ensureFirstRunTerminalSelection, type ThemeSetting as SettingsThemeSetting, type AppSettings } from "./settings";
@@ -1659,6 +1657,9 @@ ipcMain.handle('history.list', async (_e, args: { projectWslPath?: string; proje
      * 兼容 Gemini 的 projectHash：部分会话缺失 cwd 时，需用项目路径反推 hash 来做归属过滤。
      */
     const geminiHashNeedles = new Set<string>();
+    /**
+     * 从 Windows 盘符路径推导 WSL 的 /mnt/<drive>/...（仅规则转换）。
+     */
     const deriveWslFromWinPath = (p?: string): string => {
       try {
         const s = String(p || '').trim();
@@ -1670,19 +1671,37 @@ ipcMain.handle('history.list', async (_e, args: { projectWslPath?: string; proje
         return '';
       }
     };
+    /**
+     * 从 WSL 的 /mnt/<drive>/... 推导 Windows 盘符路径（仅规则转换）。
+     */
+    const deriveWinFromWslMountPath = (p?: string): string => {
+      try {
+        const s = String(p || "").trim();
+        if (!s) return "";
+        const m = s.match(/^\/mnt\/([a-zA-Z])\/(.*)$/);
+        if (!m) return "";
+        return `${m[1].toUpperCase()}:\\${m[2].replace(/\//g, "\\")}`;
+      } catch {
+        return "";
+      }
+    };
+    /**
+     * 将项目路径加入 Gemini projectHash 候选集合（兼容分隔符/盘符大小写差异）。
+     */
     const addGeminiHashCandidate = (p?: string) => {
       try {
-        const raw = typeof p === 'string' ? p.trim() : '';
+        const raw = typeof p === "string" ? p.trim() : "";
         if (!raw) return;
-        const h1 = sha256Hex(normalizeGeminiPathForHash(raw));
-        const h2 = sha256Hex(tidyPathCandidate(raw));
-        if (h1) geminiHashNeedles.add(h1);
-        if (h2) geminiHashNeedles.add(h2);
+        const hashes = deriveGeminiProjectHashCandidatesFromPath(raw);
+        for (const h of hashes) {
+          if (h) geminiHashNeedles.add(h);
+        }
       } catch {}
     };
     addGeminiHashCandidate(args.projectWslPath);
     addGeminiHashCandidate(args.projectWinPath);
     addGeminiHashCandidate(deriveWslFromWinPath(args.projectWinPath));
+    addGeminiHashCandidate(deriveWinFromWslMountPath(args.projectWslPath));
     const all = getIndexedSummaries();
     // Minimal probe logging (opt-in): only when CODEX_HISTORY_DEBUG=1
     const dbg = () => { try { return !!getDebugConfig().history.debug; } catch { return false; } };
