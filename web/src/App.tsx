@@ -47,6 +47,7 @@ import {
   ArrowDownAZ,
   Check,
   Search,
+  TriangleAlert,
 } from "lucide-react";
 import AboutSupport from "@/components/about-support";
 import { ProviderSwitcher } from "@/components/topbar/provider-switcher";
@@ -1728,6 +1729,22 @@ export default function CodexFlowManagerUI() {
   const historyCtxMenuRef = useRef<HTMLDivElement | null>(null);
   // 历史删除确认（应用内对话框，替代 window.confirm，避免同步阻塞导致的焦点/指针异常）
   const [confirmDelete, setConfirmDelete] = useState<{ open: boolean; item: HistorySession | null; groupKey: string | null }>({ open: false, item: null, groupKey: null });
+  // 退出确认（主进程发起，渲染层展示以保持 UI 风格一致）
+  const [quitConfirm, setQuitConfirm] = useState<{ open: boolean; token: string | null; count: number }>(() => ({ open: false, token: null, count: 0 }));
+  const quitConfirmTokenRef = useRef<string | null>(null);
+  useEffect(() => { quitConfirmTokenRef.current = quitConfirm.token; }, [quitConfirm.token]);
+
+  /**
+   * 回复主进程的退出确认结果，并关闭对话框。
+   */
+  const respondQuitConfirm = useCallback(async (ok: boolean, tokenOverride?: string | null) => {
+    const token = String(tokenOverride ?? quitConfirmTokenRef.current ?? "").trim();
+    // 先清空 token，避免重复回包
+    quitConfirmTokenRef.current = null;
+    setQuitConfirm({ open: false, token: null, count: 0 });
+    if (!token) return;
+    try { await window.host.app.respondQuitConfirm?.(token, ok); } catch {}
+  }, []);
   // 历史索引失效计数：用于在不切换项目的情况下触发强制刷新。
   const [historyInvalidateNonce, setHistoryInvalidateNonce] = useState<number>(0);
   const [projectCtxMenu, setProjectCtxMenu] = useState<{ show: boolean; x: number; y: number; project: Project | null }>({ show: false, x: 0, y: 0, project: null });
@@ -2338,6 +2355,23 @@ export default function CodexFlowManagerUI() {
     } catch {}
     return () => { try { off && off(); } catch {} };
   }, [focusTabFromNotification]);
+
+  // 监听主进程“退出确认”请求：用应用内 Dialog 替代原生对话框，保持 UI 风格一致
+  useEffect(() => {
+    let off: (() => void) | undefined;
+    try {
+      off = window.host.app?.onQuitConfirm?.((payload: { token: string; count: number }) => {
+        const token = String(payload?.token || "").trim();
+        const count = Math.max(0, Math.floor(Number(payload?.count) || 0));
+        if (!token) return;
+        const prev = quitConfirmTokenRef.current;
+        if (prev && prev !== token) void respondQuitConfirm(false, prev);
+        quitConfirmTokenRef.current = token;
+        setQuitConfirm({ open: true, token, count });
+      });
+    } catch {}
+    return () => { try { off && off(); } catch {} };
+  }, [respondQuitConfirm]);
 
   // Basic smoke tests (non-blocking)
   useEffect(() => {
@@ -4139,6 +4173,45 @@ export default function CodexFlowManagerUI() {
         </div>
       </ScrollArea>
 
+      {/* 退出确认弹窗（优化版：简洁自然） */}
+      <Dialog
+        open={quitConfirm.open}
+        onOpenChange={(open) => {
+          if (!open) {
+            void respondQuitConfirm(false);
+            try { document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); } catch {}
+            try { document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true } as any)); } catch {}
+            return;
+          }
+          setQuitConfirm((prev) => ({ ...prev, open: true }));
+        }}
+      >
+        <DialogContent className="max-w-[400px] p-6 border border-[var(--cf-border)] bg-[var(--cf-surface)] shadow-2xl sm:rounded-xl">
+          <div className="flex flex-col gap-5">
+            <div className="flex gap-4 items-start">
+              <TriangleAlert className="h-6 w-6 text-[var(--cf-yellow)] mt-0.5 shrink-0" />
+              <div className="flex-1">
+                <DialogTitle className="text-lg font-semibold leading-none mb-2">
+                  {t("common:quitConfirm.title")}
+                </DialogTitle>
+                <div className="text-sm text-[var(--cf-text-muted)] space-y-1">
+                  <p className="leading-normal">{t("common:quitConfirm.message", { count: quitConfirm.count })}</p>
+                  <p className="text-xs opacity-70 leading-normal">{t("common:quitConfirm.detail")}</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 mt-1">
+              <Button variant="outline" className="h-9 px-4 min-w-[80px]" onClick={() => { void respondQuitConfirm(false); }}>
+                {t("common:cancel")}
+              </Button>
+              <Button variant="danger" className="h-9 px-4 min-w-[80px]" onClick={() => { void respondQuitConfirm(true); }}>
+                {t("common:quitConfirm.quit")}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* 历史删除确认弹窗（非阻塞） */}
       <Dialog open={confirmDelete.open} onOpenChange={(v) => {

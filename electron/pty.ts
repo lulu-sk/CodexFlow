@@ -29,6 +29,13 @@ export class PTYManager {
   }
 
   /**
+   * 获取当前仍处于活跃状态的 PTY 会话数量。
+   */
+  getActiveSessionCount(): number {
+    return this.sessions.size;
+  }
+
+  /**
    * 打开一个 PTY 会话。
    * - 允许通过 opts.terminal 覆盖全局 settings.terminal，用于实现 Provider 级别环境隔离。
    */

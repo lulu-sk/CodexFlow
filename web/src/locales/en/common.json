@@ -12,6 +12,13 @@
     "language_en": "English",
     "language_zh": "简体中文"
   },
+  "quitConfirm": {
+    "title": "Confirm exit",
+    "badge": "Sessions: {count}",
+    "message": "There are still {count} terminal session(s) running. Quit anyway?",
+    "detail": "Quitting will close all running terminal sessions.",
+    "quit": "Quit"
+  },
   "files": {
     "copyFileNameWithExt": "Copy filename (with extension)",
     "cannotOpenPath": "Unable to open path",

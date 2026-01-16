@@ -12,6 +12,13 @@
     "language_en": "English",
     "language_zh": "简体中文"
   },
+  "quitConfirm": {
+    "title": "确认退出",
+    "badge": "会话：{count}",
+    "message": "还有 {count} 个终端会话正在运行，确定要退出吗？",
+    "detail": "退出将关闭所有仍在运行的终端会话。",
+    "quit": "退出"
+  },
   "files": {
     "copyFileNameWithExt": "复制文件名（含后缀）",
     "cannotOpenPath": "无法打开路径",

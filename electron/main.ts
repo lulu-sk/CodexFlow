@@ -30,6 +30,8 @@ import wsl from "./wsl";
 import fileIndex from "./fileIndex";
 import images from "./images";
 import { installInputContextMenu } from "./contextMenu";
+import { getQuitConfirmDialogTextForLocale } from "./locales/quitConfirm";
+import { registerQuitConfirmIPC, requestQuitConfirmFromRenderer } from "./quitConfirmBridge";
 import { CodexBridge, type CodexBridgeOptions } from "./codex/bridge";
 import { applyCodexAuthBackupAsync, deleteCodexAuthBackupAsync, isSafeAuthBackupId, listCodexAuthBackupsAsync, readCodexAuthBackupMetaAsync, resolveCodexAccountSignature, resolveCodexAuthJsonPathAsync, upsertCodexAuthBackupAsync, upsertCodexAuthBackupMetaOnlyAsync } from "./codex/authBackups";
 import { ensureAllCodexNotifications } from "./codex/config";
@@ -45,6 +47,8 @@ import { readDebugConfig, getDebugConfig, onDebugChanged, watchDebugConfig, upda
 
 let mainWindow: BrowserWindow | null = null;
 let DIAG = false;
+let quitConfirmed = false;
+let quitConfirming = false;
 function applyDebugGlobalsFromConfig(): void {
   try {
     const cfg = getDebugConfig();
@@ -59,6 +63,9 @@ const ptyManager = new PTYManager(() => mainWindow);
 const sessionPastedImages = new Set<string>();
 const codexBridges = new Map<string, CodexBridge>();
 
+// 注册“退出确认”渲染进程回包 IPC（用于自定义 UI 风格的确认弹窗）
+try { registerQuitConfirmIPC(); } catch {}
+
 // 记录每个渲染进程声明的活跃根集合，统一合并后再驱动 fileIndex，避免多窗口互相清空 watcher
 const activeRootsBySender = new Map<number, Set<string>>();
 const activeRootsSenderHooked = new Set<number>();
@@ -70,6 +77,36 @@ function applyMergedActiveRoots(): { closed: number; remain: number; trimmed: nu
   }
   const mergedList = Array.from(merged);
   return (fileIndex as any).setActiveRoots ? (fileIndex as any).setActiveRoots(mergedList) : { closed: 0, remain: 0, trimmed: 0 };
+}
+
+/**
+ * 当仍有终端会话未关闭时，弹出确认框；返回用户是否选择“退出”。
+ */
+async function confirmQuitWithActiveTerminals(win: BrowserWindow | null, count: number): Promise<boolean> {
+  try {
+    // 优先使用渲染进程自定义弹窗（保持 UI 风格一致）
+    const rendererRes = await requestQuitConfirmFromRenderer(win, count, { timeoutMs: 30_000 });
+    if (rendererRes !== null) return rendererRes;
+
+    // 回退：原生对话框（渲染进程不可用时）
+    const L = getQuitConfirmDialogTextForLocale(i18n.getCurrentLocale?.(), count);
+    const options: Electron.MessageBoxOptions = {
+      type: "warning",
+      title: L.title,
+      message: L.message,
+      detail: L.detail,
+      buttons: [L.cancel, L.quit],
+      defaultId: 1,
+      cancelId: 0,
+      noLink: true,
+      normalizeAccessKeys: true,
+    };
+    const res = win ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options);
+    return res.response === 1;
+  } catch {
+    // 若对话框弹出失败，为避免卡死退出流程，默认允许退出
+    return true;
+  }
 }
 
 /**
@@ -948,6 +985,29 @@ function createWindow() {
     });
   } catch {}
 
+  // 关闭窗口/退出应用前：若仍有终端会话未关闭，弹窗确认（避免误关导致任务中断）
+  mainWindow.on("close", (event) => {
+    try {
+      if (quitConfirmed) return;
+      const count = ptyManager.getActiveSessionCount();
+      if (count <= 0) return;
+      event.preventDefault();
+      if (quitConfirming) return;
+      quitConfirming = true;
+      const win = mainWindow;
+      void (async () => {
+        try {
+          const ok = await confirmQuitWithActiveTerminals(win, count);
+          if (!ok) return;
+          quitConfirmed = true;
+          try { app.quit(); } catch {}
+        } finally {
+          quitConfirming = false;
+        }
+      })();
+    } catch {}
+  });
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
@@ -1137,7 +1197,29 @@ if (!gotLock) {
     try { stopHistoryIndexer().catch(() => {}); } catch {}
   };
 
-  app.on('before-quit', () => {
+  app.on('before-quit', (event) => {
+    try {
+      if (!quitConfirmed) {
+        const count = ptyManager.getActiveSessionCount();
+        if (count > 0) {
+          event.preventDefault();
+          if (quitConfirming) return;
+          quitConfirming = true;
+          const win = mainWindow;
+          void (async () => {
+            try {
+              const ok = await confirmQuitWithActiveTerminals(win, count);
+              if (!ok) return;
+              quitConfirmed = true;
+              try { app.quit(); } catch {}
+            } finally {
+              quitConfirming = false;
+            }
+          })();
+          return;
+        }
+      }
+    } catch {}
     disposeAllPtys();
     cleanupPastedImages().catch(() => {});
     disposeCodexBridges();

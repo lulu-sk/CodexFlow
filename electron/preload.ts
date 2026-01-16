@@ -18,7 +18,21 @@ contextBridge.exposeInMainWorld('host', {
         const payload = typeof theme === 'string' ? { mode: theme } : theme;
         return await ipcRenderer.invoke('app.setTitleBarTheme', payload);
       } catch (e) { return { ok: false, error: String(e) } as any; }
-    }
+    },
+    /**
+     * 监听主进程发起的“退出确认”请求（用于渲染进程自定义弹窗样式）。
+     */
+    onQuitConfirm: (handler: (payload: { token: string; count: number }) => void) => {
+      const listener = (_: unknown, payload: { token: string; count: number }) => handler(payload);
+      ipcRenderer.on('app:quitConfirm', listener);
+      return () => ipcRenderer.removeListener('app:quitConfirm', listener);
+    },
+    /**
+     * 回复主进程的“退出确认”结果。
+     */
+    respondQuitConfirm: async (token: string, ok: boolean): Promise<{ ok: boolean; error?: string }> => {
+      try { return await ipcRenderer.invoke('app.quitConfirm.respond', { token, ok }); } catch (e) { return { ok: false, error: String(e) } as any; }
+    },
   },
   debug: {
     get: async (): Promise<any> => {
