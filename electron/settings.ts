@@ -38,6 +38,11 @@ export type CodexAccountSettings = {
   lastSeenSignatureByRuntime?: Record<string, string>;
 };
 
+export type ExperimentalSettings = {
+  /** 是否启用多实例（Profile）（实验性；全局共享，不随 profile 隔离） */
+  multiInstanceEnabled?: boolean;
+};
+
 export type ThemeSetting = 'light' | 'dark' | 'system';
 
 export type ProviderId = string;
@@ -107,6 +112,8 @@ export type AppSettings = {
   terminalFontFamily?: string;
   /** Claude Code 本地会话读取策略（仅影响索引/预览，不影响 CLI 本身）。 */
   claudeCode?: ClaudeCodeSettings;
+  /** 实验性功能开关（注意：该字段不随 profile 隔离；由主进程统一维护） */
+  experimental?: ExperimentalSettings;
 };
 
 function getStorePath() {
@@ -318,6 +325,8 @@ function mergeWithDefaults(raw: Partial<AppSettings>, preloadedDistros?: DistroI
     claudeCode: { ...DEFAULT_CLAUDE_CODE },
   };
   const merged = Object.assign({}, defaults, raw);
+  // experimental 由主进程统一维护（全局共享），不写入/不读取 profile settings.json，避免各 profile 状态不一致。
+  try { delete (merged as any).experimental; } catch {}
   merged.terminal = normalizeTerminal((raw as any)?.terminal ?? merged.terminal);
   merged.notifications = {
     ...DEFAULT_NOTIFICATIONS,

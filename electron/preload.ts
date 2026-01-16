@@ -193,6 +193,12 @@ contextBridge.exposeInMainWorld('host', {
     purgeAppDataAndQuit: async () => {
       return await ipcRenderer.invoke('storage.appData.purgeAndQuit');
     },
+    listAutoProfiles: async () => {
+      return await ipcRenderer.invoke('storage.autoProfiles.info');
+    },
+    purgeAutoProfiles: async (args?: { includeCurrent?: boolean }) => {
+      return await ipcRenderer.invoke('storage.autoProfiles.purge', args);
+    },
   },
   wsl: {
     listDistros: async () => {

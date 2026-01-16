@@ -185,7 +185,11 @@ export async function scanProjectsAsync(roots?: string[], verbose = false): Prom
     for (const d of distros) {
       const home = await getDistroHomeAsync(d.name);
       if (!home) continue;
-      const findOut = await execInWslAsync(d.name, `find \"${home}/.codex/sessions\" -type f -name \"*.jsonl\" 2>/dev/null || true`);
+      const findOut = await execInWslAsync(
+        d.name,
+        `find \"${home}/.codex/sessions\" -type f -name \"*.jsonl\" 2>/dev/null || true`,
+        { timeoutMs: 20_000 },
+      );
       if (!findOut) continue;
       const jsonFiles = findOut.split(/\r?\n/).filter(Boolean);
       await writeDbg(`[WSL] ${d.name} sessions files=${jsonFiles.length}`);
@@ -399,7 +403,7 @@ export async function scanProjectsAsync(roots?: string[], verbose = false): Prom
       let exists = await pathExists(sessionsRoot);
       if (!exists) {
         try {
-          const listing = await execInWslAsync(d.name, `ls -A "${home}/.codex/sessions" 2>/dev/null || true`);
+          const listing = await execInWslAsync(d.name, `ls -A "${home}/.codex/sessions" 2>/dev/null || true`, { timeoutMs: 8000 });
           if (!listing) continue;
         } catch { continue; }
       }

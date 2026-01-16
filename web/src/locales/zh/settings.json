@@ -97,6 +97,20 @@
       }
     }
   },
+  "experimental": {
+    "title": "实验性功能",
+    "desc": "以下功能仍在打磨中，可能存在兼容性与稳定性风险。",
+    "multiInstance": {
+      "label": "允许多开（实验性）",
+      "desc": "解除单窗口限制，允许同时运行多个数据完全隔离的 CodexFlow 实例。保存后需重启生效。",
+      "howToTitle": "如何使用",
+      "howTo1": "直接多开：再次打开应用即可（自动分配独立环境）。",
+      "howTo2": "指定环境：通过命令行参数 \"CodexFlow.exe\" --profile work 启动。",
+      "warningsTitle": "潜在影响",
+      "warning1": "资源消耗：每个实例独立运行索引，将增加内存与磁盘占用。",
+      "warning2": "兼容性：少数情况下，通知或从外部打开时，可能跳到另一个窗口。"
+    }
+  },
   "terminal": "终端",
   "terminalPlaceholder": "选择终端",
   "noTerminalDetected": "未检测到终端",
@@ -255,7 +269,7 @@
   },
   "appData": {
     "label": "应用数据目录",
-    "desc": "查看 CodexFlow 在用户数据目录中的占用情况，可按需清理缓存。",
+    "desc": "查看当前实例（Profile）的用户数据目录占用情况，可按需清理缓存；多实例模式下每个实例都有独立目录。",
     "pathLabel": "路径",
     "pathUnknown": "暂未获取路径",
     "sizeLabel": "占用空间",
@@ -283,6 +297,29 @@
     "fullConfirmDesc": "将删除 {path} 内的所有文件，并在操作完成后立即退出 CodexFlow。",
     "fullConfirmNote": "该操作不可恢复，请确保已备份重要数据。",
     "fullConfirmAction": "彻底删除并关闭",
+    "feedbackErrorTitle": "操作失败",
+    "feedbackSuccessTitle": "操作完成"
+  },
+  "autoProfiles": {
+    "label": "自动实例目录（auto-*）",
+    "desc": "多实例模式下会为 auto-* Profile 创建独立用户数据目录；这里可查看并一键回收未占用目录。",
+    "countLabel": "目录数",
+    "sizeLabel": "占用空间",
+    "current": "当前实例",
+    "empty": "未发现 auto-* 实例目录。",
+    "loading": "加载中…",
+    "refresh": "刷新列表",
+    "refreshing": "刷新中…",
+    "cleanup": "回收目录",
+    "cleaning": "处理中…",
+    "notSupported": "当前版本暂不支持自动实例目录管理。",
+    "loadFailed": "无法读取自动实例目录信息。",
+    "cleanupConfirmTitle": "回收自动实例目录",
+    "cleanupConfirmDesc": "将删除所有未占用的 auto-* Profile 用户数据目录（不会影响当前实例）。",
+    "cleanupConfirmNote": "该操作不可恢复；下次创建对应 Profile 时会自动重新生成目录并复制基础配置。",
+    "cleanupConfirmAction": "确认回收",
+    "cleanupSuccess": "已回收 {removed} 个目录，跳过 {skipped} 个（占用 {busy}，未找到 {notFound}），预计释放 {freed}。",
+    "cleanupFailed": "回收自动实例目录失败。",
     "feedbackErrorTitle": "操作失败",
     "feedbackSuccessTitle": "操作完成"
   },
