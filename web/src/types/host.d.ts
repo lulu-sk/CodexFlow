@@ -344,6 +344,10 @@ export interface AppAPI {
   getPaths(): Promise<{ licensePath?: string; noticePath?: string }>;
   /** 仅 Windows：设置原生标题栏主题（light/dark） */
   setTitleBarTheme?(theme: { mode: 'light' | 'dark'; source?: ThemeSetting } | 'light' | 'dark'): Promise<{ ok: boolean; error?: string }>;
+  /** 主进程发起的“退出确认”请求（用于渲染进程自定义弹窗样式） */
+  onQuitConfirm?(handler: (payload: { token: string; count: number }) => void): () => void;
+  /** 回复主进程的“退出确认”结果 */
+  respondQuitConfirm?(token: string, ok: boolean): Promise<{ ok: boolean; error?: string }>;
 }
 
 export interface EnvAPI {
