@@ -185,6 +185,13 @@
     "relative": "Relative path (to project root)",
     "help": "Pick the path format inserted into conversations."
   },
+  "dragDrop": {
+    "title": "Drag & drop",
+    "warnOutsideProject": {
+      "label": "Warn about items outside the project",
+      "desc": "Show a confirmation dialog when dragged paths are not under the current project directory."
+    }
+  },
   "notifications": {
     "label": "Task completion alerts",
     "help": "Get notified automatically when an agent finishes its task. Alerts only appear when you switch to another window or tab, so they won't interrupt your current work.",

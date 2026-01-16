@@ -4,13 +4,15 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { FolderOpenDot, FileText, ScrollText } from "lucide-react";
+import { FolderOpenDot, FileText, ScrollText, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import AtCommandPalette, { type PaletteLevel } from "@/components/at-mention-new/AtCommandPalette";
 import type { AtCategoryId, AtItem, SearchScope } from "@/types/at";
 import { getCaretViewportPosition } from "@/components/at-mention-new/caret";
-import { toWSLForInsert, joinWinAbs, toWslRelOrAbsForProject } from "@/lib/wsl";
+import { toWSLForInsert, joinWinAbs, toWslRelOrAbsForProject, isWinPathUnderRoot } from "@/lib/wsl";
 import { extractWinPathsFromDataTransfer, probeWinPathKind, preferExistingWinPathCandidate, type WinPathProbeResult } from "@/lib/dragDrop";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
 import {
   extractImagesFromPasteEvent,
   isImageFileName,
@@ -54,6 +56,10 @@ export interface PathChipsInputProps extends Omit<React.InputHTMLAttributes<HTML
   draftInputClassName?: string;
   /** 是否为滚动条预留左右对称边距，仅在全屏输入时开启以保持视觉等宽 */
   balancedScrollbarGutter?: boolean;
+  /** 拖拽添加的资源不在当前项目目录时提醒（默认开启） */
+  warnOutsideProjectDrop?: boolean;
+  /** 更新“目录外资源提醒”开关（用于弹窗内“一键不再提醒”即时生效） */
+  onWarnOutsideProjectDropChange?: (enabled: boolean) => void | Promise<void>;
 }
 
 function uid(): string {
@@ -192,6 +198,8 @@ export default function PathChipsInput({
   onKeyDown: externalOnKeyDown,
   draftInputClassName,
   balancedScrollbarGutter = false,
+  warnOutsideProjectDrop = true,
+  onWarnOutsideProjectDropChange,
   ...rest
 }: PathChipsInputProps) {
   const { t } = useTranslation(['common', 'history']);
@@ -206,6 +214,14 @@ export default function PathChipsInput({
   const [anchor, setAnchor] = useState<{ left: number; top: number; height: number } | null>(null);
   const atIndexRef = useRef<number | null>(null);
   const dismissedAtIndexRef = useRef<number | null>(null);
+
+  const [outsideDropDialog, setOutsideDropDialog] = useState<{
+    open: boolean;
+    outside: string[];
+    pending: { list: string[]; droppedFiles: File[] } | null;
+  }>({ open: false, outside: [], pending: null });
+  const [outsideDropApplying, setOutsideDropApplying] = useState(false);
+  const [outsideDropDontWarnAgain, setOutsideDropDontWarnAgain] = useState(false);
 
   // 外层容器：相对定位。为避免滚动时附件 Chip 遮挡文本，
   // 采用常规文档流展示 Chips（不再叠放在输入区域上）。
@@ -331,6 +347,113 @@ export default function PathChipsInput({
     }
     onChipsChange(unique);
   }, [chips, onChipsChange]);
+
+  /**
+   * 将拖拽到输入框的 Windows 路径转换为 Chip 并追加（包含目录判定、图片预览与去重）。
+   * 说明：该函数只处理已解析好的路径列表；DataTransfer 相关读取需在 onDrop 内完成。
+   */
+  const applyDroppedWinPaths = useCallback(async (list: string[], droppedFiles: File[]) => {
+    try {
+      if (!Array.isArray(list) || list.length === 0) return;
+
+      let probes: WinPathProbeResult[] = [];
+      try {
+        probes = await Promise.all(list.map(async (wp) => {
+          try { return await probeWinPathKind(wp); } catch { return { kind: "unknown", exists: false, isDirectory: false, isFile: false }; }
+        }));
+      } catch {}
+
+      const existingKeys = new Set<string>();
+      for (const chip of chips) {
+        const k = buildChipDedupeKey(chip);
+        if (k) existingKeys.add(k);
+      }
+      const localKeys = new Set<string>();
+      const candidates = list.map((wp, i) => {
+        const wsl = toWslRelOrAbsForProject(wp, winRoot, projectPathStyle === 'absolute' ? 'absolute' : 'relative');
+        const probe = probes[i];
+        const isDir = probe?.kind === "directory";
+        const isImage = !isDir && isImageFileName(wp);
+        // 当 wsl 为 "."（项目根）时，展示友好的标签：回退到 Windows 路径的最后一段，而不是 "."
+        const labelBase = (wsl === ".")
+          ? (String(wp).split(/[/\\]/).pop() || ".")
+          : ((wsl || wp).split(/[/\\]/).pop() || "");
+        const key = buildChipDedupeKey({ winPath: wp, wslPath: wsl, fileName: labelBase } as any);
+        return { wp, wsl, isDir, isImage, labelBase, key };
+      }).filter((it) => {
+        if (!it.key) return true;
+        if (existingKeys.has(it.key)) return false;
+        if (localKeys.has(it.key)) return false;
+        localKeys.add(it.key);
+        return true;
+      });
+      if (candidates.length === 0) return;
+
+      // 预览策略：优先使用 DataTransfer.files 生成 blob URL（避免 file:// 在 dev/受限环境下被拦截）
+      // 注意：仅为“最终会加入 chips 的图片”创建 blob URL，避免去重后遗留未释放的 URL
+      const needImagePreviewKeys = new Set<string>();
+      for (const it of candidates) {
+        if (!it.isImage) continue;
+        needImagePreviewKeys.add(normalizeWindowsPathForDedupe(it.wp));
+      }
+      const previewByWinPathKey = new Map<string, string>();
+      try {
+        if (needImagePreviewKeys.size > 0) {
+          for (const f of droppedFiles) {
+            const p = String((f as any).path || "").trim();
+            if (!p) continue;
+            const k = normalizeWindowsPathForDedupe(p);
+            if (!needImagePreviewKeys.has(k)) continue;
+            if (previewByWinPathKey.has(k)) continue;
+            try {
+              const url = URL.createObjectURL(f as any);
+              previewByWinPathKey.set(k, url);
+            } catch {}
+          }
+        }
+      } catch {}
+
+      const items: SavedImage[] = candidates.map((it) => {
+        const previewUrl = it.isImage ? (previewByWinPathKey.get(normalizeWindowsPathForDedupe(it.wp)) || "") : "";
+        return {
+          id: uid(),
+          blob: new Blob(),
+          previewUrl,
+          type: "text/path",
+          size: 0,
+          saved: true,
+          winPath: it.wp,
+          wslPath: it.wsl,
+          fileName: it.labelBase || (it.isImage ? t('common:files.image') : t('common:files.path')),
+          fromPaste: false,
+          isDir: it.isDir,
+          chipKind: it.isImage ? "image" : "file",
+        } as any;
+      });
+      appendChips(items);
+    } catch {}
+  }, [appendChips, chips, projectPathStyle, t, winRoot]);
+
+  /**
+   * 打开“目录外资源提醒”弹窗，并缓存待处理的拖拽数据。
+   */
+  const openOutsideDropConfirm = useCallback((args: { outside: string[]; list: string[]; droppedFiles: File[] }) => {
+    setOutsideDropDontWarnAgain(false);
+    setOutsideDropDialog({
+      open: true,
+      outside: Array.isArray(args.outside) ? args.outside : [],
+      pending: { list: Array.isArray(args.list) ? args.list : [], droppedFiles: Array.isArray(args.droppedFiles) ? args.droppedFiles : [] },
+    });
+  }, []);
+
+  /**
+   * 关闭“目录外资源提醒”弹窗并清理待处理数据。
+   */
+  const closeOutsideDropConfirm = useCallback(() => {
+    setOutsideDropDialog({ open: false, outside: [], pending: null });
+    setOutsideDropApplying(false);
+    setOutsideDropDontWarnAgain(false);
+  }, []);
 
   // 解析 chip 到可直接传给主进程的绝对路径：优先生成绝对 WSL 路径（以 / 开头）或 Windows 路径
   const resolveChipFullPath = useCallback((chip: any): string => {
@@ -663,80 +786,18 @@ export default function PathChipsInput({
 	              }));
 	            } catch {}
 	            if (!list || list.length === 0) return;
-	            let probes: WinPathProbeResult[] = [];
-	            try {
-	              probes = await Promise.all(list.map(async (wp) => {
-	                try { return await probeWinPathKind(wp); } catch { return { kind: "unknown", exists: false, isDirectory: false, isFile: false }; }
-	              }));
-		            } catch {}
-		            const existingKeys = new Set<string>();
-		            for (const chip of chips) {
-		              const k = buildChipDedupeKey(chip);
-		              if (k) existingKeys.add(k);
-		            }
-		            const localKeys = new Set<string>();
-		            const candidates = list.map((wp, i) => {
-		              const wsl = toWslRelOrAbsForProject(wp, winRoot, projectPathStyle === 'absolute' ? 'absolute' : 'relative');
-		              const probe = probes[i];
-		              const isDir = probe?.kind === "directory";
-		              const isImage = !isDir && isImageFileName(wp);
-		              // 当 wsl 为 "."（项目根）时，展示友好的标签：回退到 Windows 路径的最后一段，而不是 "."
-		              const labelBase = (wsl === ".")
-		                ? (String(wp).split(/[/\\]/).pop() || ".")
-		                : ((wsl || wp).split(/[/\\]/).pop() || "");
-		              const key = buildChipDedupeKey({ winPath: wp, wslPath: wsl, fileName: labelBase } as any);
-		              return { wp, wsl, isDir, isImage, labelBase, key };
-		            }).filter((it) => {
-		              if (!it.key) return true;
-		              if (existingKeys.has(it.key)) return false;
-		              if (localKeys.has(it.key)) return false;
-		              localKeys.add(it.key);
-		              return true;
-		            });
-		            if (candidates.length === 0) return;
+                // 目录外资源提醒：仅在存在项目根且开关开启时触发
+                try {
+                  if (warnOutsideProjectDrop !== false && winRoot) {
+                    const outside = list.filter((wp) => !isWinPathUnderRoot(wp, winRoot));
+                    if (outside.length > 0) {
+                      openOutsideDropConfirm({ outside, list, droppedFiles });
+                      return;
+                    }
+                  }
+                } catch {}
 
-		            // 预览策略：优先使用 DataTransfer.files 生成 blob URL（避免 file:// 在 dev/受限环境下被拦截）
-		            // 注意：仅为“最终会加入 chips 的图片”创建 blob URL，避免去重后遗留未释放的 URL
-		            const needImagePreviewKeys = new Set<string>();
-		            for (const it of candidates) {
-		              if (!it.isImage) continue;
-		              needImagePreviewKeys.add(normalizeWindowsPathForDedupe(it.wp));
-		            }
-		            const previewByWinPathKey = new Map<string, string>();
-		            try {
-		              if (needImagePreviewKeys.size > 0) {
-		                for (const f of droppedFiles) {
-		                  const p = String((f as any).path || "").trim();
-		                  if (!p) continue;
-		                  const k = normalizeWindowsPathForDedupe(p);
-		                  if (!needImagePreviewKeys.has(k)) continue;
-		                  if (previewByWinPathKey.has(k)) continue;
-		                  try {
-		                    const url = URL.createObjectURL(f as any);
-		                    previewByWinPathKey.set(k, url);
-		                  } catch {}
-		                }
-		              }
-		            } catch {}
-
-		            const items: SavedImage[] = candidates.map((it) => {
-		              const previewUrl = it.isImage ? (previewByWinPathKey.get(normalizeWindowsPathForDedupe(it.wp)) || "") : "";
-		              return {
-		                id: uid(),
-		                blob: new Blob(),
-		                previewUrl,
-		                type: "text/path",
-		                size: 0,
-		                saved: true,
-		                winPath: it.wp,
-		                wslPath: it.wsl,
-		                fileName: it.labelBase || (it.isImage ? t('common:files.image') : t('common:files.path')),
-		                fromPaste: false,
-		                isDir: it.isDir,
-		                chipKind: it.isImage ? "image" : "file",
-		              } as any;
-		            });
-		            appendChips(items);
+                await applyDroppedWinPaths(list, droppedFiles);
 		          } catch {}
 		        }}
 		        {...rest}
@@ -961,6 +1022,84 @@ export default function PathChipsInput({
         ),
         document.body
       )}
+
+      <Dialog
+        open={outsideDropDialog.open}
+        onOpenChange={(v) => {
+          if (!v) closeOutsideDropConfirm();
+        }}
+      >
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{t("common:dragDrop.outsideProject.title")}</DialogTitle>
+            <DialogDescription>
+              {t("common:dragDrop.outsideProject.desc", { count: outsideDropDialog.outside.length })}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="mt-3 rounded-lg border border-slate-200 bg-white/60 px-3 py-2 text-xs text-slate-700 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:text-[var(--cf-text-secondary)]">
+            <div className="mb-2 font-medium text-slate-800 dark:text-[var(--cf-text-primary)]">
+              {t("common:dragDrop.outsideProject.outsideListLabel")}
+            </div>
+            <div className="space-y-1">
+              {(outsideDropDialog.outside || []).slice(0, 6).map((p, idx) => {
+                const base = String(p || "").split(/[/\\]/).pop() || String(p || "");
+                return (
+                  <div key={`${idx}:${base}`} className="truncate font-mono" title={String(p || "")}>
+                    {base}
+                  </div>
+                );
+              })}
+              {(outsideDropDialog.outside || []).length > 6 ? (
+                <div className="text-[11px] text-slate-500 dark:text-[var(--cf-text-muted)]">
+                  {`+${(outsideDropDialog.outside || []).length - 6}`}
+                </div>
+              ) : null}
+            </div>
+          </div>
+          <div className="flex items-center justify-between pt-4">
+            <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-700 dark:text-[var(--cf-text-secondary)]">
+              <div className="relative flex h-3.5 w-3.5 items-center justify-center">
+                <input
+                  type="checkbox"
+                  className="peer h-3.5 w-3.5 cursor-pointer appearance-none rounded border border-slate-300 bg-white/50 transition-all checked:border-[var(--cf-accent)] checked:bg-[var(--cf-accent)] hover:border-[var(--cf-accent)]/60 focus:outline-none focus:ring-2 focus:ring-[var(--cf-accent)]/30 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)]"
+                  checked={outsideDropDontWarnAgain}
+                  onChange={(event) => setOutsideDropDontWarnAgain(event.target.checked)}
+                  disabled={outsideDropApplying}
+                />
+                <Check className="pointer-events-none absolute h-2.5 w-2.5 text-white opacity-0 transition-opacity peer-checked:opacity-100" />
+              </div>
+              <span className="select-none">{t("common:dragDrop.outsideProject.dontWarnAgain")}</span>
+            </label>
+            <div className="flex justify-end gap-2">
+              <Button
+                disabled={outsideDropApplying || !outsideDropDialog.pending}
+                onClick={async () => {
+                  if (!outsideDropDialog.pending) return;
+                  setOutsideDropApplying(true);
+                  try {
+                    if (outsideDropDontWarnAgain) {
+                      try { await Promise.resolve(onWarnOutsideProjectDropChange?.(false)); } catch {}
+                    }
+                    await applyDroppedWinPaths(outsideDropDialog.pending.list, outsideDropDialog.pending.droppedFiles);
+                    closeOutsideDropConfirm();
+                  } finally {
+                    setOutsideDropApplying(false);
+                  }
+                }}
+              >
+                {t("common:dragDrop.outsideProject.confirm")}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={closeOutsideDropConfirm}
+                disabled={outsideDropApplying}
+              >
+                {t("common:cancel")}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <AtCommandPalette
         open={open}

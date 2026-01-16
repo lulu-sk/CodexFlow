@@ -27,6 +27,16 @@
     "rule": "Rule",
     "deleteImageAndText": "Delete image and associated text"
   },
+  "dragDrop": {
+    "outsideProject": {
+      "title": "Outside project warning",
+      "desc": "Detected {count} dragged item(s) outside the current project directory. Add anyway?",
+      "outsideListLabel": "Outside items:",
+      "dontWarnAgain": "Don't warn again",
+      "confirm": "Add anyway",
+      "confirmAndDisable": "Don't warn again and add"
+    }
+  },
   "codexUsage": {
     "loading": "Loading usage…",
     "unavailable": "Usage unavailable",

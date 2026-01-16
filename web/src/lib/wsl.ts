@@ -94,3 +94,40 @@ export function toWslRelOrAbsForProject(winPath: string, projectWinRoot?: string
     return toWSLForInsert(String(winPath || ""));
   }
 }
+
+/**
+ * 判断一个 Windows 路径是否位于指定根目录下（不区分大小写，分隔符统一为 \\）。
+ * 说明：用于“拖拽目录外资源提醒”等 UI 逻辑；不访问文件系统，仅做字符串判定。
+ */
+export function isWinPathUnderRoot(winPath: string, rootWinPath?: string): boolean {
+  try {
+    const wpRaw = String(winPath || "").trim();
+    const rootRaw = String(rootWinPath || "").trim();
+    if (!wpRaw || !rootRaw) return false;
+    const normalize = (input: string): string => {
+      let s = String(input || "").trim().replace(/\//g, "\\");
+      if (!s) return s;
+      if (s.startsWith("\\\\")) {
+        if (s.length > 2) s = s.replace(/[\\/]+$/, "");
+        return s;
+      }
+      const m = s.match(/^([a-zA-Z]):(.*)$/);
+      if (m) {
+        const drive = m[1].toUpperCase();
+        let rest = m[2] || "";
+        if (!rest || rest === "\\" || rest === "/") return `${drive}:\\`;
+        rest = rest.replace(/[\\/]+$/, "");
+        return `${drive}:${rest}`;
+      }
+      return s.replace(/[\\/]+$/, "");
+    };
+    const wp = normalize(wpRaw).toLowerCase();
+    const root = normalize(rootRaw).toLowerCase();
+    if (!wp || !root) return false;
+    if (wp === root) return true;
+    const prefix = root.endsWith("\\") ? root : `${root}\\`;
+    return wp.startsWith(prefix);
+  } catch {
+    return false;
+  }
+}

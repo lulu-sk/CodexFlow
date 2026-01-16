@@ -38,6 +38,11 @@ export type CodexAccountSettings = {
   lastSeenSignatureByRuntime?: Record<string, string>;
 };
 
+export type DragDropSettings = {
+  /** 拖拽添加的资源不在当前项目目录时提醒（默认开启） */
+  warnOutsideProject?: boolean;
+};
+
 export type ExperimentalSettings = {
   /** 是否启用多实例（Profile）（实验性；全局共享，不随 profile 隔离） */
   multiInstanceEnabled?: boolean;
@@ -112,6 +117,8 @@ export type AppSettings = {
   terminalFontFamily?: string;
   /** Claude Code 本地会话读取策略（仅影响索引/预览，不影响 CLI 本身）。 */
   claudeCode?: ClaudeCodeSettings;
+  /** 拖拽/粘贴等输入相关偏好 */
+  dragDrop?: DragDropSettings;
   /** 实验性功能开关（注意：该字段不随 profile 隔离；由主进程统一维护） */
   experimental?: ExperimentalSettings;
 };
@@ -134,6 +141,9 @@ const DEFAULT_NETWORK: NetworkSettings = {
   proxyMode: 'system',
   proxyUrl: '',
   noProxy: '',
+};
+const DEFAULT_DRAG_DROP: DragDropSettings = {
+  warnOutsideProject: true,
 };
 const DEFAULT_CODEX_ACCOUNT: CodexAccountSettings = {
   recordEnabled: false,
@@ -322,6 +332,7 @@ function mergeWithDefaults(raw: Partial<AppSettings>, preloadedDistros?: DistroI
     notifications: { ...DEFAULT_NOTIFICATIONS },
     network: { ...DEFAULT_NETWORK },
     codexAccount: { ...DEFAULT_CODEX_ACCOUNT },
+    dragDrop: { ...DEFAULT_DRAG_DROP },
     claudeCode: { ...DEFAULT_CLAUDE_CODE },
   };
   const merged = Object.assign({}, defaults, raw);
@@ -336,6 +347,18 @@ function mergeWithDefaults(raw: Partial<AppSettings>, preloadedDistros?: DistroI
     ...DEFAULT_NETWORK,
     ...(raw as any)?.network,
   };
+  merged.dragDrop = (() => {
+    try {
+      const src = (raw as any)?.dragDrop && typeof (raw as any).dragDrop === 'object' ? (raw as any).dragDrop : {};
+      return {
+        ...DEFAULT_DRAG_DROP,
+        ...src,
+        warnOutsideProject: src.warnOutsideProject !== false,
+      } as DragDropSettings;
+    } catch {
+      return { ...DEFAULT_DRAG_DROP };
+    }
+  })();
   merged.codexAccount = (() => {
     try {
       const src = (raw as any)?.codexAccount && typeof (raw as any).codexAccount === 'object' ? (raw as any).codexAccount : {};
@@ -396,6 +419,17 @@ export function updateSettings(partial: Partial<AppSettings>) {
     const distros = loadDistroList();
     const cur = mergeWithDefaults(getSettings(), distros);
     const mergedRaw: Partial<AppSettings> = Object.assign({}, cur, partial);
+    // 对 dragDrop 做浅层合并，避免渲染层只更新单个字段时覆盖其它子字段
+    try {
+      const curDrag = (cur as any)?.dragDrop && typeof (cur as any).dragDrop === "object" ? (cur as any).dragDrop : {};
+      const nextDrag = (partial as any)?.dragDrop && typeof (partial as any).dragDrop === "object" ? (partial as any).dragDrop : null;
+      if (nextDrag) {
+        (mergedRaw as any).dragDrop = {
+          ...curDrag,
+          ...nextDrag,
+        };
+      }
+    } catch {}
     // 对 codexAccount 做浅层合并 + map 合并，避免渲染层只更新 recordEnabled 时意外清空历史签名表
     try {
       const curCodex = (cur as any)?.codexAccount && typeof (cur as any).codexAccount === "object" ? (cur as any).codexAccount : {};

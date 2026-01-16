@@ -1864,6 +1864,8 @@ export default function CodexFlowManagerUI() {
   const [sendMode, setSendMode] = useState<'write_only' | 'write_and_enter'>("write_and_enter");
   // 项目内路径样式：absolute=全路径；relative=相对路径（默认全路径）
   const [projectPathStyle, setProjectPathStyle] = useState<'absolute' | 'relative'>('absolute');
+  // 拖拽：目录外资源提醒（默认开启）
+  const [dragDropWarnOutsideProject, setDragDropWarnOutsideProject] = useState<boolean>(true);
   // 界面语言：用于设置面板展示与切换
   const [locale, setLocale] = useState<string>("en");
   const [themeSetting, setThemeSetting] = useState<ThemeSetting>(() => normalizeThemeSetting(getCachedThemeSetting() ?? "system"));
@@ -1876,6 +1878,16 @@ export default function CodexFlowManagerUI() {
   useEffect(() => {
     writeThemeSettingCache(themeSetting);
   }, [themeSetting]);
+
+  /**
+   * 更新“目录外资源提醒”开关并持久化到主进程设置。
+   */
+  const updateWarnOutsideProjectDrop = useCallback(async (enabled: boolean) => {
+    setDragDropWarnOutsideProject(!!enabled);
+    try {
+      await window.host.settings.update({ dragDrop: { warnOutsideProject: !!enabled } } as any);
+    } catch {}
+  }, []);
 
   /**
    * 统一写入 Provider 设置（同时对 codex 做 legacy 字段双写，保持旧逻辑兼容）。
@@ -2252,6 +2264,7 @@ export default function CodexFlowManagerUI() {
           setCodexCmd(codexResolved.startupCmd || legacyCodexCmd);
           setSendMode(s.sendMode || 'write_and_enter');
           setProjectPathStyle((s as any).projectPathStyle || 'absolute');
+          setDragDropWarnOutsideProject(((s as any)?.dragDrop?.warnOutsideProject) !== false);
           const nextThemeSetting = normalizeThemeSetting((s as any).theme);
           setThemeSetting(nextThemeSetting);
           writeThemeSettingCache(nextThemeSetting);
@@ -3602,6 +3615,8 @@ export default function CodexFlowManagerUI() {
                               projectWslRoot={selectedProject?.wslPath}
                               projectName={selectedProject?.name}
                               projectPathStyle={projectPathStyle}
+                              warnOutsideProjectDrop={dragDropWarnOutsideProject}
+                              onWarnOutsideProjectDropChange={updateWarnOutsideProjectDrop}
                               runEnv={terminalMode}
                               multiline
                               onKeyDown={(e: any) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { sendCommand(); e.preventDefault(); } }}
@@ -3647,6 +3662,8 @@ export default function CodexFlowManagerUI() {
                             projectWslRoot={selectedProject?.wslPath}
                             projectName={selectedProject?.name}
                             projectPathStyle={projectPathStyle}
+                            warnOutsideProjectDrop={dragDropWarnOutsideProject}
+                            onWarnOutsideProjectDropChange={updateWarnOutsideProjectDrop}
                             runEnv={terminalMode}
                             multiline
                             onKeyDown={(e: any) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { sendCommand(); e.preventDefault(); } }}
@@ -4593,6 +4610,7 @@ export default function CodexFlowManagerUI() {
           sendMode,
           locale,
           projectPathStyle,
+          dragDropWarnOutsideProject,
           theme: themeSetting,
           multiInstanceEnabled,
           notifications: notificationPrefs,
@@ -4607,6 +4625,7 @@ export default function CodexFlowManagerUI() {
           const nextSend = v.sendMode;
           const nextStyle = v.projectPathStyle || 'absolute';
           const nextLocale = v.locale;
+          const nextWarnOutsideProjectDrop = !!(v as any).dragDropWarnOutsideProject;
           const nextNotifications = normalizeCompletionPrefs(v.notifications);
           const nextFontFamily = normalizeTerminalFontFamily(v.terminalFontFamily);
           const nextTerminalTheme = normalizeTerminalTheme(v.terminalTheme);
@@ -4626,6 +4645,7 @@ export default function CodexFlowManagerUI() {
               codexCmd: codexResolved.startupCmd || "codex",
               sendMode: nextSend,
               projectPathStyle: nextStyle,
+              dragDrop: { warnOutsideProject: nextWarnOutsideProjectDrop },
               theme: nextTheme,
               experimental: { multiInstanceEnabled: nextMultiInstanceEnabled },
               notifications: nextNotifications,
@@ -4656,6 +4676,7 @@ export default function CodexFlowManagerUI() {
           } catch {}
           setSendMode(nextSend);
           setProjectPathStyle(nextStyle);
+          setDragDropWarnOutsideProject(nextWarnOutsideProjectDrop);
           setThemeSetting(nextTheme);
           writeThemeSettingCache(nextTheme);
           setNotificationPrefs(nextNotifications);
