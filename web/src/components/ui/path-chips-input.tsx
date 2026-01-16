@@ -13,7 +13,6 @@ import { toWSLForInsert, joinWinAbs, toWslRelOrAbsForProject } from "@/lib/wsl";
 import { extractWinPathsFromDataTransfer, probeWinPathKind, preferExistingWinPathCandidate, type WinPathProbeResult } from "@/lib/dragDrop";
 import {
   extractImagesFromPasteEvent,
-  extractImagesFromFileList,
   isImageFileName,
   persistImages,
   dedupePastedImagesByFingerprint,
@@ -642,75 +641,106 @@ export default function PathChipsInput({
       <div
         className={containerClass}
         onClick={() => { try { inputRef.current?.focus(); } catch {} }}
-        onDragOver={(e) => { try { e.preventDefault(); e.dataTransfer!.dropEffect = 'copy'; } catch {} }}
-        onDrop={async (e) => {
-          try {
-            e.preventDefault();
-            try { e.stopPropagation(); } catch {}
-            const dt = e.dataTransfer;
-            if (!dt) return;
+	        onDragOver={(e) => { try { e.preventDefault(); e.dataTransfer!.dropEffect = 'copy'; } catch {} }}
+	        onDrop={async (e) => {
+	          try {
+		            e.preventDefault();
+		            try { e.stopPropagation(); } catch {}
+		            const dt = e.dataTransfer;
+		            if (!dt) return;
+		            // 注意：DataTransfer 在异步 await 后可能被浏览器清理；此处先快照 FileList，确保后续可生成预览
+		            const droppedFiles = Array.from(dt.files || []);
 
-            // 拖拽图片时复用粘贴流程：持久化后生成带预览的 Chip
-            let shouldSkipImagePaths = false;
-            try {
-              const files = dt.files;
-              if (files && files.length > 0) {
-                const imgs = await extractImagesFromFileList(files);
-                if (imgs.length > 0) {
-                  shouldSkipImagePaths = true;
-                  // 先与当前 chips 基于 fingerprint 做去重，避免重复保存/生成重复图片 Chip
-                  const deduped = dedupePastedImagesByFingerprint<PastedImage>(imgs, chips as any);
-                  if (deduped && deduped.length > 0) {
-                    const saved = await persistImages(deduped, winRoot, projectName);
-                    if (saved.length > 0) appendChips(saved);
-                  }
-                }
-              }
-            } catch {}
+		            // 关键约束：拖拽图片应直接引用原始文件路径；仅“剪贴板粘贴图片”才需要落盘生成临时资源
+		            const listRaw = extractWinPathsFromDataTransfer(dt);
+		            const listBase = listRaw;
+	            // 可选增强：在原串与解码候选之间进行“存在性择优”，仅在包含 %xx 时尝试；其余保持原样
+	            let list: string[] = listBase;
+	            try {
+	              list = await Promise.all(listBase.map(async (wp) => {
+	                if (!/%[0-9a-fA-F]{2}/.test(String(wp))) return wp;
+	                try { return await preferExistingWinPathCandidate(wp); } catch { return wp; }
+	              }));
+	            } catch {}
+	            if (!list || list.length === 0) return;
+	            let probes: WinPathProbeResult[] = [];
+	            try {
+	              probes = await Promise.all(list.map(async (wp) => {
+	                try { return await probeWinPathKind(wp); } catch { return { kind: "unknown", exists: false, isDirectory: false, isFile: false }; }
+	              }));
+		            } catch {}
+		            const existingKeys = new Set<string>();
+		            for (const chip of chips) {
+		              const k = buildChipDedupeKey(chip);
+		              if (k) existingKeys.add(k);
+		            }
+		            const localKeys = new Set<string>();
+		            const candidates = list.map((wp, i) => {
+		              const wsl = toWslRelOrAbsForProject(wp, winRoot, projectPathStyle === 'absolute' ? 'absolute' : 'relative');
+		              const probe = probes[i];
+		              const isDir = probe?.kind === "directory";
+		              const isImage = !isDir && isImageFileName(wp);
+		              // 当 wsl 为 "."（项目根）时，展示友好的标签：回退到 Windows 路径的最后一段，而不是 "."
+		              const labelBase = (wsl === ".")
+		                ? (String(wp).split(/[/\\]/).pop() || ".")
+		                : ((wsl || wp).split(/[/\\]/).pop() || "");
+		              const key = buildChipDedupeKey({ winPath: wp, wslPath: wsl, fileName: labelBase } as any);
+		              return { wp, wsl, isDir, isImage, labelBase, key };
+		            }).filter((it) => {
+		              if (!it.key) return true;
+		              if (existingKeys.has(it.key)) return false;
+		              if (localKeys.has(it.key)) return false;
+		              localKeys.add(it.key);
+		              return true;
+		            });
+		            if (candidates.length === 0) return;
 
-            const listRaw = extractWinPathsFromDataTransfer(dt);
-            const listBase = shouldSkipImagePaths ? listRaw.filter((wp) => !isImageFileName(wp)) : listRaw;
-            // 可选增强：在原串与解码候选之间进行“存在性择优”，仅在包含 %xx 时尝试；其余保持原样
-            let list: string[] = listBase;
-            try {
-              list = await Promise.all(listBase.map(async (wp) => {
-                if (!/%[0-9a-fA-F]{2}/.test(String(wp))) return wp;
-                try { return await preferExistingWinPathCandidate(wp); } catch { return wp; }
-              }));
-            } catch {}
-            if (!list || list.length === 0) return;
-            let probes: WinPathProbeResult[] = [];
-            try {
-              probes = await Promise.all(list.map(async (wp) => {
-                try { return await probeWinPathKind(wp); } catch { return { kind: "unknown", exists: false, isDirectory: false, isFile: false }; }
-              }));
-            } catch {}
-            const items: SavedImage[] = list.map((wp, i) => {
-              const wsl = toWslRelOrAbsForProject(wp, winRoot, projectPathStyle === 'absolute' ? 'absolute' : 'relative');
-              // 当 wsl 为 "."（项目根）时，展示友好的标签：回退到 Windows 路径的最后一段，而不是 "."
-              const labelBase = (wsl === ".")
-                ? (String(wp).split(/[/\\]/).pop() || ".")
-                : ((wsl || wp).split(/[/\\]/).pop() || "");
-              const probe = probes[i];
-              return {
-                id: uid(),
-                blob: new Blob(),
-                previewUrl: "",
-                type: "text/path",
-                size: 0,
-                saved: true,
-                winPath: wp,
-                wslPath: wsl,
-                fileName: labelBase || t('common:files.path'),
-                fromPaste: false,
-                isDir: probe?.kind === "directory",
-              } as any;
-            });
-            appendChips(items);
-          } catch {}
-        }}
-        {...rest}
-      >
+		            // 预览策略：优先使用 DataTransfer.files 生成 blob URL（避免 file:// 在 dev/受限环境下被拦截）
+		            // 注意：仅为“最终会加入 chips 的图片”创建 blob URL，避免去重后遗留未释放的 URL
+		            const needImagePreviewKeys = new Set<string>();
+		            for (const it of candidates) {
+		              if (!it.isImage) continue;
+		              needImagePreviewKeys.add(normalizeWindowsPathForDedupe(it.wp));
+		            }
+		            const previewByWinPathKey = new Map<string, string>();
+		            try {
+		              if (needImagePreviewKeys.size > 0) {
+		                for (const f of droppedFiles) {
+		                  const p = String((f as any).path || "").trim();
+		                  if (!p) continue;
+		                  const k = normalizeWindowsPathForDedupe(p);
+		                  if (!needImagePreviewKeys.has(k)) continue;
+		                  if (previewByWinPathKey.has(k)) continue;
+		                  try {
+		                    const url = URL.createObjectURL(f as any);
+		                    previewByWinPathKey.set(k, url);
+		                  } catch {}
+		                }
+		              }
+		            } catch {}
+
+		            const items: SavedImage[] = candidates.map((it) => {
+		              const previewUrl = it.isImage ? (previewByWinPathKey.get(normalizeWindowsPathForDedupe(it.wp)) || "") : "";
+		              return {
+		                id: uid(),
+		                blob: new Blob(),
+		                previewUrl,
+		                type: "text/path",
+		                size: 0,
+		                saved: true,
+		                winPath: it.wp,
+		                wslPath: it.wsl,
+		                fileName: it.labelBase || (it.isImage ? t('common:files.image') : t('common:files.path')),
+		                fromPaste: false,
+		                isDir: it.isDir,
+		                chipKind: it.isImage ? "image" : "file",
+		              } as any;
+		            });
+		            appendChips(items);
+		          } catch {}
+		        }}
+		        {...rest}
+	      >
         {/* Chips 采用常规文档流放置在输入区上方，最小可见间隙 2px */}
         <div ref={chipsRef} className="mt-px mb-0.5 flex flex-wrap items-start gap-0.5">
           {chips.map((chip, idx) => {
