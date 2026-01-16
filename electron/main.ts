@@ -181,6 +181,9 @@ function spawnDetachedSafe(file: string, argv: string[], options?: SpawnDetached
   });
 }
 
+// Windows Terminal 启动参数：禁用隐藏，适度延长超时以兼容冷启动
+const WT_VISIBLE_SPAWN_OPTS: SpawnDetachedSafeOptions = { windowsHide: false, timeoutMs: 3000, minAliveMs: 400 };
+
 type CodexBridgeDescriptor = { key: string; options: CodexBridgeOptions };
 
 function deriveCodexBridgeDescriptor(cfg: AppSettings): CodexBridgeDescriptor {
@@ -1115,14 +1118,15 @@ ipcMain.handle('utils.openExternalConsole', async (_e, args: { terminal?: 'wsl' 
       const toPsEncoded = (s: string) => Buffer.from(s, 'utf16le').toString('base64');
       // 使用 Windows Terminal：指定起始目录，由 WT 负责切换目录；PowerShell 仅执行命令
       // 必须加入 `--`，将后续命令行完整传入新标签，而不被 wt 解析
+      // 打包版从资源管理器启动时没有父控制台，需要显式禁用 windowsHide 确保 WT 窗口可见
       const wtArgs = ['-w', '0', 'new-tab', '--title', title, '--startingDirectory', cwd, '--', resolvedShell.command, '-NoExit', '-NoProfile', '-EncodedCommand', toPsEncoded(startupCmd)];
       {
-        const ok = await spawnDetachedSafe('wt.exe', wtArgs);
+        const ok = await spawnDetachedSafe('wt.exe', wtArgs, WT_VISIBLE_SPAWN_OPTS);
         extLog(`[external] launch wt.exe ok=${ok ? 1 : 0}`);
         if (ok) return { ok: true } as const;
       }
       {
-        const ok = await spawnDetachedSafe('WindowsTerminal.exe', wtArgs);
+        const ok = await spawnDetachedSafe('WindowsTerminal.exe', wtArgs, WT_VISIBLE_SPAWN_OPTS);
         extLog(`[external] launch WindowsTerminal.exe ok=${ok ? 1 : 0}`);
         if (ok) return { ok: true } as const;
       }
@@ -1206,15 +1210,16 @@ ipcMain.handle('utils.openExternalConsole', async (_e, args: { terminal?: 'wsl' 
       })();
       const cdArgv = shouldUseCdArgv ? ['--cd', wslCwd] as string[] : [];
       const wslExe = resolveSystemBinary('wsl.exe');
+      // 同理：禁用 windowsHide，避免 WT 在 GUI 场景下被隐藏
       const wtArgs = ['-w', '0', 'new-tab', '--title', title, '--', wslExe, ...distroArgv, ...cdArgv, '--', 'bash', '-lic', bashScript];
       if (canUseWt) {
         {
-          const ok = await spawnDetachedSafe('wt.exe', wtArgs);
+          const ok = await spawnDetachedSafe('wt.exe', wtArgs, WT_VISIBLE_SPAWN_OPTS);
           extLog(`[external] launch wt.exe(wsl) ok=${ok ? 1 : 0}`);
           if (ok) return { ok: true } as const;
         }
         {
-          const ok = await spawnDetachedSafe('WindowsTerminal.exe', wtArgs);
+          const ok = await spawnDetachedSafe('WindowsTerminal.exe', wtArgs, WT_VISIBLE_SPAWN_OPTS);
           extLog(`[external] launch WindowsTerminal.exe(wsl) ok=${ok ? 1 : 0}`);
           if (ok) return { ok: true } as const;
         }
@@ -2162,7 +2167,7 @@ ipcMain.handle('app.getEnvMeta', async () => {
 });
 
 // 打开外部 WSL 控制台（以"打开 WSL 终端 -> cd 到目录 -> 执行 codex"为准则，优先稳健性）
-ipcMain.handle('utils.openExternalWSLConsole', async (_e, args: { wslPath?: string; winPath?: string; distro?: string; startupCmd?: string }) => {
+  ipcMain.handle('utils.openExternalWSLConsole', async (_e, args: { wslPath?: string; winPath?: string; distro?: string; startupCmd?: string }) => {
   try {
     const platform = process.platform;
     const requestedDistro = String(args?.distro || settings.getSettings().distro || 'Ubuntu-24.04');
@@ -2203,8 +2208,8 @@ ipcMain.handle('utils.openExternalWSLConsole', async (_e, args: { wslPath?: stri
       const wslExe = resolveSystemBinary('wsl.exe');
       const wtArgs = ['-w', '0', 'new-tab', '--title', 'Codex', '--', wslExe, ...distroArgv, '--', 'bash', '-lic', bashScript];
       if (canUseWt) {
-        if (await spawnDetachedSafe('wt.exe', wtArgs)) return { ok: true } as const;
-        if (await spawnDetachedSafe('WindowsTerminal.exe', wtArgs)) return { ok: true } as const;
+        if (await spawnDetachedSafe('wt.exe', wtArgs, WT_VISIBLE_SPAWN_OPTS)) return { ok: true } as const;
+        if (await spawnDetachedSafe('WindowsTerminal.exe', wtArgs, WT_VISIBLE_SPAWN_OPTS)) return { ok: true } as const;
       }
 
       // 方案 B：PowerShell Start-Process（不依赖 --cd，直接在 bash 中 cd）
