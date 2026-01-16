@@ -27,6 +27,16 @@
     "rule": "规则",
     "deleteImageAndText": "删除图片与关联文字"
   },
+  "dragDrop": {
+    "outsideProject": {
+      "title": "目录外资源提醒",
+      "desc": "检测到 {count} 个拖拽资源不在当前项目目录下，仍然要添加吗？",
+      "outsideListLabel": "目录外资源：",
+      "dontWarnAgain": "不再提醒",
+      "confirm": "仍然添加",
+      "confirmAndDisable": "不再提醒并添加"
+    }
+  },
   "codexUsage": {
     "loading": "正在同步用量…",
     "unavailable": "用量信息不可用",

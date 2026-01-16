@@ -71,6 +71,7 @@ export type SettingsDialogProps = {
     sendMode: SendMode;
     locale: string;
     projectPathStyle: PathStyle;
+    dragDropWarnOutsideProject: boolean;
     theme: ThemeSetting;
     notifications: NotificationPrefs;
     network?: NetworkPrefs;
@@ -89,6 +90,7 @@ export type SettingsDialogProps = {
     sendMode: SendMode;
     locale: string;
     projectPathStyle: PathStyle;
+    dragDropWarnOutsideProject: boolean;
     theme: ThemeSetting;
     notifications: NotificationPrefs;
     network: NetworkPrefs;
@@ -403,6 +405,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   
   const [sendMode, setSendMode] = useState<SendMode>(values.sendMode);
   const [pathStyle, setPathStyle] = useState<PathStyle>(values.projectPathStyle || "absolute");
+  const [dragDropWarnOutsideProject, setDragDropWarnOutsideProject] = useState<boolean>(values.dragDropWarnOutsideProject ?? true);
   const [notifications, setNotifications] = useState<NotificationPrefs>(values.notifications);
   const [network, setNetwork] = useState<NetworkPrefs>({
     proxyEnabled: values.network?.proxyEnabled ?? true,
@@ -510,6 +513,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
 
     setSendMode(values.sendMode || "write_and_enter");
     setPathStyle(values.projectPathStyle || "absolute");
+    setDragDropWarnOutsideProject(values.dragDropWarnOutsideProject ?? true);
     setLang(values.locale || "en");
     setTheme(normalizeThemeSetting(values.theme));
     setMultiInstanceEnabled(!!values.multiInstanceEnabled);
@@ -1469,6 +1473,29 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
               </Card>
               <Card>
                 <CardHeader>
+                  <CardTitle>{t("settings:dragDrop.title")}</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <label className="flex items-start gap-3 rounded-lg border border-slate-200/70 bg-white/60 px-3 py-3 shadow-sm dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:text-[var(--cf-text-primary)]">
+                    <input
+                      type="checkbox"
+                      className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)] dark:checked:bg-[var(--cf-accent)] dark:focus-visible:ring-[var(--cf-accent)]/40"
+                      checked={dragDropWarnOutsideProject}
+                      onChange={(event) => setDragDropWarnOutsideProject(event.target.checked)}
+                    />
+                    <div>
+                      <div className="text-sm font-medium text-slate-800 dark:text-[var(--cf-text-primary)]">
+                        {t("settings:dragDrop.warnOutsideProject.label")}
+                      </div>
+                      <p className="text-xs text-slate-500 dark:text-[var(--cf-text-secondary)]">
+                        {t("settings:dragDrop.warnOutsideProject.desc")}
+                      </p>
+                    </div>
+                  </label>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader>
                   <CardTitle>{t("settings:terminalTheme.label")}</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
@@ -2050,6 +2077,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     multiInstanceEnabled,
     systemTheme,
     pathStyle,
+    dragDropWarnOutsideProject,
     notifications,
     network,
     codexAccount,
@@ -2176,6 +2204,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                       sendMode,
                       locale: lang,
                       projectPathStyle: pathStyle,
+                      dragDropWarnOutsideProject,
                       theme,
                       multiInstanceEnabled,
                       notifications,

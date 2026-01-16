@@ -58,6 +58,11 @@ export type AppSettings = {
     proxyUrl?: string;
     noProxy?: string;
   };
+  /** 拖拽/粘贴等输入相关偏好 */
+  dragDrop?: {
+    /** 拖拽添加的资源不在当前项目目录时提醒（默认开启） */
+    warnOutsideProject?: boolean;
+  };
   /** ChatGPT/Codex 账号相关设置（记录账号、切换备份等） */
   codexAccount?: {
     recordEnabled?: boolean;

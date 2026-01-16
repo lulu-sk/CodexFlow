@@ -3,11 +3,14 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { Check } from "lucide-react";
 import { Input, type InputProps } from "@/components/ui/input";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
 import AtCommandPalette, { type PaletteLevel } from "./AtCommandPalette";
 import type { AtCategoryId, AtItem, SearchScope } from "@/types/at";
 import { setActiveFileIndexRoot } from "@/lib/atSearch";
-import { toWSLForInsert, toWslRelOrAbsForProject, joinWinAbs } from "@/lib/wsl";
+import { toWSLForInsert, toWslRelOrAbsForProject, joinWinAbs, isWinPathUnderRoot } from "@/lib/wsl";
 import { extractWinPathsFromDataTransfer } from "@/lib/dragDrop";
 import { getCaretViewportPosition } from "./caret";
 import { extractImagesFromPasteEvent, persistImages, insertTextAtCursor, type SavedImage, hasToken, removeToken } from "@/lib/clipboardImages";
@@ -39,9 +42,19 @@ function shouldTriggerAt(text: string, caret: number): boolean {
   return /\s|[\(\)\[\]{}.,;:!?]/.test(prev);
 }
 
-type AtInputProps = Omit<InputProps, "onChange" | "value"> & { value: string; onValueChange: (v: string) => void; winRoot?: string; projectName?: string; projectPathStyle?: 'absolute' | 'relative' };
+type AtInputProps = Omit<InputProps, "onChange" | "value"> & {
+  value: string;
+  onValueChange: (v: string) => void;
+  winRoot?: string;
+  projectName?: string;
+  projectPathStyle?: 'absolute' | 'relative';
+  /** 拖拽添加的资源不在当前项目目录时提醒（默认开启） */
+  warnOutsideProjectDrop?: boolean;
+  /** 更新“目录外资源提醒”开关（用于弹窗内“一键不再提醒”即时生效） */
+  onWarnOutsideProjectDropChange?: (enabled: boolean) => void | Promise<void>;
+};
 
-export function AtInput({ value, onValueChange, winRoot, projectName, projectPathStyle = 'absolute', ...rest }: AtInputProps) {
+export function AtInput({ value, onValueChange, winRoot, projectName, projectPathStyle = 'absolute', warnOutsideProjectDrop = true, onWarnOutsideProjectDropChange, ...rest }: AtInputProps) {
   const { t } = useTranslation(['common']);
   const ref = useRef<HTMLTextAreaElement | HTMLInputElement | null>(null);
   const [open, setOpen] = useState(false);
@@ -53,6 +66,9 @@ export function AtInput({ value, onValueChange, winRoot, projectName, projectPat
   const atIndexRef = useRef<number | null>(null);
   // 被主动关闭（选择/Esc/外点）后的会话抑制：保持到出现“新 @”或删到仅剩“@”
   const dismissedAtIndexRef = useRef<number | null>(null);
+  const [outsideDropDialog, setOutsideDropDialog] = useState<{ open: boolean; outside: string[]; pending: string[] | null }>({ open: false, outside: [], pending: null });
+  const [outsideDropApplying, setOutsideDropApplying] = useState(false);
+  const [outsideDropDontWarnAgain, setOutsideDropDontWarnAgain] = useState(false);
   // 粘贴图片的临时预览与保存结果（仅用于辅助用户查看）
   const [pastedImages, setPastedImages] = useState<SavedImage[]>([]);
   // 释放过期的 blob URL，避免内存泄漏
@@ -333,6 +349,24 @@ export function AtInput({ value, onValueChange, winRoot, projectName, projectPat
     setLevel("results");
   };
 
+  /**
+   * 将拖拽路径转换为 `...` 令牌并插入到光标处。
+   */
+  const applyDroppedWinPathsToText = useCallback((list: string[]) => {
+    try {
+      if (!Array.isArray(list) || list.length === 0) return;
+      const el = ref.current as HTMLTextAreaElement | HTMLInputElement | null;
+      if (!el) return;
+      const paths = list.map((wp) => toWslRelOrAbsForProject(wp, (rest as any)?.winRoot || winRoot, projectPathStyle === 'absolute' ? 'absolute' : 'relative'));
+      const tokens = paths.map((p) => (p ? ("`" + p + "`") : "")).filter(Boolean).join('\n');
+      const prefix = (value && !/\s$/.test(value)) ? '\n' : '';
+      const insert = `${prefix}${tokens}\n`;
+      const { next, nextCaret } = insertTextAtCursor(el, value, insert);
+      onValueChange(next);
+      requestAnimationFrame(() => { try { (el as any).setSelectionRange(nextCaret, nextCaret); el.focus(); } catch {} });
+    } catch {}
+  }, [onValueChange, projectPathStyle, rest, value, winRoot]);
+
   // 对外暴露 ref：保持与 Input 行为一致
   // 合并外部 onKeyDown
   const externalOnKeyDown = (rest as any)?.onKeyDown as ((e: React.KeyboardEvent<any>) => void) | undefined;
@@ -352,15 +386,17 @@ export function AtInput({ value, onValueChange, winRoot, projectName, projectPat
             try { e.stopPropagation(); } catch {}
             const list = extractWinPathsFromDataTransfer(e.dataTransfer);
             if (!list || list.length === 0) return;
-            const el = ref.current as HTMLTextAreaElement | HTMLInputElement | null;
-            if (!el) return;
-            const paths = list.map((wp) => toWslRelOrAbsForProject(wp, (rest as any)?.winRoot || winRoot, projectPathStyle === 'absolute' ? 'absolute' : 'relative'));
-            const tokens = paths.map((p) => (p ? ("`" + p + "`") : "")).filter(Boolean).join('\n');
-            const prefix = (value && !/\s$/.test(value)) ? '\n' : '';
-            const insert = `${prefix}${tokens}\n`;
-            const { next, nextCaret } = insertTextAtCursor(el, value, insert);
-            onValueChange(next);
-            requestAnimationFrame(() => { try { (el as any).setSelectionRange(nextCaret, nextCaret); el.focus(); } catch {} });
+            try {
+              if (warnOutsideProjectDrop !== false && winRoot) {
+                const outside = list.filter((wp) => !isWinPathUnderRoot(wp, winRoot));
+                if (outside.length > 0) {
+                  setOutsideDropDontWarnAgain(false);
+                  setOutsideDropDialog({ open: true, outside, pending: list });
+                  return;
+                }
+              }
+            } catch {}
+            applyDroppedWinPathsToText(list);
           } catch {}
         }}
         {...rest as any}
@@ -442,6 +478,93 @@ export function AtInput({ value, onValueChange, winRoot, projectName, projectPat
         onEnterCategory={handleEnterCategory}
         onPickItem={handlePick}
       />
+
+      <Dialog
+        open={outsideDropDialog.open}
+        onOpenChange={(v) => {
+          if (!v) {
+            setOutsideDropDialog({ open: false, outside: [], pending: null });
+            setOutsideDropApplying(false);
+            setOutsideDropDontWarnAgain(false);
+          }
+        }}
+      >
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{t("common:dragDrop.outsideProject.title")}</DialogTitle>
+            <DialogDescription>
+              {t("common:dragDrop.outsideProject.desc", { count: outsideDropDialog.outside.length })}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="mt-3 rounded-lg border border-slate-200 bg-white/60 px-3 py-2 text-xs text-slate-700 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:text-[var(--cf-text-secondary)]">
+            <div className="mb-2 font-medium text-slate-800 dark:text-[var(--cf-text-primary)]">
+              {t("common:dragDrop.outsideProject.outsideListLabel")}
+            </div>
+            <div className="space-y-1">
+              {(outsideDropDialog.outside || []).slice(0, 6).map((p, idx) => {
+                const base = String(p || "").split(/[/\\]/).pop() || String(p || "");
+                return (
+                  <div key={`${idx}:${base}`} className="truncate font-mono" title={String(p || "")}>
+                    {base}
+                  </div>
+                );
+              })}
+              {(outsideDropDialog.outside || []).length > 6 ? (
+                <div className="text-[11px] text-slate-500 dark:text-[var(--cf-text-muted)]">
+                  {`+${(outsideDropDialog.outside || []).length - 6}`}
+                </div>
+              ) : null}
+            </div>
+          </div>
+          <div className="flex items-center justify-between pt-4">
+            <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-700 dark:text-[var(--cf-text-secondary)]">
+              <div className="relative flex h-3.5 w-3.5 items-center justify-center">
+                <input
+                  type="checkbox"
+                  className="peer h-3.5 w-3.5 cursor-pointer appearance-none rounded border border-slate-300 bg-white/50 transition-all checked:border-[var(--cf-accent)] checked:bg-[var(--cf-accent)] hover:border-[var(--cf-accent)]/60 focus:outline-none focus:ring-2 focus:ring-[var(--cf-accent)]/30 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)]"
+                  checked={outsideDropDontWarnAgain}
+                  onChange={(event) => setOutsideDropDontWarnAgain(event.target.checked)}
+                  disabled={outsideDropApplying}
+                />
+                <Check className="pointer-events-none absolute h-2.5 w-2.5 text-white opacity-0 transition-opacity peer-checked:opacity-100" />
+              </div>
+              <span className="select-none">{t("common:dragDrop.outsideProject.dontWarnAgain")}</span>
+            </label>
+            <div className="flex justify-end gap-2">
+              <Button
+                disabled={outsideDropApplying || !outsideDropDialog.pending}
+                onClick={async () => {
+                  if (!outsideDropDialog.pending) return;
+                  setOutsideDropApplying(true);
+                  try {
+                    if (outsideDropDontWarnAgain) {
+                      try { await Promise.resolve(onWarnOutsideProjectDropChange?.(false)); } catch {}
+                    }
+                    applyDroppedWinPathsToText(outsideDropDialog.pending);
+                    setOutsideDropDialog({ open: false, outside: [], pending: null });
+                    setOutsideDropDontWarnAgain(false);
+                  } finally {
+                    setOutsideDropApplying(false);
+                  }
+                }}
+              >
+                {t("common:dragDrop.outsideProject.confirm")}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setOutsideDropDialog({ open: false, outside: [], pending: null });
+                  setOutsideDropApplying(false);
+                  setOutsideDropDontWarnAgain(false);
+                }}
+                disabled={outsideDropApplying}
+              >
+                {t("common:cancel")}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
