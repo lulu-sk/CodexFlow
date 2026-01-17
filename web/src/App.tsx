@@ -56,6 +56,7 @@ import { emitClaudeUsageRefresh } from "@/lib/claude-status";
 import { emitGeminiUsageRefresh } from "@/lib/gemini-status";
 import { checkForUpdate, type UpdateCheckErrorType } from "@/lib/about";
 import TerminalManager from "@/lib/TerminalManager";
+import { isGeminiProvider, writeBracketedPaste, writeBracketedPasteAndEnter } from "@/lib/terminal-send";
 import { oscBufferDefaults, trimOscBuffer } from "@/lib/oscNotificationBuffer";
 import HistoryCopyButton from "@/components/history/history-copy-button";
 import { toWSLForInsert } from "@/lib/wsl";
@@ -3019,12 +3020,21 @@ export default function CodexFlowManagerUI() {
     if (!pid) return;
     // 统一改用 TerminalManager 的封装，保证行为一致且便于复用
     try {
-      if (sendMode === 'write_and_enter') tm.sendTextAndEnter(activeTab.id, text);
-      else tm.sendText(activeTab.id, text);
+      if (sendMode === 'write_and_enter') tm.sendTextAndEnter(activeTab.id, text, { providerId: activeTab.providerId });
+      else tm.sendText(activeTab.id, text, { providerId: activeTab.providerId });
     } catch {
-      // 兜底：直接写入 PTY（不走 paste），并在需要时单独补 CR
-      try { window.host.pty.write(pid, text); } catch {}
-      if (sendMode === 'write_and_enter') { try { window.host.pty.write(pid, '\r'); } catch {} }
+      // 兜底：避免 Gemini 直接写入 `\n` 被吞，统一使用 bracketed paste +（可选）延迟回车
+      try {
+        if (isGeminiProvider(activeTab.providerId)) {
+          const write = (data: string) => { try { window.host.pty.write(pid, data); } catch {} };
+          if (sendMode === "write_and_enter") writeBracketedPasteAndEnter(write, text, { providerId: activeTab.providerId });
+          else writeBracketedPaste(write, text);
+        } else {
+          // 非 Gemini：直接写入 PTY，并在需要时单独补 CR
+          try { window.host.pty.write(pid, text); } catch {}
+          if (sendMode === 'write_and_enter') { try { window.host.pty.write(pid, '\r'); } catch {} }
+        }
+      } catch {}
     }
     if (chipsSnapshot.length > 0) {
       for (const chip of chipsSnapshot) {
