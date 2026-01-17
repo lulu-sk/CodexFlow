@@ -6,6 +6,12 @@ import {
   normalizeTerminalAppearance,
   type TerminalAppearance,
 } from '@/lib/terminal-appearance';
+import {
+  isGeminiProvider,
+  stripTrailingNewlines,
+  writeBracketedPaste,
+  writeBracketedPasteAndEnter,
+} from '@/lib/terminal-send';
 
 /**
  * 渲染进程侧的 PTY 接口抽象，便于将 TerminalManager 从具体的 window.host.pty 解耦以实现复用。
@@ -371,10 +377,16 @@ export default class TerminalManager {
    * 发送一段文本到指定 tab 对应的终端：
    * - 优先走 xterm 的 paste 通道（若可用，可触发 bracketed paste，避免应用层对逐字输入做清洗）。
    * - 若 adapter 不存在或 paste 不可用，则回退为直接写入 PTY。
+   * - Gemini（options.providerId === 'gemini'）：直接写入 bracketed paste 序列，确保多行 `\n` 作为正文插入而不被吞。
    */
-  sendText(tabId: string, text: string): void {
+  sendText(tabId: string, text: string, options?: { providerId?: string | null }): void {
     const adapter = this.adapters[tabId];
     const ptyId = this.getPtyId(tabId);
+    // Gemini：显式 bracketed paste，避免 `\n` 被当作未绑定的 enter 而被忽略
+    if (ptyId && isGeminiProvider(options?.providerId)) {
+      writeBracketedPaste((data) => this.hostPty.write(ptyId, data), String(text ?? ""));
+      return;
+    }
     if (adapter && typeof (adapter as any).paste === 'function') {
       try { (adapter as any).paste(String(text ?? '')); return; } catch { /* 回退 */ }
     }
@@ -390,6 +402,7 @@ export default class TerminalManager {
      * - 优先通过 `adapter.paste()` 走终端粘贴通道,避免 bracketed paste 模式下内嵌的 `CR` 被应用层吞掉。
      * - 仅在**粘贴确已结束**时发送真正的 `'\r'`(Enter),保证应用正确解析。
      * - 全链路容错：任何阶段异常都会降级为直接 `write(text)` 并最终补发 `'\r'`。
+     * - Gemini（options.providerId === 'gemini'）：使用“显式 bracketed paste + 延迟回车”策略，避开 Gemini CLI 的 40ms paste 防误触窗口。
      *
      * 行为说明
      * 1) 无 PTY：直接返回(避免空引用/无效写入)。
@@ -415,6 +428,7 @@ export default class TerminalManager {
      * 参数
      * @param tabId  目标标签页标识,用于定位对应的 PTY 与适配器。
      * @param raw    待发送的原始文本；方法内部会规范化并去除尾随换行。
+     * @param options 可选发送上下文（当前主要用于传入 providerId，以启用 Gemini 的兼容发送策略）。
      *
      * 返回
      * - `void`(副作用：向对应 PTY 写入文本并在合适时机发送 `'\r'`)。
@@ -422,63 +436,53 @@ export default class TerminalManager {
      * 调优建议
      * - 若后端/网络较抖,可适当上调静默窗口(24ms)或硬超时(800ms),以平衡“及时性”与“稳妥性”。
      */
-    sendTextAndEnter(tabId: string, raw: string): void {
+    sendTextAndEnter(tabId: string, raw: string, options?: { providerId?: string | null }): void {
         const ptyId = this.getPtyId(tabId);
         if (!ptyId) return;
         const adapter = this.adapters[tabId];
-        const text = String(raw ?? '').replace(/[\r\n]+$/g, '');
-        const BRACKET_START = '\x1b[200~';
+        const text = stripTrailingNewlines(String(raw ?? ""));
         const BRACKET_END = '\x1b[201~';
+
+        // Gemini：显式 bracketed paste + 延迟回车，避开其 40ms 防误触提交窗口
+        if (isGeminiProvider(options?.providerId)) {
+          writeBracketedPasteAndEnter((data) => this.hostPty.write(ptyId, data), text, { providerId: options?.providerId });
+          return;
+        }
+
         const sendEnter = () => {
             try {
                 this.hostPty.write(ptyId, '\r');
-            } catch {
-            }
+            } catch {}
         };
 
-// 无 adapter 或不支持 paste：直接写入并回车
+        // 无 adapter 或不支持 paste：直接写入并回车
         if (!adapter || typeof (adapter as any).paste !== 'function') {
-            try {
-                this.hostPty.write(ptyId, text);
-            } catch {
-            }
+            try { this.hostPty.write(ptyId, text); } catch {}
             sendEnter();
             return;
         }
 
-// 监听 xterm -> PTY 的 outbound 数据。当检测到 201~(粘贴结束)
-// 或者输出静默一小段时间(无 bracketed paste 的环境)后,再发回车。
+        // 监听 xterm -> PTY 的 outbound 数据。当检测到 201~(粘贴结束)
+        // 或者输出静默一小段时间(无 bracketed paste 的环境)后,再发回车。
         let buffer = '';
         let idleTimer: number | undefined;
         let hardTimer: number | undefined;
         const clearTimers = () => {
             if (idleTimer) {
-                try {
-                    window.clearTimeout(idleTimer);
-                } catch {
-                }
+                try { window.clearTimeout(idleTimer); } catch {}
                 idleTimer = undefined;
             }
             if (hardTimer) {
-                try {
-                    window.clearTimeout(hardTimer);
-                } catch {
-                }
+                try { window.clearTimeout(hardTimer); } catch {}
                 hardTimer = undefined;
             }
         };
         const scheduleIdle = () => {
             if (idleTimer) {
-                try {
-                    window.clearTimeout(idleTimer);
-                } catch {
-                }
+                try { window.clearTimeout(idleTimer); } catch {}
             }
             idleTimer = window.setTimeout(() => {
-                try {
-                    unsub?.();
-                } catch {
-                }
+                try { unsub?.(); } catch {}
                 clearTimers();
                 sendEnter();
             }, 24); // 粘贴输出静默 1 帧多一点
@@ -487,36 +491,22 @@ export default class TerminalManager {
             try {
                 buffer = (buffer + chunk).slice(-32);
                 if (buffer.includes(BRACKET_END)) {
-                    try {
-                        unsub?.();
-                    } catch {
-                    }
+                    try { unsub?.(); } catch {}
                     clearTimers();
                     sendEnter();
                     return;
                 }
                 scheduleIdle();
-            } catch {
-            }
+            } catch {}
         };
         const unsub = adapter.onData(onOutbound);
 
-// 触发粘贴(若开启了 bracketed paste,xterm 会输出 200~ + 数据 + 201~)
-        try {
-            (adapter as any).paste(text);
-        } catch {
-            try {
-                this.hostPty.write(ptyId, text);
-            } catch {
-            }
-        }
+        // 触发粘贴(若开启了 bracketed paste,xterm 会输出 200~ + 数据 + 201~)
+        try { (adapter as any).paste(text); } catch { try { this.hostPty.write(ptyId, text); } catch {} }
 
-// 兜底超时：极端环境最多等 800ms
+        // 兜底超时：极端环境最多等 800ms
         hardTimer = window.setTimeout(() => {
-            try {
-                unsub?.();
-            } catch {
-            }
+            try { unsub?.(); } catch {}
             clearTimers();
             sendEnter();
         }, 800);
