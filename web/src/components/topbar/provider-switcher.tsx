@@ -4,7 +4,6 @@
 import React, { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import type { AppSettings, ProviderItem } from "@/types/host";
 import { getBuiltInProviders } from "@/lib/providers/builtins";
@@ -13,7 +12,6 @@ import type { ThemeMode } from "@/lib/theme";
 import { CodexUsageHoverCard } from "@/components/topbar/codex-status";
 import { ClaudeUsageHoverCard } from "@/components/topbar/claude-status";
 import { GeminiUsageHoverCard } from "@/components/topbar/gemini-status";
-import { MoreHorizontal } from "lucide-react";
 
 type TerminalMode = NonNullable<AppSettings["terminal"]>;
 
@@ -28,7 +26,7 @@ export type ProviderSwitcherProps = {
 };
 
 /**
- * 顶部栏引擎切换器：固定展示 Codex/Claude/Gemini 三个图标，额外引擎通过“更多”菜单选择。
+ * 顶部栏引擎切换器：内置引擎与自定义引擎同排展示（自定义无用量面板）。
  */
 export const ProviderSwitcher: React.FC<ProviderSwitcherProps> = ({ activeId, providers, onChange, terminalMode, distro, themeMode, className }) => {
   const { t } = useTranslation(["providers", "common"]);
@@ -48,7 +46,7 @@ export const ProviderSwitcher: React.FC<ProviderSwitcherProps> = ({ activeId, pr
     return getBuiltInProviders().map((meta) => resolveProvider(byId.get(meta.id) ?? { id: meta.id }, { themeMode }));
   }, [byId, themeMode]);
 
-  const extras = useMemo(() => {
+  const customs = useMemo(() => {
     const builtInIds = new Set(getBuiltInProviders().map((x) => x.id));
     const list: Array<{ id: string; label: string; iconSrc: string }> = [];
     for (const it of providers || []) {
@@ -195,25 +193,23 @@ export const ProviderSwitcher: React.FC<ProviderSwitcherProps> = ({ activeId, pr
         );
       })}
 
-      {extras.length > 0 && (
-        <DropdownMenu>
-          <DropdownMenuTrigger>
-            <Button variant="ghost" size="icon" className="h-8 w-8 rounded-md" title={t("providers:more") as string} aria-label={t("providers:more") as string}>
-              <MoreHorizontal className="h-4 w-4" />
+      {customs.map((x) => {
+        const selected = x.id === activeId;
+        return (
+          <div key={x.id} className="flex items-center">
+            <Button
+              variant="ghost"
+              size="icon"
+              className={cn("h-8 w-8 rounded-md", selected && "bg-slate-100 dark:bg-slate-800")}
+              title={x.label}
+              aria-label={x.label}
+              onClick={() => onChange(x.id)}
+            >
+              {x.iconSrc ? <img src={x.iconSrc} className="h-4 w-4" alt={x.label} /> : <span className="text-xs">{(x.label || "?")[0]}</span>}
             </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuLabel className="text-xs text-slate-500">{t("providers:customList")}</DropdownMenuLabel>
-            <DropdownMenuSeparator />
-            {extras.map((x) => (
-              <DropdownMenuItem key={x.id} onClick={() => onChange(x.id)} className="flex items-center gap-2">
-                {x.iconSrc ? <img src={x.iconSrc} className="h-4 w-4" alt={x.label} /> : null}
-                <span className="truncate">{x.label}</span>
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      )}
+          </div>
+        );
+      })}
     </div>
   );
 };

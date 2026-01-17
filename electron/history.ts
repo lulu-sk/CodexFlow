@@ -9,7 +9,7 @@ import readline from 'node:readline';
 import { app } from 'electron';
 import { getDebugConfig } from './debugConfig';
 import crypto from 'node:crypto';
-import wsl, { isUNCPath, uncToWsl, getSessionsRootsFastAsync } from './wsl';
+import { isUNCPath, uncToWsl, getSessionsRootsFastAsync } from './wsl';
 import { perfLogger } from './log';
 import settings from './settings';
 import { extractTaggedPrefix } from './agentSessions/shared/taggedPrefix';
@@ -41,6 +41,44 @@ export type Message = { role: string; content: MessageContent[] };
 // 历史摘要前缀与缓存上限（控制内存占用）
 const SUMMARY_PREFIX_BYTES = 48 * 1024; // 仅保留文件头 48KB，用于提取 metadata / cwd 提示
 const SUMMARY_CACHE_MAX_ENTRIES = 800;
+
+/**
+ * 将路径快速规范化为“WSL 风格”的可对比 key（不调用 wsl.exe）。
+ *
+ * 目的：
+ * - history 扫描属于热路径；若调用 `wsl.exe wslpath` 会在文件量大时导致严重卡顿与日志刷屏。
+ * - 这里仅做字符串规则转换：UNC -> /home/...，盘符 -> /mnt/<drive>/...，并统一斜杠与大小写。
+ */
+function toWslLikePathKey(input?: string): string {
+  try {
+    let s = String(input || "").trim();
+    if (!s) return "";
+    // 先清理常见的 JSON/日志噪声，保持与调用方一致
+    s = s.replace(/\\n/g, "").replace(/\\\\+/g, "\\").replace(/^"|"$/g, "").trim();
+    if (!s) return "";
+
+    if (isUNCPath(s)) {
+      const info = uncToWsl(s);
+      if (info?.wslPath) s = info.wslPath;
+    } else {
+      // 仅对盘符绝对路径做规则转换（避免误把 C:relative 之类的字符串当作绝对路径）
+      const winLike = s.replace(/\//g, "\\");
+      const m = winLike.match(/^([a-zA-Z]):\\(.*)$/);
+      if (m) {
+        const drive = m[1].toLowerCase();
+        const rest = String(m[2] || "").replace(/\\/g, "/");
+        s = `/mnt/${drive}/${rest}`;
+      }
+    }
+
+    let out = s.replace(/\\/g, "/");
+    out = out.replace(/\/+/g, "/");
+    out = out.replace(/\/+$/, "");
+    return out.toLowerCase();
+  } catch {
+    return String(input || "").trim().toLowerCase();
+  }
+}
 
 function trimPrefixForCache(prefix: string): string {
   if (!prefix) return "";
@@ -496,12 +534,8 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
         }
       }
       if (/^[a-zA-Z]:\\/.test(s)) {
-        const w = wsl.winToWsl(s);
-        if (w) {
-          let x = w.split('\\').join('/');
-          while (x.includes('//')) x = x.replace('//', '/');
-          return x.toLowerCase();
-        }
+        const x = toWslLikePathKey(s);
+        if (x) return x;
       }
       {
         let x = s.split('\\').join('/');
@@ -616,8 +650,8 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
     // 从 Windows 盘符正向生成 WSL 路径
     try {
       if (/^[a-zA-Z]:\\/.test(pm)) {
-        const w = wsl.winToWsl(pm);
-        if (w) push(w.split('\\').join('/'));
+        const w = toWslLikePathKey(pm);
+        if (w) push(w);
       }
     } catch {}
     return Array.from(new Set(out.filter(Boolean)));
@@ -705,8 +739,8 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
         if (info) return info.wslPath.replace(/\\/g, '/');
       }
       if (/^[a-zA-Z]:\\/.test(p)) {
-        const w = wsl.winToWsl(p);
-        if (w) return w.replace(/\\/g, '/');
+        const w = toWslLikePathKey(p);
+        if (w) return w;
       }
     } catch {}
     return p.replace(/\\/g, '/');
