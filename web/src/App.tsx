@@ -62,6 +62,7 @@ import HistoryCopyButton from "@/components/history/history-copy-button";
 import { toWSLForInsert } from "@/lib/wsl";
 import { extractGeminiProjectHashFromPath, deriveGeminiProjectHashCandidatesFromPath } from "@/lib/gemini-hash";
 import { normalizeProvidersSettings } from "@/lib/providers/normalize";
+import { isBuiltInProviderId } from "@/lib/providers/builtins";
 import { resolveProvider } from "@/lib/providers/resolve";
 import { injectCodexTraceEnv } from "@/providers/codex/commands";
 import { buildClaudeResumeStartupCmd } from "@/providers/claude/commands";
@@ -2348,9 +2349,11 @@ export default function CodexFlowManagerUI() {
   // ---------- Actions ----------
 
   /**
-   * 隐藏项目：关闭该项目下的所有控制台/PTY，并将其加入隐藏列表（会持久化）。
+   * 关闭并清理指定项目下的所有控制台/PTY 与关联内存状态。
+   *
+   * 说明：该方法不修改 projects 列表与隐藏列表，仅做运行态清理，供“隐藏项目/移除目录记录”等场景复用。
    */
-  const hideProject = useCallback((project: Project | null) => {
+  const cleanupProjectRuntime = useCallback((project: Project | null) => {
     if (!project) return;
     const projectTabs = tabsByProject[project.id] || [];
     const tabIds = projectTabs.map((tab) => tab.id);
@@ -2407,15 +2410,23 @@ export default function CodexFlowManagerUI() {
       const projectKey = canonicalizePath(project.wslPath || project.winPath || project.id);
       if (projectKey) delete historyCacheRef.current[projectKey];
     } catch {}
-    setHiddenProjectIds((prev) => (prev.includes(project.id) ? prev : [...prev, project.id]));
     setSelectedProjectId((prev) => (prev === project.id ? "" : prev));
     try { suppressAutoSelectRef.current = true; } catch {}
     setSelectedHistoryDir(null);
     setSelectedHistoryId(null);
     setCenterMode('console');
+  }, [activeTabId, setActiveTab, tabsByProject, tm]);
+
+  /**
+   * 隐藏项目：关闭该项目下的所有控制台/PTY，并将其加入隐藏列表（会持久化）。
+   */
+  const hideProject = useCallback((project: Project | null) => {
+    if (!project) return;
+    cleanupProjectRuntime(project);
+    setHiddenProjectIds((prev) => (prev.includes(project.id) ? prev : [...prev, project.id]));
     setHideProjectConfirm({ open: false, project: null });
     setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
-  }, [activeTabId, setActiveTab, tabsByProject, tm]);
+  }, [cleanupProjectRuntime]);
 
   /**
    * 取消隐藏项目：从隐藏列表移除该项目 id。
@@ -2425,6 +2436,18 @@ export default function CodexFlowManagerUI() {
     setHiddenProjectIds((prev) => prev.filter((id) => id !== project.id));
   }, []);
 
+  /**
+   * 将项目从 UI 列表中移除（仅移除记录，不删除磁盘目录），并清理该项目下的运行态资源。
+   */
+  const removeProjectFromUIList = useCallback((project: Project | null) => {
+    if (!project) return;
+    cleanupProjectRuntime(project);
+    setProjects((prev) => prev.filter((p) => p.id !== project.id));
+    setHiddenProjectIds((prev) => prev.filter((id) => id !== project.id));
+    setHideProjectConfirm({ open: false, project: null });
+    setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
+  }, [cleanupProjectRuntime]);
+
   function markProjectUsed(projectId: string | null | undefined) {
     try { suppressAutoSelectRef.current = true; } catch {}
     if (!projectId) return;
@@ -2433,6 +2456,61 @@ export default function CodexFlowManagerUI() {
       setProjects((prev) => prev.map((x) => (x.id === projectId ? { ...x, lastOpenedAt: now } : x)));
     } catch {}
   }
+
+  /**
+   * 用最新项目对象回写到 projects 列表（优先按 id 匹配，winPath 兜底）。
+   */
+  const upsertProjectInList = useCallback((nextProject: Project) => {
+    try {
+      const next = nextProject as any;
+      const nextId = String(next?.id || "").trim();
+      const nextWin = String(next?.winPath || "").replace(/\\/g, "/").toLowerCase();
+      if (!nextId && !nextWin) return;
+      setProjects((prev) => {
+        const byId = nextId ? prev.findIndex((p) => p.id === nextId) : -1;
+        if (byId >= 0) {
+          const copy = prev.slice();
+          copy[byId] = { ...(prev[byId] as any), ...(nextProject as any) };
+          return copy;
+        }
+        if (nextWin) {
+          const byPath = prev.findIndex((p) => String(p.winPath || "").replace(/\\/g, "/").toLowerCase() === nextWin);
+          if (byPath >= 0) {
+            const copy = prev.slice();
+            copy[byPath] = { ...(prev[byPath] as any), ...(nextProject as any), id: prev[byPath].id || nextId };
+            return copy;
+          }
+        }
+        return [nextProject, ...prev];
+      });
+    } catch {}
+  }, []);
+
+  /**
+   * 标记某个项目已开始/存在内置三引擎会话（用于抑制“移除目录记录”误判）。
+   */
+  const markProjectHasBuiltInSessions = useCallback((projectId: string) => {
+    const id = String(projectId || "").trim();
+    if (!id) return;
+    setProjects((prev) => prev.map((p) => (p.id === id ? { ...p, hasBuiltInSessions: true, dirRecord: undefined } : p)));
+  }, []);
+
+  /**
+   * 自定义 Provider 新建会话时记录目录：避免自定义引擎无法被会话扫描反推 cwd，导致该项目在下次扫描时“消失”。
+   */
+  const recordCustomProviderDirIfNeeded = useCallback(async (project: Project, providerId: string) => {
+    try {
+      const pid = String(providerId || "").trim();
+      if (!pid || isBuiltInProviderId(pid)) return;
+      if (project?.hasBuiltInSessions === true) return;
+      const existing = (project as any)?.dirRecord;
+      if (existing && String(existing.kind || "") === "custom_provider" && String(existing.providerId || "") === pid) return;
+      const res: any = await window.host.projects.add({ winPath: project.winPath, dirRecord: { providerId: pid } });
+      if (res && res.ok && res.project) {
+        upsertProjectInList(res.project as Project);
+      }
+    } catch {}
+  }, [upsertProjectInList]);
 
   // 新增项目并选中，随后自动为该项目打开一个控制台（无 tmux 包装）
 
@@ -2467,6 +2545,14 @@ export default function CodexFlowManagerUI() {
       alert(String(t('terminal:openFailed', { error: String((e as any)?.message || e) })));
       return;
     }
+
+    // 内置三引擎：即便会话记录落盘存在延迟，也先在 UI 侧标记，避免“自定义目录记录可移除”误判。
+    if (isBuiltInProviderId(activeProviderId)) {
+      markProjectHasBuiltInSessions(project.id);
+    } else {
+      void recordCustomProviderDirIfNeeded(project, activeProviderId);
+    }
+
     registerTabProject(tab.id, project.id);
     setTabsByProject((m) => ({ ...m, [project.id]: [...(m[project.id] || []), tab] }));
     setActiveTab(tab.id, { focusMode: 'immediate', allowDuringRename: true, delay: 0 });
@@ -2559,6 +2645,13 @@ export default function CodexFlowManagerUI() {
       try { await (window as any).host?.utils?.perfLog?.(`[ui] openNewConsole error ${String((e as any)?.stack || e)}`); } catch {}
       alert(String(t('terminal:openFailed', { error: String((e as any)?.message || e) })));
       return;
+    }
+
+    // 内置三引擎：即便会话记录落盘存在延迟，也先在 UI 侧标记，避免“自定义目录记录可移除”误判。
+    if (isBuiltInProviderId(activeProviderId)) {
+      markProjectHasBuiltInSessions(selectedProject.id);
+    } else {
+      void recordCustomProviderDirIfNeeded(selectedProject, activeProviderId);
     }
 
     registerTabProject(tab.id, selectedProject.id);
@@ -4466,6 +4559,36 @@ export default function CodexFlowManagerUI() {
                   </button>
                 );
               }
+            }
+            // “移除目录记录”：仅对自定义引擎记录的目录开放；内置三引擎会话目录不展示该选项
+            if (proj && proj.dirRecord && proj.dirRecord.kind === "custom_provider" && proj.hasBuiltInSessions !== true) {
+              menuItems.push(
+                <button
+                  key="remove-dir-record"
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-red)] rounded-apple-sm hover:bg-[var(--cf-red-light)] transition-all duration-apple-fast"
+                  onClick={async () => {
+                    const target = projectCtxMenu.project;
+                    if (!target) { setProjectCtxMenu((m) => ({ ...m, show: false, project: null })); return; }
+                    try {
+                      const res: any = await window.host.projects.removeDirRecord({ id: target.id });
+                      if (res && res.ok && res.removed) {
+                        if (res.project) {
+                          upsertProjectInList(res.project as Project);
+                          setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
+                        } else {
+                          removeProjectFromUIList(target);
+                        }
+                        return;
+                      }
+                      setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
+                    } catch {
+                      setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
+                    }
+                  }}
+                >
+                  <X className="h-4 w-4" /> {t('projects:ctxRemoveDirRecord')}
+                </button>
+              );
             }
             return (
               <div

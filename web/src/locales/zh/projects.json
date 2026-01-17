@@ -7,6 +7,7 @@
   "ctxOpenExternalConsoleWith": "通过外部{env}控制台打开{provider}",
   "ctxHideTemporarily": "隐藏项目",
   "ctxUnhideProject": "取消隐藏项目",
+  "ctxRemoveDirRecord": "移除目录记录",
   "showHiddenProjects": "显示隐藏项目",
   "hideHiddenProjects": "不显示隐藏项目",
   "hiddenTag": "已隐藏",

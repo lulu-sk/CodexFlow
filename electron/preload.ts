@@ -134,8 +134,11 @@ contextBridge.exposeInMainWorld('host', {
     scan: async (args: { roots?: string[] } = {}) => {
       return await ipcRenderer.invoke('projects.scan', args);
     },
-    add: async (args: { winPath: string }) => {
+    add: async (args: { winPath: string; dirRecord?: { providerId: string; recordedAt?: number } }) => {
       return await ipcRenderer.invoke('projects.add', args);
+    },
+    removeDirRecord: async (args: { id: string }) => {
+      return await ipcRenderer.invoke('projects.removeDirRecord', args);
     },
     touch: (id: string) => {
       ipcRenderer.send('projects.touch', { id });

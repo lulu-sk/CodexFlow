@@ -195,8 +195,9 @@ export async function winToWslAsync(winPath: string, preferredDistro?: string): 
     }
   } catch {}
   try {
-    const distroArg = preferredDistro ? ['-d', preferredDistro, '--'] : ['--'];
-    const cmdArgs = [...distroArg, 'wslpath', '-a', normalizedWinPath];
+    // 关键：必须使用 `-e/--exec`，避免默认 shell 解析反斜杠导致 `C:\Users` 变成 `C:Users`（从而刷屏输出 wslpath 错误）。
+    const distroArg = preferredDistro ? ['-d', preferredDistro] : [];
+    const cmdArgs = [...distroArg, '-e', 'wslpath', '-a', normalizedWinPath];
     const { stdout } = await execFilePromise('wsl.exe', cmdArgs);
     const out = (stdout?.toString('utf8') || '').trim();
     if (out) return out;
@@ -269,12 +270,15 @@ export function winToWsl(winPath: string, preferredDistro?: string): string {
   }
   // 优先调用 wsl.exe wslpath -a
   try {
-    const args = ['-d', preferredDistro || ''];
-    // 如果没有指定发行版，直接调用 wslpath via wsl.exe -e wslpath ???
-    // 更可靠的方式：使用 wsl.exe -d <distro> -- wslpath -a "C:\..."
-    const distroArg = preferredDistro ? ['-d', preferredDistro, '--'] : ['--'];
-    const cmdArgs = [...distroArg, 'wslpath', '-a', normalizedWinPath];
-    const out = execFileSync('wsl.exe', cmdArgs, { encoding: 'utf8' }).trim();
+    // 关键：必须使用 `-e/--exec`，避免默认 shell 解析反斜杠导致 `C:\Users` 变成 `C:Users`（从而刷屏输出 wslpath 错误）。
+    const distroArg = preferredDistro ? ['-d', preferredDistro] : [];
+    const cmdArgs = [...distroArg, '-e', 'wslpath', '-a', normalizedWinPath];
+    const out = execFileSync('wsl.exe', cmdArgs, {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: DEFAULT_WSL_EXEC_TIMEOUT_MS,
+      maxBuffer: DEFAULT_WSL_EXEC_MAX_BUFFER,
+    }).trim();
     if (out) return out;
   } catch (e) {
     // 忽略，落回规则转换
@@ -340,7 +344,7 @@ export function getDistroHome(distro?: string): string | null {
   if (os.platform() !== 'win32') return null;
   try {
     const args = distro ? ['-d', distro, '--', 'sh', '-lc', 'echo $HOME'] : ['--', 'sh', '-lc', 'echo $HOME'];
-    const outBuf = execFileSync('wsl.exe', args);
+    const outBuf = execFileSync('wsl.exe', args, { windowsHide: true, timeout: DEFAULT_WSL_EXEC_TIMEOUT_MS, maxBuffer: DEFAULT_WSL_EXEC_MAX_BUFFER });
     const out = decodeBuffer(Buffer.isBuffer(outBuf) ? outBuf : Buffer.from(String(outBuf))).trim();
     return out || null;
   } catch (e) {

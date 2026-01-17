@@ -486,6 +486,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const storageLoadedRef = useRef(false);
   const autoProfilesLoadedRef = useRef(false);
+  const initFromValuesOnceRef = useRef(false);
 
   const labelOf = useCallback((lng: string) => {
     const map: Record<string, string> = { zh: "简体中文", en: "English" };
@@ -501,8 +502,20 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     }
   }, []);
 
+  /**
+   * 仅在“打开设置对话框”的瞬间用外部 values 初始化一次内部状态。
+   *
+   * 注意：父组件每次渲染都会创建新的 values 对象；若将 values 放进依赖数组，会导致对话框打开期间被反复重置，
+   * 从而出现“新增自定义引擎后，选择图标/任意操作导致自定义引擎消失（未保存内容被覆盖）”的现象。
+   */
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      initFromValuesOnceRef.current = false;
+      return;
+    }
+    if (initFromValuesOnceRef.current) return;
+    initFromValuesOnceRef.current = true;
+
     const activeId = String(values.providers?.activeId || "codex").trim() || "codex";
     setProvidersActiveId(activeId);
     setProviderEditingId(activeId);
@@ -528,7 +541,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     setClaudeCodeReadAgentHistory(!!values.claudeCodeReadAgentHistory);
     setTerminalFontFamily(normalizeTerminalFontFamily(values.terminalFontFamily));
     setTerminalTheme(normalizeTerminalTheme(values.terminalTheme));
-  }, [open, values]);
+  }, [open]);
 
   /**
    * 拉取指定引擎的会话根路径列表（优先使用 settings.sessionRoots；旧版本仅支持 codexRoots）。
@@ -1188,11 +1201,11 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                               }
                             }}
                           />
-                          <Button variant="outline" size="sm" onClick={triggerLightIconPicker}>
+                          <Button type="button" variant="outline" size="sm" onClick={triggerLightIconPicker}>
                             {t("settings:providers.fields.iconUpload")}
                           </Button>
                           {hasLightOverride ? (
-                            <Button variant="outline" size="sm" onClick={() => updateProviderItem(providerEditingId, { iconDataUrl: "" })}>
+                            <Button type="button" variant="outline" size="sm" onClick={() => updateProviderItem(providerEditingId, { iconDataUrl: "" })}>
                               {t("settings:providers.fields.iconClear")}
                             </Button>
                           ) : null}
@@ -1247,11 +1260,11 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                               }
                             }}
                           />
-                          <Button variant="outline" size="sm" onClick={triggerDarkIconPicker}>
+                          <Button type="button" variant="outline" size="sm" onClick={triggerDarkIconPicker}>
                             {t("settings:providers.fields.iconUpload")}
                           </Button>
                           {hasDarkOverride ? (
-                            <Button variant="outline" size="sm" onClick={() => updateProviderItem(providerEditingId, { iconDataUrlDark: "" })}>
+                            <Button type="button" variant="outline" size="sm" onClick={() => updateProviderItem(providerEditingId, { iconDataUrlDark: "" })}>
                               {t("settings:providers.fields.iconClear")}
                             </Button>
                           ) : null}

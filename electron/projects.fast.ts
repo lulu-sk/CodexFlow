@@ -23,6 +23,19 @@ export type Project = {
   hasDotCodex: boolean;
   createdAt: number;
   lastOpenedAt?: number;
+  /** 是否已确认存在内置三引擎（codex/claude/gemini）的会话记录。 */
+  hasBuiltInSessions?: boolean;
+  /** 自定义引擎无法从会话文件反推 cwd 时，用于“保留该目录”的显式记录。 */
+  dirRecord?: ProjectDirRecord;
+};
+
+export type ProjectDirRecord = {
+  /** 目录记录类型：当前仅用于自定义 Provider。 */
+  kind: "custom_provider";
+  /** 产生该记录的 Provider id（用于诊断与后续扩展）。 */
+  providerId: string;
+  /** 记录时间（毫秒时间戳）。 */
+  recordedAt: number;
 };
 
 const uid = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -90,6 +103,36 @@ async function pathExists(p: string): Promise<boolean> { try { await fsp.access(
  */
 export function listProjectsFromStore(): Project[] {
   return loadStore();
+}
+
+/**
+ * 归一化“目录记录”字段（仅接受 kind=custom_provider 且 providerId 非空）。
+ */
+function normalizeProjectDirRecord(raw: unknown): ProjectDirRecord | undefined {
+  try {
+    const obj = raw && typeof raw === "object" ? (raw as any) : null;
+    const kind = String(obj?.kind || "").trim();
+    const providerId = String(obj?.providerId || "").trim();
+    const recordedAtRaw = Number(obj?.recordedAt);
+    const recordedAt = Number.isFinite(recordedAtRaw) && recordedAtRaw > 0 ? Math.floor(recordedAtRaw) : Date.now();
+    if (kind !== "custom_provider") return undefined;
+    if (!providerId) return undefined;
+    return { kind: "custom_provider", providerId, recordedAt };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 判断某个项目是否带有“自定义引擎目录记录”（用于在 scan 时保留无会话目录）。
+ */
+function hasCustomDirRecord(p: Project | null | undefined): boolean {
+  try {
+    const rec = normalizeProjectDirRecord((p as any)?.dirRecord);
+    return !!rec;
+  } catch {
+    return false;
+  }
 }
 
 // 防抖：短时间内的并发调用合并为一次
@@ -227,7 +270,15 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
 
       const name = (cleanWin ? path.basename(cleanWin) : (cleanWsl ? cleanWsl.split('/').pop() : '')) || 'project';
       const hasDot = (await pathExists(path.join(cleanWin, '.codex'))) || (await pathExists(path.join(cleanWin, 'codex.json')));
-      projects.push({ id: uid(), name, winPath: cleanWin, wslPath: cleanWsl, hasDotCodex: hasDot, createdAt: Date.now() });
+      projects.push({
+        id: uid(),
+        name,
+        winPath: cleanWin,
+        wslPath: cleanWsl,
+        hasDotCodex: hasDot,
+        createdAt: Date.now(),
+        hasBuiltInSessions: true,
+      });
     } catch {}
   };
 
@@ -415,12 +466,42 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
           lastOpenedAt: preservedLastOpenedAt,
           name: fixedName || prev.name || p.name,
         };
+        // 只要能从会话反推到该项目，就视为“存在内置会话”，不再保留自定义目录记录
+        merged.hasBuiltInSessions = true;
+        delete (merged as any).dirRecord;
         // 保持展示路径尽量为盘符路径（避免被 UNC 覆盖导致不美观/部分场景不可用）
         merged.winPath = pickPreferredWinPath(prev.winPath, p.winPath, merged.wslPath);
         uniqueMap.set(k, merged);
         continue;
       }
-      uniqueMap.set(k, { ...p, winPath: pickPreferredWinPath("", p.winPath, p.wslPath), name: fixedName || p.name });
+      uniqueMap.set(k, {
+        ...p,
+        hasBuiltInSessions: true,
+        winPath: pickPreferredWinPath("", p.winPath, p.wslPath),
+        name: fixedName || p.name,
+      });
+    }
+
+    // 将“自定义引擎目录记录”产生的项目合并进最终列表（即便无会话文件，也要保留）
+    for (const s of store) {
+      try {
+        if (!hasCustomDirRecord(s)) continue;
+        if (s.hasBuiltInSessions === true) continue;
+        const cleanWin = normalizeWinPath(s.winPath);
+        if (!(await ensureDirExists(cleanWin))) continue;
+        const cleanWsl = s.wslPath ? normWsl(s.wslPath) : "";
+        const k = canonKey(cleanWin, cleanWsl);
+        if (!k || uniqueMap.has(k)) continue;
+        const fixedName = cleanWin ? path.basename(cleanWin) : (cleanWsl ? cleanWsl.split('/').pop() || s.name : s.name);
+        uniqueMap.set(k, {
+          ...s,
+          winPath: pickPreferredWinPath(s.winPath, cleanWin, cleanWsl),
+          wslPath: cleanWsl || s.wslPath,
+          name: fixedName || s.name,
+          hasBuiltInSessions: false,
+          dirRecord: normalizeProjectDirRecord((s as any).dirRecord),
+        });
+      } catch {}
     }
     const unique = Array.from(uniqueMap.values());
     try { await saveStoreAsync(unique); } catch {}
@@ -443,27 +524,103 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
   try { const res = await __scanPromise; return res; } finally { /* 保持 window 期内复用 */ }
 }
 
-export function addProjectByWinPath(winPath: string): Project | null {
+export type AddProjectOptions = {
+  /** 目录记录：仅用于自定义 Provider 新建会话时“保留该目录”。 */
+  dirRecord?: { providerId: string; recordedAt?: number };
+};
+
+/**
+ * 将指定目录写入项目列表（用于“打开项目”等场景）。
+ *
+ * 说明：
+ * - 默认行为仅记录项目本身；当提供 dirRecord 时，会写入“自定义引擎目录记录”，用于自定义引擎无法被会话扫描反推 cwd 的场景。
+ * - 若该项目已被确认存在内置三引擎会话（hasBuiltInSessions=true），则不会写入 dirRecord，避免出现“可移除目录记录”误导。
+ */
+export function addProjectByWinPath(winPath: string, options?: AddProjectOptions): Project | null {
   try {
     const normalized = normalizeWinPath(path.resolve(winPath));
     // 仅规则转换，避免唤起 wsl.exe
     const wslPath = ruleWinPathToWslPath(normalized);
     const store = loadStore();
-    const exists = store.find((s) => s.winPath === normalized);
-    if (exists) return exists;
+    const now = Date.now();
+    const nextRecord = options?.dirRecord
+      ? normalizeProjectDirRecord({
+          kind: "custom_provider",
+          providerId: String(options.dirRecord.providerId || "").trim(),
+          recordedAt: Number.isFinite(Number(options.dirRecord.recordedAt)) ? Number(options.dirRecord.recordedAt) : now,
+        })
+      : undefined;
+
+    const idx = store.findIndex((s) => s.winPath === normalized);
+    if (idx >= 0) {
+      const exists = store[idx] as Project;
+      let changed = false;
+      // 仅当该目录尚未被确认存在内置会话时，才允许写入“自定义目录记录”
+      if (nextRecord && exists.hasBuiltInSessions !== true) {
+        exists.dirRecord = nextRecord;
+        exists.hasBuiltInSessions = false;
+        changed = true;
+      }
+      if (changed) saveStore(store);
+      return exists;
+    }
     const proj: Project = {
       id: uid(),
       name: path.basename(normalized),
       winPath: normalized,
       wslPath,
       hasDotCodex: fs.existsSync(path.join(normalized, '.codex')) || fs.existsSync(path.join(normalized, 'codex.json')),
-      createdAt: Date.now(),
-      lastOpenedAt: undefined
+      createdAt: now,
+      lastOpenedAt: undefined,
+      hasBuiltInSessions: false,
+      dirRecord: nextRecord,
     };
     store.push(proj);
     saveStore(store);
     return proj;
   } catch { return null; }
+}
+
+export type RemoveProjectDirRecordResult = {
+  ok: boolean;
+  /** 是否成功移除了“目录记录”（包括：清空记录 或 删除仅由记录产生的项目）。 */
+  removed: boolean;
+  /** 若项目仍保留在列表中，返回更新后的项目；若已从列表移除，则为 null/undefined。 */
+  project?: Project | null;
+  error?: string;
+};
+
+/**
+ * 移除项目的“自定义引擎目录记录”。
+ *
+ * 规则：
+ * - 若项目已确认存在内置会话（hasBuiltInSessions=true），仅清空 dirRecord，不移除项目本体。
+ * - 否则（项目仅因目录记录存在），从 projects.json 中移除该项目条目。
+ */
+export function removeProjectDirRecordById(id: string): RemoveProjectDirRecordResult {
+  try {
+    const pid = String(id || "").trim();
+    if (!pid) return { ok: false, removed: false, error: "invalid id" };
+    const store = loadStore();
+    const idx = store.findIndex((s) => s.id === pid);
+    if (idx < 0) return { ok: true, removed: false, project: null };
+    const cur = store[idx] as Project;
+    if (!hasCustomDirRecord(cur)) return { ok: true, removed: false, project: cur };
+
+    if (cur.hasBuiltInSessions === true) {
+      const next: Project = { ...cur };
+      delete (next as any).dirRecord;
+      store[idx] = next;
+      saveStore(store);
+      return { ok: true, removed: true, project: next };
+    }
+
+    store.splice(idx, 1);
+    saveStore(store);
+    return { ok: true, removed: true, project: null };
+  } catch (e: any) {
+    return { ok: false, removed: false, error: String(e) };
+  }
 }
 
 export function touchProject(id: string) {
@@ -472,4 +629,4 @@ export function touchProject(id: string) {
   if (p) { p.lastOpenedAt = Date.now(); saveStore(store); }
 }
 
-export default { scanProjectsAsync, addProjectByWinPath, touchProject, listProjectsFromStore };
+export default { scanProjectsAsync, addProjectByWinPath, removeProjectDirRecordById, touchProject, listProjectsFromStore };

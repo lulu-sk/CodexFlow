@@ -1620,12 +1620,21 @@ ipcMain.handle('projects.scan', async (_e, { roots }: { roots?: string[] }) => {
   }
 });
 
-ipcMain.handle('projects.add', async (_e, { winPath }: { winPath: string }) => {
+ipcMain.handle('projects.add', async (_e, { winPath, dirRecord }: { winPath: string; dirRecord?: { providerId: string; recordedAt?: number } }) => {
   try {
-    const p = projects.addProjectByWinPath(winPath);
+    const p = projects.addProjectByWinPath(winPath, { dirRecord });
     return { ok: true, project: p };
   } catch (e: any) {
     return { ok: false, error: String(e) };
+  }
+});
+
+ipcMain.handle('projects.removeDirRecord', async (_e, { id }: { id: string }) => {
+  try {
+    const res = projects.removeProjectDirRecordById(id);
+    return res;
+  } catch (e: any) {
+    return { ok: false, removed: false, error: String(e) };
   }
 });
 
@@ -1733,14 +1742,9 @@ ipcMain.handle('history.list', async (_e, args: { projectWslPath?: string; proje
           perfLogger.log(`[history:list:probe] needles=${JSON.stringify(needles)} all=${all.length} filtered=${filtered.length} foundIdx=${foundIdx} foundFiltered=${foundFiltered}`);
         }
       } catch {}
-      // 若索引器有数据但按 dirKey 过滤后为空，针对指定项目路径回退到更稳妥的读取逻辑（全文前缀/启发式匹配）
-      if (needles.length > 0 && filtered.length === 0) {
-        try {
-          const prefRoot = typeof args.historyRoot === 'string' && args.historyRoot.trim().length > 0 ? args.historyRoot : settings.getSettings().historyRoot;
-          const res = await perfLogger.time('history.list.fallbackWhenEmpty', () => history.listHistory({ wslPath: args.projectWslPath, winPath: args.projectWinPath }, { limit: args.limit, offset: args.offset, historyRoot: prefRoot }));
-          return { ok: true, sessions: res };
-        } catch {}
-      }
+      // 性能关键：当 dirKey 过滤结果为空时，不再回退到全量扫描（history.listHistory）。
+      // 旧逻辑会在“空目录/新会话尚未写入 cwd（dirKey 仍为 sessions 目录）”场景触发全盘扫描，
+      // 导致明显卡顿与控制台刷屏。此处直接返回空结果，依赖索引器后续重解析/事件更新来补齐。
       const sorted = filtered.sort((a, b) => b.date - a.date);
       const offset = Math.max(0, Number(args.offset || 0));
       const end = args.limit ? offset + Number(args.limit) : undefined;

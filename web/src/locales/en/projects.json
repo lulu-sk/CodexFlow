@@ -7,6 +7,7 @@
   "ctxOpenExternalConsoleWith": "Open {provider} in external {env} console",
   "ctxHideTemporarily": "Hide project",
   "ctxUnhideProject": "Unhide project",
+  "ctxRemoveDirRecord": "Remove directory record",
   "showHiddenProjects": "Show hidden projects",
   "hideHiddenProjects": "Hide hidden projects",
   "hiddenTag": "Hidden",

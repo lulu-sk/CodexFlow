@@ -83,6 +83,10 @@ export type Project = {
   winPath: string;
   wslPath: string;
   hasDotCodex: boolean;
+  /** 是否已确认存在内置三引擎（codex/claude/gemini）的会话记录。 */
+  hasBuiltInSessions?: boolean;
+  /** 自定义引擎无法从会话文件反推 cwd 时，用于“保留该目录”的显式记录。 */
+  dirRecord?: { kind: "custom_provider"; providerId: string; recordedAt: number };
   createdAt: number;
   lastOpenedAt?: number;
 };
@@ -121,7 +125,9 @@ export interface ProjectsAPI {
   /** 读取缓存项目列表（不触发扫描） */
   list(): Promise<{ ok: boolean; projects?: Project[]; error?: string }>;
   scan(args?: { roots?: string[] }): Promise<{ ok: boolean; projects?: Project[]; error?: string }>;
-  add(args: { winPath: string }): Promise<{ ok: boolean; project?: Project | null; error?: string }>;
+  add(args: { winPath: string; dirRecord?: { providerId: string; recordedAt?: number } }): Promise<{ ok: boolean; project?: Project | null; error?: string }>;
+  /** 移除“自定义引擎目录记录”。若项目已确认存在内置会话，仅清空记录；否则从列表移除该项目。 */
+  removeDirRecord(args: { id: string }): Promise<{ ok: boolean; removed: boolean; project?: Project | null; error?: string }>;
   touch(id: string): void;
 }
 
