@@ -143,10 +143,16 @@ export async function parseClaudeSessionFile(filePath: string, stat: Stats, opts
         const role = normalizeClaudeRole(roleRaw);
 
         const { primaryText, toolBlocks, thinkingText } = extractClaudeContent(messageObj ?? obj);
-        if (role === "user") updatePreviewFromUserText(primaryText);
 
-        if (primaryText) {
-          const type = role === "user" ? "input_text" : (role === "assistant" ? "output_text" : "text");
+        if (role === "user" && primaryText) {
+          const { promptText, transcriptText } = splitClaudeUserTextForLocalCommandTranscript(primaryText);
+          if (promptText) updatePreviewFromUserText(promptText);
+          const content: Message["content"] = [];
+          if (transcriptText) content.push({ type: "local_command", text: transcriptText });
+          if (promptText) content.push({ type: "input_text", text: promptText });
+          if (content.length > 0) pushMessage({ role, content });
+        } else if (primaryText) {
+          const type = role === "assistant" ? "output_text" : "text";
           pushMessage({ role, content: [{ type, text: primaryText }] });
         }
         if (thinkingText) {
@@ -240,6 +246,67 @@ export async function parseClaudeSessionFile(filePath: string, stat: Stats, opts
 }
 
 type ClaudeToolBlock = { kind: "tool_call" | "tool_result"; text: string };
+
+/**
+ * 判断一行文本是否属于 Claude Code 的“本地命令 transcript”噪声片段。
+ * 这些内容通常来自 `/model` 等本地命令与其 stdout/stderr，并不代表用户真实输入。
+ */
+function isClaudeLocalCommandTranscriptLine(line: string): boolean {
+  try {
+    const s = String(line || "").trim();
+    if (!s) return false;
+    const lower = s.toLowerCase();
+    if (lower.startsWith("caveat:")) return true;
+    if (lower.includes("<command-name>")) return true;
+    if (lower.includes("<command-message>")) return true;
+    if (lower.includes("<command-args>")) return true;
+    if (lower.includes("<local-command-")) return true;
+    if (lower.includes("</local-command-")) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 将 Claude user 文本拆分为：真实 prompt 与本地命令 transcript（默认应隐藏）。
+ * - promptText：用于 preview/title 与默认展示（input_text）
+ * - transcriptText：归类为 local_command，默认筛选不勾选
+ */
+function splitClaudeUserTextForLocalCommandTranscript(text?: string): { promptText: string; transcriptText: string } {
+  try {
+    const raw = String(text ?? "");
+    const trimmed = raw.trim();
+    if (!trimmed) return { promptText: "", transcriptText: "" };
+
+    const lower = trimmed.toLowerCase();
+    const hasMarkers =
+      lower.startsWith("caveat:") ||
+      lower.includes("<command-name>") ||
+      lower.includes("<command-message>") ||
+      lower.includes("<command-args>") ||
+      lower.includes("<local-command-");
+    if (!hasMarkers) return { promptText: trimmed, transcriptText: "" };
+
+    const lines = trimmed.split(/\r?\n/);
+    const transcriptLines: string[] = [];
+    const promptLines: string[] = [];
+    for (const line of lines) {
+      if (!line || /^\s*$/.test(line)) continue;
+      if (isClaudeLocalCommandTranscriptLine(line)) transcriptLines.push(line);
+      else promptLines.push(line);
+    }
+    if (transcriptLines.length === 0) return { promptText: trimmed, transcriptText: "" };
+    if (promptLines.length === 0) return { promptText: "", transcriptText: trimmed };
+    return {
+      promptText: promptLines.join("\n").trim(),
+      transcriptText: transcriptLines.join("\n").trim(),
+    };
+  } catch {
+    const fallback = String(text ?? "").trim();
+    return { promptText: fallback, transcriptText: "" };
+  }
+}
 
 /**
  * 尝试从 Claude 消息结构中抽取可展示的文本与工具块。
