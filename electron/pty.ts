@@ -20,6 +20,40 @@ function uid() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/**
+ * 中文说明：合并额外环境变量，避免空 key 与非字符串值。
+ */
+function mergeExtraEnv(base: Record<string, string>, extra?: Record<string, string>): Record<string, string> {
+  const next = { ...base };
+  if (!extra || typeof extra !== "object") return next;
+  for (const [key, value] of Object.entries(extra)) {
+    const k = String(key || "").trim();
+    if (!k) continue;
+    if (value === undefined || value === null) continue;
+    const v = typeof value === "string" ? value : String(value);
+    next[k] = v;
+  }
+  return next;
+}
+
+/**
+ * 中文说明：将指定环境变量名追加到 WSLENV，确保传递到 WSL。
+ */
+function appendWslEnv(existing: string | undefined, keys: string[]): string {
+  const list = String(existing || "").split(":").filter(Boolean);
+  const seen = new Set<string>();
+  for (const item of list) {
+    const base = String(item || "").split("/")[0];
+    if (base) seen.add(base);
+  }
+  for (const key of keys) {
+    if (!key || seen.has(key)) continue;
+    list.push(key);
+    seen.add(key);
+  }
+  return list.join(":");
+}
+
 export class PTYManager {
   private sessions = new Map<string, IPty>();
   private getWindow: () => BrowserWindow | null;
@@ -39,7 +73,7 @@ export class PTYManager {
    * 打开一个 PTY 会话。
    * - 允许通过 opts.terminal 覆盖全局 settings.terminal，用于实现 Provider 级别环境隔离。
    */
-  openWSLConsole(opts: { terminal?: TerminalMode; distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string }): string {
+  openWSLConsole(opts: { terminal?: TerminalMode; distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string; env?: Record<string, string> }): string {
     const distro = opts.distro || 'Ubuntu-22.04';
     const wslPath = opts.wslPath || '~';
     const winPath = String(opts.winPath || '').trim();
@@ -49,7 +83,8 @@ export class PTYManager {
 
     const id = uid();
 
-    const env = { ...process.env } as Record<string, string>;
+    let env = { ...process.env } as Record<string, string>;
+    env = mergeExtraEnv(env, opts.env);
 
     // 根据设置选择 WSL 或 Windows 本地终端
     const termMode = (opts.terminal || settings.getSettings().terminal || 'wsl');
@@ -97,6 +132,10 @@ export class PTYManager {
         if (opts.wslPath) {
           args.push('--cd', wslPath);
         }
+      }
+      if (os.platform() === 'win32' && opts.env && Object.keys(opts.env).length > 0) {
+        const keys = Object.keys(opts.env).map((k) => String(k || "").trim()).filter(Boolean);
+        if (keys.length > 0) env.WSLENV = appendWslEnv(env.WSLENV, keys);
       }
       proc = pty.spawn(shell, args, {
         name: 'xterm-256color',

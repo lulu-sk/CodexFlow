@@ -109,7 +109,7 @@ export type HistoryMessage = { role: string; content: MessageContent[] };
 
 // ---- Host API 声明 ----
 export interface PtyAPI {
-  openWSLConsole(args: { terminal?: 'wsl' | 'windows' | 'pwsh'; distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string }): Promise<{ id: string }>;
+  openWSLConsole(args: { terminal?: 'wsl' | 'windows' | 'pwsh'; distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string; env?: Record<string, string> }): Promise<{ id: string }>;
   write(id: string, data: string): void;
   resize(id: string, cols: number, rows: number): void;
   close(id: string): void;
@@ -303,6 +303,8 @@ export interface GeminiAPI {
 export interface NotificationsAPI {
   setBadgeCount(count: number): void;
   showAgentCompletion(payload: { tabId: string; tabName?: string; projectName?: string; preview?: string; title: string; body: string; appTitle?: string }): void;
+  /** 监听主进程转发的外部完成通知（如 Gemini hook）。 */
+  onExternalAgentComplete?(handler: (payload: { providerId?: "gemini"; tabId?: string; envLabel?: string; preview?: string; timestamp?: string; eventId?: string }) => void): () => void;
   onFocusTab?(handler: (payload: { tabId: string }) => void): () => void;
 }
 

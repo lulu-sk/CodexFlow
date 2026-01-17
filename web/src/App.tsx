@@ -95,6 +95,12 @@ type ConsoleTab = {
   createdAt: number;
 };
 
+const GEMINI_NOTIFY_ENV_KEYS = {
+  tabId: "GEMINI_CLI_CODEXFLOW_TAB_ID",
+  envLabel: "GEMINI_CLI_CODEXFLOW_ENV_LABEL",
+  providerId: "GEMINI_CLI_CODEXFLOW_PROVIDER_ID",
+} as const;
+
 /**
  * 构建 ProviderItem 的 id -> item 索引，避免在标签渲染时重复线性扫描。
  */
@@ -107,6 +113,22 @@ function buildProviderItemIndex(items: ProviderItem[]): Record<string, ProviderI
     map[id] = it;
   }
   return map;
+}
+
+/**
+ * 中文说明：构造 Gemini hook 所需的通知环境变量（仅 Gemini 标签页注入）。
+ */
+function buildGeminiNotifyEnv(tabId: string, providerId: string, envLabel: string): Record<string, string> {
+  const pid = String(providerId || "").trim().toLowerCase();
+  if (pid !== "gemini") return {};
+  const tid = String(tabId || "").trim();
+  if (!tid) return {};
+  const label = String(envLabel || "").trim();
+  return {
+    [GEMINI_NOTIFY_ENV_KEYS.tabId]: tid,
+    [GEMINI_NOTIFY_ENV_KEYS.envLabel]: label,
+    [GEMINI_NOTIFY_ENV_KEYS.providerId]: pid,
+  };
 }
 
 /**
@@ -491,7 +513,7 @@ type NetworkPrefs = {
 const DEFAULT_COMPLETION_PREFS: CompletionPreferences = {
   badge: true,
   system: true,
-  sound: false,
+  sound: true,
 };
 
 const normalizeThemeSetting = (value: any): ThemeSetting => {
@@ -523,6 +545,15 @@ function isAgentCompletionMessage(message: string): boolean {
   if (lower.includes('approval requested')) return false;
   if (lower.startsWith('codex wants to edit')) return false;
   return true;
+}
+
+/**
+ * 中文说明：清理完成通知前缀，避免正文出现 agent-turn-complete。
+ */
+function normalizeCompletionPreview(raw: string): string {
+  const text = String(raw || "").trim();
+  if (!text) return "";
+  return text.replace(/^agent-turn-complete\s*[:：]?\s*/i, "").trim();
 }
 
 // 筛选键规范化：将等价的 tags 与 type 统一到一个"规范键"，用于去重显示与匹配
@@ -999,6 +1030,7 @@ export default function CodexFlowManagerUI() {
   const notificationPrefsRef = useRef<CompletionPreferences>(DEFAULT_COMPLETION_PREFS);
   const [pendingCompletions, setPendingCompletions] = useState<Record<string, number>>({});
   const pendingCompletionsRef = useRef<Record<string, number>>({});
+  const completionSnapshotRef = useRef<Record<string, { preview: string; ts: number }>>({});
   const ptyNotificationBuffersRef = useRef<Record<string, string>>({});
   const ptyListenersRef = useRef<Record<string, () => void>>({});
   const ptyToTabRef = useRef<Record<string, string>>({});
@@ -1279,18 +1311,64 @@ export default function CodexFlowManagerUI() {
     } catch {}
   }
 
+  /**
+   * 中文说明：记录最近一次完成通知，用于去重。
+   */
+  function recordCompletionSnapshot(tabId: string, preview: string) {
+    const safeId = String(tabId || "").trim();
+    if (!safeId) return;
+    completionSnapshotRef.current[safeId] = { preview: String(preview || ""), ts: Date.now() };
+  }
+
+  /**
+   * 中文说明：判断是否为短时间内重复通知。
+   */
+  function isDuplicateCompletion(tabId: string, preview: string, windowMs: number): boolean {
+    const safeId = String(tabId || "").trim();
+    if (!safeId) return false;
+    const last = completionSnapshotRef.current[safeId];
+    if (!last) return false;
+    const delta = Date.now() - last.ts;
+    return delta >= 0 && delta <= windowMs && String(last.preview || "") === String(preview || "");
+  }
+
+  /**
+   * 中文说明：根据外部通知负载推断对应的 tabId。
+   */
+  function resolveExternalTabId(payload: { tabId?: string; providerId?: string; envLabel?: string }): string | null {
+    const direct = String(payload?.tabId || "").trim();
+    if (direct) return direct;
+    const providerId = String(payload?.providerId || "gemini").trim().toLowerCase();
+    const envLabel = String(payload?.envLabel || "").trim();
+    const matched: ConsoleTab[] = [];
+    for (const list of Object.values(tabsByProjectRef.current)) {
+      for (const tab of list || []) {
+        if (String(tab?.providerId || "").trim().toLowerCase() !== providerId) continue;
+        if (envLabel && String(tab.name || "").trim() === envLabel) matched.push(tab);
+        else if (!envLabel) matched.push(tab);
+      }
+    }
+    if (envLabel) {
+      if (matched.length === 1) return matched[0].id;
+      return null;
+    }
+    return matched.length === 1 ? matched[0].id : null;
+  }
+
   function showCompletionNotification(tabId: string, preview: string) {
     if (!notificationPrefsRef.current.system) {
       notifyLog(`showCompletionNotification skipped tab=${tabId} reason=systemDisabled`);
       return;
     }
     let tabName = '';
+    let providerId = '';
     let projectName: string | undefined;
     const currentTabs = tabsByProjectRef.current;
     for (const [pid, list] of Object.entries(currentTabs)) {
       const found = (list || []).find((tab) => tab.id === tabId);
       if (found) {
         tabName = found.name;
+        providerId = found.providerId;
         const project = projectsRef.current.find((p) => p.id === pid);
         if (project) projectName = project.name;
         break;
@@ -1298,7 +1376,8 @@ export default function CodexFlowManagerUI() {
     }
     if (!tabName) tabName = t('common:notifications.untitledTab', 'Agent');
     const appTitle = t('common:app.name', 'CodexFlow') as string;
-    const header = [appTitle, tabName].filter(Boolean).join(' · ') || appTitle;
+    const providerLabel = providerId ? getProviderLabel(providerId) : "";
+    const header = [providerLabel || appTitle, tabName].filter(Boolean).join(' · ') || appTitle;
     const normalizedPreview = preview.trim();
     const body = normalizedPreview || (t('common:notifications.openTabHint', '点击查看详情') as string);
     try {
@@ -1381,9 +1460,11 @@ export default function CodexFlowManagerUI() {
 
   function handleAgentCompletion(tabId: string, preview: string) {
     if (!tabId) return;
+    const cleanedPreview = normalizeCompletionPreview(preview);
+    recordCompletionSnapshot(tabId, cleanedPreview);
     const foreground = isAppForeground();
     const activeMatch = activeTabIdRef.current === tabId;
-    notifyLog(`handleAgentCompletion tab=${tabId} previewLength=${preview.length} sound=${notificationPrefsRef.current.sound} foreground=${foreground ? '1' : '0'} activeMatch=${activeMatch ? '1' : '0'}`);
+    notifyLog(`handleAgentCompletion tab=${tabId} previewLength=${cleanedPreview.length} sound=${notificationPrefsRef.current.sound} foreground=${foreground ? '1' : '0'} activeMatch=${activeMatch ? '1' : '0'}`);
     const current = pendingCompletionsRef.current;
     if (foreground && activeMatch) {
       notifyLog(`handleAgentCompletion auto-clear tab=${tabId}`);
@@ -1392,7 +1473,7 @@ export default function CodexFlowManagerUI() {
       const next = { ...current, [tabId]: (current[tabId] ?? 0) + 1 };
       applyPending(next);
     }
-    showCompletionNotification(tabId, preview);
+    showCompletionNotification(tabId, cleanedPreview);
     void playCompletionChime();
     // 无论通知开关如何，均请求刷新 Codex 用量（由顶部栏组件自行做 1 分钟冷却）
     try { emitCodexRateRefresh('agent-complete'); } catch {}
@@ -2304,6 +2385,35 @@ export default function CodexFlowManagerUI() {
     return () => { try { off && off(); } catch {} };
   }, [focusTabFromNotification]);
 
+  // 监听主进程转发的 Gemini 完成通知（JSONL 桥接）
+  useEffect(() => {
+    let off: (() => void) | undefined;
+    try {
+      off = window.host.notifications?.onExternalAgentComplete?.((payload: { providerId?: string; tabId?: string; envLabel?: string; preview?: string; timestamp?: string; eventId?: string }) => {
+        const providerId = String(payload?.providerId || "gemini").trim().toLowerCase();
+        if (providerId && providerId !== "gemini") return;
+        const preview = String(payload?.preview || "");
+        const resolvedTabId = resolveExternalTabId({
+          tabId: payload?.tabId,
+          providerId,
+          envLabel: payload?.envLabel,
+        });
+        if (!resolvedTabId) {
+          notifyLog(`externalCompletion skip: no tab match provider=${providerId} env=${payload?.envLabel || ""}`);
+          return;
+        }
+        const cleanedPreview = normalizeCompletionPreview(preview);
+        if (isDuplicateCompletion(resolvedTabId, cleanedPreview, 1500)) {
+          notifyLog(`externalCompletion dedupe tab=${resolvedTabId}`);
+          return;
+        }
+        notifyLog(`externalCompletion ok tab=${resolvedTabId} previewLen=${cleanedPreview.length}`);
+        handleAgentCompletion(resolvedTabId, preview);
+      });
+    } catch {}
+    return () => { try { off && off(); } catch {} };
+  }, [handleAgentCompletion, isDuplicateCompletion, notifyLog, resolveExternalTabId]);
+
   // 监听主进程“退出确认”请求：用应用内 Dialog 替代原生对话框，保持 UI 风格一致
   useEffect(() => {
     let off: (() => void) | undefined;
@@ -2526,6 +2636,7 @@ export default function CodexFlowManagerUI() {
       logs: [],
       createdAt: Date.now(),
     };
+    const notifyEnv = buildGeminiNotifyEnv(tab.id, tab.providerId, tab.name);
     let ptyId: string | undefined;
     try {
       const env = getProviderEnv(activeProviderId);
@@ -2537,7 +2648,8 @@ export default function CodexFlowManagerUI() {
         winPath: project.winPath,
         cols: 80,
         rows: 24,
-        startupCmd
+        startupCmd,
+        env: notifyEnv,
       });
       ptyId = id;
     } catch (e) {
@@ -2623,6 +2735,7 @@ export default function CodexFlowManagerUI() {
       logs: [],
       createdAt: Date.now(),
     };
+    const notifyEnv = buildGeminiNotifyEnv(tab.id, tab.providerId, tab.name);
     let ptyId: string | undefined;
     // Open PTY in main (WSL)
     try {
@@ -2637,6 +2750,7 @@ export default function CodexFlowManagerUI() {
         cols: 80,
         rows: 24,
         startupCmd,
+        env: notifyEnv,
       });
       try { await (window as any).host?.utils?.perfLog?.(`[ui] openNewConsole pty=${id}`); } catch {}
       ptyId = id;
@@ -3863,26 +3977,28 @@ export default function CodexFlowManagerUI() {
 	        const tabName = isWindowsLike(execEnv.terminal as any)
 	          ? toShellLabel(execEnv.terminal as any)
 	          : (execEnv.distro || `Console ${((tabsByProject[selectedProject.id] || []).length + 1).toString()}`);
-	        const tab: ConsoleTab = {
-	          id: uid(),
-	          name: String(tabName),
-	          providerId,
+        const tab: ConsoleTab = {
+          id: uid(),
+          name: String(tabName),
+          providerId,
           logs: [],
           createdAt: Date.now(),
         };
+        const notifyEnv = buildGeminiNotifyEnv(tab.id, tab.providerId, tab.name);
         let ptyId: string | undefined;
         try {
           await (window as any).host?.utils?.perfLog?.(`[ui] history.resume openWSLConsole start tab=${tab.id}`);
         } catch {}
 	        try {
-	          const { id } = await window.host.pty.openWSLConsole({
-	            terminal: execEnv.terminal as any,
-	            distro: execEnv.distro,
-	            wslPath: selectedProject.wslPath,
-	            winPath: selectedProject.winPath,
-	            cols: 80,
-	            rows: 24,
+          const { id } = await window.host.pty.openWSLConsole({
+            terminal: execEnv.terminal as any,
+            distro: execEnv.distro,
+            wslPath: selectedProject.wslPath,
+            winPath: selectedProject.winPath,
+            cols: 80,
+            rows: 24,
             startupCmd,
+            env: notifyEnv,
           });
           try {
             await (window as any).host?.utils?.perfLog?.(`[ui] history.resume pty=${id} tab=${tab.id} - registering listener`);

@@ -11,7 +11,7 @@
     },
     "notifications": {
       "title": "Notifications",
-      "desc": "Choose how CodexFlow reminds you when agents finish their tasks. (Currently only supports Codex.)"
+      "desc": "Choose how CodexFlow reminds you when agents finish their tasks."
     },
     "terminal": {
       "title": "Terminal & input",
@@ -19,7 +19,7 @@
     },
     "networkAccount": {
       "title": "Network & Account",
-      "desc": "Manage network proxy settings and review your ChatGPT account status. (Account features currently only support Codex.)"
+      "desc": "Manage network proxy settings and review your ChatGPT account status."
     },
     "data": {
       "title": "Data & storage",
