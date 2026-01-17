@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { Button, type ButtonProps } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
 import { Gauge, RotateCcw } from "lucide-react";
 import type { AppSettings, CodexAccountInfo, CodexRateLimitSnapshot } from "@/types/host";
 import {
@@ -310,6 +311,75 @@ function useCodexRateCached(envKey: string): [
   return [state, fetchRate, { attempted }];
 }
 
+/**
+ * Codex 用量详情渲染：复用在顶部栏 hover 面板与设置面板的账号卡片中。
+ */
+const CodexRateDetails: React.FC<{
+  state: FetchState<CodexRateLimitSnapshot>;
+  className?: string;
+}> = ({ state, className }) => {
+  const { t, i18n } = useTranslation(["common"]);
+
+  if (state.error) {
+    return <div className={`text-[var(--cf-red)] ${className ?? ""}`}>{state.error}</div>;
+  }
+  if (state.loading && !state.data) {
+    return (
+      <div className={`text-[var(--cf-text-secondary)] ${className ?? ""}`}>
+        {t("common:codexUsage.loading", "正在同步用量…")}
+      </div>
+    );
+  }
+  if (!state.data) {
+    return (
+      <div className={`text-[var(--cf-text-secondary)] ${className ?? ""}`}>
+        {t("common:codexUsage.empty", "暂无用量信息")}
+      </div>
+    );
+  }
+
+  return (
+    <div className={`flex flex-col gap-3 ${className ?? ""}`}>
+      <div className="flex flex-col gap-2 rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-solid)] px-3 py-2.5 shadow-apple-xs">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-apple-medium text-[var(--cf-text-secondary)]">
+            {t("common:codexUsage.primary", "主要额度")}
+          </span>
+          <Badge variant="outline">{formatWindowLabel(state.data.primary, t)}</Badge>
+        </div>
+        <div className="flex items-center justify-between text-[var(--cf-text-primary)]">
+          <span className="font-apple-medium">
+            {t("common:codexUsage.summary", { percent: formatPercent(state.data.primary?.usedPercent ?? null) })}
+          </span>
+          <span className="text-xs text-[var(--cf-text-secondary)]">
+            {t("common:codexUsage.reset", {
+              time: formatResetTime(state.data.primary?.resetAfterSeconds ?? null, t, i18n.language),
+            })}
+          </span>
+        </div>
+      </div>
+      <div className="flex flex-col gap-2 rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-solid)] px-3 py-2.5 shadow-apple-xs">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-apple-medium text-[var(--cf-text-secondary)]">
+            {t("common:codexUsage.secondary", "备用额度")}
+          </span>
+          <Badge variant="outline">{formatWindowLabel(state.data.secondary, t)}</Badge>
+        </div>
+        <div className="flex items-center justify-between text-[var(--cf-text-primary)]">
+          <span className="font-apple-medium">
+            {t("common:codexUsage.summary", { percent: formatPercent(state.data.secondary?.usedPercent ?? null) })}
+          </span>
+          <span className="text-xs text-[var(--cf-text-secondary)]">
+            {t("common:codexUsage.reset", {
+              time: formatResetTime(state.data.secondary?.resetAfterSeconds ?? null, t, i18n.language),
+            })}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 type CodexUsageHoverCardTriggerArgs = {
   rateState: FetchState<CodexRateLimitSnapshot>;
   percentLabel: string;
@@ -340,7 +410,7 @@ export const CodexUsageHoverCard: React.FC<CodexUsageHoverCardProps> = ({
   enableAutoRefreshInterval = true,
   enableGlobalRefreshEvent = true,
 }) => {
-  const { t, i18n } = useTranslation(["common", "settings"]);
+  const { t } = useTranslation(["common", "settings"]);
   const envKey = useMemo(() => resolveCodexEnvKey(terminalMode, distro), [terminalMode, distro]);
   const [rateState, reloadRate] = useCodexRateCached(envKey);
   const [accountState, reloadAccount, accountMeta] = useCodexAccountCached(envKey);
@@ -493,68 +563,7 @@ export const CodexUsageHoverCard: React.FC<CodexUsageHoverCardProps> = ({
               </Badge>
             </div>
           </div>
-          {rateState.error ? (
-            <div className="text-[var(--cf-red)]">{rateState.error}</div>
-          ) : rateState.data ? (
-            <div className="flex flex-col gap-3">
-              <div className="flex flex-col gap-2 rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-solid)] px-3 py-2.5 shadow-apple-xs">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-apple-medium text-[var(--cf-text-secondary)]">
-                    {t("common:codexUsage.primary", "主要额度")}
-                  </span>
-                  <Badge variant="outline">
-                    {formatWindowLabel(rateState.data.primary, t)}
-                  </Badge>
-                </div>
-                <div className="flex items-center justify-between text-[var(--cf-text-primary)]">
-                  <span className="font-apple-medium">
-                    {t("common:codexUsage.summary", {
-                      percent: formatPercent(rateState.data.primary?.usedPercent ?? null),
-                    })}
-                  </span>
-                  <span className="text-xs text-[var(--cf-text-secondary)]">
-                    {t("common:codexUsage.reset", {
-                      time: formatResetTime(
-                        rateState.data.primary?.resetAfterSeconds ?? null,
-                        t,
-                        i18n.language,
-                      ),
-                    })}
-                  </span>
-                </div>
-              </div>
-              <div className="flex flex-col gap-2 rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-solid)] px-3 py-2.5 shadow-apple-xs">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-apple-medium text-[var(--cf-text-secondary)]">
-                    {t("common:codexUsage.secondary", "备用额度")}
-                  </span>
-                  <Badge variant="outline">
-                    {formatWindowLabel(rateState.data.secondary, t)}
-                  </Badge>
-                </div>
-                <div className="flex items-center justify-between text-[var(--cf-text-primary)]">
-                  <span className="font-apple-medium">
-                    {t("common:codexUsage.summary", {
-                      percent: formatPercent(rateState.data.secondary?.usedPercent ?? null),
-                    })}
-                  </span>
-                  <span className="text-xs text-[var(--cf-text-secondary)]">
-                    {t("common:codexUsage.reset", {
-                      time: formatResetTime(
-                        rateState.data.secondary?.resetAfterSeconds ?? null,
-                        t,
-                        i18n.language,
-                      ),
-                    })}
-                  </span>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="text-[var(--cf-text-secondary)]">
-              {t("common:codexUsage.empty", "暂无用量信息")}
-            </div>
-          )}
+          <CodexRateDetails state={rateState} />
           <div className="mt-3 flex justify-end">
             <Button
               size="sm"
@@ -676,13 +685,9 @@ export const CodexAccountInline: React.FC<{
     [t],
   );
   const [accountState, reloadAccount] = useCodexAccount(auto, errorTranslator);
+  const envKey = useMemo(() => resolveCodexEnvKey(terminalMode, distro), [terminalMode, distro]);
+  const [rateState, reloadRate, rateMeta] = useCodexRateCached(envKey);
   const hover = useHoverCard();
-  const envKey = useMemo(() => {
-    if (terminalMode === "wsl") return `wsl:${distro ?? ""}`;
-    if (terminalMode === "pwsh") return "windows-pwsh";
-    if (terminalMode === "windows") return "windows";
-    return "default";
-  }, [terminalMode, distro]);
   const lastEnvKeyRef = useRef(envKey);
 
   useEffect(() => {
@@ -694,6 +699,20 @@ export const CodexAccountInline: React.FC<{
     lastEnvKeyRef.current = envKey;
     reloadAccount();
   }, [auto, envKey, reloadAccount]);
+
+  useEffect(() => {
+    if (!expanded || !auto) return;
+    if (rateMeta.attempted) return;
+    reloadRate();
+  }, [auto, expanded, rateMeta.attempted, reloadRate]);
+
+  useEffect(() => {
+    if (!expanded || !auto) return undefined;
+    if (!rateState.data) return undefined;
+    const interval = computeRefreshInterval(rateState.data);
+    const timer = window.setTimeout(() => reloadRate(), interval);
+    return () => window.clearTimeout(timer);
+  }, [auto, expanded, rateState.data, reloadRate]);
 
   const statusText = useMemo(() => {
     if (accountState.loading && !accountState.data) {
@@ -727,8 +746,27 @@ export const CodexAccountInline: React.FC<{
           <dd className="break-all font-apple-regular">{accountState.data?.userId ?? t("settings:codexAccount.notProvided", "未提供")}</dd>
         </dl>
       )}
+      {expanded && (
+        <>
+          <Separator className="my-4" />
+          <div className="space-y-2">
+            <div className="text-xs font-apple-medium text-[var(--cf-text-secondary)]">
+              {t("common:codexUsage.title", "用量")}
+            </div>
+            <CodexRateDetails state={rateState} />
+          </div>
+        </>
+      )}
       <div className="mt-3 flex justify-end">
-        <Button size="sm" variant="outline" className="gap-2" onClick={() => reloadAccount()}>
+        <Button
+          size="sm"
+          variant="outline"
+          className="gap-2"
+          onClick={() => {
+            reloadAccount();
+            if (expanded) reloadRate();
+          }}
+        >
           <RotateCcw className="h-3.5 w-3.5" />
           {t("common:refresh", "刷新")}
         </Button>
