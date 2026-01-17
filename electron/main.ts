@@ -33,7 +33,9 @@ import { registerQuitConfirmIPC, requestQuitConfirmFromRenderer } from "./quitCo
 import { CodexBridge, type CodexBridgeOptions } from "./codex/bridge";
 import { applyCodexAuthBackupAsync, deleteCodexAuthBackupAsync, isSafeAuthBackupId, listCodexAuthBackupsAsync, readCodexAuthBackupMetaAsync, resolveCodexAccountSignature, resolveCodexAuthJsonPathAsync, upsertCodexAuthBackupAsync, upsertCodexAuthBackupMetaOnlyAsync } from "./codex/authBackups";
 import { ensureAllCodexNotifications } from "./codex/config";
+import { ensureAllClaudeNotifications } from "./claude/notifications";
 import { getClaudeUsageSnapshotAsync } from "./claude/usage";
+import { ensureAllGeminiNotifications, startGeminiNotificationBridge, stopGeminiNotificationBridge } from "./gemini/notifications";
 import { getGeminiQuotaSnapshotAsync } from "./gemini/usage";
 import storage from "./storage";
 import { registerNotificationIPC, unregisterNotificationIPC } from "./notifications";
@@ -1178,6 +1180,9 @@ if (!gotLock) {
       try { await ensureFirstRunTerminalSelection(); } catch {}
       try { await ensureSettingsAutodetect(); } catch {}
       try { await ensureAllCodexNotifications(); } catch {}
+      try { await ensureAllClaudeNotifications(); } catch {}
+      try { await ensureAllGeminiNotifications(); } catch {}
+      try { await startGeminiNotificationBridge(() => mainWindow); } catch {}
       if (DIAG) { try { perfLogger.log(`[BOOT] Locale: ${i18n.getCurrentLocale?.()}`); } catch {} }
       try { registerNotificationIPC(() => mainWindow, { appUserModelId, protocolScheme: PROTOCOL_SCHEME, profileId: instanceProfile.profileId }); } catch {}
       // 启动时静默检查更新由渲染进程完成（仅提示，不下载）
@@ -1229,6 +1234,7 @@ if (!gotLock) {
   });
 
   app.on('will-quit', () => {
+    try { stopGeminiNotificationBridge(); } catch {}
     disposeAllPtys();
     cleanupPastedImages().catch(() => {});
     disposeCodexBridges();
@@ -1318,7 +1324,7 @@ function setupAppMenu() {
 
 // -------- IPC: PTY bridge (I/O only) --------
 ipcMain.handle('pty:open', async (_event, args: {
-  terminal?: 'wsl' | 'windows' | 'pwsh'; distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string;
+  terminal?: 'wsl' | 'windows' | 'pwsh'; distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string; env?: Record<string, string>;
 }) => {
   const id = ptyManager.openWSLConsole({
     terminal: args?.terminal as any,
@@ -1327,7 +1333,8 @@ ipcMain.handle('pty:open', async (_event, args: {
     winPath: args?.winPath,
     cols: args?.cols ?? 80,
     rows: args?.rows ?? 24,
-    startupCmd: args?.startupCmd ?? ''
+    startupCmd: args?.startupCmd ?? '',
+    env: args?.env,
   });
   return { id };
 });
@@ -2773,6 +2780,9 @@ ipcMain.handle("gemini.usage", async () => {
 ipcMain.handle('settings.get', async () => {
   try { await ensureSettingsAutodetect(); } catch {}
   try { await ensureAllCodexNotifications(); } catch {}
+  try { await ensureAllClaudeNotifications(); } catch {}
+  try { await ensureAllGeminiNotifications(); } catch {}
+  try { await startGeminiNotificationBridge(() => mainWindow); } catch {}
   const cfg = settings.getSettings() as any;
   try {
     const flags = getFeatureFlags();
@@ -2826,6 +2836,9 @@ ipcMain.handle('settings.update', async (_e, partial: any) => {
   // 设置更新后尝试刷新代理
   try { await configureOrUpdateProxy(); } catch {}
   try { await ensureAllCodexNotifications(); } catch {}
+  try { await ensureAllClaudeNotifications(); } catch {}
+  try { await ensureAllGeminiNotifications(); } catch {}
+  try { await startGeminiNotificationBridge(() => mainWindow); } catch {}
   // 若刚开启“记录账号”，立即刷新一次账号信息并触发初始备份（便于立刻出现在备份列表）
   try {
     if (!prevCodexAccountRecordEnabled && nextCodexAccountRecordEnabled) {

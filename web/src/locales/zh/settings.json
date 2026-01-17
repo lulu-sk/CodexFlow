@@ -11,7 +11,7 @@
     },
     "notifications": {
       "title": "通知提醒",
-      "desc": "配置代理完成任务时的提醒方式。（目前仅支持 Codex）"
+      "desc": "配置代理完成任务时的提醒方式。"
     },
     "terminal": {
       "title": "终端与输入框",
@@ -19,7 +19,7 @@
     },
     "networkAccount": {
       "title": "网络与账号",
-      "desc": "管理应用内网络代理设置，查看 ChatGPT 账号状态。（账号功能目前仅支持 Codex）"
+      "desc": "管理应用内网络代理设置，查看 ChatGPT 账号状态。"
     },
     "data": {
       "title": "数据与存储",

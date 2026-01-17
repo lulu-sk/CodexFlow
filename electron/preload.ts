@@ -3,7 +3,7 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 
-type OpenArgs = { terminal?: 'wsl' | 'windows' | 'pwsh'; distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string };
+type OpenArgs = { terminal?: 'wsl' | 'windows' | 'pwsh'; distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string; env?: Record<string, string> };
 
 contextBridge.exposeInMainWorld('host', {
   app: {
@@ -258,6 +258,12 @@ contextBridge.exposeInMainWorld('host', {
     },
     showAgentCompletion: (payload: { tabId: string; tabName?: string; projectName?: string; preview?: string; title: string; body: string; appTitle?: string }) => {
       ipcRenderer.send('notifications:agentComplete', payload);
+    },
+    // 中文说明：监听主进程转发的外部完成通知（Gemini hook）。
+    onExternalAgentComplete: (handler: (payload: any) => void) => {
+      const listener = (_: unknown, payload: any) => handler(payload);
+      ipcRenderer.on('notifications:externalAgentComplete', listener);
+      return () => ipcRenderer.removeListener('notifications:externalAgentComplete', listener);
     },
     onFocusTab: (handler: (payload: { tabId: string }) => void) => {
       const listener = (_: unknown, payload: { tabId: string }) => handler(payload);

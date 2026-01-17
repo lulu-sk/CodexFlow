@@ -134,7 +134,7 @@ let cachedDistrosAt = 0;
 const DEFAULT_NOTIFICATIONS: NotificationSettings = {
   badge: true,
   system: true,
-  sound: false,
+  sound: true,
 };
 const DEFAULT_NETWORK: NetworkSettings = {
   proxyEnabled: true,
