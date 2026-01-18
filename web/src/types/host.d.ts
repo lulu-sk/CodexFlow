@@ -110,6 +110,8 @@ export type HistoryMessage = { role: string; content: MessageContent[] };
 // ---- Host API 声明 ----
 export interface PtyAPI {
   openWSLConsole(args: { terminal?: 'wsl' | 'windows' | 'pwsh'; distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string; env?: Record<string, string> }): Promise<{ id: string }>;
+  /** 读取 PTY 的尾部输出缓存（用于渲染进程 reload/HMR 后恢复终端滚动区）。 */
+  backlog?: (id: string, args?: { maxChars?: number }) => Promise<{ ok: boolean; data?: string; error?: string }>;
   write(id: string, data: string): void;
   resize(id: string, cols: number, rows: number): void;
   close(id: string): void;

@@ -9,9 +9,12 @@ import { I18nextProvider } from 'react-i18next';
 import i18n, { initI18n } from '@/i18n/setup';
 import ErrorBoundary from '@/components/ErrorBoundary';
 import { applyTheme, getCachedThemeSetting } from '@/lib/theme';
+import { installPreventReloadShortcuts } from '@/lib/preventReloadShortcuts';
 
 const cachedThemeSetting = getCachedThemeSetting();
 applyTheme(cachedThemeSetting ?? 'system');
+// 关键：阻止 Ctrl/Cmd+R、F5 导致的渲染进程 reload（不影响 xterm 接收按键）
+installPreventReloadShortcuts();
 
 const root = createRoot(document.getElementById('root')!);
 

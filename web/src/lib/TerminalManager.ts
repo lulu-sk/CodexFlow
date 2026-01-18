@@ -25,6 +25,8 @@ export interface HostPtyAPI {
   pause?: (id: string) => void;
   resume?: (id: string) => void;
   clear?: (id: string) => void;
+  /** 中文说明：读取 PTY 的尾部输出缓存（用于渲染进程 reload/HMR 后恢复滚动区）。 */
+  backlog?: (id: string, args?: { maxChars?: number }) => Promise<{ ok: boolean; data?: string; error?: string }>;
   onExit?: (handler: (payload: { id: string; exitCode?: number }) => void) => (() => void);
 }
 
@@ -52,6 +54,7 @@ export default class TerminalManager {
   private pendingSizeByTab: Record<string, { cols: number; rows: number } | undefined> = {};
   private isAnimatingByTab: Record<string, boolean> = {};
   private hostElByTab: Record<string, HTMLElement | null> = {};
+  private backlogHydratedPtyByTab: Record<string, string | undefined> = {};
   private getPtyId: (tabId: string) => string | undefined;
   private hostPty: HostPtyAPI;
   private appearance: TerminalAppearance = normalizeTerminalAppearance();
@@ -304,7 +307,7 @@ export default class TerminalManager {
    * 确保存在用于 tab 的持久化容器，并在容器上 mount xterm adapter
    * 返回该持久容器以便上层将其 append 到可见 host element
    */
-  ensurePersistentContainer(tabId: string): HTMLDivElement {
+  ensurePersistentContainer(tabId: string, options?: { skipAutoWireUp?: boolean }): HTMLDivElement {
     let container = this.containers[tabId];
     if (!container) {
       container = document.createElement('div');
@@ -326,7 +329,7 @@ export default class TerminalManager {
 
       // If PTY already exists for this tab, wire up bridges
       const pid = this.getPtyId(tabId);
-      if (pid) this.wireUp(tabId, pid);
+      if (pid && !options?.skipAutoWireUp) this.wireUp(tabId, pid);
     }
 
     if (!this.windowResizeCleanupByTab[tabId]) {
@@ -361,7 +364,7 @@ export default class TerminalManager {
   /**
    * 将指定 tab 的 PTY 与 adapter 做双向绑定：主进程 onData -> adapter.write，adapter.onData -> 主进程 write
    */
-  private wireUp(tabId: string, ptyId: string): void {
+  private wireUp(tabId: string, ptyId: string, options?: { skipInitialResize?: boolean }): void {
     this.dlog(`wireUp tab=${tabId} pty=${ptyId}`);
     const adapter = this.adapters[tabId];
     if (!adapter) return;
@@ -370,7 +373,9 @@ export default class TerminalManager {
     this.unsubByTab[tabId] = this.hostPty.onData(ptyId, (data) => adapter!.write(data));
     this.inputUnsubByTab[tabId] = adapter.onData((data) => this.hostPty.write(ptyId, data));
     // 首次绑定后立即同步一次（走统一的去重/阈值/防抖逻辑，立即 flush）
-    try { this.scheduleResizeSync(tabId, true); } catch {}
+    if (!options?.skipInitialResize) {
+      try { this.scheduleResizeSync(tabId, true); } catch {}
+    }
   }
 
   /**
@@ -513,13 +518,77 @@ export default class TerminalManager {
     }
 
   /**
-   * 通知 manager：某个 tab 已经被分配了 PTY id（由上层 set state 后调用）
+   * 通知 manager：某个 tab 已经被分配了 PTY id（由上层 set state 后调用）。
+   *
+   * 关键修复：当渲染进程发生 reload/HMR 时，tab/adapter 会重新创建，但主进程 PTY 仍在运行。
+   * 若不恢复输出尾部缓冲，用户会误以为“控制台/任务丢失”。因此：
+   * - 仅在 `options.hydrateBacklog=true` 且宿主提供 `pty.backlog` 时，首次绑定该 ptyId 会先回放尾部缓存；
+   * - 回放阶段尽量暂停数据流，避免“回放内容”与“实时输出”乱序。
    */
-  setPty(tabId: string, ptyId: string): void {
+  setPty(tabId: string, ptyId: string, options?: { hydrateBacklog?: boolean }): void {
     this.dlog(`setPty tab=${tabId} pty=${ptyId}`);
     // ensure container & adapter exist, then wire
-    this.ensurePersistentContainer(tabId);
-    this.wireUp(tabId, ptyId);
+    this.ensurePersistentContainer(tabId, { skipAutoWireUp: true });
+
+    // 默认不回放：新建会话时直接绑定，避免额外 IPC 与 pause/resume 影响首屏速度
+    if (!options?.hydrateBacklog) {
+      this.wireUp(tabId, ptyId);
+      return;
+    }
+
+    // 同一 tab + 同一 ptyId：避免重复回放导致内容叠加
+    if (this.backlogHydratedPtyByTab[tabId] === ptyId) {
+      this.wireUp(tabId, ptyId);
+      return;
+    }
+
+    const canBacklog = typeof this.hostPty.backlog === "function";
+    // 无 backlog 能力：直接绑定
+    if (!canBacklog) {
+      this.wireUp(tabId, ptyId);
+      return;
+    }
+
+    // 回放阶段：先尝试暂停数据流，避免乱序
+    try { this.hostPty.pause?.(ptyId); } catch {}
+    this.wireUp(tabId, ptyId, { skipInitialResize: true });
+
+    // 异步回放尾部缓存；结束后恢复数据流并做一次精确 resize 同步
+    (async () => {
+      try {
+        // 兜底超时：避免极端情况下 backlog IPC 卡死导致 PTY 长时间处于 pause 状态
+        const res = await new Promise<{ ok: boolean; data?: string; error?: string }>((resolve) => {
+          let done = false;
+          const timer = window.setTimeout(() => {
+            if (done) return;
+            done = true;
+            resolve({ ok: false, error: "timeout" });
+          }, 1200);
+          this.hostPty.backlog!(ptyId, { maxChars: 900_000 })
+            .then((r) => {
+              if (done) return;
+              done = true;
+              try { window.clearTimeout(timer); } catch {}
+              resolve((r || { ok: false }) as any);
+            })
+            .catch((err) => {
+              if (done) return;
+              done = true;
+              try { window.clearTimeout(timer); } catch {}
+              resolve({ ok: false, error: String((err as any)?.message || err) });
+            });
+        });
+        if (res && res.ok && typeof res.data === "string" && res.data.length > 0) {
+          try { this.adapters[tabId]?.write(res.data); } catch {}
+        }
+        this.backlogHydratedPtyByTab[tabId] = ptyId;
+      } catch {
+        // ignore
+      } finally {
+        try { this.hostPty.resume?.(ptyId); } catch {}
+        try { this.scheduleResizeSync(tabId, true); } catch {}
+      }
+    })();
   }
 
   /**
@@ -664,6 +733,7 @@ export default class TerminalManager {
     const container = this.containers[tabId];
     try { if (container && container.parentNode) container.parentNode.removeChild(container); } catch {}
     delete this.containers[tabId];
+    delete this.backlogHydratedPtyByTab[tabId];
 
     if (alsoClosePty) {
       const pid = this.getPtyId(tabId);

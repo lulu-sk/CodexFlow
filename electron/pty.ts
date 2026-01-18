@@ -16,6 +16,100 @@ let TERM_DEBUG = (() => { try { return !!(getDebugConfig().terminal.pty.debug); 
 export function setTermDebug(flag: boolean) { TERM_DEBUG = !!flag; try { perfLogger.log(`[pty] debugTerm=${TERM_DEBUG ? 'on' : 'off'}`); } catch {} }
 const dlog = (msg: string) => { if (TERM_DEBUG) { try { perfLogger.log(msg); } catch {} } };
 
+// PTY 输出尾部缓冲上限（字符数）。
+// 说明：用于渲染进程意外 reload/HMR 后恢复“滚动区”内容，避免用户误以为任务丢失。
+// 取值策略：与 xterm scrollback(10000) 的量级匹配，避免无限增长占用内存。
+const PTY_BACKLOG_MAX_CHARS = 1_200_000;
+
+/**
+ * 中文说明：用于保存 PTY 输出的“尾部环形缓冲”。
+ * - 写入为 O(1) 追加；超过上限后仅从头部裁剪；
+ * - 读取时按需截取尾部，避免 join 全量导致的额外开销。
+ */
+class PtyBacklogBuffer {
+  private chunks: string[] = [];
+  private totalChars = 0;
+  private maxChars: number;
+
+  /**
+   * 创建一个尾部缓冲。
+   * @param maxChars - 最大保留字符数（<=0 表示禁用缓冲）。
+   */
+  constructor(maxChars: number) {
+    const n = Number(maxChars);
+    this.maxChars = Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
+  }
+
+  /**
+   * 追加一段输出。
+   */
+  append(data: string): void {
+    if (!this.maxChars) return;
+    const s = String(data || "");
+    if (!s) return;
+    this.chunks.push(s);
+    this.totalChars += s.length;
+    this.trimIfNeeded();
+  }
+
+  /**
+   * 读取尾部最多 `maxChars` 字符（默认读取缓冲上限）。
+   */
+  readTail(maxChars?: number): string {
+    if (!this.maxChars || this.totalChars <= 0) return "";
+    const req = typeof maxChars === "number" && Number.isFinite(maxChars) ? Math.max(0, Math.floor(maxChars)) : this.maxChars;
+    const limit = Math.min(req, this.maxChars, this.totalChars);
+    if (limit <= 0) return "";
+
+    let remaining = limit;
+    const parts: string[] = [];
+    for (let i = this.chunks.length - 1; i >= 0 && remaining > 0; i--) {
+      const chunk = this.chunks[i];
+      if (!chunk) continue;
+      if (chunk.length <= remaining) {
+        parts.push(chunk);
+        remaining -= chunk.length;
+      } else {
+        parts.push(chunk.slice(chunk.length - remaining));
+        remaining = 0;
+      }
+    }
+    parts.reverse();
+    return parts.join("");
+  }
+
+  /**
+   * 清空缓冲（释放内存）。
+   */
+  clear(): void {
+    this.chunks = [];
+    this.totalChars = 0;
+  }
+
+  /**
+   * 按 maxChars 对尾部裁剪（仅裁剪头部）。
+   */
+  private trimIfNeeded(): void {
+    if (!this.maxChars) return;
+    if (this.totalChars <= this.maxChars) return;
+
+    while (this.chunks.length > 0 && this.totalChars > this.maxChars) {
+      const first = this.chunks[0] || "";
+      const overflow = this.totalChars - this.maxChars;
+      // 需要裁剪的溢出量小于首块长度：只裁剪首块前缀并结束
+      if (overflow < first.length) {
+        this.chunks[0] = first.slice(overflow);
+        this.totalChars = this.maxChars;
+        return;
+      }
+      // 直接丢弃整块
+      this.chunks.shift();
+      this.totalChars -= first.length;
+    }
+    if (this.totalChars < 0) this.totalChars = 0;
+  }
+}
+
 function uid() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -56,6 +150,7 @@ function appendWslEnv(existing: string | undefined, keys: string[]): string {
 
 export class PTYManager {
   private sessions = new Map<string, IPty>();
+  private backlogs = new Map<string, PtyBacklogBuffer>();
   private getWindow: () => BrowserWindow | null;
 
   constructor(getWindow: () => BrowserWindow | null) {
@@ -67,6 +162,24 @@ export class PTYManager {
    */
   getActiveSessionCount(): number {
     return this.sessions.size;
+  }
+
+  /**
+   * 中文说明：判断指定 id 的 PTY 会话是否仍然存活。
+   */
+  hasSession(id: string): boolean {
+    return this.sessions.has(id);
+  }
+
+  /**
+   * 中文说明：读取指定 PTY 的尾部输出缓存（用于渲染进程 reload 后恢复终端内容）。
+   * @param id - PTY id
+   * @param maxChars - 读取字符上限（不传则使用默认上限）
+   */
+  getBacklog(id: string, maxChars?: number): string {
+    const buf = this.backlogs.get(id);
+    if (!buf) return "";
+    return buf.readTail(maxChars);
   }
 
   /**
@@ -147,16 +260,21 @@ export class PTYManager {
     }
 
     this.sessions.set(id, proc);
+    // 为该会话建立尾部缓冲，支持渲染进程 reload 后恢复滚动区
+    this.backlogs.set(id, new PtyBacklogBuffer(PTY_BACKLOG_MAX_CHARS));
 
     dlog(`[pty] open id=${id} mode=${os.platform() === 'win32' ? (termMode || 'wsl') : 'posix'} cols=${cols} rows=${rows} winCwd=${winPath || ''} wslCwd=${wslPath || ''}`);
 
     proc.onData((data: string) => {
+      try { this.backlogs.get(id)?.append(data); } catch {}
       const win = this.getWindow();
       if (win) win.webContents.send('pty:data', { id, data });
     });
 
     proc.onExit((evt: { exitCode: number; signal?: number }) => {
       this.sessions.delete(id);
+      try { this.backlogs.get(id)?.clear(); } catch {}
+      this.backlogs.delete(id);
       const win = this.getWindow();
       if (win) win.webContents.send('pty:exit', { id, exitCode: evt?.exitCode });
     });
@@ -209,6 +327,8 @@ export class PTYManager {
       try { p.kill(); } catch { /* noop */ }
       this.sessions.delete(id);
     }
+    try { this.backlogs.get(id)?.clear(); } catch {}
+    this.backlogs.delete(id);
   }
 
   // 可选：在前端重排期间暂停/恢复数据，降低竞态导致的错位/叠字
@@ -235,6 +355,8 @@ export class PTYManager {
     for (const [id, p] of Array.from(this.sessions.entries())) {
       try { p.kill(); } catch {}
       this.sessions.delete(id);
+      try { this.backlogs.get(id)?.clear(); } catch {}
+      this.backlogs.delete(id);
     }
   }
 }

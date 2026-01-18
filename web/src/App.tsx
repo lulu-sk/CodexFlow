@@ -80,6 +80,7 @@ import {
 } from "@/lib/terminal-appearance";
 import { getCachedThemeSetting, useThemeController, writeThemeSettingCache, type ThemeMode, type ThemeSetting } from "@/lib/theme";
 import { loadHiddenProjectIds, loadShowHiddenProjects, saveHiddenProjectIds, saveShowHiddenProjects } from "@/lib/projects-hidden";
+import { loadConsoleSession, saveConsoleSession, type PersistedConsoleTab } from "@/lib/console-session";
 import type { AppSettings, Project, ProviderItem, ProviderEnv } from "@/types/host";
 import type { TerminalThemeId } from "@/types/terminal-theme";
 
@@ -865,12 +866,13 @@ export default function CodexFlowManagerUI() {
     } catch {}
   }, [uiLog, uiDebugEnabled]);
   // ---------- App State ----------
+  const restoredConsoleSession = useMemo(() => loadConsoleSession(), []);
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectsHydrated, setProjectsHydrated] = useState<boolean>(false);
   const [hiddenProjectIds, setHiddenProjectIds] = useState<string[]>(() => loadHiddenProjectIds());
   const [showHiddenProjects, setShowHiddenProjects] = useState<boolean>(() => loadShowHiddenProjects());
   const [query, setQuery] = useState("");
-  const [selectedProjectId, setSelectedProjectId] = useState<string>("");
+  const [selectedProjectId, setSelectedProjectId] = useState<string>(() => restoredConsoleSession?.selectedProjectId || "");
   const hiddenProjectIdSet = useMemo(() => new Set(hiddenProjectIds), [hiddenProjectIds]);
   const visibleProjects = useMemo(() => {
     if (showHiddenProjects) return projects;
@@ -968,12 +970,26 @@ export default function CodexFlowManagerUI() {
   }, [selectedProject?.winPath]);
 
   // Console tabs per project
-  const [tabsByProject, setTabsByProject] = useState<Record<string, ConsoleTab[]>>({});
+  const [tabsByProject, setTabsByProject] = useState<Record<string, ConsoleTab[]>>(() => {
+    const out: Record<string, ConsoleTab[]> = {};
+    const from = restoredConsoleSession?.tabsByProject || {};
+    for (const [projectId, list] of Object.entries(from)) {
+      if (!Array.isArray(list) || list.length === 0) continue;
+      out[projectId] = list.map((tab) => ({
+        id: tab.id,
+        name: tab.name,
+        providerId: tab.providerId,
+        createdAt: tab.createdAt,
+        logs: [],
+      }));
+    }
+    return out;
+  });
   const tabs = tabsByProject[selectedProjectId] || [];
-  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const [activeTabId, setActiveTabId] = useState<string | null>(() => restoredConsoleSession?.activeTabByProject?.[selectedProjectId] || null);
   const activeTabIdRef = useRef<string | null>(null);
   // 记录每个项目的活跃 tab，切换项目时恢复对应的活跃 tab，避免切换关闭控制台
-  const [activeTabByProject, setActiveTabByProject] = useState<Record<string, string | null>>({});
+  const [activeTabByProject, setActiveTabByProject] = useState<Record<string, string | null>>(() => restoredConsoleSession?.activeTabByProject || {});
   // 编辑标签名状态
   const [editingTabId, setEditingTabId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState<string>("");
@@ -1013,10 +1029,16 @@ export default function CodexFlowManagerUI() {
   const [terminalTheme, setTerminalTheme] = useState<TerminalThemeId>(DEFAULT_TERMINAL_THEME_ID);
   const terminalThemeDef = useMemo(() => getTerminalTheme(terminalTheme), [terminalTheme]);
   const [codexTraceEnabled, setCodexTraceEnabled] = useState(false);
-  const ptyByTabRef = useRef<Record<string, string>>({});
-  const [ptyByTab, setPtyByTab] = useState<Record<string, string>>({});
-  const ptyAliveRef = useRef<Record<string, boolean>>({});
-  const [ptyAlive, setPtyAlive] = useState<Record<string, boolean>>({});
+  const initialPtyByTab = useMemo<Record<string, string>>(() => restoredConsoleSession?.ptyByTab || {}, [restoredConsoleSession]);
+  const initialPtyAlive = useMemo<Record<string, boolean>>(() => {
+    const next: Record<string, boolean> = {};
+    for (const tabId of Object.keys(initialPtyByTab)) next[tabId] = true;
+    return next;
+  }, [initialPtyByTab]);
+  const ptyByTabRef = useRef<Record<string, string>>(initialPtyByTab);
+  const [ptyByTab, setPtyByTab] = useState<Record<string, string>>(() => initialPtyByTab);
+  const ptyAliveRef = useRef<Record<string, boolean>>(initialPtyAlive);
+  const [ptyAlive, setPtyAlive] = useState<Record<string, boolean>>(() => initialPtyAlive);
   const terminalManagerRef = useRef<TerminalManager | null>(null);
   if (!terminalManagerRef.current) {
     terminalManagerRef.current = new TerminalManager(
@@ -1043,6 +1065,75 @@ export default function CodexFlowManagerUI() {
   useEffect(() => { notificationPrefsRef.current = notificationPrefs; }, [notificationPrefs]);
   useEffect(() => { tabsByProjectRef.current = tabsByProject; }, [tabsByProject]);
   useEffect(() => { projectsRef.current = projects; }, [projects]);
+
+  // 关键修复：渲染进程意外 reload/HMR 后，基于本地快照恢复 tab 与 PTY 绑定，避免“标签页/控制台丢失”。
+  const restoredConsoleSessionAppliedRef = useRef(false);
+  useEffect(() => {
+    if (restoredConsoleSessionAppliedRef.current) return;
+    restoredConsoleSessionAppliedRef.current = true;
+    const snapshot = restoredConsoleSession;
+    if (!snapshot) return;
+
+    // 重建 tabId -> projectId 映射（用于通知聚焦、跨项目定位等）
+    try {
+      for (const [projectId, list] of Object.entries(snapshot.tabsByProject || {})) {
+        for (const tab of list || []) {
+          try { registerTabProject(tab.id, projectId); } catch {}
+        }
+      }
+    } catch {}
+
+    // 恢复 PTY 绑定：通知解析监听 + xterm 适配器桥接（含尾部缓冲回放）
+    try {
+      const knownTabs = new Set<string>();
+      for (const list of Object.values(snapshot.tabsByProject || {})) {
+        for (const tab of list || []) knownTabs.add(tab.id);
+      }
+      for (const [tabId, ptyId] of Object.entries(snapshot.ptyByTab || {})) {
+        if (!knownTabs.has(tabId)) continue;
+        try { registerPtyForTab(tabId, ptyId); } catch {}
+        try { tm.setPty(tabId, ptyId, { hydrateBacklog: true }); } catch {}
+      }
+    } catch {}
+  }, [restoredConsoleSession, tm]);
+
+  // 将当前控制台会话写入本地，支持 reload/HMR 后恢复
+  const consoleSessionSaveTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (consoleSessionSaveTimerRef.current) {
+      window.clearTimeout(consoleSessionSaveTimerRef.current);
+      consoleSessionSaveTimerRef.current = null;
+    }
+    consoleSessionSaveTimerRef.current = window.setTimeout(() => {
+      try {
+        const compactTabsByProject: Record<string, PersistedConsoleTab[]> = {};
+        for (const [projectId, list] of Object.entries(tabsByProject || {})) {
+          if (!Array.isArray(list) || list.length === 0) continue;
+          compactTabsByProject[projectId] = list.map((tab) => ({
+            id: tab.id,
+            name: tab.name,
+            providerId: tab.providerId,
+            createdAt: tab.createdAt,
+          }));
+        }
+        saveConsoleSession({
+          version: 1,
+          savedAt: Date.now(),
+          selectedProjectId,
+          tabsByProject: compactTabsByProject,
+          activeTabByProject,
+          ptyByTab,
+        });
+      } catch {}
+    }, 250);
+    return () => {
+      if (consoleSessionSaveTimerRef.current) {
+        window.clearTimeout(consoleSessionSaveTimerRef.current);
+        consoleSessionSaveTimerRef.current = null;
+      }
+    };
+  }, [selectedProjectId, tabsByProject, activeTabByProject, ptyByTab]);
   useEffect(() => {
     if (!terminalManagerRef.current) return;
     try { terminalManagerRef.current.setAppearance({ fontFamily: terminalFontFamily, theme: terminalTheme }); } catch {}

@@ -83,6 +83,12 @@ contextBridge.exposeInMainWorld('host', {
     openWSLConsole: async (args: OpenArgs): Promise<{ id: string }> => {
       return await ipcRenderer.invoke('pty:open', args);
     },
+    /**
+     * 中文说明：读取指定 PTY 的尾部输出缓存（用于渲染进程 reload/HMR 后恢复滚动区）。
+     */
+    backlog: async (id: string, args?: { maxChars?: number }): Promise<{ ok: boolean; data?: string; error?: string }> => {
+      try { return await ipcRenderer.invoke('pty:backlog', { id, maxChars: args?.maxChars }); } catch (e) { return { ok: false, error: String(e) } as any; }
+    },
     write: (id: string, data: string) => {
       ipcRenderer.send('pty:write', { id, data });
     },
