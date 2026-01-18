@@ -7,7 +7,7 @@
     },
     "providers": {
       "title": "自定义引擎",
-      "desc": "配置 Codex / Claude / Gemini，并可新增自定义引擎（图标 + 启动命令 + 环境隔离）。"
+      "desc": "配置 Codex / Claude / Gemini / 终端，并可新增自定义引擎（图标 + 启动命令 + 环境隔离）。"
     },
     "notifications": {
       "title": "通知提醒",

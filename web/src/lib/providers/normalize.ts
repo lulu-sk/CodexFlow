@@ -11,33 +11,49 @@ export type NormalizedProviders = {
 };
 
 /**
- * 将 providers 配置归一化为稳定结构（补齐内置 Provider、补齐 env、清理重复项）。
+ * 将 providers 配置归一化为稳定结构：
+ * - 官方内置 Provider 固定顺序在前（便于后续新增官方 Provider 时保持自定义引擎始终在后）
+ * - 自定义 Provider 保持相对顺序
+ * - 补齐 env、清理重复项，并对 activeId 做兜底
  */
 export function normalizeProvidersSettings(
   input: ProvidersSettings | undefined,
   legacy: { terminal: Required<ProviderEnv>["terminal"]; distro: string; codexCmd: string },
 ): NormalizedProviders {
-  const activeId = String(input?.activeId || "codex").trim() || "codex";
+  const rawActiveId = String(input?.activeId || "codex").trim();
+  const builtIns = getBuiltInProviders();
+  const builtInOrder = builtIns.map((x) => x.id);
+  // 中文说明：builtInOrder 虽然是字面量联合类型数组，但这里需要用 string 来做通用包含判断。
+  const builtInSet = new Set<string>(builtInOrder);
 
-  const items: ProviderItem[] = [];
-  const seen = new Set<string>();
+  const byId = new Map<string, ProviderItem>();
+  const customIdsInOrder: string[] = [];
   for (const it of Array.isArray(input?.items) ? input!.items : []) {
     const id = String(it?.id || "").trim();
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-    items.push({
+    if (!id || byId.has(id)) continue;
+    const normalized: ProviderItem = {
       id,
       displayName: typeof it.displayName === "string" ? it.displayName.trim() : undefined,
       iconDataUrl: typeof it.iconDataUrl === "string" ? it.iconDataUrl.trim() : undefined,
       iconDataUrlDark: typeof it.iconDataUrlDark === "string" ? it.iconDataUrlDark.trim() : undefined,
       startupCmd: typeof it.startupCmd === "string" ? it.startupCmd.trim() : undefined,
-    });
+    };
+    byId.set(id, normalized);
+    if (!builtInSet.has(id)) customIdsInOrder.push(id);
+  }
+  for (const id of builtInOrder) {
+    if (byId.has(id)) continue;
+    byId.set(id, { id });
   }
 
-  for (const builtIn of getBuiltInProviders()) {
-    if (seen.has(builtIn.id)) continue;
-    seen.add(builtIn.id);
-    items.push({ id: builtIn.id });
+  const items: ProviderItem[] = [];
+  for (const id of builtInOrder) {
+    const it = byId.get(id);
+    if (it) items.push(it);
+  }
+  for (const id of customIdsInOrder) {
+    const it = byId.get(id);
+    if (it) items.push(it);
   }
 
   const env: Record<string, Required<ProviderEnv>> = {};
@@ -50,9 +66,10 @@ export function normalizeProvidersSettings(
     env[key] = { terminal, distro };
   }
 
-  if (!env.codex) env.codex = { terminal: legacy.terminal, distro: legacy.distro };
-  if (!env.claude) env.claude = { terminal: legacy.terminal, distro: legacy.distro };
-  if (!env.gemini) env.gemini = { terminal: legacy.terminal, distro: legacy.distro };
+  for (const builtIn of builtIns) {
+    if (env[builtIn.id]) continue;
+    env[builtIn.id] = { terminal: legacy.terminal, distro: legacy.distro };
+  }
 
   // codexCmd：对 codex 的 startupCmd 做兜底填充（仅在缺失时）
   const codexItem = items.find((x) => x.id === "codex");
@@ -60,6 +77,7 @@ export function normalizeProvidersSettings(
     codexItem.startupCmd = legacy.codexCmd;
   }
 
-  return { activeId, items, env };
+  const activeId = rawActiveId || "codex";
+  const activeExists = items.some((x) => String(x?.id || "").trim() === activeId);
+  return { activeId: activeExists ? activeId : "codex", items, env };
 }
-
