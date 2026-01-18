@@ -1339,6 +1339,25 @@ ipcMain.handle('pty:open', async (_event, args: {
   return { id };
 });
 
+/**
+ * 中文说明：读取指定 PTY 的尾部输出缓存，用于渲染进程意外 reload/HMR 后恢复终端滚动区。
+ * - 若会话不存在返回 ok=false；
+ * - maxChars 会被夹紧，避免一次性传输过大导致渲染进程卡顿。
+ */
+ipcMain.handle('pty:backlog', async (_e, args: { id: string; maxChars?: number }) => {
+  try {
+    const id = String(args?.id || "").trim();
+    if (!id) return { ok: false, error: "missing id" };
+    if (!ptyManager.hasSession(id)) return { ok: false, error: "not found" };
+    const rawLimit = typeof args?.maxChars === "number" ? args.maxChars : undefined;
+    const limit = typeof rawLimit === "number" && Number.isFinite(rawLimit) ? Math.max(0, Math.min(1_200_000, Math.floor(rawLimit))) : undefined;
+    const data = ptyManager.getBacklog(id, limit);
+    return { ok: true, data: String(data || "") };
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+});
+
 ipcMain.on('pty:write', (_e, { id, data }: { id: string; data: string }) => {
   ptyManager.write(id, data);
 });
