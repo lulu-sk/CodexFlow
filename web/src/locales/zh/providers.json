@@ -2,7 +2,8 @@
   "items": {
     "codex": "Codex",
     "claude": "Claude",
-    "gemini": "Gemini"
+    "gemini": "Gemini",
+    "terminal": "终端"
   },
   "customEngine": "自定义引擎",
   "more": "更多引擎",

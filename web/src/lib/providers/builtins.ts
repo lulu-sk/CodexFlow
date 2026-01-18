@@ -5,9 +5,13 @@ import openaiIconUrl from "@/assets/providers/openai.svg";
 import openaiDarkIconUrl from "@/assets/providers/openai-dark.png";
 import claudeIconUrl from "@/assets/providers/claude-color.svg";
 import geminiIconUrl from "@/assets/providers/gemini-color.svg";
+import terminalIconUrl from "@/assets/providers/black-terminal-icon.svg";
+import terminalDarkIconUrl from "@/assets/providers/white-terminal-icon.svg";
 import type { ThemeMode } from "@/lib/theme";
 
-export type BuiltInProviderId = "codex" | "claude" | "gemini";
+export type BuiltInProviderId = "codex" | "claude" | "gemini" | "terminal";
+
+export type BuiltInSessionProviderId = "codex" | "claude" | "gemini";
 
 export type BuiltInProviderMeta = {
   id: BuiltInProviderId;
@@ -37,6 +41,13 @@ export function getDefaultProviderIconUrl(themeMode?: ThemeMode): string {
  * 判断是否为内置 Provider id。
  */
 export function isBuiltInProviderId(id: string): id is BuiltInProviderId {
+  return id === "codex" || id === "claude" || id === "gemini" || id === "terminal";
+}
+
+/**
+ * 判断是否为“会话型内置 Provider”（具备会话扫描/历史索引能力：codex/claude/gemini）。
+ */
+export function isBuiltInSessionProviderId(id: string): id is BuiltInSessionProviderId {
   return id === "codex" || id === "claude" || id === "gemini";
 }
 
@@ -48,5 +59,6 @@ export function getBuiltInProviders(): BuiltInProviderMeta[] {
     { id: "codex", defaultStartupCmd: "codex", iconUrl: openaiIconUrl, iconUrlDark: openaiDarkIconUrl, labelKey: "providers:items.codex" },
     { id: "claude", defaultStartupCmd: "claude", iconUrl: claudeIconUrl, iconUrlDark: claudeIconUrl, labelKey: "providers:items.claude" },
     { id: "gemini", defaultStartupCmd: "gemini", iconUrl: geminiIconUrl, iconUrlDark: geminiIconUrl, labelKey: "providers:items.gemini" },
+    { id: "terminal", defaultStartupCmd: "", iconUrl: terminalIconUrl, iconUrlDark: terminalDarkIconUrl, labelKey: "providers:items.terminal" },
   ];
 }

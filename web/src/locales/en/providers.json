@@ -2,7 +2,8 @@
   "items": {
     "codex": "Codex",
     "claude": "Claude",
-    "gemini": "Gemini"
+    "gemini": "Gemini",
+    "terminal": "Terminal"
   },
   "customEngine": "Custom Engine",
   "more": "More engines",

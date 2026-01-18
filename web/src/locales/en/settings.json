@@ -7,7 +7,7 @@
     },
     "providers": {
       "title": "Custom Engine",
-      "desc": "Configure Codex / Claude / Gemini, and add custom engines (icon + startup command + isolated environment)."
+      "desc": "Configure Codex / Claude / Gemini / Terminal, and add custom engines (icon + startup command + isolated environment)."
     },
     "notifications": {
       "title": "Notifications",

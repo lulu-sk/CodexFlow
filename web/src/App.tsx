@@ -62,7 +62,7 @@ import HistoryCopyButton from "@/components/history/history-copy-button";
 import { toWSLForInsert } from "@/lib/wsl";
 import { extractGeminiProjectHashFromPath, deriveGeminiProjectHashCandidatesFromPath } from "@/lib/gemini-hash";
 import { normalizeProvidersSettings } from "@/lib/providers/normalize";
-import { isBuiltInProviderId } from "@/lib/providers/builtins";
+import { isBuiltInSessionProviderId } from "@/lib/providers/builtins";
 import { resolveProvider } from "@/lib/providers/resolve";
 import { injectCodexTraceEnv } from "@/providers/codex/commands";
 import { buildClaudeResumeStartupCmd } from "@/providers/claude/commands";
@@ -2611,7 +2611,7 @@ export default function CodexFlowManagerUI() {
   const recordCustomProviderDirIfNeeded = useCallback(async (project: Project, providerId: string) => {
     try {
       const pid = String(providerId || "").trim();
-      if (!pid || isBuiltInProviderId(pid)) return;
+      if (!pid || isBuiltInSessionProviderId(pid)) return;
       if (project?.hasBuiltInSessions === true) return;
       const existing = (project as any)?.dirRecord;
       if (existing && String(existing.kind || "") === "custom_provider" && String(existing.providerId || "") === pid) return;
@@ -2659,7 +2659,7 @@ export default function CodexFlowManagerUI() {
     }
 
     // 内置三引擎：即便会话记录落盘存在延迟，也先在 UI 侧标记，避免“自定义目录记录可移除”误判。
-    if (isBuiltInProviderId(activeProviderId)) {
+    if (isBuiltInSessionProviderId(activeProviderId)) {
       markProjectHasBuiltInSessions(project.id);
     } else {
       void recordCustomProviderDirIfNeeded(project, activeProviderId);
@@ -2762,7 +2762,7 @@ export default function CodexFlowManagerUI() {
     }
 
     // 内置三引擎：即便会话记录落盘存在延迟，也先在 UI 侧标记，避免“自定义目录记录可移除”误判。
-    if (isBuiltInProviderId(activeProviderId)) {
+    if (isBuiltInSessionProviderId(activeProviderId)) {
       markProjectHasBuiltInSessions(selectedProject.id);
     } else {
       void recordCustomProviderDirIfNeeded(selectedProject, activeProviderId);
