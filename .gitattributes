@@ -1,2 +1,5 @@
 # Shell 脚本在 WSL/Linux 下执行需要 LF 行尾；避免 Windows CRLF 导致运行报错。
 *.sh text eol=lf
+
+# Windows 批处理脚本需要 CRLF 行尾；避免 cmd 下解析异常（尤其包含中文时）。
+*.bat text eol=crlf
