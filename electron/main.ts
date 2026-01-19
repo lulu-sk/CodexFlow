@@ -22,7 +22,8 @@ import { parseGeminiSessionFile, extractGeminiProjectHashFromPath, deriveGeminiP
 import { hasNonEmptyIOFromMessages } from "./agentSessions/shared/empty";
 import { perfLogger } from "./log";
 import settings, { ensureSettingsAutodetect, ensureFirstRunTerminalSelection, type ThemeSetting as SettingsThemeSetting, type AppSettings } from "./settings";
-import { resolveWindowsShell, detectPwshExecutable } from "./shells";
+import { normalizeTerminal, resolveWindowsShell, detectPwshExecutable } from "./shells";
+import { resolveActiveProviderId, resolveProviderRuntimeEnvFromSettings, resolveProviderStartupCmdFromSettings } from "./providers/runtime";
 import i18n from "./i18n";
 import wsl from "./wsl";
 import fileIndex from "./fileIndex";
@@ -1396,10 +1397,27 @@ ipcMain.handle('utils.openExternalConsole', async (_e, args: { terminal?: 'wsl' 
   try {
     const platform = process.platform;
     const cfg = settings.getSettings();
-    const terminal = (args as any)?.terminal || cfg.terminal || 'wsl';
-    const startupCmd = String(args?.startupCmd || cfg.codexCmd || 'codex');
-    const requestedDistro = String(args?.distro || cfg.distro || 'Ubuntu-24.04');
-    const title = String((args as any)?.title || '').trim() || 'Codex';
+    const activeProviderId = resolveActiveProviderId(cfg);
+    const activeEnv = resolveProviderRuntimeEnvFromSettings(cfg, activeProviderId);
+    const defaultStartupCmd = resolveProviderStartupCmdFromSettings(cfg, activeProviderId);
+
+    const terminal = normalizeTerminal((args as any)?.terminal ?? activeEnv.terminal ?? cfg.terminal ?? "wsl");
+    const startupCmd = String((typeof args?.startupCmd === "string" ? args.startupCmd : defaultStartupCmd) ?? "").trim();
+    const requestedDistro = (() => {
+      const raw = (typeof args?.distro === "string" && args.distro.trim().length > 0)
+        ? args.distro
+        : (activeEnv.distro || cfg.distro || "Ubuntu-24.04");
+      return String(raw || "").trim() || "Ubuntu-24.04";
+    })();
+    const title = (() => {
+      const explicit = String((args as any)?.title || "").trim();
+      if (explicit) return explicit;
+      if (activeProviderId === "codex") return "Codex";
+      if (activeProviderId === "claude") return "Claude";
+      if (activeProviderId === "gemini") return "Gemini";
+      if (activeProviderId === "terminal") return "Terminal";
+      return activeProviderId || "Codex";
+    })();
 
     const extLog = (msg: string) => {
       // 默认关闭：仅在 debug.config.jsonc 启用 global.diagLog 时记录
@@ -1409,7 +1427,7 @@ ipcMain.handle('utils.openExternalConsole', async (_e, args: { terminal?: 'wsl' 
     try {
       const rawWin = String(args?.winPath ?? '');
       const rawWsl = String(args?.wslPath ?? '');
-      extLog(`[external] openExternalConsole req platform=${platform} terminal=${terminal} distro=${requestedDistro} title=${title} winPath='${rawWin}' wslPath='${rawWsl}' startupLen=${startupCmd.length}`);
+      extLog(`[external] openExternalConsole req platform=${platform} terminal=${terminal} distro=${requestedDistro} title=${title} provider=${activeProviderId} winPath='${rawWin}' wslPath='${rawWsl}' startupLen=${startupCmd.length}`);
     } catch {}
 
     const guardKey = [
@@ -1440,10 +1458,12 @@ ipcMain.handle('utils.openExternalConsole', async (_e, args: { terminal?: 'wsl' 
       const resolvedShell = resolveWindowsShell(terminal === 'pwsh' ? 'pwsh' : 'windows');
       // PowerShell 字符串经常包含引号与分号；为彻底避免转义问题，改用 -EncodedCommand（UTF-16LE -> Base64）
       const toPsEncoded = (s: string) => Buffer.from(s, 'utf16le').toString('base64');
+      const hasStartupCmd = startupCmd.trim().length > 0;
       // 使用 Windows Terminal：指定起始目录，由 WT 负责切换目录；PowerShell 仅执行命令
       // 必须加入 `--`，将后续命令行完整传入新标签，而不被 wt 解析
       // 打包版从资源管理器启动时没有父控制台，需要显式禁用 windowsHide 确保 WT 窗口可见
-      const wtArgs = ['-w', '0', 'new-tab', '--title', title, '--startingDirectory', cwd, '--', resolvedShell.command, '-NoExit', '-NoProfile', '-EncodedCommand', toPsEncoded(startupCmd)];
+      const wtArgs = ['-w', '0', 'new-tab', '--title', title, '--startingDirectory', cwd, '--', resolvedShell.command, '-NoExit', '-NoProfile'];
+      if (hasStartupCmd) wtArgs.push('-EncodedCommand', toPsEncoded(startupCmd));
       {
         const ok = await spawnDetachedSafe('wt.exe', wtArgs, WT_VISIBLE_SPAWN_OPTS);
         extLog(`[external] launch wt.exe ok=${ok ? 1 : 0}`);
@@ -1455,7 +1475,9 @@ ipcMain.handle('utils.openExternalConsole', async (_e, args: { terminal?: 'wsl' 
         if (ok) return { ok: true } as const;
       }
       // 回退：cmd /c start 一个 PowerShell 窗口，使用 -EncodedCommand，先切换目录再执行
-      const psScript = `Set-Location -Path \"${cwd.replace(/"/g, '\\"')}\"; ${startupCmd}`;
+      const psScript = hasStartupCmd
+        ? `Set-Location -Path \"${cwd.replace(/"/g, '\\"')}\"; ${startupCmd}`
+        : `Set-Location -Path \"${cwd.replace(/"/g, '\\"')}\"`;
       const psEncoded = toPsEncoded(psScript);
       // 注意：cmd 的 start 需要显式传入“窗口标题”参数；最稳妥的方式是传空标题 `""`，避免把第一个参数当作命令执行。
       // 例如：start Codex wsl.exe ... 会错误地执行 codex，并把后续参数（含 -d）传给 codex。
@@ -1513,7 +1535,7 @@ ipcMain.handle('utils.openExternalConsole', async (_e, args: { terminal?: 'wsl' 
     const cdCmd = (wslCwd && wslCwd !== '~') ? `cd \"${esc(wslCwd)}\" 2>/dev/null || cd ~` : 'cd ~';
     // 关键：不要把 cd 放在 `(...)` 子 shell 中，否则目录切换不会影响后续命令
     // 使用换行分隔命令，避免引入 `;`（Windows Terminal 可能把 `;` 当作分隔符解析）
-    const bashScript = `${cdCmd}\n${startupCmd}\nexec bash`;
+    const bashScript = startupCmd ? `${cdCmd}\n${startupCmd}\nexec bash` : `${cdCmd}\nexec bash`;
     extLog(`[external] wsl-shell cwd='${wslCwd}' source=${wslCwdSource}`);
 
     if (platform === 'win32') {
@@ -2519,10 +2541,27 @@ ipcMain.handle('app.getEnvMeta', async () => {
   ipcMain.handle('utils.openExternalWSLConsole', async (_e, args: { wslPath?: string; winPath?: string; distro?: string; startupCmd?: string }) => {
   try {
     const platform = process.platform;
-    const requestedDistro = String(args?.distro || settings.getSettings().distro || 'Ubuntu-24.04');
+    const cfg = settings.getSettings();
+    const activeProviderId = resolveActiveProviderId(cfg);
+    const activeEnv = resolveProviderRuntimeEnvFromSettings(cfg, activeProviderId);
+    const defaultStartupCmd = resolveProviderStartupCmdFromSettings(cfg, activeProviderId);
+
+    const requestedDistro = (() => {
+      const raw = (typeof args?.distro === "string" && args.distro.trim().length > 0)
+        ? args.distro
+        : (activeEnv.distro || cfg.distro || "Ubuntu-24.04");
+      return String(raw || "").trim() || "Ubuntu-24.04";
+    })();
     let wslPath = String(args?.wslPath || '').trim();
     const winPath = String(args?.winPath || '').trim();
-    const startupCmd = String(args?.startupCmd || settings.getSettings().codexCmd || 'codex');
+    const startupCmd = String((typeof args?.startupCmd === "string" ? args.startupCmd : defaultStartupCmd) ?? "").trim();
+    const title = (() => {
+      if (activeProviderId === "codex") return "Codex";
+      if (activeProviderId === "claude") return "Claude";
+      if (activeProviderId === "gemini") return "Gemini";
+      if (activeProviderId === "terminal") return "Terminal";
+      return activeProviderId || "Codex";
+    })();
 
     const guardKey = [
       "openExternalWSLConsole",
@@ -2545,7 +2584,9 @@ ipcMain.handle('app.getEnvMeta', async () => {
     const cdCmd = wslPath === '~' ? 'cd ~' : `cd "${esc(wslPath)}"`;
     // 注意：避免在这里拼接 `;`，否则 Windows Terminal `wt.exe` 可能把 `;` 当作命令分隔符解析，
     // 进而把脚本拆成多段（如 if/then/else/fi），导致连开多个窗口并报错。
-    const bashScript = `(${cdCmd} || true) && (${startupCmd} || true) && exec bash`;
+    const bashScript = startupCmd
+      ? `(${cdCmd} || true) && (${startupCmd} || true) && exec bash`
+      : `(${cdCmd} || true) && exec bash`;
 
     if (platform === 'win32') {
       // 仅当发行版存在时才附加 -d <distro>，否则回退到默认发行版
@@ -2555,7 +2596,7 @@ ipcMain.handle('app.getEnvMeta', async () => {
       // 方案 A：Windows Terminal（new-tab，避免旧别名 nt），若存在则直接新开标签
       const canUseWt = !bashScript.includes(';');
       const wslExe = resolveSystemBinary('wsl.exe');
-      const wtArgs = ['-w', '0', 'new-tab', '--title', 'Codex', '--', wslExe, ...distroArgv, '--', 'bash', '-lic', bashScript];
+      const wtArgs = ['-w', '0', 'new-tab', '--title', title, '--', wslExe, ...distroArgv, '--', 'bash', '-lic', bashScript];
       if (canUseWt) {
         if (await spawnDetachedSafe('wt.exe', wtArgs, WT_VISIBLE_SPAWN_OPTS)) return { ok: true } as const;
         if (await spawnDetachedSafe('WindowsTerminal.exe', wtArgs, WT_VISIBLE_SPAWN_OPTS)) return { ok: true } as const;
@@ -2766,13 +2807,8 @@ ipcMain.handle("codex.rateLimit", async () => {
  * 读取设置中的 Provider 环境（若缺失则回退到全局 terminal/distro）。
  */
 function resolveProviderRuntimeEnv(providerId: "claude" | "gemini"): { terminal: "wsl" | "windows" | "pwsh"; distro?: string } {
-  const cfg = settings.getSettings() as any;
-  const globalTerminal = (cfg?.terminal as any) || "wsl";
-  const globalDistro = (cfg?.distro as any) || undefined;
-  const env = (cfg?.providers?.env && cfg.providers.env[providerId]) ? cfg.providers.env[providerId] : {};
-  const terminal = (env?.terminal as any) || globalTerminal || "wsl";
-  const distro = (env?.distro as any) || globalDistro || undefined;
-  return { terminal, distro };
+  const cfg = settings.getSettings();
+  return resolveProviderRuntimeEnvFromSettings(cfg, providerId);
 }
 
 ipcMain.handle("claude.usage", async () => {

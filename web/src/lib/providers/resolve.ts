@@ -48,9 +48,12 @@ export function resolveProvider(item: ProviderItem, options?: ResolveProviderOpt
   const builtIn = builtIns.find((x) => x.id === (id as BuiltInProviderId));
   const isBuiltIn = isBuiltInProviderId(id);
   const iconSrc = resolveProviderIconSrc(item, builtIn, options?.themeMode);
-  const startupCmd = (item.startupCmd && item.startupCmd.trim().length > 0)
-    ? item.startupCmd.trim()
-    : (builtIn?.defaultStartupCmd || "");
+  // Terminal：始终仅打开 shell，不允许注入启动命令（避免误执行）。
+  const startupCmd = id === "terminal"
+    ? ""
+    : ((item.startupCmd && item.startupCmd.trim().length > 0)
+      ? item.startupCmd.trim()
+      : (builtIn?.defaultStartupCmd || ""));
   return {
     id,
     isBuiltIn,
@@ -60,4 +63,3 @@ export function resolveProvider(item: ProviderItem, options?: ResolveProviderOpt
     displayName: typeof item.displayName === "string" ? item.displayName.trim() : undefined,
   };
 }
-
