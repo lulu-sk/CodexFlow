@@ -3,7 +3,7 @@
     "codex": "Codex",
     "claude": "Claude",
     "gemini": "Gemini",
-    "terminal": "终端"
+    "terminal": "Terminal"
   },
   "customEngine": "自定义引擎",
   "more": "更多引擎",

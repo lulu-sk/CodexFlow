@@ -44,7 +44,12 @@
       "nameHelp": "Custom engines can rename; built-in names follow UI language.",
       "startupCmd": "Startup command",
       "startupCmdPlaceholder": "e.g. codex / claude / gemini",
+      "startupCmdTerminalPlaceholder": "Not available for Terminal",
       "startupCmdHelp": "Executed when creating a new console; you can provide a full command if needed.",
+      "startupCmdHelpLocked": "YOLO is enabled: the startup command is locked.",
+      "startupCmdHelpTerminal": "Terminal does not support a startup command (always opens a shell).",
+      "yolo": "YOLO",
+      "yoloHelp": "When enabled, the startup command is locked to a preset (dangerous); disabling restores the default command.",
       "icon": "Icon",
       "iconLight": "Light icon",
       "iconDark": "Dark icon",
@@ -54,7 +59,8 @@
       "iconHelp": "Upload SVG/PNG etc; stored as a DataURL in settings. If you don't set a dark icon, the default icon will be reused automatically.",
       "iconClear": "Reset to default",
       "envTerminal": "Environment",
-      "envDistro": "WSL distro"
+      "envDistro": "WSL distro",
+      "envDistroNoDistros": "No WSL distros detected"
     },
     "claudeCode": {
       "title": "Claude Code",

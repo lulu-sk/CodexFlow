@@ -14,15 +14,34 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn, formatBytes } from "@/lib/utils";
 import { listAvailableLanguages, changeAppLanguage } from "@/i18n/setup";
 import { CodexAccountInline } from "@/components/topbar/codex-status";
 import { CodexAuthSwitch } from "./codex-auth-switch";
-import { Trash2, Power, ChevronUp, ChevronDown, Plus, Image as ImageIcon, Star } from "lucide-react";
+import {
+  Trash2,
+  Power,
+  ChevronUp,
+  ChevronDown,
+  Plus,
+  Image as ImageIcon,
+  Star,
+  Settings2,
+  Cpu,
+  Terminal as TerminalIcon,
+  Bell,
+  Globe,
+  Database,
+  Info,
+  Check,
+  CheckCircle2,
+} from "lucide-react";
 import { getBuiltInProviders, isBuiltInProviderId } from "@/lib/providers/builtins";
 import { resolveProvider } from "@/lib/providers/resolve";
+import { getYoloPresetStartupCmd, isYoloPresetEnabled, isYoloSupportedProviderId } from "@/lib/providers/yolo";
 import {
   DEFAULT_TERMINAL_FONT_FAMILY,
   normalizeTerminalFontFamily,
@@ -298,6 +317,33 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   }, [providerItems]);
 
   /**
+   * 保存前清理 Provider items：
+   * - Terminal：强制清空启动命令（始终仅打开 shell）
+   * - 内置三引擎：若识别到 YOLO 预设，则规范化为固定命令字符串
+   */
+  const sanitizeProviderItemsForSave = useCallback((items: ProviderItem[]): ProviderItem[] => {
+    const out: ProviderItem[] = [];
+    for (const it of Array.isArray(items) ? items : []) {
+      const id = String(it?.id || "").trim();
+      if (!id) continue;
+      const next: ProviderItem = { ...it, id };
+
+      if (id === "terminal") {
+        // 中文说明：Terminal 不允许配置启动命令，避免误执行或与“只开 shell”的预期冲突。
+        try { delete (next as any).startupCmd; } catch { (next as any).startupCmd = undefined; }
+      }
+
+      if (isYoloSupportedProviderId(id) && isYoloPresetEnabled(id, next.startupCmd)) {
+        const preset = getYoloPresetStartupCmd(id);
+        if (preset) next.startupCmd = preset;
+      }
+
+      out.push(next);
+    }
+    return out;
+  }, []);
+
+  /**
    * 处理“终端类型”切换（对 pwsh 做可用性检测）。
    */
   const handleTerminalChange = useCallback(async (next: TerminalMode) => {
@@ -357,14 +403,14 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
    * 触发亮色图标选择器（隐藏 input 的 click），用于统一按钮风格。
    */
   const triggerLightIconPicker = useCallback(() => {
-    try { iconFileInputRefLight.current?.click(); } catch {}
+    try { iconFileInputRefLight.current?.click(); } catch { }
   }, []);
 
   /**
    * 触发暗色图标选择器（隐藏 input 的 click），用于统一按钮风格。
    */
   const triggerDarkIconPicker = useCallback(() => {
-    try { iconFileInputRefDark.current?.click(); } catch {}
+    try { iconFileInputRefDark.current?.click(); } catch { }
   }, []);
 
   /**
@@ -402,7 +448,39 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
       }
     });
   }, []);
-  
+
+  /**
+   * 处理亮色图标选择：读取为 DataURL 并写入当前 Provider。
+   */
+  const handleLightIconFileChange = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      updateProviderItem(providerEditingId, { iconDataUrl: dataUrl });
+    } catch {
+    } finally {
+      try { input.value = ""; } catch { }
+    }
+  }, [providerEditingId, readFileAsDataUrl, updateProviderItem]);
+
+  /**
+   * 处理暗色图标选择：读取为 DataURL 并写入当前 Provider。
+   */
+  const handleDarkIconFileChange = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      updateProviderItem(providerEditingId, { iconDataUrlDark: dataUrl });
+    } catch {
+    } finally {
+      try { input.value = ""; } catch { }
+    }
+  }, [providerEditingId, readFileAsDataUrl, updateProviderItem]);
+
   const [sendMode, setSendMode] = useState<SendMode>(values.sendMode);
   const [pathStyle, setPathStyle] = useState<PathStyle>(values.projectPathStyle || "absolute");
   const [dragDropWarnOutsideProject, setDragDropWarnOutsideProject] = useState<boolean>(values.dragDropWarnOutsideProject ?? true);
@@ -556,7 +634,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         const roots = await window.host.settings.codexRoots();
         return Array.isArray(roots) ? roots : [];
       }
-    } catch {}
+    } catch { }
     return [];
   }, []);
 
@@ -592,12 +670,12 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     const unwatch = subscribeSystemTheme((mode) => {
       try {
         setSystemTheme(mode);
-      } catch {}
+      } catch { }
     });
     return () => {
       try {
         unwatch?.();
-      } catch {}
+      } catch { }
     };
   }, []);
 
@@ -786,9 +864,9 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
           typeof res.bytesFreed === "number"
             ? res.bytesFreed
             : Math.max(
-                0,
-                Number(res.bytesBefore || 0) - Number(res.bytesAfter || 0),
-              );
+              0,
+              Number(res.bytesBefore || 0) - Number(res.bytesAfter || 0),
+            );
         await refreshAppDataInfo();
         const note =
           res && typeof res.note === "string" && res.note.trim().length > 0
@@ -1086,271 +1164,313 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         const hasDarkOverride = typeof editingItem.iconDataUrlDark === "string" && editingItem.iconDataUrlDark.trim().length > 0;
         const darkOverrideEnabled = providerEditingId === "codex" ? true : showDarkIconOverride;
         const defaultStartupCmd = editingBuiltIn?.defaultStartupCmd || "";
+        const yoloSupported = isYoloSupportedProviderId(providerEditingId);
+        const yoloPresetCmd = yoloSupported ? getYoloPresetStartupCmd(providerEditingId) : null;
+        const yoloEnabled = yoloSupported ? isYoloPresetEnabled(providerEditingId, editingItem.startupCmd) : false;
+        const startupCmdLocked = providerEditingId === "terminal" || yoloEnabled;
+        const startupCmdValue = providerEditingId === "terminal"
+          ? ""
+          : (yoloEnabled && yoloPresetCmd ? yoloPresetCmd : (editingItem.startupCmd || ""));
         const effectiveLabel = isBuiltInProviderId(providerEditingId)
           ? (t(`providers:items.${providerEditingId}`) as string)
           : (String(editingItem.displayName || "").trim() || String(t("settings:providers.defaultName", "自定义引擎") || "").trim() || "自定义引擎");
+
         return {
           key,
           title: t("settings:sections.providers.title"),
           description: t("settings:sections.providers.desc"),
           content: (
-            <div className="space-y-6">
-              <Card>
-                <CardHeader className="flex flex-row items-center justify-between">
-                  <div>
-                    <CardTitle>{t("settings:providers.listTitle")}</CardTitle>
-                    <p className="text-sm text-slate-500">{t("settings:providers.listHelp")}</p>
-                  </div>
-                  <Button variant="secondary" size="sm" onClick={addCustomProvider}>
-                    <Plus className="mr-2 h-4 w-4" /> {t("settings:providers.add")}
+            <div className="space-y-4 animate-in fade-in duration-500">
+              {/* Engine Selector Tiles */}
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">{t("settings:providers.listTitle")}</h3>
+                  <Button variant="outline" size="sm" onClick={addCustomProvider} className="h-8 rounded-full border-dashed px-3 dark:border-white/20 dark:hover:bg-white/5">
+                    <Plus className="mr-1.5 h-3.5 w-3.5" />
+                    {t("settings:providers.add")}
                   </Button>
-                </CardHeader>
-                <CardContent className="space-y-2">
-                  {orderedProviders.map((p) => {
-                    const isActive = p.id === providersActiveId;
-                    const isEditing = p.id === providerEditingId;
-                    const label = isBuiltInProviderId(p.id)
-                      ? (t(`providers:items.${p.id}`) as string)
-                      : (String(p.displayName || "").trim() || String(t("settings:providers.defaultName", "自定义引擎") || "").trim() || "自定义引擎");
-                    const iconSrc = resolveProvider(p, { themeMode: effectiveThemeMode }).iconSrc;
-                    return (
-                      <div
+                </div>
+                <div className="flex flex-wrap gap-3">
+	                  {orderedProviders.map((p) => {
+	                    const isActive = p.id === providersActiveId;
+	                    const isEditing = p.id === providerEditingId;
+	                    const label = isBuiltInProviderId(p.id)
+	                      ? (t(`providers:items.${p.id}`) as string)
+	                      : (String(p.displayName || "").trim() || (t("settings:providers.defaultName") as string));
+	                    const iconSrc = resolveProvider(p, { themeMode: effectiveThemeMode }).iconSrc;
+
+	                    return (
+                      <button
                         key={p.id}
+                        type="button"
+                        onClick={() => setProviderEditingId(p.id)}
                         className={cn(
-                          "flex items-center justify-between gap-3 rounded-lg border px-3 py-2",
-                          isEditing ? "border-slate-900 dark:border-[var(--cf-accent)]" : "border-slate-200 dark:border-[var(--cf-border)]",
+                          "relative group flex flex-col items-center justify-center p-2 w-[84px] h-[84px] rounded-xl border transition-all duration-200",
+                          isEditing
+                            ? "bg-[var(--cf-accent)]/5 border-[var(--cf-accent)] ring-1 ring-[var(--cf-accent)] dark:bg-[var(--cf-accent)]/10"
+                            : "bg-white dark:bg-white/5 border-slate-200 dark:border-white/10 hover:border-slate-300 dark:hover:border-white/20"
                         )}
                       >
-                        <button
-                          type="button"
-                          className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                          onClick={() => setProviderEditingId(p.id)}
-                        >
-                          {iconSrc ? <img src={iconSrc} className="h-4 w-4" alt={label} /> : <ImageIcon className="h-4 w-4 text-slate-400" />}
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2">
-                              <span className="truncate font-medium">{label}</span>
-                              {isActive ? <Star className="h-3.5 w-3.5 text-amber-500" /> : null}
-                            </div>
-                          </div>
-                        </button>
-                        <div className="flex items-center gap-2">
-                          <Button variant="outline" size="sm" onClick={() => setActiveProvider(p.id)}>
-                            {t("settings:providers.setActive")}
-                          </Button>
-                          {!isBuiltInProviderId(p.id) ? (
-                            <Button variant="outline" size="sm" onClick={() => removeCustomProvider(p.id)}>
-                              {t("settings:providers.remove")}
-                            </Button>
-                          ) : null}
+                        <div className={cn(
+                          "flex h-8 w-8 items-center justify-center rounded-lg bg-slate-50 dark:bg-black/20 mb-1.5 transition-transform group-hover:scale-110",
+                          isEditing && "bg-white shadow-sm dark:bg-white/10"
+                        )}>
+                          {iconSrc ? <img src={iconSrc} className="h-5 w-5 object-contain" alt="" /> : <Cpu className="h-5 w-5 text-slate-300" />}
                         </div>
-                      </div>
+                        <span className={cn(
+                          "text-[10px] font-bold truncate w-full text-center px-1",
+                          isEditing ? "text-[var(--cf-accent)] dark:text-white" : "text-slate-600 dark:text-slate-400"
+                        )}>{label}</span>
+                        {isActive && (
+                          <div className="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-[var(--cf-accent)] shadow-[0_0_8px_var(--cf-accent)]" />
+                        )}
+                      </button>
                     );
                   })}
-                </CardContent>
-              </Card>
+                </div>
+              </div>
 
-              <Card>
-                <CardHeader>
-                  <CardTitle>{t("settings:providers.editTitle", { name: effectiveLabel })}</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <div className="space-y-2">
-                      <div className="text-sm font-medium">{t("settings:providers.fields.name")}</div>
-                      <Input
-                        value={isBuiltInProviderId(providerEditingId) ? (t(`providers:items.${providerEditingId}`) as string) : (editingItem.displayName || "")}
-                        disabled={isBuiltInProviderId(providerEditingId)}
-                        onChange={(e: any) => updateProviderItem(providerEditingId, { displayName: String(e?.target?.value || "") })}
-                      />
-                      <div className="text-xs text-slate-500">{t("settings:providers.fields.nameHelp")}</div>
+              {/* Editor Area */}
+              <div className="rounded-3xl border border-slate-200 dark:border-white/10 bg-slate-50/50 dark:bg-white/[0.02] p-4 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="h-10 w-10 rounded-2xl bg-white dark:bg-white/10 flex items-center justify-center shadow-sm border border-slate-100 dark:border-white/5">
+                      {effectiveIcon ? <img src={effectiveIcon} className="h-6 w-6 object-contain" alt="" /> : <Settings2 className="h-5 w-5 text-slate-400" />}
                     </div>
-                    <div className="space-y-2">
-                      <div className="text-sm font-medium">{t("settings:providers.fields.startupCmd")}</div>
-                      <Input
-                        value={editingItem.startupCmd || ""}
-                        placeholder={defaultStartupCmd || t("settings:providers.fields.startupCmdPlaceholder")}
-                        onChange={(e: any) => updateProviderItem(providerEditingId, { startupCmd: String(e?.target?.value || "") })}
-                      />
-                      <div className="text-xs text-slate-500">{t("settings:providers.fields.startupCmdHelp")}</div>
+                    <div>
+                      <h4 className="text-lg font-bold text-slate-900 dark:text-white">{effectiveLabel}</h4>
+                      <p className="text-xs text-slate-400 font-mono">{providerEditingId}</p>
                     </div>
                   </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant={providersActiveId === providerEditingId ? "secondary" : "outline"}
+                      size="sm"
+                      onClick={() => setActiveProvider(providerEditingId)}
+                      disabled={providersActiveId === providerEditingId}
+                      className="rounded-full px-4"
+                    >
+                      {providersActiveId === providerEditingId ? <CheckCircle2 className="mr-1.5 h-3.5 w-3.5" /> : <Star className="mr-1.5 h-3.5 w-3.5" />}
+                      {t("settings:providers.setActive")}
+                    </Button>
+                    {!isBuiltInProviderId(providerEditingId) && (
+                      <Button variant="ghost" size="icon" onClick={() => removeCustomProvider(providerEditingId)} className="rounded-full text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-500/10">
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    )}
+                  </div>
+                </div>
 
-                  <div className="space-y-2">
-                    <div className="text-sm font-medium">{t("settings:providers.fields.icon")}</div>
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-3">
-                          <div className="h-10 w-10 rounded-md border border-slate-200 dark:border-[var(--cf-border)] flex items-center justify-center overflow-hidden bg-white">
-                            {effectiveIcon ? <img src={effectiveIcon} className="h-6 w-6 object-contain" alt={effectiveLabel} /> : <ImageIcon className="h-5 w-5 text-slate-400" />}
-                          </div>
-                          <input
-                            ref={iconFileInputRefLight}
-                            type="file"
-                            className="hidden"
-                            accept="image/*,.svg"
-                            onChange={async (e) => {
-                              const f = (e.target as HTMLInputElement)?.files?.[0];
-                              if (!f) return;
-                              try {
-                                const dataUrl = await readFileAsDataUrl(f);
-                                updateProviderItem(providerEditingId, { iconDataUrl: dataUrl });
-                              } catch {
-                                // ignore
-                              } finally {
-                                try { (e.target as HTMLInputElement).value = ""; } catch {}
-                              }
-                            }}
-                          />
-                          <Button type="button" variant="outline" size="sm" onClick={triggerLightIconPicker}>
-                            {t("settings:providers.fields.iconUpload")}
-                          </Button>
-                          {hasLightOverride ? (
-                            <Button type="button" variant="outline" size="sm" onClick={() => updateProviderItem(providerEditingId, { iconDataUrl: "" })}>
-                              {t("settings:providers.fields.iconClear")}
-                            </Button>
-                          ) : null}
-                        </div>
-                      </div>
-
-                    <div className="flex items-center justify-between rounded-lg border border-slate-200/70 bg-white/60 px-3 py-2 shadow-sm dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)]">
-                      <div className="text-sm text-slate-700 dark:text-[var(--cf-text-primary)]">
-                        {t("settings:providers.fields.iconDark")}
-                        {providerEditingId !== "codex" ? (
-                          <span className="ml-2 text-xs text-slate-500 dark:text-[var(--cf-text-secondary)]">
-                            {t("settings:providers.fields.iconDarkOptional")}
-                          </span>
-                        ) : null}
-                      </div>
-                      <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-[var(--cf-text-secondary)]">
-                        <input
-                          type="checkbox"
-                          className="h-4 w-4 rounded border-slate-300 text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)] dark:checked:bg-[var(--cf-accent)] dark:focus-visible:ring-[var(--cf-accent)]/40"
-                          checked={darkOverrideEnabled}
-                          disabled={providerEditingId === "codex"}
-                          onChange={(e) => {
-                            if (providerEditingId === "codex") return;
-                            setShowDarkIconOverride(e.target.checked);
-                          }}
+                <div className="grid gap-4">
+                  {/* Basic Config */}
+                  <div className="space-y-4">
+                    <div className="flex items-center gap-2 text-xs font-bold text-slate-400 dark:text-slate-600 uppercase tracking-widest pl-1">
+                      <Settings2 className="h-3.5 w-3.5" />
+                      {t("settings:sections.basic.title")}
+                    </div>
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <div className="space-y-1.5">
+                        <Label className="text-xs font-bold text-slate-500 ml-1">{t("settings:providers.fields.name")}</Label>
+                        <Input
+                          value={isBuiltInProviderId(providerEditingId) ? (t(`providers:items.${providerEditingId}`) as string) : (editingItem.displayName || "")}
+                          disabled={isBuiltInProviderId(providerEditingId)}
+                          onChange={(e: any) => updateProviderItem(providerEditingId, { displayName: String(e?.target?.value || "") })}
+                          className="bg-white dark:bg-white/5 border-slate-200 dark:border-white/10 rounded-xl"
                         />
-                        {t("settings:providers.fields.iconDarkEnable")}
-                      </label>
+                      </div>
+	                      <div className="space-y-1.5">
+	                        <Label className="text-xs font-bold text-slate-500 ml-1">{t("settings:providers.fields.startupCmd")}</Label>
+	                        <Input
+	                          value={startupCmdValue}
+	                          disabled={startupCmdLocked}
+	                          placeholder={providerEditingId === "terminal"
+	                            ? (t("settings:providers.fields.startupCmdTerminalPlaceholder") as string)
+	                            : (defaultStartupCmd || (t("settings:providers.fields.startupCmdPlaceholder") as string))}
+	                          onChange={(e: any) => updateProviderItem(providerEditingId, { startupCmd: String(e?.target?.value || "") })}
+	                          className="bg-white dark:bg-white/5 border-slate-200 dark:border-white/10 rounded-xl font-mono text-xs"
+	                        />
+	                      </div>
                     </div>
 
-                    {darkOverrideEnabled ? (
-                      <div className="mt-3 space-y-2">
+                    {yoloSupported && (
+                      <div className={cn(
+                        "p-3 rounded-xl border transition-all",
+                        yoloEnabled
+                          ? "bg-[var(--cf-accent)]/5 border-[var(--cf-accent)]/30 dark:bg-[var(--cf-accent)]/10"
+                          : "bg-white dark:bg-white/5 border-slate-200 dark:border-white/10"
+                      )}>
                         <div className="flex items-center gap-3">
-                          <div className="h-10 w-10 rounded-md border border-slate-200 dark:border-[var(--cf-border)] flex items-center justify-center overflow-hidden bg-slate-900">
-                            {effectiveIconDarkPreview ? <img src={effectiveIconDarkPreview} className="h-6 w-6 object-contain" alt={effectiveLabel} /> : <ImageIcon className="h-5 w-5 text-slate-400" />}
+                          <div className={cn(
+                            "flex h-4 w-4 shrink-0 items-center justify-center rounded border",
+                            yoloEnabled ? "bg-[var(--cf-accent)] border-[var(--cf-accent)] text-white" : "border-slate-300 dark:border-white/20"
+                          )} onClick={() => {
+                            const next = !yoloEnabled;
+                            if (next) {
+                              const preset = getYoloPresetStartupCmd(providerEditingId);
+                              if (preset) updateProviderItem(providerEditingId, { startupCmd: preset });
+                            } else {
+                              updateProviderItem(providerEditingId, { startupCmd: undefined });
+                            }
+                          }}>
+                            {yoloEnabled && <Check className="h-3 w-3" />}
                           </div>
-                          <input
-                            ref={iconFileInputRefDark}
-                            type="file"
-                            className="hidden"
-                            accept="image/*,.svg"
-                            onChange={async (e) => {
-                              const f = (e.target as HTMLInputElement)?.files?.[0];
-                              if (!f) return;
-                              try {
-                                const dataUrl = await readFileAsDataUrl(f);
-                                updateProviderItem(providerEditingId, { iconDataUrlDark: dataUrl });
-                              } catch {
-                                // ignore
-                              } finally {
-                                try { (e.target as HTMLInputElement).value = ""; } catch {}
-                              }
-                            }}
-                          />
-                          <Button type="button" variant="outline" size="sm" onClick={triggerDarkIconPicker}>
-                            {t("settings:providers.fields.iconUpload")}
-                          </Button>
-                          {hasDarkOverride ? (
-                            <Button type="button" variant="outline" size="sm" onClick={() => updateProviderItem(providerEditingId, { iconDataUrlDark: "" })}>
-                              {t("settings:providers.fields.iconClear")}
-                            </Button>
-                          ) : null}
+                          <div className="flex-1">
+                            <span className="text-xs font-bold text-slate-800 dark:text-white leading-none">{t("settings:providers.fields.yolo")}</span>
+                            <span className="ml-2 text-[10px] text-slate-500 leading-none">{t("settings:providers.fields.yoloHelp")}</span>
+                          </div>
                         </div>
+                        {yoloEnabled && yoloPresetCmd && (
+                          <div className="mt-2 text-[10px] font-mono bg-black/5 dark:bg-white/5 px-2 py-1 rounded-md text-slate-600 dark:text-slate-400 truncate">{yoloPresetCmd}</div>
+                        )}
                       </div>
-                    ) : null}
-                    <div className="text-xs text-slate-500">{t("settings:providers.fields.iconHelp")}</div>
+                    )}
                   </div>
 
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <div className="space-y-2">
-                      <div className="text-sm font-medium">{t("settings:providers.fields.envTerminal")}</div>
-                      <Select value={editingEnv.terminal} onValueChange={(v) => handleTerminalChange(v as TerminalMode)}>
-                        <SelectTrigger>
-                          <span className="truncate text-left">{editingTerminalLabel}</span>
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="wsl">{t("settings:terminalMode.wsl")}</SelectItem>
-                          <SelectItem value="pwsh" disabled={pwshAvailable === false}>
-                            {t("settings:terminalMode.pwsh")}
-                          </SelectItem>
-                          <SelectItem value="windows">{t("settings:terminalMode.windows")}</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <div className="text-xs text-slate-500">
-                        {pwshAvailable === null
-                          ? t("settings:terminalMode.pwshDetecting")
-                          : pwshAvailable
-                            ? pwshDetectedText
-                            : t("settings:terminalMode.pwshUnavailable")}
+                  {/* Icon Customization */}
+                  <div className="space-y-4">
+                    <div className="flex items-center gap-2 text-xs font-bold text-slate-400 dark:text-slate-600 uppercase tracking-widest pl-1">
+                      <ImageIcon className="h-3.5 w-3.5" />
+                      {t("settings:providers.fields.icon")}
+                    </div>
+                    <div className="flex flex-wrap gap-4">
+                      {/* Light/Default Icon */}
+                      <div className="flex-1 min-w-[180px] p-3 rounded-xl bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10">
+                        <div className="flex items-center gap-3">
+                          <div className="h-10 w-10 rounded-lg border border-slate-100 dark:border-white/10 bg-slate-50 dark:bg-black/20 flex items-center justify-center">
+                            {effectiveIcon ? <img src={effectiveIcon} className="h-6 w-6 object-contain" alt="" /> : <ImageIcon className="h-5 w-5 text-slate-300" />}
+                          </div>
+                          <div className="flex flex-col gap-1">
+	                            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-tighter">{t("settings:providers.fields.iconLight")}</span>
+	                            <div className="flex gap-2">
+	                              <input
+	                                ref={iconFileInputRefLight}
+	                                type="file"
+	                                className="hidden"
+	                                accept="image/*,.svg"
+	                                onChange={handleLightIconFileChange}
+	                              />
+	                              <Button variant="outline" size="xs" onClick={triggerLightIconPicker} className="h-6 text-[9px] px-2 rounded-full dark:border-white/10 dark:hover:bg-white/5">
+	                                {t("settings:providers.fields.iconUpload")}
+	                              </Button>
+	                              {hasLightOverride && (
+	                                <Button variant="ghost" size="xs" onClick={() => updateProviderItem(providerEditingId, { iconDataUrl: "" })} className="h-6 text-[9px] px-2 rounded-full text-red-500">
+                                  {t("settings:providers.fields.iconClear")}
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Dark Mode Icon Option */}
+                      <div className="flex-1 min-w-[180px] p-3 rounded-xl bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10">
+                        <div className="flex items-center gap-3">
+                          <div className="h-10 w-10 rounded-lg border border-white/5 bg-black/40 flex items-center justify-center">
+                            {effectiveIconDarkPreview ? <img src={effectiveIconDarkPreview} className="h-6 w-6 object-contain" alt="" /> : <ImageIcon className="h-5 w-5 text-white/5" />}
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <div className="flex items-center gap-2">
+                              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-tighter">{t("settings:providers.fields.iconDark")}</span>
+                              <div
+                                onClick={() => providerEditingId !== "codex" && setShowDarkIconOverride(!showDarkIconOverride)}
+                                className={cn(
+                                  "h-3.5 w-6 rounded-full border border-slate-200 dark:border-white/20 relative transition-colors cursor-pointer",
+                                  darkOverrideEnabled ? "bg-[var(--cf-accent)] border-[var(--cf-accent)]" : "bg-slate-200 dark:bg-white/10"
+                                )}
+                              >
+                                <div className={cn(
+                                  "absolute top-0.5 h-2 w-2 rounded-full bg-white shadow-sm transition-all",
+                                  darkOverrideEnabled ? "left-3" : "left-0.5"
+                                )} />
+                              </div>
+	                            </div>
+	                            <div className="flex gap-2">
+	                              <input
+	                                ref={iconFileInputRefDark}
+	                                type="file"
+	                                className="hidden"
+	                                accept="image/*,.svg"
+	                                disabled={!darkOverrideEnabled}
+	                                onChange={handleDarkIconFileChange}
+	                              />
+	                              <Button
+	                                variant="outline"
+	                                size="xs"
+	                                onClick={triggerDarkIconPicker}
+                                disabled={!darkOverrideEnabled}
+                                className="h-6 text-[9px] px-2 rounded-full dark:border-white/10 dark:hover:bg-white/5"
+                              >
+                                {t("settings:providers.fields.iconUpload")}
+                              </Button>
+                            </div>
+                          </div>
+                        </div>
                       </div>
                     </div>
-
-                    {editingEnv.terminal === "wsl" ? (
-                      <div className="space-y-2">
-                        <div className="text-sm font-medium">{t("settings:providers.fields.envDistro")}</div>
-                        <Select value={editingEnv.distro} onValueChange={(v) => updateProviderEnv(providerEditingId, { distro: v })}>
-                          <SelectTrigger>
-                            <SelectValue placeholder={t("settings:terminalPlaceholder") as string} />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {availableDistros.length > 0 ? (
-                              availableDistros.map((name) => (
-                                <SelectItem key={name} value={name}>
-                                  {name}
-                                </SelectItem>
-                              ))
-                            ) : (
-                              <SelectItem value={editingEnv.distro || ""}>{editingEnv.distro || t("settings:noTerminalDetected")}</SelectItem>
-                            )}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    ) : null}
                   </div>
-                </CardContent>
-              </Card>
 
-              {providerEditingId === "claude" ? (
-                <Card>
-                  <CardHeader>
-                    <CardTitle>{t("settings:providers.claudeCode.title")}</CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    <p className="text-sm text-slate-500 dark:text-[var(--cf-text-secondary)]">
-                      {t("settings:providers.claudeCode.desc")}
-                    </p>
-                    <label className="flex items-start gap-3 rounded-lg border border-slate-200/70 bg-white/60 px-3 py-3 shadow-sm dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:text-[var(--cf-text-primary)]">
-                      <input
-                        type="checkbox"
-                        className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)] dark:checked:bg-[var(--cf-accent)] dark:focus-visible:ring-[var(--cf-accent)]/40"
-                        checked={claudeCodeReadAgentHistory}
-                        onChange={(event) => setClaudeCodeReadAgentHistory(event.target.checked)}
-                      />
-                      <div>
-                        <div className="text-sm font-medium text-slate-800 dark:text-[var(--cf-text-primary)]">
-                          {t("settings:providers.claudeCode.readAgentHistory.label")}
+                  {/* Runtime Env */}
+                  <div className="space-y-4">
+                    <div className="flex items-center gap-2 text-xs font-bold text-slate-400 dark:text-slate-600 uppercase tracking-widest pl-1">
+                      <TerminalIcon className="h-3.5 w-3.5" />
+                      {t("settings:providers.fields.envTerminal")}
+                    </div>
+                    <div className="space-y-3">
+                      <div className="grid gap-4 sm:grid-cols-2 items-start">
+                        <div className="flex flex-col gap-1.5">
+                          <Label className="text-xs font-bold text-slate-500 ml-1">{t("settings:providers.fields.envTerminal")}</Label>
+                          <Select value={editingEnv.terminal} onValueChange={(v) => handleTerminalChange(v as TerminalMode)}>
+                            <SelectTrigger className="h-9 rounded-xl bg-white dark:bg-white/5 border-slate-200 dark:border-white/10 text-xs">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="wsl">{t("settings:terminalMode.wsl")}</SelectItem>
+                              <SelectItem value="pwsh" disabled={pwshAvailable === false}>{t("settings:terminalMode.pwsh")}</SelectItem>
+                              <SelectItem value="windows">{t("settings:terminalMode.windows")}</SelectItem>
+                            </SelectContent>
+                          </Select>
                         </div>
-                        <p className="text-xs text-slate-500 dark:text-[var(--cf-text-secondary)]">
-                          {t("settings:providers.claudeCode.readAgentHistory.desc")}
-                        </p>
+
+                        {editingEnv.terminal === "wsl" && (
+                          <div className="flex flex-col gap-1.5">
+                            <Label className="text-xs font-bold text-slate-500 ml-1">{t("settings:providers.fields.envDistro")}</Label>
+                            <Select value={editingEnv.distro} onValueChange={(v) => updateProviderEnv(providerEditingId, { distro: v })}>
+                              <SelectTrigger className="h-9 rounded-xl bg-white dark:bg-white/5 border-slate-200 dark:border-white/10 px-4 text-xs">
+                                <SelectValue placeholder={t("settings:terminalPlaceholder")} />
+                              </SelectTrigger>
+                              <SelectContent>
+	                              {availableDistros.length > 0 ? (
+	                                availableDistros.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)
+	                              ) : (
+	                                <SelectItem value={editingEnv.distro || ""}>{editingEnv.distro || t("settings:providers.fields.envDistroNoDistros")}</SelectItem>
+	                              )}
+	                            </SelectContent>
+	                          </Select>
+	                        </div>
+                        )}
                       </div>
-                    </label>
-                  </CardContent>
-                </Card>
-              ) : null}
+                      <div className="flex items-center gap-2 p-2.5 rounded-xl bg-blue-50/50 dark:bg-blue-500/5 text-[10px] text-blue-600 dark:text-blue-400">
+                        <Info className="h-3 w-3 shrink-0" />
+                        <span className="truncate">{pwshAvailable === null ? t("settings:terminalMode.pwshDetecting") : (pwshAvailable ? pwshDetectedText : t("settings:terminalMode.pwshUnavailable"))}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {providerEditingId === "claude" && (
+                <div className="p-6 rounded-3xl border border-amber-200 dark:border-amber-500/20 bg-amber-50/30 dark:bg-amber-500/5">
+                  <div className="flex items-start gap-4">
+                    <div className="mt-1 h-5 w-5 shrink-0 rounded border border-amber-300 dark:border-amber-500/40 bg-white dark:bg-black/20 flex items-center justify-center cursor-pointer" onClick={() => setClaudeCodeReadAgentHistory(!claudeCodeReadAgentHistory)}>
+                      {claudeCodeReadAgentHistory && <Check className="h-3.5 w-3.5 text-amber-600" />}
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-bold text-amber-900 dark:text-amber-200">{t("settings:providers.claudeCode.readAgentHistory.label")}</h4>
+                      <p className="mt-1 text-xs text-amber-700/70 dark:text-amber-400/60 leading-relaxed">{t("settings:providers.claudeCode.readAgentHistory.desc")}</p>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           ),
         };
@@ -1556,7 +1676,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <p className="text-sm text-slate-500">{t("settings:terminalFont.help")}</p>
-                  
+
                   {/* 统一预览区域 */}
                   <div>
                     <div className="text-xs font-medium text-slate-600 mb-2">{t("settings:terminalFont.previewTitle")}</div>
@@ -1579,9 +1699,9 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                       {t("settings:terminalTheme.previewNote", { theme: t(`settings:terminalTheme.options.${terminalTheme}`) })}
                     </div>
                   </div>
-                  
+
                   {/* 单一选择器：仅显示“已安装”字体；推荐项置顶并标注“推荐” */}
-                    <div className="max-w-xs space-y-2 text-slate-700 dark:text-slate-200">
+                  <div className="max-w-xs space-y-2 text-slate-700 dark:text-slate-200">
                     <div className="text-xs font-medium text-slate-600">{t("settings:terminalFont.installedLabel")}</div>
                     {installedFonts.length > 0 ? (
                       <>
@@ -1605,7 +1725,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                           <div className="flex flex-col flex-shrink-0 h-10 w-7 overflow-hidden rounded border border-slate-200 divide-y divide-slate-200">
                             <button
                               type="button"
-                          className="inline-flex w-full flex-1 items-center justify-center bg-white text-slate-700 hover:bg-slate-50 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800"
+                              className="inline-flex w-full flex-1 items-center justify-center bg-white text-slate-700 hover:bg-slate-50 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800"
                               title={t('settings:terminalFont.prev') as string}
                               disabled={visibleFontList.length === 0 || currentFontIndex <= 0}
                               onClick={() => {
@@ -1616,14 +1736,14 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                                   if (curIdx <= 0) return;
                                   const next = list[curIdx - 1];
                                   if (next) setTerminalFontFamily(buildTerminalFontStack(next));
-                                } catch {}
+                                } catch { }
                               }}
                             >
                               <ChevronUp className="h-4 w-4" />
                             </button>
                             <button
                               type="button"
-                          className="inline-flex w-full flex-1 items-center justify-center bg-white text-slate-700 hover:bg-slate-50 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800"
+                              className="inline-flex w-full flex-1 items-center justify-center bg-white text-slate-700 hover:bg-slate-50 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800"
                               title={t('settings:terminalFont.next') as string}
                               disabled={
                                 visibleFontList.length === 0 ||
@@ -1642,7 +1762,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                                   if (curIdx >= list.length - 1) return;
                                   const next = list[curIdx + 1];
                                   if (next) setTerminalFontFamily(buildTerminalFontStack(next));
-                                } catch {}
+                                } catch { }
                               }}
                             >
                               <ChevronDown className="h-4 w-4" />
@@ -1668,7 +1788,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                   </div>
                 </CardContent>
               </Card>
-              
+
             </div>
           ),
         };
@@ -1922,8 +2042,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                   <div className="text-[11px] text-slate-500">
                     {storageInfo
                       ? t("settings:appData.updatedAt", {
-                          value: new Date(storageInfo.collectedAt).toLocaleString(),
-                        })
+                        value: new Date(storageInfo.collectedAt).toLocaleString(),
+                      })
                       : storageLoading
                         ? (t("settings:appData.loading") as string)
                         : t("settings:appData.awaitingRefresh")}
@@ -2048,7 +2168,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                         const sep = normalized.includes('\\') && !normalized.includes('/') ? '\\' : '/';
                         const target = `${normalized}${sep}debug.config.jsonc`;
                         await (window as any).host?.utils?.openPath?.(target);
-                      } catch {}
+                      } catch { }
                     }}
                   >
                     {t("settings:debug.open")}
@@ -2056,7 +2176,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                   <Button
                     variant="secondary"
                     onClick={async () => {
-                      try { await (window as any).host?.debug?.reset?.(); } catch {}
+                      try { await (window as any).host?.debug?.reset?.(); } catch { }
                     }}
                   >
                     {t("settings:debug.reset")}
@@ -2125,14 +2245,16 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     handleTerminalChange,
     editingEnv,
     editingTerminalLabel,
-    pwshAvailable,
-    pwshDetectedText,
-    readFileAsDataUrl,
-    triggerLightIconPicker,
-    triggerDarkIconPicker,
-    getProviderItem,
-    claudeCodeReadAgentHistory,
-  ]);
+	    pwshAvailable,
+	    pwshDetectedText,
+	    readFileAsDataUrl,
+	    handleLightIconFileChange,
+	    handleDarkIconFileChange,
+	    triggerLightIconPicker,
+	    triggerDarkIconPicker,
+	    getProviderItem,
+	    claudeCodeReadAgentHistory,
+	  ]);
 
   useEffect(() => {
     if (!open) {
@@ -2150,90 +2272,146 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     container.scrollTo({ top: 0, behavior: "auto" });
   }, [activeSection]);
 
-  const renderNavigation = () => (
-    <nav className="flex shrink-0 basis-56 flex-col gap-1 py-2 pr-4">
-      {sections.map((section) => (
-        <button
-          key={section.key}
-          type="button"
-          className={cn(
-            "flex flex-col items-start rounded-lg border border-transparent px-3 py-2 text-left transition-colors",
-            activeSection === section.key
-              ? "border-slate-300 bg-slate-100 text-slate-900 shadow-sm dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-hover)] dark:text-[var(--cf-text-primary)]"
-              : "hover:bg-slate-50 text-slate-600 dark:hover:bg-[var(--cf-surface)] dark:text-[var(--cf-text-secondary)]"
-          )}
-          onClick={() => {
-            setActiveSection(section.key);
-          }}
-        >
-          <span className="text-sm font-medium">{section.title}</span>
-          <span className="mt-0.5 text-xs text-slate-500 dark:text-[var(--cf-text-muted)] line-clamp-2">
-            {section.description}
-          </span>
-        </button>
-      ))}
-    </nav>
-  );
+  const renderNavigation = () => {
+    const sectionIcons: Record<SectionKey, React.ReactNode> = {
+      basic: <Settings2 className="h-4 w-4" />,
+      providers: <Cpu className="h-4 w-4" />,
+      terminal: <TerminalIcon className="h-4 w-4" />,
+      notifications: <Bell className="h-4 w-4" />,
+      networkAccount: <Globe className="h-4 w-4" />,
+      data: <Database className="h-4 w-4" />,
+    };
+
+    return (
+      <nav className="flex shrink-0 basis-60 flex-col gap-1.5 py-2 pr-4">
+        {sections.map((section) => {
+          const isActive = activeSection === section.key;
+          return (
+            <button
+              key={section.key}
+              type="button"
+              className={cn(
+                "group flex items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-all duration-200",
+                isActive
+                  ? "border-slate-200 bg-white/70 text-slate-900 shadow-sm dark:border-[var(--cf-border-strong)] dark:bg-[var(--cf-surface-hover)] dark:text-[var(--cf-text-primary)]"
+                  : "border-transparent hover:bg-slate-100/50 text-slate-500 hover:text-slate-700 dark:hover:bg-[var(--cf-surface)] dark:text-[var(--cf-text-secondary)] dark:hover:text-[var(--cf-text-primary)]"
+              )}
+              onClick={() => {
+                setActiveSection(section.key);
+              }}
+            >
+              <div
+                className={cn(
+                  "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors",
+                  isActive
+                    ? "bg-[var(--cf-accent)] text-white"
+                    : "bg-slate-100 text-slate-400 group-hover:bg-slate-200 group-hover:text-slate-500 dark:bg-[var(--cf-surface)] dark:text-[var(--cf-text-muted)] dark:group-hover:bg-[var(--cf-surface-hover)]"
+                )}
+              >
+                {sectionIcons[section.key as SectionKey]}
+              </div>
+              <div className="flex flex-col min-w-0">
+                <span className="text-sm font-semibold leading-tight">{section.title}</span>
+                <span className="mt-0.5 text-[11px] text-slate-400 dark:text-[var(--cf-text-muted)] line-clamp-1">
+                  {section.description}
+                </span>
+              </div>
+            </button>
+          );
+        })}
+      </nav>
+    );
+  };
 
   const active = sections.find((section) => section.key === activeSection) ?? sections[0];
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-5xl w-[90vw] overflow-hidden">
-        <DialogHeader className="pb-4">
-          <DialogTitle>{t("settings:title")}</DialogTitle>
-        </DialogHeader>
-        <div className="flex min-h-[520px] max-h-[70vh] gap-6">
-          {renderNavigation()}
-          <Separator orientation="vertical" />
-          <div className="flex flex-1 flex-col overflow-hidden">
-            <div className="flex flex-col gap-1 pb-4">
-              <h2 className="text-lg font-semibold text-slate-900 dark:text-[var(--cf-text-primary)]">{active.title}</h2>
-              <p className="text-sm text-slate-500 dark:text-[var(--cf-text-secondary)]">{active.description}</p>
+      <DialogContent className="max-w-[1000px] w-[90vw] overflow-hidden p-0 border-none shadow-2xl bg-white dark:bg-[#121214] ring-1 ring-black/5 dark:ring-white/10">
+        <div className="flex h-[75vh] min-h-[620px] flex-col">
+          {/* Header */}
+          <header className="flex h-14 shrink-0 items-center justify-between border-b px-6 bg-white/50 dark:bg-white/[0.02] backdrop-blur-md dark:border-white/10">
+            <div className="flex items-center gap-3">
+              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--cf-accent)] text-white shadow-lg shadow-[var(--cf-accent)]/20">
+                <Settings2 className="h-5 w-5" />
+              </div>
+              <div>
+                <DialogTitle className="text-base font-bold tracking-tight text-slate-900 dark:text-white">{t("settings:title")}</DialogTitle>
+              </div>
             </div>
-            <ScrollArea className="flex-1">
-              <div ref={scrollRef} className="pr-4">
-                <div className="pb-6">
-                  {active.content}
+          </header>
+
+          <div className="flex flex-1 overflow-hidden">
+            {/* Sidebar */}
+            <aside className="w-64 shrink-0 border-r bg-slate-50/50 dark:bg-white/[0.01] px-4 py-4 dark:border-white/10">
+              {renderNavigation()}
+            </aside>
+
+            {/* Main Content Area */}
+            <main className="flex flex-1 flex-col min-w-0 bg-white/40 dark:bg-transparent">
+	              <div className="flex-1 overflow-hidden">
+	                <ScrollArea ref={scrollRef} className="h-full">
+	                  <div className="max-w-3xl mx-auto px-6 py-4">
+	                    <div className="mb-4 flex flex-col gap-1">
+	                      <h2 className="text-xl font-bold tracking-tight text-slate-900 dark:text-[var(--cf-text-primary)]">
+	                        {active.title}
+	                      </h2>
+                      <p className="text-[12px] text-slate-500 dark:text-[var(--cf-text-secondary)] leading-relaxed">
+                        {active.description}
+                      </p>
+                    </div>
+
+                    <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                      {active.content}
+                    </div>
+                  </div>
+                </ScrollArea>
+              </div>
+
+              {/* Footer */}
+              <footer className="flex h-14 shrink-0 items-center justify-between border-t px-8 dark:border-white/10 bg-slate-50/30 dark:bg-black/5">
+                <div className="flex items-center gap-2 text-xs text-slate-400 dark:text-[var(--cf-text-muted)]">
+                  <Info className="h-3.5 w-3.5" />
+                  {t("settings:footer.note")}
                 </div>
-              </div>
-            </ScrollArea>
-            <div className="flex items-center justify-between border-t dark:border-[var(--cf-border)] pt-4">
-              <div className="text-xs text-slate-400 dark:text-[var(--cf-text-muted)]">
-                {t("settings:footer.note")}
-              </div>
-              <div className="flex items-center gap-2">
-                <Button variant="outline" onClick={() => onOpenChange(false)}>
-                  {t("common:cancel")}
-                </Button>
-                <Button
-                  onClick={() => {
-                    onSave({
-                      providers: {
-                        activeId: providersActiveId,
-                        items: providerItems,
-                        env: providerEnvMap,
-                      },
-                      sendMode,
-                      locale: lang,
-                      projectPathStyle: pathStyle,
-                      dragDropWarnOutsideProject,
-                      theme,
-                      multiInstanceEnabled,
-                      notifications,
-                      network,
-                      codexAccount,
-                      terminalFontFamily: normalizeTerminalFontFamily(terminalFontFamily),
-                      terminalTheme,
-                      claudeCodeReadAgentHistory,
-                    });
-                    onOpenChange(false);
-                  }}
-                >
-                  {t("common:save")}
-                </Button>
-              </div>
-            </div>
+                <div className="flex items-center gap-3">
+                  <Button
+                    variant="ghost"
+                    className="px-5 transition-colors hover:bg-slate-100 dark:hover:bg-[var(--cf-surface)]"
+                    onClick={() => onOpenChange(false)}
+                  >
+                    {t("common:cancel")}
+                  </Button>
+                  <Button
+                    className="px-6 shadow-md shadow-[var(--cf-accent)]/20 transition-all hover:scale-[1.02] active:scale-[0.98] bg-[var(--cf-accent)] hover:bg-[var(--cf-accent-hover)] text-white"
+                    onClick={() => {
+                      onSave({
+                        providers: {
+                          activeId: providersActiveId,
+                          items: sanitizeProviderItemsForSave(providerItems),
+                          env: providerEnvMap,
+                        },
+                        sendMode,
+                        locale: lang,
+                        projectPathStyle: pathStyle,
+                        dragDropWarnOutsideProject,
+                        theme,
+                        multiInstanceEnabled,
+                        notifications,
+                        network,
+                        codexAccount,
+                        terminalFontFamily: normalizeTerminalFontFamily(terminalFontFamily),
+                        terminalTheme,
+                        claudeCodeReadAgentHistory,
+                      });
+                      onOpenChange(false);
+                    }}
+                  >
+                    <Check className="mr-2 h-4 w-4" />
+                    {t("common:save")}
+                  </Button>
+                </div>
+              </footer>
+            </main>
           </div>
         </div>
       </DialogContent>

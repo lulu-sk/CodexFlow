@@ -38,6 +38,8 @@ export function normalizeProvidersSettings(
       iconDataUrlDark: typeof it.iconDataUrlDark === "string" ? it.iconDataUrlDark.trim() : undefined,
       startupCmd: typeof it.startupCmd === "string" ? it.startupCmd.trim() : undefined,
     };
+    // Terminal：始终不允许保存启动命令（只开 shell）。
+    if (id === "terminal") normalized.startupCmd = undefined;
     byId.set(id, normalized);
     if (!builtInSet.has(id)) customIdsInOrder.push(id);
   }
