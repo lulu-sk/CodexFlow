@@ -23,6 +23,8 @@ export type PersistedConsoleTab = {
 export type PersistedConsoleSession = {
   version: typeof CONSOLE_SESSION_VERSION;
   savedAt: number;
+  /** 用于区分“同一主进程生命周期内的 reload/HMR”与“应用重启”。 */
+  bootId?: string;
   selectedProjectId: string;
   tabsByProject: Record<string, PersistedConsoleTab[]>;
   activeTabByProject: Record<string, string | null>;
@@ -109,7 +111,7 @@ function normalizePtyByTab(input: unknown): Record<string, string> {
 /**
  * 中文说明：读取控制台会话快照。
  */
-export function loadConsoleSession(): PersistedConsoleSession | null {
+export function loadConsoleSession(options?: { currentBootId?: string }): PersistedConsoleSession | null {
   const ls = getLocalStorageSafe();
   if (!ls) return null;
   try {
@@ -118,13 +120,22 @@ export function loadConsoleSession(): PersistedConsoleSession | null {
     const parsed = JSON.parse(raw) as any;
     const version = Number(parsed?.version);
     if (version !== CONSOLE_SESSION_VERSION) return null;
+    const bootId = toNonEmptyString(parsed?.bootId);
+    const currentBootId = toNonEmptyString(options?.currentBootId);
+    // 若提供 currentBootId，则仅允许恢复同一主进程生命周期内的快照，避免重启后残留无效控制台
+    if (currentBootId) {
+      if (!bootId || bootId !== currentBootId) {
+        try { ls.removeItem(CONSOLE_SESSION_STORAGE_KEY); } catch {}
+        return null;
+      }
+    }
     const selectedProjectId = toNonEmptyString(parsed?.selectedProjectId);
     const tabsByProject = normalizeTabsByProject(parsed?.tabsByProject);
     const activeTabByProject = normalizeActiveTabByProject(parsed?.activeTabByProject);
     const ptyByTab = normalizePtyByTab(parsed?.ptyByTab);
     const savedAtNum = Number(parsed?.savedAt);
     const savedAt = Number.isFinite(savedAtNum) ? savedAtNum : Date.now();
-    return { version: CONSOLE_SESSION_VERSION, savedAt, selectedProjectId, tabsByProject, activeTabByProject, ptyByTab };
+    return { version: CONSOLE_SESSION_VERSION, savedAt, bootId, selectedProjectId, tabsByProject, activeTabByProject, ptyByTab };
   } catch {
     return null;
   }
@@ -140,6 +151,7 @@ export function saveConsoleSession(session: PersistedConsoleSession): void {
     const payload: PersistedConsoleSession = {
       version: CONSOLE_SESSION_VERSION,
       savedAt: Date.now(),
+      bootId: toNonEmptyString(session?.bootId),
       selectedProjectId: toNonEmptyString(session?.selectedProjectId),
       tabsByProject: normalizeTabsByProject(session?.tabsByProject),
       activeTabByProject: normalizeActiveTabByProject(session?.activeTabByProject),
@@ -166,4 +178,3 @@ export function clearConsoleSession(): void {
     // noop
   }
 }
-

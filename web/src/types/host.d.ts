@@ -355,6 +355,11 @@ export interface ImagesAPI {
 }
 
 export interface AppAPI {
+  /**
+   * 中文说明：本次主进程启动的唯一标识（跨 reload 稳定）。
+   * 用途：渲染层区分“渲染 reload/HMR”与“应用重启”，避免重启后恢复失效的控制台绑定。
+   */
+  bootId: string;
   getVersion(): Promise<string>;
   getPaths(): Promise<{ licensePath?: string; noticePath?: string }>;
   /** 仅 Windows：设置原生标题栏主题（light/dark） */

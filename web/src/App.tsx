@@ -866,7 +866,14 @@ export default function CodexFlowManagerUI() {
     } catch {}
   }, [uiLog, uiDebugEnabled]);
   // ---------- App State ----------
-  const restoredConsoleSession = useMemo(() => loadConsoleSession(), []);
+  const appBootId = useMemo(() => {
+    try { return String(window.host?.app?.bootId || "").trim(); } catch { return ""; }
+  }, []);
+  const restoredConsoleSession = useMemo(() => {
+    // 若无法获取 bootId，则不做会话恢复，避免跨重启残留无效控制台
+    if (!appBootId) return null;
+    return loadConsoleSession({ currentBootId: appBootId });
+  }, [appBootId]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectsHydrated, setProjectsHydrated] = useState<boolean>(false);
   const [hiddenProjectIds, setHiddenProjectIds] = useState<string[]>(() => loadHiddenProjectIds());
@@ -1120,6 +1127,7 @@ export default function CodexFlowManagerUI() {
         saveConsoleSession({
           version: 1,
           savedAt: Date.now(),
+          bootId: appBootId,
           selectedProjectId,
           tabsByProject: compactTabsByProject,
           activeTabByProject,
@@ -1133,7 +1141,7 @@ export default function CodexFlowManagerUI() {
         consoleSessionSaveTimerRef.current = null;
       }
     };
-  }, [selectedProjectId, tabsByProject, activeTabByProject, ptyByTab]);
+  }, [selectedProjectId, tabsByProject, activeTabByProject, ptyByTab, appBootId]);
   useEffect(() => {
     if (!terminalManagerRef.current) return;
     try { terminalManagerRef.current.setAppearance({ fontFamily: terminalFontFamily, theme: terminalTheme }); } catch {}

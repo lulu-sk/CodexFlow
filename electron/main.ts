@@ -46,6 +46,21 @@ import { readDebugConfig, getDebugConfig, onDebugChanged, watchDebugConfig, upda
 
 // 使用 CommonJS 编译输出时，运行时环境会提供 `__dirname`，直接使用即可
 
+/**
+ * 中文说明：本次主进程启动的唯一标识，用于让渲染层区分：
+ * - 同一主进程生命周期内的渲染 reload/HMR（PTY 仍存活，可安全恢复 tabId->ptyId 绑定）
+ * - 应用重启（PTY 已销毁，若继续恢复会导致“残留无效控制台”）
+ *
+ * 实现方式：写入环境变量，供 preload 同步读取并暴露给渲染层。
+ */
+const CODEXFLOW_APP_BOOT_ID = String(process.env.CODEXFLOW_APP_BOOT_ID || "").trim()
+  || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+try {
+  if (!String(process.env.CODEXFLOW_APP_BOOT_ID || "").trim()) {
+    process.env.CODEXFLOW_APP_BOOT_ID = CODEXFLOW_APP_BOOT_ID;
+  }
+} catch {}
+
 let mainWindow: BrowserWindow | null = null;
 let DIAG = false;
 let quitConfirmed = false;
