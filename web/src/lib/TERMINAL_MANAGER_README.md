@@ -32,7 +32,7 @@ tm.disposeTab(tabId);
 
 补充说明
 - `setPty(..., { hydrateBacklog: true })`：用于“渲染进程 reload/HMR 后重连现有 PTY”场景，会回放主进程保存的尾部输出，避免滚动区看起来为空。
+- 控制台标签页与 tabId->ptyId 绑定的持久化仅用于同一主进程生命周期内的 reload/HMR；跨应用重启时 PTY 已销毁，渲染层会基于 bootId 判定快照失效并自动清除，避免残留无效控制台。
 
 迁移建议
 - 若要提取为独立包：将 `createTerminalAdapter` 抽成 peerDependency（或提供接口注入），并把 HostPtyAPI 作为必需注入项，避免直接依赖 `window.host`。
-

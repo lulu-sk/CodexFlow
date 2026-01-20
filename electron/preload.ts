@@ -5,8 +5,16 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 type OpenArgs = { terminal?: 'wsl' | 'windows' | 'pwsh'; distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string; env?: Record<string, string> };
 
+/**
+ * 中文说明：从主进程继承的本次启动 bootId。
+ * - 主进程在启动时写入 `process.env.CODEXFLOW_APP_BOOT_ID`
+ * - preload 在每次 document load/reload 时都会重新执行，因此必须读取一个“跨 reload 稳定”的值
+ */
+const APP_BOOT_ID = String(process.env.CODEXFLOW_APP_BOOT_ID || "");
+
 contextBridge.exposeInMainWorld('host', {
   app: {
+    bootId: APP_BOOT_ID,
     getVersion: async (): Promise<string> => {
       try { const res = await ipcRenderer.invoke('app.getVersion'); return (res && res.ok) ? String(res.version || '') : ''; } catch { return ''; }
     },
