@@ -341,3 +341,14 @@ body {
     transform: translateY(18px) scale(0.97);
   }
 }
+
+/* 数字输入框：移除内置微调按钮，避免右侧留白过大 */
+.cf-number-input::-webkit-outer-spin-button,
+.cf-number-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.cf-number-input {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}

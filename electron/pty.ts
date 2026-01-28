@@ -22,6 +22,19 @@ const dlog = (msg: string) => { if (TERM_DEBUG) { try { perfLogger.log(msg); } c
 const PTY_BACKLOG_MAX_CHARS = 1_200_000;
 
 /**
+ * 将字符串转换为 Bash 单引号安全字面量。
+ *
+ * 说明：
+ * - 主要用于构造 `bash -lc '...'` 的参数；
+ * - 避免外层 shell 在双引号中对反引号/`$()` 做命令替换，导致把用户输入当作命令执行。
+ */
+function bashSingleQuote(value: string): string {
+  const s = String(value ?? "");
+  if (s.length === 0) return "''";
+  return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+/**
  * 中文说明：用于保存 PTY 输出的“尾部环形缓冲”。
  * - 写入为 O(1) 追加；超过上限后仅从头部裁剪；
  * - 读取时按需截取尾部，避免 join 全量导致的额外开销。
@@ -294,7 +307,7 @@ export class PTYManager {
           dlog(`[pty] startupCmd executed (windows) id=${id} shell=${mode}`);
         } else if (isWin) {
           // WSL：通过 bash -lc 执行
-          p.write(`bash -lc "${startupCmd.replace(/"/g, '\\"')}"\r`);
+          p.write(`bash -lc ${bashSingleQuote(startupCmd)}\r`);
           dlog(`[pty] startupCmd executed (wsl) id=${id}`);
         } else {
           p.write(`${startupCmd}\r`);

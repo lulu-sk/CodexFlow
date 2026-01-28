@@ -32,12 +32,16 @@ import {
   Settings2,
   Cpu,
   Terminal as TerminalIcon,
+  GitBranch,
   Bell,
   Globe,
   Database,
   Info,
   Check,
   CheckCircle2,
+  TerminalSquare,
+  ExternalLink,
+  GitMerge,
 } from "lucide-react";
 import { getBuiltInProviders, isBuiltInProviderId } from "@/lib/providers/builtins";
 import { resolveProvider } from "@/lib/providers/resolve";
@@ -62,6 +66,15 @@ type NotificationPrefs = {
   badge: boolean;
   system: boolean;
   sound: boolean;
+};
+type ExternalGitToolId = "rider" | "sourcetree" | "fork" | "gitkraken" | "custom";
+type GitWorktreePrefs = {
+  gitPath: string;
+  externalGitToolId: ExternalGitToolId;
+  externalGitToolCustomCommand: string;
+  terminalCommand: string;
+  autoCommitEnabled: boolean;
+  copyRulesOnCreate: boolean;
 };
 type NetworkPrefs = {
   proxyEnabled: boolean;
@@ -99,6 +112,7 @@ export type SettingsDialogProps = {
     terminalTheme: TerminalThemeId;
     claudeCodeReadAgentHistory: boolean;
     multiInstanceEnabled: boolean;
+    gitWorktree: GitWorktreePrefs;
   };
   onSave: (v: {
     providers: {
@@ -118,6 +132,7 @@ export type SettingsDialogProps = {
     terminalTheme: TerminalThemeId;
     claudeCodeReadAgentHistory: boolean;
     multiInstanceEnabled: boolean;
+    gitWorktree: GitWorktreePrefs;
   }) => void;
 };
 
@@ -163,9 +178,9 @@ type AutoProfilesInfo = {
   items: AutoProfileDirInfo[];
 };
 
-type SectionKey = "basic" | "providers" | "notifications" | "terminal" | "networkAccount" | "data";
+type SectionKey = "basic" | "providers" | "gitWorktree" | "notifications" | "terminal" | "networkAccount" | "data";
 
-const NAV_ORDER: SectionKey[] = ["basic", "providers", "terminal", "notifications", "networkAccount", "data"];
+const NAV_ORDER: SectionKey[] = ["basic", "providers", "gitWorktree", "terminal", "notifications", "networkAccount", "data"];
 
 const DEFAULT_LANGS = ["zh", "en"];
 // 移除推荐逻辑：仅保留纯字母序
@@ -495,6 +510,19 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     recordEnabled: !!values.codexAccount?.recordEnabled,
   }));
   const [claudeCodeReadAgentHistory, setClaudeCodeReadAgentHistory] = useState<boolean>(!!values.claudeCodeReadAgentHistory);
+  const [gitWorktreeGitPath, setGitWorktreeGitPath] = useState<string>(String(values.gitWorktree?.gitPath || ""));
+  const [gitWorktreeExternalGitToolId, setGitWorktreeExternalGitToolId] = useState<ExternalGitToolId>(
+    (values.gitWorktree?.externalGitToolId as ExternalGitToolId) || "rider",
+  );
+  const [gitWorktreeExternalGitToolCustomCommand, setGitWorktreeExternalGitToolCustomCommand] = useState<string>(
+    String(values.gitWorktree?.externalGitToolCustomCommand || ""),
+  );
+  const [gitWorktreeTerminalCommand, setGitWorktreeTerminalCommand] = useState<string>(String(values.gitWorktree?.terminalCommand || ""));
+  const [gitWorktreeAutoCommitEnabled, setGitWorktreeAutoCommitEnabled] = useState<boolean>(values.gitWorktree?.autoCommitEnabled !== false);
+  const [gitWorktreeCopyRulesOnCreate, setGitWorktreeCopyRulesOnCreate] = useState<boolean>(values.gitWorktree?.copyRulesOnCreate !== false);
+  const [gitWorktreeDetectingPaths, setGitWorktreeDetectingPaths] = useState<boolean>(false);
+  const [gitWorktreeDetectedGitPath, setGitWorktreeDetectedGitPath] = useState<string>("");
+  const [gitWorktreeDetectedGitBashPath, setGitWorktreeDetectedGitBashPath] = useState<string>("");
   const [codexRoots, setCodexRoots] = useState<string[]>([]);
   const [claudeRoots, setClaudeRoots] = useState<string[]>([]);
   const [geminiRoots, setGeminiRoots] = useState<string[]>([]);
@@ -617,9 +645,70 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     });
     setCodexAccount({ recordEnabled: !!values.codexAccount?.recordEnabled });
     setClaudeCodeReadAgentHistory(!!values.claudeCodeReadAgentHistory);
+    setGitWorktreeGitPath(String(values.gitWorktree?.gitPath || ""));
+    setGitWorktreeExternalGitToolId((values.gitWorktree?.externalGitToolId as ExternalGitToolId) || "rider");
+    setGitWorktreeExternalGitToolCustomCommand(String(values.gitWorktree?.externalGitToolCustomCommand || ""));
+    setGitWorktreeTerminalCommand(String(values.gitWorktree?.terminalCommand || ""));
+    setGitWorktreeAutoCommitEnabled(values.gitWorktree?.autoCommitEnabled !== false);
+    setGitWorktreeCopyRulesOnCreate(values.gitWorktree?.copyRulesOnCreate !== false);
     setTerminalFontFamily(normalizeTerminalFontFamily(values.terminalFontFamily));
     setTerminalTheme(normalizeTerminalTheme(values.terminalTheme));
   }, [open]);
+
+  /**
+   * 探测 Windows 下常见 Git / Git Bash 安装路径（仅用于设置面板展示“自动探测”的结果）。
+   */
+  const detectGitWorktreePaths = useCallback(async () => {
+    if (!open) return;
+    setGitWorktreeDetectingPaths(true);
+    try {
+      let userProfile = "";
+      try {
+        const res: any = await window.host.utils.getHomeDir();
+        const raw = res && res.ok ? String(res.homeDir || "") : "";
+        const winPath = raw.replace(/\//g, "\\").trim();
+        if (/^[a-zA-Z]:\\/.test(winPath)) userProfile = winPath;
+      } catch {}
+
+      const gitCandidates = [
+        "C:\\\\Program Files\\\\Git\\\\cmd\\\\git.exe",
+        "C:\\\\Program Files\\\\Git\\\\bin\\\\git.exe",
+        "C:\\\\Program Files (x86)\\\\Git\\\\cmd\\\\git.exe",
+        "C:\\\\Program Files (x86)\\\\Git\\\\bin\\\\git.exe",
+        userProfile ? `${userProfile}\\AppData\\Local\\Programs\\Git\\cmd\\git.exe` : "",
+        userProfile ? `${userProfile}\\AppData\\Local\\Programs\\Git\\bin\\git.exe` : "",
+      ].filter(Boolean);
+      let detectedGit = "";
+      for (const p of gitCandidates) {
+        try {
+          const res = await window.host.utils.pathExists(p);
+          if (res && res.ok && res.exists && res.isFile) { detectedGit = p; break; }
+        } catch { }
+      }
+      setGitWorktreeDetectedGitPath(detectedGit);
+
+      const gitBashCandidates = [
+        "C:\\\\Program Files\\\\Git\\\\git-bash.exe",
+        "C:\\\\Program Files (x86)\\\\Git\\\\git-bash.exe",
+        userProfile ? `${userProfile}\\AppData\\Local\\Programs\\Git\\git-bash.exe` : "",
+      ].filter(Boolean);
+      let detectedGitBash = "";
+      for (const p of gitBashCandidates) {
+        try {
+          const res = await window.host.utils.pathExists(p);
+          if (res && res.ok && res.exists && res.isFile) { detectedGitBash = p; break; }
+        } catch { }
+      }
+      setGitWorktreeDetectedGitBashPath(detectedGitBash);
+    } finally {
+      setGitWorktreeDetectingPaths(false);
+    }
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    detectGitWorktreePaths();
+  }, [open, detectGitWorktreePaths]);
 
   /**
    * 拉取指定引擎的会话根路径列表（优先使用 settings.sessionRoots；旧版本仅支持 codexRoots）。
@@ -1475,6 +1564,195 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
           ),
         };
       }
+      if (key === "gitWorktree") {
+        /**
+         * 将外部 Git 工具 id 映射为用于下拉展示的文本。
+         */
+        const externalToolLabel = (id: ExternalGitToolId): string => {
+          if (id === "rider") return "Rider";
+          if (id === "sourcetree") return "SourceTree";
+          if (id === "fork") return "Fork";
+          if (id === "gitkraken") return "GitKraken";
+          return t("settings:gitWorktree.externalGitTool.custom", "自定义命令") as string;
+        };
+
+        const currentExternalToolLabel = externalToolLabel(gitWorktreeExternalGitToolId);
+
+        return {
+          key,
+          title: t("settings:sections.gitWorktree.title"),
+          description: t("settings:sections.gitWorktree.desc"),
+	          content: (
+	            <div className="space-y-6">
+	              <div className="flex items-start gap-3 rounded-lg border border-slate-200/70 bg-white/60 px-3 py-3 shadow-sm dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:text-[var(--cf-text-primary)]">
+	                <Info className="mt-0.5 h-4 w-4 shrink-0 text-slate-500 dark:text-[var(--cf-text-secondary)]" />
+	                <div className="min-w-0">
+	                  <div className="text-sm font-medium text-slate-800 dark:text-[var(--cf-text-primary)]">
+	                    {t("settings:gitWorktree.intro.title", "使用说明") as string}
+	                  </div>
+	                  <p className="mt-1 text-xs text-slate-500 dark:text-[var(--cf-text-secondary)] leading-relaxed whitespace-pre-line">
+	                    {t(
+	                      "settings:gitWorktree.intro.desc",
+	                      "推荐流：根目录保持纯净，点击 分支徽标 (⎇) 为每个需求创建独立工作区，实现多任务/多 AI 并行开发，彻底避免不同模型同时修改同一份文件造成的代码冲突。\n怎么建：左键徽标唤起创建工作区面板（Ctrl+左键可极速创建），可以勾选 “并行混合模式”，让多个 AI 模型针对同一需求同时生成不同方案“赛马”。\n怎么收：项目右侧点 “工作区合并图标”（推荐 Squash）将最满意方案收回基分支，其余落选方案点 “垃圾桶” 直接删掉即可。"
+	                    ) as string}
+	                  </p>
+	                </div>
+	              </div>
+
+	              <Card className="border-slate-200 shadow-sm dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)]">
+	                <CardHeader className="pb-3">
+	                  <CardTitle className="text-base font-semibold flex items-center gap-2">
+                    <TerminalSquare className="h-4 w-4 text-slate-500" />
+                    {t("settings:gitWorktree.gitPath.title", "Git 基础") as string}
+                  </CardTitle>
+	                </CardHeader>
+                <CardContent className="space-y-4 pt-0">
+                  <div className="space-y-2">
+                    <Label className="text-sm font-medium text-slate-700 dark:text-[var(--cf-text-primary)]">
+                      {t("settings:gitWorktree.gitPath.label", "Git 可执行文件路径") as string}
+                    </Label>
+                    <Input
+                      value={gitWorktreeGitPath}
+                      onChange={(e: any) => setGitWorktreeGitPath(String(e?.target?.value || ""))}
+                      placeholder={t("settings:gitWorktree.gitPath.placeholder", "留空自动探测（git）") as string}
+                      className="h-9 font-mono text-xs focus-visible:ring-[var(--cf-accent)]"
+                    />
+                    <p className="text-[11px] text-slate-500 dark:text-[var(--cf-text-secondary)]">
+                        {t("settings:gitWorktree.gitPath.help", "为空将自动使用 PATH 中的 git；若探测失败请填写可执行文件路径。") as string}
+                    </p>
+                    {String(gitWorktreeGitPath || "").trim() ? null : (
+                      <p className="text-[11px] text-slate-500 dark:text-[var(--cf-text-secondary)]">
+                        {gitWorktreeDetectingPaths
+                          ? (t("settings:gitWorktree.gitPath.detecting", "探测中…") as string)
+                          : gitWorktreeDetectedGitPath
+                            ? (t("settings:gitWorktree.gitPath.detected", "已探测：{path}", { path: gitWorktreeDetectedGitPath }) as string)
+                            : (t("settings:gitWorktree.gitPath.notDetected", "未探测到：将使用 PATH 中的 git") as string)}
+                      </p>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="border-slate-200 shadow-sm dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)]">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base font-semibold flex items-center gap-2">
+                    <ExternalLink className="h-4 w-4 text-slate-500" />
+                    {t("settings:gitWorktree.tools.title", "外部工具") as string}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-5 pt-0">
+                  <div className="space-y-2">
+                    <Label className="text-sm font-medium text-slate-700 dark:text-[var(--cf-text-primary)]">
+                      {t("settings:gitWorktree.externalGitTool.label", "默认外部 Git 工具") as string}
+                    </Label>
+                    <div className="w-full">
+                      <Select
+                        value={gitWorktreeExternalGitToolId}
+                        onValueChange={(v) => setGitWorktreeExternalGitToolId(v as ExternalGitToolId)}
+                      >
+                        <SelectTrigger className="h-9 text-xs focus:ring-[var(--cf-accent)]">
+                          <span className="truncate text-left">{currentExternalToolLabel}</span>
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="rider">Rider</SelectItem>
+                          <SelectItem value="sourcetree">SourceTree</SelectItem>
+                          <SelectItem value="fork">Fork</SelectItem>
+                          <SelectItem value="gitkraken">GitKraken</SelectItem>
+                          <SelectItem value="custom">{t("settings:gitWorktree.externalGitTool.custom", "自定义命令") as string}</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    {gitWorktreeExternalGitToolId === "custom" ? (
+                      <Input
+                        value={gitWorktreeExternalGitToolCustomCommand}
+                        onChange={(e: any) => setGitWorktreeExternalGitToolCustomCommand(String(e?.target?.value || ""))}
+                        placeholder={t("settings:gitWorktree.externalGitTool.customPlaceholder", "例如：\"path/to/tool\" {path}") as string}
+                        className="h-9 font-mono text-xs mt-2 focus-visible:ring-[var(--cf-accent)]"
+                      />
+                    ) : null}
+                    <p className="text-[11px] text-slate-500 dark:text-[var(--cf-text-secondary)]">
+                      {t("settings:gitWorktree.externalGitTool.help", "自定义命令支持占位符 {path}。选择 Rider 时将以 Rider 打开目录。") as string}
+                    </p>
+                  </div>
+
+                  <Separator />
+
+                  <div className="space-y-2">
+                    <Label className="text-sm font-medium text-slate-700 dark:text-[var(--cf-text-primary)]">
+                      {t("settings:gitWorktree.terminalCommand.label", "终端 / Git Bash 命令") as string}
+                    </Label>
+                    <Input
+                      value={gitWorktreeTerminalCommand}
+                      onChange={(e: any) => setGitWorktreeTerminalCommand(String(e?.target?.value || ""))}
+                      placeholder={t("settings:gitWorktree.terminalCommand.placeholder", "留空使用默认策略；支持 {path}") as string}
+                      className="h-9 font-mono text-xs focus-visible:ring-[var(--cf-accent)]"
+                    />
+                    <p className="text-[11px] text-slate-500 dark:text-[var(--cf-text-secondary)]">
+                      {t("settings:gitWorktree.terminalCommand.help", "Windows 默认优先 Git Bash；macOS/Linux 使用系统默认终端。") as string}
+                    </p>
+                    {String(gitWorktreeTerminalCommand || "").trim() ? null : (
+                      <p className="text-[11px] text-slate-500 dark:text-[var(--cf-text-secondary)]">
+                        {gitWorktreeDetectingPaths
+                          ? (t("settings:gitWorktree.terminalCommand.detecting", "探测中…") as string)
+                          : gitWorktreeDetectedGitBashPath
+                            ? (t("settings:gitWorktree.terminalCommand.detectedGitBash", "已探测 Git Bash：{path}", { path: gitWorktreeDetectedGitBashPath }) as string)
+                            : (t("settings:gitWorktree.terminalCommand.notDetectedGitBash", "未探测到 Git Bash：将回退到系统终端") as string)}
+                      </p>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="border-slate-200 shadow-sm dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)]">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base font-semibold flex items-center gap-2">
+                     <GitMerge className="h-4 w-4 text-slate-500" />
+                    {t("settings:gitWorktree.behavior.title", "行为") as string}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3 pt-0">
+                  <label className="flex items-start gap-3 rounded-md border border-slate-200/60 bg-slate-50/50 px-3 py-2.5 cursor-pointer transition-colors hover:bg-slate-50 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:hover:bg-[var(--cf-surface-hover)]">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 h-4 w-4 rounded border-slate-300 text-[var(--cf-accent)] focus:ring-[var(--cf-accent)] dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)]"
+                      checked={gitWorktreeAutoCommitEnabled}
+                      onChange={(event) => setGitWorktreeAutoCommitEnabled(event.target.checked)}
+                    />
+                    <div className="min-w-0">
+	                      <div className="text-sm font-medium text-slate-800 dark:text-[var(--cf-text-primary)]">
+	                        {t("settings:gitWorktree.autoCommit.label", "worktree 自动提交") as string}
+	                      </div>
+	                      <p className="text-xs text-slate-500 dark:text-[var(--cf-text-secondary)] whitespace-pre-line">
+	                        {t(
+	                          "settings:gitWorktree.autoCommit.desc",
+	                          "仅对非主 worktree 的根目录生效（主工作区不触发）。\n触发：每次引擎输出完成后（包含首次对话）；以及（兜底）从同一控制台第 2 次用户输入起的每次发送后。\n行为：检测到变更才执行 git add -A 并提交一次；无变更则跳过。提交信息格式：auto(agent)/auto(user)。"
+	                        ) as string}
+	                      </p>
+	                    </div>
+	                  </label>
+
+                  <label className="flex items-start gap-3 rounded-md border border-slate-200/60 bg-slate-50/50 px-3 py-2.5 cursor-pointer transition-colors hover:bg-slate-50 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:hover:bg-[var(--cf-surface-hover)]">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 h-4 w-4 rounded border-slate-300 text-[var(--cf-accent)] focus:ring-[var(--cf-accent)] dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)]"
+                      checked={gitWorktreeCopyRulesOnCreate}
+                      onChange={(event) => setGitWorktreeCopyRulesOnCreate(event.target.checked)}
+                    />
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium text-slate-700 dark:text-[var(--cf-text-primary)]">
+                        {t("settings:gitWorktree.copyRules.label", "创建 worktree 时复制 AI 规则文件") as string}
+                      </div>
+                      <p className="text-[11px] text-slate-500 dark:text-[var(--cf-text-secondary)] mt-0.5">
+                        {t("settings:gitWorktree.copyRules.desc", "当源目录存在 AGENTS/CLAUDE/GEMINI 且被 git ignore 时复制到新 worktree。") as string}
+                      </p>
+                    </div>
+                  </label>
+                </CardContent>
+              </Card>
+            </div>
+          ),
+        };
+      }
       if (key === "notifications") {
         return {
           key,
@@ -2254,6 +2532,12 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
 	    triggerDarkIconPicker,
 	    getProviderItem,
 	    claudeCodeReadAgentHistory,
+      gitWorktreeGitPath,
+      gitWorktreeExternalGitToolId,
+      gitWorktreeExternalGitToolCustomCommand,
+      gitWorktreeTerminalCommand,
+      gitWorktreeAutoCommitEnabled,
+      gitWorktreeCopyRulesOnCreate,
 	  ]);
 
   useEffect(() => {
@@ -2272,15 +2556,16 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     container.scrollTo({ top: 0, behavior: "auto" });
   }, [activeSection]);
 
-  const renderNavigation = () => {
-    const sectionIcons: Record<SectionKey, React.ReactNode> = {
-      basic: <Settings2 className="h-4 w-4" />,
-      providers: <Cpu className="h-4 w-4" />,
-      terminal: <TerminalIcon className="h-4 w-4" />,
-      notifications: <Bell className="h-4 w-4" />,
-      networkAccount: <Globe className="h-4 w-4" />,
-      data: <Database className="h-4 w-4" />,
-    };
+	  const renderNavigation = () => {
+	    const sectionIcons: Record<SectionKey, React.ReactNode> = {
+	      basic: <Settings2 className="h-4 w-4" />,
+	      providers: <Cpu className="h-4 w-4" />,
+        gitWorktree: <GitBranch className="h-4 w-4" />,
+	      terminal: <TerminalIcon className="h-4 w-4" />,
+	      notifications: <Bell className="h-4 w-4" />,
+	      networkAccount: <Globe className="h-4 w-4" />,
+	      data: <Database className="h-4 w-4" />,
+	    };
 
     return (
       <nav className="flex shrink-0 basis-60 flex-col gap-1.5 py-2 pr-4">
@@ -2384,25 +2669,33 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                   <Button
                     className="px-6 shadow-md shadow-[var(--cf-accent)]/20 transition-all hover:scale-[1.02] active:scale-[0.98] bg-[var(--cf-accent)] hover:bg-[var(--cf-accent-hover)] text-white"
                     onClick={() => {
-                      onSave({
-                        providers: {
-                          activeId: providersActiveId,
-                          items: sanitizeProviderItemsForSave(providerItems),
-                          env: providerEnvMap,
-                        },
-                        sendMode,
-                        locale: lang,
-                        projectPathStyle: pathStyle,
-                        dragDropWarnOutsideProject,
-                        theme,
-                        multiInstanceEnabled,
-                        notifications,
-                        network,
-                        codexAccount,
-                        terminalFontFamily: normalizeTerminalFontFamily(terminalFontFamily),
-                        terminalTheme,
-                        claudeCodeReadAgentHistory,
-                      });
+	                      onSave({
+	                        providers: {
+	                          activeId: providersActiveId,
+	                          items: sanitizeProviderItemsForSave(providerItems),
+	                          env: providerEnvMap,
+	                        },
+	                        sendMode,
+	                        locale: lang,
+	                        projectPathStyle: pathStyle,
+	                        dragDropWarnOutsideProject,
+	                        theme,
+	                        multiInstanceEnabled,
+	                        notifications,
+	                        network,
+	                        codexAccount,
+                          gitWorktree: {
+                            gitPath: gitWorktreeGitPath,
+                            externalGitToolId: gitWorktreeExternalGitToolId,
+                            externalGitToolCustomCommand: gitWorktreeExternalGitToolCustomCommand,
+                            terminalCommand: gitWorktreeTerminalCommand,
+                            autoCommitEnabled: gitWorktreeAutoCommitEnabled,
+                            copyRulesOnCreate: gitWorktreeCopyRulesOnCreate,
+                          },
+	                        terminalFontFamily: normalizeTerminalFontFamily(terminalFontFamily),
+	                        terminalTheme,
+	                        claudeCodeReadAgentHistory,
+	                      });
                       onOpenChange(false);
                     }}
                   >

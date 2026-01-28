@@ -75,6 +75,23 @@ export type AppSettings = {
     /** 是否启用多实例（Profile）（实验性） */
     multiInstanceEnabled?: boolean;
   };
+  /** git worktree 相关设置（仅影响 worktree/Build-Run 等，不影响 Provider/PTY 既有策略） */
+  gitWorktree?: {
+    /** Git 可执行文件路径；为空表示自动使用 PATH 中的 git */
+    gitPath?: string;
+    /** 默认外部 Git 工具 */
+    externalGitTool?: {
+      id?: "rider" | "sourcetree" | "fork" | "gitkraken" | "custom";
+      /** 自定义命令（仅当 id=custom 时使用；支持占位符 {path}） */
+      customCommand?: string;
+    };
+    /** “在此目录打开终端/Git Bash”的自定义命令（支持占位符 {path}） */
+    terminalCommand?: string;
+    /** worktree 自动提交开关（仅对 worktree 生效） */
+    autoCommitEnabled?: boolean;
+    /** 创建 worktree 时自动拷贝 AI 规则文件 */
+    copyRulesOnCreate?: boolean;
+  };
 };
 
 export type Project = {
@@ -131,6 +148,183 @@ export interface ProjectsAPI {
   /** 移除“自定义引擎目录记录”。若项目已确认存在内置会话，仅清空记录；否则从列表移除该项目。 */
   removeDirRecord(args: { id: string }): Promise<{ ok: boolean; removed: boolean; project?: Project | null; error?: string }>;
   touch(id: string): void;
+}
+
+export type DirTreeStore = {
+  version: 1;
+  rootOrder: string[];
+  parentById: Record<string, string>;
+  childOrderByParent: Record<string, string[]>;
+  expandedById: Record<string, boolean>;
+  labelById: Record<string, string>;
+};
+
+export interface DirTreeAPI {
+  get(): Promise<{ ok: boolean; store?: DirTreeStore; error?: string }>;
+  set(store: DirTreeStore): Promise<{ ok: boolean; error?: string }>;
+}
+
+export type BuildRunBackend =
+  | { kind: "system" }
+  | { kind: "pwsh" }
+  | { kind: "git_bash" }
+  | { kind: "wsl"; distro?: string }
+  | { kind: "custom"; command: string };
+
+export type EnvRow = { key: string; value: string };
+
+export type BuildRunCommandConfig = {
+  mode: "simple" | "advanced";
+  commandText?: string;
+  cmd?: string;
+  args?: string[];
+  cwd?: string;
+  env?: EnvRow[];
+  backend?: BuildRunBackend;
+};
+
+export type DirBuildRunConfig = {
+  build?: BuildRunCommandConfig;
+  run?: BuildRunCommandConfig;
+};
+
+export interface BuildRunAPI {
+  get(dir: string): Promise<{ ok: boolean; cfg?: DirBuildRunConfig | null; error?: string }>;
+  set(dir: string, cfg: DirBuildRunConfig): Promise<{ ok: boolean; error?: string }>;
+  exec(args: any): Promise<{ ok: boolean; error?: string }>;
+}
+
+export type GitWorktreeListEntry = {
+  worktree: string;
+  head?: string;
+  branch?: string;
+  detached?: boolean;
+  locked?: boolean;
+  prune?: boolean;
+};
+
+export type WorktreeMeta = {
+  repoMainPath: string;
+  baseBranch: string;
+  wtBranch: string;
+  createdAt: number;
+};
+
+export type RecycleWorktreeErrorCode =
+  | "INVALID_ARGS"
+  | "META_MISSING"
+  | "BASE_WORKTREE_DIRTY"
+  | "WORKTREE_DIRTY"
+  | "BASE_WORKTREE_IN_PROGRESS"
+  | "BASE_WORKTREE_LOCKED"
+  | "BASE_WORKTREE_STASH_FAILED"
+  | "BASE_WORKTREE_DIRTY_AFTER_STASH"
+  | "RECYCLE_FAILED"
+  | "UNKNOWN";
+
+export type RecycleWorktreeWarningCode =
+  | "BASE_WORKTREE_RESTORE_CONFLICT"
+  | "BASE_WORKTREE_RESTORE_FAILED"
+  | "BASE_WORKTREE_STASH_DROP_FAILED";
+
+export type RecycleBaseWorktreeStashKind = "staged" | "unstaged";
+
+export type RecycleBaseWorktreeStash = {
+  kind: RecycleBaseWorktreeStashKind;
+  sha: string;
+  message: string;
+};
+
+export type RecycleWorktreeDetails = {
+  repoMainPath?: string;
+  baseBranch?: string;
+  wtBranch?: string;
+  originalRef?: { kind: "branch"; name: string } | { kind: "detached"; sha: string };
+  stashes?: RecycleBaseWorktreeStash[];
+  suggestedRestoreCommand?: string;
+  stderr?: string;
+  stdout?: string;
+  error?: string;
+};
+
+export type RecycleWorktreeResult =
+  | { ok: true; warningCode?: RecycleWorktreeWarningCode; details?: RecycleWorktreeDetails }
+  | { ok: false; errorCode: RecycleWorktreeErrorCode; details?: RecycleWorktreeDetails };
+
+export type CreatedWorktree = {
+  providerId: "codex" | "claude" | "gemini";
+  repoMainPath: string;
+  worktreePath: string;
+  baseBranch: string;
+  wtBranch: string;
+  index: number;
+  warnings?: string[];
+};
+
+export type WorktreeCreateTaskStatus = "running" | "success" | "error";
+
+export type WorktreeCreateTaskSnapshot = {
+  taskId: string;
+  repoDir: string;
+  baseBranch: string;
+  instances: Array<{ providerId: "codex" | "claude" | "gemini"; count: number }>;
+  copyRules: boolean;
+  status: WorktreeCreateTaskStatus;
+  createdAt: number;
+  updatedAt: number;
+  logSize: number;
+  error?: string;
+  items?: CreatedWorktree[];
+};
+
+export type WorktreeRecycleTaskStatus = "running" | "success" | "error";
+
+export type WorktreeRecycleTaskSnapshot = {
+  taskId: string;
+  worktreePath: string;
+  repoMainPath: string;
+  baseBranch: string;
+  wtBranch: string;
+  mode: "squash" | "rebase";
+  autoStashBaseWorktree: boolean;
+  status: WorktreeRecycleTaskStatus;
+  createdAt: number;
+  updatedAt: number;
+  logSize: number;
+  error?: string;
+  result?: RecycleWorktreeResult;
+};
+
+export type GitDirInfo = {
+  dir: string;
+  exists: boolean;
+  isDirectory: boolean;
+  isInsideWorkTree: boolean;
+  repoRoot?: string;
+  isRepoRoot: boolean;
+  branch?: string;
+  detached: boolean;
+  headSha?: string;
+  isWorktree: boolean;
+  worktrees?: GitWorktreeListEntry[];
+  mainWorktree?: string;
+  error?: string;
+};
+
+export interface GitWorktreeAPI {
+  statusBatch(dirs: string[]): Promise<{ ok: boolean; items?: GitDirInfo[]; error?: string }>;
+  listBranches(repoDir: string): Promise<{ ok: boolean; repoRoot?: string; branches?: string[]; current?: string; detached?: boolean; headSha?: string; error?: string }>;
+  getMeta(worktreePath: string): Promise<{ ok: boolean; meta?: WorktreeMeta | null; error?: string }>;
+  create(args: { repoDir: string; baseBranch: string; instances: Array<{ providerId: "codex" | "claude" | "gemini"; count: number }>; copyRules?: boolean }): Promise<{ ok: boolean; items?: CreatedWorktree[]; error?: string }>;
+  createTaskStart(args: { repoDir: string; baseBranch: string; instances: Array<{ providerId: "codex" | "claude" | "gemini"; count: number }>; copyRules?: boolean }): Promise<{ ok: boolean; taskId?: string; reused?: boolean; error?: string }>;
+  createTaskGet(args: { taskId: string; from?: number }): Promise<{ ok: boolean; task?: WorktreeCreateTaskSnapshot; append?: string; error?: string }>;
+  recycleTaskStart(args: { worktreePath: string; baseBranch: string; wtBranch: string; mode: "squash" | "rebase"; commitMessage?: string; autoStashBaseWorktree?: boolean }): Promise<{ ok: boolean; taskId?: string; reused?: boolean; error?: string }>;
+  recycleTaskGet(args: { taskId: string; from?: number }): Promise<{ ok: boolean; task?: WorktreeRecycleTaskSnapshot; append?: string; error?: string }>;
+  recycle(args: { worktreePath: string; baseBranch: string; wtBranch: string; mode: "squash" | "rebase"; commitMessage?: string; autoStashBaseWorktree?: boolean }): Promise<RecycleWorktreeResult>;
+  remove(args: { worktreePath: string; deleteBranch?: boolean; forceDeleteBranch?: boolean; forceRemoveWorktree?: boolean }): Promise<any>;
+  autoCommit(args: { worktreePath: string; message: string }): Promise<{ ok: boolean; committed: boolean; error?: string }>;
+  openExternalTool(dir: string): Promise<{ ok: boolean; error?: string }>;
+  openTerminal(dir: string): Promise<{ ok: boolean; error?: string }>;
 }
 
 export interface HistoryAPI {
@@ -324,6 +518,8 @@ export interface UtilsAPI {
   // 兼容旧名
   openExternalWSLConsole?(args: { wslPath?: string; winPath?: string; distro?: string; startupCmd?: string }): Promise<{ ok: boolean; error?: string }>;
   pathExists(p: string, dirOnly?: boolean): Promise<{ ok: boolean; exists?: boolean; isDirectory?: boolean; isFile?: boolean; error?: string }>;
+  /** 获取当前用户主目录路径（轻量）。 */
+  getHomeDir(): Promise<{ ok: boolean; homeDir?: string; error?: string }>;
   chooseFolder(): Promise<{ ok: boolean; path?: string; canceled?: boolean; error?: string }>;
   debugTermGet(): Promise<{ ok: boolean; enabled?: boolean; error?: string }>;
   debugTermSet(enabled: boolean): Promise<{ ok: boolean; error?: string }>;
@@ -392,6 +588,9 @@ declare global {
       env: EnvAPI;
       pty: PtyAPI;
       projects: ProjectsAPI;
+      dirTree?: DirTreeAPI;
+      buildRun?: BuildRunAPI;
+      gitWorktree?: GitWorktreeAPI;
       history: HistoryAPI;
       settings: SettingsAPI;
       storage: StorageAPI;

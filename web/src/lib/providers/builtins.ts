@@ -9,6 +9,8 @@ import terminalIconUrl from "@/assets/providers/black-terminal-icon.svg";
 import terminalDarkIconUrl from "@/assets/providers/white-terminal-icon.svg";
 import type { ThemeMode } from "@/lib/theme";
 
+export { openaiIconUrl, openaiDarkIconUrl, claudeIconUrl, geminiIconUrl };
+
 export type BuiltInProviderId = "codex" | "claude" | "gemini" | "terminal";
 
 export type BuiltInSessionProviderId = "codex" | "claude" | "gemini";

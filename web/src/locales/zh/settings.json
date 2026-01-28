@@ -9,6 +9,10 @@
       "title": "自定义引擎",
       "desc": "配置 Codex / Claude / Gemini / Terminal，并可新增自定义引擎（图标 + 启动命令 + 环境隔离）。"
     },
+    "gitWorktree": {
+      "title": "git worktree",
+      "desc": "worktree、外部 Git 工具、自动提交等设置。"
+    },
     "notifications": {
       "title": "通知提醒",
       "desc": "配置代理完成任务时的提醒方式。"
@@ -24,6 +28,49 @@
     "data": {
       "title": "数据与存储",
       "desc": "查看缓存目录并清理冗余历史记录。"
+    }
+  },
+  "gitWorktree": {
+    "intro": {
+      "title": "使用说明",
+      "desc": "推荐流：根目录保持纯净，点击 分支徽标 (⎇) 为每个需求创建独立工作区，实现多任务/多 AI 并行开发，彻底避免不同模型同时修改同一份文件造成的代码冲突。\n怎么建：左键徽标唤起创建工作区面板（Ctrl+左键可极速创建），可以勾选 “并行混合模式”，让多个 AI 模型针对同一需求同时生成不同方案“赛马”。\n怎么收：项目右侧点 “工作区合并图标”（推荐 Squash）将最满意方案收回基分支，其余落选方案点 “垃圾桶” 直接删掉即可。"
+    },
+    "gitPath": {
+      "title": "Git 基础",
+      "label": "Git 可执行文件路径",
+      "placeholder": "留空自动探测（git）",
+      "help": "为空将自动使用 PATH 中的 git；若探测失败请填写可执行文件路径。",
+      "detecting": "探测中…",
+      "detected": "已探测：{path}",
+      "notDetected": "未探测到：将使用 PATH 中的 git"
+    },
+    "tools": {
+      "title": "外部工具"
+    },
+    "externalGitTool": {
+      "label": "默认外部 Git 工具",
+      "custom": "自定义命令",
+      "customPlaceholder": "例如：\"path/to/tool\" {path}",
+      "help": "自定义命令支持占位符 {path}。选择 Rider 时将以 Rider 打开目录。"
+    },
+    "terminalCommand": {
+      "label": "终端 / Git Bash 命令",
+      "placeholder": "留空使用默认策略；支持 {path}",
+      "help": "Windows 默认优先 Git Bash；macOS/Linux 使用系统默认终端。",
+      "detecting": "探测中…",
+      "detectedGitBash": "已探测 Git Bash：{path}",
+      "notDetectedGitBash": "未探测到 Git Bash：将回退到系统终端"
+    },
+    "behavior": {
+      "title": "行为"
+    },
+    "autoCommit": {
+      "label": "worktree 自动提交",
+      "desc": "仅对非主 worktree 的根目录生效（主工作区不触发）。\n触发：每次引擎输出完成后（包含首次对话）；以及（兜底）从同一控制台第 2 次用户输入起的每次发送后。\n行为：检测到变更才执行 git add -A 并提交一次；无变更则跳过。提交信息格式：auto(agent)/auto(user)。"
+    },
+    "copyRules": {
+      "label": "创建 worktree 时复制 AI 规则文件",
+      "desc": "当源目录存在 AGENTS/CLAUDE/GEMINI 且被 git ignore 时复制到新 worktree。"
     }
   },
   "providers": {

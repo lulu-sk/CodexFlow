@@ -9,6 +9,10 @@
       "title": "Custom Engine",
       "desc": "Configure Codex / Claude / Gemini / Terminal, and add custom engines (icon + startup command + isolated environment)."
     },
+    "gitWorktree": {
+      "title": "git worktree",
+      "desc": "Worktree, external Git tools, and auto-commit settings."
+    },
     "notifications": {
       "title": "Notifications",
       "desc": "Choose how CodexFlow reminds you when agents finish their tasks."
@@ -24,6 +28,49 @@
     "data": {
       "title": "Data & storage",
       "desc": "Inspect cached files and clean redundant histories."
+    }
+  },
+  "gitWorktree": {
+    "intro": {
+      "title": "Quick guide",
+      "desc": "Flow: Keep the repo root pristine. Click the branch badge (⎇) to create one worktree per task—enable multi-task/multi-AI parallel work and avoid conflicts from models editing the same files.\nCreate: Left-click the badge to open the create panel (Ctrl+Left Click for quick create). Enable “Mixed parallel mode” to let multiple AI models race on the same task.\nCollect: On the right, click the “Merge worktree” icon (Squash recommended) to bring the best back to the base branch; delete the rest with the “Trash” icon."
+    },
+    "gitPath": {
+      "title": "Git basics",
+      "label": "Git executable path",
+      "placeholder": "Leave empty to auto-detect (git)",
+      "help": "Leave empty to use git from PATH; if detection fails, provide an explicit executable path.",
+      "detecting": "Detecting…",
+      "detected": "Detected: {path}",
+      "notDetected": "Not detected; will use git from PATH."
+    },
+    "tools": {
+      "title": "External tools"
+    },
+    "externalGitTool": {
+      "label": "Default external Git tool",
+      "custom": "Custom command",
+      "customPlaceholder": "e.g. \"path/to/tool\" {path}",
+      "help": "Custom command supports the {path} placeholder. When Rider is selected, CodexFlow opens the directory with Rider."
+    },
+    "terminalCommand": {
+      "label": "Terminal / Git Bash command",
+      "placeholder": "Leave empty for defaults; supports {path}",
+      "help": "On Windows, Git Bash is preferred by default; on macOS/Linux, the system default terminal is used.",
+      "detecting": "Detecting…",
+      "detectedGitBash": "Detected Git Bash: {path}",
+      "notDetectedGitBash": "Git Bash not detected; will fall back to the system terminal."
+    },
+    "behavior": {
+      "title": "Behavior"
+    },
+    "autoCommit": {
+      "label": "Worktree auto-commit",
+      "desc": "Only applies to non-main worktree repo roots (never the main worktree).\nTriggers: after each engine output (including the first turn), and (fallback) after each user send starting from the 2nd input in the same console.\nBehavior: when changes exist, run git add -A and create one commit; otherwise skip. Message format: auto(agent)/auto(user)."
+    },
+    "copyRules": {
+      "label": "Copy AI rule files when creating worktrees",
+      "desc": "Copy AGENTS/CLAUDE/GEMINI into new worktrees when they exist in the source and are git-ignored."
     }
   },
   "providers": {

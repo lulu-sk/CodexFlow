@@ -48,6 +48,28 @@ export type ExperimentalSettings = {
   multiInstanceEnabled?: boolean;
 };
 
+export type ExternalGitToolId = 'rider' | 'sourcetree' | 'fork' | 'gitkraken' | 'custom';
+
+export type ExternalGitToolSettings = {
+  /** 外部 Git 工具类型 */
+  id?: ExternalGitToolId;
+  /** 自定义命令（仅当 id=custom 时使用；支持占位符 {path}） */
+  customCommand?: string;
+};
+
+export type GitWorktreeSettings = {
+  /** Git 可执行文件路径；为空表示自动探测（使用 PATH 中的 git） */
+  gitPath?: string;
+  /** 默认外部 Git 工具 */
+  externalGitTool?: ExternalGitToolSettings;
+  /** “在此目录打开终端/Git Bash”的自定义命令（支持占位符 {path}；为空走默认策略） */
+  terminalCommand?: string;
+  /** worktree 自动提交开关（仅对 worktree 生效；主工作区不触发） */
+  autoCommitEnabled?: boolean;
+  /** 创建 worktree 时自动拷贝 AI 规则文件（AGENTS/CLAUDE/GEMINI） */
+  copyRulesOnCreate?: boolean;
+};
+
 export type ThemeSetting = 'light' | 'dark' | 'system';
 
 export type ProviderId = string;
@@ -121,6 +143,8 @@ export type AppSettings = {
   dragDrop?: DragDropSettings;
   /** 实验性功能开关（注意：该字段不随 profile 隔离；由主进程统一维护） */
   experimental?: ExperimentalSettings;
+  /** git worktree 相关设置（仅影响 worktree/Build-Run 等功能，不影响 Provider/PTY 既有策略） */
+  gitWorktree?: GitWorktreeSettings;
 };
 
 function getStorePath() {
@@ -155,6 +179,13 @@ const DEFAULT_CLAUDE_CODE: ClaudeCodeSettings = {
 const DEFAULT_THEME: ThemeSetting = 'system';
 const DEFAULT_TERMINAL_THEME: TerminalThemeId = 'campbell';
 const DEFAULT_PROVIDER_ACTIVE_ID = 'codex';
+const DEFAULT_GIT_WORKTREE: Required<GitWorktreeSettings> = {
+  gitPath: '',
+  externalGitTool: { id: 'rider', customCommand: '' },
+  terminalCommand: '',
+  autoCommitEnabled: true,
+  copyRulesOnCreate: true,
+};
 
 function normalizeTheme(raw: unknown): ThemeSetting {
   const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
@@ -169,6 +200,44 @@ function normalizeTerminalTheme(raw: unknown): TerminalThemeId {
     return 'catppuccin-latte';
   }
   return DEFAULT_TERMINAL_THEME;
+}
+
+/**
+ * 归一化 git worktree 设置：补齐默认字段，并收敛可选枚举，避免旧版本/脏数据导致主流程分支散落。
+ */
+function normalizeGitWorktreeSettings(raw: unknown): GitWorktreeSettings {
+  try {
+    const obj = raw && typeof raw === 'object' ? (raw as any) : {};
+    const gitPath = typeof obj.gitPath === 'string' ? obj.gitPath.trim() : '';
+    const terminalCommand = typeof obj.terminalCommand === 'string' ? obj.terminalCommand.trim() : '';
+    const autoCommitEnabled = obj.autoCommitEnabled !== false;
+    const copyRulesOnCreate = obj.copyRulesOnCreate !== false;
+
+    const toolRaw = obj.externalGitTool && typeof obj.externalGitTool === 'object' ? obj.externalGitTool : {};
+    const idRaw = typeof toolRaw.id === 'string' ? toolRaw.id.trim().toLowerCase() : '';
+    const id: ExternalGitToolId =
+      idRaw === 'sourcetree'
+        ? 'sourcetree'
+        : idRaw === 'fork'
+          ? 'fork'
+          : idRaw === 'gitkraken'
+            ? 'gitkraken'
+            : idRaw === 'custom'
+              ? 'custom'
+              : 'rider';
+    const customCommand = typeof toolRaw.customCommand === 'string' ? toolRaw.customCommand.trim() : '';
+
+    return {
+      ...DEFAULT_GIT_WORKTREE,
+      gitPath,
+      terminalCommand,
+      autoCommitEnabled,
+      copyRulesOnCreate,
+      externalGitTool: { id, customCommand },
+    };
+  } catch {
+    return { ...DEFAULT_GIT_WORKTREE };
+  }
 }
 
 /**
@@ -334,6 +403,7 @@ function mergeWithDefaults(raw: Partial<AppSettings>, preloadedDistros?: DistroI
     codexAccount: { ...DEFAULT_CODEX_ACCOUNT },
     dragDrop: { ...DEFAULT_DRAG_DROP },
     claudeCode: { ...DEFAULT_CLAUDE_CODE },
+    gitWorktree: { ...DEFAULT_GIT_WORKTREE },
   };
   const merged = Object.assign({}, defaults, raw);
   // experimental 由主进程统一维护（全局共享），不写入/不读取 profile settings.json，避免各 profile 状态不一致。
@@ -384,6 +454,7 @@ function mergeWithDefaults(raw: Partial<AppSettings>, preloadedDistros?: DistroI
   merged.terminalTheme = normalizeTerminalTheme((raw as any)?.terminalTheme ?? merged.terminalTheme);
   merged.providers = normalizeProviders(merged, distros);
   merged.claudeCode = normalizeClaudeCodeSettings((merged as any).claudeCode);
+  merged.gitWorktree = normalizeGitWorktreeSettings((raw as any)?.gitWorktree);
 
   // 与旧字段保持双写兼容：codex provider 的 env/cmd 同步写回 legacy 字段
   try {
@@ -441,6 +512,20 @@ export function updateSettings(partial: Partial<AppSettings>) {
           ...curCodex,
           ...nextCodex,
           lastSeenSignatureByRuntime: { ...curMap, ...nextMap },
+        };
+      }
+    } catch {}
+    // 对 gitWorktree 做浅层合并 + externalGitTool 子对象合并，避免局部更新覆盖其它字段
+    try {
+      const curGt = (cur as any)?.gitWorktree && typeof (cur as any).gitWorktree === 'object' ? (cur as any).gitWorktree : {};
+      const nextGt = (partial as any)?.gitWorktree && typeof (partial as any).gitWorktree === 'object' ? (partial as any).gitWorktree : null;
+      if (nextGt) {
+        const curTool = curGt.externalGitTool && typeof curGt.externalGitTool === 'object' ? curGt.externalGitTool : {};
+        const nextTool = nextGt.externalGitTool && typeof nextGt.externalGitTool === 'object' ? nextGt.externalGitTool : null;
+        (mergedRaw as any).gitWorktree = {
+          ...curGt,
+          ...nextGt,
+          externalGitTool: nextTool ? { ...curTool, ...nextTool } : curTool,
         };
       }
     } catch {}
