@@ -158,6 +158,84 @@ contextBridge.exposeInMainWorld('host', {
       ipcRenderer.send('projects.touch', { id });
     }
   },
+  dirTree: {
+    /** 读取目录树（仅 UI 结构持久化，不触发扫描）。 */
+    get: async () => {
+      return await ipcRenderer.invoke("dirTree.get");
+    },
+    /** 写入目录树（整包覆盖）。 */
+    set: async (store: any) => {
+      return await ipcRenderer.invoke("dirTree.set", { store });
+    },
+  },
+  buildRun: {
+    /** 读取某目录的 Build/Run 配置（Key=目录绝对路径）。 */
+    get: async (dir: string) => {
+      return await ipcRenderer.invoke("buildRun.get", { dir });
+    },
+    /** 写入某目录的 Build/Run 配置（整包覆盖）。 */
+    set: async (dir: string, cfg: any) => {
+      return await ipcRenderer.invoke("buildRun.set", { dir, cfg });
+    },
+    /** 在外部终端执行 Build/Run（硬性：不走内置 PTY）。 */
+    exec: async (args: any) => {
+      return await ipcRenderer.invoke("buildRun.exec", args);
+    },
+  },
+  gitWorktree: {
+    /** 批量读取 git 状态（仓库/工作树识别、分支、detached）。 */
+    statusBatch: async (dirs: string[]) => {
+      return await ipcRenderer.invoke("gitWorktree.statusBatch", { dirs });
+    },
+    /** 读取分支列表（仅本地分支）。 */
+    listBranches: async (repoDir: string) => {
+      return await ipcRenderer.invoke("gitWorktree.listBranches", { repoDir });
+    },
+    /** 读取 worktree 的创建元数据（用于回收/删除等默认分支选择）。 */
+    getMeta: async (worktreePath: string) => {
+      return await ipcRenderer.invoke("gitWorktree.getMeta", { worktreePath });
+    },
+    /** 从分支创建 worktree（支持多实例）。 */
+    create: async (args: any) => {
+      return await ipcRenderer.invoke("gitWorktree.create", args);
+    },
+    /** 启动（或复用）worktree 创建后台任务（用于进度 UI）。 */
+    createTaskStart: async (args: any) => {
+      return await ipcRenderer.invoke("gitWorktree.createTaskStart", args);
+    },
+    /** 获取 worktree 创建任务状态，并按偏移增量返回日志。 */
+    createTaskGet: async (args: any) => {
+      return await ipcRenderer.invoke("gitWorktree.createTaskGet", args);
+    },
+    /** 启动（或复用）worktree 回收后台任务（用于进度 UI）。 */
+    recycleTaskStart: async (args: any) => {
+      return await ipcRenderer.invoke("gitWorktree.recycleTaskStart", args);
+    },
+    /** 获取 worktree 回收任务状态，并按偏移增量返回日志。 */
+    recycleTaskGet: async (args: any) => {
+      return await ipcRenderer.invoke("gitWorktree.recycleTaskGet", args);
+    },
+    /** 回收 worktree 变更到基分支（squash/rebase）。 */
+    recycle: async (args: any) => {
+      return await ipcRenderer.invoke("gitWorktree.recycle", args);
+    },
+    /** 删除 worktree（可选同时删除分支）。 */
+    remove: async (args: any) => {
+      return await ipcRenderer.invoke("gitWorktree.remove", args);
+    },
+    /** worktree 自动提交（有变更才提交）。 */
+    autoCommit: async (args: any) => {
+      return await ipcRenderer.invoke("gitWorktree.autoCommit", args);
+    },
+    /** 在外部 Git 工具打开目录。 */
+    openExternalTool: async (dir: string) => {
+      return await ipcRenderer.invoke("gitWorktree.openExternalTool", { dir });
+    },
+    /** 在该目录打开终端（Windows 优先 Git Bash）。 */
+    openTerminal: async (dir: string) => {
+      return await ipcRenderer.invoke("gitWorktree.openTerminal", { dir });
+    },
+  },
   history: {
     list: async (args: { projectWslPath?: string; projectWinPath?: string; limit?: number; offset?: number; historyRoot?: string }) => {
       return await ipcRenderer.invoke('history.list', args);
@@ -329,6 +407,10 @@ contextBridge.exposeInMainWorld('host', {
     },
     pathExists: async (p: string, dirOnly?: boolean) => {
       return await ipcRenderer.invoke('utils.pathExists', { path: p, dirOnly });
+    }
+    /** 获取当前用户主目录路径（轻量）。 */
+    , getHomeDir: async () => {
+      return await ipcRenderer.invoke('utils.getHomeDir');
     }
     , chooseFolder: async () => {
       return await ipcRenderer.invoke('utils.chooseFolder');

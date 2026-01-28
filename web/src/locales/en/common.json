@@ -5,6 +5,13 @@
   "open": "Open",
   "refresh": "Refresh",
   "close": "Close",
+  "done": "Done",
+  "failed": "Failed",
+  "notice": "Notice",
+  "add": "Add",
+  "remove": "Remove",
+  "expand": "Expand",
+  "collapse": "Collapse",
   "account": "Account",
   "app": {
     "name": "CodexFlow",

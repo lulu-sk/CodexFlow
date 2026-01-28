@@ -145,6 +145,20 @@ function bootstrapProfileUserData(baseUserDataDir: string, profileUserDataDir: s
     }
   } catch {}
 
+  // dir-tree.json / build-run.json / worktree-meta.json：复制目录树与 worktree 相关本地状态（仅当目标缺失时）
+  for (const name of ["dir-tree.json", "build-run.json", "worktree-meta.json"]) {
+    try {
+      const from = path.join(baseUserDataDir, name);
+      const to = path.join(profileUserDataDir, name);
+      if (!fs.existsSync(to)) {
+        const obj = readJsonObjectSafe(from);
+        if (obj) {
+          try { fs.writeFileSync(to, JSON.stringify(obj, null, 2), "utf8"); } catch {}
+        }
+      }
+    } catch {}
+  }
+
   // debug.config.jsonc：直接复制（JSONC 含注释，避免解析）
   try {
     const from = path.join(baseUserDataDir, "debug.config.jsonc");

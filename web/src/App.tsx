@@ -15,7 +15,7 @@ import { setActiveFileIndexRoot } from "@/lib/atSearch";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -48,6 +48,10 @@ import {
   Check,
   Search,
   TriangleAlert,
+  Hammer,
+  Play,
+  GitMerge,
+  Loader2,
 } from "lucide-react";
 import AboutSupport from "@/components/about-support";
 import { ProviderSwitcher } from "@/components/topbar/provider-switcher";
@@ -58,16 +62,17 @@ import { checkForUpdate, type UpdateCheckErrorType } from "@/lib/about";
 import TerminalManager from "@/lib/TerminalManager";
 import { isGeminiProvider, writeBracketedPaste, writeBracketedPasteAndEnter } from "@/lib/terminal-send";
 import { oscBufferDefaults, trimOscBuffer } from "@/lib/oscNotificationBuffer";
+import { resolveDirRowDropPosition } from "@/lib/dir-tree-dnd";
 import HistoryCopyButton from "@/components/history/history-copy-button";
 import { toWSLForInsert } from "@/lib/wsl";
 import { extractGeminiProjectHashFromPath, deriveGeminiProjectHashCandidatesFromPath } from "@/lib/gemini-hash";
 import { normalizeProvidersSettings } from "@/lib/providers/normalize";
-import { isBuiltInSessionProviderId } from "@/lib/providers/builtins";
+import { isBuiltInSessionProviderId, openaiIconUrl, openaiDarkIconUrl, claudeIconUrl, geminiIconUrl } from "@/lib/providers/builtins";
 import { resolveProvider } from "@/lib/providers/resolve";
 import { injectCodexTraceEnv } from "@/providers/codex/commands";
 import { buildClaudeResumeStartupCmd } from "@/providers/claude/commands";
 import { buildGeminiResumeStartupCmd } from "@/providers/gemini/commands";
-import { buildPowerShellCall, splitCommandLineToArgv } from "@/lib/shell";
+import { bashSingleQuote, buildPowerShellCall, powerShellArgToken, splitCommandLineToArgv } from "@/lib/shell";
 import SettingsDialog from "@/features/settings/settings-dialog";
 import {
   DEFAULT_TERMINAL_FONT_FAMILY,
@@ -81,7 +86,21 @@ import {
 import { getCachedThemeSetting, useThemeController, writeThemeSettingCache, type ThemeMode, type ThemeSetting } from "@/lib/theme";
 import { loadHiddenProjectIds, loadShowHiddenProjects, saveHiddenProjectIds, saveShowHiddenProjects } from "@/lib/projects-hidden";
 import { loadConsoleSession, saveConsoleSession, type PersistedConsoleTab } from "@/lib/console-session";
-import type { AppSettings, Project, ProviderItem, ProviderEnv } from "@/types/host";
+import type {
+  AppSettings,
+  BuildRunCommandConfig,
+  CreatedWorktree,
+  DirBuildRunConfig,
+  DirTreeStore,
+  GitDirInfo,
+  Project,
+  ProviderItem,
+  ProviderEnv,
+  WorktreeCreateTaskSnapshot,
+  WorktreeCreateTaskStatus,
+  WorktreeRecycleTaskSnapshot,
+  WorktreeRecycleTaskStatus,
+} from "@/types/host";
 import type { TerminalThemeId } from "@/types/terminal-theme";
 
 // ---------- Types ----------
@@ -94,6 +113,132 @@ type ConsoleTab = {
   providerId: string;
   logs: string[]; // kept for visual compatibility; no longer used once terminal mounts
   createdAt: number;
+};
+
+type BuildRunAction = "build" | "run";
+
+type BuildRunDialogState = {
+  open: boolean;
+  action: BuildRunAction;
+  /** 触发该对话框的节点（用于继承/覆盖判断） */
+  projectId: string;
+  /** 配置保存目标：self=保存到该节点目录；parent=保存到父节点目录（worktree 默认继承） */
+  saveScope: "self" | "parent";
+  /** 若 saveScope=parent，记录父节点 id */
+  parentProjectId?: string;
+  /** 当前编辑草稿 */
+  draft: BuildRunCommandConfig;
+  /** 是否显示高级模式 */
+  advanced: boolean;
+};
+
+type DirLabelDialogState = {
+  open: boolean;
+  projectId: string;
+  draft: string;
+};
+
+type GitWorktreeProviderId = "codex" | "claude" | "gemini";
+type ExternalGitToolId = "rider" | "sourcetree" | "fork" | "gitkraken" | "custom";
+
+type WorktreeProviderCounts = Record<GitWorktreeProviderId, number>;
+
+type WorktreeCreateDialogState = {
+  open: boolean;
+  /** 触发创建的仓库节点（父节点）的 projectId */
+  repoProjectId: string;
+  /** baseBranch 下拉可选项 */
+  branches: string[];
+  /** 当前选择的基分支（不得为空） */
+  baseBranch: string;
+  /** 是否正在加载分支列表 */
+  loadingBranches: boolean;
+  /** 初始提示词：chips */
+  promptChips: PathChip[];
+  /** 初始提示词：草稿 */
+  promptDraft: string;
+  /** 是否开启并行混合模式（Use Multiple Models） */
+  useMultipleModels: boolean;
+  /** 单选模式下选择的唯一引擎 */
+  singleProviderId: GitWorktreeProviderId;
+  /** 多选模式下各引擎次数 */
+  multiCounts: WorktreeProviderCounts;
+  /** 是否正在创建（防止重复提交） */
+  creating: boolean;
+  /** 错误摘要（用于 UI 提示） */
+  error?: string;
+};
+
+type WorktreeRecycleDialogState = {
+  open: boolean;
+  projectId: string;
+  /** 主 worktree 路径（用于“主 worktree 脏”场景提供外部工具入口）。 */
+  repoMainPath: string;
+  branches: string[];
+  baseBranch: string;
+  wtBranch: string;
+  mode: "squash" | "rebase";
+  commitMessage: string;
+  loading: boolean;
+  running: boolean;
+  error?: string;
+};
+
+type BaseWorktreeDirtyDialogState = {
+  open: boolean;
+  /** 主 worktree 路径（用于打开外部 Git 工具/终端）。 */
+  repoMainPath: string;
+  /** 回收前自动提交提示（可选）。 */
+  preCommitHint?: string;
+};
+
+type WorktreeDeleteDialogState = {
+  open: boolean;
+  projectId: string;
+  /** 是否为“回收成功后”的推荐删除（仅用于 UI 文案） */
+  afterRecycle?: boolean;
+  /** 回收流程的额外提示（例如：回收前的自动提交提醒）。 */
+  afterRecycleHint?: string;
+  running: boolean;
+  /** 当需要强确认时，进入二次确认步骤 */
+  needsForceRemoveWorktree?: boolean;
+  needsForceDeleteBranch?: boolean;
+  error?: string;
+};
+
+type GitActionErrorDialogState = {
+  open: boolean;
+  title: string;
+  message: string;
+  dir: string;
+};
+
+type WorktreeCreateProgressState = {
+  open: boolean;
+  repoProjectId: string;
+  taskId: string;
+  status: WorktreeCreateTaskStatus;
+  log: string;
+  logOffset: number;
+  updatedAt: number;
+  error?: string;
+};
+
+type WorktreeRecycleProgressState = {
+  open: boolean;
+  projectId: string;
+  taskId: string;
+  status: WorktreeRecycleTaskStatus;
+  log: string;
+  logOffset: number;
+  updatedAt: number;
+  error?: string;
+};
+
+type NoticeDialogState = {
+  open: boolean;
+  title: string;
+  message: string;
 };
 
 const GEMINI_NOTIFY_ENV_KEYS = {
@@ -195,7 +340,7 @@ type InputFullscreenCloseOptions = { immediate?: boolean };
 const PROJECT_SORT_STORAGE_KEY = "codexflow.projectSort";
 // 全屏输入层动画时长（毫秒），需与 CSS 关键帧保持一致
 const INPUT_FULLSCREEN_TRANSITION_MS = 260;
-type ProjectSortKey = "recent" | "name";
+type ProjectSortKey = "recent" | "name" | "manual";
 
 function getDir(p?: string): string {
   if (!p) return '';
@@ -322,6 +467,550 @@ function canonicalizePath(p: string): string {
   }
   // Already POSIX-like or other
   return s.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+/**
+ * 归一化目录树持久化结构：
+ * - 移除不存在的节点引用
+ * - 强制层级至多一级（子节点的父节点不能再有父节点）
+ * - 去重并补齐 rootOrder/childOrder
+ */
+function normalizeDirTreeStore(store: DirTreeStore, projects: Project[]): { next: DirTreeStore; changed: boolean } {
+  const ids = new Set(projects.map((p) => p.id));
+  const next: DirTreeStore = {
+    version: 1,
+    rootOrder: Array.isArray(store?.rootOrder) ? store.rootOrder.map(String).filter((id) => ids.has(id)) : [],
+    parentById: {},
+    childOrderByParent: {},
+    expandedById: {},
+    labelById: {},
+  };
+
+  const changedRef = { value: false };
+  const mark = () => { changedRef.value = true; };
+
+  // parentById：仅保留合法的 child->parent；并强制父节点为根级
+  const rawParent = store?.parentById && typeof store.parentById === "object" ? store.parentById : {};
+  for (const [childIdRaw, parentIdRaw] of Object.entries(rawParent)) {
+    const childId = String(childIdRaw || "").trim();
+    const parentId = String(parentIdRaw || "").trim();
+    if (!childId || !ids.has(childId)) { mark(); continue; }
+    if (!parentId || !ids.has(parentId) || parentId === childId) { mark(); continue; }
+    // 禁止二级：若 parent 自己也有 parent，则将 child 提升为根
+    const parentsParent = String((rawParent as any)[parentId] || "").trim();
+    if (parentsParent) { mark(); continue; }
+    next.parentById[childId] = parentId;
+  }
+
+  // expanded / label：仅保留存在的 id
+  const rawExpanded = store?.expandedById && typeof store.expandedById === "object" ? store.expandedById : {};
+  for (const [id, v] of Object.entries(rawExpanded)) {
+    const pid = String(id || "").trim();
+    if (!pid || !ids.has(pid)) { mark(); continue; }
+    next.expandedById[pid] = v === true;
+  }
+  const rawLabel = store?.labelById && typeof store.labelById === "object" ? store.labelById : {};
+  for (const [id, v] of Object.entries(rawLabel)) {
+    const pid = String(id || "").trim();
+    if (!pid || !ids.has(pid)) { mark(); continue; }
+    const label = String(v || "").trim();
+    if (label) next.labelById[pid] = label;
+  }
+
+  // childOrder：过滤 + 去重 + 补齐
+  const rawChildOrder = store?.childOrderByParent && typeof store.childOrderByParent === "object" ? store.childOrderByParent : {};
+  for (const [parentIdRaw, listRaw] of Object.entries(rawChildOrder)) {
+    const parentId = String(parentIdRaw || "").trim();
+    if (!parentId || !ids.has(parentId)) { mark(); continue; }
+    const list = Array.isArray(listRaw) ? (listRaw as any[]).map((x) => String(x || "").trim()).filter(Boolean) : [];
+    const seen = new Set<string>();
+    const cleaned: string[] = [];
+    for (const cid of list) {
+      if (!ids.has(cid)) { mark(); continue; }
+      if (next.parentById[cid] !== parentId) continue;
+      if (seen.has(cid)) { mark(); continue; }
+      seen.add(cid);
+      cleaned.push(cid);
+    }
+    next.childOrderByParent[parentId] = cleaned;
+  }
+  // 补齐 childOrder：扫描 parentById 中的 child，若未在顺序中则追加
+  for (const [childId, parentId] of Object.entries(next.parentById)) {
+    const arr = next.childOrderByParent[parentId] || [];
+    if (!arr.includes(childId)) {
+      next.childOrderByParent[parentId] = [...arr, childId];
+      mark();
+    }
+  }
+
+  // rootOrder：去重并补齐所有根节点
+  const rootSet = new Set<string>();
+  const dedupRoot: string[] = [];
+  for (const id of next.rootOrder) {
+    if (rootSet.has(id)) { mark(); continue; }
+    if (next.parentById[id]) { mark(); continue; } // 不能把子节点放到 rootOrder
+    rootSet.add(id);
+    dedupRoot.push(id);
+  }
+  for (const p of projects) {
+    const id = p.id;
+    if (!id || next.parentById[id]) continue;
+    if (!rootSet.has(id)) {
+      rootSet.add(id);
+      dedupRoot.push(id);
+      mark();
+    }
+  }
+  next.rootOrder = dedupRoot;
+
+  // 发生结构修正或字段丢弃时标记 changed；否则再做一次浅比较兜底
+  let changed = changedRef.value;
+  if (!changed) {
+    try {
+      const same =
+        JSON.stringify(store?.rootOrder || []) === JSON.stringify(next.rootOrder) &&
+        JSON.stringify(store?.parentById || {}) === JSON.stringify(next.parentById) &&
+        JSON.stringify(store?.childOrderByParent || {}) === JSON.stringify(next.childOrderByParent) &&
+        JSON.stringify(store?.expandedById || {}) === JSON.stringify(next.expandedById) &&
+        JSON.stringify(store?.labelById || {}) === JSON.stringify(next.labelById);
+      changed = !same;
+    } catch {
+      changed = true;
+    }
+  }
+
+  return { next, changed };
+}
+
+/**
+ * 将分支名压缩为用于列表展示的文本：最多 6 个字符。
+ * - 优先展示最后一段（按 `/` 分隔），避免长前缀占满空间
+ * - 超出则截断，并由 UI 通过 title 展示完整信息
+ */
+function formatBranchLabel(branch: string): { short: string; full: string; truncated: boolean } {
+  const full = String(branch || "").trim();
+  if (!full) return { short: "", full: "", truncated: false };
+  const tail = full.split("/").filter(Boolean).pop() || full;
+  const short = tail.length > 6 ? tail.slice(0, 6) : tail;
+  return { short, full, truncated: short.length !== tail.length || full !== tail };
+}
+
+/**
+ * 分支标签胶囊：用于项目列表右侧显示分支（如 master）。
+ * - 固定尺寸与居中排版，避免不同目录显示不一致/溢出
+ * - 支持可点击（创建 worktree）与静态展示两种模式
+ */
+function BranchChip(props: {
+  mode: "button" | "static";
+  text: string;
+  title?: string;
+  isDetached?: boolean;
+  disabled?: boolean;
+      onClick?: React.MouseEventHandler<HTMLButtonElement>;
+    className?: string;
+  }) {
+    const base =
+      "relative inline-flex h-[16px] w-[44px] items-center justify-center rounded-[5px] border border-[var(--cf-border)] bg-[var(--cf-surface-solid)] text-[8px] font-mono font-medium leading-none text-[var(--cf-text-primary)] overflow-hidden whitespace-nowrap select-none";
+    const interactive =
+      props.mode === "button"
+        ? "transition-colors duration-apple ease-apple hover:bg-[var(--cf-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cf-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--cf-app-bg)] active:scale-[0.98] disabled:opacity-40 disabled:pointer-events-none"
+        : "";
+    const showGitPrefix = !props.isDetached && String(props.text || "").trim().length > 0;
+    const textClass = `${showGitPrefix ? "flex items-center justify-center gap-0.5" : "block text-center"} w-full ${props.isDetached ? "pr-3" : ""}`;
+    const combined = `${base} ${interactive} ${props.className || ""}`;
+  
+    const content = (
+      <>
+        <span className={textClass}>
+          {showGitPrefix ? (
+            <span className="opacity-80 text-[9px] leading-none" aria-hidden="true">⎇</span>
+          ) : null}
+          <span>{props.text}</span>
+        </span>
+        {props.isDetached ? (
+          <TriangleAlert className="absolute right-0 top-1/2 h-3 w-3 -translate-y-1/2 text-amber-500" />
+        ) : null}
+      </>
+    );
+  
+    if (props.mode === "button") {
+      return (
+        <button type="button" className={combined} disabled={props.disabled} title={props.title} onClick={props.onClick}>
+          {content}
+        </button>
+      );
+    }
+    return (
+      <span className={combined} title={props.title}>
+        {content}
+      </span>
+    );
+  }
+  
+  /**
+   * 统一的 worktree 操作面板：整合了分支展示、Build/Run、Recycle/Delete 等操作。
+   * 旨在固定尺寸(46px宽)内提供高密度的交互，并保持视觉整洁。
+   */
+	  function WorktreeControlPad(props: {
+	    mode: "secondary" | "root" | "normal";
+	    branch?: { short: string; full: string; isDetached: boolean; headSha?: string; disabled?: boolean; title?: string };
+	    onBranchClick?: (e: React.MouseEvent) => void;
+	    onBuild: (isRightClick: boolean) => void;
+	    onRun: (isRightClick: boolean) => void;
+	    onRecycle?: () => void;
+	    onDelete?: () => void;
+	    /** 删除按钮禁用原因（用于区分“删除中/回收中”等不同状态提示）。 */
+	    deleteDisabledReason?: "deleting" | "recycling";
+	    t: (...args: any[]) => any;
+	  }) {
+	    const { mode, branch, onBranchClick, onBuild, onRun, onRecycle, onDelete, t } = props;
+	    const deleteDisabled = props.deleteDisabledReason === "deleting" || props.deleteDisabledReason === "recycling";
+	    const deleteTitle =
+	      props.deleteDisabledReason === "deleting"
+	        ? t("projects:worktreeDeleting", "删除中…")
+	        : props.deleteDisabledReason === "recycling"
+	          ? t("projects:worktreeDeleteDisabledRecycling", "回收中…")
+	          : t("projects:worktreeDelete", "删除工作区");
+	  
+	    // 基础容器样式
+	    const containerBase = "w-[47px] flex flex-col items-center rounded-[3px] overflow-hidden select-none isolate transition-colors duration-300";
+	    // 不同模式的容器修饰
+    const containerStyle =
+      mode === "secondary"
+        ? "bg-transparent"
+        : mode === "root"
+        ? "bg-transparent"
+        : "bg-transparent";
+  
+    // 按钮通用样式
+    const btnBase =
+      "flex items-center justify-center transition-colors hover:bg-slate-200/80 dark:hover:bg-slate-700/80 active:scale-95 cursor-pointer disabled:opacity-50 disabled:pointer-events-none disabled:cursor-default";
+    const iconClass = "h-3 w-3 text-slate-600 dark:text-slate-400";
+  
+    if (mode === "normal") {
+      // Normal 模式：仅两个按钮并排，无容器背景
+      return (
+        <div className="flex items-center justify-end gap-1 w-[47px]">
+          <button
+            className="h-6 w-6 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center transition-colors"
+            title={t("projects:build", "Build")}
+            onClick={(e) => { e.stopPropagation(); onBuild(false); }}
+            onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onBuild(true); }}
+          >
+            <Hammer className={iconClass} />
+          </button>
+          <button
+            className="h-6 w-6 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center transition-colors"
+            title={t("projects:run", "Run")}
+            onClick={(e) => { e.stopPropagation(); onRun(false); }}
+            onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onRun(true); }}
+          >
+            <Play className={iconClass} />
+          </button>
+        </div>
+      );
+    }
+  
+    return (
+      <div className={`${containerBase} ${containerStyle} py-0.5`}>
+         {/* Branch Area */}
+         <div className="h-3.5 mb-0.5 flex items-center justify-center px-[2px] w-full">
+            {branch && (
+               <BranchChip
+                 mode={mode === "root" ? "button" : "static"}
+                 text={branch.short}
+                 isDetached={branch.isDetached}
+                 disabled={branch.disabled}
+                 title={branch.title}
+                 onClick={onBranchClick}
+                 className="h-full text-[9px] font-semibold"
+               />
+            )}
+         </div>
+  
+         {/* Actions Grid */}
+         <div className="grid grid-cols-2 gap-[1px] w-full px-[2px]">
+            <button
+               className={`${btnBase} h-[14px] rounded-[3px]`}
+               title={t("projects:build", "Build")}
+               onClick={(e) => { e.stopPropagation(); onBuild(false); }}
+               onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onBuild(true); }}
+            >
+               <Hammer className={iconClass} />
+            </button>
+            <button
+               className={`${btnBase} h-[14px] rounded-[3px]`}
+               title={t("projects:run", "Run")}
+               onClick={(e) => { e.stopPropagation(); onRun(false); }}
+               onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onRun(true); }}
+            >
+               <Play className={iconClass} />
+            </button>
+  
+            {mode === "secondary" && (
+               <>
+	                 <button
+	                    className={`${btnBase} h-[14px] rounded-[3px]`}
+	                    title={t("projects:worktreeRecycle", "回收到基分支")}
+	                    onClick={(e) => { e.stopPropagation(); onRecycle?.(); }}
+	                 >
+                    <GitMerge className={iconClass} />
+                 </button>
+	                 <button
+	                    className={`${btnBase} h-[14px] rounded-[3px]`}
+	                    title={deleteTitle}
+	                    disabled={deleteDisabled}
+	                    onClick={(e) => { e.stopPropagation(); onDelete?.(); }}
+	                 >
+	                    <Trash2
+	                      className={
+	                        deleteDisabled
+	                          ? "h-3 w-3 text-slate-400 dark:text-slate-500"
+	                          : "h-3 w-3 text-slate-500 hover:text-red-600 dark:text-slate-400 dark:hover:text-red-400 transition-colors"
+	                      }
+	                    />
+                 </button>
+               </>
+            )}
+         </div>
+      </div>
+    );
+  }  
+  /**
+   * 迷你图标按钮：用于目录树展开/收起等超小尺寸交互。 * 说明：不复用通用 `Button` 组件，避免 Tailwind 冲突类（例如 h/w）导致尺寸不稳定，从而挤压文本产生错误截断。
+ */
+function MiniIconButton(props: {
+  title?: string;
+  ariaLabel?: string;
+  disabled?: boolean;
+  onClick?: React.MouseEventHandler<HTMLButtonElement>;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      className="inline-flex h-[12px] w-[12px] items-center justify-center rounded-apple-sm p-0 text-[var(--cf-text-secondary)] transition-all duration-apple ease-apple hover:bg-[var(--cf-surface-hover)] hover:text-[var(--cf-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cf-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--cf-app-bg)] active:scale-[0.98] disabled:pointer-events-none disabled:opacity-40"
+      title={props.title}
+      aria-label={props.ariaLabel || props.title}
+      disabled={props.disabled}
+      onClick={props.onClick}
+    >
+      {props.children}
+    </button>
+  );
+}
+
+/**
+ * 计算多引擎并行模式下的总实例数（用于限制 ≤ 8）。
+ */
+function sumWorktreeProviderCounts(counts: Partial<WorktreeProviderCounts> | null | undefined): number {
+  try {
+    const c = counts && typeof counts === "object" ? counts : {};
+    const n = (x: any) => Math.max(0, Math.floor(Number(x) || 0));
+    return n((c as any).codex) + n((c as any).claude) + n((c as any).gemini);
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * 将 WSL/Windows 的绝对路径（若位于项目根内）转换为相对路径，用于 worktree 创建时的“可复用提示词”。
+ * - 关键目标：避免把源项目的绝对路径直接分发到多个 worktree（不同 worktree 根目录不同，会导致路径失效）
+ * - 若无法转换（不在项目内/无法识别），则返回原始路径文本
+ */
+function toWorktreePromptRelPath(args: { pathText: string; projectWinRoot?: string; projectWslRoot?: string }): string {
+  const raw = String(args.pathText || "").trim();
+  if (!raw) return "";
+
+  // 1) 先尝试按 WSL/POSIX 绝对路径处理
+  try {
+    const p = raw.replace(/\\/g, "/");
+    const root = String(args.projectWslRoot || "").trim().replace(/\\/g, "/").replace(/\/+$/, "");
+    if (p.startsWith("/") && root && root.startsWith("/")) {
+      const normP = p.replace(/\/+$/, "");
+      const normRoot = root;
+      if (normP === normRoot) return ".";
+      if (normP.startsWith(normRoot + "/")) {
+        const rel = normP.slice(normRoot.length).replace(/^\/+/, "");
+        return rel || ".";
+      }
+    }
+  } catch {}
+
+  // 2) 再尝试按 Windows 盘符/UNC 绝对路径处理（大小写不敏感）
+  try {
+    const p = raw.replace(/\//g, "\\").replace(/[\\]+$/, "");
+    const rootRaw = String(args.projectWinRoot || "").trim();
+    const root = rootRaw.replace(/\//g, "\\").replace(/[\\]+$/, "");
+    if (root && (/^[a-zA-Z]:\\/.test(p) || p.startsWith("\\\\")) && (/^[a-zA-Z]:\\/.test(root) || root.startsWith("\\\\"))) {
+      const pKey = p.toLowerCase();
+      const rootKey = root.toLowerCase();
+      if (pKey === rootKey) return ".";
+      if (pKey.startsWith(rootKey + "\\")) {
+        const rel = p.slice(root.length).replace(/^[\\]+/, "").replace(/\\/g, "/");
+        return rel || ".";
+      }
+    }
+  } catch {}
+
+  // 3) 已是相对路径或无法转换：尽量统一分隔符为 /
+  return raw.replace(/\\/g, "/");
+}
+
+/**
+ * 将 worktree 创建面板中的 chips + 草稿合并为最终提示词：
+ * - 每个 chip 独占一行，并用反引号包裹
+ * - 项目内绝对路径会被转换为相对路径，保证对不同 worktree 可复用
+ */
+function compileWorktreePromptText(args: { chips: PathChip[]; draft: string; projectWinRoot?: string; projectWslRoot?: string }): string {
+  const chips = Array.isArray(args.chips) ? args.chips : [];
+  const draft = String(args.draft || "");
+  const parts: string[] = [];
+  if (chips.length > 0) {
+    parts.push(
+      chips
+        .map((c) => {
+          const raw = String((c as any)?.wslPath || (c as any)?.winPath || (c as any)?.fileName || "").trim();
+          const p = toWorktreePromptRelPath({ pathText: raw, projectWinRoot: args.projectWinRoot, projectWslRoot: args.projectWslRoot });
+          return p ? ("`" + p + "`") : "";
+        })
+        .filter(Boolean)
+        .join("\n"),
+    );
+  }
+  const trimmedDraft = draft.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+  if (trimmedDraft) {
+    if (parts.length > 0) parts.push("");
+    parts.push(trimmedDraft);
+  }
+  return parts.join("\n");
+}
+
+/**
+ * 基于 Provider + 终端模式，构造“带初始提示词注入”的启动命令。
+ * - 仅用于 worktree 创建后的首次启动；不改动既有 Provider 的环境选择策略
+ */
+function buildProviderStartupCmdWithInitialPrompt(args: {
+  providerId: GitWorktreeProviderId;
+  terminalMode: TerminalMode;
+  baseCmd: string;
+  prompt: string;
+}): string {
+  const base = String(args.baseCmd || "").trim();
+  const prompt = String(args.prompt || "");
+  if (!base) return "";
+  if (!prompt.trim()) return base;
+
+  if (args.terminalMode !== "wsl") {
+    if (args.providerId === "claude") {
+      const baseArgv = splitCommandLineToArgv(base);
+      const argv = baseArgv.length > 0 ? baseArgv : ["claude"];
+      return buildPowerShellCall([...argv, prompt]);
+    }
+    if (args.providerId === "gemini") {
+      const baseArgv = splitCommandLineToArgv(base);
+      const argv = baseArgv.length > 0 ? baseArgv : ["gemini"];
+      const hasI = argv.includes("-i") || argv.includes("--interactive");
+      return buildPowerShellCall(hasI ? [...argv, prompt] : [...argv, "-i", prompt]);
+    }
+    // codex：可能包含 `$env:...;` 等脚本片段，避免强拆 argv，直接拼接参数
+    return `${base} ${powerShellArgToken(prompt)}`.trim();
+  }
+
+  if (args.providerId === "gemini") {
+    const hasI = base.includes(" -i ") || /\s-i\s/.test(base) || /\s--interactive\s/.test(base);
+    return hasI ? `${base} ${bashSingleQuote(prompt)}`.trim() : `${base} -i ${bashSingleQuote(prompt)}`.trim();
+  }
+  if (args.providerId === "claude") {
+    return `${base} ${bashSingleQuote(prompt)}`.trim();
+  }
+  return `${base} ${bashSingleQuote(prompt)}`.trim();
+}
+
+/**
+ * 将输入/输出文本压缩为用于提交信息的短摘要（单行、限长）。
+ */
+function summarizeForCommitMessage(text: string, maxLen: number = 72): string {
+  try {
+    const raw = String(text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+    if (!raw) return "";
+    const first = raw.split("\n").map((x) => x.trim()).find((x) => !!x) || "";
+    const oneLine = first.replace(/\s+/g, " ").trim();
+    if (oneLine.length <= maxLen) return oneLine;
+    const clipped = oneLine.slice(0, Math.max(0, maxLen - 3)).trim();
+    return clipped ? `${clipped}...` : oneLine.slice(0, maxLen);
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * 中文说明：解析回收接口返回的 stash 列表，并生成 UI 展示文本与建议恢复命令。
+ * - 目标：尽量保持“已暂存/未暂存”的原始状态（先恢复 staged，再恢复 unstaged）。
+ */
+function parseRecycleStashes(details: any, t: any): {
+  items: Array<{ kind: "staged" | "unstaged"; sha: string }>;
+  stashLine: string;
+  restoreCmd: string;
+  stashMsgForWarning: string;
+  stashShaForWarning: string;
+} {
+  const stashesRaw: any[] = Array.isArray(details?.stashes) ? details.stashes : [];
+  const items = stashesRaw
+    .map((s: any) => ({ kind: String(s?.kind || "").trim(), sha: String(s?.sha || "").trim() }))
+    .filter((s: any): s is { kind: "staged" | "unstaged"; sha: string } => (s.kind === "staged" || s.kind === "unstaged") && Boolean(s.sha));
+
+  const kindLabelOf = (kind: "staged" | "unstaged") =>
+    kind === "staged"
+      ? (t("projects:worktreeRecycleStashKindStaged", "已暂存") as string)
+      : (t("projects:worktreeRecycleStashKindUnstaged", "未暂存/未跟踪") as string);
+
+  const stashListText = items.map((s) => `- ${kindLabelOf(s.kind)}: ${s.sha}`).join("\n");
+  const stashLine =
+    items.length > 0
+      ? (t("projects:worktreeRecycleStashInfo", "主 worktree 改动已保存到 stash：{msg} {sha}", { msg: `\n${stashListText}`, sha: "" }) as string).trim()
+      : "";
+
+  let restoreCmd = String(details?.suggestedRestoreCommand || "").trim();
+  if (!restoreCmd) {
+    const stagedSha = items.find((s) => s.kind === "staged")?.sha;
+    const unstagedSha = items.find((s) => s.kind === "unstaged")?.sha;
+    const cmds: string[] = [];
+    if (stagedSha) cmds.push(`git stash apply --index ${stagedSha}`);
+    if (unstagedSha) cmds.push(stagedSha ? `git stash apply ${unstagedSha}` : `git stash apply --index ${unstagedSha}`);
+    restoreCmd = cmds.join("\n");
+  }
+
+  return {
+    items,
+    stashLine,
+    restoreCmd,
+    stashMsgForWarning: items.length > 0 ? `\n${stashListText}` : "",
+    stashShaForWarning: items.map((s) => s.sha).join(" "),
+  };
+}
+
+/**
+ * 构造自动提交信息：包含来源（user/agent）+ 内容前缀摘要。
+ */
+function buildAutoCommitMessage(source: "user" | "agent", text: string): string {
+  const head = summarizeForCommitMessage(text, 72);
+  const label = source === "agent" ? "agent" : "user";
+  const body = head || (source === "agent" ? "agent output" : "user input");
+  return `auto(${label}): ${body}`.trim();
+}
+
+/**
+ * 将 Windows/本地路径转为用于缓存/字典的 Key（Windows 下大小写不敏感）。
+ */
+function toDirKeyForCache(absPath: string): string {
+  try {
+    const raw = String(absPath || "").trim();
+    if (!raw) return "";
+    return raw.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  } catch {
+    return String(absPath || "");
+  }
 }
 
 const toShellLabel = (mode: TerminalMode): ShellLabel => {
@@ -876,6 +1565,123 @@ export default function CodexFlowManagerUI() {
   }, [appBootId]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectsHydrated, setProjectsHydrated] = useState<boolean>(false);
+  const [dirTreeStore, setDirTreeStore] = useState<DirTreeStore>(() => ({
+    version: 1,
+    rootOrder: [],
+    parentById: {},
+    childOrderByParent: {},
+    expandedById: {},
+    labelById: {},
+  }));
+  const dirTreeStoreRef = useRef<DirTreeStore | null>(null);
+  const [gitInfoByProjectId, setGitInfoByProjectId] = useState<Record<string, GitDirInfo>>({});
+  const [buildRunCfgByDirKey, setBuildRunCfgByDirKey] = useState<Record<string, DirBuildRunConfig | null>>({});
+  const buildRunCfgByDirKeyRef = useRef<Record<string, DirBuildRunConfig | null>>({});
+  const [dirDrag, setDirDrag] = useState<{ draggingId: string; overId?: string; position?: "before" | "after" | "asChild" | "root-end" } | null>(null);
+  const [buildRunDialog, setBuildRunDialog] = useState<BuildRunDialogState>(() => ({
+    open: false,
+    action: "build",
+    projectId: "",
+    saveScope: "self",
+    parentProjectId: undefined,
+    draft: { mode: "simple", commandText: "", cwd: "", env: [], backend: { kind: "system" } } as any,
+    advanced: false,
+  }));
+  const [dirLabelDialog, setDirLabelDialog] = useState<DirLabelDialogState>(() => ({ open: false, projectId: "", draft: "" }));
+  const [gitWorktreeAutoCommitEnabled, setGitWorktreeAutoCommitEnabled] = useState<boolean>(true);
+  const [gitWorktreeCopyRulesOnCreate, setGitWorktreeCopyRulesOnCreate] = useState<boolean>(true);
+  const [gitWorktreeGitPath, setGitWorktreeGitPath] = useState<string>("");
+	  const [gitWorktreeExternalGitToolId, setGitWorktreeExternalGitToolId] = useState<ExternalGitToolId>("rider");
+	  const [gitWorktreeExternalGitToolCustomCommand, setGitWorktreeExternalGitToolCustomCommand] = useState<string>("");
+	  const [gitWorktreeTerminalCommand, setGitWorktreeTerminalCommand] = useState<string>("");
+	  const [worktreeCreateDialog, setWorktreeCreateDialog] = useState<WorktreeCreateDialogState>(() => ({
+	    open: false,
+    repoProjectId: "",
+    branches: [],
+    baseBranch: "",
+    loadingBranches: false,
+    promptChips: [],
+    promptDraft: "",
+    useMultipleModels: false,
+    singleProviderId: "codex",
+    multiCounts: { codex: 1, claude: 0, gemini: 0 },
+	    creating: false,
+	    error: undefined,
+	  }));
+	  const worktreeCreateRunningTaskIdByRepoIdRef = useRef<Record<string, string>>({});
+	  /** 回收任务运行中的 taskId（用于“可关闭/可重开”的进度面板）。 */
+	  const worktreeRecycleRunningTaskIdByProjectIdRef = useRef<Record<string, string>>({});
+		  const [worktreeCreateProgress, setWorktreeCreateProgress] = useState<WorktreeCreateProgressState>(() => ({
+		    open: false,
+		    repoProjectId: "",
+		    taskId: "",
+	    status: "running",
+	    log: "",
+	    logOffset: 0,
+	    updatedAt: 0,
+	    error: undefined,
+	  }));
+	  const [worktreeRecycleProgress, setWorktreeRecycleProgress] = useState<WorktreeRecycleProgressState>(() => ({
+	    open: false,
+	    projectId: "",
+	    taskId: "",
+	    status: "running",
+	    log: "",
+	    logOffset: 0,
+	    updatedAt: 0,
+	    error: undefined,
+	  }));
+	  const [noticeDialog, setNoticeDialog] = useState<NoticeDialogState>(() => ({ open: false, title: "", message: "" }));
+	  const [worktreeRecycleDialog, setWorktreeRecycleDialog] = useState<WorktreeRecycleDialogState>(() => ({
+	    open: false,
+	    projectId: "",
+    repoMainPath: "",
+    branches: [],
+    baseBranch: "",
+    wtBranch: "",
+    mode: "squash",
+    commitMessage: "",
+    loading: false,
+    running: false,
+    error: undefined,
+  }));
+  const [worktreeDeleteDialog, setWorktreeDeleteDialog] = useState<WorktreeDeleteDialogState>(() => ({
+    open: false,
+    projectId: "",
+    afterRecycle: false,
+    afterRecycleHint: undefined,
+    running: false,
+    needsForceRemoveWorktree: false,
+    needsForceDeleteBranch: false,
+    error: undefined,
+  }));
+  const worktreeDeleteInFlightByProjectIdRef = useRef<Record<string, boolean>>({});
+  const [worktreeDeleteInFlightByProjectId, setWorktreeDeleteInFlightByProjectId] = useState<Record<string, boolean>>({});
+  const worktreeDeleteSubmitGuardRef = useRef<boolean>(false);
+  const [worktreeBlockedDialog, setWorktreeBlockedDialog] = useState<{ open: boolean; count: number }>(() => ({ open: false, count: 0 }));
+  const [baseWorktreeDirtyDialog, setBaseWorktreeDirtyDialog] = useState<BaseWorktreeDirtyDialogState>(() => ({ open: false, repoMainPath: "" }));
+  const [gitActionErrorDialog, setGitActionErrorDialog] = useState<GitActionErrorDialogState>(() => ({
+    open: false,
+    title: "",
+    message: "",
+    dir: "",
+  }));
+
+  /**
+   * 中文说明：设置某个 worktree 的“删除进行中”标记。
+   * - 用于禁用侧栏按钮，避免重复触发删除（尤其是用户关闭弹窗后再次点击）。
+   */
+  const setWorktreeDeleteInFlight = useCallback((projectId: string, inFlight: boolean) => {
+    const pid = String(projectId || "").trim();
+    if (!pid) return;
+    worktreeDeleteInFlightByProjectIdRef.current[pid] = inFlight;
+    setWorktreeDeleteInFlightByProjectId((prev) => {
+      const next = { ...(prev || {}) } as Record<string, boolean>;
+      if (inFlight) next[pid] = true;
+      else delete next[pid];
+      return next;
+    });
+  }, []);
   const [hiddenProjectIds, setHiddenProjectIds] = useState<string[]>(() => loadHiddenProjectIds());
   const [showHiddenProjects, setShowHiddenProjects] = useState<boolean>(() => loadShowHiddenProjects());
   const [query, setQuery] = useState("");
@@ -893,7 +1699,7 @@ export default function CodexFlowManagerUI() {
     if (typeof window === "undefined") return "recent";
     try {
       const saved = window.localStorage?.getItem(PROJECT_SORT_STORAGE_KEY);
-      if (saved === "recent" || saved === "name") return saved;
+      if (saved === "recent" || saved === "name" || saved === "manual") return saved;
     } catch {}
     return "recent";
   });
@@ -917,6 +1723,20 @@ export default function CodexFlowManagerUI() {
       if (nameDiff !== 0) return nameDiff;
       return (a.winPath || "").localeCompare(b.winPath || "", undefined, { sensitivity: "base", numeric: true });
     };
+    if (projectSort === "manual") {
+      const rank = new Map<string, number>();
+      for (let i = 0; i < dirTreeStore.rootOrder.length; i++) {
+        const id = dirTreeStore.rootOrder[i];
+        if (id && !rank.has(id)) rank.set(id, i);
+      }
+      list.sort((a, b) => {
+        const ra = rank.has(a.id) ? (rank.get(a.id) as number) : Number.MAX_SAFE_INTEGER;
+        const rb = rank.has(b.id) ? (rank.get(b.id) as number) : Number.MAX_SAFE_INTEGER;
+        if (ra !== rb) return ra - rb;
+        return compareByName(a, b);
+      });
+      return list;
+    }
     list.sort((a, b) => {
       if (projectSort === "name") return compareByName(a, b);
       const recentDiff = getRecentTimestamp(b) - getRecentTimestamp(a);
@@ -924,13 +1744,14 @@ export default function CodexFlowManagerUI() {
       return compareByName(a, b);
     });
     return list;
-  }, [visibleProjects, projectSort]);
+  }, [dirTreeStore.rootOrder, visibleProjects, projectSort]);
   const handleProjectSortChange = useCallback((value: string) => {
-    if (value === "recent" || value === "name") {
+    if (value === "recent" || value === "name" || value === "manual") {
       setProjectSort(value);
     }
   }, []);
   const projectSortLabel = useMemo(() => {
+    if (projectSort === "manual") return t("projects:sortManual", "手动") as string;
     if (projectSort === "name") return t("projects:sortName") as string;
     return t("projects:sortRecent") as string;
   }, [projectSort, t]);
@@ -953,6 +1774,45 @@ export default function CodexFlowManagerUI() {
       return next.length === prev.length ? prev : next;
     });
   }, [projectsHydrated, projects, hiddenProjectIds.length]);
+
+  // 目录树：在 projects 变更后归一化一次，确保不会产生二级层级或引用脏数据
+  useEffect(() => {
+    if (!projectsHydrated) return;
+    const { next, changed } = normalizeDirTreeStore(dirTreeStore, projects);
+    if (changed) setDirTreeStore(next);
+  }, [dirTreeStore, projects, projectsHydrated]);
+
+  // 目录树：持久化（轻量防抖，避免拖拽过程中频繁写盘）
+  useEffect(() => {
+    if (!projectsHydrated) return;
+    const timer = window.setTimeout(() => {
+      try { (window as any).host?.dirTree?.set?.(dirTreeStore); } catch {}
+    }, 200);
+    return () => { try { window.clearTimeout(timer); } catch {} };
+  }, [dirTreeStore, projectsHydrated]);
+
+  // Git 状态：批量刷新（用于分支/工作树识别与“目录缺失”判定）
+  useEffect(() => {
+    if (!projectsHydrated) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const dirs = projects.map((p) => p.winPath).filter(Boolean);
+        const res: any = await (window as any).host?.gitWorktree?.statusBatch?.(dirs);
+        if (cancelled) return;
+        if (res && res.ok && Array.isArray(res.items)) {
+          const next: Record<string, GitDirInfo> = {};
+          for (let i = 0; i < projects.length; i++) {
+            const p = projects[i];
+            const info = (res.items[i] || null) as GitDirInfo | null;
+            if (p?.id && info) next[p.id] = info;
+          }
+          setGitInfoByProjectId(next);
+        }
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [projectsHydrated, projects]);
 
   useEffect(() => {
     // 如果没有可见项目，清空选择
@@ -1067,11 +1927,15 @@ export default function CodexFlowManagerUI() {
   const tabsByProjectRef = useRef<Record<string, ConsoleTab[]>>(tabsByProject);
   const projectsRef = useRef<Project[]>(projects);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const userInputCountByTabIdRef = useRef<Record<string, number>>({});
+  const autoCommitQueueByProjectIdRef = useRef<Record<string, Promise<void>>>({});
 
   useEffect(() => { editingTabIdRef.current = editingTabId; }, [editingTabId]);
   useEffect(() => { notificationPrefsRef.current = notificationPrefs; }, [notificationPrefs]);
   useEffect(() => { tabsByProjectRef.current = tabsByProject; }, [tabsByProject]);
   useEffect(() => { projectsRef.current = projects; }, [projects]);
+  useEffect(() => { dirTreeStoreRef.current = dirTreeStore; }, [dirTreeStore]);
+  useEffect(() => { buildRunCfgByDirKeyRef.current = buildRunCfgByDirKey; }, [buildRunCfgByDirKey]);
 
   // 关键修复：渲染进程意外 reload/HMR 后，基于本地快照恢复 tab 与 PTY 绑定，避免“标签页/控制台丢失”。
   const restoredConsoleSessionAppliedRef = useRef(false);
@@ -1578,6 +2442,12 @@ export default function CodexFlowManagerUI() {
     try { emitCodexRateRefresh('agent-complete'); } catch {}
     try { emitClaudeUsageRefresh('agent-complete'); } catch {}
     try { emitGeminiUsageRefresh('agent-complete'); } catch {}
+
+    // worktree 自动提交：每次 agent 完成输出后，若有变更则提交一次（仅对非主 worktree 生效）
+    try {
+      const projectId = tabProjectRef.current[tabId];
+      if (projectId) enqueueAutoCommit(projectId, "agent", cleanedPreview);
+    } catch {}
   }
 
   function processPtyNotificationChunk(ptyId: string, chunk: string) {
@@ -2388,6 +3258,17 @@ export default function CodexFlowManagerUI() {
           setTerminalTheme(normalizeTerminalTheme((s as any).terminalTheme));
           setClaudeCodeReadAgentHistory(!!(s as any)?.claudeCode?.readAgentHistory);
           setMultiInstanceEnabled(!!(s as any)?.experimental?.multiInstanceEnabled);
+          // git worktree：默认开启自动提交与规则文件复制
+          try { setGitWorktreeAutoCommitEnabled(((s as any)?.gitWorktree?.autoCommitEnabled) !== false); } catch {}
+          try { setGitWorktreeCopyRulesOnCreate(((s as any)?.gitWorktree?.copyRulesOnCreate) !== false); } catch {}
+          try { setGitWorktreeGitPath(String((s as any)?.gitWorktree?.gitPath || "")); } catch {}
+          try {
+            const id = String((s as any)?.gitWorktree?.externalGitTool?.id || "rider").trim().toLowerCase();
+            const normalized = (id === "rider" || id === "sourcetree" || id === "fork" || id === "gitkraken" || id === "custom") ? (id as ExternalGitToolId) : ("rider" as ExternalGitToolId);
+            setGitWorktreeExternalGitToolId(normalized);
+          } catch {}
+          try { setGitWorktreeExternalGitToolCustomCommand(String((s as any)?.gitWorktree?.externalGitTool?.customCommand || "")); } catch {}
+          try { setGitWorktreeTerminalCommand(String((s as any)?.gitWorktree?.terminalCommand || "")); } catch {}
           // 同步网络代理偏好
           try {
             const net = (s as any).network || {};
@@ -2411,6 +3292,13 @@ export default function CodexFlowManagerUI() {
       try {
         const res = await (window as any).host?.i18n?.getLocale?.();
         if (res && res.ok && res.locale) setLocale(String(res.locale));
+      } catch {}
+      // 目录树：读取本地持久化结构（仅 UI 用，不触发扫描）
+      try {
+        const res: any = await (window as any).host?.dirTree?.get?.();
+        if (res && res.ok && res.store) {
+          setDirTreeStore(res.store as DirTreeStore);
+        }
       } catch {}
       try {
         const res: any = await window.host.projects.list();
@@ -2545,6 +3433,34 @@ export default function CodexFlowManagerUI() {
     }
     return map;
   }, [pendingCompletions, tabsByProject]);
+
+  /**
+   * 将项目列表映射为“最多一级”的目录树行：
+   * - 根节点按当前排序（recent/name/manual）输出
+   * - 子节点按 childOrderByParent 输出（仅在父节点展开时展示）
+   */
+  const dirTreeRows = useMemo(() => {
+    const byId = new Map<string, Project>();
+    for (const p of visibleProjects) {
+      if (p?.id) byId.set(p.id, p);
+    }
+    const isChild = (id: string): boolean => !!dirTreeStore.parentById[id];
+    const roots = sortedProjects.filter((p) => p?.id && !isChild(p.id));
+
+    const rows: Array<{ project: Project; depth: 0 | 1; parentId?: string }> = [];
+    for (const root of roots) {
+      rows.push({ project: root, depth: 0 });
+      const childIds = dirTreeStore.childOrderByParent[root.id] || [];
+      const expanded = dirTreeStore.expandedById[root.id] !== false;
+      if (!expanded) continue;
+      for (const cid of childIds) {
+        const child = byId.get(cid);
+        if (!child) continue;
+        rows.push({ project: child, depth: 1, parentId: root.id });
+      }
+    }
+    return rows;
+  }, [dirTreeStore.childOrderByParent, dirTreeStore.expandedById, dirTreeStore.parentById, sortedProjects, visibleProjects]);
 
   const filtered = useMemo(() => {
     if (!query.trim()) return sortedProjects;
@@ -3350,6 +4266,17 @@ export default function CodexFlowManagerUI() {
     setChipsByTab((m) => ({ ...m, [activeTab.id]: [] }));
     setDraftByTab((m) => ({ ...m, [activeTab.id]: "" }));
     setInputFullscreenState(activeTab.id, false);
+
+    // worktree 自动提交：用户第 2 条输入开始，每次输入后若有变更则提交一次
+    try {
+      const projectId = selectedProject?.id;
+      if (projectId) {
+        const prevCount = userInputCountByTabIdRef.current[activeTab.id] || 0;
+        const nextCount = prevCount + 1;
+        userInputCountByTabIdRef.current[activeTab.id] = nextCount;
+        if (nextCount >= 2) enqueueAutoCommit(projectId, "user", text);
+      }
+    } catch {}
   }
 
   function closeTab(id: string) {
@@ -3369,6 +4296,7 @@ export default function CodexFlowManagerUI() {
     });
     clearPendingForTab(id);
     unregisterTabProject(id);
+    try { delete userInputCountByTabIdRef.current[id]; } catch {}
     setInputFullscreenByTab((m) => {
       if (!m[id]) return m;
       const next = { ...m } as Record<string, boolean>;
@@ -3378,10 +4306,1295 @@ export default function CodexFlowManagerUI() {
     if (activeTabId === id) setActiveTab(null);
   }
 
+  /**
+   * 开始编辑“目录节点备注名”（仅改 UI 显示名，不改真实文件夹名）。
+   * 说明：该能力仅通过左键双击触发，不提供右键菜单入口。
+   */
+  const openDirLabelDialog = useCallback((project: Project) => {
+    const pid = String(project?.id || "").trim();
+    if (!pid) return;
+    const current = String(dirTreeStore.labelById[pid] || "").trim();
+    setDirLabelDialog({ open: true, projectId: pid, draft: current });
+  }, [dirTreeStore.labelById]);
+
+  /**
+   * 结束编辑“目录节点备注名”（不保存）。
+   */
+  const closeDirLabelDialog = useCallback(() => {
+    setDirLabelDialog({ open: false, projectId: "", draft: "" });
+  }, []);
+
+  /**
+   * 保存目录节点备注名：为空则清空备注并回退默认显示名。
+   */
+  const submitDirLabelDialog = useCallback((draftOverride?: string) => {
+    const dlg = dirLabelDialog;
+    if (!dlg.open) return;
+    const pid = String(dlg.projectId || "").trim();
+    if (!pid) { closeDirLabelDialog(); return; }
+    const nextLabel = String(draftOverride ?? dlg.draft ?? "").trim();
+    setDirTreeStore((prev) => {
+      const next: DirTreeStore = { ...prev, labelById: { ...(prev.labelById || {}) } };
+      if (nextLabel) next.labelById[pid] = nextLabel;
+      else delete next.labelById[pid];
+      return next;
+    });
+    closeDirLabelDialog();
+  }, [closeDirLabelDialog, dirLabelDialog]);
+
+  /**
+   * 获取目录节点的展示名：优先使用备注名（仅 UI），否则回退项目名。
+   */
+  const getDirNodeLabel = useCallback((p: Project): string => {
+    const id = String(p?.id || "").trim();
+    if (!id) return String(p?.name || "");
+    const label = String(dirTreeStore.labelById[id] || "").trim();
+    return label || String(p?.name || "");
+  }, [dirTreeStore.labelById]);
+
+  /**
+   * 判断目录节点是否为子级（仅 UI 结构，与文件系统无关）。
+   */
+  const isDirChild = useCallback((projectId: string): boolean => {
+    const id = String(projectId || "").trim();
+    if (!id) return false;
+    return !!dirTreeStore.parentById[id];
+  }, [dirTreeStore.parentById]);
+
+  /**
+   * 判断目录节点是否存在子级（用于展开/折叠与拖拽约束）。
+   */
+  const hasDirChildren = useCallback((projectId: string): boolean => {
+    const id = String(projectId || "").trim();
+    if (!id) return false;
+    const list = dirTreeStore.childOrderByParent[id] || [];
+    return Array.isArray(list) && list.length > 0;
+  }, [dirTreeStore.childOrderByParent]);
+
+  /**
+   * 切换父节点展开/折叠状态（仅影响 UI，不改变磁盘结构）。
+   */
+  const toggleDirExpanded = useCallback((projectId: string) => {
+    const id = String(projectId || "").trim();
+    if (!id) return;
+    setDirTreeStore((prev) => {
+      const cur = prev.expandedById[id];
+      const nextExpanded = { ...prev.expandedById, [id]: cur === false };
+      return { ...prev, expandedById: nextExpanded };
+    });
+  }, []);
+
+  /**
+   * 开始拖拽目录节点（仅在非按钮区域触发）。
+   */
+  const onDirDragStart = useCallback((e: React.DragEvent, projectId: string) => {
+    const id = String(projectId || "").trim();
+    if (!id) return;
+    if (query.trim()) {
+      // 搜索模式下禁用拖拽，避免“树结构与筛选结果”冲突
+      e.preventDefault();
+      return;
+    }
+    try {
+      e.dataTransfer.setData("text/plain", id);
+      e.dataTransfer.effectAllowed = "move";
+    } catch {}
+    setDirDrag({ draggingId: id });
+    setProjectSort("manual");
+  }, [query]);
+
+  /**
+   * 结束拖拽：清理悬浮/落点状态。
+   */
+  const onDirDragEnd = useCallback(() => {
+    setDirDrag(null);
+  }, []);
+
+  /**
+   * 将一次 drop 应用到目录树：
+   * - 根级排序：before/after/root-end（空白区域视为 root-end）
+   * - 设为子级：asChild（仅允许拖拽“无子级节点”成为子级）
+   */
+  const applyDirDrop = useCallback((dragId: string, targetId: string | null, position: "before" | "after" | "asChild" | "root-end") => {
+    const src = String(dragId || "").trim();
+    const dst = String(targetId || "").trim();
+    if (!src) return;
+    if (src === dst) return;
+
+    // 以当前“可见根节点顺序”作为基准，保证在 recent/name 排序视图下拖拽也稳定落地为 manual
+    const currentRoots = sortedProjects
+      .filter((p) => p?.id && !dirTreeStore.parentById[p.id])
+      .map((p) => p.id);
+
+    setDirTreeStore((prev) => {
+      const next: DirTreeStore = {
+        ...prev,
+        rootOrder: currentRoots.length > 0 ? currentRoots : [...prev.rootOrder],
+        parentById: { ...prev.parentById },
+        childOrderByParent: { ...prev.childOrderByParent },
+        expandedById: { ...prev.expandedById },
+        labelById: { ...prev.labelById },
+      };
+
+      const removeFromArray = (arr: string[], id: string): string[] => arr.filter((x) => x !== id);
+
+      // 先从原父节点移除
+      const prevParent = next.parentById[src];
+      if (prevParent) {
+        const prevList = next.childOrderByParent[prevParent] || [];
+        next.childOrderByParent[prevParent] = removeFromArray(prevList, src);
+        delete next.parentById[src];
+      }
+      // 从根级移除（若本来就是根）
+      next.rootOrder = removeFromArray(next.rootOrder || [], src);
+
+      if (position === "asChild") {
+        // 约束：已拥有子级的节点不能成为别人的子级（避免潜在二级层级）
+        const srcHasChildren = (next.childOrderByParent[src] || []).length > 0;
+        if (srcHasChildren) {
+          // 回退：作为根级追加到末尾
+          next.rootOrder = [...next.rootOrder, src];
+          return next;
+        }
+        if (!dst) {
+          next.rootOrder = [...next.rootOrder, src];
+          return next;
+        }
+        // 目标必须是根节点；子节点不作为 drop target
+        if (next.parentById[dst]) {
+          next.rootOrder = [...next.rootOrder, src];
+          return next;
+        }
+        next.parentById[src] = dst;
+        const list = next.childOrderByParent[dst] || [];
+        next.childOrderByParent[dst] = list.includes(src) ? list : [...list, src];
+        next.expandedById[dst] = true;
+        return next;
+      }
+
+      // 其它：根级放置（before/after/root-end）
+      if (!dst || position === "root-end") {
+        next.rootOrder = [...next.rootOrder, src];
+        return next;
+      }
+      const idx = next.rootOrder.indexOf(dst);
+      if (idx < 0) {
+        next.rootOrder = [...next.rootOrder, src];
+        return next;
+      }
+      const insertAt = position === "before" ? idx : idx + 1;
+      next.rootOrder = [...next.rootOrder.slice(0, insertAt), src, ...next.rootOrder.slice(insertAt)];
+      return next;
+    });
+  }, [dirTreeStore.parentById, dirTreeStore.childOrderByParent, sortedProjects]);
+
+  /**
+   * 读取并缓存某个目录的 Build/Run 配置（Key=目录绝对路径）。
+   */
+  const ensureBuildRunConfigLoaded = useCallback(async (winPath: string): Promise<DirBuildRunConfig | null> => {
+    const dir = String(winPath || "").trim();
+    if (!dir) return null;
+    const key = toDirKeyForCache(dir);
+    if (!key) return null;
+    const cached = buildRunCfgByDirKeyRef.current[key];
+    if (cached !== undefined) return cached;
+    try {
+      const res: any = await (window as any).host?.buildRun?.get?.(dir);
+      const cfg = res && res.ok ? ((res.cfg as DirBuildRunConfig) || null) : null;
+      setBuildRunCfgByDirKey((prev) => ({ ...prev, [key]: cfg }));
+      return cfg;
+    } catch {
+      setBuildRunCfgByDirKey((prev) => ({ ...prev, [key]: null }));
+      return null;
+    }
+  }, []);
+
+  /**
+   * 保存某个目录的 Build/Run 配置，并同步更新本地缓存。
+   */
+  const persistBuildRunConfig = useCallback(async (winPath: string, cfg: DirBuildRunConfig): Promise<boolean> => {
+    const dir = String(winPath || "").trim();
+    if (!dir) return false;
+    const key = toDirKeyForCache(dir);
+    if (!key) return false;
+    try {
+      const res: any = await (window as any).host?.buildRun?.set?.(dir, cfg);
+      if (!(res && res.ok)) return false;
+      setBuildRunCfgByDirKey((prev) => ({ ...prev, [key]: cfg }));
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  /**
+   * 解析某节点在当前动作（Build/Run）下的“生效配置”：
+   * - 先读自身配置
+   * - 若自身无配置且为子节点，则继承父节点配置
+   */
+  const resolveEffectiveBuildRunCommand = useCallback(async (project: Project, action: BuildRunAction): Promise<{
+    effective: BuildRunCommandConfig | null;
+    inherited: boolean;
+    parentProjectId?: string;
+    defaultSaveScope: "self" | "parent";
+  }> => {
+    const selfCfg = await ensureBuildRunConfigLoaded(project.winPath);
+    const selfCmd = (selfCfg as any)?.[action] as BuildRunCommandConfig | undefined;
+    if (selfCmd) return { effective: selfCmd, inherited: false, defaultSaveScope: "self" };
+
+    const parentId = String(dirTreeStore.parentById[project.id] || "").trim();
+    if (parentId) {
+      const parent = projectsRef.current.find((x) => x.id === parentId) || null;
+      if (parent) {
+        const parentCfg = await ensureBuildRunConfigLoaded(parent.winPath);
+        const parentCmd = (parentCfg as any)?.[action] as BuildRunCommandConfig | undefined;
+        if (parentCmd) return { effective: parentCmd, inherited: true, parentProjectId: parentId, defaultSaveScope: "parent" };
+        return { effective: null, inherited: false, parentProjectId: parentId, defaultSaveScope: "parent" };
+      }
+    }
+    return { effective: null, inherited: false, defaultSaveScope: "self" };
+  }, [dirTreeStore.parentById, ensureBuildRunConfigLoaded]);
+
+  /**
+   * 触发 Build/Run：
+   * - 若无配置：打开配置对话框
+   * - 否则：直接外部终端执行
+   * - edit=true：强制进入“编辑命令”
+   */
+  const triggerBuildRun = useCallback(async (project: Project, action: BuildRunAction, edit = false) => {
+    const p = project;
+    if (!p?.id || !p?.winPath) return;
+    const resolved = await resolveEffectiveBuildRunCommand(p, action);
+    const effective = resolved.effective;
+    if (edit || !effective) {
+      const draft = effective
+        ? ({ ...effective, env: Array.isArray(effective.env) ? effective.env : [] } as BuildRunCommandConfig)
+        : ({ mode: "simple", commandText: "", cwd: "", env: [], backend: { kind: "system" } } as BuildRunCommandConfig);
+      const advanced = draft.mode === "advanced";
+      setBuildRunDialog({
+        open: true,
+        action,
+        projectId: p.id,
+        saveScope: resolved.defaultSaveScope,
+        parentProjectId: resolved.parentProjectId,
+        draft,
+        advanced,
+      });
+      return;
+    }
+
+    const cwd = String(effective.cwd || "").trim() || p.winPath;
+    const title = `${getDirNodeLabel(p)} ${action === "build" ? "Build" : "Run"}`;
+    try {
+      const res: any = await (window as any).host?.buildRun?.exec?.({ dir: p.winPath, cwd, title, command: effective });
+      if (!(res && res.ok)) throw new Error(res?.error || "failed");
+    } catch (e: any) {
+      alert(String((t("projects:buildRunFailed", "执行失败：{{error}}") as any) || "").replace("{{error}}", String(e?.message || e)));
+    }
+  }, [getDirNodeLabel, resolveEffectiveBuildRunCommand, t]);
+
+  /**
+   * 保存 Build/Run 配置对话框的草稿到本地持久化存储。
+   */
+  const saveBuildRunDialog = useCallback(async () => {
+    const dlg = buildRunDialog;
+    if (!dlg.open) return;
+
+    const target = projectsRef.current.find((x) => x.id === dlg.projectId) || null;
+    if (!target) return;
+
+    const parentIdFromTree = String(dirTreeStore.parentById[target.id] || "").trim();
+    const parentId = String(dlg.parentProjectId || parentIdFromTree || "").trim();
+
+    const saveProject = (() => {
+      if (dlg.saveScope !== "parent") return target;
+      if (!parentId) return target;
+      return projectsRef.current.find((x) => x.id === parentId) || target;
+    })();
+
+    const draft = dlg.draft || ({} as any);
+    const nextCmd: BuildRunCommandConfig = { ...draft } as any;
+    nextCmd.cwd = String(draft.cwd || "").trim();
+    nextCmd.backend = (draft.backend && typeof draft.backend === "object") ? draft.backend : { kind: "system" };
+    nextCmd.env = Array.isArray(draft.env)
+      ? draft.env.map((r: any) => ({ key: String(r?.key || ""), value: String(r?.value ?? "") }))
+      : [];
+
+    if (dlg.advanced) {
+      nextCmd.mode = "advanced";
+      nextCmd.commandText = undefined;
+      nextCmd.cmd = String(draft.cmd || "").trim();
+      nextCmd.args = Array.isArray(draft.args) ? draft.args.map((x: any) => String(x ?? "")).filter((x: string) => x.trim().length > 0) : [];
+      if (!nextCmd.cmd) {
+        alert(t("projects:buildRunMissingCmd", "请输入命令") as string);
+        return;
+      }
+    } else {
+      nextCmd.mode = "simple";
+      nextCmd.cmd = undefined;
+      nextCmd.args = undefined;
+      nextCmd.commandText = String(draft.commandText || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+      if (!nextCmd.commandText) {
+        alert(t("projects:buildRunMissingCmd", "请输入命令") as string);
+        return;
+      }
+    }
+
+    const existing = (await ensureBuildRunConfigLoaded(saveProject.winPath)) || {};
+    const nextCfg: DirBuildRunConfig = { ...(existing as any), [dlg.action]: nextCmd } as any;
+    const ok = await persistBuildRunConfig(saveProject.winPath, nextCfg);
+    if (!ok) {
+      alert(t("projects:buildRunSaveFailed", "保存失败") as string);
+      return;
+    }
+
+    setBuildRunDialog((prev) => ({ ...prev, open: false }));
+  }, [buildRunDialog, dirTreeStore.parentById, ensureBuildRunConfigLoaded, persistBuildRunConfig, t]);
+
+  /**
+   * 关闭 Build/Run 配置对话框（不保存）。
+   */
+  const closeBuildRunDialog = useCallback(() => {
+    setBuildRunDialog((prev) => ({ ...prev, open: false }));
+  }, []);
+
+  /**
+   * 将 child 节点挂载到 parent 作为“一级子级”，并同步 rootOrder/parentById/childOrderByParent。
+   * - 仅用于 UI 结构（不代表文件系统父子）
+   * - 若 parent 自身是子级，为避免产生二级层级，本次挂载会被忽略
+   */
+  const attachDirChildToParent = useCallback((parentId: string, childId: string) => {
+    const parent = String(parentId || "").trim();
+    const child = String(childId || "").trim();
+    if (!parent || !child || parent === child) return;
+    setDirTreeStore((prev) => {
+      // 约束：父节点必须是根级（否则会产生二级层级）
+      if (prev.parentById[parent]) return prev;
+
+      const next: DirTreeStore = {
+        ...prev,
+        rootOrder: [...(prev.rootOrder || [])],
+        parentById: { ...(prev.parentById || {}) },
+        childOrderByParent: { ...(prev.childOrderByParent || {}) },
+        expandedById: { ...(prev.expandedById || {}) },
+        labelById: { ...(prev.labelById || {}) },
+      };
+
+      const removeFromArray = (arr: string[] | undefined, id: string): string[] => {
+        const list = Array.isArray(arr) ? arr : [];
+        return list.filter((x) => x !== id);
+      };
+
+      // 先从旧父节点移除
+      const prevParent = next.parentById[child];
+      if (prevParent) {
+        next.childOrderByParent[prevParent] = removeFromArray(next.childOrderByParent[prevParent], child);
+        delete next.parentById[child];
+      }
+      // 同时从根级移除（避免重复节点）
+      next.rootOrder = removeFromArray(next.rootOrder, child);
+
+      // 写入新父子关系
+      next.parentById[child] = parent;
+      const list = next.childOrderByParent[parent] || [];
+      next.childOrderByParent[parent] = list.includes(child) ? list : [...list, child];
+      next.expandedById[parent] = true;
+      return next;
+    });
+  }, []);
+
+  /**
+   * 打开“从分支创建 worktree”面板，并加载 baseBranch 下拉的分支列表。
+   */
+  const openWorktreeCreateDialog = useCallback(async (repoProject: Project) => {
+    const repoId = String(repoProject?.id || "").trim();
+    if (!repoId) return;
+
+    // 若该仓库的 worktree 创建任务仍在进行，则优先打开进度面板
+    const runningTaskId = String(worktreeCreateRunningTaskIdByRepoIdRef.current[repoId] || "").trim();
+    if (runningTaskId) {
+      setWorktreeCreateProgress((prev) => {
+        if (prev.taskId === runningTaskId) return { ...prev, open: true, repoProjectId: repoId };
+        return { open: true, repoProjectId: repoId, taskId: runningTaskId, status: "running", log: "", logOffset: 0, updatedAt: 0, error: undefined };
+      });
+      return;
+    }
+
+    // 为 @ 引用准备文件索引根（避免用户未选中该项目时，@ 搜索仍指向旧项目）
+    try { await setActiveFileIndexRoot(repoProject.winPath); } catch {}
+
+    const defaultProvider: GitWorktreeProviderId =
+      (activeProviderId === "codex" || activeProviderId === "claude" || activeProviderId === "gemini")
+        ? (activeProviderId as any)
+        : "codex";
+
+    setWorktreeCreateDialog({
+      open: true,
+      repoProjectId: repoId,
+      branches: [],
+      baseBranch: "",
+      loadingBranches: true,
+      promptChips: [],
+      promptDraft: "",
+      useMultipleModels: false,
+      singleProviderId: defaultProvider,
+      multiCounts: { codex: defaultProvider === "codex" ? 1 : 0, claude: defaultProvider === "claude" ? 1 : 0, gemini: defaultProvider === "gemini" ? 1 : 0 },
+      creating: false,
+      error: undefined,
+    });
+
+    try {
+      const res: any = await (window as any).host?.gitWorktree?.listBranches?.(repoProject.winPath);
+      if (!(res && res.ok)) throw new Error(res?.error || "failed");
+      const branches = Array.isArray(res.branches) ? res.branches.map((x: any) => String(x || "").trim()).filter(Boolean) : [];
+      const current = String(res.current || "").trim();
+      const baseBranch = current || branches[0] || "";
+      setWorktreeCreateDialog((prev) => {
+        if (!prev.open || prev.repoProjectId !== repoId) return prev;
+        return {
+          ...prev,
+          branches,
+          baseBranch,
+          loadingBranches: false,
+          error: baseBranch ? undefined : (t("projects:worktreeMissingBaseBranch", "未能读取到基分支") as string),
+        };
+      });
+    } catch (e: any) {
+      setWorktreeCreateDialog((prev) => {
+        if (!prev.open || prev.repoProjectId !== repoId) return prev;
+        return { ...prev, branches: [], baseBranch: "", loadingBranches: false, error: String(e?.message || e) };
+      });
+    }
+  }, [activeProviderId, t]);
+
+  /**
+   * 关闭 worktree 创建面板（不执行创建）。
+   */
+  const closeWorktreeCreateDialog = useCallback(() => {
+    setWorktreeCreateDialog((prev) => ({ ...prev, open: false, creating: false, error: undefined }));
+  }, []);
+
+  /**
+   * 在指定目录中启动 Provider CLI（用于 worktree 创建后的“自动启动引擎实例”）。
+   */
+  const openProviderConsoleInProject = useCallback(async (args: {
+    project: Project;
+    providerId: GitWorktreeProviderId;
+    startupCmd: string;
+  }): Promise<{ ok: boolean; tabId?: string; error?: string }> => {
+    const project = args.project;
+    const providerId = args.providerId;
+    if (!project?.id) return { ok: false, error: "missing project" };
+    const env = getProviderEnv(providerId);
+
+    const tabName = env.terminal !== "wsl"
+      ? toShellLabel(env.terminal as any)
+      : (env.distro || `Console ${((tabsByProjectRef.current[project.id] || []).length + 1).toString()}`);
+
+    const tab: ConsoleTab = {
+      id: uid(),
+      name: String(tabName),
+      providerId,
+      logs: [],
+      createdAt: Date.now(),
+    };
+
+    const notifyEnv = buildGeminiNotifyEnv(tab.id, tab.providerId, tab.name);
+
+    let ptyId: string | undefined;
+    try {
+      const { id } = await window.host.pty.openWSLConsole({
+        terminal: env.terminal,
+        distro: env.distro,
+        wslPath: project.wslPath,
+        winPath: project.winPath,
+        cols: 80,
+        rows: 24,
+        startupCmd: args.startupCmd,
+        env: notifyEnv,
+      });
+      ptyId = id;
+    } catch (e: any) {
+      return { ok: false, error: String(e?.message || e) };
+    }
+
+    // 内置三引擎：即便会话记录落盘存在延迟，也先在 UI 侧标记，避免“自定义目录记录可移除”误判。
+    if (isBuiltInSessionProviderId(providerId)) {
+      markProjectHasBuiltInSessions(project.id);
+    } else {
+      void recordCustomProviderDirIfNeeded(project, providerId);
+    }
+
+    registerTabProject(tab.id, project.id);
+    setTabsByProject((m) => ({ ...m, [project.id]: [...(m[project.id] || []), tab] }));
+
+    if (ptyId) {
+      ptyByTabRef.current[tab.id] = ptyId;
+      setPtyByTab((m) => ({ ...m, [tab.id]: ptyId }));
+      ptyAliveRef.current[tab.id] = true;
+      setPtyAlive((m) => ({ ...m, [tab.id]: true }));
+      registerPtyForTab(tab.id, ptyId);
+      try { tm.setPty(tab.id, ptyId); } catch {}
+    }
+
+    try { window.host.projects.touch(project.id); } catch {}
+    markProjectUsed(project.id);
+    return { ok: true, tabId: tab.id };
+  }, [getProviderEnv, markProjectHasBuiltInSessions, recordCustomProviderDirIfNeeded, tm, markProjectUsed]);
+
+  /**
+   * 执行创建 worktree，并在每个 worktree 内启动对应引擎 CLI。
+   * - 目录结构/复用规则由主进程完成；渲染层负责：避免重复节点、挂载到树、启动引擎
+   */
+  const createWorktreesAndStartAgents = useCallback(async (args: {
+    repoProject: Project;
+    baseBranch: string;
+    instances: Array<{ providerId: GitWorktreeProviderId; count: number }>;
+    prompt: string;
+  }) => {
+    const repoProject = args.repoProject;
+    const repoId = String(repoProject?.id || "").trim();
+    if (!repoId) return;
+
+    const baseBranch = String(args.baseBranch || "").trim();
+    if (!baseBranch) {
+      setNoticeDialog({ open: true, title: t("projects:worktreeCreateTitle", "从分支创建 worktree") as string, message: t("projects:worktreeMissingBaseBranch", "未能读取到基分支") as string });
+      return;
+    }
+
+    const instances = Array.isArray(args.instances)
+      ? args.instances.map((x) => ({ providerId: x.providerId, count: Math.max(0, Math.floor(Number(x.count) || 0)) })).filter((x) => x.count > 0)
+      : [];
+    if (instances.length === 0) return;
+
+    // 若该仓库已有创建任务在跑，则直接打开“创建中”面板查看进度，避免重复创建
+    const runningTaskId = String(worktreeCreateRunningTaskIdByRepoIdRef.current[repoId] || "").trim();
+    if (runningTaskId) {
+      setWorktreeCreateProgress((prev) => {
+        if (prev.taskId === runningTaskId) return { ...prev, open: true, repoProjectId: repoId };
+        return { open: true, repoProjectId: repoId, taskId: runningTaskId, status: "running", log: "", logOffset: 0, updatedAt: 0, error: undefined };
+      });
+      // 创建面板若仍打开则关闭（避免用户误以为会再创建一次）
+      setWorktreeCreateDialog((prev) => (prev.open && prev.repoProjectId === repoId ? { ...prev, open: false, creating: false, error: undefined } : prev));
+      return;
+    }
+
+    // 启动后台任务（主进程执行 git worktree add，并持续产生日志）
+    let taskId = "";
+    try {
+      const res: any = await (window as any).host?.gitWorktree?.createTaskStart?.({
+        repoDir: repoProject.winPath,
+        baseBranch,
+        instances,
+        copyRules: gitWorktreeCopyRulesOnCreate,
+      });
+      if (!(res && res.ok && res.taskId)) throw new Error(res?.error || "create task start failed");
+      taskId = String(res.taskId || "").trim();
+    } catch (e: any) {
+      setWorktreeCreateDialog((prev) => (prev.open && prev.repoProjectId === repoId ? { ...prev, creating: false, error: String(e?.message || e) } : prev));
+      setNoticeDialog({
+        open: true,
+        title: t("projects:worktreeCreateTitle", "从分支创建 worktree") as string,
+        message: String((t("projects:worktreeCreateFailed", "创建 worktree 失败：{{error}}") as any) || "").replace("{{error}}", String(e?.message || e)),
+      });
+      return;
+    }
+
+    if (!taskId) return;
+    worktreeCreateRunningTaskIdByRepoIdRef.current[repoId] = taskId;
+
+    // 进入“创建中”进度面板，并关闭“创建配置”面板
+    setWorktreeCreateProgress({ open: true, repoProjectId: repoId, taskId, status: "running", log: "", logOffset: 0, updatedAt: Date.now(), error: undefined });
+    setWorktreeCreateDialog((prev) => (prev.open && prev.repoProjectId === repoId ? { ...prev, open: false, creating: false, error: undefined } : prev));
+
+    // 轮询任务输出（支持关闭 UI 后继续执行；重新打开时可继续看到日志）
+    let snapshot: WorktreeCreateTaskSnapshot | null = null;
+    let logText = "";
+    let logOffset = 0;
+    const startedAt = Date.now();
+    while (true) {
+      try {
+        const pull: any = await (window as any).host?.gitWorktree?.createTaskGet?.({ taskId, from: logOffset });
+        if (pull && pull.ok && pull.task) {
+          snapshot = pull.task as WorktreeCreateTaskSnapshot;
+          const append = String(pull.append || "");
+          if (append) logText += append;
+          logOffset = Math.max(logOffset, Math.floor(Number(snapshot.logSize) || 0));
+          setWorktreeCreateProgress((prev) => {
+            if (prev.taskId !== taskId) return prev;
+            return {
+              ...prev,
+              status: snapshot!.status,
+              log: logText,
+              logOffset,
+              updatedAt: Math.floor(Number(snapshot!.updatedAt) || Date.now()),
+              error: snapshot!.error ? String(snapshot!.error || "") : undefined,
+            };
+          });
+          if (snapshot.status !== "running") break;
+        }
+      } catch {}
+
+      // 兜底：避免无限等待
+      if (Date.now() - startedAt > 40 * 60_000) {
+        snapshot = snapshot || null;
+        setWorktreeCreateProgress((prev) => {
+          if (prev.taskId !== taskId) return prev;
+          return { ...prev, status: "error", error: "等待创建任务超时（请重试或在外部终端执行 git worktree add 诊断）" };
+        });
+        break;
+      }
+
+      await new Promise((r) => setTimeout(r, 250));
+    }
+
+    // 创建任务结束：允许再次创建（无论成功或失败）
+    try { delete worktreeCreateRunningTaskIdByRepoIdRef.current[repoId]; } catch {}
+
+    // 失败：保留进度面板，让用户查看完整输出
+    if (!(snapshot && snapshot.status === "success" && Array.isArray(snapshot.items))) {
+      setWorktreeCreateProgress((prev) => (prev.taskId === taskId ? { ...prev, open: true } : prev));
+      return;
+    }
+
+    const createdItems: CreatedWorktree[] = snapshot.items as any;
+    const prompt = String(args.prompt || "");
+    const warnings: string[] = [];
+    let firstNewProjectId: string | null = null;
+    let firstTabId: string | null = null;
+
+    for (const item of createdItems) {
+      const providerId = String(item?.providerId || "").trim().toLowerCase() as GitWorktreeProviderId;
+      const worktreePath = String(item?.worktreePath || "").trim();
+      if (!worktreePath) continue;
+
+      // 将 worktree 目录加入项目列表（若已存在则复用）
+      let wtProject: Project | null = null;
+      try {
+        const addRes: any = await window.host.projects.add({ winPath: worktreePath });
+        if (addRes && addRes.ok && addRes.project) {
+          wtProject = addRes.project as Project;
+          upsertProjectInList(wtProject);
+          // 若该 worktree 项目此前处于“隐藏项目”列表，则在创建时自动取消隐藏，避免用户误以为未创建成功
+          unhideProject(wtProject);
+        }
+      } catch {}
+      if (!wtProject) continue;
+      if (!firstNewProjectId) firstNewProjectId = wtProject.id;
+
+      // 挂载到 UI 树结构：作为当前仓库节点的一级子级
+      attachDirChildToParent(repoId, wtProject.id);
+
+      // 启动引擎 CLI（每个实例一个 worktree）
+      try {
+        const env = getProviderEnv(providerId);
+        const baseCmd = buildProviderStartupCmd(providerId, env);
+        const startupCmd = buildProviderStartupCmdWithInitialPrompt({ providerId, terminalMode: env.terminal as any, baseCmd, prompt });
+        const started = await openProviderConsoleInProject({ project: wtProject, providerId, startupCmd });
+        if (started.ok && started.tabId) {
+          if (!firstTabId) firstTabId = started.tabId;
+        } else if (!started.ok && started.error) {
+          warnings.push(`${providerId}: ${started.error}`);
+        }
+      } catch (e: any) {
+        warnings.push(`${providerId}: ${String(e?.message || e)}`);
+      }
+
+      // 规则文件复制的非致命警告
+      try {
+        const ws = Array.isArray(item?.warnings) ? item.warnings.map((x: any) => String(x || "").trim()).filter(Boolean) : [];
+        for (const w of ws) warnings.push(w);
+      } catch {}
+    }
+
+    // 选择第一个新 worktree 节点
+    if (firstNewProjectId) {
+      suppressAutoSelectRef.current = true;
+      setSelectedProjectId(firstNewProjectId);
+      setCenterMode("console");
+      setSelectedHistoryDir(null);
+      setSelectedHistoryId(null);
+      if (firstTabId) {
+        setActiveTab(firstTabId, { projectId: firstNewProjectId, focusMode: "immediate", allowDuringRename: true, delay: 0 });
+      }
+    }
+
+    // 创建完成：关闭面板
+    setWorktreeCreateProgress((prev) => (prev.taskId === taskId ? { ...prev, open: false } : prev));
+
+    // 提示：若有警告（如规则文件复制/启动失败），以轻量方式告知
+    if (warnings.length > 0) {
+      setNoticeDialog({
+        open: true,
+        title: t("projects:worktreeCreateTitle", "从分支创建 worktree") as string,
+        message: (t("projects:worktreeCreateWarnings", "创建已完成，但存在警告：\n{{warnings}}") as any).replace("{{warnings}}", warnings.join("\n")),
+      });
+    }
+  }, [attachDirChildToParent, buildProviderStartupCmd, getProviderEnv, gitWorktreeCopyRulesOnCreate, openProviderConsoleInProject, setActiveTab, t, unhideProject, upsertProjectInList]);
+
+  /**
+   * Ctrl+单击：快速创建（不弹确认/不打开面板）。
+   */
+  const quickCreateWorktree = useCallback(async (repoProject: Project) => {
+    const repoId = String(repoProject?.id || "").trim();
+    if (!repoId) return;
+
+    const defaultProvider: GitWorktreeProviderId =
+      (activeProviderId === "codex" || activeProviderId === "claude" || activeProviderId === "gemini")
+        ? (activeProviderId as any)
+        : "codex";
+
+    // 优先使用已缓存的分支信息，失败则回退到分支列表
+    const git = gitInfoByProjectId[repoId];
+    let baseBranch = String(git?.branch || "").trim();
+    if (!baseBranch) {
+      try {
+        const res: any = await (window as any).host?.gitWorktree?.listBranches?.(repoProject.winPath);
+        const branches = Array.isArray(res?.branches) ? res.branches.map((x: any) => String(x || "").trim()).filter(Boolean) : [];
+        baseBranch = String(res?.current || "").trim() || branches[0] || "";
+      } catch {}
+    }
+    if (!baseBranch) {
+      // 无法自动解析基分支时回退到创建面板（保持 UI 风格一致，并让用户可手动选择）
+      void openWorktreeCreateDialog(repoProject);
+      return;
+    }
+
+    await createWorktreesAndStartAgents({
+      repoProject,
+      baseBranch,
+      instances: [{ providerId: defaultProvider, count: 1 }],
+      prompt: "",
+    });
+  }, [activeProviderId, createWorktreesAndStartAgents, gitInfoByProjectId, openWorktreeCreateDialog]);
+
+  /**
+   * 打开“Git 操作失败”弹窗（提供外部 Git 工具/终端快捷入口）。
+   */
+  const showGitActionErrorDialog = useCallback((args: { title: string; message: string; dir: string }) => {
+    setGitActionErrorDialog({
+      open: true,
+      title: String(args.title || "").trim() || (t("projects:gitActionFailed", "Git 操作失败") as string),
+      message: String(args.message || "").trim(),
+      dir: String(args.dir || "").trim(),
+    });
+  }, [t]);
+
+  /**
+   * 关闭“Git 操作失败”弹窗。
+   */
+  const closeGitActionErrorDialog = useCallback(() => {
+    setGitActionErrorDialog((prev) => ({ ...prev, open: false }));
+  }, []);
+
+  /**
+   * 主动刷新指定项目的 git 状态（用于 worktree 删除后立即让 UI 降级为普通目录/禁用）。
+   */
+  const refreshGitInfoForProjectIds = useCallback(async (projectIds: string[]) => {
+    const ids = Array.from(new Set((projectIds || []).map((x) => String(x || "").trim()).filter(Boolean)));
+    if (ids.length === 0) return;
+    const pairs = ids
+      .map((id) => {
+        const p = projectsRef.current.find((x) => x.id === id) || null;
+        return p?.winPath ? { id, dir: p.winPath } : null;
+      })
+      .filter(Boolean) as Array<{ id: string; dir: string }>;
+    if (pairs.length === 0) return;
+    try {
+      const res: any = await (window as any).host?.gitWorktree?.statusBatch?.(pairs.map((x) => x.dir));
+      if (!(res && res.ok && Array.isArray(res.items))) return;
+      const items = res.items as GitDirInfo[];
+      setGitInfoByProjectId((prev) => {
+        const next = { ...prev };
+        for (let i = 0; i < pairs.length; i++) {
+          const pid = pairs[i].id;
+          const info = items[i];
+          if (pid && info) next[pid] = info;
+        }
+        return next;
+      });
+    } catch {}
+  }, []);
+
+  /**
+   * 中文说明：统计指定项目仍在运行的终端代理数量（以 tab 是否仍绑定 PTY 为准）。
+   */
+  const countRunningTerminalAgentsByProjectId = useCallback((projectId: string): number => {
+    const pid = String(projectId || "").trim();
+    if (!pid) return 0;
+    let count = 0;
+    const tabToProject = tabProjectRef.current;
+    const ptyByTab = ptyByTabRef.current;
+    for (const tabId of Object.keys(ptyByTab || {})) {
+      if (tabToProject[tabId] === pid) count++;
+    }
+    return count;
+  }, []);
+
+  /**
+   * 中文说明：若当前项目仍存在终端代理，则拦截 worktree 回收/删除，并提示用户先关闭终端代理。
+   */
+  const guardWorktreeRecycleAndDeleteByTerminalAgents = useCallback((project: Project): boolean => {
+    const pid = String(project?.id || "").trim();
+    if (!pid) return false;
+    const runningCount = countRunningTerminalAgentsByProjectId(pid);
+    if (runningCount <= 0) return true;
+    setWorktreeBlockedDialog({ open: true, count: runningCount });
+    return false;
+  }, [countRunningTerminalAgentsByProjectId]);
+
+  /**
+   * 打开“回收 worktree 到基分支”对话框（默认分支来自 worktree 元数据）。
+   */
+	  const openWorktreeRecycleDialog = useCallback(async (project: Project) => {
+	    const pid = String(project?.id || "").trim();
+	    if (!pid) return;
+
+	    // 若该 worktree 的回收任务仍在进行，则优先打开进度面板（可关闭/可重开）
+	    const runningTaskId = String(worktreeRecycleRunningTaskIdByProjectIdRef.current[pid] || "").trim();
+	    if (runningTaskId) {
+	      setWorktreeRecycleProgress((prev) => {
+	        if (prev.taskId === runningTaskId) return { ...prev, open: true, projectId: pid };
+	        return { open: true, projectId: pid, taskId: runningTaskId, status: "running", log: "", logOffset: 0, updatedAt: 0, error: undefined };
+	      });
+	      return;
+	    }
+	    if (!guardWorktreeRecycleAndDeleteByTerminalAgents(project)) return;
+	    setWorktreeRecycleDialog({
+	      open: true,
+	      projectId: pid,
+      repoMainPath: "",
+      branches: [],
+      baseBranch: "",
+      wtBranch: "",
+      mode: "squash",
+      commitMessage: "",
+      loading: true,
+      running: false,
+      error: undefined,
+    });
+
+    try {
+      const metaRes: any = await (window as any).host?.gitWorktree?.getMeta?.(project.winPath);
+      const meta = metaRes && metaRes.ok ? metaRes.meta : null;
+      if (!meta) throw new Error(t("projects:worktreeMetaMissing", "未找到该 worktree 的创建记录（base/wt 分支映射）") as string);
+
+      const repoMainPath = String(meta.repoMainPath || project.winPath);
+      const listRes: any = await (window as any).host?.gitWorktree?.listBranches?.(repoMainPath);
+      if (!(listRes && listRes.ok)) throw new Error(listRes?.error || (t("projects:worktreeListBranchesFailed", "读取分支列表失败") as string));
+      const branches = Array.isArray(listRes.branches) ? listRes.branches.map((x: any) => String(x || "").trim()).filter(Boolean) : [];
+
+      const baseBranch = String(meta.baseBranch || "").trim() || String(listRes.current || "").trim() || branches[0] || "";
+      const wtBranch = String(meta.wtBranch || "").trim();
+      const commitMessage = `squash: ${wtBranch || "wt"} -> ${baseBranch || "base"}`;
+
+      setWorktreeRecycleDialog((prev) => {
+        if (!prev.open || prev.projectId !== pid) return prev;
+        return { ...prev, repoMainPath, branches, baseBranch, wtBranch, commitMessage, loading: false, error: undefined };
+      });
+    } catch (e: any) {
+      setWorktreeRecycleDialog((prev) => {
+        if (!prev.open || prev.projectId !== pid) return prev;
+        return { ...prev, loading: false, error: String(e?.message || e) };
+      });
+    }
+  }, [guardWorktreeRecycleAndDeleteByTerminalAgents, t]);
+
+  /**
+   * 关闭“回收 worktree”对话框。
+   */
+  const closeWorktreeRecycleDialog = useCallback(() => {
+    setWorktreeRecycleDialog((prev) => ({ ...prev, open: false, running: false, loading: false }));
+  }, []);
+
+	  /**
+	   * 执行“回收 worktree”。
+	   */
+		  const submitWorktreeRecycle = useCallback(async (opts?: { autoStashBaseWorktree?: boolean }) => {
+		    const dlg = worktreeRecycleDialog;
+		    if (dlg.running || dlg.loading) return;
+		    const project = projectsRef.current.find((x) => x.id === dlg.projectId) || null;
+		    if (!project) return;
+		    if (!guardWorktreeRecycleAndDeleteByTerminalAgents(project)) return;
+		    const baseBranch = String(dlg.baseBranch || "").trim();
+		    const wtBranch = String(dlg.wtBranch || "").trim();
+		    if (!baseBranch || !wtBranch) return;
+
+	      // 中文说明：仅当用户在“主 worktree 脏”弹窗中确认继续时才启用自动 stash/恢复。
+	      const autoStashBaseWorktree = opts?.autoStashBaseWorktree === true;
+
+		    setWorktreeRecycleDialog((prev) => ({ ...prev, running: true, error: undefined }));
+
+		    // 与“worktree 自动提交”共用同一串行队列，避免 git lock / index 冲突。
+		    const queueKey = String(project.id || "").trim();
+		    const prev = (autoCommitQueueByProjectIdRef.current[queueKey] || Promise.resolve());
+		    const preCommitMessage = (dlg.mode === "squash" ? String(dlg.commitMessage || "").trim() : "") || `pre-recycle: ${wtBranch} -> ${baseBranch}`;
+	      let preCommitted = false;
+        let recycleTaskId = "";
+
+		    const kickoff = prev
+		      .catch(() => {})
+		      .then(async () => {
+		        // 回收前：若 worktree 仍有未提交修改，则先提交一次，避免修改丢失/导致 rebase 模式失败。
+		        const pre: any = await (window as any).host?.gitWorktree?.autoCommit?.({ worktreePath: project.winPath, message: preCommitMessage });
+		        if (!(pre && pre.ok)) throw new Error(pre?.error || (t("projects:worktreeAutoCommitFailed", "worktree 自动提交失败") as string));
+		        preCommitted = pre?.committed === true;
+
+            // 启动回收后台任务：主进程执行，并持续产生日志
+            const start: any = await (window as any).host?.gitWorktree?.recycleTaskStart?.({
+              worktreePath: project.winPath,
+              baseBranch,
+              wtBranch,
+              mode: dlg.mode,
+              commitMessage: dlg.mode === "squash" ? String(dlg.commitMessage || "").trim() || undefined : undefined,
+              autoStashBaseWorktree,
+            });
+            if (!(start && start.ok && start.taskId)) throw new Error(start?.error || "recycle task start failed");
+            recycleTaskId = String(start.taskId || "").trim();
+            return { taskId: recycleTaskId, preCommitted };
+		      });
+
+			    autoCommitQueueByProjectIdRef.current[queueKey] = kickoff.then(() => {}).catch(() => {});
+			    try {
+			      const out = await kickoff;
+	          const taskId = String(out?.taskId || "").trim();
+	        preCommitted = out?.preCommitted === true;
+
+	        const preCommitHint = preCommitted
+	          ? `提示：回收前检测到未提交修改，已在分支 ${wtBranch} 自动提交一次（${summarizeForCommitMessage(preCommitMessage, 96)}）。`
+	          : undefined;
+
+	          if (!taskId) throw new Error("recycle task id missing");
+
+	          // 回收任务开始：记录 taskId，便于侧栏再次点击“回收”时直接打开进度窗口
+	          const wtPid = String(project.id || "").trim();
+	          if (wtPid) worktreeRecycleRunningTaskIdByProjectIdRef.current[wtPid] = taskId;
+
+	          // 关闭“配置弹窗”，切换到“进度弹窗”
+			      setWorktreeRecycleDialog((prev) => ({ ...prev, open: false, running: false, loading: false }));
+	          setWorktreeRecycleProgress({ open: true, projectId: project.id, taskId, status: "running", log: "", logOffset: 0, updatedAt: Date.now(), error: undefined });
+
+          // 轮询任务输出（支持实时日志）
+          let snapshot: WorktreeRecycleTaskSnapshot | null = null;
+          let logText = "";
+          let logOffset = 0;
+          const startedAt = Date.now();
+          while (true) {
+            try {
+              const pull: any = await (window as any).host?.gitWorktree?.recycleTaskGet?.({ taskId, from: logOffset });
+              if (pull && pull.ok && pull.task) {
+                snapshot = pull.task as WorktreeRecycleTaskSnapshot;
+                const append = String(pull.append || "");
+                if (append) logText += append;
+                logOffset = Math.max(logOffset, Math.floor(Number(snapshot.logSize) || 0));
+                setWorktreeRecycleProgress((prev) => {
+                  if (prev.taskId !== taskId) return prev;
+                  return {
+                    ...prev,
+                    status: snapshot!.status,
+                    log: logText,
+                    logOffset,
+                    updatedAt: Math.floor(Number(snapshot!.updatedAt) || Date.now()),
+                    error: snapshot!.error ? String(snapshot!.error || "") : undefined,
+                  };
+                });
+                if (snapshot.status !== "running") break;
+              }
+            } catch {}
+
+            // 兜底：避免无限等待
+            if (Date.now() - startedAt > 40 * 60_000) {
+              setWorktreeRecycleProgress((prev) => {
+                if (prev.taskId !== taskId) return prev;
+                return { ...prev, status: "error", error: "等待回收任务超时（请在外部 Git 工具/终端查看状态并处理）" };
+              });
+              break;
+            }
+	            await new Promise((r) => setTimeout(r, 250));
+	          }
+
+	          // 回收任务结束：允许再次回收（无论成功或失败）
+	          try { delete worktreeRecycleRunningTaskIdByProjectIdRef.current[wtPid]; } catch {}
+
+	          const res: any = snapshot?.result;
+	          if (!snapshot || !res) {
+	            const msg = snapshot?.error || "回收任务未返回结果（请重试或在外部 Git 工具排查）";
+	            setWorktreeRecycleProgress((prev) => (prev.taskId === taskId ? { ...prev, open: true, status: "error", error: msg } : prev));
+            showGitActionErrorDialog({
+              title: t("projects:worktreeRecycleFailed", "回收 worktree 失败") as string,
+              message: `${msg}${preCommitHint ? `\n\n${preCommitHint}` : ""}`,
+              dir: dlg.repoMainPath || project.winPath,
+            });
+            return;
+          }
+
+          // BASE_WORKTREE_DIRTY：不直接失败结束，弹窗让用户选择（取消/外部工具/继续）
+          if (res && res.ok === false && String(res.errorCode || "") === "BASE_WORKTREE_DIRTY" && !autoStashBaseWorktree) {
+            setWorktreeRecycleProgress((prev) => (prev.taskId === taskId ? { ...prev, open: false } : prev));
+            setBaseWorktreeDirtyDialog({
+              open: true,
+              repoMainPath: String(res?.details?.repoMainPath || dlg.repoMainPath || project.winPath),
+              preCommitHint,
+            });
+            return;
+          }
+
+          // 其它失败：统一走结构化错误码 + i18n 映射（进度弹窗保留以便查看日志）
+          if (!(res && res.ok)) {
+            const errorCode = String(res?.errorCode || "").trim();
+            const details = res?.details || {};
+            const repoMainPath = String(details?.repoMainPath || dlg.repoMainPath || project.winPath);
+            const dirForDialog = errorCode === "WORKTREE_DIRTY" ? project.winPath : repoMainPath;
+            const stashInfo = parseRecycleStashes(details, t);
+            const stashLine = stashInfo.stashLine;
+            const hasStash = stashInfo.items.length > 0;
+            const restoreCmd = stashInfo.restoreCmd;
+            const restoreLine = restoreCmd
+              ? (t("projects:worktreeRecycleSuggestedRestore", "待主 worktree 状态正常后，可手动执行：{cmd}", { cmd: restoreCmd }) as string)
+              : "";
+            const mapped =
+              errorCode === "BASE_WORKTREE_IN_PROGRESS"
+                ? (t("projects:worktreeRecycleError_BASE_WORKTREE_IN_PROGRESS", "主 worktree 存在未完成的 Git 操作或冲突文件。请先在外部工具完成/中止当前操作后再重试。") as string)
+                : errorCode === "BASE_WORKTREE_LOCKED"
+                  ? (t("projects:worktreeRecycleError_BASE_WORKTREE_LOCKED", "仓库当前被锁定（可能存在 index.lock 或其他 Git 进程正在运行）。请关闭占用进程后重试。") as string)
+                  : errorCode === "BASE_WORKTREE_STASH_FAILED"
+                    ? (t("projects:worktreeRecycleError_BASE_WORKTREE_STASH_FAILED", "自动暂存主 worktree 失败。请在外部工具检查 Git 状态并手动处理。") as string)
+                    : errorCode === "BASE_WORKTREE_DIRTY_AFTER_STASH"
+                      ? (t("projects:worktreeRecycleError_BASE_WORKTREE_DIRTY_AFTER_STASH", "已创建 stash，但主 worktree 仍然不干净（例如子模块/嵌套仓库修改等 stash 无法覆盖的情况）。请在外部工具处理。") as string)
+                      : errorCode === "WORKTREE_DIRTY"
+                        ? (t("projects:worktreeRecycleError_WORKTREE_DIRTY", "该 worktree 存在未提交修改。请先提交/暂存或取消修改后再回收。") as string)
+                        : errorCode === "RECYCLE_FAILED"
+                          ? (hasStash
+                              ? (t("projects:worktreeRecycleError_RECYCLE_FAILED_STASHED", "回收过程中失败。为避免把主 worktree 改动叠加到冲突/中断态，未自动恢复 stash。请先在外部工具中处理回收失败原因后再自行恢复。") as string)
+                              : (t("projects:worktreeRecycleError_RECYCLE_FAILED", "回收过程中失败。请在外部工具中查看冲突/中断/hook 等原因并处理后再重试。") as string))
+                          : (String(details?.stderr || details?.error || "").trim() || (t("projects:worktreeRecycleFailed", "回收 worktree 失败") as string));
+
+            const message = [mapped, stashLine, restoreLine, preCommitHint ? `\n${preCommitHint}` : ""].filter((x) => String(x || "").trim()).join("\n\n");
+            setWorktreeRecycleProgress((prev) => (prev.taskId === taskId ? { ...prev, status: "error", error: mapped } : prev));
+            showGitActionErrorDialog({
+              title: t("projects:worktreeRecycleFailed", "回收 worktree 失败") as string,
+              message,
+              dir: dirForDialog,
+            });
+            return;
+          }
+
+          // 成功：关闭进度弹窗，进入“是否删除 worktree”步骤
+          setWorktreeRecycleProgress((prev) => (prev.taskId === taskId ? { ...prev, open: false } : prev));
+		      const squashHint =
+		        dlg.mode === "squash"
+		          ? (t("projects:worktreeRecycleSquashAfterHint", "提示：你选择的是“提交压缩（squash）”回收。该方式不会把 worktree 分支的提交历史合并到基分支，所以删除分支时 Git 会判定“未合并”，需要强制删除（不会影响已回收的改动）。") as string)
+		          : undefined;
+
+          const warningCode = String(res?.warningCode || "").trim();
+          const details = res?.details || {};
+          const stashInfo = parseRecycleStashes(details, t);
+          const stashMsg = stashInfo.stashMsgForWarning;
+          const stashSha = stashInfo.stashShaForWarning;
+          const restoreCmd = stashInfo.restoreCmd;
+          const warningHint =
+            warningCode === "BASE_WORKTREE_RESTORE_CONFLICT"
+              ? (t("projects:worktreeRecycleWarning_BASE_WORKTREE_RESTORE_CONFLICT", "提示：回收已完成，但主 worktree 自动恢复发生冲突。请用外部工具解决冲突；stash 仍保留：{msg} {sha}", { msg: stashMsg || "-", sha: stashSha || "" }) as string)
+              : warningCode === "BASE_WORKTREE_RESTORE_FAILED"
+                ? (t("projects:worktreeRecycleWarning_BASE_WORKTREE_RESTORE_FAILED", "提示：回收已完成，但主 worktree 自动恢复失败。stash 仍保留：{msg} {sha}\n你可以手动执行：{cmd}", { msg: stashMsg || "-", sha: stashSha || "", cmd: restoreCmd || (stashSha ? `git stash apply --index ${stashSha}` : "") }) as string)
+                : warningCode === "BASE_WORKTREE_STASH_DROP_FAILED"
+                  ? (t("projects:worktreeRecycleWarning_BASE_WORKTREE_STASH_DROP_FAILED", "提示：回收已完成且已尝试恢复，但自动清理 stash 失败。你可以稍后手动删除该 stash：{sha}", { sha: stashSha || "" }) as string)
+                  : undefined;
+
+          const afterRecycleHint = [preCommitHint, squashHint, warningHint].filter(Boolean).join("\n") || undefined;
+          setWorktreeDeleteDialog({
+            open: true,
+            projectId: project.id,
+            afterRecycle: true,
+            afterRecycleHint,
+            running: false,
+            needsForceRemoveWorktree: false,
+            needsForceDeleteBranch: false,
+            error: undefined,
+          });
+		    } catch (e: any) {
+		      const preCommitHint = preCommitted
+	          ? `\n\n提示：回收前检测到未提交修改，已在分支 ${wtBranch} 自动提交一次（${summarizeForCommitMessage(preCommitMessage, 96)}）。`
+	          : "";
+		      setWorktreeRecycleDialog((prev) => ({ ...prev, running: false, error: String(e?.message || e) }));
+          setWorktreeRecycleProgress((prev) => (prev.taskId && prev.taskId === recycleTaskId ? { ...prev, status: "error", error: String(e?.message || e) } : prev));
+		      showGitActionErrorDialog({
+		        title: t("projects:worktreeRecycleFailed", "回收 worktree 失败") as string,
+		        message: `${String(e?.message || e)}${preCommitHint}`,
+		        dir: dlg.repoMainPath || project.winPath,
+		      });
+		    }
+		  }, [guardWorktreeRecycleAndDeleteByTerminalAgents, showGitActionErrorDialog, t, worktreeRecycleDialog]);
+
+  /**
+   * 打开“删除 worktree”对话框。
+   */
+		  const openWorktreeDeleteDialog = useCallback((project: Project, afterRecycle?: boolean) => {
+		    const pid = String(project?.id || "").trim();
+		    if (!pid) return;
+
+		    // 回收进行中：禁止删除（避免与回收流程并发导致状态不一致）
+		    const runningRecycleTaskId = String(worktreeRecycleRunningTaskIdByProjectIdRef.current[pid] || "").trim();
+		    if (runningRecycleTaskId) {
+		      setNoticeDialog({
+		        open: true,
+		        title: t("projects:worktreeDeleteTitle", "删除 worktree") as string,
+		        message: t(
+		          "projects:worktreeDeleteBlockedByRecycling",
+		          "该 worktree 正在回收中，暂不可删除。你可以点击“回收”查看进度。"
+		        ) as string,
+		      });
+		      setWorktreeRecycleProgress((prev) => {
+		        if (prev.taskId === runningRecycleTaskId) return { ...prev, open: true, projectId: pid };
+		        return { open: true, projectId: pid, taskId: runningRecycleTaskId, status: "running", log: "", logOffset: 0, updatedAt: 0, error: undefined };
+		      });
+		      return;
+		    }
+		    if (!guardWorktreeRecycleAndDeleteByTerminalAgents(project)) return;
+		    if (worktreeDeleteInFlightByProjectIdRef.current[pid]) {
+		      setNoticeDialog({
+		        open: true,
+	        title: t("projects:worktreeDeleteTitle", "删除 worktree") as string,
+	        message: t("projects:worktreeDeleteInProgress", "该 worktree 正在删除中，请勿重复操作。") as string,
+	      });
+	      return;
+	    }
+	    setWorktreeDeleteDialog({
+	      open: true,
+	      projectId: pid,
+	      afterRecycle: !!afterRecycle,
+	      afterRecycleHint: undefined,
+	      running: false,
+	      needsForceRemoveWorktree: false,
+	      needsForceDeleteBranch: false,
+	      error: undefined,
+	    });
+	  }, [guardWorktreeRecycleAndDeleteByTerminalAgents, t]);
+
+  /**
+   * 关闭“删除 worktree”对话框。
+   */
+	  const closeWorktreeDeleteDialog = useCallback(() => {
+	    setWorktreeDeleteDialog((prev) => ({
+	      ...prev,
+	      open: false,
+	      afterRecycleHint: undefined,
+	      running: false,
+	      needsForceRemoveWorktree: false,
+	      needsForceDeleteBranch: false,
+	      error: undefined,
+	    }));
+	  }, []);
+
+  /**
+   * 执行“删除 worktree”（包含：worktree remove + 删除专用分支；必要时二次强确认）。
+   */
+	  const submitWorktreeDelete = useCallback(async (opts?: { forceRemoveWorktree?: boolean; forceDeleteBranch?: boolean }) => {
+	    const dlg = worktreeDeleteDialog;
+	    if (!dlg.open || dlg.running) return;
+	    if (worktreeDeleteSubmitGuardRef.current) return;
+	    const project = projectsRef.current.find((x) => x.id === dlg.projectId) || null;
+	    if (!project) return;
+
+	    // 回收进行中：禁止删除（避免与回收流程并发导致状态不一致）
+	    const pid = String(project.id || "").trim();
+	    const runningRecycleTaskId = String(worktreeRecycleRunningTaskIdByProjectIdRef.current[pid] || "").trim();
+	    if (runningRecycleTaskId) {
+	      setWorktreeDeleteDialog((prev) => (prev.open && prev.projectId === pid ? { ...prev, running: false, error: t("projects:worktreeDeleteBlockedByRecycling", "该 worktree 正在回收中，暂不可删除。你可以点击“回收”查看进度。") as string } : prev));
+	      setWorktreeRecycleProgress((prev) => {
+	        if (prev.taskId === runningRecycleTaskId) return { ...prev, open: true, projectId: pid };
+	        return { open: true, projectId: pid, taskId: runningRecycleTaskId, status: "running", log: "", logOffset: 0, updatedAt: 0, error: undefined };
+	      });
+	      return;
+	    }
+	    if (!guardWorktreeRecycleAndDeleteByTerminalAgents(project)) return;
+	
+	    // 防重复：即使用户关闭弹窗后再次打开，也不允许重复触发同一 worktree 的删除
+	    if (worktreeDeleteInFlightByProjectIdRef.current[String(project.id || "").trim()]) {
+      setNoticeDialog({
+        open: true,
+        title: t("projects:worktreeDeleteTitle", "删除 worktree") as string,
+        message: t("projects:worktreeDeleteInProgress", "该 worktree 正在删除中，请勿重复操作。") as string,
+      });
+      return;
+    }
+
+    worktreeDeleteSubmitGuardRef.current = true;
+    setWorktreeDeleteInFlight(project.id, true);
+
+    setWorktreeDeleteDialog((prev) => ({ ...prev, running: true, error: undefined }));
+    try {
+      const res: any = await (window as any).host?.gitWorktree?.remove?.({
+        worktreePath: project.winPath,
+        deleteBranch: true,
+        forceRemoveWorktree: opts?.forceRemoveWorktree === true,
+        forceDeleteBranch: opts?.forceDeleteBranch === true,
+      });
+      if (res && res.ok) {
+        setWorktreeDeleteDialog((prev) => ({ ...prev, open: false, running: false }));
+        void refreshGitInfoForProjectIds([project.id]);
+        return;
+      }
+      if (res?.needsForceRemoveWorktree) {
+        setWorktreeDeleteDialog((prev) => ({ ...prev, running: false, needsForceRemoveWorktree: true, error: String(res?.error || "") }));
+        return;
+      }
+      if (res?.needsForceDeleteBranch) {
+        setWorktreeDeleteDialog((prev) => ({ ...prev, running: false, needsForceDeleteBranch: true, error: String(res?.error || "") }));
+        return;
+      }
+      throw new Error(res?.error || "delete failed");
+    } catch (e: any) {
+      setWorktreeDeleteDialog((prev) => ({ ...prev, running: false, error: String(e?.message || e) }));
+      showGitActionErrorDialog({
+        title: t("projects:worktreeDeleteFailed", "删除 worktree 失败") as string,
+        message: String(e?.message || e),
+        dir: project.winPath,
+      });
+    } finally {
+      worktreeDeleteSubmitGuardRef.current = false;
+      setWorktreeDeleteInFlight(project.id, false);
+    }
+  }, [guardWorktreeRecycleAndDeleteByTerminalAgents, refreshGitInfoForProjectIds, setWorktreeDeleteInFlight, showGitActionErrorDialog, t, worktreeDeleteDialog]);
+
+	  /**
+	   * 若当前项目满足“worktree 自动提交”条件，则将一次自动提交加入队列（同一项目串行执行，避免 git lock 冲突）。
+	   */
+	  const enqueueAutoCommit = useCallback((projectId: string, source: "user" | "agent", text: string) => {
+	    if (!gitWorktreeAutoCommitEnabled) return;
+	    const pid = String(projectId || "").trim();
+	    if (!pid) return;
+	    const project = projectsRef.current.find((x) => x.id === pid) || null;
+	    if (!project?.winPath) return;
+	    // 关键修复：不要依赖前端的 git 状态缓存是否已刷新（新建 worktree 后第一轮可能尚未写入 gitInfoByProjectId）。
+	    // 是否为“非主 worktree 根目录”的最终判定交由主进程完成，避免首次对话漏触发导致“第二次对话才提交”的体验问题。
+
+	    const message = buildAutoCommitMessage(source, text);
+	    if (!message.trim()) return;
+
+	    const key = pid;
+	    const prev = autoCommitQueueByProjectIdRef.current[key] || Promise.resolve();
+	    autoCommitQueueByProjectIdRef.current[key] = prev
+	      .catch(() => {})
+	      .then(async () => {
+	        try {
+	          const res: any = await (window as any).host?.gitWorktree?.autoCommit?.({ worktreePath: project.winPath, message });
+	          if (res && res.ok) return;
+	          throw new Error(res?.error || "autoCommit failed");
+	        } catch (e: any) {
+	          showGitActionErrorDialog({
+	            title: t("projects:autoCommitFailedTitle", "自动提交失败") as string,
+	            message: String(e?.message || e),
+	            dir: project.winPath,
+	          });
+	        }
+	      });
+	  }, [gitWorktreeAutoCommitEnabled, showGitActionErrorDialog, t]);
+
   // ---------- Renderers ----------
 
   const Sidebar = (
-    <div className="flex h-full min-h-0 min-w-[240px] flex-col border-r bg-white/50 dark:border-slate-800 dark:bg-slate-900/40">
+    <div className="flex h-full min-h-0 min-w-0 flex-col border-r bg-white/50 dark:border-slate-800 dark:bg-slate-900/40">
 	      <div className="flex items-center gap-2 px-3 py-3">
 	        <DropdownMenu>
 	          <DropdownMenuTrigger>
@@ -3526,24 +5739,76 @@ export default function CodexFlowManagerUI() {
           </Button>
         </div>
       </div>
-      <ScrollArea className="flex-1 min-h-0 px-2 pb-6">
-        <div className="space-y-1 pr-1">
-          {filtered.map((p) => {
+      <ScrollArea className="flex-1 min-h-0 pl-2 pr-[5px] pb-6">
+        <div
+          className="space-y-1 relative"
+          onDragOver={(e) => {
+            if (!dirDrag?.draggingId) return;
+            // 若目标在行内，则由行自身处理，避免 root-end 覆盖 before/after/asChild 的落点判断
+            try {
+              const el = e.target as any;
+              if (el && typeof el.closest === "function" && el.closest("[data-dir-row]")) return;
+            } catch {}
+            e.preventDefault();
+            try { e.dataTransfer.dropEffect = "move"; } catch {}
+            // 落到空白区域：视为移动到根级末尾
+            if (!dirDrag.overId || dirDrag.position !== "root-end") {
+              setDirDrag((prev) => prev ? { ...prev, overId: "", position: "root-end" } : null);
+            }
+          }}
+          onDrop={(e) => {
+            const src = dirDrag?.draggingId;
+            if (!src) return;
+            try {
+              const el = e.target as any;
+              if (el && typeof el.closest === "function" && el.closest("[data-dir-row]")) return;
+            } catch {}
+            e.preventDefault();
+            applyDirDrop(src, null, "root-end");
+            setDirDrag(null);
+          }}
+        >
+          {dirDrag?.draggingId && dirDrag.position === "root-end" && !dirDrag.overId ? (
+            <div className="pointer-events-none absolute left-3 right-3 -bottom-1 h-[2px] rounded-full bg-[var(--cf-accent)]/60" />
+          ) : null}
+          {(query.trim() ? filtered.map((p) => ({ project: p, depth: 0 as const })) : dirTreeRows).map((row) => {
+            const p = row.project;
+            const depth = row.depth;
             const tabsInProject = tabsByProject[p.id] || [];
             const liveCount = tabsInProject.filter((tab) => !!ptyAlive[tab.id]).length;
             const pendingCount = pendingByProject[p.id] ?? 0;
             const isHidden = hiddenProjectIdSet.has(p.id);
+            const git = gitInfoByProjectId[p.id];
+            const exists = git ? git.exists && git.isDirectory : true;
+            const isRepoRoot = !!git?.isRepoRoot;
+            const branchFull = git?.branch || "";
+            const isDetached = !!git?.detached;
+            const branch = formatBranchLabel(branchFull);
+            const isMainWorktree = !!git?.isWorktree && !!git?.mainWorktree && toDirKeyForCache(git.mainWorktree) === toDirKeyForCache(git.dir);
+            const isWorktreeNode = !!git?.isWorktree && !!git?.isRepoRoot;
+            const isSecondaryWorktree = isWorktreeNode && !isMainWorktree;
+            const selected = p.id === selectedProjectId;
+            const hasChildren = depth === 0 && hasDirChildren(p.id);
+            const expanded = hasChildren && dirTreeStore.expandedById[p.id] !== false;
+            const canOperateOnDir = exists;
+            const canDrag = !query.trim();
+            const isEditingDirLabel = dirLabelDialog.open && dirLabelDialog.projectId === p.id;
+            const isChildNode = isDirChild(p.id);
+            const canCreateWorktree = canOperateOnDir && isRepoRoot && !isSecondaryWorktree && !isChildNode;
+
+            const rowClass = `group relative flex items-center justify-between rounded-lg transition cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800 ${isHidden ? "opacity-60" : ""} ${selected ? "bg-slate-100 dark:bg-slate-800/80 dark:text-slate-100" : ""}`;
+            const rowPadding = depth === 1 ? "pl-1 pr-2" : "pl-[1px] pr-[7px]";
+
             return (
               <div
                 key={p.id}
-                className={`group flex cursor-pointer items-center justify-between rounded-lg px-3 py-2 transition hover:bg-slate-100 dark:hover:bg-slate-800 ${isHidden ? 'opacity-60' : ''} ${
-                  p.id === selectedProjectId ? 'bg-slate-100 dark:bg-slate-800/80 dark:text-slate-100' : ''
-                }`}
+                data-dir-row="1"
+                className={`${rowClass} ${rowPadding} h-14`}
                 onClick={() => {
                   // 点击项目时默认进入控制台，并清除历史选择（避免自动跳到历史详情）
                   suppressAutoSelectRef.current = true;
                   setSelectedProjectId(p.id);
-                  setCenterMode('console');
+                  setCenterMode("console");
                   setSelectedHistoryDir(null);
                   setSelectedHistoryId(null);
                 }}
@@ -3551,32 +5816,175 @@ export default function CodexFlowManagerUI() {
                   e.preventDefault();
                   setProjectCtxMenu({ show: true, x: e.clientX, y: e.clientY, project: p });
                 }}
+	                onDragOver={(e) => {
+	                  const src = dirDrag?.draggingId;
+	                  if (!src) return;
+	                  if (depth !== 0) {
+	                    // 子级不作为 drop target：仅清理落点提示，不允许 drop
+	                    setDirDrag((prev) => (prev && prev.draggingId === src ? { draggingId: src } : prev));
+	                    return;
+	                  }
+	                  if (src === p.id) return;
+	                  e.preventDefault();
+	                  try { e.dataTransfer.dropEffect = "move"; } catch {}
+	                  const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
+	                  const y = e.clientY - rect.top;
+	                  const ratio = rect.height > 0 ? y / rect.height : 0.5;
+	                  // 说明：拖到中间区域默认作为子级移动；拖到上下边缘可提升为根级并参与根级排序
+	                  const srcHasChildren = hasDirChildren(src);
+	                  const allowAsChild = !srcHasChildren && !isDirChild(p.id);
+	                  const pos = resolveDirRowDropPosition(ratio, { allowAsChild });
+	                  setDirDrag({ draggingId: src, overId: p.id, position: pos });
+	                }}
+                onDrop={(e) => {
+                  const src = dirDrag?.draggingId;
+                  const pos = dirDrag?.position;
+                  if (!src || !pos) return;
+                  e.preventDefault();
+                  if (depth !== 0) return;
+                  if (src === p.id) return;
+                  applyDirDrop(src, p.id, pos === "asChild" ? "asChild" : (pos === "before" ? "before" : "after"));
+                  setDirDrag(null);
+                }}
               >
-                {/* 左侧内容区域：可水平滚动以查看长路径；右侧计数固定不滚动，避免遮挡 */}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 font-medium dark:text-[var(--cf-text-primary)]">
-                    <FolderOpen className="h-4 w-4 text-slate-500 dark:text-[var(--cf-text-secondary)]" />
-                    <span className="truncate max-w-[16rem]" title={p.name}>{p.name}</span>
-                    {isHidden ? (
-                      <span
-                        className="inline-flex items-center"
-                        title={t('projects:hiddenTag') as string}
-                      >
-                        <EyeOff className="h-3.5 w-3.5 text-slate-500 dark:text-[var(--cf-text-muted)]" />
-                      </span>
+                {dirDrag?.draggingId && depth === 0 && dirDrag.overId === p.id ? (
+                  <div className="pointer-events-none absolute inset-0">
+                    {dirDrag.position === "asChild" ? (
+                      <div className="absolute inset-0 rounded-lg ring-2 ring-[var(--cf-accent)]/35" />
+                    ) : null}
+                    {dirDrag.position === "before" ? (
+                      <div className="absolute left-2 right-2 top-0 h-[2px] rounded-full bg-[var(--cf-accent)]/80" />
+                    ) : null}
+                    {dirDrag.position === "after" ? (
+                      <div className="absolute left-2 right-2 bottom-0 h-[2px] rounded-full bg-[var(--cf-accent)]/80" />
                     ) : null}
                   </div>
-                  <div className="text-xs text-slate-500 dark:text-[var(--cf-text-muted)] overflow-x-auto no-scrollbar whitespace-nowrap pr-1" title={p.winPath}>{p.winPath}</div>
+                ) : null}
+
+                {/* 左侧：展开/收起 + 名称与路径；拖拽仅绑定在名称与路径区域，避免按钮误触 */}
+                <div className="flex-1 min-w-0 flex items-start gap-[1px]">
+                  <div className="mt-[4px] shrink-0">
+                    {hasChildren ? (
+                      <MiniIconButton
+                        title={expanded ? t("common:collapse", "收起") as string : t("common:expand", "展开") as string}
+                        onClick={(e) => { e.stopPropagation(); toggleDirExpanded(p.id); }}
+                      >
+                        {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                      </MiniIconButton>
+                    ) : (
+                      <span className="block h-[12px] w-[12px]" />
+                    )}
+                  </div>
+                  <div
+                    className="flex-1 min-w-0"
+                    draggable={canDrag && !isEditingDirLabel}
+                    onDragStart={(e) => onDirDragStart(e, p.id)}
+                    onDragEnd={onDirDragEnd}
+                  >
+                    <div className="flex items-center gap-2 font-medium dark:text-[var(--cf-text-primary)]">
+                      {isEditingDirLabel ? (
+                        <input
+                          autoFocus
+                          onFocus={(e) => { try { (e.target as HTMLInputElement).select(); } catch {} }}
+                          onMouseDown={(e) => { e.stopPropagation(); }}
+                          className="h-6 flex-1 min-w-0 max-w-[16rem] bg-transparent px-1 -mx-1 rounded-apple-sm border border-transparent outline-none focus:border-[var(--cf-border)] focus:bg-white/60 dark:focus:bg-slate-900/60"
+                          value={String(dirLabelDialog.draft || "")}
+                          placeholder={String(p.name || "").trim() || (t("projects:renameLabelPlaceholder", "留空表示无备注") as string)}
+                          onChange={(e) => setDirLabelDialog((prev) => ({ ...prev, draft: String(e.target.value || "") }))}
+                          onBlur={(e) => submitDirLabelDialog((e.target as HTMLInputElement).value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              submitDirLabelDialog((e.target as HTMLInputElement).value);
+                            } else if (e.key === "Escape") {
+                              e.preventDefault();
+                              closeDirLabelDialog();
+                            }
+                          }}
+                        />
+                      ) : (
+                        <span
+                          className="truncate max-w-[16rem]"
+                          title={getDirNodeLabel(p)}
+                          onDoubleClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            openDirLabelDialog(p);
+                          }}
+                        >
+                          {getDirNodeLabel(p)}
+                        </span>
+                      )}
+                      {!exists ? (
+                        <span className="inline-flex items-center" title={t('terminal:dirMissing') as string}>
+                          <TriangleAlert className="h-3.5 w-3.5 text-amber-500" />
+                        </span>
+                      ) : null}
+                      {isHidden ? (
+                        <span className="inline-flex items-center" title={t("projects:hiddenTag") as string}>
+                          <EyeOff className="h-3.5 w-3.5 text-slate-500 dark:text-[var(--cf-text-muted)]" />
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="text-xs text-slate-500 dark:text-[var(--cf-text-muted)] overflow-x-auto no-scrollbar whitespace-nowrap pr-1" title={p.winPath}>
+                      {p.winPath}
+                    </div>
+                  </div>
                 </div>
-                <div className="ml-2 shrink-0 flex items-center gap-2">
+
+                {/* 右侧：动作区（目录缺失时仍允许选择/展开，仅禁用需要真实目录的操作） */}
+                <div className="ml-2 shrink-0 flex items-center gap-1">
+	                  {canOperateOnDir ? (
+	                    <WorktreeControlPad
+	                      mode={isSecondaryWorktree ? "secondary" : isRepoRoot ? "root" : "normal"}
+	                      deleteDisabledReason={
+	                        isSecondaryWorktree && !!worktreeDeleteInFlightByProjectId[p.id]
+	                          ? "deleting"
+	                          : isSecondaryWorktree && !!String(worktreeRecycleRunningTaskIdByProjectIdRef.current[p.id] || "").trim()
+	                            ? "recycling"
+	                            : undefined
+	                      }
+	                      branch={
+	                        isSecondaryWorktree || isRepoRoot
+	                          ? {
+	                              short: branch.short || (isDetached ? "DET" : ""),
+                              full: branch.full,
+                              isDetached,
+                              headSha: git?.headSha,
+                              disabled: !canCreateWorktree && isRepoRoot,
+                              title:
+                                isRepoRoot && !canCreateWorktree
+                                  ? (t("projects:worktreeCreateDisabledChild", "该节点已为子级，无法再创建 worktree（层级至多一级）") as string)
+                                  : isDetached
+                                  ? `Detached HEAD ${git?.headSha ? `(${git.headSha})` : ""}`.trim()
+                                  : isRepoRoot
+                                  ? `${branch.full}\n${t("projects:worktreeCreateBranchHint", "单击：打开创建面板；Ctrl + 左键：快速创建工作区") as string}`
+                                  : branch.full,
+                            }
+                          : undefined
+                      }
+                      onBranchClick={(e) => {
+                        e.stopPropagation();
+                        if (!canCreateWorktree || !isRepoRoot) return;
+                        if (e.ctrlKey) void quickCreateWorktree(p);
+                        else void openWorktreeCreateDialog(p);
+	                      }}
+	                      onBuild={(isRightClick) => void triggerBuildRun(p, "build", isRightClick)}
+	                      onRun={(isRightClick) => void triggerBuildRun(p, "run", isRightClick)}
+	                      onRecycle={() => void openWorktreeRecycleDialog(p)}
+	                      onDelete={() => void openWorktreeDeleteDialog(p, false)}
+	                      t={t}
+	                    />
+	                  ) : null}
+
                   {pendingCount > 0 ? (
                     <span
-                      className="inline-flex h-2 w-2 rounded-full bg-red-500 dark:bg-[var(--cf-red)] dark:shadow-sm"
-                      title={t('common:notifications.openTabHint', '点击查看详情') as string}
+                      className="ml-1 inline-flex h-2 w-2 rounded-full bg-red-500 dark:bg-[var(--cf-red)] dark:shadow-sm"
+                      title={t("common:notifications.openTabHint", "点击查看详情") as string}
                     ></span>
                   ) : null}
                   {liveCount > 0 ? (
-                    <span className="inline-flex items-center justify-center rounded-full bg-[var(--cf-accent)] text-white text-[10px] font-apple-semibold h-5 min-w-[20px] px-1 shadow-apple-xs ring-1 ring-[var(--cf-accent)]/20">
+                    <span className="ml-1 inline-flex items-center justify-center rounded-full bg-[var(--cf-accent)] text-white text-[10px] font-apple-semibold h-5 min-w-[20px] px-1 shadow-apple-xs ring-1 ring-[var(--cf-accent)]/20">
                       {liveCount}
                     </span>
                   ) : null}
@@ -4533,7 +6941,7 @@ export default function CodexFlowManagerUI() {
 
   return (
     <TooltipProvider>
-      <div className={`grid h-screen min-h-0 grid-rows-[minmax(0,1fr)] overflow-hidden ${showHistoryPanel ? 'grid-cols-[240px_1fr_240px]' : 'grid-cols-[240px_1fr]'}`}>
+      <div className={`grid h-screen min-h-0 grid-rows-[minmax(0,1fr)] overflow-hidden ${showHistoryPanel ? 'grid-cols-[222px_1fr_240px]' : 'grid-cols-[222px_1fr]'}`}>
         {Sidebar}
         <div className="grid h-full min-w-0 grid-rows-[auto_1fr] bg-white/60 min-h-0 overflow-hidden dark:bg-slate-900/40 dark:text-slate-100">
           {TopBar}
@@ -4696,12 +7104,16 @@ export default function CodexFlowManagerUI() {
         >
           {(function renderProjectMenu() {
             const menuItems: JSX.Element[] = [];
+            const proj = projectCtxMenu.project;
+            const projGit = proj ? gitInfoByProjectId[proj.id] : undefined;
+            const dirExists = proj ? (projGit ? !!(projGit.exists && projGit.isDirectory) : true) : false;
+            const dirRequiredBtnCls = "disabled:opacity-50 disabled:pointer-events-none";
             menuItems.push(
               <button
                 key="show-in-explorer"
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
+                disabled={!dirExists}
+                className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast ${dirRequiredBtnCls}`}
                 onClick={async () => {
-                  const proj = projectCtxMenu.project;
                   if (proj) {
                     try {
                       const res: any = await window.host.utils.showInFolder(proj.winPath);
@@ -4716,10 +7128,40 @@ export default function CodexFlowManagerUI() {
             );
             menuItems.push(
               <button
-                key="open-external"
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
+                key="open-git-tool"
+                disabled={!dirExists}
+                className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast ${dirRequiredBtnCls}`}
                 onClick={async () => {
-                  const proj = projectCtxMenu.project;
+                  if (proj) {
+                    try { await (window as any).host?.gitWorktree?.openExternalTool?.(proj.winPath); } catch {}
+                  }
+                  setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
+                }}
+              >
+                <ExternalLink className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t("projects:ctxOpenExternalGitTool", "在外部 Git 工具中打开") as string}
+              </button>
+            );
+            menuItems.push(
+              <button
+                key="open-git-terminal"
+                disabled={!dirExists}
+                className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast ${dirRequiredBtnCls}`}
+                onClick={async () => {
+                  if (proj) {
+                    try { await (window as any).host?.gitWorktree?.openTerminal?.(proj.winPath); } catch {}
+                  }
+                  setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
+                }}
+              >
+                <TerminalSquare className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t("projects:ctxOpenGitTerminal", "在外部终端 / Git Bash 打开") as string}
+              </button>
+            );
+            menuItems.push(
+              <button
+                key="open-external"
+                disabled={!dirExists}
+                className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast ${dirRequiredBtnCls}`}
+                onClick={async () => {
 	                  if (proj) {
 	                    try {
 	                      const env = getProviderEnv(activeProviderId);
@@ -4744,7 +7186,6 @@ export default function CodexFlowManagerUI() {
 	                <ExternalLink className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('projects:ctxOpenExternalConsoleWith', { env: toShellLabel(getProviderEnv(activeProviderId).terminal as any), provider: getProviderLabel(activeProviderId) })}
 	              </button>
 	            );
-            const proj = projectCtxMenu.project;
             if (proj) {
               const isHidden = hiddenProjectIdSet.has(proj.id);
               if (isHidden) {
@@ -4819,6 +7260,1112 @@ export default function CodexFlowManagerUI() {
         </div>
       )}
 
+      {/* Build/Run 配置对话框（仅影响 Build/Run 的外部终端执行链路） */}
+      <Dialog
+        open={buildRunDialog.open}
+        onOpenChange={(open) => {
+          if (open) return;
+          closeBuildRunDialog();
+        }}
+      >
+        <DialogContent className="max-w-lg">
+          <DialogHeader className="pb-2 border-b border-slate-100 dark:border-slate-800/50">
+            <DialogTitle>
+              {buildRunDialog.action === "build"
+                ? (t("projects:buildCommandTitle", "配置 Build 命令") as string)
+                : (t("projects:runCommandTitle", "配置 Run 命令") as string)}
+            </DialogTitle>
+            <DialogDescription>
+              {t("projects:buildRunDialogDesc", "首次配置后将直接执行；右键按钮可随时编辑。") as string}
+            </DialogDescription>
+          </DialogHeader>
+          {(function renderBuildRunDialogBody() {
+            const target = projectsRef.current.find((x) => x.id === buildRunDialog.projectId) || null;
+            if (!target) return null;
+            const parentId = String(buildRunDialog.parentProjectId || dirTreeStore.parentById[target.id] || "").trim();
+            const parent = parentId ? (projectsRef.current.find((x) => x.id === parentId) || null) : null;
+            const canChooseParent = !!parentId && !!parent;
+            const override = buildRunDialog.saveScope === "self";
+
+            const draft = buildRunDialog.draft || ({} as any);
+            const envRows = Array.isArray(draft.env) ? (draft.env as any[]) : [];
+            const backendKind = String((draft.backend as any)?.kind || "system");
+            const wslDistroDraft = String((draft.backend as any)?.distro || "").trim();
+
+            const setDraft = (patch: Partial<BuildRunCommandConfig>) => {
+              setBuildRunDialog((prev) => ({ ...prev, draft: { ...(prev.draft as any), ...(patch as any) } }));
+            };
+            const setEnvRow = (idx: number, next: { key: string; value: string }) => {
+              const list = Array.isArray(envRows) ? [...envRows] : [];
+              list[idx] = next as any;
+              setDraft({ env: list as any });
+            };
+            const removeEnvRow = (idx: number) => {
+              const list = Array.isArray(envRows) ? envRows.filter((_: any, i: number) => i !== idx) : [];
+              setDraft({ env: list as any });
+            };
+            const addEnvRow = () => {
+              const list = Array.isArray(envRows) ? [...envRows] : [];
+              list.push({ key: "", value: "" });
+              setDraft({ env: list as any });
+            };
+
+            const labelClass = "text-[10px] font-bold uppercase tracking-wider text-slate-500/80 dark:text-slate-400/80 mb-1 block";
+
+            return (
+              <div className="flex flex-col max-h-[75vh]">
+                <ScrollArea className="flex-1 pr-3">
+                  <div className="space-y-4 py-1">
+                    {canChooseParent ? (
+                      <div
+                        className={`rounded-md border px-2.5 py-1.5 transition-colors cursor-pointer flex items-start gap-2.5 ${
+                          override
+                            ? "border-[var(--cf-accent)]/30 bg-[var(--cf-accent)]/5 dark:border-[var(--cf-accent)]/40 dark:bg-[var(--cf-accent)]/10"
+                            : "border-slate-200/70 bg-white/60 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)]"
+                        }`}
+                        onClick={() => {
+                            setBuildRunDialog((prev) => ({
+                              ...prev,
+                              saveScope: override ? "parent" : "self",
+                              parentProjectId: parentId || prev.parentProjectId,
+                            }));
+                        }}
+                      >
+                        <div className="pt-0.5 shrink-0">
+                           <div className={`h-3.5 w-3.5 rounded-full border flex items-center justify-center transition-colors ${
+                              override ? "border-[var(--cf-accent)] bg-[var(--cf-accent)]" : "border-slate-400 bg-transparent"
+                           }`}>
+                              {override && <Check className="h-2.5 w-2.5 text-white" />}
+                           </div>
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-xs font-semibold text-slate-800 dark:text-[var(--cf-text-primary)] leading-none">
+                            {t("projects:worktreeOverride", "对此 worktree 覆盖") as string}
+                          </div>
+                          <p className="text-[10px] text-slate-500 dark:text-[var(--cf-text-secondary)] mt-1 leading-tight">
+                            {override
+                              ? (t("projects:worktreeOverrideOn", "将该命令保存到当前 worktree。") as string)
+                              : (t("projects:worktreeOverrideOff", "默认继承父项目命令；保存将写入父项目。") as string)}
+                          </p>
+                        </div>
+                      </div>
+                    ) : null}
+
+                    <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className={labelClass}>
+                            {t("projects:buildRunCommandLabel", "命令")}
+                          </span>
+                          <div className="flex bg-slate-100 dark:bg-slate-800 rounded p-0.5">
+                            <button
+                              type="button"
+                              className={`px-2 py-0.5 text-[10px] font-medium rounded transition-all ${
+                                !buildRunDialog.advanced
+                                  ? "bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm"
+                                  : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+                              }`}
+                              onClick={() => setBuildRunDialog((prev) => ({ ...prev, advanced: false }))}
+                            >
+                              {t("projects:buildRunSimple", "简洁") as string}
+                            </button>
+                            <button
+                              type="button"
+                              className={`px-2 py-0.5 text-[10px] font-medium rounded transition-all ${
+                                buildRunDialog.advanced
+                                  ? "bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm"
+                                  : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+                              }`}
+                              onClick={() => setBuildRunDialog((prev) => ({ ...prev, advanced: true }))}
+                            >
+                              {t("projects:buildRunAdvanced", "高级") as string}
+                            </button>
+                          </div>
+                        </div>
+
+                        {!buildRunDialog.advanced ? (
+                          <div className="space-y-2">
+                            <Input
+                              multiline
+                              value={String(draft.commandText || "")}
+                              onChange={(e: any) => setDraft({ commandText: e.target.value, mode: "simple" } as any)}
+                              placeholder={t("projects:buildRunCommandPlaceholder", "例如：npm run build") as string}
+                              className="font-mono text-xs min-h-[4rem]"
+                            />
+
+                            <details className="group rounded-md border border-slate-200/70 bg-white/50 px-2.5 py-1.5 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)]">
+                              <summary className="cursor-pointer select-none text-[11px] font-medium text-slate-600 dark:text-[var(--cf-text-secondary)] flex items-center gap-1 focus:outline-none">
+                                <ChevronRight className="h-3 w-3 transition-transform group-open:rotate-90" />
+                                {t("projects:buildRunMoreOptions", "更多选项") as string}
+                              </summary>
+                              <div className="mt-2 space-y-3 pl-3 border-l border-slate-200 dark:border-slate-700 ml-1">
+                                <div className="space-y-1">
+                                    <label className={labelClass}>{t("projects:buildRunCwd", "工作目录")}</label>
+                                    <Input
+                                      value={String(draft.cwd || "")}
+                                      onChange={(e: any) => setDraft({ cwd: e.target.value } as any)}
+                                      placeholder={t("projects:buildRunCwdPlaceholder", "默认为当前节点") as string}
+                                      className="font-mono text-xs h-7"
+                                    />
+                                </div>
+
+                                <div className="space-y-1.5">
+                                  <div className="flex items-center justify-between">
+                                    <label className={labelClass}>
+                                      {t("projects:buildRunEnv", "环境变量")}
+                                    </label>
+                                    <Button size="sm" variant="ghost" className="h-5 px-1.5 text-[10px]" onClick={addEnvRow}>
+                                      <Plus className="h-2.5 w-2.5 mr-1" />
+                                      {t("common:add", "添加") as string}
+                                    </Button>
+                                  </div>
+                                  {envRows.length === 0 ? (
+                                    <div className="text-[10px] text-slate-400 italic px-1">{t("projects:buildRunEnvEmpty", "无自定义环境变量") as string}</div>
+                                  ) : (
+                                    <div className="space-y-1.5">
+                                      {envRows.map((row: any, idx: number) => (
+                                        <div key={idx} className="flex gap-1.5">
+                                          <Input
+                                            value={String(row?.key || "")}
+                                            onChange={(e: any) => setEnvRow(idx, { key: e.target.value, value: String(row?.value ?? "") })}
+                                            placeholder="KEY"
+                                            className="h-7 font-mono text-[10px] flex-1 min-w-0"
+                                          />
+                                          <Input
+                                            value={String(row?.value ?? "")}
+                                            onChange={(e: any) => setEnvRow(idx, { key: String(row?.key || ""), value: e.target.value })}
+                                            placeholder="VALUE"
+                                            className="h-7 font-mono text-[10px] flex-1 min-w-0"
+                                          />
+                                          <Button size="icon" variant="ghost" className="h-7 w-7 shrink-0 text-slate-400 hover:text-red-500" onClick={() => removeEnvRow(idx)} title={t("common:remove", "移除") as string}>
+                                            <X className="h-3 w-3" />
+                                          </Button>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </details>
+                          </div>
+                        ) : (
+                          <div className="space-y-3">
+                             {/* Advanced Mode: CMD + ARGS */}
+                            <div className="space-y-1">
+                              <label className={labelClass}>{t("projects:buildRunCmd", "cmd")}</label>
+                              <Input
+                                value={String(draft.cmd || "")}
+                                onChange={(e: any) => setDraft({ cmd: e.target.value, mode: "advanced" } as any)}
+                                placeholder="cmd"
+                                className="h-8 font-mono text-xs"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <label className={labelClass}>{t("projects:buildRunArgs", "args（每行一个）")}</label>
+                              <Input
+                                multiline
+                                value={(Array.isArray(draft.args) ? (draft.args as any[]).map((x) => String(x ?? "")).join("\n") : "")}
+                                onChange={(e: any) => {
+                                  const lines = String(e.target.value || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n").map((x) => x.trim()).filter(Boolean);
+                                  setDraft({ args: lines, mode: "advanced" } as any);
+                                }}
+                                placeholder="arg1\narg2"
+                                className="font-mono text-xs min-h-[3rem]"
+                              />
+                            </div>
+
+                            <div className="space-y-1">
+                              <div className={labelClass}>{t("projects:buildRunBackend", "终端后端")}</div>
+                              <select
+                                className="h-8 w-full rounded-md border border-slate-300 bg-white px-2 text-xs text-slate-900 focus:border-[var(--cf-accent)] focus:outline-none focus:ring-1 focus:ring-[var(--cf-accent)] dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-solid)] dark:text-[var(--cf-text-primary)]"
+                                value={backendKind}
+                                onChange={(e) => {
+                                  const kind = e.target.value;
+                                  if (kind === "wsl") setDraft({ backend: { kind: "wsl", distro: wslDistroDraft } as any } as any);
+                                  else if (kind === "pwsh") setDraft({ backend: { kind: "pwsh" } as any } as any);
+                                  else if (kind === "git_bash") setDraft({ backend: { kind: "git_bash" } as any } as any);
+                                  else setDraft({ backend: { kind: "system" } as any } as any);
+                                }}
+                              >
+                                <option value="system">{t("projects:buildRunBackendSystem", "系统默认") as string}</option>
+                                <option value="pwsh">{t("projects:buildRunBackendPwsh", "PowerShell 7") as string}</option>
+                                <option value="git_bash">{t("projects:buildRunBackendGitBash", "Git Bash") as string}</option>
+                                <option value="wsl">{t("projects:buildRunBackendWsl", "WSL") as string}</option>
+                              </select>
+                              {backendKind === "wsl" ? (
+                                <Input
+                                  value={wslDistroDraft}
+                                  onChange={(e: any) => setDraft({ backend: { kind: "wsl", distro: e.target.value } as any } as any)}
+                                  placeholder={t("projects:buildRunWslDistro", "发行版（可选）") as string}
+                                  className="h-8 font-mono text-xs mt-1"
+                                />
+                              ) : null}
+                            </div>
+
+                            <div className="space-y-1">
+                              <label className={labelClass}>{t("projects:buildRunCwd", "工作目录")}</label>
+                              <Input
+                                value={String(draft.cwd || "")}
+                                onChange={(e: any) => setDraft({ cwd: e.target.value } as any)}
+                                placeholder={t("projects:buildRunCwdPlaceholder", "默认为当前节点") as string}
+                                className="font-mono text-xs h-8"
+                              />
+                            </div>
+
+                            <div className="space-y-1.5">
+                              <div className="flex items-center justify-between">
+                                <label className={labelClass}>{t("projects:buildRunEnv", "环境变量")}</label>
+                                <Button size="sm" variant="ghost" className="h-5 px-1.5 text-[10px]" onClick={addEnvRow}>
+                                  <Plus className="h-2.5 w-2.5 mr-1" />
+                                  {t("common:add", "添加") as string}
+                                </Button>
+                              </div>
+                              {envRows.length === 0 ? (
+                                <div className="text-[10px] text-slate-400 italic px-1">{t("projects:buildRunEnvEmpty", "无自定义环境变量") as string}</div>
+                              ) : (
+                                <div className="space-y-1.5">
+                                  {envRows.map((row: any, idx: number) => (
+                                    <div key={idx} className="flex gap-1.5">
+                                      <Input
+                                        value={String(row?.key || "")}
+                                        onChange={(e: any) => setEnvRow(idx, { key: e.target.value, value: String(row?.value ?? "") })}
+                                        placeholder="KEY"
+                                        className="h-7 font-mono text-[10px] flex-1 min-w-0"
+                                      />
+                                      <Input
+                                        value={String(row?.value ?? "")}
+                                        onChange={(e: any) => setEnvRow(idx, { key: String(row?.key || ""), value: e.target.value })}
+                                        placeholder="VALUE"
+                                        className="h-7 font-mono text-[10px] flex-1 min-w-0"
+                                      />
+                                      <Button size="icon" variant="ghost" className="h-7 w-7 shrink-0 text-slate-400 hover:text-red-500" onClick={() => removeEnvRow(idx)} title={t("common:remove", "移除") as string}>
+                                        <X className="h-3 w-3" />
+                                      </Button>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                    </div>
+                  </div>
+                </ScrollArea>
+
+                <div className="flex justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-800/50 mt-2 shrink-0">
+                  <Button variant="outline" size="sm" className="h-8 text-xs" onClick={closeBuildRunDialog}>
+                    {t("common:cancel", "取消") as string}
+                  </Button>
+                  <Button variant="secondary" size="sm" className="h-8 text-xs min-w-[4rem]" onClick={() => void saveBuildRunDialog()}>
+                    {t("common:save", "保存") as string}
+                  </Button>
+                </div>
+              </div>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
+
+      {/* 从分支创建 worktree：创建后会在对应 worktree 内启动引擎 CLI（不影响 Build/Run 的终端链路） */}
+      <Dialog
+        open={worktreeCreateDialog.open}
+        onOpenChange={(open) => {
+          if (open) return;
+          closeWorktreeCreateDialog();
+        }}
+      >
+        <DialogContent className="max-w-lg">
+          <DialogHeader className="pb-2">
+            <DialogTitle>{t("projects:worktreeCreateTitle", "从分支创建 worktree") as string}</DialogTitle>
+            <DialogDescription>
+              {t("projects:worktreeCreateDesc", "每个引擎实例会创建一个 worktree，并在控制台中启动对应 CLI。") as string}
+            </DialogDescription>
+          </DialogHeader>
+          {(function renderWorktreeCreateBody() {
+            const repo = projectsRef.current.find((x) => x.id === worktreeCreateDialog.repoProjectId) || null;
+            if (!repo) return null;
+
+            const total = worktreeCreateDialog.useMultipleModels ? sumWorktreeProviderCounts(worktreeCreateDialog.multiCounts) : 1;
+            const tooMany = total > 8;
+            const canSubmit =
+              !worktreeCreateDialog.loadingBranches &&
+              !worktreeCreateDialog.creating &&
+              !!worktreeCreateDialog.baseBranch &&
+              total > 0 &&
+              !tooMany &&
+              !worktreeCreateDialog.error;
+
+            const setDialog = (patch: Partial<WorktreeCreateDialogState>) => {
+              setWorktreeCreateDialog((prev) => ({ ...prev, ...(patch as any) }));
+            };
+
+            const setMultiCount = (pid: GitWorktreeProviderId, nextValue: number) => {
+              const v = Math.max(0, Math.min(8, Math.floor(Number(nextValue) || 0)));
+              setWorktreeCreateDialog((prev) => ({ ...prev, multiCounts: { ...(prev.multiCounts as any), [pid]: v } }));
+            };
+
+            const submit = async () => {
+              if (!canSubmit) return;
+              const baseBranch = String(worktreeCreateDialog.baseBranch || "").trim();
+              if (!baseBranch) return;
+              const instances = worktreeCreateDialog.useMultipleModels
+                ? (["codex", "claude", "gemini"] as const)
+                    .map((pid) => ({ providerId: pid, count: Math.max(0, Math.floor(Number(worktreeCreateDialog.multiCounts?.[pid]) || 0)) }))
+                    .filter((x) => x.count > 0)
+                : [{ providerId: worktreeCreateDialog.singleProviderId, count: 1 }];
+              const prompt = compileWorktreePromptText({
+                chips: worktreeCreateDialog.promptChips,
+                draft: worktreeCreateDialog.promptDraft,
+                projectWinRoot: repo.winPath,
+                projectWslRoot: repo.wslPath,
+              });
+              await createWorktreesAndStartAgents({ repoProject: repo, baseBranch, instances, prompt });
+            };
+
+            const labelClass = "text-[10px] font-bold uppercase tracking-wider text-slate-500/80 dark:text-slate-400/80 mb-1 block";
+
+            return (
+              <div className="space-y-3">
+                {worktreeCreateDialog.error ? (
+                  <div className="rounded-md border border-red-200 bg-red-50 px-3 py-1.5 text-[11px] font-medium text-red-800 flex items-center gap-2">
+                    <TriangleAlert className="h-3.5 w-3.5" />
+                    {worktreeCreateDialog.error}
+                  </div>
+                ) : null}
+
+                <div className="space-y-1">
+                  <label className={labelClass}>
+                    {t("projects:worktreeBaseBranch", "基分支（baseBranch）")}
+                  </label>
+                  <select
+                    className="h-8 w-full rounded-md border border-slate-300 bg-white px-2 text-xs text-slate-900 focus:border-[var(--cf-accent)] focus:outline-none focus:ring-1 focus:ring-[var(--cf-accent)] dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-solid)] dark:text-[var(--cf-text-primary)]"
+                    value={worktreeCreateDialog.baseBranch}
+                    disabled={worktreeCreateDialog.loadingBranches || worktreeCreateDialog.creating}
+                    onChange={(e) => setDialog({ baseBranch: e.target.value })}
+                  >
+                    {(worktreeCreateDialog.branches.length > 0 ? worktreeCreateDialog.branches : [worktreeCreateDialog.baseBranch]).filter(Boolean).map((b) => (
+                      <option key={b} value={b}>
+                        {b}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                        <label className={labelClass}>
+                            {t("projects:worktreeModelSelection", "模型实例")}
+                        </label>
+                        <label className="flex items-center gap-1.5 text-[10px] text-slate-500 dark:text-[var(--cf-text-secondary)] cursor-pointer select-none hover:text-slate-800 dark:hover:text-slate-300 transition-colors">
+                          <input
+                            type="checkbox"
+                            className="h-3 w-3 rounded border-slate-300 text-[var(--cf-accent)] focus:ring-[var(--cf-accent)] dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)]"
+                            checked={worktreeCreateDialog.useMultipleModels}
+                            onChange={(e) => setDialog({ useMultipleModels: e.target.checked })}
+                            disabled={worktreeCreateDialog.creating}
+                          />
+                          {t("projects:worktreeUseMultipleModels", "并行混合模式")}
+                        </label>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-2">
+                      {(["codex", "claude", "gemini"] as const).map((pid) => {
+                          const icon = pid === "codex" ? (themeMode === "dark" ? openaiDarkIconUrl : openaiIconUrl) : pid === "claude" ? claudeIconUrl : geminiIconUrl;
+                          const isMulti = worktreeCreateDialog.useMultipleModels;
+                          const count = Math.max(0, Math.floor(Number(worktreeCreateDialog.multiCounts?.[pid]) || 0));
+                          const enabledInMulti = count > 0;
+                          const selectedInSingle = worktreeCreateDialog.singleProviderId === pid;
+                          const isActive = isMulti ? enabledInMulti : selectedInSingle;
+
+                          return (
+                              <div
+                                  key={pid}
+                                  onClick={() => {
+                                      if (worktreeCreateDialog.creating) return;
+                                      if (isMulti) {
+                                          setMultiCount(pid, enabledInMulti ? 0 : 1);
+                                      } else {
+                                          setDialog({ singleProviderId: pid });
+                                      }
+                                  }}
+                                  className={`group relative cursor-pointer rounded-md border px-2 py-1.5 transition-all flex flex-col items-center justify-center gap-1 h-16 ${
+                                      isActive
+                                          ? "border-[var(--cf-accent)] bg-[var(--cf-accent)]/5 ring-1 ring-[var(--cf-accent)] shadow-sm"
+                                          : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-solid)] dark:hover:bg-[var(--cf-surface-hover)]"
+                                  } ${worktreeCreateDialog.creating ? "opacity-50 pointer-events-none" : ""}`}
+                              >
+                                  {isMulti && (
+                                      <div className="absolute top-1 left-1">
+                                          <input
+                                              type="checkbox"
+                                              className="h-3 w-3 rounded border-slate-300 text-[var(--cf-accent)] focus:ring-[var(--cf-accent)] pointer-events-none"
+                                              checked={enabledInMulti}
+                                              readOnly
+                                          />
+                                      </div>
+                                  )}
+                                  
+                                  <img 
+                                      src={icon} 
+                                      alt={pid} 
+                                      className={`h-4 w-4 object-contain transition-all ${isActive ? "opacity-100 scale-110" : "opacity-60 grayscale group-hover:opacity-80 group-hover:grayscale-0"}`} 
+                                  />
+                                  <span className={`font-medium text-[10px] ${isActive ? "text-[var(--cf-accent)]" : "text-slate-500 dark:text-[var(--cf-text-secondary)]"}`}>
+                                      {getProviderLabel(pid)}
+                                  </span>
+
+                                  {isMulti && (
+                                      <div 
+                                          className={`absolute bottom-1 right-1 transition-all ${isActive ? "opacity-100 scale-100" : "opacity-0 scale-90 pointer-events-none"}`}
+                                          onClick={(e) => e.stopPropagation()} 
+                                      >
+                                          <div className="flex items-center bg-white dark:bg-slate-800 rounded border border-slate-200 dark:border-slate-700 px-1 h-5 shadow-sm">
+                                              <span className="text-[9px] text-slate-400 mr-1 font-bold">x</span>
+                                              <input
+                                                  type="number"
+                                                  min={1}
+                                                  max={8}
+                                                  value={String(count || "")}
+                                                  onChange={(e) => setMultiCount(pid, Number(e.target.value))}
+                                                  disabled={!enabledInMulti || worktreeCreateDialog.creating}
+                                                  className="cf-number-input w-5 text-center text-[10px] font-mono bg-transparent outline-none p-0 focus:ring-0 leading-none"
+                                              />
+                                          </div>
+                                      </div>
+                                  )}
+                              </div>
+                          );
+                      })}
+                    </div>
+                    
+                    {worktreeCreateDialog.useMultipleModels && (
+                        <div className="flex items-center justify-end h-3 gap-2">
+                          <span className={`text-[10px] font-medium ${tooMany ? "text-red-600" : "text-slate-400"}`}>
+                            {t("projects:worktreeTotalCount", "总计：{count} / 8", { count: total }) as string}
+                          </span>
+                          {tooMany ? <TriangleAlert className="h-3 w-3 text-red-600" /> : null}
+                        </div>
+                    )}
+                </div>
+
+                <div className="space-y-1">
+                  <div className="text-xs font-semibold text-slate-700 dark:text-[var(--cf-text-primary)]">
+                    {t("projects:worktreeInitialPrompt", "初始提示词（可选）") as string}
+                  </div>
+                  <PathChipsInput
+                    multiline
+                    chips={worktreeCreateDialog.promptChips}
+                    onChipsChange={(next) => setDialog({ promptChips: next })}
+                    draft={worktreeCreateDialog.promptDraft}
+                    onDraftChange={(v) => setDialog({ promptDraft: v })}
+                    winRoot={repo.winPath}
+                    projectWslRoot={repo.wslPath}
+                    className="min-h-[3rem] text-xs"
+                  />
+                </div>
+
+                <div className="flex justify-end gap-2 pt-1 border-t border-slate-100 dark:border-slate-800/50 mt-1">
+                  <Button variant="outline" size="sm" className="h-8 text-xs" onClick={closeWorktreeCreateDialog} disabled={worktreeCreateDialog.creating}>
+                    {t("common:cancel", "取消") as string}
+                  </Button>
+                  <Button variant="secondary" size="sm" className="h-8 text-xs min-w-[4rem]" onClick={() => void submit()} disabled={!canSubmit}>
+                    {worktreeCreateDialog.creating ? (t("projects:worktreeCreating", "创建中…") as string) : (t("projects:worktreeCreateAction", "创建") as string)}
+                  </Button>
+                </div>
+              </div>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
+
+      {/* worktree 创建进度：展示主进程执行 git worktree add 的输出，可关闭并重新打开查看进度 */}
+      <Dialog
+        open={worktreeCreateProgress.open}
+        onOpenChange={(open) => {
+          if (open) return;
+          setWorktreeCreateProgress((prev) => ({ ...prev, open: false }));
+        }}
+      >
+        <DialogContent className="max-w-3xl">
+          <DialogHeader className="pb-2">
+            <DialogTitle>{t("projects:worktreeCreateProgressTitle", "创建 worktree（进度）") as string}</DialogTitle>
+            <DialogDescription>
+              {t("projects:worktreeCreateProgressDesc", "你可以随时关闭该窗口；重新点击项目右侧的分支徽标可再次打开查看进度。") as string}
+            </DialogDescription>
+          </DialogHeader>
+          {(function renderWorktreeCreateProgressBody() {
+            const repo = projectsRef.current.find((x) => x.id === worktreeCreateProgress.repoProjectId) || null;
+            const status = worktreeCreateProgress.status;
+            const statusLabel =
+              status === "running"
+                ? (t("projects:worktreeCreating", "创建中…") as string)
+                : status === "success"
+                ? (t("common:done", "完成") as string)
+                : (t("common:failed", "失败") as string);
+            const statusIcon =
+              status === "running" ? (
+                <Loader2 className="h-4 w-4 animate-spin text-slate-500" />
+              ) : status === "success" ? (
+                <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+              ) : (
+                <TriangleAlert className="h-4 w-4 text-red-600" />
+              );
+
+            return (
+              <div className="space-y-3">
+                {repo ? (
+                  <div className="rounded-lg border border-slate-200/70 bg-white/60 px-3 py-2 text-xs text-slate-600 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:text-[var(--cf-text-secondary)] space-y-1">
+                    <div className="text-[9px] uppercase font-bold text-slate-400 tracking-wider">Repo</div>
+                    <div className="font-mono break-all">{repo.winPath}</div>
+                    <div className="text-[9px] uppercase font-bold text-slate-400 tracking-wider mt-1">Task</div>
+                    <div className="font-mono break-all">{worktreeCreateProgress.taskId}</div>
+                  </div>
+                ) : null}
+
+                <div className="flex items-center gap-2 text-xs text-slate-700 dark:text-[var(--cf-text-primary)]">
+                  {statusIcon}
+                  <span className="font-semibold">{statusLabel}</span>
+                  {worktreeCreateProgress.updatedAt ? (
+                    <span className="text-[10px] text-slate-400">
+                      {new Date(worktreeCreateProgress.updatedAt).toLocaleTimeString()}
+                    </span>
+                  ) : null}
+                </div>
+
+                {worktreeCreateProgress.error ? (
+                  <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800 whitespace-pre-wrap break-words">
+                    {worktreeCreateProgress.error}
+                  </div>
+                ) : null}
+
+                <div className="rounded-lg border border-slate-200 bg-slate-50 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] overflow-hidden">
+                  <ScrollArea className="h-[22rem]">
+                    <pre className="font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-words p-3 text-slate-700 dark:text-[var(--cf-text-secondary)]">
+                      {worktreeCreateProgress.log || ""}
+                    </pre>
+                  </ScrollArea>
+                </div>
+
+                <div className="flex justify-end gap-2 pt-1">
+                  <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => setWorktreeCreateProgress((prev) => ({ ...prev, open: false }))}>
+                    {t("common:close", "关闭") as string}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="h-8 text-xs"
+                    onClick={async () => {
+                      try { if (repo?.winPath) await (window as any).host?.gitWorktree?.openExternalTool?.(repo.winPath); } catch {}
+                    }}
+                    disabled={!repo?.winPath}
+                  >
+                    {t("projects:gitOpenExternalTool", "打开外部 Git 工具") as string}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="h-8 text-xs"
+                    onClick={async () => {
+                      try { if (repo?.winPath) await (window as any).host?.gitWorktree?.openTerminal?.(repo.winPath); } catch {}
+                    }}
+                    disabled={!repo?.winPath}
+                  >
+                    {t("projects:gitOpenTerminal", "在外部终端 / Git Bash 打开") as string}
+                  </Button>
+                </div>
+              </div>
+            );
+          })()}
+        </DialogContent>
+	      </Dialog>
+
+	      {/* worktree 回收进度：展示主进程执行回收流程的实时输出，可关闭查看 */}
+	      <Dialog
+	        open={worktreeRecycleProgress.open}
+	        onOpenChange={(open) => {
+	          if (open) return;
+	          setWorktreeRecycleProgress((prev) => ({ ...prev, open: false }));
+	        }}
+	      >
+	        <DialogContent className="max-w-3xl">
+	          <DialogHeader className="pb-2">
+	            <DialogTitle>{t("projects:worktreeRecycleProgressTitle", "回收 worktree（进度）") as string}</DialogTitle>
+	            <DialogDescription>
+	              {t("projects:worktreeRecycleProgressDesc", "展示回收过程的实时日志；你可以随时关闭该窗口，回收仍会继续执行。") as string}
+	            </DialogDescription>
+	          </DialogHeader>
+	          {(function renderWorktreeRecycleProgressBody() {
+	            const project = projectsRef.current.find((x) => x.id === worktreeRecycleProgress.projectId) || null;
+	            const status = worktreeRecycleProgress.status;
+	            const statusLabel =
+	              status === "running"
+	                ? (t("projects:worktreeRecycling", "执行中…") as string)
+	                : status === "success"
+	                  ? (t("common:done", "完成") as string)
+	                  : (t("common:failed", "失败") as string);
+	            const statusIcon =
+	              status === "running" ? (
+	                <Loader2 className="h-4 w-4 animate-spin text-slate-500" />
+	              ) : status === "success" ? (
+	                <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+	              ) : (
+	                <TriangleAlert className="h-4 w-4 text-red-600" />
+	              );
+
+	            const dirForOpen = String(worktreeRecycleDialog.repoMainPath || project?.winPath || "").trim();
+
+	            return (
+	              <div className="space-y-3">
+	                {project ? (
+	                  <div className="rounded-lg border border-slate-200/70 bg-white/60 px-3 py-2 text-xs text-slate-600 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:text-[var(--cf-text-secondary)] space-y-1">
+	                    <div className="text-[9px] uppercase font-bold text-slate-400 tracking-wider">Worktree</div>
+	                    <div className="font-mono break-all">{project.winPath}</div>
+	                    <div className="text-[9px] uppercase font-bold text-slate-400 tracking-wider mt-1">Task</div>
+	                    <div className="font-mono break-all">{worktreeRecycleProgress.taskId}</div>
+	                  </div>
+	                ) : null}
+
+	                <div className="flex items-center gap-2 text-xs text-slate-700 dark:text-[var(--cf-text-primary)]">
+	                  {statusIcon}
+	                  <span className="font-semibold">{statusLabel}</span>
+	                  {worktreeRecycleProgress.updatedAt ? (
+	                    <span className="text-[10px] text-slate-400">
+	                      {new Date(worktreeRecycleProgress.updatedAt).toLocaleTimeString()}
+	                    </span>
+	                  ) : null}
+	                </div>
+
+	                {worktreeRecycleProgress.error ? (
+	                  <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800 whitespace-pre-wrap break-words">
+	                    {worktreeRecycleProgress.error}
+	                  </div>
+	                ) : null}
+
+	                <div className="rounded-lg border border-slate-200 bg-slate-50 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] overflow-hidden">
+	                  <ScrollArea className="h-[22rem]">
+	                    <pre className="font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-words p-3 text-slate-700 dark:text-[var(--cf-text-secondary)]">
+	                      {worktreeRecycleProgress.log || ""}
+	                    </pre>
+	                  </ScrollArea>
+	                </div>
+
+	                <div className="flex justify-end gap-2 pt-1">
+	                  <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => setWorktreeRecycleProgress((prev) => ({ ...prev, open: false }))}>
+	                    {t("common:close", "关闭") as string}
+	                  </Button>
+	                  <Button
+	                    variant="secondary"
+	                    size="sm"
+	                    className="h-8 text-xs"
+	                    onClick={async () => {
+	                      try { if (dirForOpen) await (window as any).host?.gitWorktree?.openExternalTool?.(dirForOpen); } catch {}
+	                    }}
+	                    disabled={!dirForOpen}
+	                  >
+	                    {t("projects:gitOpenExternalTool", "打开外部 Git 工具") as string}
+	                  </Button>
+	                  <Button
+	                    variant="secondary"
+	                    size="sm"
+	                    className="h-8 text-xs"
+	                    onClick={async () => {
+	                      try { if (dirForOpen) await (window as any).host?.gitWorktree?.openTerminal?.(dirForOpen); } catch {}
+	                    }}
+	                    disabled={!dirForOpen}
+	                  >
+	                    {t("projects:gitOpenTerminal", "在外部终端 / Git Bash 打开") as string}
+	                  </Button>
+	                </div>
+	              </div>
+	            );
+	          })()}
+	        </DialogContent>
+	      </Dialog>
+
+	      {/* 回收 worktree 到基分支（squash/rebase） */}
+	      <Dialog
+	        open={worktreeRecycleDialog.open}
+        onOpenChange={(open) => {
+          if (open) return;
+          closeWorktreeRecycleDialog();
+        }}
+      >
+        <DialogContent className="max-w-md">
+	          <DialogHeader className="pb-2 border-b border-slate-100 dark:border-slate-800/50">
+	            <DialogTitle>{t("projects:worktreeRecycleTitle", "回收 worktree 到基分支") as string}</DialogTitle>
+	            <DialogDescription>{t("projects:worktreeRecycleDesc", "回收前会检查 worktree 是否存在未提交修改；如有会先自动提交一次以避免丢失。遇到冲突/中断等问题请优先使用外部 Git 工具处理。") as string}</DialogDescription>
+	          </DialogHeader>
+          {(function renderRecycleBody() {
+            const project = projectsRef.current.find((x) => x.id === worktreeRecycleDialog.projectId) || null;
+            if (!project) return null;
+            const branches = Array.isArray(worktreeRecycleDialog.branches) ? worktreeRecycleDialog.branches : [];
+            const base = String(worktreeRecycleDialog.baseBranch || "").trim();
+            const wt = String(worktreeRecycleDialog.wtBranch || "").trim();
+            const baseOptions = Array.from(new Set([base, ...branches].filter(Boolean)));
+            const wtOptions = Array.from(new Set([wt, ...branches].filter(Boolean)));
+
+            return (
+              <div className="space-y-3">
+                {worktreeRecycleDialog.error ? (
+                  <div className="rounded-md border border-red-200 bg-red-50 px-3 py-1.5 text-[11px] font-medium text-red-800 flex items-center gap-2">
+                    <TriangleAlert className="h-3.5 w-3.5" />
+                    {worktreeRecycleDialog.error}
+                  </div>
+                ) : null}
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-semibold text-slate-700 dark:text-[var(--cf-text-primary)]">
+                        {t("projects:worktreeRecycleBaseBranch", "目标基分支") as string}
+                      </label>
+                      <select
+                        className="h-8 w-full rounded-md border border-slate-300 bg-white px-2 text-xs text-slate-900 focus:border-[var(--cf-accent)] focus:outline-none focus:ring-1 focus:ring-[var(--cf-accent)] dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-solid)] dark:text-[var(--cf-text-primary)]"
+                        value={base}
+                        disabled={worktreeRecycleDialog.loading || worktreeRecycleDialog.running}
+                        onChange={(e) => setWorktreeRecycleDialog((prev) => ({ ...prev, baseBranch: e.target.value }))}
+                      >
+                        {baseOptions.map((b) => (
+                          <option key={b} value={b}>
+                            {b}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-semibold text-slate-700 dark:text-[var(--cf-text-primary)]">
+                        {t("projects:worktreeRecycleWtBranch", "源分支") as string}
+                      </label>
+                      <select
+                        className="h-8 w-full rounded-md border border-slate-300 bg-white px-2 text-xs text-slate-900 focus:border-[var(--cf-accent)] focus:outline-none focus:ring-1 focus:ring-[var(--cf-accent)] dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-solid)] dark:text-[var(--cf-text-primary)]"
+                        value={wt}
+                        disabled={worktreeRecycleDialog.loading || worktreeRecycleDialog.running}
+                        onChange={(e) => setWorktreeRecycleDialog((prev) => ({ ...prev, wtBranch: e.target.value }))}
+                      >
+                        {wtOptions.map((b) => (
+                          <option key={b} value={b}>
+                            {b}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <div className="text-[11px] font-semibold text-slate-700 dark:text-[var(--cf-text-primary)]">
+                    {t("projects:worktreeRecycleMode", "合并模式") as string}
+                  </div>
+                  <div className="flex p-0.5 bg-slate-100 dark:bg-slate-800 rounded-md">
+                    {(["squash", "rebase"] as const).map((m) => {
+                        const isSelected = worktreeRecycleDialog.mode === m;
+                        return (
+                            <button
+                                key={m}
+                                type="button"
+                                onClick={() => setWorktreeRecycleDialog((prev) => ({ ...prev, mode: m }))}
+                                disabled={worktreeRecycleDialog.loading || worktreeRecycleDialog.running}
+                                className={`flex-1 py-1 text-[10px] font-medium rounded transition-all ${
+                                    isSelected
+                                        ? "bg-white dark:bg-slate-600 text-slate-900 dark:text-white shadow-sm"
+                                        : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+                                }`}
+                            >
+                                {m === "squash"
+                                    ? t("projects:worktreeRecycleModeSquash", "Squash（推荐）")
+                                    : t("projects:worktreeRecycleModeRebase", "Rebase")}
+                            </button>
+                        );
+                    })}
+                  </div>
+                  <p className="text-[9px] text-slate-500 px-1 italic">
+                      {worktreeRecycleDialog.mode === "squash"
+                        ? t("projects:worktreeRecycleSquashHint", "所有提交压缩为一个，保持主分支整洁。")
+                        : t("projects:worktreeRecycleRebaseHint", "变基操作，保持原有提交历史。")}
+                  </p>
+                </div>
+
+                {worktreeRecycleDialog.mode === "squash" ? (
+                  <div className="space-y-1">
+                    <div className="text-[11px] font-semibold text-slate-700 dark:text-[var(--cf-text-primary)]">
+                      {t("projects:worktreeRecycleCommitMessage", "提交信息（可选）") as string}
+                    </div>
+                    <Input
+                      value={String(worktreeRecycleDialog.commitMessage || "")}
+                      onChange={(e: any) => setWorktreeRecycleDialog((prev) => ({ ...prev, commitMessage: e.target.value }))}
+                      placeholder={t("projects:worktreeRecycleCommitMessagePlaceholder", "留空将自动生成") as string}
+                      className="h-8 font-mono text-[11px]"
+                      disabled={worktreeRecycleDialog.loading || worktreeRecycleDialog.running}
+                    />
+                  </div>
+                ) : null}
+
+                <div className="flex justify-end gap-2 pt-1.5 border-t border-slate-100 dark:border-slate-800/50">
+                  <Button variant="outline" size="sm" className="h-8 text-xs" onClick={closeWorktreeRecycleDialog} disabled={worktreeRecycleDialog.running}>
+                    {t("common:cancel", "取消") as string}
+                  </Button>
+                  <Button variant="secondary" size="sm" className="h-8 text-xs" onClick={() => void submitWorktreeRecycle()} disabled={worktreeRecycleDialog.loading || worktreeRecycleDialog.running || !base || !wt}>
+                    {worktreeRecycleDialog.running ? (t("projects:worktreeRecycling", "执行中…") as string) : (t("projects:worktreeRecycleAction", "回收") as string)}
+                  </Button>
+                </div>
+              </div>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
+
+      {/* 删除 worktree（含删除专用分支；必要时强确认） */}
+      <Dialog
+        open={worktreeDeleteDialog.open}
+        onOpenChange={(open) => {
+          if (open) return;
+          closeWorktreeDeleteDialog();
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader className="pb-2 border-b border-slate-100 dark:border-slate-800/50">
+            <DialogTitle>
+              {worktreeDeleteDialog.afterRecycle
+                ? (t("projects:worktreeDeleteAfterRecycleTitle", "回收成功，是否删除该 worktree？") as string)
+                : (t("projects:worktreeDeleteTitle", "删除 worktree") as string)}
+            </DialogTitle>
+            <DialogDescription>
+              {t("projects:worktreeDeleteDesc", "将执行 git worktree remove，并删除该 worktree 的专用分支。") as string}
+            </DialogDescription>
+          </DialogHeader>
+          {(function renderDeleteBody() {
+            const project = projectsRef.current.find((x) => x.id === worktreeDeleteDialog.projectId) || null;
+            if (!project) return null;
+            const needForceRemove = worktreeDeleteDialog.needsForceRemoveWorktree === true;
+            const needForceBranch = worktreeDeleteDialog.needsForceDeleteBranch === true;
+            const forceHint = needForceRemove
+              ? (t("projects:worktreeDeleteForceRemoveHint", "检测到未提交修改：强制移除将丢弃这些修改。") as string)
+              : needForceBranch
+                ? (t("projects:worktreeDeleteForceBranchHint", "分支未合并：强制删除将丢失该分支上的提交。") as string)
+                : "";
+            const primaryLabel = needForceRemove || needForceBranch
+              ? (t("projects:worktreeDeleteForceAction", "强制删除") as string)
+              : (t("projects:worktreeDeleteAction", "删除") as string);
+            const doSubmit = () => void submitWorktreeDelete({ forceRemoveWorktree: needForceRemove, forceDeleteBranch: needForceBranch });
+
+	            return (
+	              <div className="space-y-3">
+	                <div className="rounded-md border border-slate-200/60 bg-slate-50/50 px-2.5 py-1.5 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)]">
+                  <div className="text-[9px] uppercase font-bold text-slate-400 mb-0.5 tracking-wider">Path</div>
+	                  <div className="font-mono text-[10px] break-all text-slate-700 dark:text-[var(--cf-text-secondary)] leading-tight">{project.winPath}</div>
+	                </div>
+	                {worktreeDeleteDialog.afterRecycleHint ? (
+	                  <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800 whitespace-pre-line">
+	                    {worktreeDeleteDialog.afterRecycleHint}
+	                  </div>
+	                ) : null}
+	                {forceHint ? (
+	                  <div className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 flex gap-2 items-start">
+                    <TriangleAlert className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+                    <div className="text-[10px] text-amber-800 leading-normal font-medium">
+	                    {forceHint}
+	                  </div>
+	</div>
+                ) : null}
+                {worktreeDeleteDialog.error ? (
+                  <div className="rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-[10px] font-medium text-red-800 flex items-center gap-2">
+                    <TriangleAlert className="h-3.5 w-3.5" />
+                    {worktreeDeleteDialog.error}
+                  </div>
+                ) : null}
+
+                <div className="flex justify-end gap-2 pt-1 border-t border-slate-100 dark:border-slate-800/50">
+                  <Button variant="outline" size="sm" className="h-8 text-xs" onClick={closeWorktreeDeleteDialog} disabled={worktreeDeleteDialog.running}>
+                    {t("common:cancel", "取消") as string}
+                  </Button>
+                  <Button 
+                    variant={needForceRemove || needForceBranch ? "danger" : "secondary"}
+                    size="sm"
+                    className="h-8 text-xs"
+                    onClick={doSubmit} 
+                    disabled={worktreeDeleteDialog.running}
+                  >
+                    {worktreeDeleteDialog.running ? (t("projects:worktreeDeleting", "删除中…") as string) : primaryLabel}
+                  </Button>
+                </div>
+              </div>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={worktreeBlockedDialog.open}
+        onOpenChange={(open) => {
+          if (!open) setWorktreeBlockedDialog((prev) => ({ ...prev, open: false }));
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t("projects:worktreeActionBlockedTitle", "操作不可用") as string}</DialogTitle>
+            <DialogDescription>
+              {t(
+                "projects:worktreeActionBlockedByTerminals",
+                "当前项目存在 {count} 个终端代理，工作树回收/删除功能不可用。请关闭所有终端代理再尝试。",
+                { count: worktreeBlockedDialog.count }
+              ) as string}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" onClick={() => setWorktreeBlockedDialog((prev) => ({ ...prev, open: false }))}>
+              {t("common:close", "关闭") as string}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* 主 worktree 不干净：允许用户选择外部处理或“我知道风险，继续（自动 stash/恢复）” */}
+      <Dialog
+        open={baseWorktreeDirtyDialog.open}
+        onOpenChange={(open) => {
+          if (open) return;
+          setBaseWorktreeDirtyDialog((prev) => ({ ...prev, open: false }));
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t("projects:worktreeRecycleBaseDirtyTitle", "主 worktree 不干净") as string}</DialogTitle>
+            <DialogDescription>
+              {t("projects:worktreeRecycleBaseDirtyDesc", "回收需要在主 worktree 上执行 checkout/merge 等操作。检测到主 worktree 存在未提交修改，你可以选择：") as string}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            {baseWorktreeDirtyDialog.repoMainPath ? (
+              <div className="rounded-lg border border-slate-200/70 bg-white/60 px-3 py-2 text-xs text-slate-600 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:text-[var(--cf-text-secondary)]">
+                <div className="font-mono break-all">{baseWorktreeDirtyDialog.repoMainPath}</div>
+              </div>
+            ) : null}
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 whitespace-pre-line">
+              {t(
+                "projects:worktreeRecycleBaseDirtyBody",
+                "继续将执行以下操作：\n- 创建“事务化快照”，最大化保持主 worktree 的三态（已暂存/未暂存/未跟踪）：\n  - 执行 `git stash push -u` 保存工作区内容（含未跟踪；不含 ignored）。\n  - 同时对 `.git/index` 做字节级快照，用于 100% 还原 staged 语义。\n- 回收完成后自动恢复：先清空到确定态，再“只覆盖、不合并”回放工作区快照，并原样恢复 index；会做一致性校验。\n- 若恢复/校验失败：stash/快照将保留，你需要用外部 Git 工具手动处理。"
+              ) as string}
+            </div>
+            {baseWorktreeDirtyDialog.preCommitHint ? (
+              <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800 whitespace-pre-line">
+                {baseWorktreeDirtyDialog.preCommitHint}
+              </div>
+            ) : null}
+	            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
+	              <Button className="w-full" variant="outline" onClick={() => setBaseWorktreeDirtyDialog((prev) => ({ ...prev, open: false }))}>
+	                {t("common:cancel", "取消") as string}
+	              </Button>
+	              <Button
+	                className="w-full !h-auto !whitespace-normal leading-snug"
+	                variant="secondary"
+	                onClick={async () => {
+	                  const dir = String(baseWorktreeDirtyDialog.repoMainPath || "").trim();
+		                  try {
+	                    const r: any = await (window as any).host?.gitWorktree?.openExternalTool?.(dir);
+	                    if (!(r && r.ok)) throw new Error("打开外部 Git 工具失败");
+	                  } catch {
+	                    try { await (window as any).host?.gitWorktree?.openTerminal?.(dir); } catch {}
+	                  }
+                  setBaseWorktreeDirtyDialog((prev) => ({ ...prev, open: false }));
+	                }}
+	                disabled={!baseWorktreeDirtyDialog.repoMainPath}
+	              >
+	                {t("projects:gitOpenExternalOrTerminal", "打开外部 Git 工具/终端处理") as string}
+	              </Button>
+	              <Button
+	                className="w-full !h-auto !whitespace-normal leading-snug"
+	                variant="danger"
+	                onClick={() => {
+	                  setBaseWorktreeDirtyDialog((prev) => ({ ...prev, open: false }));
+	                  void submitWorktreeRecycle({ autoStashBaseWorktree: true });
+                }}
+                disabled={worktreeRecycleDialog.running}
+	              >
+	                {t("projects:worktreeRecycleBaseDirtyContinue", "我知道风险，继续") as string}
+	              </Button>
+	            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Git 失败兜底弹窗：提供外部 Git 工具/终端快捷入口 */}
+      <Dialog
+        open={gitActionErrorDialog.open}
+        onOpenChange={(open) => {
+          if (open) return;
+          closeGitActionErrorDialog();
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{gitActionErrorDialog.title}</DialogTitle>
+            <DialogDescription>{t("projects:gitActionFailedHint", "请在外部工具中处理冲突/中断/hook 等问题后再重试。") as string}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            {gitActionErrorDialog.dir ? (
+              <div className="rounded-lg border border-slate-200/70 bg-white/60 px-3 py-2 text-xs text-slate-600 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:text-[var(--cf-text-secondary)]">
+                <div className="font-mono break-all">{gitActionErrorDialog.dir}</div>
+              </div>
+            ) : null}
+	            {gitActionErrorDialog.message ? (
+	              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700 whitespace-pre-line">
+	                {gitActionErrorDialog.message}
+	              </div>
+	            ) : null}
+            <div className="flex justify-end gap-2 pt-1">
+              <Button variant="outline" onClick={closeGitActionErrorDialog}>
+                {t("common:close", "关闭") as string}
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={async () => {
+                  try { if (gitActionErrorDialog.dir) await (window as any).host?.gitWorktree?.openExternalTool?.(gitActionErrorDialog.dir); } catch {}
+                  closeGitActionErrorDialog();
+                }}
+                disabled={!gitActionErrorDialog.dir}
+              >
+                {t("projects:gitOpenExternalTool", "打开外部 Git 工具") as string}
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={async () => {
+                  try { if (gitActionErrorDialog.dir) await (window as any).host?.gitWorktree?.openTerminal?.(gitActionErrorDialog.dir); } catch {}
+                  closeGitActionErrorDialog();
+                }}
+                disabled={!gitActionErrorDialog.dir}
+              >
+                {t("projects:gitOpenTerminal", "在外部终端 / Git Bash 打开") as string}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* 通用提示弹窗：用于替代 alert，保持应用整体风格一致 */}
+      <Dialog
+        open={noticeDialog.open}
+        onOpenChange={(open) => {
+          if (open) return;
+          setNoticeDialog((prev) => ({ ...prev, open: false }));
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{noticeDialog.title || (t("common:notice", "提示") as string)}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            {noticeDialog.message ? (
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700 whitespace-pre-wrap break-words dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:text-[var(--cf-text-secondary)]">
+                {noticeDialog.message}
+              </div>
+            ) : null}
+            <div className="flex justify-end gap-2 pt-1">
+              <Button variant="outline" onClick={() => setNoticeDialog((prev) => ({ ...prev, open: false }))}>
+                {t("common:close", "关闭") as string}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={hideProjectConfirm.open} onOpenChange={(open) => {
         setHideProjectConfirm((prev) => ({ open, project: open ? prev.project : null }));
         if (!open) {
@@ -4881,6 +8428,14 @@ export default function CodexFlowManagerUI() {
           terminalFontFamily,
           terminalTheme,
           claudeCodeReadAgentHistory,
+          gitWorktree: {
+            gitPath: gitWorktreeGitPath,
+            externalGitToolId: gitWorktreeExternalGitToolId,
+            externalGitToolCustomCommand: gitWorktreeExternalGitToolCustomCommand,
+            terminalCommand: gitWorktreeTerminalCommand,
+            autoCommitEnabled: gitWorktreeAutoCommitEnabled,
+            copyRulesOnCreate: gitWorktreeCopyRulesOnCreate,
+          },
         }}
         onSave={async (v) => {
           const nextProviders = v.providers as any;
@@ -4894,6 +8449,17 @@ export default function CodexFlowManagerUI() {
           const nextTheme = normalizeThemeSetting(v.theme);
           const nextClaudeAgentHistory = !!v.claudeCodeReadAgentHistory;
           const nextMultiInstanceEnabled = !!v.multiInstanceEnabled;
+          const nextGitWorktree = (v as any).gitWorktree || {};
+          const nextGitWorktreeGitPath = String(nextGitWorktree.gitPath || "");
+          const nextExternalGitToolIdRaw = String(nextGitWorktree.externalGitToolId || "rider").trim().toLowerCase();
+          const nextExternalGitToolId: ExternalGitToolId =
+            (nextExternalGitToolIdRaw === "rider" || nextExternalGitToolIdRaw === "sourcetree" || nextExternalGitToolIdRaw === "fork" || nextExternalGitToolIdRaw === "gitkraken" || nextExternalGitToolIdRaw === "custom")
+              ? (nextExternalGitToolIdRaw as ExternalGitToolId)
+              : "rider";
+          const nextExternalGitToolCustomCommand = String(nextGitWorktree.externalGitToolCustomCommand || "");
+          const nextGitWorktreeTerminalCommand = String(nextGitWorktree.terminalCommand || "");
+          const nextGitWorktreeAutoCommitEnabled = nextGitWorktree.autoCommitEnabled !== false;
+          const nextGitWorktreeCopyRulesOnCreate = nextGitWorktree.copyRulesOnCreate !== false;
           // 先切换语言（内部会写入 settings 并广播），再持久化其它字段
           try { await (window as any).host?.i18n?.setLocale?.(nextLocale); setLocale(nextLocale); } catch {}
           try {
@@ -4913,6 +8479,13 @@ export default function CodexFlowManagerUI() {
               notifications: nextNotifications,
               network: v.network,
               codexAccount: v.codexAccount as any,
+              gitWorktree: {
+                gitPath: nextGitWorktreeGitPath,
+                externalGitTool: { id: nextExternalGitToolId, customCommand: nextExternalGitToolCustomCommand },
+                terminalCommand: nextGitWorktreeTerminalCommand,
+                autoCommitEnabled: nextGitWorktreeAutoCommitEnabled,
+                copyRulesOnCreate: nextGitWorktreeCopyRulesOnCreate,
+              },
               terminalFontFamily: nextFontFamily,
               terminalTheme: nextTerminalTheme,
               claudeCode: { readAgentHistory: nextClaudeAgentHistory },
@@ -4948,6 +8521,12 @@ export default function CodexFlowManagerUI() {
           setTerminalFontFamily(nextFontFamily);
           setTerminalTheme(nextTerminalTheme);
           setClaudeCodeReadAgentHistory(nextClaudeAgentHistory);
+          setGitWorktreeAutoCommitEnabled(nextGitWorktreeAutoCommitEnabled);
+          setGitWorktreeCopyRulesOnCreate(nextGitWorktreeCopyRulesOnCreate);
+          setGitWorktreeGitPath(nextGitWorktreeGitPath);
+          setGitWorktreeExternalGitToolId(nextExternalGitToolId);
+          setGitWorktreeExternalGitToolCustomCommand(nextExternalGitToolCustomCommand);
+          setGitWorktreeTerminalCommand(nextGitWorktreeTerminalCommand);
         }}
       />
 

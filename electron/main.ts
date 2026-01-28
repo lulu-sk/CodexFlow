@@ -43,6 +43,13 @@ import { registerNotificationIPC, unregisterNotificationIPC } from "./notificati
 import { applyInstanceProfile, normalizeProfileId, resolveProfileUserDataDir } from "./instance";
 import { getBaseUserDataDir, getFeatureFlags, updateFeatureFlags } from "./featureFlags";
 import { readDebugConfig, getDebugConfig, onDebugChanged, watchDebugConfig, updateDebugConfig, resetDebugConfig, unwatchDebugConfig } from "./debugConfig";
+import { getGitDirInfoBatchAsync } from "./git/status";
+import { autoCommitWorktreeIfDirtyAsync, createWorktreesAsync, listLocalBranchesAsync, recycleWorktreeAsync, removeWorktreeAsync } from "./git/worktreeOps";
+import { WorktreeCreateTaskManager } from "./git/worktreeCreateTasks";
+import { WorktreeRecycleTaskManager } from "./git/worktreeRecycleTasks";
+import { loadDirTreeStore, saveDirTreeStore } from "./stores/dirTreeStore";
+import { getDirBuildRunConfig, setDirBuildRunConfig } from "./stores/buildRunStore";
+import { getWorktreeMeta } from "./stores/worktreeMetaStore";
 
 // 使用 CommonJS 编译输出时，运行时环境会提供 `__dirname`，直接使用即可
 
@@ -75,6 +82,10 @@ const APP_USER_MODEL_ID = 'com.codexflow.app';
 const DEV_APP_USER_MODEL_ID = 'com.codexflow.app.dev';
 const PROTOCOL_SCHEME = 'codexflow';
 const ptyManager = new PTYManager(() => mainWindow);
+// worktree 创建后台任务：用于“创建中”进度 UI（可关闭/可重新打开查看输出）
+const worktreeCreateTasks = new WorktreeCreateTaskManager();
+// worktree 回收后台任务：用于“回收中”进度 UI（可查看实时日志）
+const worktreeRecycleTasks = new WorktreeRecycleTaskManager();
 // 会话期粘贴图片（保存后的 Windows 路径），用于退出时统一清理
 const sessionPastedImages = new Set<string>();
 const codexBridges = new Map<string, CodexBridge>();
@@ -167,6 +178,10 @@ type SpawnDetachedSafeOptions = {
   timeoutMs?: number;
   detached?: boolean;
   windowsHide?: boolean;
+  /** 进程工作目录（可选）。 */
+  cwd?: string;
+  /** 额外环境变量（会与当前进程 env 合并）。 */
+  env?: NodeJS.ProcessEnv;
   minAliveMs?: number;
   acceptExit0BeforeMinAliveMs?: boolean;
 };
@@ -181,6 +196,8 @@ function spawnDetachedSafe(file: string, argv: string[], options?: SpawnDetached
   const timeoutMs = Math.max(200, Math.min(5000, Number(options?.timeoutMs ?? 1200)));
   const detached = options?.detached ?? true;
   const windowsHide = options?.windowsHide ?? true;
+  const cwd = typeof options?.cwd === "string" && options.cwd.trim().length > 0 ? options.cwd : undefined;
+  const env = options?.env ? { ...process.env, ...options.env } : undefined;
   const minAliveMs = Math.max(0, Math.min(2000, Number(options?.minAliveMs ?? 200)));
   const acceptExit0BeforeMinAliveMs = options?.acceptExit0BeforeMinAliveMs ?? true;
   return new Promise<boolean>((resolve) => {
@@ -197,7 +214,7 @@ function spawnDetachedSafe(file: string, argv: string[], options?: SpawnDetached
 
     let child: ReturnType<typeof spawn> | null = null;
     try {
-      child = spawn(file, argv, { detached, stdio: "ignore", windowsHide });
+      child = spawn(file, argv, { detached, stdio: "ignore", windowsHide, cwd, env });
     } catch {
       finish(false);
       return;
@@ -239,6 +256,45 @@ function spawnDetachedSafe(file: string, argv: string[], options?: SpawnDetached
       });
     } catch {
       try { child?.unref(); } catch {}
+      finish(false);
+    }
+  });
+}
+
+/**
+ * 以 shell=true 的方式启动外部进程（用于用户自定义命令等场景）。
+ * - 必须有超时，避免极端情况下 promise 悬挂
+ * - 仅用于“启动外部工具/终端”，不用于需要可靠 I/O 的内部链路
+ */
+function spawnDetachedShellSafe(commandLine: string, options?: { timeoutMs?: number; windowsHide?: boolean }): Promise<boolean> {
+  const cmd = String(commandLine || "").trim();
+  const timeoutMs = Math.max(200, Math.min(5000, Number(options?.timeoutMs ?? 1200)));
+  const windowsHide = options?.windowsHide ?? false;
+  return new Promise<boolean>((resolve) => {
+    let done = false;
+    const finish = (ok: boolean) => {
+      if (done) return;
+      done = true;
+      resolve(ok);
+    };
+    let child: ReturnType<typeof spawn> | null = null;
+    try {
+      child = spawn(cmd, { shell: true, detached: true, stdio: "ignore", windowsHide });
+    } catch {
+      finish(false);
+      return;
+    }
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    try { (timer as any).unref?.(); } catch {}
+    try {
+      child.once("error", () => finish(false));
+      child.once("spawn", () => {
+        try { child?.unref?.(); } catch {}
+        clearTimeout(timer);
+        finish(true);
+      });
+    } catch {
+      clearTimeout(timer);
       finish(false);
     }
   });
@@ -1705,6 +1761,527 @@ ipcMain.on('projects.touch', (_e, { id }: { id: string }) => {
   projects.touchProject(id);
 });
 
+// ---- Dir Tree / Build-Run / Git Worktree ----
+
+/**
+ * 目录树：读取（仅 UI 结构持久化，不涉及磁盘扫描）。
+ */
+ipcMain.handle("dirTree.get", async () => {
+  try {
+    const store = loadDirTreeStore();
+    return { ok: true, store };
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+});
+
+/**
+ * 目录树：写入（整包覆盖；由渲染层保证约束与去重）。
+ */
+ipcMain.handle("dirTree.set", async (_e, args: { store: any }) => {
+  try {
+    const store = args?.store as any;
+    if (!store || typeof store !== "object") return { ok: false, error: "invalid store" };
+    saveDirTreeStore(store as any);
+    return { ok: true };
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+});
+
+/**
+ * Build/Run：读取指定目录的持久化配置（Key=目录绝对路径）。
+ */
+ipcMain.handle("buildRun.get", async (_e, args: { dir: string }) => {
+  try {
+    const dir = String(args?.dir || "").trim();
+    if (!dir) return { ok: false, error: "missing dir" };
+    const cfg = getDirBuildRunConfig(dir);
+    return { ok: true, cfg: cfg || null };
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+});
+
+/**
+ * Build/Run：写入指定目录的持久化配置（整包覆盖；避免复杂 merge 逻辑散落）。
+ */
+ipcMain.handle("buildRun.set", async (_e, args: { dir: string; cfg: any }) => {
+  try {
+    const dir = String(args?.dir || "").trim();
+    if (!dir) return { ok: false, error: "missing dir" };
+    const cfg = args?.cfg;
+    if (!cfg || typeof cfg !== "object") return { ok: false, error: "invalid cfg" };
+    setDirBuildRunConfig(dir, cfg as any);
+    return { ok: true };
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+});
+
+/**
+ * Build/Run：在外部终端执行（硬性要求：不走内置 PTY）。
+ * - 默认只按 OS 环境选择终端（不跟随 Provider/全局终端切换器）
+ * - WSL 仅在该命令显式选择或用户命令显式写 wsl.exe 时进入
+ */
+ipcMain.handle("buildRun.exec", async (_e, args: any) => {
+  try {
+    const dir = String(args?.dir || "").trim();
+    const title = String(args?.title || "").trim() || "Build/Run";
+    const command = args?.command && typeof args.command === "object" ? (args.command as any) : null;
+    if (!dir) return { ok: false, error: "missing dir" };
+    if (!command) return { ok: false, error: "missing command" };
+
+    const mode = String(command.mode || "").trim();
+    const cwd = String(args?.cwd || "").trim() || dir;
+    const backend = (command.backend && typeof command.backend === "object") ? command.backend : (args?.backend && typeof args.backend === "object" ? args.backend : { kind: "system" });
+    const backendKind = String(backend?.kind || "system").trim();
+
+    const envRows = Array.isArray(command.env) ? command.env : (Array.isArray(args?.env) ? args.env : []);
+    const envMap: Record<string, string> = {};
+    for (const row of envRows) {
+      const k = String((row as any)?.key || "").trim();
+      const v = String((row as any)?.value ?? "");
+      if (!k) continue;
+      envMap[k] = v;
+    }
+
+    const quotePs = (s: string) => `'${String(s ?? "").replace(/'/g, "''")}'`;
+    const quoteBash = (s: string) => `'${String(s ?? "").replace(/'/g, `'\"'\"'`)}'`;
+
+    const buildCmdText = (): { ps: string; bash: string } => {
+      if (mode === "advanced") {
+        const cmd = String(command.cmd || "").trim();
+        const argv = Array.isArray(command.args) ? (command.args as any[]).map((x: any) => String(x ?? "")) : [];
+        const ps = cmd ? `& ${quotePs(cmd)} ${argv.map((a) => quotePs(a)).join(" ")}`.trim() : "";
+        const bash = cmd ? `${quoteBash(cmd)} ${argv.map((a) => quoteBash(a)).join(" ")}`.trim() : "";
+        return { ps, bash };
+      }
+      const text = String(command.commandText || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+      return { ps: text, bash: text };
+    };
+
+    const { ps: cmdPsBody, bash: cmdBashBody } = buildCmdText();
+    if (!cmdPsBody.trim() && !cmdBashBody.trim()) return { ok: false, error: "empty command" };
+
+    if (process.platform === "win32") {
+      // Windows：system/pwsh 使用 PowerShell 执行脚本；git_bash 使用 Git Bash；wsl 使用 wsl.exe
+      const toPsEncoded = (s: string) => Buffer.from(String(s || ""), "utf16le").toString("base64");
+      const resolvedShell = (() => {
+        if (backendKind === "pwsh") return resolveWindowsShell("pwsh");
+        return resolveWindowsShell("windows");
+      })();
+
+      if (backendKind === "git_bash") {
+        const bashCandidates = [
+          "C:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe",
+          "C:\\\\Program Files\\\\Git\\\\usr\\\\bin\\\\bash.exe",
+          "C:\\\\Program Files (x86)\\\\Git\\\\bin\\\\bash.exe",
+          "C:\\\\Program Files (x86)\\\\Git\\\\usr\\\\bin\\\\bash.exe",
+        ];
+        const bashExe = bashCandidates.find((p) => { try { return fs.existsSync(p); } catch { return false; } });
+        if (!bashExe) return { ok: false, error: "Git Bash 未检测到（bash.exe not found）" };
+        const bashScriptLines: string[] = [];
+        bashScriptLines.push(`cd ${quoteBash(cwd)} 2>/dev/null || cd ~`);
+        for (const [k, v] of Object.entries(envMap)) bashScriptLines.push(`export ${k}=${quoteBash(v)}`);
+        bashScriptLines.push(cmdBashBody);
+        bashScriptLines.push("exec bash");
+        const bashScript = bashScriptLines.join("\n");
+        const cmdExe = resolveSystemBinary("cmd.exe");
+        const ok = await spawnDetachedSafe(cmdExe, ["/c", "start", "", bashExe, "-lc", bashScript], { windowsHide: false });
+        if (ok) return { ok: true };
+        return { ok: false, error: "failed to launch Git Bash" };
+      }
+
+      if (backendKind === "wsl") {
+        const distro = String(backend?.distro || "").trim();
+        const hasDistro = (() => { try { return distro ? wsl.distroExists(distro) : false; } catch { return false; } })();
+        const distroArgv = hasDistro ? ["-d", distro] : [];
+        // WSL cwd：优先用 winPath -> wsl；失败则回退 ~
+        let wslCwd = "~";
+        try {
+          const w = wsl.winToWsl(wsl.normalizeWinPath(cwd), hasDistro ? distro : undefined);
+          if (w && w.startsWith("/")) wslCwd = w;
+        } catch {}
+        const bashLines: string[] = [];
+        bashLines.push(`cd ${quoteBash(wslCwd)} 2>/dev/null || cd ~`);
+        for (const [k, v] of Object.entries(envMap)) bashLines.push(`export ${k}=${quoteBash(v)}`);
+        bashLines.push(cmdBashBody);
+        bashLines.push("exec bash");
+        const bashScript = bashLines.join("\n");
+        const wslExe = resolveSystemBinary("wsl.exe");
+        const cmdExe = resolveSystemBinary("cmd.exe");
+        const ok = await spawnDetachedSafe(cmdExe, ["/c", "start", "", wslExe, ...distroArgv, ...(wslCwd && wslCwd !== "~" ? ["--cd", wslCwd] : []), "--", "bash", "-lic", bashScript], { windowsHide: false });
+        if (ok) return { ok: true };
+        return { ok: false, error: "failed to launch WSL" };
+      }
+
+      // system/pwsh：PowerShell 编码脚本
+      const psLines: string[] = [];
+      psLines.push(`$Host.UI.RawUI.WindowTitle = ${quotePs(title)}`);
+      psLines.push(`Set-Location -Path ${quotePs(cwd)}`);
+      for (const [k, v] of Object.entries(envMap)) psLines.push(`$env:${k} = ${quotePs(v)}`);
+      psLines.push(cmdPsBody);
+      const psScript = psLines.join("\n");
+      const psEncoded = toPsEncoded(psScript);
+      const cmdExe = resolveSystemBinary("cmd.exe");
+      const ok = await spawnDetachedSafe(cmdExe, ["/c", "start", "", resolvedShell.command, "-NoExit", "-NoProfile", "-EncodedCommand", psEncoded], { windowsHide: false });
+      if (ok) return { ok: true };
+      return { ok: false, error: "failed to launch external PowerShell" };
+    }
+
+    // macOS / Linux：尽量使用系统终端打开，并在其中执行 bash 脚本
+    const bashLines: string[] = [];
+    bashLines.push(`cd ${quoteBash(cwd)} 2>/dev/null || cd ~`);
+    for (const [k, v] of Object.entries(envMap)) bashLines.push(`export ${k}=${quoteBash(v)}`);
+    bashLines.push(cmdBashBody);
+    bashLines.push("exec bash");
+    const bashScript = bashLines.join("\n");
+
+    if (process.platform === "darwin") {
+      // macOS：使用 AppleScript 打开 Terminal 并执行脚本（失败则回退无提示）
+      const esc = (s: string) => String(s || "").replace(/\\/g, "\\\\").replace(/\"/g, "\\\"");
+      const osa = `tell application \"Terminal\"\nactivate\ndo script \"bash -lc \\\"${esc(bashScript)}\\\"\"\nend tell`;
+      try {
+        const ok = await spawnDetachedSafe("osascript", ["-e", osa], { windowsHide: true, timeoutMs: 3000, minAliveMs: 0 });
+        if (ok) return { ok: true };
+      } catch {}
+      return { ok: false, error: "failed to launch Terminal.app" };
+    }
+
+    const candidates: Array<{ cmd: string; args: string[] }> = [
+      { cmd: "x-terminal-emulator", args: ["-e", "bash", "-lc", bashScript] },
+      { cmd: "gnome-terminal", args: ["--", "bash", "-lc", bashScript] },
+      { cmd: "konsole", args: ["-e", "bash", "-lc", bashScript] },
+      { cmd: "xterm", args: ["-e", "bash", "-lc", bashScript] },
+    ];
+    for (const c of candidates) {
+      try {
+        const child = spawn(c.cmd, c.args, { detached: true, stdio: "ignore", cwd: process.env.HOME });
+        child.on("error", () => {});
+        child.unref();
+        return { ok: true };
+      } catch {}
+    }
+    return { ok: false, error: "no terminal available" };
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+});
+
+/**
+ * Git：批量读取目录 git 状态（仓库/工作树识别、分支、detached）。
+ */
+ipcMain.handle("gitWorktree.statusBatch", async (_e, args: { dirs: string[] }) => {
+  try {
+    const dirs = Array.isArray(args?.dirs) ? args.dirs.map((x) => String(x || "")).filter(Boolean) : [];
+    if (dirs.length === 0) return { ok: true, items: [] };
+    const cfg = settings.getSettings() as any;
+    const gitPath = String(cfg?.gitWorktree?.gitPath || "").trim() || "git";
+    const items = await getGitDirInfoBatchAsync({ dirs, gitPath, cacheTtlMs: 1200, timeoutMs: 2500, concurrency: 6 });
+    return { ok: true, items };
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+});
+
+/**
+ * Git：读取分支列表（仅本地分支，用于 baseBranch 下拉）。
+ */
+ipcMain.handle("gitWorktree.listBranches", async (_e, args: { repoDir: string }) => {
+  try {
+    const repoDir = String(args?.repoDir || "").trim();
+    if (!repoDir) return { ok: false, error: "missing repoDir" };
+    const cfg = settings.getSettings() as any;
+    const gitPath = String(cfg?.gitWorktree?.gitPath || "").trim() || "git";
+    return await listLocalBranchesAsync({ repoDir, gitPath, timeoutMs: 8000 });
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+});
+
+/**
+ * Git：读取 worktree 元数据（用于回收/删除等默认分支选择）。
+ */
+ipcMain.handle("gitWorktree.getMeta", async (_e, args: { worktreePath: string }) => {
+  try {
+    const worktreePath = String(args?.worktreePath || "").trim();
+    if (!worktreePath) return { ok: false, error: "missing worktreePath" };
+    const meta = getWorktreeMeta(worktreePath);
+    return { ok: true, meta: meta || null };
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+});
+
+/**
+ * Git：从分支创建 worktree（统一上级目录管理，支持多实例）。
+ */
+ipcMain.handle("gitWorktree.create", async (_e, args: { repoDir: string; baseBranch: string; instances: any[]; copyRules?: boolean }) => {
+  try {
+    const repoDir = String(args?.repoDir || "").trim();
+    const baseBranch = String(args?.baseBranch || "").trim();
+    const instancesRaw = Array.isArray(args?.instances) ? args.instances : [];
+    if (!repoDir) return { ok: false, error: "missing repoDir" };
+    if (!baseBranch) return { ok: false, error: "missing baseBranch" };
+    const instances = instancesRaw
+      .map((x: any) => ({ providerId: String(x?.providerId || "").trim().toLowerCase(), count: Math.max(0, Math.floor(Number(x?.count) || 0)) }))
+      .filter((x: any) => (x.providerId === "codex" || x.providerId === "claude" || x.providerId === "gemini") && x.count > 0) as any;
+    const cfg = settings.getSettings() as any;
+    const gitPath = String(cfg?.gitWorktree?.gitPath || "").trim() || "git";
+    const copyRules = args?.copyRules === true;
+    return await createWorktreesAsync({ repoDir, baseBranch, instances, gitPath, copyRules });
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+});
+
+/**
+ * Git：启动（或复用）worktree 创建后台任务，并返回 taskId（用于进度 UI）。
+ */
+ipcMain.handle("gitWorktree.createTaskStart", async (_e, args: { repoDir: string; baseBranch: string; instances: any[]; copyRules?: boolean }) => {
+  try {
+    const repoDir = String(args?.repoDir || "").trim();
+    const baseBranch = String(args?.baseBranch || "").trim();
+    const instancesRaw = Array.isArray(args?.instances) ? args.instances : [];
+    if (!repoDir) return { ok: false, error: "missing repoDir" };
+    if (!baseBranch) return { ok: false, error: "missing baseBranch" };
+    const instances = instancesRaw
+      .map((x: any) => ({ providerId: String(x?.providerId || "").trim().toLowerCase(), count: Math.max(0, Math.floor(Number(x?.count) || 0)) }))
+      .filter((x: any) => (x.providerId === "codex" || x.providerId === "claude" || x.providerId === "gemini") && x.count > 0) as any;
+    const cfg = settings.getSettings() as any;
+    const gitPath = String(cfg?.gitWorktree?.gitPath || "").trim() || "git";
+    const copyRules = args?.copyRules === true;
+    return worktreeCreateTasks.startOrReuse({ repoDir, baseBranch, instances, gitPath, copyRules });
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+});
+
+/**
+ * Git：读取 worktree 创建后台任务状态，并按偏移增量返回日志（用于可关闭/可重开的进度 UI）。
+ */
+ipcMain.handle("gitWorktree.createTaskGet", async (_e, args: { taskId: string; from?: number }) => {
+  try {
+    return worktreeCreateTasks.get({ taskId: String(args?.taskId || "").trim(), from: args?.from });
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+});
+
+/**
+ * Git：启动（或复用）worktree 回收后台任务，并返回 taskId（用于进度 UI）。
+ */
+ipcMain.handle("gitWorktree.recycleTaskStart", async (_e, args: any) => {
+  try {
+    const worktreePath = String(args?.worktreePath || "").trim();
+    const baseBranch = String(args?.baseBranch || "").trim();
+    const wtBranch = String(args?.wtBranch || "").trim();
+    const mode = String(args?.mode || "").trim();
+    const commitMessage = typeof args?.commitMessage === "string" ? args.commitMessage : undefined;
+    const autoStashBaseWorktree = args?.autoStashBaseWorktree === true;
+    if (!worktreePath || !baseBranch || !wtBranch) return { ok: false, error: "missing args" };
+    if (mode !== "squash" && mode !== "rebase") return { ok: false, error: "invalid mode" };
+    const cfg = settings.getSettings() as any;
+    const gitPath = String(cfg?.gitWorktree?.gitPath || "").trim() || "git";
+    return worktreeRecycleTasks.startOrReuse({ worktreePath, baseBranch, wtBranch, mode: mode as any, gitPath, commitMessage, autoStashBaseWorktree });
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+});
+
+/**
+ * Git：读取 worktree 回收后台任务状态，并按偏移增量返回日志（用于可关闭/可重开的进度 UI）。
+ */
+ipcMain.handle("gitWorktree.recycleTaskGet", async (_e, args: { taskId: string; from?: number }) => {
+  try {
+    return worktreeRecycleTasks.get({ taskId: String(args?.taskId || "").trim(), from: args?.from });
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+});
+
+/**
+ * Git：回收 worktree 变更到基分支（squash/rebase）。
+ */
+ipcMain.handle("gitWorktree.recycle", async (_e, args: any) => {
+  try {
+    const worktreePath = String(args?.worktreePath || "").trim();
+    const baseBranch = String(args?.baseBranch || "").trim();
+    const wtBranch = String(args?.wtBranch || "").trim();
+    const mode = String(args?.mode || "").trim();
+    const commitMessage = typeof args?.commitMessage === "string" ? args.commitMessage : undefined;
+    const autoStashBaseWorktree = args?.autoStashBaseWorktree === true;
+    if (!worktreePath || !baseBranch || !wtBranch) return { ok: false, errorCode: "INVALID_ARGS", details: { worktreePath, baseBranch, wtBranch } };
+    if (mode !== "squash" && mode !== "rebase") return { ok: false, errorCode: "INVALID_ARGS", details: { mode } };
+    const cfg = settings.getSettings() as any;
+    const gitPath = String(cfg?.gitWorktree?.gitPath || "").trim() || "git";
+    return await recycleWorktreeAsync({ worktreePath, baseBranch, wtBranch, mode, gitPath, commitMessage, autoStashBaseWorktree });
+  } catch (e: any) {
+    return { ok: false, errorCode: "UNKNOWN", details: { error: String(e?.message || e) } };
+  }
+});
+
+/**
+ * Git：删除 worktree（可选同时删除分支；未合并需强确认）。
+ */
+ipcMain.handle("gitWorktree.remove", async (_e, args: any) => {
+  try {
+    const worktreePath = String(args?.worktreePath || "").trim();
+    if (!worktreePath) return { ok: false, removedWorktree: false, removedBranch: false, error: "missing worktreePath" };
+    const deleteBranch = args?.deleteBranch === true;
+    const forceDeleteBranch = args?.forceDeleteBranch === true;
+    const forceRemoveWorktree = args?.forceRemoveWorktree === true;
+    const cfg = settings.getSettings() as any;
+    const gitPath = String(cfg?.gitWorktree?.gitPath || "").trim() || "git";
+    return await removeWorktreeAsync({ worktreePath, gitPath, deleteBranch, forceDeleteBranch, forceRemoveWorktree });
+  } catch (e: any) {
+    return { ok: false, removedWorktree: false, removedBranch: false, error: String(e?.message || e) };
+  }
+});
+
+/**
+ * Git：worktree 自动提交（有变更才提交）。
+ */
+ipcMain.handle("gitWorktree.autoCommit", async (_e, args: any) => {
+  try {
+    const worktreePath = String(args?.worktreePath || "").trim();
+    const message = String(args?.message || "").trim();
+    if (!worktreePath || !message) return { ok: false, committed: false, error: "missing args" };
+    const cfg = settings.getSettings() as any;
+    const gitPath = String(cfg?.gitWorktree?.gitPath || "").trim() || "git";
+    return await autoCommitWorktreeIfDirtyAsync({ worktreePath, gitPath, message, timeoutMs: 12_000 });
+  } catch (e: any) {
+    return { ok: false, committed: false, error: String(e?.message || e) };
+  }
+});
+
+/**
+ * Git：在外部 Git 工具中打开指定目录（失败则回退到文件管理器打开）。
+ */
+ipcMain.handle("gitWorktree.openExternalTool", async (_e, args: { dir: string }) => {
+  try {
+    const dir = String(args?.dir || "").trim();
+    if (!dir) return { ok: false, error: "missing dir" };
+    const cfg = settings.getSettings() as any;
+    const toolId = String(cfg?.gitWorktree?.externalGitTool?.id || "").trim().toLowerCase();
+    const customCmd = String(cfg?.gitWorktree?.externalGitTool?.customCommand || "").trim();
+
+    const trySpawn = async (file: string, argv: string[]) => {
+      const ok = await spawnDetachedSafe(file, argv, { windowsHide: false });
+      return ok;
+    };
+
+    const platform = process.platform;
+    let launched = false;
+
+    if (toolId === "custom" && customCmd) {
+      const cmd = customCmd.replace(/\{path\}/g, dir);
+      launched = await spawnDetachedShellSafe(cmd, { windowsHide: false });
+    } else if (toolId === "rider") {
+      if (platform === "darwin") launched = await trySpawn("open", ["-a", "Rider", dir]);
+      else if (platform === "win32") launched = (await trySpawn("rider64.exe", [dir])) || (await trySpawn("rider.exe", [dir])) || (await spawnDetachedShellSafe(`rider \"${dir}\"`, { windowsHide: false }));
+      else launched = await trySpawn("rider", [dir]);
+    } else if (toolId === "sourcetree") {
+      if (platform === "darwin") launched = await trySpawn("open", ["-a", "SourceTree", dir]);
+      else if (platform === "win32") launched = (await trySpawn("SourceTree.exe", ["-f", dir])) || (await trySpawn("sourcetree.exe", ["-f", dir]));
+      else launched = await trySpawn("sourcetree", [dir]);
+    } else if (toolId === "fork") {
+      if (platform === "darwin") launched = await trySpawn("open", ["-a", "Fork", dir]);
+      else if (platform === "win32") launched = (await trySpawn("Fork.exe", [dir])) || (await trySpawn("fork.exe", [dir]));
+      else launched = await trySpawn("fork", [dir]);
+    } else if (toolId === "gitkraken") {
+      if (platform === "darwin") launched = await trySpawn("open", ["-a", "GitKraken", dir]);
+      else if (platform === "win32") launched = (await trySpawn("gitkraken.exe", ["-p", dir])) || (await trySpawn("gitkraken.exe", [dir]));
+      else launched = (await trySpawn("gitkraken", ["-p", dir])) || (await trySpawn("gitkraken", [dir]));
+    }
+
+    if (launched) return { ok: true };
+    // 回退：文件管理器打开目录
+    try { await shell.openPath(dir); } catch {}
+    return { ok: true, fallback: true };
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+});
+
+/**
+ * Git：在该目录打开终端（Windows 优先 Git Bash；其它系统用默认终端）。
+ */
+ipcMain.handle("gitWorktree.openTerminal", async (_e, args: { dir: string }) => {
+  try {
+    const dir = String(args?.dir || "").trim();
+    if (!dir) return { ok: false, error: "missing dir" };
+    const cfg = settings.getSettings() as any;
+    const customCmd = String(cfg?.gitWorktree?.terminalCommand || "").trim();
+
+    if (customCmd) {
+      const cmd = customCmd.replace(/\{path\}/g, dir);
+      const ok = await spawnDetachedShellSafe(cmd, { windowsHide: false });
+      return ok ? { ok: true } : { ok: false, error: "failed to launch custom terminal" };
+    }
+
+    // 默认：按 OS 策略
+    if (process.platform === "win32") {
+      // 优先尝试 Git Bash（mintty），并通过 CHERE_INVOKING + cwd 实现“在此处打开”
+      try {
+        const userProfile = String(process.env.USERPROFILE || "").trim();
+        const gitBashCandidates = [
+          "C:\\\\Program Files\\\\Git\\\\git-bash.exe",
+          "C:\\\\Program Files (x86)\\\\Git\\\\git-bash.exe",
+          userProfile ? path.join(userProfile, "AppData", "Local", "Programs", "Git", "git-bash.exe") : "",
+        ].filter(Boolean);
+        const gitBashExe = gitBashCandidates.find((p) => { try { return fs.existsSync(p); } catch { return false; } });
+        if (gitBashExe) {
+          const ok = await spawnDetachedSafe(gitBashExe, [], { windowsHide: false, cwd: dir, env: { CHERE_INVOKING: "1" } });
+          if (ok) return { ok: true };
+        }
+      } catch {}
+
+      const bashCandidates = [
+        "C:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe",
+        "C:\\\\Program Files\\\\Git\\\\usr\\\\bin\\\\bash.exe",
+        "C:\\\\Program Files (x86)\\\\Git\\\\bin\\\\bash.exe",
+        "C:\\\\Program Files (x86)\\\\Git\\\\usr\\\\bin\\\\bash.exe",
+      ];
+      const bashExe = bashCandidates.find((p) => { try { return fs.existsSync(p); } catch { return false; } });
+      const cmdExe = resolveSystemBinary("cmd.exe");
+      if (bashExe) {
+        const quoteBash = (s: string) => `'${String(s ?? "").replace(/'/g, `'\"'\"'`)}'`;
+        // 说明：Git Bash 更偏好 `/` 或 `C:/...` 风格路径；直接使用 Windows 反斜杠路径可能导致 cd 失败。
+        const dirForBash = dir.replace(/\\/g, "/");
+        // 说明：避免在 Windows 命令行参数中携带换行符，防止 start/batch 解析异常导致窗口一闪而过。
+        const bashScript = `cd ${quoteBash(dirForBash)} 2>/dev/null || cd ~; exec bash -i`;
+        const ok = await spawnDetachedSafe(cmdExe, ["/c", "start", "", bashExe, "-lc", bashScript], { windowsHide: false });
+        if (ok) return { ok: true };
+      }
+      // 回退：cmd 打开目录
+      const ok = await spawnDetachedSafe(cmdExe, ["/c", "start", "", "cmd.exe", "/k", `cd /d \"${dir}\"`], { windowsHide: false });
+      return ok ? { ok: true } : { ok: false, error: "failed to launch terminal" };
+    }
+
+    if (process.platform === "darwin") {
+      const esc = (s: string) => String(s || "").replace(/\\/g, "\\\\").replace(/\"/g, "\\\"");
+      const osa = `tell application \"Terminal\"\nactivate\ndo script \"cd \\\"${esc(dir)}\\\"; exec bash\"\nend tell`;
+      const ok = await spawnDetachedSafe("osascript", ["-e", osa], { windowsHide: true, timeoutMs: 3000, minAliveMs: 0 });
+      return ok ? { ok: true } : { ok: false, error: "failed to launch Terminal.app" };
+    }
+
+    const candidates: Array<{ cmd: string; args: string[] }> = [
+      { cmd: "x-terminal-emulator", args: ["-e", "bash", "-lc", `cd \"${dir.replace(/\"/g, "\\\"")}\" 2>/dev/null || cd ~\nexec bash`] },
+      { cmd: "gnome-terminal", args: ["--", "bash", "-lc", `cd \"${dir.replace(/\"/g, "\\\"")}\" 2>/dev/null || cd ~\nexec bash`] },
+      { cmd: "konsole", args: ["-e", "bash", "-lc", `cd \"${dir.replace(/\"/g, "\\\"")}\" 2>/dev/null || cd ~\nexec bash`] },
+      { cmd: "xterm", args: ["-e", "bash", "-lc", `cd \"${dir.replace(/\"/g, "\\\"")}\" 2>/dev/null || cd ~\nexec bash`] },
+    ];
+    for (const c of candidates) {
+      try { const child = spawn(c.cmd, c.args, { detached: true, stdio: "ignore", cwd: process.env.HOME }); child.on("error", () => {}); child.unref(); return { ok: true }; } catch {}
+    }
+    return { ok: false, error: "no terminal available" };
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+});
+
 // History API
 ipcMain.handle('history.list', async (_e, args: { projectWslPath?: string; projectWinPath?: string; limit?: number; offset?: number; historyRoot?: string }) => {
   try {
@@ -2673,6 +3250,18 @@ ipcMain.handle('utils.chooseFolder', async (_e) => {
 });
 
 // Path helpers
+/**
+ * 获取当前用户主目录路径（轻量）。
+ * 用途：渲染层推导常见安装位置（如 Git 的用户级安装目录），避免误用重型的 appData 统计接口导致设置页卡顿。
+ */
+ipcMain.handle('utils.getHomeDir', async () => {
+  try {
+    return { ok: true, homeDir: os.homedir() };
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
+  }
+});
+
 ipcMain.handle('utils.pathExists', async (_e, args: { path: string; dirOnly?: boolean }) => {
   try {
     const p = String(args?.path || '');

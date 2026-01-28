@@ -1,9 +1,42 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
-import type { AppSettings } from "@/types/host";
+import type { AppSettings } from "../types/host";
 
 export type TerminalMode = NonNullable<AppSettings["terminal"]>;
+
+/**
+ * 将 UTF-8 文本编码为 Base64（用于在 PowerShell 中安全还原包含换行的参数）。
+ * 说明：
+ * - 在 Node 环境优先使用 `Buffer`（稳定且性能更好）；
+ * - 在浏览器环境使用 `TextEncoder` + `btoa`（Electron 渲染进程可用）。
+ */
+function utf8ToBase64(text: string): string {
+  const s = String(text ?? "");
+  if (s.length === 0) return "";
+
+  // Node（含 Vitest）环境：优先 Buffer
+  try {
+    const anyGlobal = globalThis as any;
+    if (anyGlobal?.Buffer) {
+      return anyGlobal.Buffer.from(s, "utf8").toString("base64");
+    }
+  } catch {}
+
+  // 浏览器环境：TextEncoder + btoa
+  try {
+    const bytes = new TextEncoder().encode(s);
+    let binary = "";
+    const chunkSize = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      const chunk = bytes.subarray(i, i + chunkSize);
+      binary += String.fromCharCode(...Array.from(chunk));
+    }
+    return btoa(binary);
+  } catch {}
+
+  return "";
+}
 
 /**
  * 判断是否为 Windows 系终端（PowerShell / PowerShell 7）。
@@ -99,14 +132,36 @@ export function powerShellSingleQuote(value: string): string {
 }
 
 /**
- * 基于 argv 构造 PowerShell 调用表达式（使用 call operator `&`），并对每个 token 做安全单引号包裹。
+ * 将字符串转换为 PowerShell “可作为单个参数”的安全 token。
+ * - 默认使用单引号字面量（无需额外转义 `$`/`` ` `` 等字符）。
+ * - 若包含换行（`\r`/`\n`），则使用 UTF-8 Base64 解码表达式生成一行命令，避免 PTY/ConPTY 把多行拆坏。
+ */
+export function powerShellArgToken(value: string): string {
+  const raw = String(value ?? "");
+  if (raw.length === 0) return "''";
+
+  if (/[\r\n]/.test(raw)) {
+    // 统一为 \n，避免在不同环境中得到 \r\n 影响下游解析
+    const normalized = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    const b64 = utf8ToBase64(normalized);
+    if (b64) {
+      return `([System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String(${powerShellSingleQuote(b64)})))`;
+    }
+    return powerShellSingleQuote(normalized);
+  }
+
+  return powerShellSingleQuote(raw);
+}
+
+/**
+ * 基于 argv 构造 PowerShell 调用表达式（使用 call operator `&`）。
+ * - 命令与参数会被转换为可安全粘贴/执行的 token（默认单引号；包含换行的参数自动 Base64 编码还原）。
  */
 export function buildPowerShellCall(argv: string[]): string {
   const parts = (argv || []).map((x) => String(x || "")).filter((x) => x.length > 0);
   if (parts.length === 0) return "";
   const [cmd, ...args] = parts;
   const rendered = [`& ${powerShellSingleQuote(cmd)}`];
-  for (const a of args) rendered.push(powerShellSingleQuote(a));
+  for (const a of args) rendered.push(powerShellArgToken(a));
   return rendered.join(" ");
 }
-
