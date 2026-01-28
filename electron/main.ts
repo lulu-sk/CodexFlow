@@ -346,6 +346,46 @@ function stripInstanceIsolationArgs(argv: readonly string[]): string[] {
 }
 
 /**
+ * 从 argv 中解析渲染层开发服务器 URL（支持：--dev-server-url <url> / --dev-server-url=<url>）。
+ * 说明：需要放在 argv 中的原因是，`second-instance` 转发场景下无法直接获取“二次启动”的环境变量。
+ */
+function parseDevServerUrlFromArgv(argv: readonly string[]): string | null {
+  try {
+    for (let i = 0; i < argv.length; i++) {
+      const arg = argv[i];
+      if (arg === "--dev-server-url") {
+        const next = argv[i + 1];
+        if (typeof next === "string" && next.trim()) return next.trim();
+      }
+      if (typeof arg === "string" && arg.startsWith("--dev-server-url=")) {
+        const val = arg.slice("--dev-server-url=".length);
+        if (val.trim()) return val.trim();
+      }
+    }
+  } catch {}
+  return null;
+}
+
+/**
+ * 获取渲染层开发服务器 URL：
+ * - 优先使用 argv 的 --dev-server-url（适配多 worktree/多实例转发）
+ * - 其次使用环境变量 DEV_SERVER_URL（兼容旧脚本）
+ */
+function resolveDevServerUrl(argv: readonly string[]): string | null {
+  try {
+    const fromArgv = String(parseDevServerUrlFromArgv(argv) || "").trim();
+    if (fromArgv && /^https?:/i.test(fromArgv)) return fromArgv;
+
+    const fromEnv = String(process.env.DEV_SERVER_URL || "").trim();
+    if (fromEnv && /^https?:/i.test(fromEnv)) return fromEnv;
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * 生成一个自动 profileId（用于“一键打开新实例”）。
  */
 /** 自动 profile 槽位数量：用于复用数据目录，避免每次双击都生成新目录导致磁盘无限增长。 */
@@ -1021,9 +1061,9 @@ function createWindow() {
     applyTitleBarTheme(fallbackMode, 'system');
   } catch {}
 
-  const devUrl = process.env.DEV_SERVER_URL;
+  const devUrl = resolveDevServerUrl(process.argv);
   if (DIAG) { try { perfLogger.log(`[WIN] create BrowserWindow devUrl=${devUrl || ''}`); } catch {} }
-  if (devUrl && /^https?:/i.test(devUrl)) {
+  if (devUrl) {
     if (DIAG) { try { perfLogger.log(`[WIN] loadURL ${devUrl}`); } catch {} }
     mainWindow.loadURL(devUrl);
     mainWindow.webContents.openDevTools({ mode: 'detach' });
@@ -1160,7 +1200,7 @@ if (!gotLock) {
    * - 若启用实验性多实例：当二次启动未指定 `--profile` 时，自动拉起一个新的 profile 实例
    * - 否则聚焦现有窗口（保持单实例体验）
    */
-  async function handleSecondInstance(argv: readonly string[]): Promise<void> {
+  async function handleSecondInstance(argv: readonly string[], workingDirectory?: string): Promise<void> {
     const url = extractProtocolUrl(argv as any);
     if (url) {
       focusTabFromProtocol(url);
@@ -1172,17 +1212,34 @@ if (!gotLock) {
       if (enabled) {
         const hasProfileArg = stripProfileArgs(argv).length !== argv.length;
         if (!hasProfileArg) {
-          const baseArgs = stripInstanceIsolationArgs(process.argv.slice(1));
+          // 使用“二次启动”的 argv/cwd 来拉起新实例，避免始终复用首实例的可执行文件/工作目录/资源。
+          // 场景：开发者同时保留旧实例运行，再启动新构建版本；若仍用首实例参数拉起，会导致后续实例仍运行旧界面与逻辑。
+          const incomingExecPath = (() => {
+            try {
+              const p = (argv as any)?.[0];
+              if (typeof p === "string" && p.trim()) return p.trim();
+            } catch {}
+            return process.execPath;
+          })();
+          const execCandidates = (() => {
+            const list = [incomingExecPath];
+            if (process.execPath && process.execPath !== incomingExecPath) list.push(process.execPath);
+            return list;
+          })();
+          const baseArgs = stripInstanceIsolationArgs((argv as any)?.slice?.(1) || []);
+          const spawnCwd = typeof workingDirectory === "string" && workingDirectory.trim().length > 0 ? workingDirectory : undefined;
           const baseUserDataDir = getBaseUserDataDir();
           const candidates = buildAutoProfileCandidates();
           for (const profileId of candidates) {
             const userDataDir = resolveProfileUserDataDir(baseUserDataDir, profileId);
             const spawnArgs = [...baseArgs, "--profile", profileId, "--user-data-dir", userDataDir];
-            try { perfLogger.log(`[INSTANCE] spawn profile=${profileId} userData=${userDataDir}`); } catch {}
-            const launched = await spawnDetachedSafe(process.execPath, spawnArgs, { timeoutMs: 2000, minAliveMs: 250, windowsHide: true, acceptExit0BeforeMinAliveMs: false });
-            if (launched) {
-              try { perfLogger.log(`[INSTANCE] spawn ok profile=${profileId}`); } catch {}
-              return;
+            for (const execPath of execCandidates) {
+              try { perfLogger.log(`[INSTANCE] spawn file=${execPath} cwd=${spawnCwd || ""} profile=${profileId} userData=${userDataDir}`); } catch {}
+              const launched = await spawnDetachedSafe(execPath, spawnArgs, { timeoutMs: 2000, minAliveMs: 250, windowsHide: true, acceptExit0BeforeMinAliveMs: false, cwd: spawnCwd });
+              if (launched) {
+                try { perfLogger.log(`[INSTANCE] spawn ok profile=${profileId}`); } catch {}
+                return;
+              }
             }
             try { perfLogger.log(`[INSTANCE] spawn failed profile=${profileId}`); } catch {}
           }
@@ -1195,8 +1252,8 @@ if (!gotLock) {
     }
   }
 
-  app.on("second-instance", (_event, argv) => {
-    void handleSecondInstance(argv as any);
+  app.on("second-instance", (_event, argv, workingDirectory) => {
+    void handleSecondInstance(argv as any, workingDirectory);
   });
 
   app.whenReady().then(() => {
@@ -3121,8 +3178,8 @@ ipcMain.handle('app.getPaths', async () => {
 ipcMain.handle('app.getEnvMeta', async () => {
   try {
     const isDev = !app.isPackaged && !process.env.PORTABLE_EXECUTABLE_DIR;
-    const devServerUrl = String(process.env.DEV_SERVER_URL || '').trim();
-    const protocol = devServerUrl && /^https?:/i.test(devServerUrl) ? 'http' : 'file';
+    const devServerUrl = resolveDevServerUrl(process.argv);
+    const protocol = devServerUrl ? 'http' : 'file';
     return { ok: true, isDev, devServerUrl: devServerUrl || null, protocol } as const;
   } catch (e: any) {
     return { ok: false, error: String(e) } as const;
