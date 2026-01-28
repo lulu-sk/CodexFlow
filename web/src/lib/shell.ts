@@ -6,7 +6,7 @@ import type { AppSettings } from "../types/host";
 export type TerminalMode = NonNullable<AppSettings["terminal"]>;
 
 /**
- * 将 UTF-8 文本编码为 Base64（用于在 PowerShell 中安全还原包含换行的参数）。
+ * 将 UTF-8 文本编码为 Base64（用于在 PowerShell 中安全还原包含换行或非 ASCII 字符的参数）。
  * 说明：
  * - 在 Node 环境优先使用 `Buffer`（稳定且性能更好）；
  * - 在浏览器环境使用 `TextEncoder` + `btoa`（Electron 渲染进程可用）。
@@ -36,6 +36,17 @@ function utf8ToBase64(text: string): string {
   } catch {}
 
   return "";
+}
+
+/**
+ * 判断字符串是否包含“非 ASCII 或不可打印 ASCII”字符。
+ * 中文说明：
+ * - Windows 的 ConPTY/CodePage 在输入侧对部分 Unicode 字符兼容性不一致；
+ * - 对包含非 ASCII 的参数，优先走 Base64 还原路径，避免 PTY 写入时发生截断/丢字。
+ * @param text - 待检测的文本
+ */
+function hasNonAsciiOrControl(text: string): boolean {
+  return /[^\x20-\x7E]/.test(String(text ?? ""));
 }
 
 /**
@@ -134,13 +145,14 @@ export function powerShellSingleQuote(value: string): string {
 /**
  * 将字符串转换为 PowerShell “可作为单个参数”的安全 token。
  * - 默认使用单引号字面量（无需额外转义 `$`/`` ` `` 等字符）。
- * - 若包含换行（`\r`/`\n`），则使用 UTF-8 Base64 解码表达式生成一行命令，避免 PTY/ConPTY 把多行拆坏。
+ * - 若包含换行（`\r`/`\n`）或非 ASCII 字符，则使用 UTF-8 Base64 解码表达式生成一行命令，避免 PTY/ConPTY 在写入/编码时出现兼容性问题。
  */
 export function powerShellArgToken(value: string): string {
   const raw = String(value ?? "");
   if (raw.length === 0) return "''";
 
-  if (/[\r\n]/.test(raw)) {
+  const needsB64 = hasNonAsciiOrControl(raw);
+  if (needsB64) {
     // 统一为 \n，避免在不同环境中得到 \r\n 影响下游解析
     const normalized = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
     const b64 = utf8ToBase64(normalized);
@@ -155,13 +167,13 @@ export function powerShellArgToken(value: string): string {
 
 /**
  * 基于 argv 构造 PowerShell 调用表达式（使用 call operator `&`）。
- * - 命令与参数会被转换为可安全粘贴/执行的 token（默认单引号；包含换行的参数自动 Base64 编码还原）。
+ * - 命令与参数会被转换为可安全粘贴/执行的 token（默认单引号；包含换行或非 ASCII 的参数自动 Base64 编码还原）。
  */
 export function buildPowerShellCall(argv: string[]): string {
   const parts = (argv || []).map((x) => String(x || "")).filter((x) => x.length > 0);
   if (parts.length === 0) return "";
   const [cmd, ...args] = parts;
-  const rendered = [`& ${powerShellSingleQuote(cmd)}`];
+  const rendered = [`& ${powerShellArgToken(cmd)}`];
   for (const a of args) rendered.push(powerShellArgToken(a));
   return rendered.join(" ");
 }
