@@ -10,6 +10,7 @@ import * as pty from '@lydell/node-pty';
 import { BrowserWindow } from 'electron';
 import { perfLogger } from './log.js';
 import { getDebugConfig } from './debugConfig.js';
+import { safeWindowSend } from './ipcSafe';
 
 // 终端日志总开关（主进程）。默认关闭，由统一调试配置控制，也可通过 IPC 置位。
 let TERM_DEBUG = (() => { try { return !!(getDebugConfig().terminal.pty.debug); } catch { return false; } })();
@@ -171,6 +172,21 @@ export class PTYManager {
   }
 
   /**
+   * 中文说明：安全向渲染进程发送 PTY 事件。
+   * - 渲染进程 reload/导航切换期间 mainFrame 可能暂不可用，此时自动跳过并短暂退避；
+   * - 避免控制台刷屏或触发主进程未捕获异常导致崩溃。
+   * @param channel - IPC 通道名
+   * @param payload - 发送负载
+   */
+  private sendToRenderer(channel: string, payload: unknown): void {
+    safeWindowSend(this.getWindow(), channel, payload, {
+      tag: 'pty',
+      suppressMs: 800,
+      logger: TERM_DEBUG ? dlog : undefined,
+    });
+  }
+
+  /**
    * 获取当前仍处于活跃状态的 PTY 会话数量。
    */
   getActiveSessionCount(): number {
@@ -280,16 +296,14 @@ export class PTYManager {
 
     proc.onData((data: string) => {
       try { this.backlogs.get(id)?.append(data); } catch {}
-      const win = this.getWindow();
-      if (win) win.webContents.send('pty:data', { id, data });
+      this.sendToRenderer('pty:data', { id, data });
     });
 
     proc.onExit((evt: { exitCode: number; signal?: number }) => {
       this.sessions.delete(id);
       try { this.backlogs.get(id)?.clear(); } catch {}
       this.backlogs.delete(id);
-      const win = this.getWindow();
-      if (win) win.webContents.send('pty:exit', { id, exitCode: evt?.exitCode });
+      this.sendToRenderer('pty:exit', { id, exitCode: evt?.exitCode });
     });
 
     // 关键修复：延迟执行 startupCmd，确保前端有足够时间订阅 'pty:data' 事件
@@ -319,11 +333,22 @@ export class PTYManager {
     return id;
   }
 
+  /**
+   * 向指定 PTY 写入数据（等价于用户在终端中输入）。
+   * @param id - PTY id
+   * @param data - 写入内容
+   */
   write(id: string, data: string) {
     const p = this.sessions.get(id);
     if (p) p.write(data);
   }
 
+  /**
+   * 调整指定 PTY 的终端尺寸。
+   * @param id - PTY id
+   * @param cols - 列数
+   * @param rows - 行数
+   */
   resize(id: string, cols: number, rows: number) {
     const p = this.sessions.get(id);
     if (p) {
@@ -334,6 +359,10 @@ export class PTYManager {
     }
   }
 
+  /**
+   * 关闭并清理指定 PTY 会话。
+   * @param id - PTY id
+   */
   close(id: string) {
     const p = this.sessions.get(id);
     if (p) {
@@ -345,12 +374,20 @@ export class PTYManager {
   }
 
   // 可选：在前端重排期间暂停/恢复数据，降低竞态导致的错位/叠字
+  /**
+   * 暂停指定 PTY 的数据流（若底层实现支持）。
+   * @param id - PTY id
+   */
   pause(id: string) {
     const p = this.sessions.get(id);
     dlog(`[pty] pause id=${id}`);
     try { p?.pause(); } catch {}
   }
 
+  /**
+   * 恢复指定 PTY 的数据流（若底层实现支持）。
+   * @param id - PTY id
+   */
   resume(id: string) {
     const p = this.sessions.get(id);
     dlog(`[pty] resume id=${id}`);
@@ -358,12 +395,19 @@ export class PTYManager {
   }
 
   // 与前端清屏同步，通知 ConPTY 清除其内部缓冲（仅 Windows/ConPTY 有效，其他平台为 no-op）
+  /**
+   * 请求底层 PTY 清理内部缓冲（仅部分实现支持，如 Windows/ConPTY）。
+   * @param id - PTY id
+   */
   clear(id: string) {
     const p = this.sessions.get(id);
     try { (p as any)?.clear?.(); } catch {}
   }
 
   // 强制清理所有会话（例如应用退出时调用）
+  /**
+   * 强制清理所有 PTY 会话（通常用于应用退出流程）。
+   */
   disposeAll() {
     for (const [id, p] of Array.from(this.sessions.entries())) {
       try { p.kill(); } catch {}

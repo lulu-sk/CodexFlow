@@ -8,6 +8,7 @@ import { BrowserWindow } from "electron";
 import { perfLogger } from "./log";
 import { getDebugConfig } from "./debugConfig";
 import { getSessionsRootCandidatesFastAsync, isUNCPath, uncToWsl } from "./wsl";
+import { safeWindowSend } from "./ipcSafe";
 import { detectResumeInfo, detectRuntimeShell, detectRuntimeShellFromContent } from "./history";
 import type { HistorySummary, Message, RuntimeShell } from "./history";
 import settings from "./settings";
@@ -1259,7 +1260,8 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
     const batch: IndexSummary[] = [];
     const flush = () => {
       if (batch.length === 0) return;
-      try { win?.webContents.send('history:index:add', { items: batch.splice(0, batch.length) }); } catch {}
+      const items = batch.splice(0, batch.length);
+      safeWindowSend(win, "history:index:add", { items }, { tag: "indexer", suppressMs: 1000 });
     };
 
     // 若 details 未能解析出 cwd（仅得到文件所在目录），延迟重试几次，以适配 CLI 先写头再补充 <cwd> 的行为
@@ -1288,7 +1290,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
               ix.savedAt = Date.now(); det.savedAt = Date.now();
               saveIndex(ix); saveDetails(det);
               if (existed) {
-                try { win?.webContents.send('history:index:remove', { filePath: fp }); } catch {}
+                safeWindowSend(win, "history:index:remove", { filePath: fp }, { tag: "indexer", suppressMs: 1000 });
               }
               retries.delete(key);
               return;
@@ -1316,7 +1318,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
             ix.savedAt = Date.now(); det.savedAt = Date.now();
             saveIndex(ix); saveDetails(det);
             if (gotProjectDir) {
-              try { win?.webContents.send('history:index:update', { item: summary }); } catch {}
+              safeWindowSend(win, "history:index:update", { item: summary }, { tag: "indexer", suppressMs: 1000 });
               retries.delete(key);
             } else {
               // 若仍未提取到 cwd，继续按指数回退重试
@@ -1413,7 +1415,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
             if (ix.files[k]) delete ix.files[k];
             if (det.files[k]) delete det.files[k];
             ix.savedAt = Date.now(); det.savedAt = Date.now(); saveIndex(ix); saveDetails(det);
-            if (existed) try { win?.webContents.send('history:index:remove', { filePath: fp }); } catch {}
+            if (existed) safeWindowSend(win, "history:index:remove", { filePath: fp }, { tag: "indexer", suppressMs: 1000 });
             return;
           }
           const slimDetails = stripDetailsForPersist(details);
@@ -1434,7 +1436,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
           } as any;
           ix.files[k] = { sig, summary };
           ix.savedAt = Date.now(); det.savedAt = Date.now(); saveIndex(ix); saveDetails(det);
-          try { win?.webContents.send('history:index:update', { item: summary }); } catch {}
+          safeWindowSend(win, "history:index:update", { item: summary }, { tag: "indexer", suppressMs: 1000 });
           try {
             const fallbackDir = dirKeyOf(fp);
             const hasCwd = !!(details.cwd && String(details.cwd).trim());
@@ -1509,7 +1511,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
           try { getDetailsCache().delete(k); } catch {}
           delete ix.files[k]; delete det.files[k];
           ix.savedAt = Date.now(); det.savedAt = Date.now(); saveIndex(ix); saveDetails(det);
-          if (removed) try { win?.webContents.send('history:index:remove', { filePath: fp }); } catch {}
+          if (removed) safeWindowSend(win, "history:index:remove", { filePath: fp }, { tag: "indexer", suppressMs: 1000 });
         } catch {}
       };
 
@@ -1652,7 +1654,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
               ix.files[k] = { sig, summary };
               ix.savedAt = Date.now(); det.savedAt = Date.now();
               saveIndex(ix); saveDetails(det);
-              try { win?.webContents.send('history:index:update', { item: summary }); } catch {}
+              safeWindowSend(win, "history:index:update", { item: summary }, { tag: "indexer", suppressMs: 1000 });
               idxLog(`[rescan] updated index for file='${fp}' dirKey='${summary.dirKey}'`);
               // If dirKey still falls back, schedule reparse
               try {
