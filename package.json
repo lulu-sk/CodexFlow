@@ -19,7 +19,7 @@
     "postinstall": "npm run build:electron && electron-builder install-app-deps",
     "dev:web": "vite --config web/vite.config.mts",
     "dev:electron": "cross-env DEV_SERVER_URL=http://localhost:5173 electron .",
-    "dev": "concurrently -k \"npm:dev:web\" \"npm:dev:electron\"",
+    "dev": "node scripts/dev-worktree.cjs",
     "dev:electron:dist": "cross-env DEV_SERVER_URL=file://local electron .",
     "dev:dist": "npm run build:electron && npm run build:web && npm run dev:electron:dist",
     "build:electron": "node scripts/clean-electron-dist.cjs && tsc -p tsconfig.electron.json",
