@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
-import { createTerminalAdapter, type TerminalAdapterAPI } from '@/adapters/TerminalAdapter';
+import { createTerminalAdapter, type TerminalAdapterAPI, type TerminalScrollSnapshot } from '@/adapters/TerminalAdapter';
 import {
   normalizeTerminalAppearance,
   type TerminalAppearance,
@@ -44,6 +44,7 @@ export default class TerminalManager {
   private dlog(msg: string): void { if (this.dbgEnabled()) { try { (window as any).host?.utils?.perfLog?.(`[tm] ${msg}`); } catch {} } }
   private adapters: Record<string, TerminalAdapterAPI | null> = {};
   private containers: Record<string, HTMLDivElement | null> = {};
+  private scrollSnapshotByTab: Record<string, TerminalScrollSnapshot | null> = {};
   private unsubByTab: Record<string, (() => void) | null> = {};
   private inputUnsubByTab: Record<string, (() => void) | null> = {};
   private resizeUnsubByTab: Record<string, (() => void) | null> = {};
@@ -59,6 +60,35 @@ export default class TerminalManager {
   private hostPty: HostPtyAPI;
   private appearance: TerminalAppearance = normalizeTerminalAppearance();
   private lastFocusedTabId: string | null = null;
+
+  /**
+   * 中文说明：保存指定 tab 的滚动快照。
+   * 设计目标：在标签页隐藏/切换后，能够恢复“滚动位置 + 滚动条指示”，避免出现内容在底部但滚动条回到顶部的错位。
+   */
+  private saveScrollSnapshot(tabId: string, source: string): void {
+    const adapter = this.adapters[tabId];
+    if (!adapter) return;
+    try {
+      const snapshot = adapter.getScrollSnapshot?.() ?? null;
+      if (snapshot) {
+        this.scrollSnapshotByTab[tabId] = snapshot;
+        this.dlog(`scroll.save tab=${tabId} source=${source} y=${snapshot.viewportY}/${snapshot.baseY} bottom=${snapshot.isAtBottom ? '1' : '0'}`);
+      }
+    } catch {}
+  }
+
+  /**
+   * 中文说明：恢复指定 tab 的滚动快照；若无快照，则执行一次“对齐修复”（以当前 buffer 视图为准）。
+   */
+  private restoreScrollSnapshot(tabId: string, source: string): void {
+    const adapter = this.adapters[tabId];
+    if (!adapter) return;
+    const snapshot = this.scrollSnapshotByTab[tabId] ?? null;
+    try {
+      adapter.restoreScrollSnapshot?.(snapshot);
+      this.dlog(`scroll.restore tab=${tabId} source=${source} has=${snapshot ? '1' : '0'}`);
+    } catch {}
+  }
 
   /**
    * 构造函数
@@ -613,6 +643,8 @@ export default class TerminalManager {
     try { this.scheduleResizeSync(tabId, true); } catch {}
     // 切换后主动聚焦并强制刷新，消解输入法合成/宽字符残影
     try { this.adapters[tabId]?.focus?.(); } catch {}
+    // 关键：恢复（或对齐修复）滚动位置，避免隐藏/显示后滚动条指示错误
+    try { this.restoreScrollSnapshot(tabId, "activated"); } catch {}
     const pid = this.getPtyId(tabId);
     if (pid) {
       try {
@@ -630,6 +662,8 @@ export default class TerminalManager {
     if (this.lastFocusedTabId === tabId) {
       this.lastFocusedTabId = null;
     }
+    // 切换/隐藏前先记录滚动快照，确保回到该 tab 时能恢复滚动条位置
+    try { this.saveScrollSnapshot(tabId, "deactivated"); } catch {}
     this.blurTab(tabId, "deactivate");
   }
 
@@ -733,6 +767,7 @@ export default class TerminalManager {
     const container = this.containers[tabId];
     try { if (container && container.parentNode) container.parentNode.removeChild(container); } catch {}
     delete this.containers[tabId];
+    delete this.scrollSnapshotByTab[tabId];
     delete this.backlogHydratedPtyByTab[tabId];
 
     if (alsoClosePty) {

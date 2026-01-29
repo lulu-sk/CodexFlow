@@ -22,10 +22,20 @@ export type TerminalAdapterAPI = {
   paste: (data: string) => void;
   onData: (cb: (data: string) => void) => () => void;
   resize: () => { cols: number; rows: number };
+  /** 中文说明：读取当前滚动快照（用于标签切换/隐藏恢复滚动条位置）。 */
+  getScrollSnapshot: () => TerminalScrollSnapshot | null;
+  /** 中文说明：同步滚动条指示与缓冲区视图；传空则以当前视图执行一次“对齐修复”（不强制滚动内容）。 */
+  restoreScrollSnapshot: (snapshot?: TerminalScrollSnapshot | null) => void;
   focus?: () => void;
   blur?: () => void;
   setAppearance: (appearance: Partial<TerminalAppearance>) => void;
   dispose: () => void;
+};
+
+export type TerminalScrollSnapshot = {
+  viewportY: number;
+  baseY: number;
+  isAtBottom: boolean;
 };
 
 export type TerminalAdapterOptions = {
@@ -71,6 +81,7 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
   let removeAuxMouseListener: (() => void) | null = null;
   let removeTermFocusListener: (() => void) | null = null;
   let removeTermBlurListener: (() => void) | null = null;
+  let removeScrollListener: (() => void) | null = null;
   // 防重与抑制：用于避免 Ctrl+V 同时触发 keydown + paste 导致的重复粘贴
   let lastManualPasteAt = 0; // 上次手动触发粘贴时间戳（ms）
   let suppressNativePasteUntil = 0; // 在该时间点之前忽略原生 paste 事件（ms）
@@ -81,6 +92,76 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
   let legacyWinBuild = 0;
   let legacyLastCols = 0;
   let appearance: TerminalAppearance = normalizeTerminalAppearance(options?.appearance);
+  let lastScrollSnapshot: TerminalScrollSnapshot | null = null;
+
+  /**
+   * 中文说明：读取 xterm 的滚动快照（以 buffer.active.viewportY/baseY 为准）。
+   * 该数据与 DOM 的 scrollTop 解耦，可用于修复“内容位置正确但滚动条指示错误”的偶发不一致。
+   */
+  const readScrollSnapshot = (): TerminalScrollSnapshot | null => {
+    if (!term) return null;
+    try {
+      const buf: any = (term as any)?.buffer?.active;
+      if (!buf) return null;
+      const viewportY = Number(buf.viewportY ?? buf.ydisp ?? 0);
+      const baseY = Number(buf.baseY ?? buf.ybase ?? 0);
+      if (!isFinite(viewportY) || !isFinite(baseY)) return null;
+      const isAtBottom = baseY - viewportY <= 1;
+      return { viewportY: Math.max(0, viewportY), baseY: Math.max(0, baseY), isAtBottom };
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * 中文说明：将 DOM 滚动条位置与 xterm 缓冲区视图对齐。
+   *
+   * 设计目标
+   * - 修复在 `display:none`/标签切换等场景下，出现“内容位置正确但滚动条滑块位置错误”的偶发不一致。
+   *
+   * 注意事项
+   * - 该函数不调用 `scrollToBottom/scrollToLine`，不主动改变缓冲区视图（避免干扰用户的滚动/拖拽）。
+   */
+  const syncScrollbarToSnapshot = (snapshot?: TerminalScrollSnapshot | null, tag = "sync") => {
+    if (!term || !container) return;
+    const current = readScrollSnapshot();
+    const effective = current || snapshot || lastScrollSnapshot;
+    if (!effective) return;
+
+    // 先同步 scrollArea，确保 viewport.scrollHeight 可靠
+    try { syncViewportHeight(`scrollbar.${tag}`); } catch {}
+
+    try {
+      const viewport = container.querySelector(".xterm-viewport") as HTMLDivElement | null;
+      if (!viewport) return;
+
+      const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+      const baseY = Math.max(0, Number(effective.baseY || 0));
+      const viewportY = Math.max(0, Number(effective.viewportY || 0));
+
+      let perLinePx = 0;
+      try {
+        const core: any = (term as any)?._core;
+        const dims = core?._renderService?.dimensions?.css?.cell || {};
+        const cellH = Number(dims?.height || 0);
+        if (cellH && isFinite(cellH)) perLinePx = cellH;
+      } catch {}
+      // 若拿不到 cell 尺寸，则用最大可滚动距离反推每行像素（maxScrollTop ≈ baseY * lineHeightPx）
+      if (!perLinePx && baseY > 0 && maxScrollTop > 0) {
+        perLinePx = maxScrollTop / baseY;
+      }
+      if (!perLinePx || !isFinite(perLinePx) || perLinePx <= 0) return;
+
+      const target = Math.round(viewportY * perLinePx);
+      const clamped = Math.max(0, Math.min(target, maxScrollTop));
+      // 仅在差异明显时写入，避免频繁写 scrollTop 导致抖动
+      if (Math.abs((viewport.scrollTop || 0) - clamped) > 1) {
+        viewport.scrollTop = clamped;
+      }
+    } catch {}
+
+    lastScrollSnapshot = readScrollSnapshot();
+  };
 
   const applyAppearanceToTerminal = (next: TerminalAppearance) => {
     appearance = next;
@@ -322,6 +403,20 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
         (term as any).unicode?.activeVersion && ((term as any).unicode.activeVersion = "11");
       } catch { /* 忽略加载失败（兼容旧环境） */ }
       // 保持默认 Canvas 渲染，不主动启用 WebGL，回归最初实现的稳定渲染路径
+      // 记录滚动快照：用于标签切换/隐藏后恢复滚动条指示
+      try {
+        removeScrollListener?.();
+      } catch {} finally {
+        removeScrollListener = null;
+      }
+      try {
+        const disp = term.onScroll(() => {
+          lastScrollSnapshot = readScrollSnapshot();
+        });
+        removeScrollListener = () => disp.dispose();
+      } catch {
+        removeScrollListener = null;
+      }
     }
   };
 
@@ -829,6 +924,18 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
       dlog(`[adapter] resize -> ${s.cols}x${s.rows}`);
       return s;
     },
+    getScrollSnapshot: () => {
+      if (!term) ensure();
+      const snapshot = readScrollSnapshot();
+      lastScrollSnapshot = snapshot;
+      return snapshot;
+    },
+    restoreScrollSnapshot: (snapshot?: TerminalScrollSnapshot | null) => {
+      if (!term) ensure();
+      try { syncScrollbarToSnapshot(snapshot ?? null, "restore"); } catch {}
+      // 二次对齐：用于处理标签刚切回时 DOM 尚未稳定的场景
+      try { requestAnimationFrame(() => { try { syncScrollbarToSnapshot(snapshot ?? null, "restore.raf"); } catch {} }); } catch {}
+    },
     // 主动聚焦隐藏 textarea，避免切换后输入法合成态残留导致的键位/光标错位
     focus: () => {
       try {
@@ -876,6 +983,8 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
       try { removeTermBlurListener?.(); } catch {}
       removeTermFocusListener = null;
       removeTermBlurListener = null;
+      try { removeScrollListener?.(); } catch {}
+      removeScrollListener = null;
       // 释放终端与引用
       term?.dispose();
       term = null;
@@ -883,6 +992,7 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
       container = null;
       lastAuxMouseDownAt = 0;
       lastCtrlKeydownAt = 0;
+      lastScrollSnapshot = null;
     }
   };
 }
