@@ -2677,11 +2677,13 @@ export default function CodexFlowManagerUI() {
 
   // History panel data (fixed sidebar)
   const [historySessions, setHistorySessions] = useState<HistorySession[]>([]);
+  const historySessionsRef = useRef<HistorySession[]>(historySessions);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [selectedHistoryDir, setSelectedHistoryDir] = useState<string | null>(null);
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
   // 用于在点击项目时抑制自动选中历史的标志
   const suppressAutoSelectRef = useRef(false);
+  useEffect(() => { historySessionsRef.current = historySessions; }, [historySessions]);
 
   const focusTabFromNotification = React.useCallback((tabId: string) => {
     if (!tabId) return;
@@ -2735,6 +2737,15 @@ export default function CodexFlowManagerUI() {
   const [projectCtxMenu, setProjectCtxMenu] = useState<{ show: boolean; x: number; y: number; project: Project | null }>({ show: false, x: 0, y: 0, project: null });
   const [hideProjectConfirm, setHideProjectConfirm] = useState<{ open: boolean; project: Project | null }>({ open: false, project: null });
   const projectCtxMenuRef = useRef<HTMLDivElement | null>(null);
+  type HoverProjectShortcutContext = {
+    project: Project;
+    isHidden: boolean;
+    canRemoveDirRecord: boolean;
+    canDeleteWorktree: boolean;
+  };
+  type HoverHistoryShortcutContext = { item: HistorySession; groupKey: string };
+  const hoveredProjectShortcutRef = useRef<HoverProjectShortcutContext | null>(null);
+  const hoveredHistoryShortcutRef = useRef<HoverHistoryShortcutContext | null>(null);
   // Simple in-memory cache to show previous results instantly when switching projects
   const historyCacheRef = useRef<Record<string, HistorySession[]>>({});
   // Gemini：基于项目路径计算 projectHash，用于在会话缺失 cwd 时仍能正确归属到项目。
@@ -5591,6 +5602,159 @@ export default function CodexFlowManagerUI() {
 	      });
 	  }, [gitWorktreeAutoCommitEnabled, showGitActionErrorDialog, t]);
 
+  /**
+   * 中文说明：移除项目的“自定义 Provider 目录记录”。
+   * - 若该项目仅由目录记录产生，则会从项目列表中移除（等同于“删除该项目条目”）。
+   * - 若该项目已存在内置会话，则仅清空目录记录，项目仍保留。
+   */
+  const removeProjectDirRecord = useCallback(async (target: Project | null) => {
+    const project = target;
+    if (!project) return;
+    // 优先关闭菜单，避免重复触发或遮挡提示
+    setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
+    try {
+      const res: any = await window.host.projects.removeDirRecord({ id: project.id });
+      if (res && res.ok && res.removed) {
+        if (res.project) upsertProjectInList(res.project as Project);
+        else removeProjectFromUIList(project);
+      }
+    } catch {}
+  }, [removeProjectFromUIList, upsertProjectInList]);
+
+  /**
+   * 中文说明：打开历史记录“删除到回收站”确认弹窗（用于悬停快捷键 D）。
+   */
+  const openHistoryDeleteConfirm = useCallback((item: HistorySession | null, groupKey: string | null) => {
+    if (!item) return;
+    setConfirmDelete({ open: true, item, groupKey });
+    setHistoryCtxMenu((m) => ({ ...m, show: false }));
+  }, []);
+
+  /**
+   * 中文说明：判断当前是否存在打开的应用内 Dialog（用于避免悬停快捷键在弹窗期间误触）。
+   */
+  const hasAnyOpenDialog = useCallback((): boolean => {
+    try {
+      if (typeof document === "undefined") return false;
+      return !!document.querySelector('[data-cf-dialog-content="true"]');
+    } catch {
+      return false;
+    }
+  }, []);
+
+  /**
+   * 中文说明：判断键盘事件是否应忽略悬停快捷键（IME/组合键/弹窗打开/指定输入区域等）。
+   */
+  const shouldIgnoreHoverShortcutEvent = useCallback((event: KeyboardEvent): boolean => {
+    if (!event) return true;
+    if (event.defaultPrevented) return true;
+    if ((event as any).isComposing) return true;
+    if (event.repeat) return true;
+    if (event.ctrlKey || event.metaKey || event.altKey) return true;
+    if (hasAnyOpenDialog()) return true;
+    try {
+      const el = event.target as any;
+      if (el && typeof el.closest === "function" && el.closest('[data-cf-hover-shortcuts-ignore="true"]')) return true;
+    } catch {}
+    return false;
+  }, [hasAnyOpenDialog]);
+
+  useEffect(() => {
+    /**
+     * 中文说明：悬停快捷键处理器。
+     * - 项目列表：H=隐藏/取消隐藏；D=删除 worktree 或移除目录记录
+     * - 历史列表：D=删除历史对话（删除到回收站）
+     */
+    const handler = (event: KeyboardEvent) => {
+      const k = String(event?.key || "");
+      const key = k.toLowerCase();
+      if (key !== "h" && key !== "d") return;
+      if (shouldIgnoreHoverShortcutEvent(event)) return;
+
+      // 历史项优先：D = 删除历史对话（删除到回收站）
+      if (key === "d") {
+        try {
+          const hoverEl = document.querySelector('[data-cf-history-row-id]:hover') as HTMLElement | null;
+          if (hoverEl) {
+            const hoverId = String(hoverEl.getAttribute("data-cf-history-row-id") || "").trim();
+            const hoverGroupKey = String(hoverEl.getAttribute("data-cf-history-group-key") || "").trim();
+            if (hoverId && hoverGroupKey) {
+              const cached = hoveredHistoryShortcutRef.current;
+              const item =
+                cached && cached.item && cached.item.id === hoverId && cached.groupKey === hoverGroupKey
+                  ? cached.item
+                  : (historySessionsRef.current.find((s) => s.id === hoverId) || null);
+              if (item) {
+                event.preventDefault();
+                openHistoryDeleteConfirm(item, hoverGroupKey);
+                hoveredHistoryShortcutRef.current = null;
+                return;
+              }
+            }
+          }
+        } catch {}
+      }
+
+      // 项目列表：H = 隐藏/取消隐藏；D = 删除（worktree 删除 或 移除目录记录）
+      try {
+        const hoverEl = document.querySelector('[data-cf-project-row-id]:hover') as HTMLElement | null;
+        if (!hoverEl) return;
+        const hoverId = String(hoverEl.getAttribute("data-cf-project-row-id") || "").trim();
+        if (!hoverId) return;
+
+        const cached = hoveredProjectShortcutRef.current;
+        const project =
+          cached && cached.project && cached.project.id === hoverId
+            ? cached.project
+            : (projectsRef.current.find((p) => p.id === hoverId) || null);
+        if (!project) return;
+
+        const isHidden = cached && cached.project && cached.project.id === hoverId ? cached.isHidden : hiddenProjectIdSet.has(project.id);
+        const canRemoveDirRecord =
+          cached && cached.project && cached.project.id === hoverId
+            ? cached.canRemoveDirRecord
+            : !!(project.dirRecord && project.dirRecord.kind === "custom_provider" && project.hasBuiltInSessions !== true);
+        const canDeleteWorktree =
+          cached && cached.project && cached.project.id === hoverId
+            ? cached.canDeleteWorktree
+            : (() => {
+                const git = gitInfoByProjectId[project.id];
+                const isWorktreeNode = !!git?.isWorktree && !!git?.isRepoRoot;
+                const isMainWorktree =
+                  isWorktreeNode &&
+                  !!git?.mainWorktree &&
+                  toDirKeyForCache(String(git.mainWorktree || "")) === toDirKeyForCache(String(git.dir || ""));
+                return isWorktreeNode && !isMainWorktree;
+              })();
+
+        if (key === "h") {
+          event.preventDefault();
+          if (isHidden) unhideProject(project);
+          else setHideProjectConfirm({ open: true, project });
+          hoveredProjectShortcutRef.current = null;
+          return;
+        }
+
+        if (key === "d") {
+          if (canDeleteWorktree) {
+            event.preventDefault();
+            openWorktreeDeleteDialog(project, false);
+            hoveredProjectShortcutRef.current = null;
+            return;
+          }
+          if (canRemoveDirRecord) {
+            event.preventDefault();
+            void removeProjectDirRecord(project);
+            hoveredProjectShortcutRef.current = null;
+            return;
+          }
+        }
+      } catch {}
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [gitInfoByProjectId, hiddenProjectIdSet, openHistoryDeleteConfirm, openWorktreeDeleteDialog, removeProjectDirRecord, shouldIgnoreHoverShortcutEvent, unhideProject]);
+
   // ---------- Renderers ----------
 
   const Sidebar = (
@@ -5684,6 +5848,7 @@ export default function CodexFlowManagerUI() {
             value={query}
             onChange={(e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setQuery((e.target as any).value)}
             className="h-9"
+            data-cf-hover-shortcuts-ignore="true"
           />
           <DropdownMenu>
             <DropdownMenuTrigger>
@@ -5795,6 +5960,7 @@ export default function CodexFlowManagerUI() {
             const isEditingDirLabel = dirLabelDialog.open && dirLabelDialog.projectId === p.id;
             const isChildNode = isDirChild(p.id);
             const canCreateWorktree = canOperateOnDir && isRepoRoot && !isSecondaryWorktree && !isChildNode;
+            const canRemoveDirRecord = !!(p.dirRecord && p.dirRecord.kind === "custom_provider" && p.hasBuiltInSessions !== true);
 
             const rowClass = `group relative flex items-center justify-between rounded-lg transition cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800 ${isHidden ? "opacity-60" : ""} ${selected ? "bg-slate-100 dark:bg-slate-800/80 dark:text-slate-100" : ""}`;
             const rowPadding = depth === 1 ? "pl-1 pr-2" : "pl-[1px] pr-[7px]";
@@ -5803,7 +5969,15 @@ export default function CodexFlowManagerUI() {
               <div
                 key={p.id}
                 data-dir-row="1"
+                data-cf-project-row-id={p.id}
                 className={`${rowClass} ${rowPadding} h-14`}
+                onMouseEnter={() => {
+                  hoveredProjectShortcutRef.current = { project: p, isHidden, canRemoveDirRecord, canDeleteWorktree: isSecondaryWorktree };
+                }}
+                onMouseLeave={() => {
+                  const cur = hoveredProjectShortcutRef.current;
+                  if (cur?.project?.id === p.id) hoveredProjectShortcutRef.current = null;
+                }}
                 onClick={() => {
                   // 点击项目时默认进入控制台，并清除历史选择（避免自动跳到历史详情）
                   suppressAutoSelectRef.current = true;
@@ -5885,6 +6059,7 @@ export default function CodexFlowManagerUI() {
                       {isEditingDirLabel ? (
                         <input
                           autoFocus
+                          data-cf-hover-shortcuts-ignore="true"
                           onFocus={(e) => { try { (e.target as HTMLInputElement).select(); } catch {} }}
                           onMouseDown={(e) => { e.stopPropagation(); }}
                           className="h-6 flex-1 min-w-0 max-w-[16rem] bg-transparent px-1 -mx-1 rounded-apple-sm border border-transparent outline-none focus:border-[var(--cf-border)] focus:bg-white/60 dark:focus:bg-slate-900/60"
@@ -6691,6 +6866,7 @@ export default function CodexFlowManagerUI() {
           placeholder={t('history:searchPlaceholder') as string}
           title={t('history:searchPlaceholderHint') as string}
           className="h-9"
+          data-cf-hover-shortcuts-ignore="true"
           onKeyDown={(e: React.KeyboardEvent<any>) => {
             if (e.key === 'Enter') {
               const q = historyQuery.trim().toLowerCase();
@@ -6784,8 +6960,15 @@ export default function CodexFlowManagerUI() {
                       return (
                         <button
                           key={s.filePath || s.id}
+                          data-cf-history-row-id={s.id}
+                          data-cf-history-group-key={g.key}
                           onClick={() => { setSelectedHistoryDir(g.key); setSelectedHistoryId(s.id); setCenterMode('history'); }}
                           onContextMenu={(e) => { e.preventDefault(); setHistoryCtxMenu({ show: true, x: e.clientX, y: e.clientY, item: s, groupKey: g.key }); }}
+                          onMouseEnter={() => { hoveredHistoryShortcutRef.current = { item: s, groupKey: g.key }; }}
+                          onMouseLeave={() => {
+                            const cur = hoveredHistoryShortcutRef.current;
+                            if (cur?.item?.id === s.id) hoveredHistoryShortcutRef.current = null;
+                          }}
                           className={itemClass}
                           title={tooltip}
                         >
@@ -7082,14 +7265,14 @@ export default function CodexFlowManagerUI() {
             </button>
             <button
               className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-red)] rounded-apple-sm hover:bg-[var(--cf-red-light)] transition-all duration-apple-fast"
-              onClick={async () => {
-                const it = historyCtxMenu.item; const key = historyCtxMenu.groupKey || (it ? historyTimelineGroupKey(it, new Date()) : HISTORY_UNKNOWN_GROUP_KEY);
+              onClick={() => {
+                const it = historyCtxMenu.item;
+                const key = historyCtxMenu.groupKey || (it ? historyTimelineGroupKey(it, new Date()) : HISTORY_UNKNOWN_GROUP_KEY);
                 if (!it?.filePath) { setHistoryCtxMenu((m) => ({ ...m, show: false })); return; }
-                setConfirmDelete({ open: true, item: it, groupKey: key });
-                setHistoryCtxMenu((m) => ({ ...m, show: false }));
+                openHistoryDeleteConfirm(it, key);
               }}
             >
-              <Trash2 className="h-4 w-4" /> {t('history:deleteToTrash')}
+              <Trash2 className="h-4 w-4" /> {t('history:deleteToTrash')} (D)
             </button>
           </div>
         </div>
@@ -7198,7 +7381,7 @@ export default function CodexFlowManagerUI() {
                       setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
                     }}
                   >
-                    <Eye className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('projects:ctxUnhideProject')}
+                    <Eye className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('projects:ctxUnhideProject')} (H)
                   </button>
                 );
               } else {
@@ -7211,7 +7394,7 @@ export default function CodexFlowManagerUI() {
                       setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
                     }}
                   >
-                    <EyeOff className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('projects:ctxHideTemporarily')}
+                    <EyeOff className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('projects:ctxHideTemporarily')} (H)
                   </button>
                 );
               }
@@ -7222,27 +7405,9 @@ export default function CodexFlowManagerUI() {
                 <button
                   key="remove-dir-record"
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-red)] rounded-apple-sm hover:bg-[var(--cf-red-light)] transition-all duration-apple-fast"
-                  onClick={async () => {
-                    const target = projectCtxMenu.project;
-                    if (!target) { setProjectCtxMenu((m) => ({ ...m, show: false, project: null })); return; }
-                    try {
-                      const res: any = await window.host.projects.removeDirRecord({ id: target.id });
-                      if (res && res.ok && res.removed) {
-                        if (res.project) {
-                          upsertProjectInList(res.project as Project);
-                          setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
-                        } else {
-                          removeProjectFromUIList(target);
-                        }
-                        return;
-                      }
-                      setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
-                    } catch {
-                      setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
-                    }
-                  }}
+                  onClick={() => { void removeProjectDirRecord(projectCtxMenu.project); }}
                 >
-                  <X className="h-4 w-4" /> {t('projects:ctxRemoveDirRecord')}
+                  <X className="h-4 w-4" /> {t('projects:ctxRemoveDirRecord')} (D)
                 </button>
               );
             }
