@@ -178,6 +178,9 @@ type AutoProfilesInfo = {
   items: AutoProfileDirInfo[];
 };
 
+type WorktreeProfileDirInfo = AutoProfileDirInfo;
+type WorktreeProfilesInfo = AutoProfilesInfo;
+
 type SectionKey = "basic" | "providers" | "gitWorktree" | "notifications" | "terminal" | "networkAccount" | "data";
 
 const NAV_ORDER: SectionKey[] = ["basic", "providers", "gitWorktree", "terminal", "notifications", "networkAccount", "data"];
@@ -213,6 +216,30 @@ function normalizeProviderEnvMap(
   }
 
   return env;
+}
+
+/**
+ * 将主进程返回的 Profile 目录统计结果归一化为设置面板可直接渲染的结构。
+ */
+function normalizeProfileDirsInfo(res: any): AutoProfilesInfo {
+  const itemsRaw = Array.isArray(res?.items) ? (res.items as any[]) : [];
+  const items: AutoProfileDirInfo[] = itemsRaw.map((item) => ({
+    profileId: typeof item?.profileId === "string" ? item.profileId : String(item?.profileId || ""),
+    dirName: typeof item?.dirName === "string" ? item.dirName : String(item?.dirName || ""),
+    path: typeof item?.path === "string" ? item.path : String(item?.path || ""),
+    totalBytes: typeof item?.totalBytes === "number" ? item.totalBytes : Number(item?.totalBytes || 0),
+    dirCount: typeof item?.dirCount === "number" ? item.dirCount : Number(item?.dirCount || 0),
+    fileCount: typeof item?.fileCount === "number" ? item.fileCount : Number(item?.fileCount || 0),
+    collectedAt: typeof item?.collectedAt === "number" ? item.collectedAt : Date.now(),
+    isCurrent: !!item?.isCurrent,
+  }));
+  return {
+    baseUserData: typeof res?.baseUserData === "string" ? res.baseUserData : String(res?.baseUserData || ""),
+    currentUserData: typeof res?.currentUserData === "string" ? res.currentUserData : String(res?.currentUserData || ""),
+    count: typeof res?.count === "number" ? res.count : items.length,
+    totalBytes: typeof res?.totalBytes === "number" ? res.totalBytes : Number(res?.totalBytes || 0),
+    items,
+  };
 }
 
 /**
@@ -580,6 +607,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   const [storageClearing, setStorageClearing] = useState(false);
   const [storagePurging, setStoragePurging] = useState(false);
   const [storageConfirmOpen, setStorageConfirmOpen] = useState(false);
+  const [storagePreserveSettings, setStoragePreserveSettings] = useState(true);
   const [storagePurgeConfirmOpen, setStoragePurgeConfirmOpen] = useState(false);
   const [storageFeedback, setStorageFeedback] = useState<{ open: boolean; message: string; isError: boolean }>({ open: false, message: "", isError: false });
   const [storageError, setStorageError] = useState<string | null>(null);
@@ -589,9 +617,16 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   const [autoProfilesConfirmOpen, setAutoProfilesConfirmOpen] = useState(false);
   const [autoProfilesFeedback, setAutoProfilesFeedback] = useState<{ open: boolean; message: string; isError: boolean }>({ open: false, message: "", isError: false });
   const [autoProfilesError, setAutoProfilesError] = useState<string | null>(null);
+  const [worktreeProfilesInfo, setWorktreeProfilesInfo] = useState<WorktreeProfilesInfo | null>(null);
+  const [worktreeProfilesLoading, setWorktreeProfilesLoading] = useState(false);
+  const [worktreeProfilesCleaning, setWorktreeProfilesCleaning] = useState(false);
+  const [worktreeProfilesConfirmOpen, setWorktreeProfilesConfirmOpen] = useState(false);
+  const [worktreeProfilesFeedback, setWorktreeProfilesFeedback] = useState<{ open: boolean; message: string; isError: boolean }>({ open: false, message: "", isError: false });
+  const [worktreeProfilesError, setWorktreeProfilesError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const storageLoadedRef = useRef(false);
   const autoProfilesLoadedRef = useRef(false);
+  const worktreeProfilesLoadedRef = useRef(false);
   const initFromValuesOnceRef = useRef(false);
 
   const labelOf = useCallback((lng: string) => {
@@ -947,7 +982,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     }
     setStorageClearing(true);
     try {
-      const res: any = await api({ preserveSettings: true });
+      const res: any = await api({ preserveSettings: storagePreserveSettings });
       if (res && res.ok) {
         const freedRaw =
           typeof res.bytesFreed === "number"
@@ -985,7 +1020,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     } finally {
       setStorageClearing(false);
     }
-  }, [refreshAppDataInfo, t]);
+  }, [refreshAppDataInfo, storagePreserveSettings, t]);
 
   const handlePurgeAppData = useCallback(async () => {
     setStoragePurgeConfirmOpen(false);
@@ -1025,24 +1060,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     try {
       const res: any = await api();
       if (res && res.ok) {
-        const items = Array.isArray(res.items) ? (res.items as any[]) : [];
-        const mapped: AutoProfileDirInfo[] = items.map((item) => ({
-          profileId: typeof item?.profileId === "string" ? item.profileId : String(item?.profileId || ""),
-          dirName: typeof item?.dirName === "string" ? item.dirName : String(item?.dirName || ""),
-          path: typeof item?.path === "string" ? item.path : String(item?.path || ""),
-          totalBytes: typeof item?.totalBytes === "number" ? item.totalBytes : Number(item?.totalBytes || 0),
-          dirCount: typeof item?.dirCount === "number" ? item.dirCount : Number(item?.dirCount || 0),
-          fileCount: typeof item?.fileCount === "number" ? item.fileCount : Number(item?.fileCount || 0),
-          collectedAt: typeof item?.collectedAt === "number" ? item.collectedAt : Date.now(),
-          isCurrent: !!item?.isCurrent,
-        }));
-        setAutoProfilesInfo({
-          baseUserData: typeof res.baseUserData === "string" ? res.baseUserData : String(res.baseUserData || ""),
-          currentUserData: typeof res.currentUserData === "string" ? res.currentUserData : String(res.currentUserData || ""),
-          count: typeof res.count === "number" ? res.count : mapped.length,
-          totalBytes: typeof res.totalBytes === "number" ? res.totalBytes : Number(res.totalBytes || 0),
-          items: mapped,
-        });
+        setAutoProfilesInfo(normalizeProfileDirsInfo(res));
       } else {
         const message = res && res.error ? String(res.error) : (t("settings:autoProfiles.loadFailed") as string);
         setAutoProfilesInfo(null);
@@ -1100,6 +1118,79 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     }
   }, [refreshAutoProfilesInfo, t]);
 
+  /**
+   * 刷新 worktree 实例（wt-* Profile）用户数据目录列表。
+   */
+  const refreshWorktreeProfilesInfo = useCallback(async () => {
+    const api = (window as any).host?.storage?.listWorktreeProfiles;
+    if (!api) {
+      setWorktreeProfilesInfo(null);
+      setWorktreeProfilesError(t("settings:worktreeProfiles.notSupported") as string);
+      return;
+    }
+    setWorktreeProfilesLoading(true);
+    setWorktreeProfilesError(null);
+    try {
+      const res: any = await api();
+      if (res && res.ok) {
+        setWorktreeProfilesInfo(normalizeProfileDirsInfo(res));
+      } else {
+        const message = res && res.error ? String(res.error) : (t("settings:worktreeProfiles.loadFailed") as string);
+        setWorktreeProfilesInfo(null);
+        setWorktreeProfilesError(message);
+      }
+    } catch (error: any) {
+      setWorktreeProfilesInfo(null);
+      setWorktreeProfilesError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setWorktreeProfilesLoading(false);
+    }
+  }, [t]);
+
+  /**
+   * 一键回收所有 worktree 实例（wt-* Profile）用户数据目录（默认跳过当前实例与占用目录）。
+   */
+  const handlePurgeWorktreeProfiles = useCallback(async () => {
+    setWorktreeProfilesConfirmOpen(false);
+    const api = (window as any).host?.storage?.purgeWorktreeProfiles;
+    if (!api) {
+      setWorktreeProfilesFeedback({ open: true, message: t("settings:worktreeProfiles.cleanupFailed") as string, isError: true });
+      return;
+    }
+    setWorktreeProfilesCleaning(true);
+    try {
+      const res: any = await api({ includeCurrent: false });
+      if (res && res.ok) {
+        await refreshWorktreeProfilesInfo();
+        const removed = typeof res.removed === "number" ? res.removed : Number(res.removed || 0);
+        const skipped = typeof res.skipped === "number" ? res.skipped : Number(res.skipped || 0);
+        const busy = typeof res.busy === "number" ? res.busy : Number(res.busy || 0);
+        const notFound = typeof res.notFound === "number" ? res.notFound : Number(res.notFound || 0);
+        const freedRaw = typeof res.bytesFreed === "number" ? res.bytesFreed : Number(res.bytesFreed || 0);
+        setWorktreeProfilesFeedback({
+          open: true,
+          message: String(
+            t("settings:worktreeProfiles.cleanupSuccess", {
+              removed,
+              skipped,
+              busy,
+              notFound,
+              freed: formatBytes(freedRaw),
+            }),
+          ),
+          isError: false,
+        });
+      } else {
+        const message = res && res.error ? String(res.error) : (t("settings:worktreeProfiles.cleanupFailed") as string);
+        setWorktreeProfilesFeedback({ open: true, message, isError: true });
+      }
+    } catch {
+      setWorktreeProfilesFeedback({ open: true, message: t("settings:worktreeProfiles.cleanupFailed") as string, isError: true });
+    } finally {
+      setWorktreeProfilesCleaning(false);
+    }
+  }, [refreshWorktreeProfilesInfo, t]);
+
   useEffect(() => {
     if (!open) {
       storageLoadedRef.current = false;
@@ -1125,6 +1216,19 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
       refreshAutoProfilesInfo();
     }
   }, [open, refreshAutoProfilesInfo]);
+
+  useEffect(() => {
+    if (!open) {
+      worktreeProfilesLoadedRef.current = false;
+      setWorktreeProfilesInfo(null);
+      setWorktreeProfilesError(null);
+      return;
+    }
+    if (!worktreeProfilesLoadedRef.current) {
+      worktreeProfilesLoadedRef.current = true;
+      refreshWorktreeProfilesInfo();
+    }
+  }, [open, refreshWorktreeProfilesInfo]);
 
   const sections = useMemo(() => {
     return NAV_ORDER.map((key) => {
@@ -2339,7 +2443,10 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                     variant="secondary"
                     className="border border-amber-200 text-amber-600 hover:bg-amber-50 dark:border-[var(--cf-yellow-light)] dark:text-[var(--cf-yellow)] dark:hover:bg-[var(--cf-yellow-light)]"
                     disabled={storageLoading || storageClearing || storagePurging}
-                    onClick={() => setStorageConfirmOpen(true)}
+                    onClick={() => {
+                      setStoragePreserveSettings(true);
+                      setStorageConfirmOpen(true);
+                    }}
                   >
                     <Trash2 className="mr-2 h-4 w-4" />{" "}
                     {storageClearing ? t("settings:appData.cleaning") : t("settings:appData.clean")}
@@ -2429,6 +2536,77 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
             </Card>
             <Card>
               <CardHeader>
+                <CardTitle>{t("settings:worktreeProfiles.label")}</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <p className="text-sm text-slate-500">{t("settings:worktreeProfiles.desc")}</p>
+                <div className="space-y-3 rounded border bg-slate-50 p-3 text-xs">
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <div>
+                      <div className="text-slate-500">{t("settings:worktreeProfiles.countLabel")}</div>
+                      <div className="mt-1 text-sm font-medium text-slate-700">
+                        {worktreeProfilesLoading && !worktreeProfilesInfo
+                          ? (t("settings:worktreeProfiles.loading") as string)
+                          : worktreeProfilesInfo ? worktreeProfilesInfo.count : "—"}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-slate-500">{t("settings:worktreeProfiles.sizeLabel")}</div>
+                      <div className="mt-1 text-sm font-medium text-slate-700">
+                        {worktreeProfilesLoading && !worktreeProfilesInfo
+                          ? (t("settings:worktreeProfiles.loading") as string)
+                          : formatBytes(worktreeProfilesInfo?.totalBytes ?? 0)}
+                      </div>
+                    </div>
+                  </div>
+                  {worktreeProfilesInfo && worktreeProfilesInfo.items.length > 0 ? (
+                    <div className="mt-2 max-h-48 overflow-auto rounded border bg-white p-2 text-xs">
+                      <ul className="space-y-1">
+                        {worktreeProfilesInfo.items.map((item: WorktreeProfileDirInfo) => (
+                          <li key={item.path} className="flex items-center gap-2" title={item.path}>
+                            <span className="w-28 shrink-0 truncate font-medium text-slate-700" title={item.profileId}>{item.profileId}</span>
+                            <span className="flex-1 min-w-0 truncate select-all font-mono text-[11px] text-slate-700">{item.path}</span>
+                            <span className="shrink-0 text-slate-500">{formatBytes(item.totalBytes)}</span>
+                            {item.isCurrent && (
+                              <span className="shrink-0 rounded bg-slate-200 px-1 text-[10px] text-slate-600">
+                                {t("settings:worktreeProfiles.current")}
+                              </span>
+                            )}
+                            <Button size="xs" variant="ghost" className="h-6 px-2" onClick={() => openSessionRootPath(item.path)}>{t("common:open")}</Button>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : (
+                    <div className="text-[11px] text-slate-500">
+                      {worktreeProfilesLoading
+                        ? (t("settings:worktreeProfiles.loading") as string)
+                        : t("settings:worktreeProfiles.empty")}
+                    </div>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    variant="outline"
+                    disabled={worktreeProfilesLoading || worktreeProfilesCleaning}
+                    onClick={refreshWorktreeProfilesInfo}
+                  >
+                    {worktreeProfilesLoading ? t("settings:worktreeProfiles.refreshing") : t("settings:worktreeProfiles.refresh")}
+                  </Button>
+                  <Button
+                    variant="danger"
+                    disabled={worktreeProfilesCleaning || worktreeProfilesLoading || !!(worktreeProfilesInfo && worktreeProfilesInfo.items.length === 0)}
+                    onClick={() => setWorktreeProfilesConfirmOpen(true)}
+                  >
+                    <Trash2 className="mr-2 h-4 w-4" />{" "}
+                    {worktreeProfilesCleaning ? t("settings:worktreeProfiles.cleaning") : t("settings:worktreeProfiles.cleanup")}
+                  </Button>
+                </div>
+                {worktreeProfilesError && <div className="text-sm text-red-600 dark:text-[var(--cf-red)]">{worktreeProfilesError}</div>}
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader>
                 <CardTitle>{t("settings:debug.label")}</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -2503,8 +2681,13 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     autoProfilesLoading,
     autoProfilesCleaning,
     autoProfilesError,
+    worktreeProfilesInfo,
+    worktreeProfilesLoading,
+    worktreeProfilesCleaning,
+    worktreeProfilesError,
     refreshAppDataInfo,
     refreshAutoProfilesInfo,
+    refreshWorktreeProfilesInfo,
     t,
     terminalFontFamily,
     terminalTheme,
@@ -2719,6 +2902,22 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
           <p className="mt-2 text-xs text-slate-500">
             {t("settings:appData.cleanConfirmNote")}
           </p>
+          <label className="mt-3 flex items-start gap-3 rounded-lg border border-slate-200/70 bg-white/60 px-3 py-3 shadow-sm dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:text-[var(--cf-text-primary)]">
+            <input
+              type="checkbox"
+              className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)] dark:checked:bg-[var(--cf-accent)] dark:focus-visible:ring-[var(--cf-accent)]/40"
+              checked={storagePreserveSettings}
+              onChange={(event) => setStoragePreserveSettings(event.target.checked)}
+            />
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-slate-800 dark:text-[var(--cf-text-primary)]">
+                {t("settings:appData.preserveSettings.label")}
+              </div>
+              <p className={cn("text-xs dark:text-[var(--cf-text-secondary)]", storagePreserveSettings ? "text-slate-500" : "text-red-600 dark:text-[var(--cf-red)]")}>
+                {t("settings:appData.preserveSettings.desc")}
+              </p>
+            </div>
+          </label>
           <div className="flex justify-end gap-2 pt-4">
             <Button variant="outline" onClick={() => setStorageConfirmOpen(false)} disabled={storageClearing}>
               {t("common:cancel")}
@@ -2824,6 +3023,53 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
           )}
           <div className="flex justify-end pt-4">
             <Button onClick={() => setAutoProfilesFeedback((prev) => ({ ...prev, open: false }))}>
+              {t("common:ok")}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={worktreeProfilesConfirmOpen} onOpenChange={setWorktreeProfilesConfirmOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>{t("settings:worktreeProfiles.cleanupConfirmTitle")}</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-slate-500">
+            {t("settings:worktreeProfiles.cleanupConfirmDesc")}
+          </p>
+          <p className="mt-3 text-xs text-red-600">
+            {t("settings:worktreeProfiles.cleanupConfirmNote")}
+          </p>
+          <div className="flex justify-end gap-2 pt-4">
+            <Button variant="outline" onClick={() => setWorktreeProfilesConfirmOpen(false)} disabled={worktreeProfilesCleaning}>
+              {t("common:cancel")}
+            </Button>
+            <Button
+              variant="danger"
+              disabled={worktreeProfilesCleaning}
+              onClick={handlePurgeWorktreeProfiles}
+            >
+              <Trash2 className="mr-2 h-4 w-4" />{" "}
+              {worktreeProfilesCleaning ? t("settings:worktreeProfiles.cleaning") : t("settings:worktreeProfiles.cleanupConfirmAction")}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={worktreeProfilesFeedback.open} onOpenChange={(openState) => setWorktreeProfilesFeedback((prev) => ({ ...prev, open: openState }))}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>
+              {worktreeProfilesFeedback.isError
+                ? t("settings:worktreeProfiles.feedbackErrorTitle")
+                : t("settings:worktreeProfiles.feedbackSuccessTitle")}
+            </DialogTitle>
+          </DialogHeader>
+          {worktreeProfilesFeedback.message && (
+            <p className={cn("text-sm", worktreeProfilesFeedback.isError ? "text-red-600" : "text-slate-600")}>
+              {worktreeProfilesFeedback.message}
+            </p>
+          )}
+          <div className="flex justify-end pt-4">
+            <Button onClick={() => setWorktreeProfilesFeedback((prev) => ({ ...prev, open: false }))}>
               {t("common:ok")}
             </Button>
           </div>

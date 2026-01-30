@@ -38,7 +38,7 @@ type ClearResult = {
   note?: string;
 };
 
-type AutoProfileDirInfo = {
+type ProfileDirInfo = {
   profileId: string;
   dirName: string;
   path: string;
@@ -49,21 +49,30 @@ type AutoProfileDirInfo = {
   isCurrent: boolean;
 };
 
-type AutoProfilesInfo = {
+type AutoProfileDirInfo = ProfileDirInfo;
+type WorktreeProfileDirInfo = ProfileDirInfo;
+
+type ProfileDirsInfo = {
   ok: boolean;
   baseUserData: string;
   currentUserData: string;
   count: number;
   totalBytes: number;
-  items: AutoProfileDirInfo[];
+  items: ProfileDirInfo[];
   error?: string;
 };
 
-type PurgeAutoProfilesOptions = {
+type AutoProfilesInfo = ProfileDirsInfo;
+type WorktreeProfilesInfo = ProfileDirsInfo;
+
+type PurgeProfileDirsOptions = {
   includeCurrent?: boolean;
 };
 
-type PurgeAutoProfilesResult = {
+type PurgeAutoProfilesOptions = PurgeProfileDirsOptions;
+type PurgeWorktreeProfilesOptions = PurgeProfileDirsOptions;
+
+type PurgeProfileDirsResult = {
   ok: boolean;
   total: number;
   removed: number;
@@ -74,6 +83,9 @@ type PurgeAutoProfilesResult = {
   errors?: Array<{ profileId: string; path: string; message: string }>;
   error?: string;
 };
+
+type PurgeAutoProfilesResult = PurgeProfileDirsResult;
+type PurgeWorktreeProfilesResult = PurgeProfileDirsResult;
 
 const SETTINGS_FILE = 'settings.json';
 const KNOWN_LOCK_NAMES = new Set<string>(['lockfile', 'SingletonLock', 'LOCK', 'LOCKFILE']);
@@ -265,21 +277,24 @@ function makeTempName(base: string): string {
 }
 
 /**
- * 扫描并返回 auto-* profile 的 userData 目录列表。
+ * 扫描并返回指定 profileId 前缀的 userData 目录列表。
+ * 说明：
+ * - Profile 目录与 baseUserDataDir 同级（例如：`codexflow` 与 `codexflow-profile-wt-xxxx`）
+ * - 仅返回 `${baseName}-profile-${profileId}` 形式的目录
  */
-async function listAutoProfileDirs(baseUserDataDir: string): Promise<Array<{ profileId: string; dirName: string; fullPath: string }>> {
+async function listProfileDirsByIdPrefix(baseUserDataDir: string, profileIdPrefix: string): Promise<Array<{ profileId: string; dirName: string; fullPath: string }>> {
   const base = String(baseUserDataDir || '').trim();
   if (!base) return [];
   const parent = path.dirname(base);
   const baseName = path.basename(base);
   const profilePrefix = `${baseName}-profile-`;
-  const autoPrefix = `${profilePrefix}auto-`;
+  const wantedPrefix = `${profilePrefix}${String(profileIdPrefix || '').trim()}`;
   const out: Array<{ profileId: string; dirName: string; fullPath: string }> = [];
   const entries = await safeReaddir(parent);
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const dirName = String(entry.name || '');
-    if (!dirName.startsWith(autoPrefix)) continue;
+    if (!dirName.startsWith(wantedPrefix)) continue;
     const profileId = dirName.slice(profilePrefix.length);
     if (!profileId) continue;
     out.push({ profileId, dirName, fullPath: path.join(parent, dirName) });
@@ -616,15 +631,15 @@ async function getAppDataInfo(): Promise<AppDataInfo> {
 }
 
 /**
- * 获取所有 auto-* Profile 目录占用信息（只读统计）。
+ * 获取指定 profileId 前缀的 Profile 目录占用信息（只读统计）。
  */
-async function getAutoProfilesInfo(): Promise<AutoProfilesInfo> {
+async function getProfilesInfoByIdPrefix(profileIdPrefix: string): Promise<ProfileDirsInfo> {
   try {
     const baseUserData = getBaseUserDataPath();
     const currentUserData = getUserDataPath();
     const currentKey = normalizePathKey(currentUserData);
-    const dirs = await listAutoProfileDirs(baseUserData);
-    const items: AutoProfileDirInfo[] = [];
+    const dirs = await listProfileDirsByIdPrefix(baseUserData, profileIdPrefix);
+    const items: ProfileDirInfo[] = [];
     let totalBytes = 0;
     for (const d of dirs) {
       const info = await summarize(d.fullPath);
@@ -656,14 +671,28 @@ async function getAutoProfilesInfo(): Promise<AutoProfilesInfo> {
 }
 
 /**
- * 一键回收（删除）所有 auto-* Profile 目录（默认跳过当前实例目录与占用目录）。
+ * 获取所有 auto-* Profile 目录占用信息（只读统计）。
  */
-async function purgeAutoProfiles(options: PurgeAutoProfilesOptions = {}): Promise<PurgeAutoProfilesResult> {
+async function getAutoProfilesInfo(): Promise<AutoProfilesInfo> {
+  return await getProfilesInfoByIdPrefix('auto-');
+}
+
+/**
+ * 获取所有 wt-* Profile 目录占用信息（只读统计）。
+ */
+async function getWorktreeProfilesInfo(): Promise<WorktreeProfilesInfo> {
+  return await getProfilesInfoByIdPrefix('wt-');
+}
+
+/**
+ * 一键回收（删除）指定 profileId 前缀的 Profile 目录（默认跳过当前实例目录与占用目录）。
+ */
+async function purgeProfilesByIdPrefix(profileIdPrefix: string, options: PurgeProfileDirsOptions = {}): Promise<PurgeProfileDirsResult> {
   const baseUserData = getBaseUserDataPath();
   const currentUserData = getUserDataPath();
   const currentKey = normalizePathKey(currentUserData);
   void options;
-  const dirs = await listAutoProfileDirs(baseUserData);
+  const dirs = await listProfileDirsByIdPrefix(baseUserData, profileIdPrefix);
   const errors: Array<{ profileId: string; path: string; message: string }> = [];
   let removed = 0;
   let skipped = 0;
@@ -701,12 +730,26 @@ async function purgeAutoProfiles(options: PurgeAutoProfilesOptions = {}): Promis
 
   const total = dirs.length;
   const ok = errors.length === 0;
-  const result: PurgeAutoProfilesResult = { ok, total, removed, skipped, busy, notFound, bytesFreed };
+  const result: PurgeProfileDirsResult = { ok, total, removed, skipped, busy, notFound, bytesFreed };
   if (!ok) {
     result.errors = errors;
     result.error = errors.map((x) => `${x.profileId}: ${x.message}`).join('; ');
   }
   return result;
+}
+
+/**
+ * 一键回收（删除）所有 auto-* Profile 目录（默认跳过当前实例目录与占用目录）。
+ */
+async function purgeAutoProfiles(options: PurgeAutoProfilesOptions = {}): Promise<PurgeAutoProfilesResult> {
+  return await purgeProfilesByIdPrefix('auto-', options);
+}
+
+/**
+ * 一键回收（删除）所有 wt-* Profile 目录（默认跳过当前实例目录与占用目录）。
+ */
+async function purgeWorktreeProfiles(options: PurgeWorktreeProfilesOptions = {}): Promise<PurgeWorktreeProfilesResult> {
+  return await purgeProfilesByIdPrefix('wt-', options);
 }
 
 async function clearAppData(options: ClearOptions = {}): Promise<ClearResult> {
@@ -716,6 +759,8 @@ async function clearAppData(options: ClearOptions = {}): Promise<ClearResult> {
   const preserveNames = new Set<string>();
   if (options.preserveSettings !== false) {
     preserveNames.add(SETTINGS_FILE);
+    // 账号记录：Codex 登录备份（用于“记录账号/切换账号”等场景）
+    preserveNames.add('codex-auth-backups');
   }
   await flushElectronSessions();
   const { errors, removedEntries, skippedEntries } = await clearChildren(root, preserveNames, { skipKnownLocks: true });
@@ -825,4 +870,6 @@ export default {
   purgeAppDataAndQuit,
   getAutoProfilesInfo,
   purgeAutoProfiles,
+  getWorktreeProfilesInfo,
+  purgeWorktreeProfiles,
 };
