@@ -28,6 +28,49 @@ type StoreShape = {
 };
 
 /**
+ * 中文说明：根据已有记录与最新分支选择，构建应写回的 worktree 元数据。
+ *
+ * 设计原则：
+ * - 优先保留 createdAt（若已有），避免无意义抖动。
+ * - 当 baseBranch/wtBranch 发生变化时，清空 baseRefAtCreate，避免错误把旧分叉点当作“创建记录”。
+ * - 允许调用方显式提供 baseRefAtCreate（例如 reset 后更新为最新基线）。
+ */
+export function buildNextWorktreeMeta(args: {
+  existing: WorktreeMeta | null;
+  repoMainPath: string;
+  baseBranch: string;
+  wtBranch: string;
+  baseRefAtCreate?: string;
+  createdAt?: number;
+}): WorktreeMeta {
+  const existing = args.existing;
+  const repoMainPath = String(args.repoMainPath || "").trim();
+  const baseBranch = String(args.baseBranch || "").trim();
+  const wtBranch = String(args.wtBranch || "").trim();
+  const createdAt =
+    Number.isFinite(Number(existing?.createdAt))
+      ? Math.floor(Number(existing!.createdAt))
+      : (Number.isFinite(Number(args.createdAt)) ? Math.floor(Number(args.createdAt)) : Date.now());
+
+  const branchesChanged =
+    !!existing &&
+    (String(existing.baseBranch || "").trim() !== baseBranch || String(existing.wtBranch || "").trim() !== wtBranch);
+
+  const baseRefAtCreate =
+    typeof args.baseRefAtCreate === "string"
+      ? String(args.baseRefAtCreate || "").trim() || undefined
+      : (branchesChanged ? undefined : (existing?.baseRefAtCreate ? String(existing.baseRefAtCreate || "").trim() || undefined : undefined));
+
+  return {
+    repoMainPath,
+    baseBranch,
+    wtBranch,
+    createdAt,
+    baseRefAtCreate,
+  };
+}
+
+/**
  * 获取 worktree 元数据存储文件路径（位于 userData，避免写入仓库）。
  */
 function getStorePath(): string {

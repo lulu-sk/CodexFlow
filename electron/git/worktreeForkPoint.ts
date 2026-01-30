@@ -3,6 +3,7 @@
 
 import { execGitAsync } from "./exec";
 import { toFsPathAbs } from "./pathKey";
+import { resolveRepoMainPathFromWorktreeAsync } from "./worktreeMetaResolve";
 import { getWorktreeMeta, type WorktreeMeta } from "../stores/worktreeMetaStore";
 
 export type WorktreeForkPointSource = "recorded" | "merge-base";
@@ -59,8 +60,12 @@ export async function resolveWorktreeForkPointAsync(req: {
   if (!wt || !baseBranch || !wtBranch) return { ok: false, error: "missing args" };
 
   const meta = getWorktreeMeta(wt);
-  const repoMainPath = toFsPathAbs(String(meta?.repoMainPath || ""));
-  if (!repoMainPath) return { ok: false, error: "missing repoMainPath" };
+  let repoMainPath = toFsPathAbs(String(meta?.repoMainPath || ""));
+  if (!repoMainPath) {
+    const inferred = await resolveRepoMainPathFromWorktreeAsync({ worktreePath: wt, gitPath, timeoutMs: 12_000 });
+    if (!inferred.ok) return { ok: false, error: inferred.error };
+    repoMainPath = inferred.repoMainPath;
+  }
 
   const recordedSha = String(meta?.baseRefAtCreate || "").trim() || undefined;
   const recordedApplies = isRecordedForkPointApplicable(meta, baseBranch, wtBranch);
@@ -127,8 +132,12 @@ export async function searchForkPointCommitsAsync(args: {
   if (!wt || !wtBranch) return { ok: false, error: "missing args" };
 
   const meta = getWorktreeMeta(wt);
-  const repoMainPath = toFsPathAbs(String(meta?.repoMainPath || ""));
-  if (!repoMainPath) return { ok: false, error: "missing repoMainPath" };
+  let repoMainPath = toFsPathAbs(String(meta?.repoMainPath || ""));
+  if (!repoMainPath) {
+    const inferred = await resolveRepoMainPathFromWorktreeAsync({ worktreePath: wt, gitPath, timeoutMs: 12_000 });
+    if (!inferred.ok) return { ok: false, error: inferred.error };
+    repoMainPath = inferred.repoMainPath;
+  }
 
   const argv = ["-C", repoMainPath, "log", wtBranch, `--max-count=${limit}`, "--format=%H%x00%h%x00%s%x00%ct"];
   if (query) argv.push("--fixed-strings", "--regexp-ignore-case", `--grep=${query}`);
@@ -165,8 +174,12 @@ export async function validateForkPointRefAsync(args: {
   if (!wt || !wtBranch || !ref) return { ok: false, error: "missing args" };
 
   const meta = getWorktreeMeta(wt);
-  const repoMainPath = toFsPathAbs(String(meta?.repoMainPath || ""));
-  if (!repoMainPath) return { ok: false, error: "missing repoMainPath" };
+  let repoMainPath = toFsPathAbs(String(meta?.repoMainPath || ""));
+  if (!repoMainPath) {
+    const inferred = await resolveRepoMainPathFromWorktreeAsync({ worktreePath: wt, gitPath, timeoutMs: 12_000 });
+    if (!inferred.ok) return { ok: false, error: inferred.error };
+    repoMainPath = inferred.repoMainPath;
+  }
 
   const rp = await execGitAsync({ gitPath, argv: ["-C", repoMainPath, "rev-parse", "--verify", `${ref}^{commit}`], timeoutMs: 12_000 });
   if (!rp.ok) return { ok: false, error: String(rp.error || rp.stderr || "invalid ref").trim() || "invalid ref" };

@@ -154,6 +154,8 @@ type WorktreeCreateDialogState = {
   baseBranch: string;
   /** 是否正在加载分支列表 */
   loadingBranches: boolean;
+  /** 复用的子 worktree（projectId，多选；默认不选） */
+  selectedChildWorktreeIds: string[];
   /** 初始提示词：chips */
   promptChips: PathChip[];
   /** 初始提示词：草稿 */
@@ -850,6 +852,77 @@ function sumWorktreeProviderCounts(counts: Partial<WorktreeProviderCounts> | nul
   } catch {
     return 0;
   }
+}
+
+/**
+ * 根据“worktree 创建”面板的引擎选择，生成实例队列（用于与复用子 worktree 做 1:1 分配）。
+ * - 单选模式：始终返回 1 个实例（与现有面板行为保持一致）
+ * - 并行混合模式：按 codex/claude/gemini 顺序展开计数
+ */
+function buildWorktreeProviderQueue(args: {
+  useMultipleModels: boolean;
+  singleProviderId: GitWorktreeProviderId;
+  multiCounts: Partial<WorktreeProviderCounts> | null | undefined;
+}): GitWorktreeProviderId[] {
+  const order: GitWorktreeProviderId[] = ["codex", "claude", "gemini"];
+  if (args.useMultipleModels) {
+    const c = args.multiCounts && typeof args.multiCounts === "object" ? args.multiCounts : {};
+    const out: GitWorktreeProviderId[] = [];
+    for (const pid of order) {
+      const n = Math.max(0, Math.floor(Number((c as any)[pid]) || 0));
+      for (let i = 0; i < n; i++) out.push(pid);
+    }
+    return out;
+  }
+  const single = String(args.singleProviderId || "codex").trim().toLowerCase();
+  if (single === "codex" || single === "claude" || single === "gemini") return [single as GitWorktreeProviderId];
+  return ["codex"];
+}
+
+/**
+ * 将实例队列（providerId 列表）聚合为主进程 worktree 创建 API 所需的 instances 结构。
+ */
+function collapseWorktreeProviderQueueToInstances(queue: GitWorktreeProviderId[]): Array<{ providerId: GitWorktreeProviderId; count: number }> {
+  const counts: Record<GitWorktreeProviderId, number> = { codex: 0, claude: 0, gemini: 0 };
+  for (const pid of Array.isArray(queue) ? queue : []) {
+    if (pid === "codex" || pid === "claude" || pid === "gemini") counts[pid]++;
+  }
+  const out: Array<{ providerId: GitWorktreeProviderId; count: number }> = [];
+  for (const pid of ["codex", "claude", "gemini"] as const) {
+    if (counts[pid] > 0) out.push({ providerId: pid, count: counts[pid] });
+  }
+  return out;
+}
+
+/**
+ * 按给定顺序与上限裁剪已选 id 列表，确保：去重、仅保留允许项、且不超过 limit。
+ */
+function trimSelectedIdsByOrder(args: { selectedIds: string[]; allowedOrder: string[]; limit: number }): string[] {
+  const selected = Array.isArray(args.selectedIds) ? args.selectedIds.map((x) => String(x || "").trim()).filter(Boolean) : [];
+  const order = Array.isArray(args.allowedOrder) ? args.allowedOrder.map((x) => String(x || "").trim()).filter(Boolean) : [];
+  const limit = Math.max(0, Math.floor(Number(args.limit) || 0));
+  if (selected.length === 0 || order.length === 0 || limit === 0) return [];
+  const selectedSet = new Set(selected);
+  const out: string[] = [];
+  for (const id of order) {
+    if (!selectedSet.has(id)) continue;
+    out.push(id);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+/**
+ * 判断两个字符串数组是否完全相等（顺序与内容一致）。
+ */
+function areStringArraysEqual(a: string[] | null | undefined, b: string[] | null | undefined): boolean {
+  const aa = Array.isArray(a) ? a : [];
+  const bb = Array.isArray(b) ? b : [];
+  if (aa.length !== bb.length) return false;
+  for (let i = 0; i < aa.length; i++) {
+    if (aa[i] !== bb[i]) return false;
+  }
+  return true;
 }
 
 /**
@@ -1639,6 +1712,7 @@ export default function CodexFlowManagerUI() {
     branches: [],
     baseBranch: "",
     loadingBranches: false,
+    selectedChildWorktreeIds: [],
     promptChips: [],
     promptDraft: "",
     useMultipleModels: false,
@@ -1868,6 +1942,35 @@ export default function CodexFlowManagerUI() {
     })();
     return () => { cancelled = true; };
   }, [projectsHydrated, projects]);
+
+  // Worktree 创建面板：当实例数/子节点变化时，裁剪“复用子 worktree”的选择，避免超出上限或引用失效
+  useEffect(() => {
+    if (!worktreeCreateDialog.open) return;
+    const repoId = String(worktreeCreateDialog.repoProjectId || "").trim();
+    if (!repoId) return;
+
+    const selectedRaw = Array.isArray(worktreeCreateDialog.selectedChildWorktreeIds) ? worktreeCreateDialog.selectedChildWorktreeIds : [];
+    if (selectedRaw.length === 0) return;
+
+    const total = worktreeCreateDialog.useMultipleModels ? sumWorktreeProviderCounts(worktreeCreateDialog.multiCounts) : 1;
+    const childIds = dirTreeStore.childOrderByParent[repoId] || [];
+    const allowedOrder = childIds.filter((id) => !!gitInfoByProjectId[id]?.isWorktree);
+    const trimmed = trimSelectedIdsByOrder({ selectedIds: selectedRaw, allowedOrder, limit: total });
+
+    if (areStringArraysEqual(selectedRaw, trimmed)) return;
+    setWorktreeCreateDialog((prev) => {
+      if (!prev.open || prev.repoProjectId !== repoId) return prev;
+      return { ...prev, selectedChildWorktreeIds: trimmed };
+    });
+  }, [
+    dirTreeStore.childOrderByParent,
+    gitInfoByProjectId,
+    worktreeCreateDialog.multiCounts,
+    worktreeCreateDialog.open,
+    worktreeCreateDialog.repoProjectId,
+    worktreeCreateDialog.selectedChildWorktreeIds,
+    worktreeCreateDialog.useMultipleModels,
+  ]);
 
   useEffect(() => {
     // 如果没有可见项目，清空选择
@@ -4800,6 +4903,7 @@ export default function CodexFlowManagerUI() {
       branches: [],
       baseBranch: "",
       loadingBranches: true,
+      selectedChildWorktreeIds: [],
       promptChips: [],
       promptDraft: "",
       useMultipleModels: false,
@@ -4909,6 +5013,27 @@ export default function CodexFlowManagerUI() {
   }, [getProviderEnv, markProjectHasBuiltInSessions, recordCustomProviderDirIfNeeded, tm, markProjectUsed]);
 
   /**
+   * 在指定项目中启动某个引擎实例，并注入初始提示词（worktree 新建/复用共用）。
+   */
+  const startProviderInstanceInProject = useCallback(async (args: {
+    project: Project;
+    providerId: GitWorktreeProviderId;
+    prompt: string;
+  }): Promise<{ ok: boolean; tabId?: string; error?: string }> => {
+    try {
+      const project = args.project;
+      const providerId = args.providerId;
+      if (!project?.id) return { ok: false, error: "missing project" };
+      const env = getProviderEnv(providerId);
+      const baseCmd = buildProviderStartupCmd(providerId, env);
+      const startupCmd = buildProviderStartupCmdWithInitialPrompt({ providerId, terminalMode: env.terminal as any, baseCmd, prompt: args.prompt });
+      return await openProviderConsoleInProject({ project, providerId, startupCmd });
+    } catch (e: any) {
+      return { ok: false, error: String(e?.message || e) };
+    }
+  }, [buildProviderStartupCmd, getProviderEnv, openProviderConsoleInProject]);
+
+  /**
    * 执行创建 worktree，并在每个 worktree 内启动对应引擎 CLI。
    * - 目录结构/复用规则由主进程完成；渲染层负责：避免重复节点、挂载到树、启动引擎
    */
@@ -4917,6 +5042,8 @@ export default function CodexFlowManagerUI() {
     baseBranch: string;
     instances: Array<{ providerId: GitWorktreeProviderId; count: number }>;
     prompt: string;
+    /** 额外警告（用于把“复用已有 worktree 的启动失败”合并到同一份提示里）。 */
+    extraWarnings?: string[];
   }) => {
     const repoProject = args.repoProject;
     const repoId = String(repoProject?.id || "").trim();
@@ -5025,7 +5152,7 @@ export default function CodexFlowManagerUI() {
 
     const createdItems: CreatedWorktree[] = snapshot.items as any;
     const prompt = String(args.prompt || "");
-    const warnings: string[] = [];
+    const warnings: string[] = Array.isArray(args.extraWarnings) ? args.extraWarnings.map((x: any) => String(x || "").trim()).filter(Boolean) : [];
     let firstNewProjectId: string | null = null;
     let firstTabId: string | null = null;
 
@@ -5052,18 +5179,11 @@ export default function CodexFlowManagerUI() {
       attachDirChildToParent(repoId, wtProject.id);
 
       // 启动引擎 CLI（每个实例一个 worktree）
-      try {
-        const env = getProviderEnv(providerId);
-        const baseCmd = buildProviderStartupCmd(providerId, env);
-        const startupCmd = buildProviderStartupCmdWithInitialPrompt({ providerId, terminalMode: env.terminal as any, baseCmd, prompt });
-        const started = await openProviderConsoleInProject({ project: wtProject, providerId, startupCmd });
-        if (started.ok && started.tabId) {
-          if (!firstTabId) firstTabId = started.tabId;
-        } else if (!started.ok && started.error) {
-          warnings.push(`${providerId}: ${started.error}`);
-        }
-      } catch (e: any) {
-        warnings.push(`${providerId}: ${String(e?.message || e)}`);
+      const started = await startProviderInstanceInProject({ project: wtProject, providerId, prompt });
+      if (started.ok && started.tabId) {
+        if (!firstTabId) firstTabId = started.tabId;
+      } else if (!started.ok && started.error) {
+        warnings.push(`${providerId}: ${started.error}`);
       }
 
       // 规则文件复制的非致命警告
@@ -5096,7 +5216,7 @@ export default function CodexFlowManagerUI() {
         message: (t("projects:worktreeCreateWarnings", "创建已完成，但存在警告：\n{{warnings}}") as any).replace("{{warnings}}", warnings.join("\n")),
       });
     }
-  }, [attachDirChildToParent, buildProviderStartupCmd, getProviderEnv, gitWorktreeCopyRulesOnCreate, openProviderConsoleInProject, setActiveTab, t, unhideProject, upsertProjectInList]);
+  }, [attachDirChildToParent, gitWorktreeCopyRulesOnCreate, setActiveTab, startProviderInstanceInProject, t, unhideProject, upsertProjectInList]);
 
   /**
    * Ctrl+单击：快速创建（不弹确认/不打开面板）。
@@ -5252,17 +5372,32 @@ export default function CodexFlowManagerUI() {
     try {
       const metaRes: any = await (window as any).host?.gitWorktree?.getMeta?.(project.winPath);
       const meta = metaRes && metaRes.ok ? metaRes.meta : null;
-      if (!meta) throw new Error(t("projects:worktreeMetaMissing", "未找到该 worktree 的创建记录（base/wt 分支映射）") as string);
 
-      const repoMainPath = String(meta.repoMainPath || project.winPath);
+      // 中文说明：创建记录缺失时，不阻断流程：优先从 git worktree 信息推断主 worktree 路径，并允许用户手动选择分支。
+      let repoMainPath = String(meta?.repoMainPath || "").trim();
+      let cachedWtBranch = "";
+      if (!repoMainPath) {
+        try {
+          const st: any = await (window as any).host?.gitWorktree?.statusBatch?.([project.winPath]);
+          const info = st && st.ok && Array.isArray(st.items) ? (st.items[0] as any) : null;
+          const main = String(info?.mainWorktree || info?.repoRoot || "").trim();
+          repoMainPath = main || project.winPath;
+          const b = info && info.detached !== true ? String(info.branch || "").trim() : "";
+          if (b) cachedWtBranch = b;
+        } catch {
+          repoMainPath = project.winPath;
+        }
+      } else {
+        repoMainPath = String(meta.repoMainPath || project.winPath);
+      }
       const listRes: any = await (window as any).host?.gitWorktree?.listBranches?.(repoMainPath);
       if (!(listRes && listRes.ok)) throw new Error(listRes?.error || (t("projects:worktreeListBranchesFailed", "读取分支列表失败") as string));
       const branchesRaw: string[] = Array.isArray(listRes.branches) ? listRes.branches.map((x: any) => String(x || "").trim()).filter(Boolean) : [];
       const branches: string[] = Array.from(new Set<string>(branchesRaw));
       const branchSet = new Set<string>(branches);
 
-      const metaBaseBranch = String(meta.baseBranch || "").trim();
-      const metaWtBranch = String(meta.wtBranch || "").trim();
+      const metaBaseBranch = String(meta?.baseBranch || "").trim();
+      const metaWtBranch = String(meta?.wtBranch || "").trim();
       const currentBranch = String(listRes.current || "").trim();
       const baseBranch =
         (metaBaseBranch && branchSet.has(metaBaseBranch) ? metaBaseBranch : "") ||
@@ -5279,6 +5414,8 @@ export default function CodexFlowManagerUI() {
           const b = info && info.detached !== true ? String(info.branch || "").trim() : "";
           if (b && branchSet.has(b)) inferredWtBranch = b;
         } catch {}
+      } else if (!metaWtBranch && cachedWtBranch && branchSet.has(cachedWtBranch)) {
+        inferredWtBranch = cachedWtBranch;
 	      }
 	      const wtBranch = metaWtBranch && branchSet.has(metaWtBranch) ? metaWtBranch : inferredWtBranch || "";
 	      const commitMessage = "";
@@ -8095,22 +8232,40 @@ export default function CodexFlowManagerUI() {
           <DialogHeader className="pb-2">
             <DialogTitle>{t("projects:worktreeCreateTitle", "从分支创建 worktree") as string}</DialogTitle>
             <DialogDescription>
-              {t("projects:worktreeCreateDesc", "每个引擎实例会创建一个 worktree，并在控制台中启动对应 CLI。") as string}
+              {t("projects:worktreeCreateDesc", "每个引擎实例需要一个 worktree，并在控制台中启动对应 CLI。") as string}
             </DialogDescription>
           </DialogHeader>
           {(function renderWorktreeCreateBody() {
             const repo = projectsRef.current.find((x) => x.id === worktreeCreateDialog.repoProjectId) || null;
             if (!repo) return null;
 
-            const total = worktreeCreateDialog.useMultipleModels ? sumWorktreeProviderCounts(worktreeCreateDialog.multiCounts) : 1;
+            const providerQueue = buildWorktreeProviderQueue({
+              useMultipleModels: worktreeCreateDialog.useMultipleModels,
+              singleProviderId: worktreeCreateDialog.singleProviderId,
+              multiCounts: worktreeCreateDialog.multiCounts,
+            });
+            const total = providerQueue.length;
             const tooMany = total > 8;
+
+            const childIds = dirTreeStore.childOrderByParent[worktreeCreateDialog.repoProjectId] || [];
+            const childWorktrees = childIds
+              .map((id) => projectsRef.current.find((x) => x.id === id) || null)
+              .filter((p): p is Project => !!p)
+              .filter((p) => !!gitInfoByProjectId[p.id]?.isWorktree);
+            const childWorktreeIdsOrdered = childWorktrees.map((p) => p.id);
+            const selectedChildIdsOrdered = trimSelectedIdsByOrder({
+              selectedIds: worktreeCreateDialog.selectedChildWorktreeIds,
+              allowedOrder: childWorktreeIdsOrdered,
+              limit: total,
+            });
+            const reuseCount = selectedChildIdsOrdered.length;
+            const createCount = Math.max(0, total - reuseCount);
+
             const canSubmit =
-              !worktreeCreateDialog.loadingBranches &&
               !worktreeCreateDialog.creating &&
-              !!worktreeCreateDialog.baseBranch &&
               total > 0 &&
               !tooMany &&
-              !worktreeCreateDialog.error;
+              (createCount === 0 ? true : (!worktreeCreateDialog.loadingBranches && !!worktreeCreateDialog.baseBranch && !worktreeCreateDialog.error));
 
             const setDialog = (patch: Partial<WorktreeCreateDialogState>) => {
               setWorktreeCreateDialog((prev) => ({ ...prev, ...(patch as any) }));
@@ -8123,30 +8278,129 @@ export default function CodexFlowManagerUI() {
 
             const submit = async () => {
               if (!canSubmit) return;
-              const baseBranch = String(worktreeCreateDialog.baseBranch || "").trim();
-              if (!baseBranch) return;
-              const instances = worktreeCreateDialog.useMultipleModels
-                ? (["codex", "claude", "gemini"] as const)
-                    .map((pid) => ({ providerId: pid, count: Math.max(0, Math.floor(Number(worktreeCreateDialog.multiCounts?.[pid]) || 0)) }))
-                    .filter((x) => x.count > 0)
-                : [{ providerId: worktreeCreateDialog.singleProviderId, count: 1 }];
+              setDialog({ creating: true, error: undefined });
+
               const prompt = compileWorktreePromptText({
                 chips: worktreeCreateDialog.promptChips,
                 draft: worktreeCreateDialog.promptDraft,
                 projectWinRoot: repo.winPath,
                 projectWslRoot: repo.wslPath,
               });
-              await createWorktreesAndStartAgents({ repoProject: repo, baseBranch, instances, prompt });
+
+              // 1) 优先在已选子 worktree 中启动实例（1:1 分配）
+              const extraWarnings: string[] = [];
+              let firstReuseProjectId: string | null = null;
+              let firstReuseTabId: string | null = null;
+              for (let i = 0; i < selectedChildIdsOrdered.length; i++) {
+                const projectId = selectedChildIdsOrdered[i];
+                const wtProject = childWorktrees.find((p) => p.id === projectId) || null;
+                if (!wtProject) continue;
+                const providerId = providerQueue[i] || worktreeCreateDialog.singleProviderId;
+                // 用户主动选择：若该 worktree 被隐藏，则自动取消隐藏
+                unhideProject(wtProject);
+                const started = await startProviderInstanceInProject({ project: wtProject, providerId, prompt });
+                if (started.ok && started.tabId) {
+                  if (!firstReuseTabId) firstReuseTabId = started.tabId;
+                } else if (!started.ok && started.error) {
+                  extraWarnings.push(`${providerId}: ${started.error} (${getDirNodeLabel(wtProject)})`);
+                }
+                if (!firstReuseProjectId) firstReuseProjectId = wtProject.id;
+              }
+
+              // 2) 剩余实例才创建新 worktree
+              const remainingQueue = providerQueue.slice(selectedChildIdsOrdered.length);
+              const remainingInstances = collapseWorktreeProviderQueueToInstances(remainingQueue);
+              if (remainingInstances.length > 0) {
+                const baseBranch = String(worktreeCreateDialog.baseBranch || "").trim();
+                if (!baseBranch) {
+                  setDialog({ creating: false, error: t("projects:worktreeMissingBaseBranch", "未能读取到基分支") as string });
+                  return;
+                }
+                await createWorktreesAndStartAgents({ repoProject: repo, baseBranch, instances: remainingInstances, prompt, extraWarnings });
+                return;
+              }
+
+              // 仅复用：关闭面板，并将焦点切换到第一个已启动实例
+              closeWorktreeCreateDialog();
+              if (firstReuseProjectId) {
+                suppressAutoSelectRef.current = true;
+                setSelectedProjectId(firstReuseProjectId);
+                setCenterMode("console");
+                setSelectedHistoryDir(null);
+                setSelectedHistoryId(null);
+                if (firstReuseTabId) {
+                  setActiveTab(firstReuseTabId, { projectId: firstReuseProjectId, focusMode: "immediate", allowDuringRename: true, delay: 0 });
+                }
+              }
+              if (extraWarnings.length > 0) {
+                setNoticeDialog({
+                  open: true,
+                  title: t("projects:worktreeCreateTitle", "从分支创建 worktree") as string,
+                  message: (t("projects:worktreeCreateWarnings", "创建已完成，但存在警告：\n{{warnings}}") as any).replace("{{warnings}}", extraWarnings.join("\n")),
+                });
+              }
             };
 
             const labelClass = "text-[10px] font-bold uppercase tracking-wider text-slate-500/80 dark:text-slate-400/80 mb-1 block";
+            const selectedSet = new Set(selectedChildIdsOrdered);
+            const assignedProviderByWorktreeId = new Map<string, GitWorktreeProviderId>();
+            for (let i = 0; i < selectedChildIdsOrdered.length; i++) {
+              const projectId = selectedChildIdsOrdered[i];
+              const providerId = providerQueue[i];
+              if (projectId && providerId) assignedProviderByWorktreeId.set(projectId, providerId);
+            }
+
+            const primaryActionLabel =
+              createCount > 0
+                ? (reuseCount > 0
+                    ? (t("projects:worktreeCreateAndStartAction", "创建并启动") as string)
+                    : (t("projects:worktreeCreateAction", "创建") as string))
+                : (t("projects:worktreeStartAction", "启动") as string);
+            const primaryActionWorkingLabel =
+              createCount > 0
+                ? (t("projects:worktreeCreating", "创建中…") as string)
+                : (t("projects:worktreeStarting", "启动中…") as string);
+
+            /**
+             * 切换复用子 worktree 的选中状态（受总实例数限制）。
+             */
+            const toggleChildWorktree = (projectId: string) => {
+              const id = String(projectId || "").trim();
+              if (!id) return;
+              if (worktreeCreateDialog.creating) return;
+              setWorktreeCreateDialog((prev) => {
+                if (!prev.open) return prev;
+                const cur = Array.isArray(prev.selectedChildWorktreeIds) ? prev.selectedChildWorktreeIds.map((x) => String(x || "").trim()).filter(Boolean) : [];
+                if (cur.includes(id)) return { ...prev, selectedChildWorktreeIds: cur.filter((x) => x !== id) };
+                const max = buildWorktreeProviderQueue({ useMultipleModels: prev.useMultipleModels, singleProviderId: prev.singleProviderId, multiCounts: prev.multiCounts }).length;
+                if (cur.length >= max) return prev;
+                return { ...prev, selectedChildWorktreeIds: [...cur, id] };
+              });
+            };
+
+            /**
+             * 清空复用子 worktree 选择。
+             */
+            const clearChildWorktreeSelection = () => {
+              if (worktreeCreateDialog.creating) return;
+              setDialog({ selectedChildWorktreeIds: [] });
+            };
 
             return (
               <div className="space-y-3">
                 {worktreeCreateDialog.error ? (
-                  <div className="rounded-md border border-red-200 bg-red-50 px-3 py-1.5 text-[11px] font-medium text-red-800 flex items-center gap-2">
+                  <div
+                    className={`rounded-md border px-3 py-1.5 text-[11px] font-medium flex items-center gap-2 ${
+                      createCount > 0
+                        ? "border-red-200 bg-red-50 text-red-800"
+                        : "border-amber-200 bg-amber-50 text-amber-900"
+                    }`}
+                  >
                     <TriangleAlert className="h-3.5 w-3.5" />
-                    {worktreeCreateDialog.error}
+                    <span className="break-words">
+                      {worktreeCreateDialog.error}
+                      {createCount === 0 ? (t("projects:worktreeCreateErrorCreateOnly", "（仅影响新建）") as string) : null}
+                    </span>
                   </div>
                 ) : null}
 
@@ -8157,7 +8411,7 @@ export default function CodexFlowManagerUI() {
                   <select
                     className="h-8 w-full rounded-md border border-slate-300 bg-white px-2 text-xs text-slate-900 focus:border-[var(--cf-accent)] focus:outline-none focus:ring-1 focus:ring-[var(--cf-accent)] dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-solid)] dark:text-[var(--cf-text-primary)]"
                     value={worktreeCreateDialog.baseBranch}
-                    disabled={worktreeCreateDialog.loadingBranches || worktreeCreateDialog.creating}
+                    disabled={worktreeCreateDialog.loadingBranches || worktreeCreateDialog.creating || createCount === 0}
                     onChange={(e) => setDialog({ baseBranch: e.target.value })}
                   >
                     {(worktreeCreateDialog.branches.length > 0 ? worktreeCreateDialog.branches : [worktreeCreateDialog.baseBranch]).filter(Boolean).map((b) => (
@@ -8265,6 +8519,80 @@ export default function CodexFlowManagerUI() {
                     )}
                 </div>
 
+                {childWorktrees.length > 0 ? (
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <label className={labelClass}>
+                        {t("projects:worktreeReuseChildWorktrees", "复用已有子 worktree（可选）")}
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-slate-500 dark:text-[var(--cf-text-secondary)]">
+                          {t("projects:worktreeReuseSelectedCount", "已选：{selected} / {max}", { selected: reuseCount, max: total }) as string}
+                        </span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 px-2 text-[10px]"
+                          onClick={clearChildWorktreeSelection}
+                          disabled={reuseCount === 0 || worktreeCreateDialog.creating}
+                        >
+                          {t("projects:worktreeReuseClear", "清空") as string}
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="text-[10px] text-slate-500 dark:text-[var(--cf-text-secondary)]">
+                      {t("projects:worktreeReuseHint", "默认不勾选任何已有子 worktree。勾选后将优先把引擎实例分配到这些 worktree；剩余实例再新建。") as string}
+                    </div>
+
+                    <div className="rounded-md border border-slate-200/70 bg-white/50 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] overflow-hidden">
+                      <div className="max-h-40 overflow-auto divide-y divide-slate-100 dark:divide-slate-800/50">
+                        {childWorktrees.map((p) => {
+                          const checked = selectedSet.has(p.id);
+                          const disabled = worktreeCreateDialog.creating || (!checked && reuseCount >= total) || total === 0;
+                          const assigned = assignedProviderByWorktreeId.get(p.id);
+                          const displayLabel = getDirNodeLabel(p);
+                          return (
+                            <label
+                              key={p.id}
+                              className={`flex items-center gap-2 px-2.5 py-2 text-xs ${
+                                disabled ? "opacity-60" : "cursor-pointer hover:bg-slate-50 dark:hover:bg-[var(--cf-surface-hover)]"
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                className="h-3 w-3 rounded border-slate-300 text-[var(--cf-accent)] focus:ring-[var(--cf-accent)] dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)]"
+                                checked={checked}
+                                disabled={disabled}
+                                onChange={() => toggleChildWorktree(p.id)}
+                              />
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="font-medium text-slate-700 dark:text-[var(--cf-text-primary)] truncate">
+                                    {displayLabel}
+                                  </span>
+                                  {checked && assigned ? (
+                                    <span className="text-[10px] px-1.5 py-0.5 rounded border border-slate-200 bg-white text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                                      {getProviderLabel(assigned)}
+                                    </span>
+                                  ) : null}
+                                </div>
+                                <div className="text-[10px] text-slate-400 font-mono truncate">{p.winPath}</div>
+                              </div>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="flex justify-end">
+                      <span className="text-[10px] text-slate-400">
+                        {t("projects:worktreeReuseSummary", "复用 {reuse}，新建 {create}", { reuse: reuseCount, create: createCount }) as string}
+                      </span>
+                    </div>
+                  </div>
+                ) : null}
+
                 <div className="space-y-1">
                   <div className="text-xs font-semibold text-slate-700 dark:text-[var(--cf-text-primary)]">
                     {t("projects:worktreeInitialPrompt", "初始提示词（可选）") as string}
@@ -8286,7 +8614,7 @@ export default function CodexFlowManagerUI() {
                     {t("common:cancel", "取消") as string}
                   </Button>
                   <Button variant="secondary" size="sm" className="h-8 text-xs min-w-[4rem]" onClick={() => void submit()} disabled={!canSubmit}>
-                    {worktreeCreateDialog.creating ? (t("projects:worktreeCreating", "创建中…") as string) : (t("projects:worktreeCreateAction", "创建") as string)}
+                    {worktreeCreateDialog.creating ? primaryActionWorkingLabel : primaryActionLabel}
                   </Button>
                 </div>
               </div>
