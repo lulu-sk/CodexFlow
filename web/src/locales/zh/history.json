@@ -22,6 +22,7 @@
   "cannotOpenDefault": "无法用默认程序打开",
   "deleteToTrash": "彻底删除",
   "confirmPermanentDelete": "确认要彻底删除该历史文件吗？该操作不可恢复。",
+  "untitledSessionTitle": "未命名",
   "deleteFailed": "删除失败：{error}",
   "cannotDelete": "无法删除：{error}",
   "continueConversation": "继续对话",

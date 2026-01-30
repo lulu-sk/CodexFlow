@@ -22,6 +22,7 @@
   "cannotOpenDefault": "Unable to open with default app",
   "deleteToTrash": "Delete Permanently",
   "confirmPermanentDelete": "Permanently delete this history file? This action cannot be undone.",
+  "untitledSessionTitle": "Untitled",
   "deleteFailed": "Delete failed: {error}",
   "cannotDelete": "Unable to delete: {error}",
   "continueConversation": "Continue Conversation",
