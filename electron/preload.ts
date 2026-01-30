@@ -219,9 +219,25 @@ contextBridge.exposeInMainWorld('host', {
     recycle: async (args: any) => {
       return await ipcRenderer.invoke("gitWorktree.recycle", args);
     },
+    /** 解析 worktree 的分叉点（用于“仅分叉点之后回收”的 UI 展示与手动校验）。 */
+    resolveForkPoint: async (args: any) => {
+      return await ipcRenderer.invoke("gitWorktree.resolveForkPoint", args);
+    },
+    /** 搜索可用作“分叉点”的提交列表（用于下拉框搜索）。 */
+    searchForkPointCommits: async (args: any) => {
+      return await ipcRenderer.invoke("gitWorktree.searchForkPointCommits", args);
+    },
+    /** 校验用户手动输入的分叉点引用（提交号/引用名），并返回提交摘要。 */
+    validateForkPointRef: async (args: any) => {
+      return await ipcRenderer.invoke("gitWorktree.validateForkPointRef", args);
+    },
     /** 删除 worktree（可选同时删除分支）。 */
     remove: async (args: any) => {
       return await ipcRenderer.invoke("gitWorktree.remove", args);
+    },
+    /** 对齐 worktree 到主工作区当前基线，并恢复为干净状态（保持目录，不删除）。 */
+    reset: async (args: any) => {
+      return await ipcRenderer.invoke("gitWorktree.reset", args);
     },
     /** worktree 自动提交（有变更才提交）。 */
     autoCommit: async (args: any) => {

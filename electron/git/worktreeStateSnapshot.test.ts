@@ -24,6 +24,9 @@ describe("worktreeStateSnapshot（事务化快照：index 字节级 + stash 内�
         await git(root, ["init"]);
         await git(root, ["config", "user.name", "CodexFlow"]);
         await git(root, ["config", "user.email", "codexflow@example.com"]);
+        // 中文说明：测试期望以 LF 为基准；不同平台/全局 git 配置可能导致自动 CRLF 转换，需在测试仓库内显式关闭。
+        await git(root, ["config", "core.autocrlf", "false"]);
+        await git(root, ["config", "core.eol", "lf"]);
 
         const fp = path.join(root, "f.txt");
         await fsp.writeFile(fp, "A\nB\n", "utf8");

@@ -5,6 +5,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Combobox } from "@/components/ui/combobox";
 import PathChipsInput, { type PathChip } from "@/components/ui/path-chips-input";
 import { retainPreviewUrl, releasePreviewUrl } from "@/lib/previewUrlRegistry";
 import { retainPastedImage, releasePastedImage, requestTrashWinPath } from "@/lib/imageResourceRegistry";
@@ -169,6 +170,17 @@ type WorktreeCreateDialogState = {
   error?: string;
 };
 
+type ForkPointOption = {
+  /** 作为提交参数传给后端的值（通常为完整 commit sha）。 */
+  value: string;
+  /** 主展示文本（优先展示提交 subject）。 */
+  title: string;
+  /** 辅助展示文本（通常为 short sha）。 */
+  subtitle: string;
+  /** UI 标签（例如：创建记录 / 自动 / 手动）。 */
+  tag?: string;
+};
+
 type WorktreeRecycleDialogState = {
   open: boolean;
   projectId: string;
@@ -177,6 +189,24 @@ type WorktreeRecycleDialogState = {
   branches: string[];
   baseBranch: string;
   wtBranch: string;
+  /** 回收范围：默认仅回收分叉点之后；可选完整回收。 */
+  range: "since_fork" | "full";
+  /** 分叉点选择值（提交号/引用；通常为 commit sha）。 */
+  forkPointValue: string;
+  /** 用户是否手动改过分叉点选择（用于避免自动推断覆盖）。 */
+  forkPointTouched: boolean;
+  /** 分叉点置顶候选（创建记录/自动推断/手动）。 */
+  forkPointPinned: ForkPointOption[];
+  /** 分叉点搜索候选（从 git log 获取的提交列表）。 */
+  forkPointSearchItems: ForkPointOption[];
+  /** 分叉点搜索词（用于下拉框搜索输入）。 */
+  forkPointSearchQuery: string;
+  /** 是否正在加载置顶候选（resolveForkPoint）。 */
+  forkPointPinnedLoading: boolean;
+  /** 是否正在加载搜索候选（git log）。 */
+  forkPointSearchLoading: boolean;
+  /** 分叉点相关错误（校验失败/搜索失败等）。 */
+  forkPointError?: string;
   mode: "squash" | "rebase";
   commitMessage: string;
   loading: boolean;
@@ -195,6 +225,8 @@ type BaseWorktreeDirtyDialogState = {
 type WorktreeDeleteDialogState = {
   open: boolean;
   projectId: string;
+  /** 操作类型：delete=删除 worktree；reset=对齐到主工作区当前基线（保持目录，不删除）。 */
+  action: "delete" | "reset";
   /** 是否为“回收成功后”的推荐删除（仅用于 UI 文案） */
   afterRecycle?: boolean;
   /** 回收流程的额外提示（例如：回收前的自动提交提醒）。 */
@@ -203,7 +235,14 @@ type WorktreeDeleteDialogState = {
   /** 当需要强确认时，进入二次确认步骤 */
   needsForceRemoveWorktree?: boolean;
   needsForceDeleteBranch?: boolean;
+  needsForceResetWorktree?: boolean;
   error?: string;
+};
+
+type WorktreePostRecycleDialogState = {
+  open: boolean;
+  projectId: string;
+  hint?: string;
 };
 
 type GitActionErrorDialogState = {
@@ -665,12 +704,12 @@ function BranchChip(props: {
 	  }) {
 	    const { mode, branch, onBranchClick, onBuild, onRun, onRecycle, onDelete, t } = props;
 	    const deleteDisabled = props.deleteDisabledReason === "deleting" || props.deleteDisabledReason === "recycling";
-	    const deleteTitle =
-	      props.deleteDisabledReason === "deleting"
-	        ? t("projects:worktreeDeleting", "删除中…")
-	        : props.deleteDisabledReason === "recycling"
-	          ? t("projects:worktreeDeleteDisabledRecycling", "回收中…")
-	          : t("projects:worktreeDelete", "删除工作区");
+		    const deleteTitle =
+		      props.deleteDisabledReason === "deleting"
+		        ? t("projects:worktreeDeleting", "删除中…")
+		        : props.deleteDisabledReason === "recycling"
+		          ? t("projects:worktreeDeleteDisabledRecycling", "合并中…")
+		          : t("projects:worktreeDelete", "删除工作区");
 	  
 	    // 基础容器样式
 	    const containerBase = "w-[47px] flex flex-col items-center rounded-[3px] overflow-hidden select-none isolate transition-colors duration-300";
@@ -749,13 +788,13 @@ function BranchChip(props: {
   
             {mode === "secondary" && (
                <>
-	                 <button
-	                    className={`${btnBase} h-[14px] rounded-[3px]`}
-	                    title={t("projects:worktreeRecycle", "回收到基分支")}
-	                    onClick={(e) => { e.stopPropagation(); onRecycle?.(); }}
-	                 >
-                    <GitMerge className={iconClass} />
-                 </button>
+		                 <button
+		                    className={`${btnBase} h-[14px] rounded-[3px]`}
+		                    title={t("projects:worktreeRecycle", "合并到目标分支")}
+		                    onClick={(e) => { e.stopPropagation(); onRecycle?.(); }}
+		                 >
+	                    <GitMerge className={iconClass} />
+	                 </button>
 	                 <button
 	                    className={`${btnBase} h-[14px] rounded-[3px]`}
 	                    title={deleteTitle}
@@ -1611,6 +1650,10 @@ export default function CodexFlowManagerUI() {
 	  const worktreeCreateRunningTaskIdByRepoIdRef = useRef<Record<string, string>>({});
 	  /** 回收任务运行中的 taskId（用于“可关闭/可重开”的进度面板）。 */
 	  const worktreeRecycleRunningTaskIdByProjectIdRef = useRef<Record<string, string>>({});
+	  /** 回收弹窗：分叉点解析的请求序号（用于避免竞态覆盖）。 */
+	  const worktreeRecycleForkPointReqIdRef = useRef<number>(0);
+	  /** 回收弹窗：分叉点搜索的请求序号（用于避免竞态覆盖）。 */
+	  const worktreeRecycleForkPointSearchReqIdRef = useRef<number>(0);
 		  const [worktreeCreateProgress, setWorktreeCreateProgress] = useState<WorktreeCreateProgressState>(() => ({
 		    open: false,
 		    repoProjectId: "",
@@ -1639,6 +1682,15 @@ export default function CodexFlowManagerUI() {
     branches: [],
     baseBranch: "",
     wtBranch: "",
+    range: "since_fork",
+    forkPointValue: "",
+    forkPointTouched: false,
+    forkPointPinned: [],
+    forkPointSearchItems: [],
+    forkPointSearchQuery: "",
+    forkPointPinnedLoading: false,
+    forkPointSearchLoading: false,
+    forkPointError: undefined,
     mode: "squash",
     commitMessage: "",
     loading: false,
@@ -1648,13 +1700,16 @@ export default function CodexFlowManagerUI() {
   const [worktreeDeleteDialog, setWorktreeDeleteDialog] = useState<WorktreeDeleteDialogState>(() => ({
     open: false,
     projectId: "",
+    action: "delete",
     afterRecycle: false,
     afterRecycleHint: undefined,
     running: false,
     needsForceRemoveWorktree: false,
     needsForceDeleteBranch: false,
+    needsForceResetWorktree: false,
     error: undefined,
   }));
+  const [worktreePostRecycleDialog, setWorktreePostRecycleDialog] = useState<WorktreePostRecycleDialogState>(() => ({ open: false, projectId: "", hint: undefined }));
   const worktreeDeleteInFlightByProjectIdRef = useRef<Record<string, boolean>>({});
   const [worktreeDeleteInFlightByProjectId, setWorktreeDeleteInFlightByProjectId] = useState<Record<string, boolean>>({});
   const worktreeDeleteSubmitGuardRef = useRef<boolean>(false);
@@ -5178,6 +5233,15 @@ export default function CodexFlowManagerUI() {
       branches: [],
       baseBranch: "",
       wtBranch: "",
+      range: "since_fork",
+      forkPointValue: "",
+      forkPointTouched: false,
+      forkPointPinned: [],
+      forkPointSearchItems: [],
+      forkPointSearchQuery: "",
+      forkPointPinnedLoading: false,
+      forkPointSearchLoading: false,
+      forkPointError: undefined,
       mode: "squash",
       commitMessage: "",
       loading: true,
@@ -5193,11 +5257,31 @@ export default function CodexFlowManagerUI() {
       const repoMainPath = String(meta.repoMainPath || project.winPath);
       const listRes: any = await (window as any).host?.gitWorktree?.listBranches?.(repoMainPath);
       if (!(listRes && listRes.ok)) throw new Error(listRes?.error || (t("projects:worktreeListBranchesFailed", "读取分支列表失败") as string));
-      const branches = Array.isArray(listRes.branches) ? listRes.branches.map((x: any) => String(x || "").trim()).filter(Boolean) : [];
+      const branchesRaw: string[] = Array.isArray(listRes.branches) ? listRes.branches.map((x: any) => String(x || "").trim()).filter(Boolean) : [];
+      const branches: string[] = Array.from(new Set<string>(branchesRaw));
+      const branchSet = new Set<string>(branches);
 
-      const baseBranch = String(meta.baseBranch || "").trim() || String(listRes.current || "").trim() || branches[0] || "";
-      const wtBranch = String(meta.wtBranch || "").trim();
-      const commitMessage = `squash: ${wtBranch || "wt"} -> ${baseBranch || "base"}`;
+      const metaBaseBranch = String(meta.baseBranch || "").trim();
+      const metaWtBranch = String(meta.wtBranch || "").trim();
+      const currentBranch = String(listRes.current || "").trim();
+      const baseBranch =
+        (metaBaseBranch && branchSet.has(metaBaseBranch) ? metaBaseBranch : "") ||
+        (currentBranch && branchSet.has(currentBranch) ? currentBranch : "") ||
+        branches[0] ||
+        "";
+
+      // 中文说明：源分支默认取创建记录；若该分支已不存在，则尝试读取 worktree 当前分支；仍不可用则留空让用户选择。
+      let inferredWtBranch = "";
+      if (metaWtBranch && !branchSet.has(metaWtBranch)) {
+        try {
+          const st: any = await (window as any).host?.gitWorktree?.statusBatch?.([project.winPath]);
+          const info = st && st.ok && Array.isArray(st.items) ? (st.items[0] as any) : null;
+          const b = info && info.detached !== true ? String(info.branch || "").trim() : "";
+          if (b && branchSet.has(b)) inferredWtBranch = b;
+        } catch {}
+	      }
+	      const wtBranch = metaWtBranch && branchSet.has(metaWtBranch) ? metaWtBranch : inferredWtBranch || "";
+	      const commitMessage = "";
 
       setWorktreeRecycleDialog((prev) => {
         if (!prev.open || prev.projectId !== pid) return prev;
@@ -5218,6 +5302,241 @@ export default function CodexFlowManagerUI() {
     setWorktreeRecycleDialog((prev) => ({ ...prev, open: false, running: false, loading: false }));
   }, []);
 
+  /**
+   * 中文说明：校验并应用用户手动输入的分叉点引用（提交号/引用名）。
+   */
+  const validateAndSelectForkPointRef = useCallback(async (raw: string) => {
+    const dlg = worktreeRecycleDialog;
+    if (!dlg.open) return;
+    const pid = String(dlg.projectId || "").trim();
+    if (!pid) return;
+    const project = projectsRef.current.find((x) => x.id === pid) || null;
+    if (!project) return;
+    const wtBranch = String(dlg.wtBranch || "").trim();
+    const ref = String(raw || "").trim();
+    if (!wtBranch || !ref) return;
+
+    const requestId = ++worktreeRecycleForkPointReqIdRef.current;
+    setWorktreeRecycleDialog((prev) => {
+      if (!prev.open || prev.projectId !== pid) return prev;
+      return { ...prev, forkPointPinnedLoading: true, forkPointError: undefined };
+    });
+
+    try {
+      const res: any = await (window as any).host?.gitWorktree?.validateForkPointRef?.({ worktreePath: project.winPath, wtBranch, ref });
+      if (worktreeRecycleForkPointReqIdRef.current !== requestId) return;
+      if (res && res.ok && res.commit) {
+        const sha = String(res.commit.sha || "").trim();
+        const subject = String(res.commit.subject || "").trim() || "(no subject)";
+        const shortSha = String(res.commit.shortSha || "").trim() || sha.slice(0, 7);
+        const tagManual = t("projects:worktreeRecycleForkPointTagManual", "手动") as string;
+        const option: ForkPointOption = { value: sha, title: subject, subtitle: shortSha, tag: tagManual };
+        setWorktreeRecycleDialog((prev) => {
+          if (!prev.open || prev.projectId !== pid) return prev;
+          const merged = new Map<string, ForkPointOption>();
+          for (const it of prev.forkPointPinned || []) merged.set(it.value, it);
+          const existed = merged.get(option.value);
+          if (existed) {
+            const tags = new Set<string>(String(existed.tag || "").split("/").map((x) => x.trim()).filter(Boolean));
+            if (option.tag) tags.add(option.tag);
+            merged.set(option.value, { ...existed, tag: Array.from(tags).join(" / ") || undefined });
+          } else {
+            merged.set(option.value, option);
+          }
+          return {
+            ...prev,
+            forkPointPinned: Array.from(merged.values()),
+            forkPointValue: option.value,
+            forkPointTouched: true,
+            forkPointSearchQuery: "",
+            forkPointPinnedLoading: false,
+            forkPointError: undefined,
+          };
+        });
+        return;
+      }
+      const msg = String(res?.error || "invalid fork point ref").trim();
+      setWorktreeRecycleDialog((prev) => {
+        if (!prev.open || prev.projectId !== pid) return prev;
+        return { ...prev, forkPointPinnedLoading: false, forkPointError: msg || (t("projects:worktreeRecycleForkPointInvalid", "分叉点无效") as string) };
+      });
+    } catch (e: any) {
+      if (worktreeRecycleForkPointReqIdRef.current !== requestId) return;
+      const msg = String(e?.message || e).trim();
+      setWorktreeRecycleDialog((prev) => {
+        if (!prev.open || prev.projectId !== pid) return prev;
+        return { ...prev, forkPointPinnedLoading: false, forkPointError: msg || (t("projects:worktreeRecycleForkPointInvalid", "分叉点无效") as string) };
+      });
+    }
+  }, [t, worktreeRecycleDialog]);
+
+  /**
+   * 中文说明：当选择“仅分叉点之后”回收时，自动解析并置顶展示分叉点候选（创建记录/自动推断）。
+   */
+  useEffect(() => {
+    if (!worktreeRecycleDialog.open) return;
+    if (worktreeRecycleDialog.range !== "since_fork") return;
+    const pid = String(worktreeRecycleDialog.projectId || "").trim();
+    if (!pid) return;
+
+    const project = projectsRef.current.find((x) => x.id === pid) || null;
+    if (!project) return;
+    const baseBranch = String(worktreeRecycleDialog.baseBranch || "").trim();
+    const wtBranch = String(worktreeRecycleDialog.wtBranch || "").trim();
+    if (!baseBranch || !wtBranch) return;
+
+    const requestId = ++worktreeRecycleForkPointReqIdRef.current;
+    setWorktreeRecycleDialog((prev) => {
+      if (!prev.open || prev.projectId !== pid) return prev;
+      return { ...prev, forkPointPinnedLoading: true, forkPointError: undefined };
+    });
+
+    void (async () => {
+      try {
+        const res: any = await (window as any).host?.gitWorktree?.resolveForkPoint?.({ worktreePath: project.winPath, baseBranch, wtBranch });
+        if (worktreeRecycleForkPointReqIdRef.current !== requestId) return;
+
+        const tagRecorded = t("projects:worktreeRecycleForkPointTagRecorded", "创建记录") as string;
+        const tagAuto = t("projects:worktreeRecycleForkPointTagAuto", "自动") as string;
+
+        const build = (commit: any, tag: string): ForkPointOption | null => {
+          const sha = String(commit?.sha || "").trim();
+          if (!sha) return null;
+          const subject = String(commit?.subject || "").trim() || "(no subject)";
+          const shortSha = String(commit?.shortSha || "").trim() || sha.slice(0, 7);
+          return { value: sha, title: subject, subtitle: shortSha, tag };
+        };
+
+        const mergeOptions = (items: Array<ForkPointOption | null | undefined>): ForkPointOption[] => {
+          const map = new Map<string, ForkPointOption>();
+          for (const it of items) {
+            if (!it) continue;
+            const existed = map.get(it.value);
+            if (!existed) {
+              map.set(it.value, it);
+              continue;
+            }
+            const tags = new Set<string>(String(existed.tag || "").split("/").map((x) => x.trim()).filter(Boolean));
+            if (it.tag) tags.add(it.tag);
+            map.set(it.value, { ...existed, tag: Array.from(tags).join(" / ") || undefined });
+          }
+          return Array.from(map.values());
+        };
+
+        if (res && res.ok && res.forkPoint) {
+          const fp = res.forkPoint as any;
+          const pinned = mergeOptions([build(fp.recordedCommit, tagRecorded), build(fp.autoCommit, tagAuto)]);
+          const recordedApplies = fp.recordedApplies === true;
+          const recordedSha = String(fp.recordedCommit?.sha || "").trim();
+          const autoSha = String(fp.autoCommit?.sha || "").trim() || String(fp.sha || "").trim();
+          const preferred = (recordedApplies && recordedSha) ? recordedSha : (autoSha || recordedSha);
+
+          setWorktreeRecycleDialog((prev) => {
+            if (!prev.open || prev.projectId !== pid) return prev;
+            const nextValue = prev.forkPointTouched ? prev.forkPointValue : (preferred || prev.forkPointValue || "");
+            return { ...prev, forkPointPinned: pinned, forkPointPinnedLoading: false, forkPointValue: nextValue, forkPointError: undefined };
+          });
+          return;
+        }
+
+        const err = String(res?.error || "resolve fork point failed").trim();
+        const fp = (res && res.forkPoint) ? res.forkPoint : null;
+        const pinned = mergeOptions([build(fp?.recordedCommit, tagRecorded)]);
+        setWorktreeRecycleDialog((prev) => {
+          if (!prev.open || prev.projectId !== pid) return prev;
+          return { ...prev, forkPointPinned: pinned, forkPointPinnedLoading: false, forkPointError: err || undefined };
+        });
+      } catch (e: any) {
+        if (worktreeRecycleForkPointReqIdRef.current !== requestId) return;
+        const err = String(e?.message || e).trim();
+        setWorktreeRecycleDialog((prev) => {
+          if (!prev.open || prev.projectId !== pid) return prev;
+          return { ...prev, forkPointPinnedLoading: false, forkPointError: err || undefined };
+        });
+      }
+    })();
+  }, [
+    t,
+    worktreeRecycleDialog.open,
+    worktreeRecycleDialog.projectId,
+    worktreeRecycleDialog.range,
+    worktreeRecycleDialog.baseBranch,
+    worktreeRecycleDialog.wtBranch,
+  ]);
+
+  /**
+   * 中文说明：加载分叉点候选提交列表（可搜索）。
+   */
+  useEffect(() => {
+    if (!worktreeRecycleDialog.open) return;
+    if (worktreeRecycleDialog.range !== "since_fork") return;
+    const pid = String(worktreeRecycleDialog.projectId || "").trim();
+    if (!pid) return;
+    const project = projectsRef.current.find((x) => x.id === pid) || null;
+    if (!project) return;
+    const wtBranch = String(worktreeRecycleDialog.wtBranch || "").trim();
+    if (!wtBranch) return;
+
+    const query = String(worktreeRecycleDialog.forkPointSearchQuery || "");
+    const requestId = ++worktreeRecycleForkPointSearchReqIdRef.current;
+    setWorktreeRecycleDialog((prev) => {
+      if (!prev.open || prev.projectId !== pid) return prev;
+      return { ...prev, forkPointSearchLoading: true };
+    });
+
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const res: any = await (window as any).host?.gitWorktree?.searchForkPointCommits?.({
+            worktreePath: project.winPath,
+            wtBranch,
+            query: String(query || "").trim() || undefined,
+            limit: 200,
+          });
+          if (worktreeRecycleForkPointSearchReqIdRef.current !== requestId) return;
+          if (res && res.ok && Array.isArray(res.items)) {
+            const items: ForkPointOption[] = (res.items as any[])
+              .map((c) => {
+                const sha = String(c?.sha || "").trim();
+                if (!sha) return null;
+                const subject = String(c?.subject || "").trim() || "(no subject)";
+                const shortSha = String(c?.shortSha || "").trim() || sha.slice(0, 7);
+                return { value: sha, title: subject, subtitle: shortSha } as ForkPointOption;
+              })
+              .filter(Boolean) as ForkPointOption[];
+
+            setWorktreeRecycleDialog((prev) => {
+              if (!prev.open || prev.projectId !== pid) return prev;
+              const pinnedSet = new Set<string>((prev.forkPointPinned || []).map((x) => String(x.value || "").trim()).filter(Boolean));
+              const filtered = items.filter((x) => !pinnedSet.has(x.value));
+              return { ...prev, forkPointSearchItems: filtered, forkPointSearchLoading: false };
+            });
+            return;
+          }
+          setWorktreeRecycleDialog((prev) => {
+            if (!prev.open || prev.projectId !== pid) return prev;
+            return { ...prev, forkPointSearchItems: [], forkPointSearchLoading: false };
+          });
+        } catch {
+          if (worktreeRecycleForkPointSearchReqIdRef.current !== requestId) return;
+          setWorktreeRecycleDialog((prev) => {
+            if (!prev.open || prev.projectId !== pid) return prev;
+            return { ...prev, forkPointSearchItems: [], forkPointSearchLoading: false };
+          });
+        }
+      })();
+    }, 250);
+    return () => {
+      try { window.clearTimeout(timer); } catch {}
+    };
+  }, [
+    worktreeRecycleDialog.open,
+    worktreeRecycleDialog.projectId,
+    worktreeRecycleDialog.range,
+    worktreeRecycleDialog.wtBranch,
+    worktreeRecycleDialog.forkPointSearchQuery,
+  ]);
+
 	  /**
 	   * 执行“回收 worktree”。
 	   */
@@ -5230,6 +5549,20 @@ export default function CodexFlowManagerUI() {
 		    const baseBranch = String(dlg.baseBranch || "").trim();
 		    const wtBranch = String(dlg.wtBranch || "").trim();
 		    if (!baseBranch || !wtBranch) return;
+
+		    const range = dlg.range === "full" ? "full" : "since_fork";
+		    const forkBaseRef = range === "since_fork" ? String(dlg.forkPointValue || "").trim() || undefined : undefined;
+		    if (range === "since_fork" && !forkBaseRef) {
+		      setWorktreeRecycleDialog((prev) => ({
+		        ...prev,
+		        forkPointError: t(
+		          "projects:worktreeRecycleForkPointMissing",
+		          "无法确定分叉点：请等待自动推断完成，或手动指定分叉点，或切换到“完整回收”。"
+		        ) as string,
+		        error: undefined,
+		      }));
+		      return;
+		    }
 
 	      // 中文说明：仅当用户在“主 worktree 脏”弹窗中确认继续时才启用自动 stash/恢复。
 	      const autoStashBaseWorktree = opts?.autoStashBaseWorktree === true;
@@ -5256,6 +5589,8 @@ export default function CodexFlowManagerUI() {
               worktreePath: project.winPath,
               baseBranch,
               wtBranch,
+              range,
+              forkBaseRef,
               mode: dlg.mode,
               commitMessage: dlg.mode === "squash" ? String(dlg.commitMessage || "").trim() || undefined : undefined,
               autoStashBaseWorktree,
@@ -5271,9 +5606,9 @@ export default function CodexFlowManagerUI() {
 	          const taskId = String(out?.taskId || "").trim();
 	        preCommitted = out?.preCommitted === true;
 
-	        const preCommitHint = preCommitted
-	          ? `提示：回收前检测到未提交修改，已在分支 ${wtBranch} 自动提交一次（${summarizeForCommitMessage(preCommitMessage, 96)}）。`
-	          : undefined;
+		        const preCommitHint = preCommitted
+		          ? `提示：合并前检测到未提交修改，已在分支 ${wtBranch} 自动提交一次（${summarizeForCommitMessage(preCommitMessage, 96)}）。`
+		          : undefined;
 
 	          if (!taskId) throw new Error("recycle task id missing");
 
@@ -5317,7 +5652,7 @@ export default function CodexFlowManagerUI() {
             if (Date.now() - startedAt > 40 * 60_000) {
               setWorktreeRecycleProgress((prev) => {
                 if (prev.taskId !== taskId) return prev;
-                return { ...prev, status: "error", error: "等待回收任务超时（请在外部 Git 工具/终端查看状态并处理）" };
+                return { ...prev, status: "error", error: "等待合并任务超时（请在外部 Git 工具/终端查看状态并处理）" };
               });
               break;
             }
@@ -5329,10 +5664,10 @@ export default function CodexFlowManagerUI() {
 
 	          const res: any = snapshot?.result;
 	          if (!snapshot || !res) {
-	            const msg = snapshot?.error || "回收任务未返回结果（请重试或在外部 Git 工具排查）";
+	            const msg = snapshot?.error || "合并任务未返回结果（请重试或在外部 Git 工具排查）";
 	            setWorktreeRecycleProgress((prev) => (prev.taskId === taskId ? { ...prev, open: true, status: "error", error: msg } : prev));
             showGitActionErrorDialog({
-              title: t("projects:worktreeRecycleFailed", "回收 worktree 失败") as string,
+              title: t("projects:worktreeRecycleFailed", "合并 worktree 失败") as string,
               message: `${msg}${preCommitHint ? `\n\n${preCommitHint}` : ""}`,
               dir: dlg.repoMainPath || project.winPath,
             });
@@ -5364,7 +5699,11 @@ export default function CodexFlowManagerUI() {
               ? (t("projects:worktreeRecycleSuggestedRestore", "待主 worktree 状态正常后，可手动执行：{cmd}", { cmd: restoreCmd }) as string)
               : "";
             const mapped =
-              errorCode === "BASE_WORKTREE_IN_PROGRESS"
+              errorCode === "FORK_POINT_UNAVAILABLE"
+                ? (t("projects:worktreeRecycleError_FORK_POINT_UNAVAILABLE", "无法自动确定分叉点。请在回收设置中手动指定分叉点，或切换到“完整回收”。") as string)
+                : errorCode === "FORK_POINT_INVALID"
+                  ? (t("projects:worktreeRecycleError_FORK_POINT_INVALID", "分叉点无效（需为源分支祖先提交）。请手动指定正确的分叉点，或切换到“完整回收”。") as string)
+                  : errorCode === "BASE_WORKTREE_IN_PROGRESS"
                 ? (t("projects:worktreeRecycleError_BASE_WORKTREE_IN_PROGRESS", "主 worktree 存在未完成的 Git 操作或冲突文件。请先在外部工具完成/中止当前操作后再重试。") as string)
                 : errorCode === "BASE_WORKTREE_LOCKED"
                   ? (t("projects:worktreeRecycleError_BASE_WORKTREE_LOCKED", "仓库当前被锁定（可能存在 index.lock 或其他 Git 进程正在运行）。请关闭占用进程后重试。") as string)
@@ -5378,15 +5717,15 @@ export default function CodexFlowManagerUI() {
                           ? (hasStash
                               ? (t("projects:worktreeRecycleError_RECYCLE_FAILED_STASHED", "回收过程中失败。为避免把主 worktree 改动叠加到冲突/中断态，未自动恢复 stash。请先在外部工具中处理回收失败原因后再自行恢复。") as string)
                               : (t("projects:worktreeRecycleError_RECYCLE_FAILED", "回收过程中失败。请在外部工具中查看冲突/中断/hook 等原因并处理后再重试。") as string))
-                          : (String(details?.stderr || details?.error || "").trim() || (t("projects:worktreeRecycleFailed", "回收 worktree 失败") as string));
+	                          : (String(details?.stderr || details?.error || "").trim() || (t("projects:worktreeRecycleFailed", "合并 worktree 失败") as string));
 
             const message = [mapped, stashLine, restoreLine, preCommitHint ? `\n${preCommitHint}` : ""].filter((x) => String(x || "").trim()).join("\n\n");
             setWorktreeRecycleProgress((prev) => (prev.taskId === taskId ? { ...prev, status: "error", error: mapped } : prev));
-            showGitActionErrorDialog({
-              title: t("projects:worktreeRecycleFailed", "回收 worktree 失败") as string,
-              message,
-              dir: dirForDialog,
-            });
+	            showGitActionErrorDialog({
+	              title: t("projects:worktreeRecycleFailed", "合并 worktree 失败") as string,
+	              message,
+	              dir: dirForDialog,
+	            });
             return;
           }
 
@@ -5412,35 +5751,26 @@ export default function CodexFlowManagerUI() {
                   ? (t("projects:worktreeRecycleWarning_BASE_WORKTREE_STASH_DROP_FAILED", "提示：回收已完成且已尝试恢复，但自动清理 stash 失败。你可以稍后手动删除该 stash：{sha}", { sha: stashSha || "" }) as string)
                   : undefined;
 
-          const afterRecycleHint = [preCommitHint, squashHint, warningHint].filter(Boolean).join("\n") || undefined;
-          setWorktreeDeleteDialog({
-            open: true,
-            projectId: project.id,
-            afterRecycle: true,
-            afterRecycleHint,
-            running: false,
-            needsForceRemoveWorktree: false,
-            needsForceDeleteBranch: false,
-            error: undefined,
-          });
+          const hint = [preCommitHint, squashHint, warningHint].filter(Boolean).join("\n") || undefined;
+          setWorktreePostRecycleDialog({ open: true, projectId: project.id, hint });
 		    } catch (e: any) {
-		      const preCommitHint = preCommitted
-	          ? `\n\n提示：回收前检测到未提交修改，已在分支 ${wtBranch} 自动提交一次（${summarizeForCommitMessage(preCommitMessage, 96)}）。`
-	          : "";
+			      const preCommitHint = preCommitted
+		          ? `\n\n提示：合并前检测到未提交修改，已在分支 ${wtBranch} 自动提交一次（${summarizeForCommitMessage(preCommitMessage, 96)}）。`
+		          : "";
 		      setWorktreeRecycleDialog((prev) => ({ ...prev, running: false, error: String(e?.message || e) }));
           setWorktreeRecycleProgress((prev) => (prev.taskId && prev.taskId === recycleTaskId ? { ...prev, status: "error", error: String(e?.message || e) } : prev));
-		      showGitActionErrorDialog({
-		        title: t("projects:worktreeRecycleFailed", "回收 worktree 失败") as string,
-		        message: `${String(e?.message || e)}${preCommitHint}`,
-		        dir: dlg.repoMainPath || project.winPath,
-		      });
+			      showGitActionErrorDialog({
+			        title: t("projects:worktreeRecycleFailed", "合并 worktree 失败") as string,
+			        message: `${String(e?.message || e)}${preCommitHint}`,
+			        dir: dlg.repoMainPath || project.winPath,
+			      });
 		    }
 		  }, [guardWorktreeRecycleAndDeleteByTerminalAgents, showGitActionErrorDialog, t, worktreeRecycleDialog]);
 
   /**
-   * 打开“删除 worktree”对话框。
+   * 打开“删除 worktree / 对齐到主工作区”对话框。
    */
-		  const openWorktreeDeleteDialog = useCallback((project: Project, afterRecycle?: boolean) => {
+		  const openWorktreeDeleteDialog = useCallback((project: Project, afterRecycle?: boolean, action?: "delete" | "reset", afterRecycleHint?: string) => {
 		    const pid = String(project?.id || "").trim();
 		    if (!pid) return;
 
@@ -5473,34 +5803,40 @@ export default function CodexFlowManagerUI() {
 	    setWorktreeDeleteDialog({
 	      open: true,
 	      projectId: pid,
+	      action: action === "reset" ? "reset" : "delete",
 	      afterRecycle: !!afterRecycle,
-	      afterRecycleHint: undefined,
+	      afterRecycleHint: afterRecycleHint || undefined,
 	      running: false,
 	      needsForceRemoveWorktree: false,
 	      needsForceDeleteBranch: false,
+	      needsForceResetWorktree: false,
 	      error: undefined,
 	    });
 	  }, [guardWorktreeRecycleAndDeleteByTerminalAgents, t]);
 
   /**
-   * 关闭“删除 worktree”对话框。
+   * 关闭“删除 worktree / 对齐到主工作区”对话框。
    */
 	  const closeWorktreeDeleteDialog = useCallback(() => {
 	    setWorktreeDeleteDialog((prev) => ({
 	      ...prev,
 	      open: false,
+	      action: "delete",
 	      afterRecycleHint: undefined,
 	      running: false,
 	      needsForceRemoveWorktree: false,
 	      needsForceDeleteBranch: false,
+	      needsForceResetWorktree: false,
 	      error: undefined,
 	    }));
 	  }, []);
 
   /**
-   * 执行“删除 worktree”（包含：worktree remove + 删除专用分支；必要时二次强确认）。
+   * 执行“删除 worktree / 对齐到主工作区”。
+   * - 删除：worktree remove + 删除专用分支；必要时二次强确认。
+   * - 对齐：保持目录不删除，将该子 worktree 强制更新到主工作区当前基线并恢复为干净状态；必要时二次强确认。
    */
-	  const submitWorktreeDelete = useCallback(async (opts?: { forceRemoveWorktree?: boolean; forceDeleteBranch?: boolean }) => {
+	  const submitWorktreeDelete = useCallback(async (opts?: { forceRemoveWorktree?: boolean; forceDeleteBranch?: boolean; forceResetWorktree?: boolean }) => {
 	    const dlg = worktreeDeleteDialog;
 	    if (!dlg.open || dlg.running) return;
 	    if (worktreeDeleteSubmitGuardRef.current) return;
@@ -5509,13 +5845,13 @@ export default function CodexFlowManagerUI() {
 
 	    // 回收进行中：禁止删除（避免与回收流程并发导致状态不一致）
 	    const pid = String(project.id || "").trim();
-	    const runningRecycleTaskId = String(worktreeRecycleRunningTaskIdByProjectIdRef.current[pid] || "").trim();
-	    if (runningRecycleTaskId) {
-	      setWorktreeDeleteDialog((prev) => (prev.open && prev.projectId === pid ? { ...prev, running: false, error: t("projects:worktreeDeleteBlockedByRecycling", "该 worktree 正在回收中，暂不可删除。你可以点击“回收”查看进度。") as string } : prev));
-	      setWorktreeRecycleProgress((prev) => {
-	        if (prev.taskId === runningRecycleTaskId) return { ...prev, open: true, projectId: pid };
-	        return { open: true, projectId: pid, taskId: runningRecycleTaskId, status: "running", log: "", logOffset: 0, updatedAt: 0, error: undefined };
-	      });
+		    const runningRecycleTaskId = String(worktreeRecycleRunningTaskIdByProjectIdRef.current[pid] || "").trim();
+		    if (runningRecycleTaskId) {
+		      setWorktreeDeleteDialog((prev) => (prev.open && prev.projectId === pid ? { ...prev, running: false, error: t("projects:worktreeDeleteBlockedByRecycling", "该 worktree 正在合并中，暂不可删除。你可以点击“合并”查看进度。") as string } : prev));
+		      setWorktreeRecycleProgress((prev) => {
+		        if (prev.taskId === runningRecycleTaskId) return { ...prev, open: true, projectId: pid };
+		        return { open: true, projectId: pid, taskId: runningRecycleTaskId, status: "running", log: "", logOffset: 0, updatedAt: 0, error: undefined };
+		      });
 	      return;
 	    }
 	    if (!guardWorktreeRecycleAndDeleteByTerminalAgents(project)) return;
@@ -5535,30 +5871,47 @@ export default function CodexFlowManagerUI() {
 
     setWorktreeDeleteDialog((prev) => ({ ...prev, running: true, error: undefined }));
     try {
-      const res: any = await (window as any).host?.gitWorktree?.remove?.({
-        worktreePath: project.winPath,
-        deleteBranch: true,
-        forceRemoveWorktree: opts?.forceRemoveWorktree === true,
-        forceDeleteBranch: opts?.forceDeleteBranch === true,
-      });
-      if (res && res.ok) {
-        setWorktreeDeleteDialog((prev) => ({ ...prev, open: false, running: false }));
-        void refreshGitInfoForProjectIds([project.id]);
-        return;
+      if (dlg.action === "reset") {
+        const res: any = await (window as any).host?.gitWorktree?.reset?.({
+          worktreePath: project.winPath,
+          force: opts?.forceResetWorktree === true,
+        });
+        if (res && res.ok) {
+          setWorktreeDeleteDialog((prev) => ({ ...prev, open: false, running: false }));
+          void refreshGitInfoForProjectIds([project.id]);
+          return;
+        }
+        if (res?.needsForce) {
+          setWorktreeDeleteDialog((prev) => ({ ...prev, running: false, needsForceResetWorktree: true, error: String(res?.error || "") }));
+          return;
+        }
+        throw new Error(res?.error || "reset failed");
+      } else {
+        const res: any = await (window as any).host?.gitWorktree?.remove?.({
+          worktreePath: project.winPath,
+          deleteBranch: true,
+          forceRemoveWorktree: opts?.forceRemoveWorktree === true,
+          forceDeleteBranch: opts?.forceDeleteBranch === true,
+        });
+        if (res && res.ok) {
+          setWorktreeDeleteDialog((prev) => ({ ...prev, open: false, running: false }));
+          void refreshGitInfoForProjectIds([project.id]);
+          return;
+        }
+        if (res?.needsForceRemoveWorktree) {
+          setWorktreeDeleteDialog((prev) => ({ ...prev, running: false, needsForceRemoveWorktree: true, error: String(res?.error || "") }));
+          return;
+        }
+        if (res?.needsForceDeleteBranch) {
+          setWorktreeDeleteDialog((prev) => ({ ...prev, running: false, needsForceDeleteBranch: true, error: String(res?.error || "") }));
+          return;
+        }
+        throw new Error(res?.error || "delete failed");
       }
-      if (res?.needsForceRemoveWorktree) {
-        setWorktreeDeleteDialog((prev) => ({ ...prev, running: false, needsForceRemoveWorktree: true, error: String(res?.error || "") }));
-        return;
-      }
-      if (res?.needsForceDeleteBranch) {
-        setWorktreeDeleteDialog((prev) => ({ ...prev, running: false, needsForceDeleteBranch: true, error: String(res?.error || "") }));
-        return;
-      }
-      throw new Error(res?.error || "delete failed");
     } catch (e: any) {
       setWorktreeDeleteDialog((prev) => ({ ...prev, running: false, error: String(e?.message || e) }));
       showGitActionErrorDialog({
-        title: t("projects:worktreeDeleteFailed", "删除 worktree 失败") as string,
+        title: dlg.action === "reset" ? (t("projects:worktreeResetFailed", "重置失败") as string) : (t("projects:worktreeDeleteFailed", "删除 worktree 失败") as string),
         message: String(e?.message || e),
         dir: project.winPath,
       });
@@ -8043,7 +8396,7 @@ export default function CodexFlowManagerUI() {
         </DialogContent>
 	      </Dialog>
 
-	      {/* worktree 回收进度：展示主进程执行回收流程的实时输出，可关闭查看 */}
+		      {/* worktree 合并进度：展示主进程执行合并流程的实时输出，可关闭查看 */}
 	      <Dialog
 	        open={worktreeRecycleProgress.open}
 	        onOpenChange={(open) => {
@@ -8053,18 +8406,18 @@ export default function CodexFlowManagerUI() {
 	      >
 	        <DialogContent className="max-w-3xl">
 	          <DialogHeader className="pb-2">
-	            <DialogTitle>{t("projects:worktreeRecycleProgressTitle", "回收 worktree（进度）") as string}</DialogTitle>
-	            <DialogDescription>
-	              {t("projects:worktreeRecycleProgressDesc", "展示回收过程的实时日志；你可以随时关闭该窗口，回收仍会继续执行。") as string}
-	            </DialogDescription>
+		            <DialogTitle>{t("projects:worktreeRecycleProgressTitle", "合并 worktree（进度）") as string}</DialogTitle>
+		            <DialogDescription>
+		              {t("projects:worktreeRecycleProgressDesc", "展示合并过程的实时日志；你可以随时关闭该窗口，合并仍会继续执行。") as string}
+		            </DialogDescription>
 	          </DialogHeader>
 	          {(function renderWorktreeRecycleProgressBody() {
 	            const project = projectsRef.current.find((x) => x.id === worktreeRecycleProgress.projectId) || null;
 	            const status = worktreeRecycleProgress.status;
 	            const statusLabel =
-	              status === "running"
-	                ? (t("projects:worktreeRecycling", "执行中…") as string)
-	                : status === "success"
+		              status === "running"
+		                ? (t("projects:worktreeRecycling", "合并中…") as string)
+		                : status === "success"
 	                  ? (t("common:done", "完成") as string)
 	                  : (t("common:failed", "失败") as string);
 	            const statusIcon =
@@ -8146,7 +8499,7 @@ export default function CodexFlowManagerUI() {
 	        </DialogContent>
 	      </Dialog>
 
-	      {/* 回收 worktree 到基分支（squash/rebase） */}
+		      {/* 将 worktree 变更合并到目标分支（squash/rebase） */}
 	      <Dialog
 	        open={worktreeRecycleDialog.open}
         onOpenChange={(open) => {
@@ -8156,8 +8509,8 @@ export default function CodexFlowManagerUI() {
       >
         <DialogContent className="max-w-md">
 	          <DialogHeader className="pb-2 border-b border-slate-100 dark:border-slate-800/50">
-	            <DialogTitle>{t("projects:worktreeRecycleTitle", "回收 worktree 到基分支") as string}</DialogTitle>
-	            <DialogDescription>{t("projects:worktreeRecycleDesc", "回收前会检查 worktree 是否存在未提交修改；如有会先自动提交一次以避免丢失。遇到冲突/中断等问题请优先使用外部 Git 工具处理。") as string}</DialogDescription>
+		            <DialogTitle>{t("projects:worktreeRecycleTitle", "将 worktree 变更合并到目标分支") as string}</DialogTitle>
+		            <DialogDescription>{t("projects:worktreeRecycleDesc", "将源分支的提交合并到目标分支。若发生冲突，请先解决冲突后再继续；必要时可使用命令行 Git 完成操作。") as string}</DialogDescription>
 	          </DialogHeader>
           {(function renderRecycleBody() {
             const project = projectsRef.current.find((x) => x.id === worktreeRecycleDialog.projectId) || null;
@@ -8165,8 +8518,14 @@ export default function CodexFlowManagerUI() {
             const branches = Array.isArray(worktreeRecycleDialog.branches) ? worktreeRecycleDialog.branches : [];
             const base = String(worktreeRecycleDialog.baseBranch || "").trim();
             const wt = String(worktreeRecycleDialog.wtBranch || "").trim();
-            const baseOptions = Array.from(new Set([base, ...branches].filter(Boolean)));
-            const wtOptions = Array.from(new Set([wt, ...branches].filter(Boolean)));
+            const branchOptions = Array.from(new Set(branches.map((x) => String(x || "").trim()).filter(Boolean)));
+            const forkBaseRefForSubmit = String(worktreeRecycleDialog.forkPointValue || "").trim();
+            const canSubmitRecycle =
+              !worktreeRecycleDialog.loading &&
+              !worktreeRecycleDialog.running &&
+              !!base &&
+              !!wt &&
+              (worktreeRecycleDialog.range !== "since_fork" || !!forkBaseRefForSubmit);
 
             return (
               <div className="space-y-3">
@@ -8180,15 +8539,34 @@ export default function CodexFlowManagerUI() {
                 <div className="grid gap-3 sm:grid-cols-2">
                     <div className="space-y-1">
                       <label className="text-[11px] font-semibold text-slate-700 dark:text-[var(--cf-text-primary)]">
-                        {t("projects:worktreeRecycleBaseBranch", "目标基分支") as string}
+	                        {t("projects:worktreeRecycleBaseBranch", "目标分支") as string}
                       </label>
                       <select
                         className="h-8 w-full rounded-md border border-slate-300 bg-white px-2 text-xs text-slate-900 focus:border-[var(--cf-accent)] focus:outline-none focus:ring-1 focus:ring-[var(--cf-accent)] dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-solid)] dark:text-[var(--cf-text-primary)]"
                         value={base}
                         disabled={worktreeRecycleDialog.loading || worktreeRecycleDialog.running}
-                        onChange={(e) => setWorktreeRecycleDialog((prev) => ({ ...prev, baseBranch: e.target.value }))}
+                        onChange={(e) =>
+                          setWorktreeRecycleDialog((prev) => ({
+                            ...prev,
+                            baseBranch: e.target.value,
+                            forkPointValue: "",
+                            forkPointTouched: false,
+                            forkPointPinned: [],
+                            forkPointSearchItems: [],
+                            forkPointSearchQuery: "",
+                            forkPointPinnedLoading: false,
+                            forkPointSearchLoading: false,
+                            forkPointError: undefined,
+                            error: undefined,
+                          }))
+                        }
                       >
-                        {baseOptions.map((b) => (
+                        {!base ? (
+                          <option value="" disabled>
+                            {t("projects:worktreeRecycleSelectBranchPlaceholder", "请选择") as string}
+                          </option>
+                        ) : null}
+                        {branchOptions.map((b) => (
                           <option key={b} value={b}>
                             {b}
                           </option>
@@ -8204,9 +8582,28 @@ export default function CodexFlowManagerUI() {
                         className="h-8 w-full rounded-md border border-slate-300 bg-white px-2 text-xs text-slate-900 focus:border-[var(--cf-accent)] focus:outline-none focus:ring-1 focus:ring-[var(--cf-accent)] dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-solid)] dark:text-[var(--cf-text-primary)]"
                         value={wt}
                         disabled={worktreeRecycleDialog.loading || worktreeRecycleDialog.running}
-                        onChange={(e) => setWorktreeRecycleDialog((prev) => ({ ...prev, wtBranch: e.target.value }))}
+                        onChange={(e) =>
+                          setWorktreeRecycleDialog((prev) => ({
+                            ...prev,
+                            wtBranch: e.target.value,
+                            forkPointValue: "",
+                            forkPointTouched: false,
+                            forkPointPinned: [],
+                            forkPointSearchItems: [],
+                            forkPointSearchQuery: "",
+                            forkPointPinnedLoading: false,
+                            forkPointSearchLoading: false,
+                            forkPointError: undefined,
+                            error: undefined,
+                          }))
+                        }
                       >
-                        {wtOptions.map((b) => (
+                        {!wt ? (
+                          <option value="" disabled>
+                            {t("projects:worktreeRecycleSelectBranchPlaceholder", "请选择") as string}
+                          </option>
+                        ) : null}
+                        {branchOptions.map((b) => (
                           <option key={b} value={b}>
                             {b}
                           </option>
@@ -8215,10 +8612,110 @@ export default function CodexFlowManagerUI() {
                     </div>
                 </div>
 
-                <div className="space-y-1.5">
-                  <div className="text-[11px] font-semibold text-slate-700 dark:text-[var(--cf-text-primary)]">
-                    {t("projects:worktreeRecycleMode", "合并模式") as string}
+	                <div className="space-y-1.5">
+	                  <div className="text-[11px] font-semibold text-slate-700 dark:text-[var(--cf-text-primary)]">
+	                    {t("projects:worktreeRecycleRange", "合并范围") as string}
+	                  </div>
+                  <div className="flex p-0.5 bg-slate-100 dark:bg-slate-800 rounded-md">
+                    {(["since_fork", "full"] as const).map((r) => {
+                      const isSelected = worktreeRecycleDialog.range === r;
+                      return (
+                        <button
+                          key={r}
+                          type="button"
+                          onClick={() => setWorktreeRecycleDialog((prev) => ({ ...prev, range: r, forkPointError: undefined, error: undefined }))}
+                          disabled={worktreeRecycleDialog.loading || worktreeRecycleDialog.running}
+                          className={`flex-1 py-1 text-[10px] font-medium rounded transition-all ${
+                            isSelected
+                              ? "bg-white dark:bg-slate-600 text-slate-900 dark:text-white shadow-sm"
+                              : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+                          }`}
+                        >
+	                          {r === "since_fork"
+	                            ? (t("projects:worktreeRecycleRangeSinceFork", "仅包含分叉点之后的提交（推荐）") as string)
+	                            : (t("projects:worktreeRecycleRangeFull", "包含全部提交") as string)}
+	                        </button>
+	                      );
+	                    })}
+	                  </div>
+	                  <p className="text-[9px] text-slate-500 px-1 italic">
+	                    {worktreeRecycleDialog.range === "since_fork"
+	                      ? (t("projects:worktreeRecycleRangeHintSinceFork", "以分叉点（merge-base）为边界，仅纳入后续提交，通常可降低冲突概率。") as string)
+	                      : (t("projects:worktreeRecycleRangeHintFull", "纳入源分支的全部提交。") as string)}
+	                  </p>
+	                </div>
+
+                {worktreeRecycleDialog.range === "since_fork" ? (
+                  <div className="space-y-2">
+	                    <div className="text-[11px] font-semibold text-slate-700 dark:text-[var(--cf-text-primary)]">
+	                      {t("projects:worktreeRecycleForkPointTitle", "分叉点（merge-base）") as string}
+	                    </div>
+                      <p className="text-[9px] text-slate-500 px-1 italic">
+                        {t("projects:worktreeRecycleForkPointDesc", "用于确定“分叉点之后”的提交范围。") as string}
+                      </p>
+
+	                    <Combobox
+	                      showTagInTrigger
+	                      value={String(worktreeRecycleDialog.forkPointValue || "").trim()}
+	                      onValueChange={(v) =>
+	                        setWorktreeRecycleDialog((prev) => ({
+	                          ...prev,
+	                          forkPointValue: v,
+                          forkPointTouched: true,
+                          forkPointSearchQuery: "",
+                          forkPointError: undefined,
+                          error: undefined,
+                        }))
+                      }
+                      groups={[
+                        {
+                          key: "pinned",
+                          label: t("projects:worktreeRecycleForkPointGroupPinned", "推荐") as string,
+                          items: (worktreeRecycleDialog.forkPointPinned || []).map((x) => ({
+                            value: x.value,
+                            title: x.title,
+                            subtitle: x.subtitle,
+                            tag: x.tag,
+                          })),
+                        },
+                        {
+                          key: "history",
+                          label: t("projects:worktreeRecycleForkPointGroupHistory", "提交记录") as string,
+                          items: (worktreeRecycleDialog.forkPointSearchItems || []).map((x) => ({
+                            value: x.value,
+                            title: x.title,
+                            subtitle: x.subtitle,
+                            tag: x.tag,
+                          })),
+                        },
+                      ]}
+                      placeholder={t("projects:worktreeRecycleForkPointPlaceholder", "选择分叉点…") as string}
+                      searchPlaceholder={t("projects:worktreeRecycleForkPointSearchPlaceholder", "搜索提交信息（支持粘贴提交号/引用并回车校验）") as string}
+                      emptyText={t("projects:worktreeRecycleForkPointEmpty", "无匹配提交") as string}
+                      disabled={worktreeRecycleDialog.loading || worktreeRecycleDialog.running}
+                      loading={worktreeRecycleDialog.forkPointPinnedLoading || worktreeRecycleDialog.forkPointSearchLoading}
+                      searchValue={String(worktreeRecycleDialog.forkPointSearchQuery || "")}
+                      onSearchValueChange={(q) => setWorktreeRecycleDialog((prev) => ({ ...prev, forkPointSearchQuery: String(q ?? "") }))}
+                      customEntry={{
+                        title: (ref) => (t("projects:worktreeRecycleForkPointCustomTitle", "使用：{ref}", { ref }) as string),
+                        subtitle: () => (t("projects:worktreeRecycleForkPointCustomSubtitle", "校验并使用该引用") as string),
+                        tag: t("projects:worktreeRecycleForkPointTagManual", "手动") as string,
+                      }}
+                      onEnterCustomValue={(raw) => void validateAndSelectForkPointRef(raw)}
+                    />
+
+                    {worktreeRecycleDialog.forkPointError ? (
+                      <div className="rounded border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[10px] text-amber-800 whitespace-pre-wrap break-words">
+                        {worktreeRecycleDialog.forkPointError}
+                      </div>
+                    ) : null}
                   </div>
+                ) : null}
+
+	                <div className="space-y-1.5">
+	                  <div className="text-[11px] font-semibold text-slate-700 dark:text-[var(--cf-text-primary)]">
+	                    {t("projects:worktreeRecycleMode", "合并方式") as string}
+	                  </div>
                   <div className="flex p-0.5 bg-slate-100 dark:bg-slate-800 rounded-md">
                     {(["squash", "rebase"] as const).map((m) => {
                         const isSelected = worktreeRecycleDialog.mode === m;
@@ -8233,43 +8730,43 @@ export default function CodexFlowManagerUI() {
                                         ? "bg-white dark:bg-slate-600 text-slate-900 dark:text-white shadow-sm"
                                         : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
                                 }`}
-                            >
-                                {m === "squash"
-                                    ? t("projects:worktreeRecycleModeSquash", "Squash（推荐）")
-                                    : t("projects:worktreeRecycleModeRebase", "Rebase")}
-                            </button>
-                        );
-                    })}
-                  </div>
-                  <p className="text-[9px] text-slate-500 px-1 italic">
-                      {worktreeRecycleDialog.mode === "squash"
-                        ? t("projects:worktreeRecycleSquashHint", "所有提交压缩为一个，保持主分支整洁。")
-                        : t("projects:worktreeRecycleRebaseHint", "变基操作，保持原有提交历史。")}
-                  </p>
-                </div>
+	                            >
+	                                {m === "squash"
+	                                    ? t("projects:worktreeRecycleModeSquash", "压缩（Squash，推荐）")
+	                                    : t("projects:worktreeRecycleModeRebase", "变基（Rebase）")}
+	                            </button>
+	                        );
+	                    })}
+	                  </div>
+	                  <p className="text-[9px] text-slate-500 px-1 italic">
+	                      {worktreeRecycleDialog.mode === "squash"
+	                        ? t("projects:worktreeRecycleSquashHint", "将源分支的所有提交压缩为一个提交，使目标分支历史更整洁。")
+	                        : t("projects:worktreeRecycleRebaseHint", "将源分支的提交按顺序重放到目标分支之上，保留每个提交。")}
+	                  </p>
+	                </div>
 
                 {worktreeRecycleDialog.mode === "squash" ? (
-                  <div className="space-y-1">
-                    <div className="text-[11px] font-semibold text-slate-700 dark:text-[var(--cf-text-primary)]">
-                      {t("projects:worktreeRecycleCommitMessage", "提交信息（可选）") as string}
-                    </div>
+	                  <div className="space-y-1">
+	                    <div className="text-[11px] font-semibold text-slate-700 dark:text-[var(--cf-text-primary)]">
+	                      {t("projects:worktreeRecycleCommitMessage", "提交说明（可选）") as string}
+	                    </div>
                     <Input
                       value={String(worktreeRecycleDialog.commitMessage || "")}
                       onChange={(e: any) => setWorktreeRecycleDialog((prev) => ({ ...prev, commitMessage: e.target.value }))}
-                      placeholder={t("projects:worktreeRecycleCommitMessagePlaceholder", "留空将自动生成") as string}
-                      className="h-8 font-mono text-[11px]"
-                      disabled={worktreeRecycleDialog.loading || worktreeRecycleDialog.running}
-                    />
-                  </div>
+	                      placeholder={t("projects:worktreeRecycleCommitMessagePlaceholder", "squash: <源分支> -> <目标分支>") as string}
+	                      className="h-8 font-mono text-[11px]"
+	                      disabled={worktreeRecycleDialog.loading || worktreeRecycleDialog.running}
+	                    />
+	                  </div>
                 ) : null}
 
                 <div className="flex justify-end gap-2 pt-1.5 border-t border-slate-100 dark:border-slate-800/50">
                   <Button variant="outline" size="sm" className="h-8 text-xs" onClick={closeWorktreeRecycleDialog} disabled={worktreeRecycleDialog.running}>
                     {t("common:cancel", "取消") as string}
                   </Button>
-                  <Button variant="secondary" size="sm" className="h-8 text-xs" onClick={() => void submitWorktreeRecycle()} disabled={worktreeRecycleDialog.loading || worktreeRecycleDialog.running || !base || !wt}>
-                    {worktreeRecycleDialog.running ? (t("projects:worktreeRecycling", "执行中…") as string) : (t("projects:worktreeRecycleAction", "回收") as string)}
-                  </Button>
+	                  <Button variant="secondary" size="sm" className="h-8 text-xs" onClick={() => void submitWorktreeRecycle()} disabled={!canSubmitRecycle}>
+	                    {worktreeRecycleDialog.running ? (t("projects:worktreeRecycling", "合并中…") as string) : (t("projects:worktreeRecycleAction", "合并") as string)}
+	                  </Button>
                 </div>
               </div>
             );
@@ -8277,7 +8774,7 @@ export default function CodexFlowManagerUI() {
         </DialogContent>
       </Dialog>
 
-      {/* 删除 worktree（含删除专用分支；必要时强确认） */}
+	      {/* 删除 worktree / 重置为主 worktree 状态（必要时强确认） */}
       <Dialog
         open={worktreeDeleteDialog.open}
         onOpenChange={(open) => {
@@ -8287,36 +8784,80 @@ export default function CodexFlowManagerUI() {
       >
         <DialogContent className="max-w-md">
           <DialogHeader className="pb-2 border-b border-slate-100 dark:border-slate-800/50">
-            <DialogTitle>
-              {worktreeDeleteDialog.afterRecycle
-                ? (t("projects:worktreeDeleteAfterRecycleTitle", "回收成功，是否删除该 worktree？") as string)
-                : (t("projects:worktreeDeleteTitle", "删除 worktree") as string)}
-            </DialogTitle>
-            <DialogDescription>
-              {t("projects:worktreeDeleteDesc", "将执行 git worktree remove，并删除该 worktree 的专用分支。") as string}
-            </DialogDescription>
+	            <DialogTitle>
+	              {worktreeDeleteDialog.action === "reset"
+	                ? (t("projects:worktreeResetTitle", "重置为主 worktree 状态") as string)
+	                : worktreeDeleteDialog.afterRecycle
+	                  ? (t("projects:worktreeDeleteAfterRecycleTitle", "合并成功，是否删除该 worktree？") as string)
+	                  : (t("projects:worktreeDeleteTitle", "删除 worktree") as string)}
+	            </DialogTitle>
+	            <DialogDescription className={worktreeDeleteDialog.action === "reset" ? "whitespace-pre-line" : ""}>
+	              {worktreeDeleteDialog.action === "reset"
+	                ? (t("projects:worktreeResetDesc", "将此 worktree 重置到与主 worktree 当前签出的修订版一致，并清理工作区使其恢复为干净状态。\n此操作会丢弃未提交的修改，并删除未跟踪的文件（默认不删除被忽略的文件）。") as string)
+	                : (t("projects:worktreeDeleteDesc", "将执行 git worktree remove，并删除该 worktree 的专用分支。") as string)}
+	            </DialogDescription>
           </DialogHeader>
           {(function renderDeleteBody() {
             const project = projectsRef.current.find((x) => x.id === worktreeDeleteDialog.projectId) || null;
             if (!project) return null;
-            const needForceRemove = worktreeDeleteDialog.needsForceRemoveWorktree === true;
-            const needForceBranch = worktreeDeleteDialog.needsForceDeleteBranch === true;
-            const forceHint = needForceRemove
-              ? (t("projects:worktreeDeleteForceRemoveHint", "检测到未提交修改：强制移除将丢弃这些修改。") as string)
-              : needForceBranch
-                ? (t("projects:worktreeDeleteForceBranchHint", "分支未合并：强制删除将丢失该分支上的提交。") as string)
-                : "";
-            const primaryLabel = needForceRemove || needForceBranch
-              ? (t("projects:worktreeDeleteForceAction", "强制删除") as string)
-              : (t("projects:worktreeDeleteAction", "删除") as string);
-            const doSubmit = () => void submitWorktreeDelete({ forceRemoveWorktree: needForceRemove, forceDeleteBranch: needForceBranch });
+            const isReset = worktreeDeleteDialog.action === "reset";
+	            const needForceReset = isReset && worktreeDeleteDialog.needsForceResetWorktree === true;
+            const needForceRemove = !isReset && worktreeDeleteDialog.needsForceRemoveWorktree === true;
+            const needForceBranch = !isReset && worktreeDeleteDialog.needsForceDeleteBranch === true;
+	            const forceHint = needForceReset
+	              ? (t("projects:worktreeResetForceHint", "检测到未提交修改：强制重置将丢弃这些修改。") as string)
+	              : needForceRemove
+	                ? (t("projects:worktreeDeleteForceRemoveHint", "检测到未提交修改：强制移除将丢弃这些修改。") as string)
+                : needForceBranch
+                  ? (t("projects:worktreeDeleteForceBranchHint", "分支未合并：强制删除将丢失该分支上的提交。") as string)
+                  : "";
+	            const primaryLabel = isReset
+	              ? (needForceReset ? (t("projects:worktreeResetForceAction", "强制重置") as string) : (t("projects:worktreeResetAction", "重置") as string))
+	              : needForceRemove || needForceBranch
+	                ? (t("projects:worktreeDeleteForceAction", "强制删除") as string)
+	                : (t("projects:worktreeDeleteAction", "删除") as string);
+	            const runningLabel = isReset ? (t("projects:worktreeResetting", "重置中…") as string) : (t("projects:worktreeDeleting", "删除中…") as string);
+            const doSubmit = () =>
+              isReset ? void submitWorktreeDelete({ forceResetWorktree: needForceReset }) : void submitWorktreeDelete({ forceRemoveWorktree: needForceRemove, forceDeleteBranch: needForceBranch });
 
 	            return (
 	              <div className="space-y-3">
 	                <div className="rounded-md border border-slate-200/60 bg-slate-50/50 px-2.5 py-1.5 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)]">
-                  <div className="text-[9px] uppercase font-bold text-slate-400 mb-0.5 tracking-wider">Path</div>
+	                  <div className="text-[9px] uppercase font-bold text-slate-400 mb-0.5 tracking-wider">{t("projects:worktreePath", "PATH") as string}</div>
 	                  <div className="font-mono text-[10px] break-all text-slate-700 dark:text-[var(--cf-text-secondary)] leading-tight">{project.winPath}</div>
 	                </div>
+
+                  <div className="rounded-md border border-slate-200/60 bg-white/60 px-2.5 py-2 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)]">
+                    <label className="flex gap-2 items-start cursor-pointer">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5"
+                        checked={worktreeDeleteDialog.action === "reset"}
+                        disabled={worktreeDeleteDialog.running}
+                        onChange={(e) =>
+                          setWorktreeDeleteDialog((prev) => ({
+                            ...prev,
+                            action: e.target.checked ? "reset" : "delete",
+                            needsForceRemoveWorktree: false,
+                            needsForceDeleteBranch: false,
+                            needsForceResetWorktree: false,
+                            error: undefined,
+                          }))
+                        }
+                      />
+                      <div className="space-y-0.5">
+	                        <div className="text-[11px] font-semibold text-slate-700 dark:text-[var(--cf-text-primary)]">
+	                          {t("projects:worktreeDeleteResetOption", "保留并重置该目录（不移除worktree）") as string}
+	                        </div>
+	                        <div className="text-[10px] text-slate-500 dark:text-[var(--cf-text-secondary)] leading-snug">
+	                          {t(
+	                            "projects:worktreeDeleteResetHint",
+	                            "仅重置到与主 worktree 当前签出的修订版一致并清理；不会执行“移除worktree”。"
+	                          ) as string}
+	                        </div>
+                      </div>
+                    </label>
+                  </div>
 	                {worktreeDeleteDialog.afterRecycleHint ? (
 	                  <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800 whitespace-pre-line">
 	                    {worktreeDeleteDialog.afterRecycleHint}
@@ -8342,13 +8883,74 @@ export default function CodexFlowManagerUI() {
                     {t("common:cancel", "取消") as string}
                   </Button>
                   <Button 
-                    variant={needForceRemove || needForceBranch ? "danger" : "secondary"}
+                    variant={needForceReset || needForceRemove || needForceBranch ? "danger" : "secondary"}
                     size="sm"
                     className="h-8 text-xs"
                     onClick={doSubmit} 
                     disabled={worktreeDeleteDialog.running}
                   >
-                    {worktreeDeleteDialog.running ? (t("projects:worktreeDeleting", "删除中…") as string) : primaryLabel}
+                    {worktreeDeleteDialog.running ? runningLabel : primaryLabel}
+                  </Button>
+                </div>
+              </div>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
+
+	      {/* 合并完成后的可选操作：删除 / 重置 / 稍后 */}
+      <Dialog
+        open={worktreePostRecycleDialog.open}
+        onOpenChange={(open) => {
+          if (open) return;
+          setWorktreePostRecycleDialog((prev) => ({ ...prev, open: false }));
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader className="pb-2 border-b border-slate-100 dark:border-slate-800/50">
+	            <DialogTitle>{t("projects:worktreePostRecycleTitle", "合并完成") as string}</DialogTitle>
+	            <DialogDescription>
+	              {t("projects:worktreePostRecycleDesc", "已将变更合并到目标分支。你可以选择删除该 worktree，或将其重置为主 worktree 状态以便复用。") as string}
+	            </DialogDescription>
+          </DialogHeader>
+          {(function renderPostRecycleBody() {
+            const project = projectsRef.current.find((x) => x.id === worktreePostRecycleDialog.projectId) || null;
+            if (!project) return null;
+            const hint = worktreePostRecycleDialog.hint;
+            const close = () => setWorktreePostRecycleDialog((prev) => ({ ...prev, open: false }));
+            return (
+              <div className="space-y-3">
+                {hint ? (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700 whitespace-pre-line dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:text-[var(--cf-text-secondary)]">
+                    {hint}
+                  </div>
+                ) : null}
+
+                <div className="flex justify-end gap-2 pt-1 border-t border-slate-100 dark:border-slate-800/50">
+                  <Button variant="outline" size="sm" className="h-8 text-xs" onClick={close}>
+                    {t("projects:worktreePostRecycleActionLater", "稍后") as string}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="h-8 text-xs"
+                    onClick={() => {
+                      close();
+                      openWorktreeDeleteDialog(project, true, "reset", hint);
+                    }}
+                  >
+	                    {t("projects:worktreePostRecycleActionReset", "重置为主 worktree 状态") as string}
+	                  </Button>
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    className="h-8 text-xs"
+                    onClick={() => {
+                      close();
+                      openWorktreeDeleteDialog(project, true, "delete", hint);
+                    }}
+                  >
+                    {t("projects:worktreePostRecycleActionDelete", "删除该子 worktree") as string}
                   </Button>
                 </div>
               </div>

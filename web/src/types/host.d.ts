@@ -206,13 +206,20 @@ export type GitWorktreeListEntry = {
 export type WorktreeMeta = {
   repoMainPath: string;
   baseBranch: string;
+  /** 创建时基分支的提交号（用于“按分叉点之后回收”的默认边界）。 */
+  baseRefAtCreate?: string;
   wtBranch: string;
   createdAt: number;
 };
 
+/** 回收范围：默认仅回收分叉点之后的提交；可选完整回收。 */
+export type RecycleWorktreeRange = "since_fork" | "full";
+
 export type RecycleWorktreeErrorCode =
   | "INVALID_ARGS"
   | "META_MISSING"
+  | "FORK_POINT_UNAVAILABLE"
+  | "FORK_POINT_INVALID"
   | "BASE_WORKTREE_DIRTY"
   | "WORKTREE_DIRTY"
   | "BASE_WORKTREE_IN_PROGRESS"
@@ -251,6 +258,10 @@ export type RecycleWorktreeResult =
   | { ok: true; warningCode?: RecycleWorktreeWarningCode; details?: RecycleWorktreeDetails }
   | { ok: false; errorCode: RecycleWorktreeErrorCode; details?: RecycleWorktreeDetails };
 
+export type ResetWorktreeResult =
+  | { ok: true }
+  | { ok: false; needsForce?: boolean; error?: string };
+
 export type CreatedWorktree = {
   providerId: "codex" | "claude" | "gemini";
   repoMainPath: string;
@@ -285,6 +296,9 @@ export type WorktreeRecycleTaskSnapshot = {
   repoMainPath: string;
   baseBranch: string;
   wtBranch: string;
+  range: RecycleWorktreeRange;
+  /** 可选：手动指定的分叉点引用（提交号/引用），仅在 range=since_fork 时生效。 */
+  forkBaseRef?: string;
   mode: "squash" | "rebase";
   autoStashBaseWorktree: boolean;
   status: WorktreeRecycleTaskStatus;
@@ -294,6 +308,33 @@ export type WorktreeRecycleTaskSnapshot = {
   error?: string;
   result?: RecycleWorktreeResult;
 };
+
+export type WorktreeForkPointSource = "recorded" | "merge-base";
+
+export type GitCommitSummary = {
+  /** 完整提交号。 */
+  sha: string;
+  /** 短提交号（用于 UI 辅助展示）。 */
+  shortSha: string;
+  /** 提交标题（subject，单行）。 */
+  subject: string;
+  /** 作者时间戳（Unix 秒）。 */
+  authorDateUnix: number;
+};
+
+export type WorktreeForkPointSnapshot = {
+  repoMainPath: string;
+  recordedSha?: string;
+  recordedCommit?: GitCommitSummary;
+  recordedApplies?: boolean;
+  sha: string;
+  autoCommit?: GitCommitSummary;
+  source: WorktreeForkPointSource;
+};
+
+export type ResolveWorktreeForkPointResult =
+  | { ok: true; forkPoint: WorktreeForkPointSnapshot }
+  | { ok: false; error: string; forkPoint?: Partial<WorktreeForkPointSnapshot> };
 
 export type GitDirInfo = {
   dir: string;
@@ -318,10 +359,14 @@ export interface GitWorktreeAPI {
   create(args: { repoDir: string; baseBranch: string; instances: Array<{ providerId: "codex" | "claude" | "gemini"; count: number }>; copyRules?: boolean }): Promise<{ ok: boolean; items?: CreatedWorktree[]; error?: string }>;
   createTaskStart(args: { repoDir: string; baseBranch: string; instances: Array<{ providerId: "codex" | "claude" | "gemini"; count: number }>; copyRules?: boolean }): Promise<{ ok: boolean; taskId?: string; reused?: boolean; error?: string }>;
   createTaskGet(args: { taskId: string; from?: number }): Promise<{ ok: boolean; task?: WorktreeCreateTaskSnapshot; append?: string; error?: string }>;
-  recycleTaskStart(args: { worktreePath: string; baseBranch: string; wtBranch: string; mode: "squash" | "rebase"; commitMessage?: string; autoStashBaseWorktree?: boolean }): Promise<{ ok: boolean; taskId?: string; reused?: boolean; error?: string }>;
+  recycleTaskStart(args: { worktreePath: string; baseBranch: string; wtBranch: string; range?: RecycleWorktreeRange; forkBaseRef?: string; mode: "squash" | "rebase"; commitMessage?: string; autoStashBaseWorktree?: boolean }): Promise<{ ok: boolean; taskId?: string; reused?: boolean; error?: string }>;
   recycleTaskGet(args: { taskId: string; from?: number }): Promise<{ ok: boolean; task?: WorktreeRecycleTaskSnapshot; append?: string; error?: string }>;
-  recycle(args: { worktreePath: string; baseBranch: string; wtBranch: string; mode: "squash" | "rebase"; commitMessage?: string; autoStashBaseWorktree?: boolean }): Promise<RecycleWorktreeResult>;
+  recycle(args: { worktreePath: string; baseBranch: string; wtBranch: string; range?: RecycleWorktreeRange; forkBaseRef?: string; mode: "squash" | "rebase"; commitMessage?: string; autoStashBaseWorktree?: boolean }): Promise<RecycleWorktreeResult>;
+  resolveForkPoint(args: { worktreePath: string; baseBranch: string; wtBranch: string }): Promise<ResolveWorktreeForkPointResult>;
+  searchForkPointCommits(args: { worktreePath: string; wtBranch: string; query?: string; limit?: number }): Promise<{ ok: boolean; items?: GitCommitSummary[]; error?: string }>;
+  validateForkPointRef(args: { worktreePath: string; wtBranch: string; ref: string }): Promise<{ ok: boolean; commit?: GitCommitSummary; error?: string }>;
   remove(args: { worktreePath: string; deleteBranch?: boolean; forceDeleteBranch?: boolean; forceRemoveWorktree?: boolean }): Promise<any>;
+  reset(args: { worktreePath: string; targetRef?: string; force?: boolean }): Promise<ResetWorktreeResult>;
   autoCommit(args: { worktreePath: string; message: string }): Promise<{ ok: boolean; committed: boolean; error?: string }>;
   openExternalTool(dir: string): Promise<{ ok: boolean; error?: string }>;
   openTerminal(dir: string): Promise<{ ok: boolean; error?: string }>;
