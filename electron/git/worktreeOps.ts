@@ -3,6 +3,7 @@
 
 import fs from "node:fs";
 import { promises as fsp } from "node:fs";
+import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { execGitAsync, isGitExecutableUnavailable, spawnGitAsync } from "./exec";
@@ -55,6 +56,10 @@ export type RecycleWorktreeRequest = {
   worktreePath: string;
   baseBranch: string;
   wtBranch: string;
+  /** 回收范围：默认仅回收分叉点之后的提交；可选完整回收。 */
+  range?: "since_fork" | "full";
+  /** 可选：手动指定的分叉点引用（提交号/引用），仅在 range=since_fork 时生效。 */
+  forkBaseRef?: string;
   mode: RecycleMode;
   gitPath?: string;
   commitMessage?: string;
@@ -74,6 +79,8 @@ export type RecycleWorktreeRequest = {
 export type RecycleWorktreeErrorCode =
   | "INVALID_ARGS"
   | "META_MISSING"
+  | "FORK_POINT_UNAVAILABLE"
+  | "FORK_POINT_INVALID"
   | "BASE_WORKTREE_DIRTY"
   | "WORKTREE_DIRTY"
   | "BASE_WORKTREE_IN_PROGRESS"
@@ -252,6 +259,14 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
     return { ok: false, error: msg };
   }
   const repoRoot = String(top.stdout || "").trim();
+  const baseBranch = String(req.baseBranch || "").trim();
+
+  /**
+   * 中文说明：记录“创建时基分支 HEAD（提交号）”作为后续回收的默认分叉点边界。
+   * - 失败不影响创建主流程（回收时会回退到 merge-base 推断）。
+   */
+  const baseRefAtCreate = await execGitAsync({ gitPath, argv: ["-C", repoRoot, "rev-parse", baseBranch], timeoutMs: 8000 });
+  const baseRefAtCreateSha = baseRefAtCreate.ok ? String(baseRefAtCreate.stdout || "").trim() : "";
 
   const wtListRes = await execGitAsync({ gitPath, argv: ["-C", repoRoot, "worktree", "list", "--porcelain"], timeoutMs: listTimeoutMs });
   if (!wtListRes.ok) {
@@ -401,7 +416,7 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
       const warnings = await copyRulesIfNeeded(targetDir);
 
       // 持久化 baseBranch <-> wtBranch 映射
-      const meta: WorktreeMeta = { repoMainPath: mainWorktreePath, baseBranch: req.baseBranch, wtBranch, createdAt: Date.now() };
+      const meta: WorktreeMeta = { repoMainPath: mainWorktreePath, baseBranch: req.baseBranch, baseRefAtCreate: baseRefAtCreateSha || undefined, wtBranch, createdAt: Date.now() };
       setWorktreeMeta(targetDir, meta);
 
       items.push({
@@ -783,6 +798,166 @@ async function restoreIndexFromStagedStashAsync(args: {
 }
 
 /**
+ * 中文说明：将 git 命令的 stdout 流式写入文件，避免大补丁占用内存（适用于大仓库回收）。
+ */
+async function spawnGitStdoutToFileAsync(opts: {
+  gitPath?: string;
+  argv: string[];
+  cwd?: string;
+  timeoutMs: number;
+  outFile: string;
+}): Promise<{ ok: boolean; exitCode: number; stderr: string; error?: string }> {
+  const gitPath = String(opts?.gitPath || "").trim() || "git";
+  const argv = Array.isArray(opts?.argv) ? opts.argv.map((x) => String(x)) : [];
+  const cwd = typeof opts?.cwd === "string" && opts.cwd.trim().length > 0 ? opts.cwd : undefined;
+  const outFile = String(opts?.outFile || "").trim();
+  const timeoutMs = Math.max(200, Math.min(30 * 60_000, Number(opts?.timeoutMs ?? 8000)));
+  if (!outFile) return { ok: false, exitCode: -1, stderr: "", error: "缺少输出文件路径" };
+
+  return await new Promise((resolve) => {
+    let stderr = "";
+    let finished = false;
+    let timedOut = false;
+    let timeoutHandle: any = null;
+
+    const finalize = (res: { ok: boolean; exitCode: number; stderr: string; error?: string }) => {
+      if (finished) return;
+      finished = true;
+      if (timeoutHandle) {
+        try { clearTimeout(timeoutHandle); } catch {}
+        timeoutHandle = null;
+      }
+      resolve(res);
+    };
+
+    try {
+      const ws = fs.createWriteStream(outFile, { flags: "w" });
+      const child = spawn(gitPath, argv, { cwd, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+
+      timeoutHandle = setTimeout(() => {
+        timedOut = true;
+        try { child.kill(); } catch {}
+        setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, 800);
+      }, timeoutMs);
+
+      child.stdout?.on("data", (buf: Buffer) => {
+        try {
+          const ok = ws.write(buf);
+          if (!ok) {
+            try { child.stdout?.pause(); } catch {}
+            ws.once("drain", () => {
+              try { child.stdout?.resume(); } catch {}
+            });
+          }
+        } catch {}
+      });
+
+      child.stderr?.on("data", (buf: Buffer) => {
+        const chunk = Buffer.isBuffer(buf) ? buf.toString("utf8") : String(buf || "");
+        stderr += chunk;
+      });
+
+      child.on("error", (err: any) => {
+        try { ws.end(); } catch {}
+        const msg = String(err?.message || err);
+        finalize({ ok: false, exitCode: -1, stderr, error: msg });
+      });
+
+      child.on("close", (code: number | null) => {
+        const exitCode = typeof code === "number" ? code : -1;
+        const done = () => {
+          if (timedOut) {
+            finalize({ ok: false, exitCode, stderr, error: `timeout after ${timeoutMs}ms` });
+            return;
+          }
+          if (exitCode === 0) {
+            finalize({ ok: true, exitCode: 0, stderr: "" });
+            return;
+          }
+          finalize({ ok: false, exitCode, stderr, error: `exit ${exitCode}` });
+        };
+        try {
+          ws.end();
+          ws.once("finish", done);
+          ws.once("error", () => done());
+        } catch {
+          done();
+        }
+      });
+
+      ws.on("error", (e: any) => {
+        const msg = String(e?.message || e);
+        try { child.kill(); } catch {}
+        finalize({ ok: false, exitCode: -1, stderr, error: msg });
+      });
+    } catch (e: any) {
+      finalize({ ok: false, exitCode: -1, stderr, error: String(e?.message || e) });
+    }
+  });
+}
+
+/**
+ * 中文说明：解析并校验“分叉点边界”的提交号（优先使用创建时记录的 baseRefAtCreate）。
+ */
+async function resolveForkBaseShaAsync(args: {
+  repoMainPath: string;
+  gitPath?: string;
+  baseBranch: string;
+  wtBranch: string;
+  meta: WorktreeMeta | null;
+  /** 中文说明：日志回调（用于进度 UI 展示）。 */
+  onLog?: (text: string) => void;
+}): Promise<{ ok: true; sha: string; source: "meta" | "merge-base" } | { ok: false; error: string }> {
+  const repoMainPath = toFsPathAbs(args.repoMainPath);
+  const gitPath = args.gitPath;
+  const baseBranch = String(args.baseBranch || "").trim();
+  const wtBranch = String(args.wtBranch || "").trim();
+  const meta = args.meta;
+  const log = (text: string) => {
+    try { args.onLog?.(String(text ?? "")); } catch {}
+  };
+
+  const resolveCommitSha = async (ref: string): Promise<string> => {
+    const r = String(ref || "").trim();
+    if (!r) return "";
+    const res = await execGitAsync({ gitPath, argv: ["-C", repoMainPath, "rev-parse", "--verify", `${r}^{commit}`], timeoutMs: 12_000 });
+    if (!res.ok) return "";
+    return String(res.stdout || "").trim();
+  };
+
+  const canUseMeta =
+    !!(meta && String(meta.baseRefAtCreate || "").trim()) &&
+    String(meta?.baseBranch || "").trim() === baseBranch &&
+    String(meta?.wtBranch || "").trim() === wtBranch;
+
+  if (canUseMeta) {
+    const sha = await resolveCommitSha(String(meta?.baseRefAtCreate || ""));
+    if (sha) {
+      const anc = await execGitAsync({ gitPath, argv: ["-C", repoMainPath, "merge-base", "--is-ancestor", sha, wtBranch], timeoutMs: 12_000 });
+      // merge-base --is-ancestor：0=是祖先（可用），1=否，其它=错误
+      if (anc.exitCode === 0) return { ok: true, sha, source: "meta" };
+      if (anc.exitCode === 1) log("提示：创建记录中的分叉点已不再是源分支的祖先，回退使用 merge-base 推断。\n");
+      else log("提示：校验创建记录分叉点失败，回退使用 merge-base 推断。\n");
+    } else {
+      log("提示：创建记录中的分叉点提交号不可用，回退使用 merge-base 推断。\n");
+    }
+  } else if (meta && String(meta.baseRefAtCreate || "").trim()) {
+    log("提示：当前选择的基分支/源分支与创建记录不一致，改用 merge-base 推断分叉点。\n");
+  }
+
+  const mb = await execGitAsync({ gitPath, argv: ["-C", repoMainPath, "merge-base", baseBranch, wtBranch], timeoutMs: 12_000 });
+  if (!mb.ok) {
+    const msg = pickGitFailureText(mb) || "git merge-base failed";
+    return { ok: false, error: msg };
+  }
+  const sha = String(mb.stdout || "").trim();
+  if (!sha) return { ok: false, error: "git merge-base returned empty" };
+  const verified = await resolveCommitSha(sha);
+  if (!verified) return { ok: false, error: "merge-base sha is not a valid commit" };
+  return { ok: true, sha: verified, source: "merge-base" };
+}
+
+/**
  * 中文说明：执行实际的回收逻辑（假设主 worktree 已处于可操作状态）。
  * - 该方法不负责处理“主 worktree 脏”的策略；由外层决定是提示用户还是自动 stash。
  */
@@ -791,6 +966,9 @@ async function recycleWorktreeCoreAsync(args: {
   repoMainPath: string;
   baseBranch: string;
   wtBranch: string;
+  range: "since_fork" | "full";
+  /** 中文说明：仅在 range=since_fork 时使用的分叉点边界提交号。 */
+  forkBaseSha?: string;
   mode: RecycleMode;
   gitPath?: string;
   commitMessage?: string;
@@ -814,17 +992,102 @@ async function recycleWorktreeCoreAsync(args: {
   const commitTimeoutMs = 60_000;
   const rebaseTimeoutMs = 30 * 60_000;
   const ffTimeoutMs = 5 * 60_000;
+  const diffTimeoutMs = 10 * 60_000;
+  const applyTimeoutMs = 10 * 60_000;
+  const rollbackTimeoutMs = 5 * 60_000;
 
   if (args.mode === "squash") {
     const sw = await runGit(["-C", repoMainPath, "switch", baseBranch], 12_000);
     if (!sw.ok) return { ok: false, errorCode: isGitLockedFailure(sw) ? "BASE_WORKTREE_LOCKED" : undefined, stderr: String(sw.stderr || ""), stdout: String(sw.stdout || ""), error: sw.error };
 
+    if (args.range === "since_fork") {
+      const forkBaseSha = String(args.forkBaseSha || "").trim();
+      if (!forkBaseSha) return { ok: false, errorCode: "INVALID_ARGS", stderr: "", stdout: "", error: "缺少 forkBaseSha" };
+
+      // A) 生成补丁（写入临时文件），避免把大 diff 拉进内存/日志
+      const patchFile = path.join(
+        os.tmpdir(),
+        `codexflow-recycle-diff-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}.patch`
+      );
+      try {
+        log(`\n$ git -C "${repoMainPath}" diff --binary ${forkBaseSha} ${wtBranch} > "${patchFile}"\n`);
+        const diff = await spawnGitStdoutToFileAsync({ gitPath, argv: ["-C", repoMainPath, "diff", "--binary", forkBaseSha, wtBranch], timeoutMs: diffTimeoutMs, outFile: patchFile });
+        if (!diff.ok) {
+          return {
+            ok: false,
+            errorCode: isGitLockedFailure({ error: diff.error, stderr: diff.stderr, stdout: "" }) ? "BASE_WORKTREE_LOCKED" : undefined,
+            stderr: String(diff.stderr || ""),
+            stdout: "",
+            error: diff.error,
+          };
+        }
+
+        const st = await fsp.stat(patchFile).catch(() => null as any);
+        const size = typeof st?.size === "number" ? st.size : 0;
+        if (size <= 0) {
+          log("无可回收变更：分叉点之后没有差异。\n");
+          return { ok: true };
+        }
+
+        // B) 应用补丁到主 worktree（带 --3way 优先，失败自动回退）
+        const baseArgv = ["-C", repoMainPath, "apply", "--index", "--whitespace=nowarn"];
+        const try1 = await runGit([...baseArgv, "--3way", patchFile], applyTimeoutMs);
+        if (!try1.ok) {
+          const msg = `${String(try1.stderr || "")}\n${String(try1.stdout || "")}`.trim();
+          const isUnknown3way = /unknown option.*--3way|unknown option.*3way|unrecognized option.*--3way/i.test(msg);
+          if (!isUnknown3way) {
+            log("提示：补丁应用失败，正在回滚主 worktree 到干净状态。\n");
+            try { await runGit(["-C", repoMainPath, "reset", "--hard"], rollbackTimeoutMs); } catch {}
+            try { await runGit(["-C", repoMainPath, "clean", "-fd"], rollbackTimeoutMs); } catch {}
+            return { ok: false, errorCode: isGitLockedFailure(try1) ? "BASE_WORKTREE_LOCKED" : undefined, stderr: String(try1.stderr || ""), stdout: String(try1.stdout || ""), error: try1.error || msg || "git apply failed" };
+          }
+
+          const try2 = await runGit([...baseArgv, patchFile], applyTimeoutMs);
+          if (!try2.ok) {
+            log("提示：补丁应用失败，正在回滚主 worktree 到干净状态。\n");
+            try { await runGit(["-C", repoMainPath, "reset", "--hard"], rollbackTimeoutMs); } catch {}
+            try { await runGit(["-C", repoMainPath, "clean", "-fd"], rollbackTimeoutMs); } catch {}
+            return { ok: false, errorCode: isGitLockedFailure(try2) ? "BASE_WORKTREE_LOCKED" : undefined, stderr: String(try2.stderr || ""), stdout: String(try2.stdout || ""), error: try2.error || "git apply failed" };
+          }
+        }
+
+        // C) 若无改动则不提交（避免 “nothing to commit” 报错）
+        const st2 = await execGitAsync({ gitPath, argv: ["-C", repoMainPath, "status", "--porcelain"], timeoutMs: 8000 });
+        if (st2.ok && String(st2.stdout || "").trim().length === 0) {
+          log("无可回收变更：补丁应用后主 worktree 仍无改动。\n");
+          return { ok: true };
+        }
+
+        const msg = String(args.commitMessage || "").trim() || `squash: ${wtBranch} -> ${baseBranch}`;
+        const commit = await runGit(["-C", repoMainPath, "commit", "-m", msg], commitTimeoutMs);
+        if (!commit.ok) {
+          const st3 = await execGitAsync({ gitPath, argv: ["-C", repoMainPath, "status", "--porcelain"], timeoutMs: 8000 });
+          if (st3.ok && String(st3.stdout || "").trim().length === 0) return { ok: true };
+          return { ok: false, errorCode: isGitLockedFailure(commit) ? "BASE_WORKTREE_LOCKED" : undefined, stderr: String(commit.stderr || ""), stdout: String(commit.stdout || ""), error: commit.error };
+        }
+        return { ok: true };
+      } finally {
+        try { await fsp.unlink(patchFile); } catch {}
+      }
+    }
+
+    // 完整回收：沿用原有 squash 流程
     const merge = await runGit(["-C", repoMainPath, "merge", "--squash", wtBranch], mergeTimeoutMs);
     if (!merge.ok) return { ok: false, errorCode: isGitLockedFailure(merge) ? "BASE_WORKTREE_LOCKED" : undefined, stderr: String(merge.stderr || ""), stdout: String(merge.stdout || ""), error: merge.error };
 
+    const st2 = await execGitAsync({ gitPath, argv: ["-C", repoMainPath, "status", "--porcelain"], timeoutMs: 8000 });
+    if (st2.ok && String(st2.stdout || "").trim().length === 0) {
+      log("无可回收变更：当前分支与基分支无差异。\n");
+      return { ok: true };
+    }
+
     const msg = String(args.commitMessage || "").trim() || `squash: ${wtBranch} -> ${baseBranch}`;
     const commit = await runGit(["-C", repoMainPath, "commit", "-m", msg], commitTimeoutMs);
-    if (!commit.ok) return { ok: false, errorCode: isGitLockedFailure(commit) ? "BASE_WORKTREE_LOCKED" : undefined, stderr: String(commit.stderr || ""), stdout: String(commit.stdout || ""), error: commit.error };
+    if (!commit.ok) {
+      const st3 = await execGitAsync({ gitPath, argv: ["-C", repoMainPath, "status", "--porcelain"], timeoutMs: 8000 });
+      if (st3.ok && String(st3.stdout || "").trim().length === 0) return { ok: true };
+      return { ok: false, errorCode: isGitLockedFailure(commit) ? "BASE_WORKTREE_LOCKED" : undefined, stderr: String(commit.stderr || ""), stdout: String(commit.stdout || ""), error: commit.error };
+    }
     return { ok: true };
   }
 
@@ -837,8 +1100,17 @@ async function recycleWorktreeCoreAsync(args: {
   const swWt = await runGit(["-C", wt, "switch", wtBranch], 12_000);
   if (!swWt.ok) return { ok: false, errorCode: isGitLockedFailure(swWt) ? "BASE_WORKTREE_LOCKED" : undefined, stderr: String(swWt.stderr || ""), stdout: String(swWt.stdout || ""), error: swWt.error };
 
-  const rebase = await runGit(["-C", wt, "rebase", baseBranch], rebaseTimeoutMs);
-  if (!rebase.ok) return { ok: false, errorCode: isGitLockedFailure(rebase) ? "BASE_WORKTREE_LOCKED" : undefined, stderr: String(rebase.stderr || ""), stdout: String(rebase.stdout || ""), error: rebase.error };
+  const rebase =
+    args.range === "since_fork"
+      ? (() => {
+          const forkBaseSha = String(args.forkBaseSha || "").trim();
+          if (!forkBaseSha) return null;
+          return runGit(["-C", wt, "rebase", "--onto", baseBranch, forkBaseSha, wtBranch], rebaseTimeoutMs);
+        })()
+      : runGit(["-C", wt, "rebase", baseBranch], rebaseTimeoutMs);
+  if (!rebase) return { ok: false, errorCode: "INVALID_ARGS", stderr: "", stdout: "", error: "缺少 forkBaseSha" };
+  const rebaseRes = await rebase;
+  if (!rebaseRes.ok) return { ok: false, errorCode: isGitLockedFailure(rebaseRes) ? "BASE_WORKTREE_LOCKED" : undefined, stderr: String(rebaseRes.stderr || ""), stdout: String(rebaseRes.stdout || ""), error: rebaseRes.error };
 
   const swMain = await runGit(["-C", repoMainPath, "switch", baseBranch], 12_000);
   if (!swMain.ok) return { ok: false, errorCode: isGitLockedFailure(swMain) ? "BASE_WORKTREE_LOCKED" : undefined, stderr: String(swMain.stderr || ""), stdout: String(swMain.stdout || ""), error: swMain.error };
@@ -871,7 +1143,8 @@ export async function recycleWorktreeAsync(req: RecycleWorktreeRequest): Promise
 
   const repoKey = toFsPathKey(repoMainPath);
   return await runExclusiveInRepoAsync(repoKey, async () => {
-    log(`开始回收 worktree\nworktreePath: ${wt}\nrepoMainPath: ${repoMainPath}\nbaseBranch: ${baseBranch}\nwtBranch: ${wtBranch}\nmode: ${req.mode}\n\n`);
+    const rangeLabel = req.range === "full" ? "full" : "since_fork";
+    log(`开始回收 worktree\nworktreePath: ${wt}\nrepoMainPath: ${repoMainPath}\nbaseBranch: ${baseBranch}\nwtBranch: ${wtBranch}\nrange: ${rangeLabel}\nmode: ${req.mode}\n\n`);
 
     // A) 二次校验：中断/冲突态直接拒绝自动化（同时也避免误导 UI 去弹“继续 stash”）
     const inProg = await detectBaseWorktreeInProgressAsync({ repoMainPath, gitPath });
@@ -954,8 +1227,42 @@ export async function recycleWorktreeAsync(req: RecycleWorktreeRequest): Promise
     }
 
     // D) 执行回收（复用既有 squash/rebase 流程）
-    log("开始执行回收（switch/merge/rebase 等 Git 操作）。\n");
-    const core = await recycleWorktreeCoreAsync({ wt, repoMainPath, baseBranch, wtBranch, mode: req.mode, gitPath, commitMessage: req.commitMessage, onLog: req.onLog });
+    // 中文说明：当选择“仅分叉点之后”时，不做“失败即自动回退完整回收”，避免误扩大回收范围。
+    const requestedRange = req.range === "full" ? "full" : "since_fork";
+    let forkBaseSha: string | undefined = undefined;
+
+    if (requestedRange === "since_fork") {
+      const manualRef = String(req.forkBaseRef || "").trim();
+
+      // 1) 手动分叉点：优先使用，并做严格校验（必须为源分支祖先）
+      if (manualRef) {
+        const rp = await execGitAsync({ gitPath, argv: ["-C", repoMainPath, "rev-parse", "--verify", `${manualRef}^{commit}`], timeoutMs: 12_000 });
+        if (!rp.ok) {
+          return { ok: false, errorCode: "FORK_POINT_INVALID", details: { repoMainPath, baseBranch, wtBranch, error: pickGitFailureText(rp) || "分叉点提交号无效" } };
+        }
+        const sha = String(rp.stdout || "").trim();
+        const anc = await execGitAsync({ gitPath, argv: ["-C", repoMainPath, "merge-base", "--is-ancestor", sha, wtBranch], timeoutMs: 12_000 });
+        // merge-base --is-ancestor：0=是祖先（可用），1=否，其它=错误
+        if (anc.exitCode !== 0) {
+          const msg = anc.exitCode === 1 ? "分叉点不是源分支的祖先" : (pickGitFailureText(anc) || "校验分叉点失败");
+          return { ok: false, errorCode: "FORK_POINT_INVALID", details: { repoMainPath, baseBranch, wtBranch, error: msg } };
+        }
+        forkBaseSha = sha;
+        log(`分叉点边界：${forkBaseSha}（来源：手动指定）。\n`);
+      } else {
+        // 2) 自动分叉点：优先创建记录，否则 merge-base
+        const fork = await resolveForkBaseShaAsync({ repoMainPath, gitPath, baseBranch, wtBranch, meta, onLog: req.onLog });
+        if (!fork.ok) {
+          return { ok: false, errorCode: "FORK_POINT_UNAVAILABLE", details: { repoMainPath, baseBranch, wtBranch, error: fork.error } };
+        }
+        forkBaseSha = fork.sha;
+        const sourceLabel = fork.source === "meta" ? "创建记录" : "merge-base";
+        log(`分叉点边界：${forkBaseSha}（来源：${sourceLabel}）。\n`);
+      }
+    }
+
+    log(`开始执行回收（范围：${requestedRange === "since_fork" ? "仅分叉点之后" : "完整"}；模式：${req.mode}）。\n`);
+    const core = await recycleWorktreeCoreAsync({ wt, repoMainPath, baseBranch, wtBranch, range: requestedRange, forkBaseSha, mode: req.mode, gitPath, commitMessage: req.commitMessage, onLog: req.onLog });
     if (!core.ok) {
       // 失败兜底：若已 stash，则不要自动恢复，避免叠加到冲突/中断态
       if (stashes.length > 0) {

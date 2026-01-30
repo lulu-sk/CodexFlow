@@ -45,6 +45,8 @@ import { getBaseUserDataDir, getFeatureFlags, updateFeatureFlags } from "./featu
 import { readDebugConfig, getDebugConfig, onDebugChanged, watchDebugConfig, updateDebugConfig, resetDebugConfig, unwatchDebugConfig } from "./debugConfig";
 import { getGitDirInfoBatchAsync } from "./git/status";
 import { autoCommitWorktreeIfDirtyAsync, createWorktreesAsync, listLocalBranchesAsync, recycleWorktreeAsync, removeWorktreeAsync } from "./git/worktreeOps";
+import { resetWorktreeAsync } from "./git/worktreeReset";
+import { resolveWorktreeForkPointAsync, searchForkPointCommitsAsync, validateForkPointRefAsync } from "./git/worktreeForkPoint";
 import { WorktreeCreateTaskManager } from "./git/worktreeCreateTasks";
 import { WorktreeRecycleTaskManager } from "./git/worktreeRecycleTasks";
 import { loadDirTreeStore, saveDirTreeStore } from "./stores/dirTreeStore";
@@ -2134,6 +2136,8 @@ ipcMain.handle("gitWorktree.recycleTaskStart", async (_e, args: any) => {
     const worktreePath = String(args?.worktreePath || "").trim();
     const baseBranch = String(args?.baseBranch || "").trim();
     const wtBranch = String(args?.wtBranch || "").trim();
+    const range = args?.range === "full" ? "full" : "since_fork";
+    const forkBaseRef = typeof args?.forkBaseRef === "string" ? String(args.forkBaseRef).trim() : undefined;
     const mode = String(args?.mode || "").trim();
     const commitMessage = typeof args?.commitMessage === "string" ? args.commitMessage : undefined;
     const autoStashBaseWorktree = args?.autoStashBaseWorktree === true;
@@ -2141,7 +2145,7 @@ ipcMain.handle("gitWorktree.recycleTaskStart", async (_e, args: any) => {
     if (mode !== "squash" && mode !== "rebase") return { ok: false, error: "invalid mode" };
     const cfg = settings.getSettings() as any;
     const gitPath = String(cfg?.gitWorktree?.gitPath || "").trim() || "git";
-    return worktreeRecycleTasks.startOrReuse({ worktreePath, baseBranch, wtBranch, mode: mode as any, gitPath, commitMessage, autoStashBaseWorktree });
+    return worktreeRecycleTasks.startOrReuse({ worktreePath, baseBranch, wtBranch, range, forkBaseRef, mode: mode as any, gitPath, commitMessage, autoStashBaseWorktree });
   } catch (e: any) {
     return { ok: false, error: String(e?.message || e) };
   }
@@ -2166,6 +2170,8 @@ ipcMain.handle("gitWorktree.recycle", async (_e, args: any) => {
     const worktreePath = String(args?.worktreePath || "").trim();
     const baseBranch = String(args?.baseBranch || "").trim();
     const wtBranch = String(args?.wtBranch || "").trim();
+    const range = args?.range === "full" ? "full" : "since_fork";
+    const forkBaseRef = typeof args?.forkBaseRef === "string" ? String(args.forkBaseRef).trim() : undefined;
     const mode = String(args?.mode || "").trim();
     const commitMessage = typeof args?.commitMessage === "string" ? args.commitMessage : undefined;
     const autoStashBaseWorktree = args?.autoStashBaseWorktree === true;
@@ -2173,7 +2179,7 @@ ipcMain.handle("gitWorktree.recycle", async (_e, args: any) => {
     if (mode !== "squash" && mode !== "rebase") return { ok: false, errorCode: "INVALID_ARGS", details: { mode } };
     const cfg = settings.getSettings() as any;
     const gitPath = String(cfg?.gitWorktree?.gitPath || "").trim() || "git";
-    return await recycleWorktreeAsync({ worktreePath, baseBranch, wtBranch, mode, gitPath, commitMessage, autoStashBaseWorktree });
+    return await recycleWorktreeAsync({ worktreePath, baseBranch, wtBranch, range, forkBaseRef, mode, gitPath, commitMessage, autoStashBaseWorktree });
   } catch (e: any) {
     return { ok: false, errorCode: "UNKNOWN", details: { error: String(e?.message || e) } };
   }
@@ -2194,6 +2200,75 @@ ipcMain.handle("gitWorktree.remove", async (_e, args: any) => {
     return await removeWorktreeAsync({ worktreePath, gitPath, deleteBranch, forceDeleteBranch, forceRemoveWorktree });
   } catch (e: any) {
     return { ok: false, removedWorktree: false, removedBranch: false, error: String(e?.message || e) };
+  }
+});
+
+/**
+ * Git：对齐 worktree 到主工作区当前基线，并恢复为干净状态（保持目录，不删除）。
+ */
+ipcMain.handle("gitWorktree.reset", async (_e, args: any) => {
+  try {
+    const worktreePath = String(args?.worktreePath || "").trim();
+    if (!worktreePath) return { ok: false, needsForce: false, error: "missing worktreePath" };
+    const targetRef = typeof args?.targetRef === "string" ? String(args.targetRef).trim() : undefined;
+    const force = args?.force === true;
+    const cfg = settings.getSettings() as any;
+    const gitPath = String(cfg?.gitWorktree?.gitPath || "").trim() || "git";
+    return await resetWorktreeAsync({ worktreePath, targetRef, force, gitPath });
+  } catch (e: any) {
+    return { ok: false, needsForce: false, error: String(e?.message || e) };
+  }
+});
+
+/**
+ * Git：解析 worktree 的分叉点（用于“仅分叉点之后回收”的 UI 展示与手动校验）。
+ */
+ipcMain.handle("gitWorktree.resolveForkPoint", async (_e, args: any) => {
+  try {
+    const worktreePath = String(args?.worktreePath || "").trim();
+    const baseBranch = String(args?.baseBranch || "").trim();
+    const wtBranch = String(args?.wtBranch || "").trim();
+    if (!worktreePath || !baseBranch || !wtBranch) return { ok: false, error: "missing args" };
+    const cfg = settings.getSettings() as any;
+    const gitPath = String(cfg?.gitWorktree?.gitPath || "").trim() || "git";
+    return await resolveWorktreeForkPointAsync({ worktreePath, baseBranch, wtBranch, gitPath });
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+});
+
+/**
+ * Git：搜索可用作“分叉点”的提交列表（用于分叉点下拉框搜索）。
+ */
+ipcMain.handle("gitWorktree.searchForkPointCommits", async (_e, args: any) => {
+  try {
+    const worktreePath = String(args?.worktreePath || "").trim();
+    const wtBranch = String(args?.wtBranch || "").trim();
+    const query = typeof args?.query === "string" ? String(args.query || "").trim() : undefined;
+    const limit = Number.isFinite(Number(args?.limit)) ? Math.floor(Number(args.limit)) : undefined;
+    if (!worktreePath || !wtBranch) return { ok: false, error: "missing args" };
+    const cfg = settings.getSettings() as any;
+    const gitPath = String(cfg?.gitWorktree?.gitPath || "").trim() || "git";
+    return await searchForkPointCommitsAsync({ worktreePath, wtBranch, query, limit, gitPath });
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+});
+
+/**
+ * Git：校验用户手动输入的分叉点引用（提交号/引用名），并返回提交摘要。
+ */
+ipcMain.handle("gitWorktree.validateForkPointRef", async (_e, args: any) => {
+  try {
+    const worktreePath = String(args?.worktreePath || "").trim();
+    const wtBranch = String(args?.wtBranch || "").trim();
+    const ref = String(args?.ref || "").trim();
+    if (!worktreePath || !wtBranch || !ref) return { ok: false, error: "missing args" };
+    const cfg = settings.getSettings() as any;
+    const gitPath = String(cfg?.gitWorktree?.gitPath || "").trim() || "git";
+    return await validateForkPointRefAsync({ worktreePath, wtBranch, ref, gitPath });
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) };
   }
 });
 

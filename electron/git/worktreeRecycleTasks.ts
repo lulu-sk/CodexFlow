@@ -13,6 +13,10 @@ export type WorktreeRecycleTaskSnapshot = {
   repoMainPath: string;
   baseBranch: string;
   wtBranch: string;
+  /** 回收范围：默认仅回收分叉点之后的提交；可选完整回收。 */
+  range: "since_fork" | "full";
+  /** 可选：手动指定的分叉点引用（提交号/引用），仅在 range=since_fork 时生效。 */
+  forkBaseRef?: string;
   mode: "squash" | "rebase";
   autoStashBaseWorktree: boolean;
   status: WorktreeRecycleTaskStatus;
@@ -54,6 +58,8 @@ export class WorktreeRecycleTaskManager {
     worktreePath: string;
     baseBranch: string;
     wtBranch: string;
+    range?: "since_fork" | "full";
+    forkBaseRef?: string;
     mode: "squash" | "rebase";
     gitPath?: string;
     commitMessage?: string;
@@ -62,6 +68,8 @@ export class WorktreeRecycleTaskManager {
     const worktreePath = String(args?.worktreePath || "").trim();
     const baseBranch = String(args?.baseBranch || "").trim();
     const wtBranch = String(args?.wtBranch || "").trim();
+    const range = args?.range === "full" ? "full" : "since_fork";
+    const forkBaseRef = typeof args?.forkBaseRef === "string" ? String(args.forkBaseRef).trim() : "";
     const mode = args?.mode;
     if (!worktreePath) return { ok: false, error: "missing worktreePath" };
     if (!baseBranch) return { ok: false, error: "missing baseBranch" };
@@ -89,6 +97,8 @@ export class WorktreeRecycleTaskManager {
       repoMainPath,
       baseBranch,
       wtBranch,
+      range,
+      forkBaseRef: forkBaseRef || undefined,
       mode,
       autoStashBaseWorktree: args?.autoStashBaseWorktree === true,
       status: "running",
@@ -103,7 +113,7 @@ export class WorktreeRecycleTaskManager {
     this.runningByKey.set(key, taskId);
 
     // 后台执行：不阻塞 IPC 回包
-    void this.runRecycleTask(taskId, { ...args, worktreePath, baseBranch, wtBranch, mode }).catch(() => {});
+    void this.runRecycleTask(taskId, { ...args, worktreePath, baseBranch, wtBranch, range, forkBaseRef: forkBaseRef || undefined, mode }).catch(() => {});
     return { ok: true, taskId, reused: false };
   }
 
@@ -125,7 +135,17 @@ export class WorktreeRecycleTaskManager {
    */
   private async runRecycleTask(
     taskId: string,
-    args: { worktreePath: string; baseBranch: string; wtBranch: string; mode: "squash" | "rebase"; gitPath?: string; commitMessage?: string; autoStashBaseWorktree?: boolean }
+    args: {
+      worktreePath: string;
+      baseBranch: string;
+      wtBranch: string;
+      range: "since_fork" | "full";
+      forkBaseRef?: string;
+      mode: "squash" | "rebase";
+      gitPath?: string;
+      commitMessage?: string;
+      autoStashBaseWorktree?: boolean;
+    }
   ): Promise<void> {
     const t = this.tasks.get(taskId);
     if (!t) return;
@@ -139,6 +159,8 @@ export class WorktreeRecycleTaskManager {
         worktreePath: args.worktreePath,
         baseBranch: args.baseBranch,
         wtBranch: args.wtBranch,
+        range: args.range,
+        forkBaseRef: args.forkBaseRef,
         mode: args.mode,
         gitPath: args.gitPath,
         commitMessage: args.commitMessage,
@@ -201,6 +223,8 @@ export class WorktreeRecycleTaskManager {
       repoMainPath: t.repoMainPath,
       baseBranch: t.baseBranch,
       wtBranch: t.wtBranch,
+      range: t.range,
+      forkBaseRef: t.forkBaseRef,
       mode: t.mode,
       autoStashBaseWorktree: t.autoStashBaseWorktree,
       status: t.status,

@@ -11,6 +11,11 @@ export type WorktreeMeta = {
   repoMainPath: string;
   /** 创建时选择的基分支 */
   baseBranch: string;
+  /**
+   * 创建时基分支的提交号（用于“按分叉点之后回收”的默认边界）。
+   * - 可选：旧数据可能不存在；此时回收可回退为 merge-base 推断。
+   */
+  baseRefAtCreate?: string;
   /** 为该 worktree 生成的专用分支 */
   wtBranch: string;
   /** 创建时间（毫秒时间戳） */
