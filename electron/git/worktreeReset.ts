@@ -3,7 +3,8 @@
 
 import { execGitAsync, spawnGitAsync } from "./exec";
 import { toFsPathAbs, toFsPathKey } from "./pathKey";
-import { getWorktreeMeta, setWorktreeMeta, type WorktreeMeta } from "../stores/worktreeMetaStore";
+import { resolveRepoMainPathFromWorktreeAsync } from "./worktreeMetaResolve";
+import { buildNextWorktreeMeta, getWorktreeMeta, setWorktreeMeta, type WorktreeMeta } from "../stores/worktreeMetaStore";
 
 export type ResetWorktreeResult =
   | { ok: true }
@@ -34,15 +35,38 @@ export async function resetWorktreeAsync(req: {
   if (existing) return await existing;
 
   const task = (async (): Promise<ResetWorktreeResult> => {
-    const meta = getWorktreeMeta(wt);
-    if (!meta) return { ok: false, needsForce: false, error: "missing worktree meta" };
-
     const gitPath = req.gitPath;
-    const repoMainPath = toFsPathAbs(String(meta.repoMainPath || ""));
-    const wtBranch = String(meta.wtBranch || "").trim();
-    const baseBranch = String(meta.baseBranch || "").trim();
+
+    // 1) 读取创建记录；缺失时通过 git worktree 信息推断 repoMainPath/baseBranch/wtBranch
+    const existingMeta = getWorktreeMeta(wt);
+    let repoMainPath = toFsPathAbs(String(existingMeta?.repoMainPath || ""));
+    if (!repoMainPath) {
+      const inferred = await resolveRepoMainPathFromWorktreeAsync({ worktreePath: wt, gitPath, timeoutMs: 12_000 });
+      if (!inferred.ok) return { ok: false, needsForce: false, error: inferred.error || "missing repoMainPath" };
+      repoMainPath = inferred.repoMainPath;
+    }
+
+    const metaWtBranch = String(existingMeta?.wtBranch || "").trim();
+    const metaBaseBranch = String(existingMeta?.baseBranch || "").trim();
+    let wtBranch = metaWtBranch;
+    if (!wtBranch) {
+      const br = await execGitAsync({ gitPath, argv: ["-C", wt, "symbolic-ref", "--short", "-q", "HEAD"], timeoutMs: 8000 });
+      wtBranch = String(br.stdout || "").trim();
+    }
+    if (!wtBranch) return { ok: false, needsForce: false, error: "无法确定 worktree 当前分支（可能处于 detached HEAD）" };
+
+    let baseBranch = metaBaseBranch;
+    if (!baseBranch) {
+      const br = await execGitAsync({ gitPath, argv: ["-C", repoMainPath, "symbolic-ref", "--short", "-q", "HEAD"], timeoutMs: 8000 });
+      baseBranch = String(br.stdout || "").trim();
+    }
+
     const targetRef = String(req.targetRef || baseBranch).trim();
-    if (!repoMainPath || !wtBranch || !targetRef) return { ok: false, needsForce: false, error: "missing args" };
+    if (!targetRef) return { ok: false, needsForce: false, error: "无法确定目标基线（请手动指定 targetRef）" };
+
+    // 2) 写入/更新映射，保证后续 delete/recycle/fork-point 等功能无需依赖“创建时记录”
+    let meta: WorktreeMeta = buildNextWorktreeMeta({ existing: existingMeta, repoMainPath, baseBranch: baseBranch || metaBaseBranch, wtBranch });
+    try { setWorktreeMeta(wt, meta); } catch {}
 
     // 1) 检查 worktree 是否有未提交修改（未确认 force 则拒绝）
     const st = await execGitAsync({ gitPath, argv: ["-C", wt, "status", "--porcelain"], timeoutMs: 8000 });
@@ -66,11 +90,8 @@ export async function resetWorktreeAsync(req: {
     // 3) 更新创建基线（用于后续回收默认边界）
     const shaRes = await execGitAsync({ gitPath, argv: ["-C", repoMainPath, "rev-parse", targetRef], timeoutMs: 12_000 });
     const sha = shaRes.ok ? String(shaRes.stdout || "").trim() : "";
-    const nextMeta: WorktreeMeta = {
-      ...meta,
-      baseRefAtCreate: sha || meta.baseRefAtCreate,
-    };
-    try { setWorktreeMeta(wt, nextMeta); } catch {}
+    meta = buildNextWorktreeMeta({ existing: meta, repoMainPath, baseBranch: baseBranch || meta.baseBranch, wtBranch, baseRefAtCreate: sha || meta.baseRefAtCreate });
+    try { setWorktreeMeta(wt, meta); } catch {}
     return { ok: true };
   })();
 

@@ -9,8 +9,9 @@ import path from "node:path";
 import { execGitAsync, isGitExecutableUnavailable, spawnGitAsync } from "./exec";
 import { toFsPathAbs, toFsPathKey } from "./pathKey";
 import { parseWorktreeListPorcelain } from "./worktreeList";
+import { resolveRepoMainPathFromWorktreeAsync, resolveWorktreeBranchNameAsync } from "./worktreeMetaResolve";
 import { buildRestoreCommandsForWorktreeStateSnapshot, cleanupWorktreeStateSnapshotAsync, createWorktreeStateSnapshotAsync, restoreWorktreeStateSnapshotAsync, type WorktreeStateSnapshot } from "./worktreeStateSnapshot";
-import { deleteWorktreeMeta, getWorktreeMeta, setWorktreeMeta, type WorktreeMeta } from "../stores/worktreeMetaStore";
+import { buildNextWorktreeMeta, deleteWorktreeMeta, getWorktreeMeta, setWorktreeMeta, type WorktreeMeta } from "../stores/worktreeMetaStore";
 
 export type GitWorktreeBranchInfo = {
   ok: boolean;
@@ -1125,9 +1126,6 @@ async function recycleWorktreeCoreAsync(args: {
  */
 export async function recycleWorktreeAsync(req: RecycleWorktreeRequest): Promise<RecycleWorktreeResult> {
   const wt = toFsPathAbs(req.worktreePath);
-  const meta = getWorktreeMeta(wt);
-  const repoMainPath = toFsPathAbs(meta?.repoMainPath || "");
-  if (!repoMainPath) return { ok: false, errorCode: "META_MISSING", details: { repoMainPath: undefined } };
 
   /**
    * 中文说明：安全写日志，避免日志回调抛错影响主流程。
@@ -1139,7 +1137,23 @@ export async function recycleWorktreeAsync(req: RecycleWorktreeRequest): Promise
   const gitPath = req.gitPath;
   const baseBranch = String(req.baseBranch || "").trim();
   const wtBranch = String(req.wtBranch || "").trim();
-  if (!baseBranch || !wtBranch) return { ok: false, errorCode: "INVALID_ARGS", details: { repoMainPath, baseBranch, wtBranch } };
+  if (!baseBranch || !wtBranch) return { ok: false, errorCode: "INVALID_ARGS", details: { repoMainPath: undefined, baseBranch, wtBranch } };
+
+  // 1) 解析 repoMainPath：优先使用创建记录；缺失则尝试从 git worktree 信息推断
+  let meta: WorktreeMeta | null = getWorktreeMeta(wt);
+  let repoMainPath = toFsPathAbs(String(meta?.repoMainPath || ""));
+  if (!repoMainPath) {
+    const inferred = await resolveRepoMainPathFromWorktreeAsync({ worktreePath: wt, gitPath, timeoutMs: 12_000 });
+    if (!inferred.ok) return { ok: false, errorCode: "META_MISSING", details: { repoMainPath: undefined, error: inferred.error } };
+    repoMainPath = inferred.repoMainPath;
+  }
+
+  // 2) 记录/更新 base/wt 选择（用于下次默认值，以及 delete/reset 等后续操作）
+  try {
+    const nextMeta = buildNextWorktreeMeta({ existing: meta, repoMainPath, baseBranch, wtBranch });
+    setWorktreeMeta(wt, nextMeta);
+    meta = nextMeta;
+  } catch {}
 
   const repoKey = toFsPathKey(repoMainPath);
   return await runExclusiveInRepoAsync(repoKey, async () => {
@@ -1382,11 +1396,27 @@ export async function removeWorktreeAsync(req: RemoveWorktreeRequest): Promise<R
   if (existing) return await existing;
 
   const task = (async (): Promise<RemoveWorktreeResult> => {
-    const meta = getWorktreeMeta(wt);
-    const repoMainPath = toFsPathAbs(meta?.repoMainPath || "");
-    if (!repoMainPath) return { ok: false, removedWorktree: false, removedBranch: false, error: "missing repoMainPath" };
-
     const gitPath = req.gitPath;
+    const meta = getWorktreeMeta(wt);
+    let repoMainPath = toFsPathAbs(String(meta?.repoMainPath || ""));
+    if (!repoMainPath) {
+      const inferred = await resolveRepoMainPathFromWorktreeAsync({ worktreePath: wt, gitPath, timeoutMs: 12_000 });
+      if (!inferred.ok) return { ok: false, removedWorktree: false, removedBranch: false, error: inferred.error || "missing repoMainPath" };
+      repoMainPath = inferred.repoMainPath;
+    }
+
+    // 中文说明：deleteBranch=true 时需要的关键信息尽量在 remove 之前解析（避免目录被移除后无法读取）
+    let resolvedWtBranch = String(meta?.wtBranch || "").trim();
+    if (req.deleteBranch && !resolvedWtBranch) {
+      const inferred = await resolveWorktreeBranchNameAsync({ repoDir: repoMainPath, worktreePath: wt, gitPath, timeoutMs: 12_000 });
+      if (inferred.ok && !inferred.detached) resolvedWtBranch = String(inferred.branch || "").trim();
+    }
+
+    let baseRefForMergedCheck = String(meta?.baseBranch || "").trim();
+    if (req.deleteBranch && !baseRefForMergedCheck) {
+      const cur = await execGitAsync({ gitPath, argv: ["-C", repoMainPath, "symbolic-ref", "--short", "-q", "HEAD"], timeoutMs: 8000 });
+      baseRefForMergedCheck = String(cur.stdout || "").trim() || "HEAD";
+    }
     // 中文说明：大仓库/大工作区删除可能很慢（主要耗时在目录移除），需要更长超时避免误判失败。
     const removeTimeoutMs = 15 * 60_000;
 
@@ -1415,10 +1445,10 @@ export async function removeWorktreeAsync(req: RemoveWorktreeRequest): Promise<R
 
     let removedBranch = false;
     if (req.deleteBranch) {
-      const wtBranch = String(meta?.wtBranch || "").trim();
-      const baseBranch = String(meta?.baseBranch || "").trim();
-      if (wtBranch && baseBranch) {
-        const merged = await execGitAsync({ gitPath, argv: ["-C", repoMainPath, "merge-base", "--is-ancestor", wtBranch, baseBranch], timeoutMs: 10_000 });
+      const wtBranch = String(resolvedWtBranch || "").trim();
+      const baseRef = String(baseRefForMergedCheck || "").trim() || "HEAD";
+      if (wtBranch) {
+        const merged = await execGitAsync({ gitPath, argv: ["-C", repoMainPath, "merge-base", "--is-ancestor", wtBranch, baseRef], timeoutMs: 10_000 });
         // merge-base --is-ancestor：0=是祖先（已合并），1=否，其它=错误
         if (merged.exitCode !== 0 && merged.exitCode !== 1) {
           return { ok: false, removedWorktree, removedBranch: false, error: merged.error || merged.stderr.trim() || "git merge-base failed" };

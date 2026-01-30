@@ -103,5 +103,80 @@ describe("worktreeForkPoint（分叉点解析/搜索/校验）", () => {
     },
     { timeout: 60_000 }
   );
+
+  it(
+    "创建记录缺失时，也能通过 git worktree 信息推断 repoMainPath 并正常工作",
+    async () => {
+      const repo = await fsp.mkdtemp(path.join(os.tmpdir(), "codexflow-wt-forkpoint-main-"));
+      const wtParent = await fsp.mkdtemp(path.join(os.tmpdir(), "codexflow-wt-forkpoint-child-parent-"));
+      const wtDir = path.join(wtParent, "wt");
+      const userData = await fsp.mkdtemp(path.join(os.tmpdir(), "codexflow-userdata-"));
+      userDataDir = userData;
+
+      try {
+        await git(repo, ["init"]);
+        await git(repo, ["config", "user.name", "CodexFlow"]);
+        await git(repo, ["config", "user.email", "codexflow@example.com"]);
+        await git(repo, ["config", "core.autocrlf", "false"]);
+        await git(repo, ["config", "core.eol", "lf"]);
+
+        await git(repo, ["checkout", "-b", "main"]);
+
+        await fsp.writeFile(path.join(repo, "a.txt"), "A\n", "utf8");
+        await git(repo, ["add", "a.txt"]);
+        await git(repo, ["commit", "-m", "main: init"]);
+        const commit1 = (await git(repo, ["rev-parse", "HEAD"])).trim();
+
+        await fsp.writeFile(path.join(repo, "b.txt"), "B\n", "utf8");
+        await git(repo, ["add", "b.txt"]);
+        await git(repo, ["commit", "-m", "main: base"]);
+        const commit2 = (await git(repo, ["rev-parse", "HEAD"])).trim();
+
+        // 创建子 worktree（分支 wt，从 main 当前 HEAD=commit2 创建）
+        await git(repo, ["worktree", "add", "-b", "wt", wtDir, "main"]);
+
+        // 源分支提交
+        await fsp.writeFile(path.join(wtDir, "w.txt"), "W\n", "utf8");
+        await git(wtDir, ["add", "w.txt"]);
+        await git(wtDir, ["commit", "-m", "wt: change"]);
+        const wtCommit = (await git(wtDir, ["rev-parse", "HEAD"])).trim();
+
+        // base 分支继续前进：制造一个“非源分支祖先”的提交，用于 validate 失败用例
+        await git(repo, ["checkout", "main"]);
+        await fsp.writeFile(path.join(repo, "c.txt"), "C\n", "utf8");
+        await git(repo, ["add", "c.txt"]);
+        await git(repo, ["commit", "-m", "main: after fork"]);
+        const mainAfterFork = (await git(repo, ["rev-parse", "HEAD"])).trim();
+
+        // 不写入创建记录：验证 resolve/search/validate 仍可用
+        const fork = await resolveWorktreeForkPointAsync({ worktreePath: wtDir, baseBranch: "main", wtBranch: "wt" });
+        expect(fork.ok).toBe(true);
+        if (fork.ok) {
+          expect(fork.forkPoint.repoMainPath).toBe(repo);
+          expect(fork.forkPoint.recordedSha).toBeUndefined();
+          expect(fork.forkPoint.sha).toBe(commit2);
+          expect(fork.forkPoint.autoCommit?.sha).toBe(commit2);
+          expect(fork.forkPoint.source).toBe("merge-base");
+        }
+
+        const search = await searchForkPointCommitsAsync({ worktreePath: wtDir, wtBranch: "wt", query: "wt: change", limit: 50 });
+        expect(search.ok).toBe(true);
+        if (search.ok) {
+          expect(search.items.some((x) => x.sha === wtCommit && x.subject === "wt: change")).toBe(true);
+        }
+
+        const okRef = await validateForkPointRefAsync({ worktreePath: wtDir, wtBranch: "wt", ref: commit1 });
+        expect(okRef.ok).toBe(true);
+
+        const badRef = await validateForkPointRefAsync({ worktreePath: wtDir, wtBranch: "wt", ref: mainAfterFork });
+        expect(badRef.ok).toBe(false);
+      } finally {
+        try { await fsp.rm(wtParent, { recursive: true, force: true }); } catch {}
+        try { await fsp.rm(repo, { recursive: true, force: true }); } catch {}
+        try { await fsp.rm(userData, { recursive: true, force: true }); } catch {}
+      }
+    },
+    { timeout: 60_000 }
+  );
 });
 

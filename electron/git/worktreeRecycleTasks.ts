@@ -89,7 +89,7 @@ export class WorktreeRecycleTaskManager {
     const taskId = this.uid();
     const now = Date.now();
     const meta = getWorktreeMeta(worktreePath);
-    const repoMainPath = toFsPathAbs(String(meta?.repoMainPath || ""));
+    const repoMainPath = toFsPathAbs(String(meta?.repoMainPath || worktreePath));
 
     const state: WorktreeRecycleTaskState = {
       taskId,
