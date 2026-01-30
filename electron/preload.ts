@@ -324,6 +324,12 @@ contextBridge.exposeInMainWorld('host', {
     purgeAutoProfiles: async (args?: { includeCurrent?: boolean }) => {
       return await ipcRenderer.invoke('storage.autoProfiles.purge', args);
     },
+    listWorktreeProfiles: async () => {
+      return await ipcRenderer.invoke('storage.worktreeProfiles.info');
+    },
+    purgeWorktreeProfiles: async (args?: { includeCurrent?: boolean }) => {
+      return await ipcRenderer.invoke('storage.worktreeProfiles.purge', args);
+    },
   },
   wsl: {
     listDistros: async () => {

@@ -456,6 +456,35 @@ export interface StorageAPI {
     errors?: Array<{ profileId: string; path: string; message: string }>;
     error?: string;
   }>;
+  listWorktreeProfiles(): Promise<{
+    ok: boolean;
+    baseUserData: string;
+    currentUserData: string;
+    count: number;
+    totalBytes: number;
+    items: Array<{
+      profileId: string;
+      dirName: string;
+      path: string;
+      totalBytes: number;
+      dirCount: number;
+      fileCount: number;
+      collectedAt: number;
+      isCurrent: boolean;
+    }>;
+    error?: string;
+  }>;
+  purgeWorktreeProfiles(args?: { includeCurrent?: boolean }): Promise<{
+    ok: boolean;
+    total: number;
+    removed: number;
+    skipped: number;
+    busy: number;
+    notFound: number;
+    bytesFreed: number;
+    errors?: Array<{ profileId: string; path: string; message: string }>;
+    error?: string;
+  }>;
 }
 
 export type CodexAccountInfo = {

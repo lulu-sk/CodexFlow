@@ -3787,6 +3787,38 @@ ipcMain.handle('storage.autoProfiles.purge', async (_e, args: { includeCurrent?:
     };
   }
 });
+// Dev-worktree 多开：wt-* profile 目录管理
+ipcMain.handle('storage.worktreeProfiles.info', async () => {
+  try {
+    return await (storage as any).getWorktreeProfilesInfo();
+  } catch (e: any) {
+    return {
+      ok: false,
+      baseUserData: '',
+      currentUserData: '',
+      count: 0,
+      totalBytes: 0,
+      items: [],
+      error: String(e),
+    };
+  }
+});
+ipcMain.handle('storage.worktreeProfiles.purge', async (_e, args: { includeCurrent?: boolean } = {}) => {
+  try {
+    return await (storage as any).purgeWorktreeProfiles(args);
+  } catch (e: any) {
+    return {
+      ok: false,
+      total: 0,
+      removed: 0,
+      skipped: 0,
+      busy: 0,
+      notFound: 0,
+      bytesFreed: 0,
+      error: String(e),
+    };
+  }
+});
 
 // 返回可用 WSL 发行版列表（仅列出名称）
 ipcMain.handle('wsl.listDistros', async () => {
