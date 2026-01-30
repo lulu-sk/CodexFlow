@@ -7554,7 +7554,21 @@ export default function CodexFlowManagerUI() {
         <DialogContent className="max-w-sm">
           <DialogHeader>
             <DialogTitle>{t('settings:cleanupConfirm.title')}</DialogTitle>
-            <DialogDescription>{t('history:confirmPermanentDelete')}</DialogDescription>
+            <DialogDescription>
+              {t('history:confirmPermanentDelete')}
+              {confirmDelete.item && (
+                <div className="mt-3 rounded border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:text-[var(--cf-text-secondary)]">
+                  <div className="font-semibold text-[var(--cf-text-primary)] mb-1 truncate">
+                    {confirmDelete.item.title || t('history:untitledSessionTitle')}
+                  </div>
+                  {confirmDelete.item.preview && (
+                    <div className="line-clamp-3 opacity-80 whitespace-pre-wrap font-mono text-[11px]">
+                      {confirmDelete.item.preview}
+                    </div>
+                  )}
+                </div>
+              )}
+            </DialogDescription>
           </DialogHeader>
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="outline" onClick={() => setConfirmDelete((m) => ({ ...m, open: false }))}>{t('common:cancel')}</Button>
@@ -9472,9 +9486,19 @@ export default function CodexFlowManagerUI() {
           <DialogHeader>
             <DialogTitle>{t('projects:hideTemporaryTitle')}</DialogTitle>
             <DialogDescription>
-              {hideProjectConfirm.project?.name
-                ? t('projects:hideTemporaryDescriptionNamed', { name: hideProjectConfirm.project.name })
-                : t('projects:hideTemporaryDescription')}
+              {t('projects:hideTemporaryDescription')}
+              {hideProjectConfirm.project?.name && (
+                <div className="mt-4 rounded border border-slate-200 bg-slate-50 p-3 text-center dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)]">
+                  <div className="text-sm font-semibold text-slate-900 dark:text-[var(--cf-text-primary)]">
+                    {hideProjectConfirm.project.name}
+                  </div>
+                  {hideProjectConfirm.project.id && dirTreeStore.labelById[hideProjectConfirm.project.id] && (
+                    <div className="mt-1 text-xs text-slate-500 dark:text-[var(--cf-text-muted)] truncate">
+                      {dirTreeStore.labelById[hideProjectConfirm.project.id]}
+                    </div>
+                  )}
+                </div>
+              )}
             </DialogDescription>
           </DialogHeader>
           <div className="flex justify-end gap-2 pt-2">
