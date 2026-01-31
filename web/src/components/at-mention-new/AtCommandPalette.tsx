@@ -74,14 +74,17 @@ export default function AtCommandPalette(props: AtCommandPaletteProps) {
   }, [level, scope, query]);
 
   const [results, setResults] = useState<SearchResult[]>([]);
+  const [loading, setLoading] = useState(false);
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      if (level !== 'results') { setResults([]); return; }
+      if (level !== 'results') { setResults([]); setLoading(false); return; }
+      if (!cancelled) setLoading(true);
       try {
         const list = await searchAtItems(query, scope, 30);
         if (!cancelled) setResults(list);
       } catch { if (!cancelled) setResults([]); }
+      finally { if (!cancelled) setLoading(false); }
     })();
     return () => { cancelled = true; };
   }, [level, scope, query]);
@@ -214,7 +217,7 @@ export default function AtCommandPalette(props: AtCommandPaletteProps) {
           <ScrollArea className="h-[210px]">
             <div className="py-1">
               {results.length === 0 && (
-                <div className="px-3 py-4 text-sm text-[var(--cf-text-muted)]">{t('at:noResults')}</div>
+                <div className="px-3 py-4 text-sm text-[var(--cf-text-muted)]">{loading ? t('at:loading') : t('at:noResults')}</div>
               )}
               {results.map((r, idx) => {
                 const it = r.item;

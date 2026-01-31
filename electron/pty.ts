@@ -21,6 +21,12 @@ const dlog = (msg: string) => { if (TERM_DEBUG) { try { perfLogger.log(msg); } c
 // 说明：用于渲染进程意外 reload/HMR 后恢复“滚动区”内容，避免用户误以为任务丢失。
 // 取值策略：与 xterm scrollback(10000) 的量级匹配，避免无限增长占用内存。
 const PTY_BACKLOG_MAX_CHARS = 1_200_000;
+// PTY 输出合并：将高频碎片输出合并为较少的 IPC 消息，减少主/渲染进程消息队列压力。
+// 说明：该值越小越“实时”，但 IPC 次数越多；16ms 约等于 60fps，实践中对 UI/CPU 更友好。
+const PTY_IPC_FLUSH_MS = 16;
+// 中文说明：单个 PTY 在一次 flush 窗口内允许积累的最大字符数（超过则裁剪旧数据）。
+// 目的：避免渲染卡顿/不可见时 IPC 队列与字符串拼接无上限增长，最终导致白屏/崩溃。
+const PTY_IPC_MAX_PENDING_CHARS = 280_000;
 
 /**
  * 将字符串转换为 Bash 单引号安全字面量。
@@ -162,9 +168,17 @@ function appendWslEnv(existing: string | undefined, keys: string[]): string {
   return list.join(":");
 }
 
+type PtyIpcPendingState = {
+  timer: NodeJS.Timeout | null;
+  chunks: string[];
+  totalChars: number;
+  droppedChars: number;
+};
+
 export class PTYManager {
   private sessions = new Map<string, IPty>();
   private backlogs = new Map<string, PtyBacklogBuffer>();
+  private ipcPendingById = new Map<string, PtyIpcPendingState>();
   private getWindow: () => BrowserWindow | null;
 
   constructor(getWindow: () => BrowserWindow | null) {
@@ -184,6 +198,104 @@ export class PTYManager {
       suppressMs: 800,
       logger: TERM_DEBUG ? dlog : undefined,
     });
+  }
+
+  /**
+   * 中文说明：将 PTY 输出合并后再发送到渲染进程，降低高频输出下的 IPC 消息数量。
+   *
+   * 设计目标：
+   * - 多终端并发 + 大量输出场景下，避免主/渲染进程消息队列被淹没；
+   * - 避免渲染层因事件分发与 xterm 写入过于频繁而出现“白屏但任务仍在跑”的假死状态。
+   *
+   * @param id - PTY 会话 id
+   * @param data - 本次新增输出片段
+   */
+  private enqueuePtyData(id: string, data: string): void {
+    const key = String(id || "").trim();
+    if (!key) return;
+    const chunk = String(data || "");
+    if (!chunk) return;
+
+    let state = this.ipcPendingById.get(key);
+    if (!state) {
+      state = { timer: null, chunks: [], totalChars: 0, droppedChars: 0 };
+      this.ipcPendingById.set(key, state);
+    }
+
+    state.chunks.push(chunk);
+    state.totalChars += chunk.length;
+
+    // 过载保护：仅保留尾部，避免 pending 在渲染侧卡顿时无限增长
+    if (state.totalChars > PTY_IPC_MAX_PENDING_CHARS) {
+      let overflow = state.totalChars - PTY_IPC_MAX_PENDING_CHARS;
+      while (overflow > 0 && state.chunks.length > 0) {
+        const first = state.chunks[0] || "";
+        if (first.length <= overflow) {
+          state.chunks.shift();
+          overflow -= first.length;
+          state.totalChars -= first.length;
+          state.droppedChars += first.length;
+          continue;
+        }
+        state.chunks[0] = first.slice(overflow);
+        state.totalChars -= overflow;
+        state.droppedChars += overflow;
+        overflow = 0;
+      }
+    }
+
+    if (state.timer) return;
+    state.timer = setTimeout(() => {
+      try { this.flushPtyData(key); } catch {}
+    }, PTY_IPC_FLUSH_MS);
+    try { (state.timer as any).unref?.(); } catch {}
+  }
+
+  /**
+   * 中文说明：立刻发送一次合并后的 PTY 输出，并清空 pending。
+   * @param id - PTY 会话 id
+   */
+  private flushPtyData(id: string): void {
+    const state = this.ipcPendingById.get(id);
+    if (!state) return;
+    try {
+      if (state.timer) {
+        try { clearTimeout(state.timer); } catch {}
+      }
+    } finally {
+      state.timer = null;
+    }
+
+    const dropped = state.droppedChars;
+    state.droppedChars = 0;
+    const data = state.chunks.length > 0 ? state.chunks.join("") : "";
+    state.chunks = [];
+    state.totalChars = 0;
+    this.ipcPendingById.delete(id);
+
+    if (!data && !dropped) return;
+    if (dropped > 0) {
+      // 中文说明：不把提示字样注入到终端输出流，避免破坏 TUI 的屏幕状态；仅在调试时记录。
+      try { dlog(`[pty] ipc.drop id=${id} dropped=${dropped}`); } catch {}
+    }
+    this.sendToRenderer('pty:data', { id, data });
+  }
+
+  /**
+   * 中文说明：在会话关闭/退出时清理 pending 定时器与缓存，避免泄漏。
+   * 注意：此方法不会发送残留数据；需要保留“最后一批输出”的场景应调用 flushPtyData。
+   * @param id - PTY 会话 id
+   */
+  private clearPendingPtyData(id: string): void {
+    const state = this.ipcPendingById.get(id);
+    if (!state) return;
+    try {
+      if (state.timer) {
+        try { clearTimeout(state.timer); } catch {}
+      }
+    } catch {} finally {
+      this.ipcPendingById.delete(id);
+    }
   }
 
   /**
@@ -296,10 +408,12 @@ export class PTYManager {
 
     proc.onData((data: string) => {
       try { this.backlogs.get(id)?.append(data); } catch {}
-      this.sendToRenderer('pty:data', { id, data });
+      this.enqueuePtyData(id, data);
     });
 
     proc.onExit((evt: { exitCode: number; signal?: number }) => {
+      // 中文说明：在退出前先 flush，避免最后一批输出被合并队列吞掉（例如短命令 < 16ms 即退出）。
+      try { this.flushPtyData(id); } catch {}
       this.sessions.delete(id);
       try { this.backlogs.get(id)?.clear(); } catch {}
       this.backlogs.delete(id);
@@ -369,6 +483,9 @@ export class PTYManager {
       try { p.kill(); } catch { /* noop */ }
       this.sessions.delete(id);
     }
+    // 中文说明：关闭时尽量把最后的 pending 输出发送出去，避免 UI 看到“少一截”。
+    try { this.flushPtyData(id); } catch {}
+    try { this.clearPendingPtyData(id); } catch {}
     try { this.backlogs.get(id)?.clear(); } catch {}
     this.backlogs.delete(id);
   }
@@ -412,6 +529,9 @@ export class PTYManager {
     for (const [id, p] of Array.from(this.sessions.entries())) {
       try { p.kill(); } catch {}
       this.sessions.delete(id);
+      // 中文说明：同 close(id)，在全量清理时也尽量 flush 尾部输出。
+      try { this.flushPtyData(id); } catch {}
+      try { this.clearPendingPtyData(id); } catch {}
       try { this.backlogs.get(id)?.clear(); } catch {}
       this.backlogs.delete(id);
     }

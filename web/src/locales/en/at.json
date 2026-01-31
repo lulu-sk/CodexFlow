@@ -1,6 +1,7 @@
 {
   "categoriesTitle": "Categories",
   "scopeAll": "All",
+  "loading": "Loading index...",
   "noResults": "No matches",
   "category": {
     "files": "Files & Folders",
