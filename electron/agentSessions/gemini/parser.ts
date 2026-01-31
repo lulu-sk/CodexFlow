@@ -142,11 +142,41 @@ export async function parseGeminiSessionFile(filePath: string, stat: Stats, opts
   };
 
   if (sizeBytes > maxBytes) {
+    // 文件过大时不做完整 JSON.parse；但索引列表仍需要 preview/title。
+    try {
+      const prefixBytes = Math.max(64 * 1024, Math.min(maxBytes, 512 * 1024));
+      const extracted = await extractGeminiSummaryFromJsonPrefix(filePath, prefixBytes);
+      if (extracted.rawDate) rawDate = extracted.rawDate;
+      if (extracted.resumeId) resumeId = extracted.resumeId;
+      if (extracted.cwd) cwd = extracted.cwd;
+      if (extracted.preview) preview = extracted.preview;
+    } catch {}
+
+    // hash 校验（避免把别的项目路径误归到当前会话）
+    if (cwd && projectHash) {
+      try {
+        const want = projectHash.toLowerCase();
+        const cands = deriveGeminiProjectHashCandidatesFromPath(cwd);
+        if (!cands.includes(want)) cwd = undefined;
+      } catch {
+        cwd = undefined;
+      }
+    }
+
+    // 兜底：若文件路径无法推断 shell，则尝试用会话内记录的 cwd 再推断一次。
+    if (runtimeShell === "unknown" && cwd) {
+      try {
+        const hint = detectRuntimeShell(cwd);
+        if (hint !== "unknown") runtimeShell = hint;
+      } catch {}
+    }
+
     const dirKey = cwd ? dirKeyFromCwd(cwd) : dirKeyOfFilePath(filePath);
+    const title = preview ? preview : path.basename(filePath);
     return {
       providerId: "gemini",
       id,
-      title: path.basename(filePath),
+      title,
       date,
       filePath,
       messages,
@@ -156,6 +186,7 @@ export async function parseGeminiSessionFile(filePath: string, stat: Stats, opts
       dirKey,
       preview,
       projectHash,
+      resumeId,
       runtimeShell,
     };
   }
@@ -250,6 +281,233 @@ export async function parseGeminiSessionFile(filePath: string, stat: Stats, opts
 }
 
 type GeminiExtractedMeta = { startTime?: unknown; lastUpdated?: unknown; firstTS?: unknown; lastTS?: unknown };
+type GeminiPrefixExtracted = { rawDate?: string; cwd?: string; preview?: string; resumeId?: string };
+
+/**
+ * 在不读取完整文件的情况下，从 Gemini 会话 JSON 的“前缀内容”中提取摘要信息：
+ * - sessionId（用于 continue/resume）
+ * - startTime/lastUpdated（用于 rawDate 展示）
+ * - messages 中首条 user 文本（用于 preview/title）
+ *
+ * 说明：
+ * - 这是索引阶段的性能兜底：Gemini 会话 JSON 可能很大（包含大量 toolCalls/result），但预览通常出现在文件头部。
+ * - 该方法只读取 prefixBytes 的前缀，解析失败时返回空对象，不影响主流程。
+ *
+ * @param filePath 会话文件路径
+ * @param prefixBytes 需要读取的前缀字节数（会被限制在合理范围内）
+ * @returns 提取到的摘要信息（尽力而为）
+ */
+async function extractGeminiSummaryFromJsonPrefix(filePath: string, prefixBytes: number): Promise<GeminiPrefixExtracted> {
+  try {
+    const safeBytes = Math.max(64 * 1024, Math.min(8 * 1024 * 1024, Number(prefixBytes || 0)));
+    const prefix = await readUtf8Prefix(filePath, safeBytes);
+    if (!prefix) return {};
+
+    // 优先在 messages 之前的头部提取 top-level 字段，避免误匹配到 toolCalls 里的同名键。
+    const messagesIdx = prefix.indexOf("\"messages\"");
+    const head = messagesIdx > 0 ? prefix.slice(0, messagesIdx) : prefix;
+
+    const resumeId = extractJsonStringFieldFromPrefix(head, "sessionId");
+    const rawDate = extractJsonStringFieldFromPrefix(head, "lastUpdated") || extractJsonStringFieldFromPrefix(head, "startTime");
+
+    // 预览：尽量从 messages 数组中解析出前几条 item，找到首条 user 文本。
+    const preview = tryExtractGeminiPreviewFromMessagesPrefix(prefix);
+
+    // cwd：Gemini CLI 通常不直接写入，但保留轻量兜底（若头部恰好有该字段）。
+    const cwd = extractJsonStringFieldFromPrefix(head, "cwd")
+      || extractJsonStringFieldFromPrefix(head, "projectDir")
+      || extractJsonStringFieldFromPrefix(head, "project_dir")
+      || extractJsonStringFieldFromPrefix(head, "workingDirectory")
+      || extractJsonStringFieldFromPrefix(head, "working_dir");
+
+    return {
+      rawDate: rawDate ? pickFirstStringOrNumberAsString(rawDate) : undefined,
+      resumeId: resumeId ? String(resumeId).trim() : undefined,
+      cwd: cwd ? tidyPathCandidate(cwd) : undefined,
+      preview,
+    };
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * 读取文件 UTF-8 前缀（最大 prefixBytes），用于大文件的轻量摘要提取。
+ *
+ * @param filePath 文件路径
+ * @param prefixBytes 需要读取的字节数
+ * @returns UTF-8 字符串（读取失败返回空串）
+ */
+async function readUtf8Prefix(filePath: string, prefixBytes: number): Promise<string> {
+  try {
+    const bytes = Math.max(1, Number(prefixBytes || 0));
+    const fh = await fs.open(filePath, "r");
+    try {
+      const buf = Buffer.allocUnsafe(bytes);
+      const { bytesRead } = await fh.read(buf, 0, bytes, 0);
+      return buf.subarray(0, bytesRead).toString("utf8");
+    } finally {
+      try { await fh.close(); } catch {}
+    }
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * 从 JSON 前缀中提取形如 `"key": "..."` 的字符串字段，并解码转义字符。
+ *
+ * 注意：仅用于索引阶段的“尽力而为”，不保证对所有非法/截断 JSON 都能成功。
+ *
+ * @param prefix JSON 前缀字符串
+ * @param key 需要提取的字段名
+ * @returns 解码后的字符串（未命中返回 undefined）
+ */
+function extractJsonStringFieldFromPrefix(prefix: string, key: string): string | undefined {
+  try {
+    const k = String(key || "").trim();
+    if (!k) return undefined;
+
+    const escaped = k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(`\"${escaped}\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"`);
+    const m = re.exec(String(prefix || ""));
+    if (!m?.[1]) return undefined;
+    try {
+      return JSON.parse(`\"${m[1]}\"`);
+    } catch {
+      return m[1];
+    }
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 从 messages 数组的 JSON 前缀中抽取首条 user 文本，并进行预览过滤与裁剪。
+ *
+ * @param prefix 包含 messages 的 JSON 前缀
+ * @returns 预览文本（未命中返回 undefined）
+ */
+function tryExtractGeminiPreviewFromMessagesPrefix(prefix: string): string | undefined {
+  try {
+    const src = String(prefix || "");
+    if (!src) return undefined;
+
+    const keyIdx = src.indexOf("\"messages\"");
+    if (keyIdx < 0) return undefined;
+    const arrIdx = src.indexOf("[", keyIdx);
+    if (arrIdx < 0) return undefined;
+
+    let i = arrIdx + 1;
+    for (let n = 0; n < 12 && i < src.length; n += 1) {
+      i = skipWsComma(src, i);
+      if (i >= src.length) break;
+      const ch = src[i];
+      if (ch === "]") break;
+      if (ch !== "{") break;
+
+      const picked = pickCompleteJsonObject(src, i);
+      if (!picked) break;
+      i = picked.end;
+
+      let obj: any = null;
+      try { obj = JSON.parse(picked.text); } catch { obj = null; }
+      if (!obj) continue;
+
+      const role = normalizeGeminiRole(String(obj?.role ?? obj?.type ?? obj?.actor ?? ""));
+      const text = extractGeminiText(obj);
+      if (role === "user" && text) {
+        const filtered = filterHistoryPreviewText(text);
+        if (filtered) {
+          const clamped = clampPreview(filtered);
+          if (clamped) return clamped;
+        }
+      }
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 跳过空白与逗号，返回下一个可能的 JSON token 起始位置。
+ *
+ * @param src 源字符串
+ * @param start 起始下标
+ * @returns 跳过后的位置
+ */
+function skipWsComma(src: string, start: number): number {
+  let i = Math.max(0, Number(start || 0));
+  while (i < src.length) {
+    const c = src[i];
+    if (c === "," || c === " " || c === "\n" || c === "\r" || c === "\t") {
+      i += 1;
+      continue;
+    }
+    break;
+  }
+  return i;
+}
+
+/**
+ * 从给定位置（应为 `{`）开始，提取一个完整的 JSON 对象文本。
+ *
+ * 说明：
+ * - 采用括号计数 + 字符串状态机，容错处理嵌套对象/数组与转义字符。
+ * - 若前缀被截断导致对象不完整，返回 null。
+ *
+ * @param src 源字符串
+ * @param start JSON 对象起始下标（应指向 `{`）
+ * @returns 对象文本与结束下标（失败返回 null）
+ */
+function pickCompleteJsonObject(src: string, start: number): { text: string; end: number } | null {
+  try {
+    const s = String(src || "");
+    const begin = Math.max(0, Number(start || 0));
+    if (s[begin] !== "{") return null;
+
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    for (let i = begin; i < s.length; i += 1) {
+      const c = s[i];
+      if (inString) {
+        if (escape) {
+          escape = false;
+          continue;
+        }
+        if (c === "\\") {
+          escape = true;
+          continue;
+        }
+        if (c === "\"") {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (c === "\"") {
+        inString = true;
+        continue;
+      }
+      if (c === "{") {
+        depth += 1;
+        continue;
+      }
+      if (c === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          const end = i + 1;
+          return { text: s.slice(begin, end), end };
+        }
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * 兼容多种 Gemini session JSON 结构，统一抽取 items 与 meta。
