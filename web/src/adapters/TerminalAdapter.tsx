@@ -94,6 +94,84 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
   let appearance: TerminalAppearance = normalizeTerminalAppearance(options?.appearance);
   let lastScrollSnapshot: TerminalScrollSnapshot | null = null;
 
+  // 输出写入合并：避免在高频输出/多终端并发时把大量小片段直接灌入 xterm，导致写入队列膨胀与 UI 假死。
+  const TERM_WRITE_MAX_PENDING_CHARS = 300_000;
+  const TERM_WRITE_MAX_CHARS_PER_FLUSH = 120_000;
+  let pendingWriteChunks: string[] = [];
+  let pendingWriteChars = 0;
+  let pendingWriteDroppedChars = 0;
+  let pendingWriteScheduled: number | null = null;
+
+  /**
+   * 中文说明：将待写入数据分帧写入 xterm，避免一次性写入过大导致长帧/白屏。
+   */
+  const flushPendingWrites = () => {
+    pendingWriteScheduled = null;
+    if (!term) return;
+    if (pendingWriteChars <= 0 || pendingWriteChunks.length === 0) return;
+    const limit = TERM_WRITE_MAX_CHARS_PER_FLUSH;
+    let remaining = limit;
+    const out: string[] = [];
+    while (pendingWriteChunks.length > 0 && remaining > 0) {
+      const chunk = pendingWriteChunks[0] || "";
+      if (!chunk) { pendingWriteChunks.shift(); continue; }
+      if (chunk.length <= remaining) {
+        out.push(chunk);
+        pendingWriteChunks.shift();
+        pendingWriteChars -= chunk.length;
+        remaining -= chunk.length;
+        continue;
+      }
+      out.push(chunk.slice(0, remaining));
+      pendingWriteChunks[0] = chunk.slice(remaining);
+      pendingWriteChars -= remaining;
+      remaining = 0;
+      break;
+    }
+    const dropped = pendingWriteDroppedChars;
+    pendingWriteDroppedChars = 0;
+    if (dropped > 0) {
+      try { dlog(`[adapter] write.drop chars=${dropped}`); } catch {}
+    }
+    try { term.write(out.join("")); } catch {}
+    // 若仍有残留，继续分帧
+    if (pendingWriteChars > 0 && pendingWriteChunks.length > 0) {
+      try { pendingWriteScheduled = window.requestAnimationFrame(flushPendingWrites); } catch {}
+    }
+  };
+
+  /**
+   * 中文说明：追加输出到待写入队列，并触发一次分帧 flush。
+   * @param data - PTY 输出片段
+   */
+  const enqueueWrite = (data: string) => {
+    if (!term) return;
+    const s = String(data || "");
+    if (!s) return;
+    pendingWriteChunks.push(s);
+    pendingWriteChars += s.length;
+    // 过载保护：仅保留尾部，避免内存无限增长
+    if (pendingWriteChars > TERM_WRITE_MAX_PENDING_CHARS) {
+      let overflow = pendingWriteChars - TERM_WRITE_MAX_PENDING_CHARS;
+      while (overflow > 0 && pendingWriteChunks.length > 0) {
+        const first = pendingWriteChunks[0] || "";
+        if (first.length <= overflow) {
+          pendingWriteChunks.shift();
+          overflow -= first.length;
+          pendingWriteChars -= first.length;
+          pendingWriteDroppedChars += first.length;
+          continue;
+        }
+        pendingWriteChunks[0] = first.slice(overflow);
+        pendingWriteChars -= overflow;
+        pendingWriteDroppedChars += overflow;
+        overflow = 0;
+      }
+    }
+    if (pendingWriteScheduled !== null) return;
+    try { pendingWriteScheduled = window.requestAnimationFrame(flushPendingWrites); } catch {}
+  };
+
   /**
    * 中文说明：读取 xterm 的滚动快照（以 buffer.active.viewportY/baseY 为准）。
    * 该数据与 DOM 的 scrollTop 解耦，可用于修复“内容位置正确但滚动条指示错误”的偶发不一致。
@@ -903,7 +981,8 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
     // 注意：保持默认行为——无选区时允许 ^C 传递（用于进程中断）。
     // 将逻辑放在 write/onData 之外，避免业务层重复判断。
     write: (data: string) => {
-      term?.write(data);
+      if (!term) ensure();
+      enqueueWrite(data);
     },
     // 粘贴：优先调用 xterm 内置 paste（若目标应用已启用 bracketed paste，将以原子粘贴的方式送入，减少应用层清洗）
     paste: (data: string) => {
@@ -957,6 +1036,12 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
     },
     dispose: () => {
       try { dlog('[adapter] dispose'); if (container) container.style.height = ""; } catch {}
+      // 先取消 pending write，避免在 dispose 后的下一帧仍尝试写入（导致异常或泄漏）。
+      try { if (pendingWriteScheduled !== null) cancelAnimationFrame(pendingWriteScheduled); } catch {}
+      pendingWriteScheduled = null;
+      pendingWriteChunks = [];
+      pendingWriteChars = 0;
+      pendingWriteDroppedChars = 0;
       // 先移除所有监听与覆盖层，再置空 container，避免移除阶段拿不到宿主元素
       try { removeDprListener?.(); } catch {}
       dprMedia = null;

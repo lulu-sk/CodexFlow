@@ -1749,6 +1749,22 @@ ipcMain.handle('fileIndex.candidates', async (_e, { root }: { root: string }) =>
   }
 });
 
+// @ 搜索：主进程侧只返回 topN，避免把全量候选传到渲染进程导致卡顿/崩溃
+ipcMain.handle('fileIndex.searchAt', async (_e, args: { root: string; query: string; scope?: 'all' | 'files' | 'rule'; limit?: number; excludes?: string[] }) => {
+  try {
+    const root = String((args as any)?.root || '').trim();
+    if (!root) return { ok: true, items: [], total: 0, updatedAt: Date.now() };
+    const query = String((args as any)?.query || '');
+    const scope = (args as any)?.scope;
+    const limit = (args as any)?.limit;
+    const excludes = Array.isArray((args as any)?.excludes) ? (args as any).excludes : undefined;
+    const res = await (fileIndex as any).searchAt({ root, query, scope, limit, excludes });
+    return { ok: true, ...res };
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
+  }
+});
+
 ipcMain.handle('fileIndex.activeRoots', async (event, { roots }: { roots: string[] }) => {
   try {
     const list = Array.isArray(roots) ? roots.filter((x) => typeof x === 'string') : [];

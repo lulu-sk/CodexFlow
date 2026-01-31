@@ -2,8 +2,88 @@
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
 const { contextBridge, ipcRenderer } = require('electron');
+// preload 层：集中做 IPC 分发与安全封装
 
 type OpenArgs = { terminal?: 'wsl' | 'windows' | 'pwsh'; distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string; env?: Record<string, string> };
+
+type PtyDataPayload = { id: string; data: string };
+type PtyExitPayload = { id: string; exitCode?: number };
+
+// ---- PTY 事件分发（关键性能修复）----
+// 中文说明：
+// - 旧实现：每次 `window.host.pty.onData(id, cb)` 都会 `ipcRenderer.on('pty:data', ...)` 注册一个监听器；
+//   当存在多个终端/多个订阅（例如 xterm 渲染 + 完成通知解析）时，会导致每条输出被重复分发 N 次，
+//   在高频输出场景下会显著放大 CPU 开销，并最终表现为页面白屏/渲染进程崩溃（但主进程 PTY 仍在跑）。
+// - 新实现：preload 仅注册 **一个** `ipcRenderer` 监听器，然后按 ptyId 分发给订阅者集合，避免 O(N) 放大。
+
+// 中文说明：
+// - Electron 渲染进程发生 reload/HMR 时，preload 可能会再次执行；若仍使用“模块级布尔值”防重，容易导致重复安装 ipcRenderer 监听器；
+// - 这里将“单例监听器与 handler 容器”挂到 renderer process 的 `process` 上（Symbol.for），确保跨 reload 仍然是单例；
+// - 同时在每次 preload 执行时清空旧 handler，避免旧页面闭包被持有导致内存泄漏与重复分发。
+
+const SYM_PTY_DATA_HANDLERS = Symbol.for("codexflow:ptyDataHandlersById");
+const SYM_PTY_EXIT_HANDLERS = Symbol.for("codexflow:ptyExitHandlers");
+const SYM_PTY_DATA_LISTENER = Symbol.for("codexflow:ptyDataListener");
+const SYM_PTY_EXIT_LISTENER = Symbol.for("codexflow:ptyExitListener");
+
+const gProc: any = process as any;
+const ptyDataHandlersById: Map<string, Set<(data: string) => void>> = (gProc[SYM_PTY_DATA_HANDLERS] as any) || new Map();
+gProc[SYM_PTY_DATA_HANDLERS] = ptyDataHandlersById;
+try { ptyDataHandlersById.clear(); } catch {}
+
+const ptyExitHandlers: Set<(payload: PtyExitPayload) => void> = (gProc[SYM_PTY_EXIT_HANDLERS] as any) || new Set();
+gProc[SYM_PTY_EXIT_HANDLERS] = ptyExitHandlers;
+try { ptyExitHandlers.clear(); } catch {}
+
+/**
+ * 中文说明：安装 PTY data 分发器（全局仅一次）。
+ */
+function ensurePtyDataDispatcher(): void {
+  const existing = (gProc as any)[SYM_PTY_DATA_LISTENER];
+  if (existing) return;
+  const listener = (_: unknown, payload: PtyDataPayload) => {
+    try {
+      const id = String(payload?.id || '');
+      if (!id) return;
+      const map: Map<string, Set<(data: string) => void>> = (gProc as any)[SYM_PTY_DATA_HANDLERS] || ptyDataHandlersById;
+      const set = map.get(id);
+      if (!set || set.size === 0) return;
+      const data = typeof payload?.data === 'string' ? payload.data : String(payload?.data ?? '');
+      // 中文说明：对 Set 做快照迭代，避免回调内部增删订阅导致迭代语义不稳定。
+      for (const cb of Array.from(set)) {
+        try { cb(data); } catch {}
+      }
+    } catch {}
+  };
+  (gProc as any)[SYM_PTY_DATA_LISTENER] = listener;
+  ipcRenderer.on('pty:data', listener);
+}
+
+/**
+ * 中文说明：安装 PTY exit 分发器（全局仅一次）。
+ */
+function ensurePtyExitDispatcher(): void {
+  const existing = (gProc as any)[SYM_PTY_EXIT_LISTENER];
+  if (existing) return;
+  const listener = (_: unknown, payload: PtyExitPayload) => {
+    try {
+      const evt: PtyExitPayload = { id: String(payload?.id || ''), exitCode: (payload as any)?.exitCode };
+      if (!evt.id) return;
+      // 中文说明：收到 exit 后，自动清理该 PTY 的 data handlers，避免泄漏（即便业务侧忘记 unsubscribe）。
+      try {
+        const map: Map<string, Set<(data: string) => void>> = (gProc as any)[SYM_PTY_DATA_HANDLERS] || ptyDataHandlersById;
+        map.delete(evt.id);
+      } catch {}
+      // 中文说明：对 Set 做快照迭代，避免回调内部增删订阅导致迭代语义不稳定。
+      const set: Set<(payload: PtyExitPayload) => void> = (gProc as any)[SYM_PTY_EXIT_HANDLERS] || ptyExitHandlers;
+      for (const cb of Array.from(set)) {
+        try { cb(evt); } catch {}
+      }
+    } catch {}
+  };
+  (gProc as any)[SYM_PTY_EXIT_LISTENER] = listener;
+  ipcRenderer.on('pty:exit', listener);
+}
 
 /**
  * 中文说明：从主进程继承的本次启动 bootId。
@@ -111,16 +191,30 @@ contextBridge.exposeInMainWorld('host', {
     resume: (id: string) => { ipcRenderer.send('pty:resume', { id }); },
     clear: (id: string) => { ipcRenderer.send('pty:clear', { id }); },
     onData: (id: string, handler: (data: string) => void) => {
-      const listener = (_: unknown, payload: { id: string; data: string }) => {
-        if (payload.id === id) handler(payload.data);
+      ensurePtyDataDispatcher();
+      const key = String(id || '');
+      if (!key) return () => {};
+      let set = ptyDataHandlersById.get(key);
+      if (!set) {
+        set = new Set();
+        ptyDataHandlersById.set(key, set);
+      }
+      set.add(handler);
+      return () => {
+        try {
+          const cur = ptyDataHandlersById.get(key);
+          if (!cur) return;
+          cur.delete(handler);
+          if (cur.size === 0) ptyDataHandlersById.delete(key);
+        } catch {}
       };
-      ipcRenderer.on('pty:data', listener);
-      return () => ipcRenderer.removeListener('pty:data', listener);
     },
     onExit: (handler: (payload: { id: string; exitCode?: number }) => void) => {
-      const listener = (_: unknown, payload: { id: string; exitCode?: number }) => handler(payload);
-      ipcRenderer.on('pty:exit', listener);
-      return () => ipcRenderer.removeListener('pty:exit', listener);
+      ensurePtyExitDispatcher();
+      ptyExitHandlers.add(handler as any);
+      return () => {
+        try { ptyExitHandlers.delete(handler as any); } catch {}
+      };
     },
   },
   fileIndex: {
@@ -129,6 +223,12 @@ contextBridge.exposeInMainWorld('host', {
     },
     getAllCandidates: async (root: string) => {
       return await ipcRenderer.invoke('fileIndex.candidates', { root });
+    },
+    /**
+     * 中文说明：主进程侧 @ 搜索（仅返回 topN，避免全量候选跨进程搬运）。
+     */
+    searchAt: async (args: { root: string; query: string; scope?: 'all' | 'files' | 'rule'; limit?: number; excludes?: string[] }) => {
+      return await ipcRenderer.invoke('fileIndex.searchAt', args);
     },
     setActiveRoots: async (roots: string[]) => {
       return await ipcRenderer.invoke('fileIndex.activeRoots', { roots });

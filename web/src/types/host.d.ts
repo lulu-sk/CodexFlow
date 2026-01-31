@@ -613,6 +613,29 @@ export interface WslAPI {
 export interface FileIndexAPI {
   ensureIndex(args: { root: string; excludes?: string[] }): Promise<{ ok: boolean; total?: number; updatedAt?: number; error?: string }>;
   getAllCandidates(root: string): Promise<{ ok: boolean; items?: Array<{ rel: string; isDir: boolean }>; error?: string }>;
+  /**
+   * 中文说明：主进程侧 @ 搜索（仅返回 topN）。
+   * 目的：避免把全量候选列表跨进程传到渲染层/Worker，导致大仓库下的内存峰值与页面刷新。
+   */
+  searchAt(args: {
+    root: string;
+    query: string;
+    scope?: "all" | "files" | "rule";
+    limit?: number;
+    excludes?: string[];
+  }): Promise<{
+    ok: boolean;
+    items?: Array<{
+      categoryId: "files" | "rule";
+      rel: string;
+      isDir: boolean;
+      score: number;
+      groupKey?: "pinned" | "legacy" | "dynamic";
+    }>;
+    total?: number;
+    updatedAt?: number;
+    error?: string;
+  }>;
   setActiveRoots(roots: string[]): Promise<{ ok: boolean; closed?: number; remain?: number; trimmed?: number; error?: string }>;
   onChanged?: (handler: (payload: { root: string; reason?: string; adds?: { rel: string; isDir: boolean }[]; removes?: { rel: string; isDir: boolean }[] }) => void) => () => void;
 }

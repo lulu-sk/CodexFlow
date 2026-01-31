@@ -9,6 +9,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 import { perfLogger } from "./log";
+import { searchFileIndexCandidates, type RankedRel } from "./fileIndexSearch";
 import chokidar, { FSWatcher } from "chokidar";
 
 // 与扫描/监听一致的默认排除规则（目录前缀，统一使用 "/" 分隔）
@@ -19,6 +20,21 @@ const DEFAULT_EXCLUDES = [
 
 // 文件/目录候选类型（相对路径，分隔符统一为 "/"）
 export type FileCandidate = { rel: string; isDir: boolean };
+
+// @ 搜索（主进程）返回给渲染侧的最小结构：只返回 topN，避免全量候选跨进程搬运。
+export type AtSearchCategoryId = "files" | "rule";
+export type AtRuleGroupKey = "pinned" | "legacy" | "dynamic";
+export type AtSearchWireItem = {
+  categoryId: AtSearchCategoryId;
+  /** 相对路径（"/" 分隔） */
+  rel: string;
+  /** 是否目录（rule 恒为 false） */
+  isDir: boolean;
+  /** 排序分数，越大越靠前 */
+  score: number;
+  /** rule 分组（仅 categoryId=rule 时存在） */
+  groupKey?: AtRuleGroupKey;
+};
 
 type DiskCache = {
   root: string;
@@ -34,6 +50,8 @@ type MemEntry = {
   updatedAt: number;
   files: string[];
   dirs: string[];
+  // 缓存规则文件候选（避免每次搜索都全量扫描 files）。
+  ruleCandidates?: Array<{ rel: string; groupKey: AtRuleGroupKey }>;
 };
 
 const MAX_MEM_ENTRIES = 3; // 简易 LRU 上限：主动收敛缓存规模，避免大仓库常驻占用
@@ -255,7 +273,124 @@ export function getAllCandidates(root: string): FileCandidate[] {
   return items;
 }
 
-export default { ensureIndex, getAllCandidates, setActiveRoots };
+/**
+ * 中文说明：基于文件索引计算规则文件候选（仅在首次需要时懒计算，并缓存到内存条目中）。
+ */
+function ensureRuleCandidates(entry: MemEntry): Array<{ rel: string; groupKey: AtRuleGroupKey }> {
+  if (Array.isArray(entry.ruleCandidates)) return entry.ruleCandidates;
+  let hasPinned = false;
+  let hasLegacy = false;
+  const dynamic: string[] = [];
+  for (const f of entry.files || []) {
+    const rel = String(f || "");
+    if (!rel) continue;
+    if (rel === ".cursor/index.mdc") { hasPinned = true; continue; }
+    if (rel === ".cursorrules") { hasLegacy = true; continue; }
+    if (rel.startsWith(".cursor/rules/") && rel.endsWith(".mdc")) dynamic.push(rel);
+  }
+  dynamic.sort((a, b) => a.localeCompare(b));
+  const out: Array<{ rel: string; groupKey: AtRuleGroupKey }> = [];
+  if (hasPinned) out.push({ rel: ".cursor/index.mdc", groupKey: "pinned" });
+  if (hasLegacy) out.push({ rel: ".cursorrules", groupKey: "legacy" });
+  for (const rel of dynamic) out.push({ rel, groupKey: "dynamic" });
+  entry.ruleCandidates = out;
+  return out;
+}
+
+/**
+ * 中文说明：对规则候选评分（越大越靠前）。规则候选数量极少，因此允许使用简单实现。
+ */
+function scoreRuleRel(rel: string, query: string): number {
+  const q = String(query || "").trim().toLowerCase();
+  if (!q) return 0;
+  const p = String(rel || "");
+  const base = (() => {
+    const i = p.lastIndexOf("/");
+    return (i >= 0 ? p.slice(i + 1) : p).toLowerCase();
+  })();
+  const pp = p.toLowerCase();
+  let s = 0;
+  if (base.startsWith(q)) s += 800;
+  if (pp.startsWith(q)) s += 600;
+  if (pp.includes(q)) s += 200;
+  s -= p.length * 0.15;
+  return s;
+}
+
+/**
+ * 中文说明：主进程侧 @ 搜索（仅返回 topN），避免将全量文件列表通过 IPC 传到渲染进程导致卡顿/崩溃。
+ *
+ * @param args.root - 项目根（Windows/UNC）
+ * @param args.query - 查询串（不含 '@'，允许包含 '\\'）
+ * @param args.scope - 搜索范围：all/files/rule
+ * @param args.limit - 返回上限（默认 30，最大 50）
+ * @param args.excludes - 额外排除规则（可选）
+ */
+export async function searchAt(args: {
+  root: string;
+  query: string;
+  scope?: "all" | "files" | "rule";
+  limit?: number;
+  excludes?: string[];
+}): Promise<{ items: AtSearchWireItem[]; total?: number; updatedAt?: number }> {
+  const root = String(args?.root || "").trim();
+  if (!root) return { items: [], total: 0, updatedAt: Date.now() };
+  const scope = (args?.scope === "files" || args?.scope === "rule") ? args.scope : "all";
+  // 中文说明：limit 允许为 0；仅在传入非法值（NaN/Infinity）时回退到默认值 30。
+  const rawLimit = Number(args?.limit ?? 30);
+  const limit = Number.isFinite(rawLimit)
+    ? Math.max(0, Math.min(50, Math.floor(rawLimit)))
+    : 30;
+  const query = String(args?.query || "").trim().replace(/\\/g, "/");
+
+  // 确保索引存在（首次可能较慢，但不会产生“全量候选跨进程搬运”的内存峰值）
+  try { await ensureIndex({ root, excludes: args?.excludes }); } catch {}
+  const hit = memLRU.get(canonKey(root));
+  if (!hit) return { items: [], total: 0, updatedAt: Date.now() };
+
+  const out: AtSearchWireItem[] = [];
+  const total = (hit.files?.length || 0) + (hit.dirs?.length || 0);
+
+  // files：目录 + 文件
+  if (scope !== "rule" && limit > 0) {
+    const ranked: RankedRel[] = searchFileIndexCandidates({
+      files: hit.files || [],
+      dirs: hit.dirs || [],
+      query,
+      limit,
+    });
+    for (const r of ranked) {
+      out.push({ categoryId: "files", rel: r.rel, isDir: !!r.isDir, score: Number(r.score || 0) });
+    }
+  }
+
+  // rule：只返回规则文件（数量很少）
+  if (scope !== "files" && out.length < limit) {
+    const rules = ensureRuleCandidates(hit);
+    const remaining = Math.max(0, limit - out.length);
+    if (remaining <= 0) return { items: out, total, updatedAt: hit.updatedAt };
+
+    if (!query) {
+      for (const it of rules.slice(0, Math.min(10, remaining))) {
+        out.push({ categoryId: "rule", rel: it.rel, isDir: false, score: 0, groupKey: it.groupKey });
+      }
+      return { items: out, total, updatedAt: hit.updatedAt };
+    }
+
+    const scored = rules
+      .map((it) => ({ ...it, score: scoreRuleRel(it.rel, query) }))
+      .filter((it) => it.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, remaining);
+    for (const it of scored) {
+      out.push({ categoryId: "rule", rel: it.rel, isDir: false, score: it.score, groupKey: it.groupKey });
+    }
+  }
+
+  return { items: out, total, updatedAt: hit.updatedAt };
+}
+
+export default { ensureIndex, getAllCandidates, searchAt, setActiveRoots };
 
 // ---------------- 变更监听与热更新 ----------------
 
@@ -530,6 +665,7 @@ function ensureWatcher(root: string, excludes: string[]) {
           }
           if (newDirs.length > 0) e.dirs.push(...newDirs);
           e.updatedAt = Date.now();
+          e.ruleCandidates = undefined;
         }
       } catch {}
       scheduleFlush(state);
@@ -547,6 +683,7 @@ function ensureWatcher(root: string, excludes: string[]) {
           const i = e.files.indexOf(rel);
           if (i >= 0) e.files.splice(i, 1);
           e.updatedAt = Date.now();
+          e.ruleCandidates = undefined;
         }
       } catch {}
       scheduleFlush(state);
