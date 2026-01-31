@@ -757,6 +757,13 @@ async function clearAppData(options: ClearOptions = {}): Promise<ClearResult> {
   await ensureDir(root);
   const before = await summarize(root);
   const preserveNames = new Set<string>();
+  // 项目列表与 UI 本地状态：折叠关系/备注/手动排序、Build/Run 配置、Worktree 元数据等。
+  // 说明：这些属于“用户数据”，清理缓存不应删除；否则会导致项目树结构与备注丢失。
+  preserveNames.add('projects.json');
+  preserveNames.add('dir-tree.json');
+  preserveNames.add('build-run.json');
+  preserveNames.add('worktree-meta.json');
+  preserveNames.add('debug.config.jsonc');
   if (options.preserveSettings !== false) {
     preserveNames.add(SETTINGS_FILE);
     // 账号记录：Codex 登录备份（用于“记录账号/切换账号”等场景）
