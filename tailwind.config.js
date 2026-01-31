@@ -58,6 +58,7 @@ module.exports = {
       },
     },
   },
-  plugins: [],
+  // 说明：用于为 Markdown 等富文本提供更好的排版默认值（prose 系列类名）
+  plugins: [require("@tailwindcss/typography")],
 };
 

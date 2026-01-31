@@ -352,3 +352,28 @@ body {
   appearance: textfield;
   -moz-appearance: textfield;
 }
+
+/* 历史详情 Markdown：去掉首尾多余外边距，减少“卡片内留白过大”的观感 */
+.cf-history-markdown > :first-child {
+  margin-top: 0;
+}
+.cf-history-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+/* rehype-pretty-code：保证每行独占一行，避免 Shiki 输出挤在同一行 */
+.cf-history-markdown [data-rehype-pretty-code-figure] code {
+  display: grid;
+}
+.cf-history-markdown [data-rehype-pretty-code-figure] [data-line] {
+  display: block;
+  min-height: 1em;
+}
+
+/* Shiki 多主题：暗色模式下将 token 颜色切换到 --shiki-dark（覆盖 inline style 的亮色值） */
+.cf-history-markdown [data-rehype-pretty-code-figure] span[style*="--shiki-light"] {
+  color: var(--shiki-light);
+}
+.dark .cf-history-markdown [data-rehype-pretty-code-figure] span[style*="--shiki-dark"] {
+  color: var(--shiki-dark) !important;
+}
