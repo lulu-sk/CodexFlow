@@ -10,6 +10,8 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "web/src"),
+      // 单测环境不依赖 Electron 二进制（避免 `electron` 包未下载导致的运行失败）
+      "electron": path.resolve(__dirname, "electron/__mocks__/electron.ts"),
     },
   },
 });
