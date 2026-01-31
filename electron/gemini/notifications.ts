@@ -508,17 +508,63 @@ function ensureGeminiAfterAgentHooks(groups: HookGroup[], command: string): { gr
  */
 function ensureGeminiSettings(raw: any, command: string): { next: any; changed: boolean } {
   const base = raw && typeof raw === "object" ? { ...raw } : {};
-  const tools = base.tools && typeof base.tools === "object" ? { ...(base.tools as any) } : {};
-  const hooks = base.hooks && typeof base.hooks === "object" ? { ...(base.hooks as any) } : {};
+  const rawTools = base.tools;
+  const tools = rawTools && typeof rawTools === "object" && !Array.isArray(rawTools) ? { ...(rawTools as any) } : null;
+  const rawHooksConfig = base.hooksConfig;
+  const hooksConfig = rawHooksConfig && typeof rawHooksConfig === "object" && !Array.isArray(rawHooksConfig) ? { ...(rawHooksConfig as any) } : {};
+  const hooks = base.hooks && typeof base.hooks === "object" && !Array.isArray(base.hooks) ? { ...(base.hooks as any) } : {};
   let changed = false;
 
-  if (tools.enableHooks !== true) {
-    tools.enableHooks = true;
+  // 中文说明：Gemini CLI 新版配置中，hooks 开关位于 hooksConfig.enabled。
+  // CodexFlow 旧实现写入了 tools.enableHooks 与 hooks.enabled，会触发 Gemini CLI 的配置校验错误。
+  if (hooksConfig.enabled !== true) {
+    hooksConfig.enabled = true;
     changed = true;
   }
 
-  if (hooks.enabled !== true) {
-    hooks.enabled = true;
+  // 中文说明：若 hooksConfig.disabled 非 string[]，则清理成符合 schema 的格式，避免触发校验错误。
+  if ("disabled" in hooksConfig && !Array.isArray(hooksConfig.disabled)) {
+    delete (hooksConfig as any).disabled;
+    changed = true;
+  }
+  if (Array.isArray(hooksConfig.disabled)) {
+    const rawList = hooksConfig.disabled;
+    const cleaned = rawList.filter((v: unknown) => typeof v === "string");
+    const deduped = Array.from(new Set(cleaned));
+    if (deduped.length !== rawList.length) {
+      hooksConfig.disabled = deduped;
+      changed = true;
+    }
+  }
+
+  // 中文说明：兼容旧字段迁移/清理：
+  // - tools.enableHooks：新版 schema 中不存在（tools 也不允许额外字段）
+  // - hooks.enabled / hooks.disabled：新版 schema 中 hooks.* 均为 HookDefinitionArray
+  if (tools && "enableHooks" in tools) {
+    delete (tools as any).enableHooks;
+    changed = true;
+  }
+
+  if ("enabled" in hooks) {
+    delete (hooks as any).enabled;
+    changed = true;
+  }
+
+  if ("disabled" in hooks) {
+    const legacyDisabled = (hooks as any).disabled;
+    // 中文说明：若旧字段是 string[]，则迁移到 hooksConfig.disabled。
+    if (Array.isArray(legacyDisabled)) {
+      const items = legacyDisabled.filter((v: unknown) => typeof v === "string");
+      if (items.length) {
+        const current = Array.isArray(hooksConfig.disabled) ? hooksConfig.disabled.filter((v: unknown) => typeof v === "string") : [];
+        const merged = Array.from(new Set([...current, ...items]));
+        if (!Array.isArray(hooksConfig.disabled) || merged.length !== current.length) {
+          hooksConfig.disabled = merged;
+          changed = true;
+        }
+      }
+    }
+    delete (hooks as any).disabled;
     changed = true;
   }
 
@@ -527,7 +573,13 @@ function ensureGeminiSettings(raw: any, command: string): { next: any; changed: 
 
   if (!Array.isArray(hooks.AfterAgent)) changed = true;
   hooks.AfterAgent = nextGroups;
-  base.tools = tools;
+  if (tools) base.tools = tools;
+  else if ("tools" in base) {
+    // 中文说明：若 tools 非对象（例如 null/boolean/string），会触发 Gemini CLI schema 校验错误；此处直接移除。
+    delete (base as any).tools;
+    changed = true;
+  }
+  base.hooksConfig = hooksConfig;
   base.hooks = hooks;
 
   return { next: base, changed: changed || hooksChanged };
