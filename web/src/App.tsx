@@ -65,6 +65,7 @@ import { isGeminiProvider, writeBracketedPaste, writeBracketedPasteAndEnter } fr
 import { oscBufferDefaults, trimOscBuffer } from "@/lib/oscNotificationBuffer";
 import { resolveDirRowDropPosition } from "@/lib/dir-tree-dnd";
 import HistoryCopyButton from "@/components/history/history-copy-button";
+import HistoryPanelToggleButton from "@/components/history/history-panel-toggle-button";
 import { toWSLForInsert } from "@/lib/wsl";
 import { extractGeminiProjectHashFromPath, deriveGeminiProjectHashCandidatesFromPath } from "@/lib/gemini-hash";
 import { normalizeProvidersSettings } from "@/lib/providers/normalize";
@@ -6714,14 +6715,11 @@ export default function CodexFlowManagerUI() {
 		          themeMode={themeMode}
 		        />
 	      </div>
-	      <div className="flex items-center gap-2">
+	      <div className={`flex items-center gap-2 ${showHistoryPanel ? "" : "pr-[44px]"}`}>
         {/* 目录缺失提示：若选中项目的 Windows 路径不存在则提示 */}
         {selectedProject?.winPath && (
           <span className="hidden" data-proj-path={selectedProject.winPath}></span>
         )}
-        <Button size="sm" variant="secondary" className="whitespace-nowrap" onClick={() => setShowHistoryPanel((v) => !v)}>
-          <HistoryIcon className="mr-2 h-4 w-4" /> {showHistoryPanel ? t('history:hidePanel') : t('history:showPanel')}
-        </Button>
         <Button size="sm" variant="secondary" className="whitespace-nowrap" onClick={() => setSettingsOpen(true)}>
           <SettingsIcon className="mr-2 h-4 w-4" /> {t('settings:title')}
         </Button>
@@ -7342,7 +7340,7 @@ export default function CodexFlowManagerUI() {
   const HistorySidebar = (
     <div className="grid h-full min-w-[240px] grid-rows-[auto_auto_auto_1fr] min-h-0 border-l bg-white/70 backdrop-blur-sm dark:border-slate-800 dark:bg-slate-900/60">
       {/* Header with enhanced modern styling */}
-      <div className="flex items-center justify-between px-3 py-3 border-b border-slate-100 dark:border-slate-700/50">
+      <div className="flex items-center justify-between px-3 pt-3 pb-5 border-b border-slate-100 dark:border-slate-700/50">
         <div className="flex items-center gap-2 font-medium shrink-0">
           <HistoryIcon className="h-4 w-4" /> {t('history:panelTitle')}
         </div>
@@ -7675,6 +7673,14 @@ export default function CodexFlowManagerUI() {
           )}
         </div>
         {showHistoryPanel && HistorySidebar}
+      </div>
+
+      <div className="fixed right-4 top-3 z-40">
+        <HistoryPanelToggleButton
+          expanded={showHistoryPanel}
+          label={String(showHistoryPanel ? t("history:hidePanel") : t("history:showPanel"))}
+          onToggle={() => setShowHistoryPanel((v) => !v)}
+        />
       </div>
 
       {historyCtxMenu.show && (
