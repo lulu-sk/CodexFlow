@@ -109,8 +109,6 @@ function collectSearchableTextNodes(container: HTMLElement): Text[] {
         return NodeFilter.FILTER_ACCEPT;
       },
     },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    false as any,
   );
 
   let cur = walker.nextNode();

@@ -28,7 +28,8 @@
     "i18n:report": "node scripts/i18n-check.js STRICT=0",
     "i18n:check": "node scripts/i18n-check.js",
     "prepare": "husky install",
-    "test": "vitest run"
+    "test": "npm run typecheck:web && vitest run",
+    "typecheck:web": "tsc -p web/tsconfig.typecheck.json"
   },
   "dependencies": {
     "@lydell/node-pty": "^1.1.0",
