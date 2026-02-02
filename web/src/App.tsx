@@ -8782,8 +8782,17 @@ type SearchMatch = {
   fieldKey?: string;
 };
 
+type HistoryMessageView = {
+  /** 稳定的 messageKey：用于 React key、DOM 查找与命中归属。 */
+  messageKey: string;
+  /** 原始消息序号（基于 session.messages 的索引）。 */
+  originalIndex: number;
+  /** 过滤后的消息内容（会按 typeFilter 裁剪 content）。 */
+  message: HistoryMessage;
+};
+
 type HistoryFilterResult = {
-  messages: HistoryMessage[];
+  messages: HistoryMessageView[];
   matches: SearchMatch[];
   fieldMatches: FieldMatchMap;
 };
@@ -8793,7 +8802,19 @@ type HistoryRenderOptions = {
   registerMessageRef?: (key: string, node: HTMLDivElement | null) => void;
 };
 
-function renderHistoryBlocks(session: HistorySession, messages: HistoryMessage[], options?: HistoryRenderOptions) {
+/**
+ * 中文说明：构造历史详情每条消息的稳定 messageKey。
+ * 设计：使用 “sessionId + 原始消息序号” 来避免筛选/搜索导致的索引漂移，从而防止 React 复用错误节点。
+ */
+function buildHistoryMessageKey(sessionId: string, originalIndex: number): string {
+  return `${sessionId}-${originalIndex}`;
+}
+
+/**
+ * 中文说明：渲染历史详情的消息块列表。
+ * 关键点：必须使用稳定 messageKey 作为 React key，避免“筛选/搜索导致索引漂移”触发错误节点复用。
+ */
+function renderHistoryBlocks(session: HistorySession, messages: HistoryMessageView[], options?: HistoryRenderOptions) {
   if (!session) return null;
   return (
     <div>
@@ -8802,8 +8823,9 @@ function renderHistoryBlocks(session: HistorySession, messages: HistoryMessage[]
         {toLocalDisplayTime(session)}
       </h3>
       <div className="space-y-2">
-        {messages.map((m, i) => {
-          const messageKey = `${session.id}-${i}`;
+        {messages.map((view) => {
+          const m = view.message;
+          const messageKey = view.messageKey;
           const isActive = options?.activeMessageKey === messageKey;
           return (
             <div
@@ -8823,6 +8845,12 @@ function renderHistoryBlocks(session: HistorySession, messages: HistoryMessage[]
 }
 
 
+/**
+ * 中文说明：按类型筛选与关键字过滤历史消息，并生成“命中索引”。
+ * - messages：返回带稳定 messageKey 的消息视图（基于原始序号），用于渲染与 DOM 查找；
+ * - matches：用于“上一个/下一个”跳转的命中列表（文本命中会被后续 DOM 高亮替代，仅保留元信息命中）；
+ * - fieldMatches：旧版文本字段命中（用于区分 meta/text 命中来源）。
+ */
 function filterHistoryMessages(session: HistorySession, typeFilter: Record<string, boolean>, normalizedSearch: string): HistoryFilterResult {
   const allowItem = (item: any) => {
     if (!typeFilter) return true;
@@ -8837,10 +8865,6 @@ function filterHistoryMessages(session: HistorySession, typeFilter: Record<strin
     ...m,
     content: (m.content || []).filter((item) => allowItem(item)),
   }));
-
-  const nonEmptyMessages = candidateMessages.filter((m) =>
-    Array.isArray(m.content) && m.content.some((item) => String((item as any)?.text ?? "").trim().length > 0),
-  );
 
   const matches: SearchMatch[] = [];
   const fieldMatches: FieldMatchMap = {};
@@ -8874,15 +8898,19 @@ function filterHistoryMessages(session: HistorySession, typeFilter: Record<strin
     return true;
   };
 
-  const filteredMessages: HistoryMessage[] = [];
+  const filteredMessages: HistoryMessageView[] = [];
   const searchActive = normalizedSearch.length > 0;
-  for (const message of nonEmptyMessages) {
+  for (let originalIndex = 0; originalIndex < candidateMessages.length; originalIndex += 1) {
+    const message = candidateMessages[originalIndex];
+    const hasContent =
+      Array.isArray(message.content) && message.content.some((item) => String((item as any)?.text ?? "").trim().length > 0);
+    if (!hasContent) continue;
+
+    const messageKey = buildHistoryMessageKey(session.id, originalIndex);
     if (!searchActive) {
-      filteredMessages.push(message);
+      filteredMessages.push({ messageKey, originalIndex, message });
       continue;
     }
-    const projectedIndex = filteredMessages.length;
-    const messageKey = `${session.id}-${projectedIndex}`;
     let hit = false;
     if (message.role) {
       if (captureTextMatches(messageKey, `${messageKey}-role`, message.role)) hit = true;
@@ -8904,7 +8932,7 @@ function filterHistoryMessages(session: HistorySession, typeFilter: Record<strin
       }
     }
     if (hit) {
-      filteredMessages.push(message);
+      filteredMessages.push({ messageKey, originalIndex, message });
     }
   }
 
@@ -9030,8 +9058,9 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
 
     // 说明：按消息顺序合并，先文本命中后元信息命中（保持跳转逻辑直观且稳定）
     const out: SearchMatch[] = [];
-    for (let i = 0; i < filteredMessages.length; i += 1) {
-      const messageKey = `${detailSession.id}-${i}`;
+    for (const view of filteredMessages) {
+      const messageKey = String(view?.messageKey || "");
+      if (!messageKey) continue;
       const textHits = byMessageText.get(messageKey);
       if (textHits && textHits.length) out.push(...textHits);
       const metaHits = byMessageMeta.get(messageKey);
