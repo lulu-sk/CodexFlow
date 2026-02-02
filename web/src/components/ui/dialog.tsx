@@ -12,14 +12,18 @@ const DIALOG_CONTENT_SELECTOR = '[data-cf-dialog-content="true"]';
 let dialogGlobalKeydownInstalled = false;
 
 /**
- * 中文说明：判断 Enter 自动确认是否需要跳过当前事件目标。
+ * 中文说明：判断 Enter 自动确认是否需要跳过当前事件目标（仅在事件目标位于弹窗内时）。
  * - textarea / 可编辑区域：Enter 通常用于换行
  * - button：让浏览器默认行为接管，避免二次触发
  */
-function shouldSkipEnterAutoConfirm(target: EventTarget | null): boolean {
+function shouldSkipEnterAutoConfirm(target: EventTarget | null, dialogRoot: HTMLElement): boolean {
   try {
     const el = target as any;
     if (!el) return false;
+    // 仅当焦点/事件目标在弹窗内容内时才跳过；否则应由弹窗接管 Enter，避免背景元素吞掉确认键。
+    try {
+      if (el instanceof Node && !dialogRoot.contains(el)) return false;
+    } catch {}
     if (el instanceof HTMLTextAreaElement) return true;
     if (el instanceof HTMLButtonElement) return true;
     if (typeof el.isContentEditable === "boolean" && el.isContentEditable) return true;
@@ -107,15 +111,17 @@ function handleGlobalDialogKeydown(event: KeyboardEvent) {
     const list = Array.from(document.querySelectorAll<HTMLElement>(DIALOG_CONTENT_SELECTOR));
     if (list.length === 0) return;
     const topmost = list[list.length - 1];
+    if ((event as any).isComposing) return;
 
     if (event.key === "Enter") {
       // 仅处理“纯 Enter”（不含 Ctrl/Alt/Meta/Shift），避免干扰既有快捷键
       if (event.ctrlKey || event.metaKey || event.altKey) return;
       if (event.shiftKey) return;
-      if (shouldSkipEnterAutoConfirm(event.target)) return;
+      if (shouldSkipEnterAutoConfirm(event.target, topmost)) return;
       const btn = findDialogPrimaryButton(topmost);
       if (!btn) return;
       event.preventDefault();
+      event.stopPropagation();
       btn.click();
       return;
     }
@@ -124,6 +130,7 @@ function handleGlobalDialogKeydown(event: KeyboardEvent) {
       const cancel = findDialogCancelButton(topmost);
       if (cancel) {
         event.preventDefault();
+        event.stopPropagation();
         cancel.click();
         return;
       }
@@ -131,6 +138,7 @@ function handleGlobalDialogKeydown(event: KeyboardEvent) {
       const overlay = topmost.parentElement?.querySelector<HTMLElement>('[data-cf-dialog-overlay="true"]');
       if (overlay) {
         event.preventDefault();
+        event.stopPropagation();
         overlay.click();
       }
     }
@@ -144,7 +152,8 @@ function ensureDialogGlobalKeydownInstalled() {
   if (dialogGlobalKeydownInstalled) return;
   if (typeof window === "undefined" || typeof document === "undefined") return;
   dialogGlobalKeydownInstalled = true;
-  window.addEventListener("keydown", handleGlobalDialogKeydown);
+  // 使用捕获阶段，避免被 xterm 等组件在冒泡阶段 stopPropagation 导致弹窗快捷键失效。
+  window.addEventListener("keydown", handleGlobalDialogKeydown, true);
 }
 
 export function Dialog({ open: openProp, onOpenChange, children }: { open?: boolean; onOpenChange?: (v: boolean) => void; children: React.ReactNode }) {
