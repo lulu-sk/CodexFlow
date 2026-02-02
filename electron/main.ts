@@ -29,6 +29,7 @@ import wsl from "./wsl";
 import fileIndex from "./fileIndex";
 import images from "./images";
 import { installInputContextMenu } from "./contextMenu";
+import { installRendererResponseSecurityHeaders } from "./security/rendererHeaders";
 import { getQuitConfirmDialogTextForLocale } from "./locales/quitConfirm";
 import { registerQuitConfirmIPC, requestQuitConfirmFromRenderer } from "./quitConfirmBridge";
 import { CodexBridge, type CodexBridgeOptions } from "./codex/bridge";
@@ -1042,6 +1043,9 @@ function createWindow() {
 
   // 安装输入框右键菜单（撤销/重做/剪切/复制/粘贴/全选，支持多语言）
   try { installInputContextMenu(mainWindow.webContents); } catch {}
+
+  // 通过响应头补齐部分 CSP 指令（例如 frame-ancestors），避免 meta 方式被 Chromium 忽略
+  try { installRendererResponseSecurityHeaders(mainWindow.webContents.session); } catch {}
 
   // 窗口可见性兜底：避免多开实例“只有进程没窗口”的误感知
   try {
