@@ -443,6 +443,8 @@ export default function CodexFlowManagerUI() {
   const [worktreeDeleteInFlightByProjectId, setWorktreeDeleteInFlightByProjectId] = useState<Record<string, boolean>>({});
   const worktreeDeleteSubmitGuardRef = useRef<boolean>(false);
   const [worktreeBlockedDialog, setWorktreeBlockedDialog] = useState<{ open: boolean; count: number }>(() => ({ open: false, count: 0 }));
+  const [worktreeRecycleTerminalAgentsDialog, setWorktreeRecycleTerminalAgentsDialog] = useState<{ open: boolean; count: number }>(() => ({ open: false, count: 0 }));
+  const worktreeRecycleTerminalAgentsDialogResolverRef = useRef<((proceed: boolean) => void) | null>(null);
   const [baseWorktreeDirtyDialog, setBaseWorktreeDirtyDialog] = useState<BaseWorktreeDirtyDialogState>(() => ({ open: false, repoMainPath: "" }));
   const [gitActionErrorDialog, setGitActionErrorDialog] = useState<GitActionErrorDialogState>(() => ({
     open: false,
@@ -3974,9 +3976,9 @@ export default function CodexFlowManagerUI() {
   }, []);
 
   /**
-   * 中文说明：若当前项目仍存在终端代理，则拦截 worktree 回收/删除，并提示用户先关闭终端代理。
+   * 中文说明：若当前项目仍存在终端代理，则拦截 worktree 删除/重置，并提示用户先关闭终端代理。
    */
-  const guardWorktreeRecycleAndDeleteByTerminalAgents = useCallback((project: Project): boolean => {
+  const guardWorktreeDeleteAndResetByTerminalAgents = useCallback((project: Project): boolean => {
     const pid = String(project?.id || "").trim();
     if (!pid) return false;
     const runningCount = countRunningTerminalAgentsByProjectId(pid);
@@ -3986,11 +3988,44 @@ export default function CodexFlowManagerUI() {
   }, [countRunningTerminalAgentsByProjectId]);
 
   /**
+   * 中文说明：关闭“合并前终端代理提醒”弹窗，并将用户选择回写给等待中的 Promise。
+   */
+  const resolveWorktreeRecycleTerminalAgentsConfirm = useCallback((proceed: boolean) => {
+    const resolver = worktreeRecycleTerminalAgentsDialogResolverRef.current;
+    worktreeRecycleTerminalAgentsDialogResolverRef.current = null;
+    setWorktreeRecycleTerminalAgentsDialog((prev) => ({ ...prev, open: false }));
+    if (resolver) resolver(proceed);
+  }, []);
+
+  /**
+   * 中文说明：若当前项目仍存在终端代理，则在“合并(worktree 回收)”前弹出确认（取消/继续）。
+   * @returns 用户是否选择继续合并
+   */
+  const confirmWorktreeRecycleByTerminalAgents = useCallback(async (project: Project): Promise<boolean> => {
+    const pid = String(project?.id || "").trim();
+    if (!pid) return false;
+    const runningCount = countRunningTerminalAgentsByProjectId(pid);
+    if (runningCount <= 0) return true;
+
+    // 若上一次确认尚未返回，默认取消，避免悬挂 Promise。
+    const prev = worktreeRecycleTerminalAgentsDialogResolverRef.current;
+    if (prev) {
+      try { prev(false); } catch {}
+      worktreeRecycleTerminalAgentsDialogResolverRef.current = null;
+    }
+
+    return await new Promise<boolean>((resolve) => {
+      worktreeRecycleTerminalAgentsDialogResolverRef.current = resolve;
+      setWorktreeRecycleTerminalAgentsDialog({ open: true, count: runningCount });
+    });
+  }, [countRunningTerminalAgentsByProjectId]);
+
+  /**
    * 打开“回收 worktree 到基分支”对话框（默认分支来自 worktree 元数据）。
    */
-	  const openWorktreeRecycleDialog = useCallback(async (project: Project) => {
-	    const pid = String(project?.id || "").trim();
-	    if (!pid) return;
+		  const openWorktreeRecycleDialog = useCallback(async (project: Project) => {
+		    const pid = String(project?.id || "").trim();
+		    if (!pid) return;
 
 	    // 若该 worktree 的回收任务仍在进行，则优先打开进度面板（可关闭/可重开）
 	    const runningTaskId = String(worktreeRecycleRunningTaskIdByProjectIdRef.current[pid] || "").trim();
@@ -4001,7 +4036,6 @@ export default function CodexFlowManagerUI() {
 	      });
 	      return;
 	    }
-	    if (!guardWorktreeRecycleAndDeleteByTerminalAgents(project)) return;
 	    setWorktreeRecycleDialog({
 	      open: true,
 	      projectId: pid,
@@ -4086,7 +4120,7 @@ export default function CodexFlowManagerUI() {
         return { ...prev, loading: false, error: String(e?.message || e) };
       });
     }
-  }, [guardWorktreeRecycleAndDeleteByTerminalAgents, t]);
+  }, [t]);
 
   /**
    * 关闭“回收 worktree”对话框。
@@ -4338,7 +4372,7 @@ export default function CodexFlowManagerUI() {
 		    if (dlg.running || dlg.loading) return;
 		    const project = projectsRef.current.find((x) => x.id === dlg.projectId) || null;
 		    if (!project) return;
-		    if (!guardWorktreeRecycleAndDeleteByTerminalAgents(project)) return;
+		    if (!(await confirmWorktreeRecycleByTerminalAgents(project))) return;
 		    const baseBranch = String(dlg.baseBranch || "").trim();
 		    const wtBranch = String(dlg.wtBranch || "").trim();
 		    if (!baseBranch || !wtBranch) return;
@@ -4558,7 +4592,7 @@ export default function CodexFlowManagerUI() {
 			        dir: dlg.repoMainPath || project.winPath,
 			      });
 		    }
-		  }, [guardWorktreeRecycleAndDeleteByTerminalAgents, showGitActionErrorDialog, t, worktreeRecycleDialog]);
+		  }, [confirmWorktreeRecycleByTerminalAgents, showGitActionErrorDialog, t, worktreeRecycleDialog]);
 
   /**
    * 打开“删除 worktree / 对齐到主工作区”对话框。
@@ -4584,7 +4618,7 @@ export default function CodexFlowManagerUI() {
 		      });
 		      return;
 		    }
-		    if (!guardWorktreeRecycleAndDeleteByTerminalAgents(project)) return;
+		    if (!guardWorktreeDeleteAndResetByTerminalAgents(project)) return;
 		    if (worktreeDeleteInFlightByProjectIdRef.current[pid]) {
 		      setNoticeDialog({
 		        open: true,
@@ -4605,7 +4639,7 @@ export default function CodexFlowManagerUI() {
 	      needsForceResetWorktree: false,
 	      error: undefined,
 	    });
-	  }, [guardWorktreeRecycleAndDeleteByTerminalAgents, t]);
+	  }, [guardWorktreeDeleteAndResetByTerminalAgents, t]);
 
   /**
    * 关闭“删除 worktree / 对齐到主工作区”对话框。
@@ -4629,12 +4663,12 @@ export default function CodexFlowManagerUI() {
    * - 删除：worktree remove + 删除专用分支；必要时二次强确认。
    * - 对齐：保持目录不删除，将该子 worktree 强制更新到主工作区当前基线并恢复为干净状态；必要时二次强确认。
    */
-	  const submitWorktreeDelete = useCallback(async (opts?: { forceRemoveWorktree?: boolean; forceDeleteBranch?: boolean; forceResetWorktree?: boolean }) => {
-	    const dlg = worktreeDeleteDialog;
-	    if (!dlg.open || dlg.running) return;
-	    if (worktreeDeleteSubmitGuardRef.current) return;
-	    const project = projectsRef.current.find((x) => x.id === dlg.projectId) || null;
-	    if (!project) return;
+		  const submitWorktreeDelete = useCallback(async (opts?: { forceRemoveWorktree?: boolean; forceDeleteBranch?: boolean; forceResetWorktree?: boolean }) => {
+		    const dlg = worktreeDeleteDialog;
+		    if (!dlg.open || dlg.running) return;
+		    if (worktreeDeleteSubmitGuardRef.current) return;
+		    const project = projectsRef.current.find((x) => x.id === dlg.projectId) || null;
+		    if (!project) return;
 
 	    // 回收进行中：禁止删除（避免与回收流程并发导致状态不一致）
 	    const pid = String(project.id || "").trim();
@@ -4647,7 +4681,7 @@ export default function CodexFlowManagerUI() {
 		      });
 	      return;
 	    }
-	    if (!guardWorktreeRecycleAndDeleteByTerminalAgents(project)) return;
+	    if (!guardWorktreeDeleteAndResetByTerminalAgents(project)) return;
 
 	    // 防重复：即使用户关闭弹窗后再次打开，也不允许重复触发同一 worktree 的删除
 	    if (worktreeDeleteInFlightByProjectIdRef.current[String(project.id || "").trim()]) {
@@ -4712,7 +4746,7 @@ export default function CodexFlowManagerUI() {
       worktreeDeleteSubmitGuardRef.current = false;
       setWorktreeDeleteInFlight(project.id, false);
     }
-  }, [guardWorktreeRecycleAndDeleteByTerminalAgents, refreshGitInfoForProjectIds, setWorktreeDeleteInFlight, showGitActionErrorDialog, t, worktreeDeleteDialog]);
+  }, [guardWorktreeDeleteAndResetByTerminalAgents, refreshGitInfoForProjectIds, setWorktreeDeleteInFlight, showGitActionErrorDialog, t, worktreeDeleteDialog]);
 
 	  /**
 	   * 若当前项目满足“worktree 自动提交”条件，则将一次自动提交加入队列（同一项目串行执行，避免 git lock 冲突）。
@@ -7965,6 +7999,35 @@ export default function CodexFlowManagerUI() {
       </Dialog>
 
       <Dialog
+        open={worktreeRecycleTerminalAgentsDialog.open}
+        onOpenChange={(open) => {
+          if (open) return;
+          resolveWorktreeRecycleTerminalAgentsConfirm(false);
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t("projects:worktreeRecycleTerminalAgentsTitle", "终端代理仍在运行") as string}</DialogTitle>
+            <DialogDescription>
+              {t(
+                "projects:worktreeRecycleTerminalAgentsDesc",
+                "检测到当前项目存在 {count} 个终端代理仍在运行。继续合并可能影响正在运行的任务/进程。是否继续？",
+                { count: worktreeRecycleTerminalAgentsDialog.count }
+              ) as string}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" onClick={() => resolveWorktreeRecycleTerminalAgentsConfirm(false)}>
+              {t("common:cancel", "取消") as string}
+            </Button>
+            <Button variant="secondary" onClick={() => resolveWorktreeRecycleTerminalAgentsConfirm(true)}>
+              {t("common:continue", "继续") as string}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
         open={worktreeBlockedDialog.open}
         onOpenChange={(open) => {
           if (!open) setWorktreeBlockedDialog((prev) => ({ ...prev, open: false }));
@@ -7976,7 +8039,7 @@ export default function CodexFlowManagerUI() {
             <DialogDescription>
               {t(
                 "projects:worktreeActionBlockedByTerminals",
-                "当前项目存在 {count} 个终端代理，工作树回收/删除功能不可用。请关闭所有终端代理再尝试。",
+                "当前项目存在 {count} 个终端代理，删除/重置 worktree 功能不可用。请关闭所有终端代理再尝试。",
                 { count: worktreeBlockedDialog.count }
               ) as string}
             </DialogDescription>
