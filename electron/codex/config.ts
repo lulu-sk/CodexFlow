@@ -8,7 +8,11 @@ import { perfLogger } from "../log";
 import { getCodexRootsFastAsync } from "../wsl";
 
 const REQUIRED_NOTIFICATION = "agent-turn-complete";
+const REQUIRED_NOTIFICATION_METHOD = "osc9";
 const NOTIFICATIONS_KEY = "notifications";
+const NOTIFICATION_METHOD_KEY = "notification_method";
+const DOTTED_TUI_NOTIFICATIONS_KEY = "tui.notifications";
+const DOTTED_TUI_NOTIFICATION_METHOD_KEY = "tui.notification_method";
 
 type NormalizeResult = { updated: string; changed: boolean };
 
@@ -148,6 +152,160 @@ function dedupePreservingOrder<T>(list: T[]): T[] {
   return out;
 }
 
+/**
+ * 中文说明：判断文件中是否存在 [tui] 表头。
+ */
+function hasTuiTableHeader(lines: string[]): boolean {
+  for (const line of lines) {
+    const sectionMatch = String(line || "").match(/^(\s*\[([^\]\[]+)\])(\s*)(.*)$/);
+    if (!sectionMatch) continue;
+    const section = sectionMatch[2].trim().toLowerCase();
+    if (section === "tui") return true;
+  }
+  return false;
+}
+
+/**
+ * 中文说明：判断文件中是否出现任何 root 级的 tui.* dotted 配置（避免盲目追加 [tui] 导致 TOML 失效）。
+ */
+function hasRootTuiDottedKeys(lines: string[]): boolean {
+  let sawAnySection = false;
+  for (const rawLine of lines) {
+    const sectionMatch = String(rawLine || "").match(/^(\s*\[([^\]\[]+)\])(\s*)(.*)$/);
+    if (sectionMatch) {
+      sawAnySection = true;
+      continue;
+    }
+    if (sawAnySection) continue;
+    const { code } = splitInlineComment(String(rawLine || ""));
+    if (/^\s*tui\.[a-z0-9_.-]+\s*=/i.test(code)) return true;
+  }
+  return false;
+}
+
+type TomlArrayAssignment = {
+  indent: string;
+  key: string;
+  comment: string;
+  rawValue: string;
+  endIndex: number;
+  hasArray: boolean;
+};
+
+/**
+ * 中文说明：解析一条 TOML 数组赋值（支持跨行与“= 后换行”写法）。
+ */
+function parseTomlArrayAssignment(lines: string[], startIndex: number, keyRegex: RegExp): TomlArrayAssignment | null {
+  const { code, comment } = splitInlineComment(lines[startIndex] ?? "");
+  const assignmentMatch = code.match(keyRegex);
+  if (!assignmentMatch) return null;
+
+  const indent = assignmentMatch[1] ?? "";
+  const key = assignmentMatch[2] ?? "";
+  const valueFragment = assignmentMatch[4] ?? "";
+
+  const fragments: string[] = [valueFragment];
+  let endIndex = startIndex;
+  const state: ArrayScanState = { depth: 0, hasBracket: false, inSingle: false, inDouble: false, escaped: false, done: false };
+  feedArrayState(state, valueFragment);
+
+  while (!state.done && state.hasBracket && endIndex + 1 < lines.length) {
+    endIndex += 1;
+    const { code: nextCode } = splitInlineComment(lines[endIndex] ?? "");
+    fragments.push(nextCode);
+    feedArrayState(state, nextCode);
+  }
+
+  if (!state.hasBracket) {
+    const probeFragments: string[] = [];
+    const probeState: ArrayScanState = { ...state };
+    let probeIndex = endIndex;
+    // 中文说明：寻找下一行是否为数组起始，兼容 `key =` 换行写法。
+    while (!probeState.done && probeIndex + 1 < lines.length) {
+      const nextIndex = probeIndex + 1;
+      const { code: nextCode } = splitInlineComment(lines[nextIndex] ?? "");
+      const trimmedNext = nextCode.trim();
+      if (trimmedNext === "") {
+        probeFragments.push(nextCode);
+        probeIndex = nextIndex;
+        continue;
+      }
+      if (trimmedNext.startsWith("#")) break;
+      probeFragments.push(nextCode);
+      feedArrayState(probeState, nextCode);
+      probeIndex = nextIndex;
+      if (!probeState.hasBracket && !trimmedNext.startsWith("[")) {
+        break;
+      }
+    }
+
+    if (probeState.hasBracket) {
+      fragments.push(...probeFragments);
+      endIndex = probeIndex;
+      Object.assign(state, probeState);
+    }
+  }
+
+  const rawValue = fragments.join("\n").trim();
+  return { indent, key, comment, rawValue, endIndex, hasArray: state.hasBracket };
+}
+
+/**
+ * 中文说明：序列化为 TOML 的字符串数组（使用 JSON.stringify 保证转义正确）。
+ */
+function serializeTomlStringArray(values: string[]): string {
+  return values.map((value) => JSON.stringify(value)).join(", ");
+}
+
+/**
+ * 中文说明：将通知列表规范化为“去重 + 保留顺序 + 确保包含 required”。
+ */
+function normalizeTuiNotifications(values: string[]): string[] {
+  const deduped = dedupePreservingOrder(values || []);
+  if (!deduped.includes(REQUIRED_NOTIFICATION)) deduped.push(REQUIRED_NOTIFICATION);
+  return deduped;
+}
+
+/**
+ * 中文说明：移除 root 级的 tui.notifications / tui.notification_method，避免与 [tui] 配置重复导致 TOML 失效。
+ * - 会返回从 tui.notifications 读取到的通知列表（用于后续合并到 [tui]）。
+ */
+function stripRootTuiDottedKeys(lines: string[]): { lines: string[]; changed: boolean; dottedNotifications: string[] } {
+  let changed = false;
+  const dottedNotifications: string[] = [];
+  let sawAnySection = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const sectionMatch = String(lines[i] || "").match(/^(\s*\[([^\]\[]+)\])(\s*)(.*)$/);
+    if (sectionMatch) {
+      sawAnySection = true;
+      continue;
+    }
+    if (sawAnySection) continue;
+
+    const parsed = parseTomlArrayAssignment(lines, i, /^(\s*)(tui\.notifications)(\s*=\s*)(.*)$/i);
+    if (parsed) {
+      if (parsed.hasArray) {
+        try { dottedNotifications.push(...extractArrayValues(parsed.rawValue)); } catch {}
+      }
+      lines.splice(i, parsed.endIndex - i + 1);
+      i -= 1;
+      changed = true;
+      continue;
+    }
+
+    const { code } = splitInlineComment(String(lines[i] || ""));
+    if (/^\s*tui\.notification_method\s*=/i.test(code)) {
+      lines.splice(i, 1);
+      i -= 1;
+      changed = true;
+      continue;
+    }
+  }
+
+  return { lines, changed, dottedNotifications };
+}
+
 function findTuiSectionBounds(lines: string[]): { start: number; end: number } {
   let start = -1;
   let end = lines.length;
@@ -172,9 +330,141 @@ function updateNotificationsSection(normalized: string): NormalizeResult {
   let changed = false;
   let tuiFound = false;
   let notificationsFound = false;
+  let notificationMethodFound = false;
+
+  // 中文说明：兼容 root 级 tui.* dotted 写法：存在 dotted 时，不要盲目追加 [tui]，否则会造成 TOML 解析失败。
+  const tuiTableHeaderPresent = hasTuiTableHeader(lines);
+  const rootTuiDottedPresent = hasRootTuiDottedKeys(lines);
+
+  // 若存在 [tui] 表头，优先以表头为准，并移除 root 级的重复 dotted keys（避免重复键/表重定义导致配置失效）。
+  const dottedMergeFromRoot: string[] = [];
+  if (tuiTableHeaderPresent) {
+    const stripped = stripRootTuiDottedKeys(lines);
+    if (stripped.changed) changed = true;
+    dottedMergeFromRoot.push(...stripped.dottedNotifications);
+  }
+
+  // 若没有 [tui] 表头但存在 root 级 dotted tui.*，则走 dotted 模式更新（避免追加 [tui]）。
+  if (!tuiTableHeaderPresent && rootTuiDottedPresent) {
+    let notificationsLineIndex = -1;
+    let notificationsIndent = "";
+    let notificationsComment = "";
+    let notificationsValues: string[] = [];
+
+    let methodLineIndex = -1;
+    let methodIndent = "";
+    let methodComment = "";
+
+    let sawAnySection = false;
+    for (let i = 0; i < lines.length; i++) {
+      const sectionMatch = String(lines[i] || "").match(/^(\s*\[([^\]\[]+)\])(\s*)(.*)$/);
+      if (sectionMatch) {
+        sawAnySection = true;
+        continue;
+      }
+      if (sawAnySection) continue;
+
+      const parsed = parseTomlArrayAssignment(lines, i, /^(\s*)(tui\.notifications)(\s*=\s*)(.*)$/i);
+      if (parsed) {
+        const originalValues = parsed.hasArray ? extractArrayValues(parsed.rawValue) : [];
+        const merged = normalizeTuiNotifications([...notificationsValues, ...originalValues]);
+        const serializedValues = serializeTomlStringArray(merged);
+        const rendered = `${parsed.indent}${DOTTED_TUI_NOTIFICATIONS_KEY} = [${serializedValues}]${parsed.comment ? ` ${parsed.comment}` : ""}`;
+
+        if (notificationsLineIndex < 0) {
+          notificationsLineIndex = i;
+          notificationsIndent = parsed.indent;
+          notificationsComment = parsed.comment;
+          notificationsValues = merged;
+          const originalBlock = lines.slice(i, parsed.endIndex + 1);
+          lines.splice(i, parsed.endIndex - i + 1, rendered);
+          if (originalBlock.length !== 1 || originalBlock[0] !== rendered) changed = true;
+        } else {
+          // 中文说明：重复 key 会导致 TOML 解析失败，合并到首条并删除后续重复项。
+          notificationsValues = merged;
+          lines[notificationsLineIndex] = `${notificationsIndent}${DOTTED_TUI_NOTIFICATIONS_KEY} = [${serializeTomlStringArray(notificationsValues)}]${notificationsComment ? ` ${notificationsComment}` : ""}`;
+          lines.splice(i, parsed.endIndex - i + 1);
+          i -= 1;
+          changed = true;
+        }
+        tuiFound = true;
+        notificationsFound = true;
+        continue;
+      }
+
+      const { code, comment } = splitInlineComment(lines[i] ?? "");
+      const methodMatch = code.match(/^(\s*)(tui\.notification_method)(\s*=\s*)(.*)$/i);
+      if (methodMatch) {
+        const indent = methodMatch[1] ?? "";
+        const rendered = `${indent}${DOTTED_TUI_NOTIFICATION_METHOD_KEY} = "${REQUIRED_NOTIFICATION_METHOD}"${comment ? ` ${comment}` : ""}`;
+        if (methodLineIndex < 0) {
+          methodLineIndex = i;
+          methodIndent = indent;
+          methodComment = comment;
+          if (lines[i] !== rendered) {
+            lines[i] = rendered;
+            changed = true;
+          }
+        } else {
+          // 中文说明：重复 key 会导致 TOML 解析失败，保留首条并删除后续重复项。
+          lines.splice(i, 1);
+          i -= 1;
+          changed = true;
+        }
+        tuiFound = true;
+        notificationMethodFound = true;
+        continue;
+      }
+    }
+
+    // 仅当 root 级已经有 tui.* dotted 配置时，才在 root 级补齐缺失项，避免把新 key 插入到某个 section 内。
+    const insertIndex = (() => {
+      for (let i = 0; i < lines.length; i++) {
+        const m = String(lines[i] || "").match(/^(\s*\[([^\]\[]+)\])(\s*)(.*)$/);
+        if (m) return i;
+      }
+      return lines.length;
+    })();
+
+    const rootIndent = notificationsLineIndex >= 0 ? notificationsIndent : (methodLineIndex >= 0 ? methodIndent : "");
+    const needsBlankBeforeInsert = insertIndex > 0 && lines[insertIndex - 1].trim() !== "";
+
+    if (!notificationsFound) {
+      const merged = normalizeTuiNotifications(notificationsValues);
+      const rendered = `${rootIndent}${DOTTED_TUI_NOTIFICATIONS_KEY} = [${serializeTomlStringArray(merged)}]`;
+      const toInsert = needsBlankBeforeInsert ? ["", rendered] : [rendered];
+      lines.splice(insertIndex, 0, ...toInsert);
+      changed = true;
+      tuiFound = true;
+      notificationsFound = true;
+    }
+
+    if (!notificationMethodFound) {
+      const rendered = `${rootIndent}${DOTTED_TUI_NOTIFICATION_METHOD_KEY} = "${REQUIRED_NOTIFICATION_METHOD}"`;
+      const idx = (() => {
+        // 若刚插入了 notifications，并且 insertIndex 处有空行，则把 method 放在 notifications 后面更直观。
+        const base = insertIndex + (needsBlankBeforeInsert ? 1 : 0);
+        for (let i = base; i < Math.min(lines.length, base + 6); i++) {
+          if (String(lines[i] || "").includes(DOTTED_TUI_NOTIFICATIONS_KEY)) return i + 1;
+        }
+        return insertIndex;
+      })();
+      if (idx === insertIndex && needsBlankBeforeInsert && lines[insertIndex] !== "") {
+        lines.splice(insertIndex, 0, "");
+      }
+      lines.splice(idx, 0, rendered);
+      changed = true;
+      tuiFound = true;
+      notificationMethodFound = true;
+    }
+
+    return { updated: lines.join("\n"), changed };
+  }
 
   let inTui = false;
-  let processedInCurrentTui = false;
+  let processedNotificationsInCurrentTui = false;
+  let processedMethodInCurrentTui = false;
+  let mergedFromRootDotted = false;
 
   for (let i = 0; i < lines.length; i++) {
     const sectionMatch = lines[i].match(/^(\s*\[([^\]\[]+)\])(\s*)(.*)$/);
@@ -183,7 +473,9 @@ function updateNotificationsSection(normalized: string): NormalizeResult {
       if (section === "tui") {
         tuiFound = true;
         inTui = true;
-        processedInCurrentTui = false;
+        processedNotificationsInCurrentTui = false;
+        processedMethodInCurrentTui = false;
+        mergedFromRootDotted = false;
 
         const headerPart = sectionMatch[1];
         const suffix = lines[i].slice(headerPart.length);
@@ -202,99 +494,59 @@ function updateNotificationsSection(normalized: string): NormalizeResult {
     if (!inTui) continue;
 
     const { code, comment } = splitInlineComment(lines[i]);
-    const assignmentMatch = code.match(/^(\s*)(notifications)(\s*=\s*)(.*)$/i);
-    if (!assignmentMatch) continue;
 
-    if (processedInCurrentTui) {
-      lines.splice(i, 1);
-      i -= 1;
-      changed = true;
-      continue;
-    }
-
-    processedInCurrentTui = true;
-    notificationsFound = true;
-
-    const indent = assignmentMatch[1] ?? "";
-    const valueFragment = assignmentMatch[4] ?? "";
-
-    const fragments: string[] = [valueFragment];
-    let endIndex = i;
-    const state: ArrayScanState = { depth: 0, hasBracket: false, inSingle: false, inDouble: false, escaped: false, done: false };
-    feedArrayState(state, valueFragment);
-
-    while (!state.done && state.hasBracket && endIndex + 1 < lines.length) {
-      endIndex += 1;
-      const { code: nextCode } = splitInlineComment(lines[endIndex]);
-      fragments.push(nextCode);
-      feedArrayState(state, nextCode);
-    }
-
-    if (!state.hasBracket) {
-      const probeFragments: string[] = [];
-      const probeState: ArrayScanState = { ...state };
-      let probeIndex = endIndex;
-      // 寻找下一行是否为数组起始，兼容 `notifications =` 换行写法
-      while (!probeState.done && probeIndex + 1 < lines.length) {
-        const nextIndex = probeIndex + 1;
-        const { code: nextCode } = splitInlineComment(lines[nextIndex]);
-        const trimmedNext = nextCode.trim();
-        if (trimmedNext === "") {
-          probeFragments.push(nextCode);
-          probeIndex = nextIndex;
-          continue;
-        }
-        if (trimmedNext.startsWith("#")) break;
-        probeFragments.push(nextCode);
-        feedArrayState(probeState, nextCode);
-        probeIndex = nextIndex;
-        if (!probeState.hasBracket && !trimmedNext.startsWith("[")) {
-          break;
-        }
+    const notificationsParsed = parseTomlArrayAssignment(lines, i, /^(\s*)(notifications)(\s*=\s*)(.*)$/i);
+    if (notificationsParsed) {
+      if (processedNotificationsInCurrentTui) {
+        lines.splice(i, notificationsParsed.endIndex - i + 1);
+        i -= 1;
+        changed = true;
+        continue;
       }
 
-      if (probeState.hasBracket) {
-        fragments.push(...probeFragments);
-        endIndex = probeIndex;
-        Object.assign(state, probeState);
+      processedNotificationsInCurrentTui = true;
+      notificationsFound = true;
+
+      const originalValues = notificationsParsed.hasArray ? extractArrayValues(notificationsParsed.rawValue) : [];
+      const merged = normalizeTuiNotifications([...originalValues, ...(mergedFromRootDotted ? [] : dottedMergeFromRoot)]);
+      mergedFromRootDotted = true;
+
+      const serializedValues = serializeTomlStringArray(merged);
+      const newLine = `${notificationsParsed.indent}${NOTIFICATIONS_KEY} = [${serializedValues}]${notificationsParsed.comment ? ` ${notificationsParsed.comment}` : ""}`;
+      const originalBlock = lines.slice(i, notificationsParsed.endIndex + 1);
+      lines.splice(i, notificationsParsed.endIndex - i + 1, newLine);
+      if (originalBlock.length !== 1 || originalBlock[0] !== newLine) changed = true;
+      continue;
+    }
+
+    const methodMatch = code.match(/^(\s*)(notification_method)(\s*=\s*)(.*)$/i);
+    if (methodMatch) {
+      if (processedMethodInCurrentTui) {
+        lines.splice(i, 1);
+        i -= 1;
+        changed = true;
+        continue;
       }
-    }
-
-    const rawValue = fragments.join("\n").trim();
-
-    if (!state.hasBracket) {
-      const rendered = `${indent}${NOTIFICATIONS_KEY} = ["${REQUIRED_NOTIFICATION}"]${comment ? ` ${comment}` : ""}`;
-      lines.splice(i, endIndex - i + 1, rendered);
-      changed = true;
+      processedMethodInCurrentTui = true;
+      notificationMethodFound = true;
+      const indent = methodMatch[1] ?? "";
+      const rendered = `${indent}${NOTIFICATION_METHOD_KEY} = "${REQUIRED_NOTIFICATION_METHOD}"${comment ? ` ${comment}` : ""}`;
+      if (lines[i] !== rendered) {
+        lines[i] = rendered;
+        changed = true;
+      }
       continue;
     }
-
-    const originalValues = extractArrayValues(rawValue);
-    const deduped = dedupePreservingOrder(originalValues);
-    const priorLength = deduped.length;
-    if (!deduped.includes(REQUIRED_NOTIFICATION)) {
-      deduped.push(REQUIRED_NOTIFICATION);
-    }
-    const valuesChanged = deduped.length !== priorLength || deduped.length !== originalValues.length;
-
-    if (!valuesChanged) {
-      i = endIndex;
-      continue;
-    }
-
-    const serializedValues = deduped.map((value) => JSON.stringify(value)).join(", ");
-    const newLine = `${indent}${NOTIFICATIONS_KEY} = [${serializedValues}]${comment ? ` ${comment}` : ""}`;
-    lines.splice(i, endIndex - i + 1, newLine);
-    changed = true;
   }
 
   if (!tuiFound) {
     const needsLeadingBlank = lines.length > 0 && lines[lines.length - 1].trim() !== "";
     if (needsLeadingBlank) lines.push("");
     lines.push("[tui]");
+    lines.push(`${NOTIFICATION_METHOD_KEY} = "${REQUIRED_NOTIFICATION_METHOD}"`);
     lines.push(`${NOTIFICATIONS_KEY} = ["${REQUIRED_NOTIFICATION}"]`);
     changed = true;
-  } else if (!notificationsFound) {
+  } else if (!notificationsFound || !notificationMethodFound) {
     const { start, end } = findTuiSectionBounds(lines);
     if (start >= 0) {
       let insertIndex = start + 1;
@@ -310,8 +562,16 @@ function updateNotificationsSection(normalized: string): NormalizeResult {
         break;
       }
 
-      lines.splice(insertIndex, 0, `${indent}${NOTIFICATIONS_KEY} = ["${REQUIRED_NOTIFICATION}"]`);
-      changed = true;
+      const inserts: string[] = [];
+      if (!notificationMethodFound) inserts.push(`${indent}${NOTIFICATION_METHOD_KEY} = "${REQUIRED_NOTIFICATION_METHOD}"`);
+      if (!notificationsFound) {
+        const merged = normalizeTuiNotifications(dottedMergeFromRoot);
+        inserts.push(`${indent}${NOTIFICATIONS_KEY} = [${serializeTomlStringArray(merged)}]`);
+      }
+      if (inserts.length > 0) {
+        lines.splice(insertIndex, 0, ...inserts);
+        changed = true;
+      }
     }
   }
 

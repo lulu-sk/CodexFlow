@@ -473,7 +473,7 @@ contextBridge.exposeInMainWorld('host', {
     showAgentCompletion: (payload: { tabId: string; tabName?: string; projectName?: string; preview?: string; title: string; body: string; appTitle?: string }) => {
       ipcRenderer.send('notifications:agentComplete', payload);
     },
-    // 中文说明：监听主进程转发的外部完成通知（Gemini hook）。
+    // 中文说明：监听主进程转发的外部完成通知（Gemini/Claude hook -> JSONL 桥接）。
     onExternalAgentComplete: (handler: (payload: any) => void) => {
       const listener = (_: unknown, payload: any) => handler(payload);
       ipcRenderer.on('notifications:externalAgentComplete', listener);

@@ -573,8 +573,8 @@ export interface GeminiAPI {
 export interface NotificationsAPI {
   setBadgeCount(count: number): void;
   showAgentCompletion(payload: { tabId: string; tabName?: string; projectName?: string; preview?: string; title: string; body: string; appTitle?: string }): void;
-  /** 监听主进程转发的外部完成通知（如 Gemini hook）。 */
-  onExternalAgentComplete?(handler: (payload: { providerId?: "gemini"; tabId?: string; envLabel?: string; preview?: string; timestamp?: string; eventId?: string }) => void): () => void;
+  /** 监听主进程转发的外部完成通知（如 Gemini/Claude hook -> JSONL 桥接）。 */
+  onExternalAgentComplete?(handler: (payload: { providerId?: "gemini" | "claude"; tabId?: string; envLabel?: string; preview?: string; timestamp?: string; eventId?: string }) => void): () => void;
   onFocusTab?(handler: (payload: { tabId: string }) => void): () => void;
 }
 
