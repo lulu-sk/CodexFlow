@@ -108,7 +108,6 @@ import {
   CHIP_COMMIT_RELEASE_DELAY_MS,
   clampText,
   DEFAULT_COMPLETION_PREFS,
-  GEMINI_NOTIFY_ENV_KEYS,
   HISTORY_TITLE_MAX_CHARS,
   HISTORY_UNKNOWN_GROUP_KEY,
   INPUT_FULLSCREEN_TRANSITION_MS,
@@ -126,7 +125,7 @@ import {
   WorktreeControlPad,
   areStringArraysEqual,
   buildAutoCommitMessage,
-  buildGeminiNotifyEnv,
+  buildProviderNotifyEnv,
   buildProviderItemIndex,
   buildProviderStartupCmdWithInitialPrompt,
   buildWorktreeProviderQueue,
@@ -2198,17 +2197,17 @@ export default function CodexFlowManagerUI() {
     return () => { try { off && off(); } catch {} };
   }, [focusTabFromNotification]);
 
-  // 监听主进程转发的 Gemini 完成通知（JSONL 桥接）
+  // 监听主进程转发的外部完成通知（Gemini/Claude，JSONL 桥接）
   useEffect(() => {
     let off: (() => void) | undefined;
     try {
       off = window.host.notifications?.onExternalAgentComplete?.((payload: { providerId?: string; tabId?: string; envLabel?: string; preview?: string; timestamp?: string; eventId?: string }) => {
-        const providerId = String(payload?.providerId || "gemini").trim().toLowerCase();
-        if (providerId && providerId !== "gemini") return;
+        const providerId = String(payload?.providerId || "").trim().toLowerCase();
+        if (providerId && providerId !== "gemini" && providerId !== "claude") return;
         const preview = String(payload?.preview || "");
         const resolvedTabId = resolveExternalTabId({
           tabId: payload?.tabId,
-          providerId,
+          providerId: providerId || "gemini",
           envLabel: payload?.envLabel,
         });
         if (!resolvedTabId) {
@@ -2477,7 +2476,7 @@ export default function CodexFlowManagerUI() {
       logs: [],
       createdAt: Date.now(),
     };
-    const notifyEnv = buildGeminiNotifyEnv(tab.id, tab.providerId, tab.name);
+    const notifyEnv = buildProviderNotifyEnv(tab.id, tab.providerId, tab.name);
     let ptyId: string | undefined;
     try {
       const env = getProviderEnv(activeProviderId);
@@ -2576,7 +2575,7 @@ export default function CodexFlowManagerUI() {
       logs: [],
       createdAt: Date.now(),
     };
-    const notifyEnv = buildGeminiNotifyEnv(tab.id, tab.providerId, tab.name);
+    const notifyEnv = buildProviderNotifyEnv(tab.id, tab.providerId, tab.name);
     let ptyId: string | undefined;
     // Open PTY in main (WSL)
     try {
@@ -3626,7 +3625,7 @@ export default function CodexFlowManagerUI() {
       createdAt: Date.now(),
     };
 
-    const notifyEnv = buildGeminiNotifyEnv(tab.id, tab.providerId, tab.name);
+    const notifyEnv = buildProviderNotifyEnv(tab.id, tab.providerId, tab.name);
 
     let ptyId: string | undefined;
     try {
@@ -5810,7 +5809,7 @@ export default function CodexFlowManagerUI() {
           logs: [],
           createdAt: Date.now(),
         };
-        const notifyEnv = buildGeminiNotifyEnv(tab.id, tab.providerId, tab.name);
+        const notifyEnv = buildProviderNotifyEnv(tab.id, tab.providerId, tab.name);
         let ptyId: string | undefined;
         try {
           await (window as any).host?.utils?.perfLog?.(`[ui] history.resume openWSLConsole start tab=${tab.id}`);

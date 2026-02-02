@@ -291,6 +291,12 @@ const GEMINI_NOTIFY_ENV_KEYS = {
   providerId: "GEMINI_CLI_CODEXFLOW_PROVIDER_ID",
 } as const;
 
+const CLAUDE_NOTIFY_ENV_KEYS = {
+  tabId: "CLAUDE_CODEXFLOW_TAB_ID",
+  envLabel: "CLAUDE_CODEXFLOW_ENV_LABEL",
+  providerId: "CLAUDE_CODEXFLOW_PROVIDER_ID",
+} as const;
+
 /**
  * 构建 ProviderItem 的 id -> item 索引，避免在标签渲染时重复线性扫描。
  */
@@ -319,6 +325,34 @@ function buildGeminiNotifyEnv(tabId: string, providerId: string, envLabel: strin
     [GEMINI_NOTIFY_ENV_KEYS.envLabel]: label,
     [GEMINI_NOTIFY_ENV_KEYS.providerId]: pid,
   };
+}
+
+/**
+ * 中文说明：构造 Claude Code hook 所需的通知环境变量（仅 claude 标签页注入）。
+ */
+function buildClaudeNotifyEnv(tabId: string, providerId: string, envLabel: string): Record<string, string> {
+  const pid = String(providerId || "").trim().toLowerCase();
+  if (pid !== "claude") return {};
+  const tid = String(tabId || "").trim();
+  if (!tid) return {};
+  const label = String(envLabel || "").trim();
+  return {
+    [CLAUDE_NOTIFY_ENV_KEYS.tabId]: tid,
+    [CLAUDE_NOTIFY_ENV_KEYS.envLabel]: label,
+    [CLAUDE_NOTIFY_ENV_KEYS.providerId]: pid,
+  };
+}
+
+/**
+ * 中文说明：构造 Provider 完成通知链路所需的环境变量（按 providerId 注入）。
+ * - Gemini：用于 AfterAgent hook（JSONL 桥接）
+ * - Claude：用于 Stop hook（JSONL 桥接）
+ */
+function buildProviderNotifyEnv(tabId: string, providerId: string, envLabel: string): Record<string, string> {
+  const pid = String(providerId || "").trim().toLowerCase();
+  if (pid === "gemini") return buildGeminiNotifyEnv(tabId, pid, envLabel);
+  if (pid === "claude") return buildClaudeNotifyEnv(tabId, pid, envLabel);
+  return {};
 }
 
 /**
@@ -1367,7 +1401,9 @@ function normalizeCompletionPrefs(raw?: Partial<CompletionPreferences> | null): 
 
 function isAgentCompletionMessage(message: string): boolean {
   const normalized = message.trim();
-  if (!normalized) return false;
+  // 中文说明：部分引擎会发出“空 payload”的 OSC 9; 通知（仅用于提示宿主“已完成”），这里也应视为完成事件。
+  // 为空时后续会走默认文案（如“点击查看详情”），避免整条完成链路失效。
+  if (!normalized) return true;
   const lower = normalized.toLowerCase();
   if (lower.includes('approval requested')) return false;
   if (lower.startsWith('codex wants to edit')) return false;
@@ -1581,6 +1617,7 @@ function TerminalView({
 export {
   CHIP_COMMIT_RELEASE_DELAY_MS,
   GEMINI_NOTIFY_ENV_KEYS,
+  CLAUDE_NOTIFY_ENV_KEYS,
   PROJECT_SORT_STORAGE_KEY,
   INPUT_FULLSCREEN_TRANSITION_MS,
   OSC_NOTIFICATION_PREFIX,
@@ -1594,6 +1631,7 @@ export {
   uid,
   buildProviderItemIndex,
   buildGeminiNotifyEnv,
+  buildProviderNotifyEnv,
   getProviderIconSrc,
   getDir,
   timeFromFilename,

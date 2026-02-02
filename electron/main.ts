@@ -35,7 +35,7 @@ import { registerQuitConfirmIPC, requestQuitConfirmFromRenderer } from "./quitCo
 import { CodexBridge, type CodexBridgeOptions } from "./codex/bridge";
 import { applyCodexAuthBackupAsync, deleteCodexAuthBackupAsync, isSafeAuthBackupId, listCodexAuthBackupsAsync, readCodexAuthBackupMetaAsync, resolveCodexAccountSignature, resolveCodexAuthJsonPathAsync, upsertCodexAuthBackupAsync, upsertCodexAuthBackupMetaOnlyAsync } from "./codex/authBackups";
 import { ensureAllCodexNotifications } from "./codex/config";
-import { ensureAllClaudeNotifications } from "./claude/notifications";
+import { ensureAllClaudeNotifications, startClaudeNotificationBridge, stopClaudeNotificationBridge } from "./claude/notifications";
 import { getClaudeUsageSnapshotAsync } from "./claude/usage";
 import { ensureAllGeminiNotifications, startGeminiNotificationBridge, stopGeminiNotificationBridge } from "./gemini/notifications";
 import { getGeminiQuotaSnapshotAsync } from "./gemini/usage";
@@ -1317,6 +1317,7 @@ if (!gotLock) {
       try { await ensureAllCodexNotifications(); } catch {}
       try { await ensureAllClaudeNotifications(); } catch {}
       try { await ensureAllGeminiNotifications(); } catch {}
+      try { await startClaudeNotificationBridge(() => mainWindow); } catch {}
       try { await startGeminiNotificationBridge(() => mainWindow); } catch {}
       if (DIAG) { try { perfLogger.log(`[BOOT] Locale: ${i18n.getCurrentLocale?.()}`); } catch {} }
       try { registerNotificationIPC(() => mainWindow, { appUserModelId, protocolScheme: PROTOCOL_SCHEME, profileId: instanceProfile.profileId }); } catch {}
@@ -1369,6 +1370,7 @@ if (!gotLock) {
   });
 
   app.on('will-quit', () => {
+    try { stopClaudeNotificationBridge(); } catch {}
     try { stopGeminiNotificationBridge(); } catch {}
     disposeAllPtys();
     cleanupPastedImages().catch(() => {});
@@ -3593,6 +3595,7 @@ ipcMain.handle('settings.get', async () => {
   try { await ensureAllCodexNotifications(); } catch {}
   try { await ensureAllClaudeNotifications(); } catch {}
   try { await ensureAllGeminiNotifications(); } catch {}
+  try { await startClaudeNotificationBridge(() => mainWindow); } catch {}
   try { await startGeminiNotificationBridge(() => mainWindow); } catch {}
   const cfg = settings.getSettings() as any;
   try {
@@ -3649,6 +3652,7 @@ ipcMain.handle('settings.update', async (_e, partial: any) => {
   try { await ensureAllCodexNotifications(); } catch {}
   try { await ensureAllClaudeNotifications(); } catch {}
   try { await ensureAllGeminiNotifications(); } catch {}
+  try { await startClaudeNotificationBridge(() => mainWindow); } catch {}
   try { await startGeminiNotificationBridge(() => mainWindow); } catch {}
   // 若刚开启“记录账号”，立即刷新一次账号信息并触发初始备份（便于立刻出现在备份列表）
   try {
