@@ -4768,7 +4768,7 @@ export default function CodexFlowManagerUI() {
   }, [removeProjectFromUIList, upsertProjectInList]);
 
   /**
-   * 中文说明：打开历史记录“删除到回收站”确认弹窗（用于悬停快捷键 D）。
+   * 中文说明：打开历史记录“删除到回收站”确认弹窗（用于悬停快捷键 Delete/Del）。
    */
   const openHistoryDeleteConfirm = useCallback((item: HistorySession | null, groupKey: string | null) => {
     if (!item) return;
@@ -4809,16 +4809,18 @@ export default function CodexFlowManagerUI() {
     /**
      * 中文说明：悬停快捷键处理器。
      * - 项目列表：H=隐藏/取消隐藏；D=删除 worktree 或移除目录记录
-     * - 历史列表：D=删除历史对话（删除到回收站）
+     * - 历史列表：Delete/Del=删除历史对话（删除到回收站）
      */
     const handler = (event: KeyboardEvent) => {
       const k = String(event?.key || "");
+      const code = String((event as any)?.code || "");
       const key = k.toLowerCase();
-      if (key !== "h" && key !== "d") return;
+      const isHistoryDeleteKey = key === "delete" || code === "Delete";
+      if (!isHistoryDeleteKey && key !== "h" && key !== "d") return;
       if (shouldIgnoreHoverShortcutEvent(event)) return;
 
-      // 历史项优先：D = 删除历史对话（删除到回收站）
-      if (key === "d") {
+      // 历史项优先：Delete/Del = 删除历史对话（删除到回收站）
+      if (isHistoryDeleteKey) {
         try {
           const hoverEl = document.querySelector('[data-cf-history-row-id]:hover') as HTMLElement | null;
           if (hoverEl) {
