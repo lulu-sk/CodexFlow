@@ -163,6 +163,8 @@ type WorktreeCreateDialogState = {
   promptChips: PathChip[];
   /** 初始提示词：草稿 */
   promptDraft: string;
+  /** 是否在本次创建/启动中临时启用 YOLO（不影响全局设置）。 */
+  useYolo: boolean;
   /** 是否开启并行混合模式（Use Multiple Models） */
   useMultipleModels: boolean;
   /** 单选模式下选择的唯一引擎 */
