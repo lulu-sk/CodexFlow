@@ -24,6 +24,19 @@ export function getYoloPresetStartupCmd(providerId: string): string | null {
 }
 
 /**
+ * 获取内置三引擎的“非 YOLO”基础启动命令。
+ * - Codex：codex
+ * - Claude：claude
+ * - Gemini：gemini
+ */
+export function getNonYoloStartupCmd(providerId: string): string | null {
+  if (providerId === "codex") return "codex";
+  if (providerId === "claude") return "claude";
+  if (providerId === "gemini") return "gemini";
+  return null;
+}
+
+/**
  * 归一化命令字符串用于对比（去除首尾空白并合并连续空白）。
  */
 export function normalizeCliCommandForCompare(cmd: string): string {
@@ -41,3 +54,23 @@ export function isYoloPresetEnabled(providerId: string, startupCmd: string | nul
   return cur.length > 0 && cur === normalizeCliCommandForCompare(preset);
 }
 
+/**
+ * 根据本次是否启用 YOLO，返回应使用的启动命令（不修改全局设置）。
+ * - enabled=true：若支持则强制使用 YOLO 预设命令。
+ * - enabled=false：若当前命令等于 YOLO 预设命令，则回退到非 YOLO 基础命令。
+ */
+export function resolveStartupCmdWithYolo(args: { providerId: string; startupCmd: string | null | undefined; enabled: boolean }): string {
+  const providerId = String(args.providerId || "").trim().toLowerCase();
+  const current = String(args.startupCmd || "").trim();
+  if (!isYoloSupportedProviderId(providerId)) return current;
+
+  if (args.enabled) {
+    return getYoloPresetStartupCmd(providerId) || current;
+  }
+
+  if (isYoloPresetEnabled(providerId, current)) {
+    return getNonYoloStartupCmd(providerId) || current;
+  }
+
+  return current;
+}

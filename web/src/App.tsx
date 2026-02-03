@@ -70,6 +70,7 @@ import { extractGeminiProjectHashFromPath, deriveGeminiProjectHashCandidatesFrom
 import { normalizeProvidersSettings } from "@/lib/providers/normalize";
 import { isBuiltInSessionProviderId, openaiIconUrl, openaiDarkIconUrl, claudeIconUrl, geminiIconUrl } from "@/lib/providers/builtins";
 import { resolveProvider } from "@/lib/providers/resolve";
+import { resolveStartupCmdWithYolo } from "@/lib/providers/yolo";
 import { injectCodexTraceEnv } from "@/providers/codex/commands";
 import { buildClaudeResumeStartupCmd } from "@/providers/claude/commands";
 import { buildGeminiResumeStartupCmd } from "@/providers/gemini/commands";
@@ -370,6 +371,7 @@ export default function CodexFlowManagerUI() {
     selectedChildWorktreeIds: [],
     promptChips: [],
     promptDraft: "",
+    useYolo: true,
     useMultipleModels: false,
     singleProviderId: "codex",
     multiCounts: { codex: 1, claude: 0, gemini: 0 },
@@ -1741,6 +1743,29 @@ export default function CodexFlowManagerUI() {
     }
     return resolved.startupCmd;
   }, [providerItems, codexCmd, codexTraceEnabled]);
+
+  /**
+   * 构造 worktree 创建面板用的 Provider 启动命令（可临时覆盖 YOLO，不写入全局设置）。
+   */
+  const buildProviderStartupCmdForWorktreeCreate = useCallback((args: {
+    providerId: GitWorktreeProviderId;
+    env: Required<ProviderEnv>;
+    useYolo?: boolean;
+  }): string => {
+    const providerId = args.providerId;
+    const env = args.env;
+    if (typeof args.useYolo !== "boolean") return buildProviderStartupCmd(providerId, env);
+
+    const item = providerItems.find((x) => x.id === providerId) ?? { id: providerId };
+    const resolved = resolveProvider(item);
+    const raw = providerId === "codex" ? (resolved.startupCmd || codexCmd) : resolved.startupCmd;
+    const adjusted = resolveStartupCmdWithYolo({ providerId, startupCmd: raw, enabled: args.useYolo });
+
+    if (providerId === "codex") {
+      return injectCodexTraceEnv({ cmd: adjusted || raw || codexCmd, traceEnabled: codexTraceEnabled, terminalMode: env.terminal as any });
+    }
+    return adjusted;
+  }, [buildProviderStartupCmd, codexCmd, codexTraceEnabled, providerItems]);
 
   /**
    * 获取 Provider 的展示名称（用于菜单文案与外部终端标题）。
@@ -3564,6 +3589,7 @@ export default function CodexFlowManagerUI() {
       selectedChildWorktreeIds: [],
       promptChips: [],
       promptDraft: "",
+      useYolo: true,
       useMultipleModels: false,
       singleProviderId: defaultProvider,
       multiCounts: { codex: defaultProvider === "codex" ? 1 : 0, claude: defaultProvider === "claude" ? 1 : 0, gemini: defaultProvider === "gemini" ? 1 : 0 },
@@ -3672,24 +3698,26 @@ export default function CodexFlowManagerUI() {
 
   /**
    * 在指定项目中启动某个引擎实例，并注入初始提示词（worktree 新建/复用共用）。
+   * - 支持通过 useYolo 临时覆盖 YOLO 预设（仅本次生效，不写入设置）。
    */
   const startProviderInstanceInProject = useCallback(async (args: {
     project: Project;
     providerId: GitWorktreeProviderId;
     prompt: string;
+    useYolo?: boolean;
   }): Promise<{ ok: boolean; tabId?: string; error?: string }> => {
     try {
       const project = args.project;
       const providerId = args.providerId;
       if (!project?.id) return { ok: false, error: "missing project" };
       const env = getProviderEnv(providerId);
-      const baseCmd = buildProviderStartupCmd(providerId, env);
+      const baseCmd = buildProviderStartupCmdForWorktreeCreate({ providerId, env, useYolo: args.useYolo });
       const startupCmd = buildProviderStartupCmdWithInitialPrompt({ providerId, terminalMode: env.terminal as any, baseCmd, prompt: args.prompt });
       return await openProviderConsoleInProject({ project, providerId, startupCmd });
     } catch (e: any) {
       return { ok: false, error: String(e?.message || e) };
     }
-  }, [buildProviderStartupCmd, getProviderEnv, openProviderConsoleInProject]);
+  }, [buildProviderStartupCmdForWorktreeCreate, getProviderEnv, openProviderConsoleInProject]);
 
   /**
    * 执行创建 worktree，并在每个 worktree 内启动对应引擎 CLI。
@@ -3700,6 +3728,8 @@ export default function CodexFlowManagerUI() {
     baseBranch: string;
     instances: Array<{ providerId: GitWorktreeProviderId; count: number }>;
     prompt: string;
+    /** 是否在本次创建/启动中临时启用 YOLO（不影响全局设置）。 */
+    useYolo?: boolean;
     /** 额外警告（用于把“复用已有 worktree 的启动失败”合并到同一份提示里）。 */
     extraWarnings?: string[];
   }) => {
@@ -3837,7 +3867,7 @@ export default function CodexFlowManagerUI() {
       attachDirChildToParent(repoId, wtProject.id);
 
       // 启动引擎 CLI（每个实例一个 worktree）
-      const started = await startProviderInstanceInProject({ project: wtProject, providerId, prompt });
+      const started = await startProviderInstanceInProject({ project: wtProject, providerId, prompt, useYolo: args.useYolo });
       if (started.ok && started.tabId) {
         if (!firstTabId) firstTabId = started.tabId;
       } else if (!started.ok && started.error) {
@@ -7009,7 +7039,7 @@ export default function CodexFlowManagerUI() {
                 const providerId = providerQueue[i] || worktreeCreateDialog.singleProviderId;
                 // 用户主动选择：若该 worktree 被隐藏，则自动取消隐藏
                 unhideProject(wtProject);
-                const started = await startProviderInstanceInProject({ project: wtProject, providerId, prompt });
+                const started = await startProviderInstanceInProject({ project: wtProject, providerId, prompt, useYolo: worktreeCreateDialog.useYolo });
                 if (started.ok && started.tabId) {
                   if (!firstReuseTabId) firstReuseTabId = started.tabId;
                 } else if (!started.ok && started.error) {
@@ -7027,7 +7057,7 @@ export default function CodexFlowManagerUI() {
                   setDialog({ creating: false, error: t("projects:worktreeMissingBaseBranch", "未能读取到基分支") as string });
                   return;
                 }
-                await createWorktreesAndStartAgents({ repoProject: repo, baseBranch, instances: remainingInstances, prompt, extraWarnings });
+                await createWorktreesAndStartAgents({ repoProject: repo, baseBranch, instances: remainingInstances, prompt, useYolo: worktreeCreateDialog.useYolo, extraWarnings });
                 return;
               }
 
@@ -7138,16 +7168,31 @@ export default function CodexFlowManagerUI() {
                         <label className={labelClass}>
                             {t("projects:worktreeModelSelection", "模型实例")}
                         </label>
-                        <label className="flex items-center gap-1.5 text-[10px] text-slate-500 dark:text-[var(--cf-text-secondary)] cursor-pointer select-none hover:text-slate-800 dark:hover:text-slate-300 transition-colors">
-                          <input
-                            type="checkbox"
-                            className="h-3 w-3 rounded border-slate-300 text-[var(--cf-accent)] focus:ring-[var(--cf-accent)] dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)]"
-                            checked={worktreeCreateDialog.useMultipleModels}
-                            onChange={(e) => setDialog({ useMultipleModels: e.target.checked })}
-                            disabled={worktreeCreateDialog.creating}
-                          />
-                          {t("projects:worktreeUseMultipleModels", "并行混合模式")}
-                        </label>
+                        <div className="flex items-center gap-3">
+                          <label
+                            className="flex items-center gap-1.5 text-[10px] text-slate-500 dark:text-[var(--cf-text-secondary)] cursor-pointer select-none hover:text-slate-800 dark:hover:text-slate-300 transition-colors"
+                            title={t("projects:worktreeYoloHint", "仅对本次操作生效，不会修改全局设置。") as string}
+                          >
+                            <input
+                              type="checkbox"
+                              className="h-3 w-3 rounded border-slate-300 text-[var(--cf-accent)] focus:ring-[var(--cf-accent)] dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)]"
+                              checked={worktreeCreateDialog.useYolo}
+                              onChange={(e) => setDialog({ useYolo: e.target.checked })}
+                              disabled={worktreeCreateDialog.creating}
+                            />
+                            {t("projects:worktreeUseYolo", "yolo（推荐）")}
+                          </label>
+                          <label className="flex items-center gap-1.5 text-[10px] text-slate-500 dark:text-[var(--cf-text-secondary)] cursor-pointer select-none hover:text-slate-800 dark:hover:text-slate-300 transition-colors">
+                            <input
+                              type="checkbox"
+                              className="h-3 w-3 rounded border-slate-300 text-[var(--cf-accent)] focus:ring-[var(--cf-accent)] dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)]"
+                              checked={worktreeCreateDialog.useMultipleModels}
+                              onChange={(e) => setDialog({ useMultipleModels: e.target.checked })}
+                              disabled={worktreeCreateDialog.creating}
+                            />
+                            {t("projects:worktreeUseMultipleModels", "并行混合模式")}
+                          </label>
+                        </div>
                     </div>
 
                     <div className="grid grid-cols-3 gap-2">
