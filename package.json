@@ -16,7 +16,7 @@
   "main": "dist/electron/main.js",
   "type": "commonjs",
   "scripts": {
-    "postinstall": "npm run build:electron && electron-builder install-app-deps",
+    "postinstall": "patch-package && npm run build:electron && electron-builder install-app-deps",
     "dev:web": "vite --config web/vite.config.mts",
     "dev:electron": "cross-env DEV_SERVER_URL=http://localhost:5173 electron .",
     "dev": "node scripts/dev-worktree.cjs",
@@ -63,6 +63,7 @@
     "jsdom": "^27.0.0",
     "lucide-react": "^0.453.0",
     "postcss": "^8.4.35",
+    "patch-package": "^8.0.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-i18next": "^14.1.2",
@@ -76,7 +77,15 @@
     "vite": "^5.4.21",
     "vitest": "^2.0.5"
   },
-  "overrides": {},
+  "overrides": {
+    "@electron/asar": {
+      "glob": "10.5.0"
+    },
+    "archiver-utils": {
+      "glob": "10.5.0"
+    },
+    "boolean": "file:vendor/npm/boolean"
+  },
   "build": {
     "appId": "com.codexflow.app",
     "productName": "CodexFlow",
