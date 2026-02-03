@@ -156,8 +156,17 @@ export async function spawnGitAsync(opts: GitSpawnOptions): Promise<GitExecResul
           finalize({ ok: true, stdout, stderr, exitCode: 0 });
           return;
         }
-        // 非 0 exitCode：尽量把 stderr/stdout 返回给上层拼装诊断信息
-        finalize({ ok: false, stdout, stderr, exitCode, error: `exit ${exitCode}` });
+        // 非 0 exitCode：尽量优先把 stderr/stdout 提升为错误摘要，避免 UI 只看到 “exit <code>” 无法定位原因
+        const errText = String(stderr || "").trim();
+        const outText = String(stdout || "").trim();
+        const summaryRaw = errText || outText;
+        const summaryMaxChars = 4096;
+        const summary =
+          summaryRaw.length > summaryMaxChars
+            ? `${summaryRaw.slice(0, summaryMaxChars)}…`
+            : summaryRaw;
+        const msg = summary ? `${summary}\n(exit ${exitCode})` : `exit ${exitCode}`;
+        finalize({ ok: false, stdout, stderr, exitCode, error: msg });
       });
     } catch (e: any) {
       finalize({
