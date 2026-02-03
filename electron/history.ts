@@ -1313,6 +1313,16 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
             }
           } catch {}
         }
+        // developer 角色增强：为其内容项补充稳定标签，便于前端在“类型筛选”中单独开关
+        try {
+          const roleLower = String(role || '').trim().toLowerCase();
+          if (roleLower === 'developer') {
+            for (const it of contentArr) {
+              const prev = Array.isArray(it.tags) ? it.tags : [];
+              if (!prev.includes('developer')) it.tags = [...prev, 'developer'];
+            }
+          }
+        } catch {}
         if (contentArr.length > 0) messages.push({ role, content: contentArr });
       } else if (obj.type === 'function_call' || (obj.type === 'response_item' && obj.payload && obj.payload.type === 'function_call')) {
         // 工具/函数调用
