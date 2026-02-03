@@ -1,0 +1,8 @@
+{
+  "name": "boolean",
+  "version": "3.2.0",
+  "private": true,
+  "description": "本地替代实现：用于消除上游 boolean@3.2.0 弃用警告",
+  "type": "commonjs",
+  "main": "index.js"
+}

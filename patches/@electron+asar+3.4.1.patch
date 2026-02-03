@@ -1,0 +1,19 @@
+diff --git a/node_modules/@electron/asar/lib/crawlfs.js b/node_modules/@electron/asar/lib/crawlfs.js
+index 1eb3e5a..2b9d97b 100644
+--- a/node_modules/@electron/asar/lib/crawlfs.js
++++ b/node_modules/@electron/asar/lib/crawlfs.js
+@@ -32,7 +32,13 @@ const util_1 = require("util");
+ const glob_1 = require("glob");
+ const wrapped_fs_1 = __importDefault(require("./wrapped-fs"));
+ const path = __importStar(require("path"));
+-const glob = (0, util_1.promisify)(glob_1.glob);
++const glob = (() => {
++    const maybeGlob = glob_1.glob;
++    const isAsyncFunction = typeof maybeGlob === "function" &&
++        maybeGlob.constructor &&
++        maybeGlob.constructor.name === "AsyncFunction";
++    return isAsyncFunction ? maybeGlob : (0, util_1.promisify)(maybeGlob);
++})();
+ async function determineFileType(filename) {
+     const stat = await wrapped_fs_1.default.lstat(filename);
+     if (stat.isFile()) {
