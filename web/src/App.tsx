@@ -8900,6 +8900,8 @@ function filterHistoryMessages(session: HistorySession, typeFilter: Record<strin
   const allowItem = (item: any) => {
     if (!typeFilter) return true;
     const keys = keysOfItemCanonical(item);
+    // developer 标签需要显式启用：避免 developer 内容被 input_text 等类型“顺带展示”
+    if (keys.includes('developer') && Object.prototype.hasOwnProperty.call(typeFilter, 'developer') && !(typeFilter as any)['developer']) return false;
     for (const key of keys) {
       if (Object.prototype.hasOwnProperty.call(typeFilter, key) && !!(typeFilter as any)[key]) return true;
     }
@@ -9332,6 +9334,8 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
     if (!s) return '';
     const allowItem = (it: any) => {
       const keys = keysOfItemCanonical(it);
+      // developer 标签需要显式启用：避免 developer 内容被 input_text 等类型“顺带展示”
+      if (keys.includes('developer') && Object.prototype.hasOwnProperty.call(typeFilter, 'developer') && !typeFilter['developer']) return false;
       for (const k of keys) { if (Object.prototype.hasOwnProperty.call(typeFilter, k) && !!typeFilter[k]) return true; }
       return !!typeFilter['other'];
     };
