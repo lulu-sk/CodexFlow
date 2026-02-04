@@ -378,6 +378,7 @@ export default function CodexFlowManagerUI() {
 	    creating: false,
 	    error: undefined,
 	  }));
+	  const [worktreeCreatePromptFullscreenOpen, setWorktreeCreatePromptFullscreenOpen] = useState<boolean>(false);
 	  const worktreeCreateRunningTaskIdByRepoIdRef = useRef<Record<string, string>>({});
 	  /** 回收任务运行中的 taskId（用于“可关闭/可重开”的进度面板）。 */
 	  const worktreeRecycleRunningTaskIdByProjectIdRef = useRef<Record<string, string>>({});
@@ -385,6 +386,13 @@ export default function CodexFlowManagerUI() {
 	  const worktreeRecycleForkPointReqIdRef = useRef<number>(0);
 	  /** 回收弹窗：分叉点搜索的请求序号（用于避免竞态覆盖）。 */
 	  const worktreeRecycleForkPointSearchReqIdRef = useRef<number>(0);
+
+	  /**
+	   * 中文说明：worktree 创建面板关闭时，同步关闭“初始提示词大屏编辑”弹窗，避免状态残留导致下次打开直接弹出。
+	   */
+	  useEffect(() => {
+	    if (!worktreeCreateDialog.open) setWorktreeCreatePromptFullscreenOpen(false);
+	  }, [worktreeCreateDialog.open]);
 		  const [worktreeCreateProgress, setWorktreeCreateProgress] = useState<WorktreeCreateProgressState>(() => ({
 		    open: false,
 		    repoProjectId: "",
@@ -3715,6 +3723,7 @@ export default function CodexFlowManagerUI() {
    * 关闭 worktree 创建面板（不执行创建）。
    */
   const closeWorktreeCreateDialog = useCallback(() => {
+    setWorktreeCreatePromptFullscreenOpen(false);
     setWorktreeCreateDialog((prev) => ({ ...prev, open: false, creating: false, error: undefined }));
   }, []);
 
@@ -7451,18 +7460,43 @@ export default function CodexFlowManagerUI() {
 
                 <div className="space-y-1">
                   <div className="text-xs font-semibold text-slate-700 dark:text-[var(--cf-text-primary)]">
-                    {t("projects:worktreeInitialPrompt", "初始提示词（可选）") as string}
+                    {t("projects:worktreeInitialPrompt", "初始提示词") as string}
                   </div>
-                  <PathChipsInput
-                    multiline
-                    chips={worktreeCreateDialog.promptChips}
-                    onChipsChange={(next) => setDialog({ promptChips: next })}
-                    draft={worktreeCreateDialog.promptDraft}
-                    onDraftChange={(v) => setDialog({ promptDraft: v })}
-                    winRoot={repo.winPath}
-                    projectWslRoot={repo.wslPath}
-                    className="min-h-[3rem] text-xs"
-                  />
+                  <div className="relative w-full">
+                    <PathChipsInput
+                      placeholder={t("terminal:inputPlaceholder") as string}
+                      multiline
+                      onKeyDown={(e: any) => {
+                        if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                          void submit();
+                          e.preventDefault();
+                        }
+                      }}
+                      chips={worktreeCreateDialog.promptChips}
+                      onChipsChange={(next) => setDialog({ promptChips: next })}
+                      draft={worktreeCreateDialog.promptDraft}
+                      onDraftChange={(v) => setDialog({ promptDraft: v })}
+                      winRoot={repo.winPath}
+                      projectWslRoot={repo.wslPath}
+                      projectName={repo.name}
+                      projectPathStyle={projectPathStyle}
+                      warnOutsideProjectDrop={dragDropWarnOutsideProject}
+                      onWarnOutsideProjectDropChange={updateWarnOutsideProjectDrop}
+                      className="min-h-[3rem] text-xs"
+                    />
+                    <div className="absolute right-2 bottom-2 flex flex-row gap-2">
+                      <Button
+                        variant="secondary"
+                        size="icon"
+                        aria-label={t("terminal:expandInput") as string}
+                        title={t("terminal:expandInput") as string}
+                        onClick={() => setWorktreeCreatePromptFullscreenOpen(true)}
+                        className="h-8 w-8 rounded-full shadow-sm"
+                      >
+                        <Maximize2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="flex justify-end gap-2 pt-1 border-t border-slate-100 dark:border-slate-800/50 mt-1">
@@ -7473,6 +7507,74 @@ export default function CodexFlowManagerUI() {
                     {worktreeCreateDialog.creating ? primaryActionWorkingLabel : primaryActionLabel}
                   </Button>
                 </div>
+
+                {/* worktree 创建：初始提示词（展开编辑） */}
+                <Dialog
+                  open={worktreeCreatePromptFullscreenOpen}
+                  onOpenChange={(open) => {
+                    if (open) return;
+                    setWorktreeCreatePromptFullscreenOpen(false);
+                  }}
+                >
+                  <DialogContent
+                    className="max-w-none overflow-hidden"
+                    style={{
+                      width: "calc(100vw - 48px)",
+                      maxWidth: 1080,
+                      height: "calc(100vh - 48px)",
+                      maxHeight: 820,
+                      padding: 0,
+                    }}
+                  >
+                    <div className="flex h-full w-full flex-col">
+                      <div className="px-6 pt-5 pb-4 border-b border-slate-100/80 dark:border-slate-800/60">
+                        <div className="text-sm font-semibold text-slate-800 dark:text-[var(--cf-text-primary)]">
+                          {t("projects:worktreeInitialPrompt", "初始提示词") as string}
+                        </div>
+                      </div>
+
+                      <div className="flex flex-1 min-h-0 p-4">
+                        <div className="relative flex flex-1 min-h-0">
+                          <PathChipsInput
+                            placeholder={t("terminal:inputPlaceholder") as string}
+                            multiline
+                            onKeyDown={(e: any) => {
+                              if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                                void submit();
+                                e.preventDefault();
+                              }
+                            }}
+                            chips={worktreeCreateDialog.promptChips}
+                            onChipsChange={(next) => setDialog({ promptChips: next })}
+                            draft={worktreeCreateDialog.promptDraft}
+                            onDraftChange={(v) => setDialog({ promptDraft: v })}
+                            winRoot={repo.winPath}
+                            projectWslRoot={repo.wslPath}
+                            projectName={repo.name}
+                            projectPathStyle={projectPathStyle}
+                            warnOutsideProjectDrop={dragDropWarnOutsideProject}
+                            onWarnOutsideProjectDropChange={updateWarnOutsideProjectDrop}
+                            className="flex flex-1 flex-col min-h-0 overflow-auto h-full text-sm"
+                            balancedScrollbarGutter
+                            draftInputClassName="flex-1 min-h-0"
+                          />
+                          <div className="pointer-events-auto absolute right-2 bottom-2 flex flex-row gap-2">
+                            <Button
+                              variant="secondary"
+                              size="icon"
+                              aria-label={t("terminal:collapseInput") as string}
+                              title={t("terminal:collapseInput") as string}
+                              onClick={() => setWorktreeCreatePromptFullscreenOpen(false)}
+                              className="h-8 w-8 rounded-full shadow-sm"
+                            >
+                              <Minimize2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </DialogContent>
+                </Dialog>
               </div>
             );
           })()}

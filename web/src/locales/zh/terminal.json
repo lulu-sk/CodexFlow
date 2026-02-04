@@ -1,7 +1,7 @@
 {
   "dirMissing": "目录缺失，无法创建控制台",
   "newConsole": "新建代理",
-  "inputPlaceholder": "输入要发给 Codex 的消息（支持粘贴图片、@ 搜索文件），Ctrl + Enter 发送",
+  "inputPlaceholder": "输入要发送的消息（支持粘贴图片、@ 搜索文件、@/ 搜索文件夹、拖拽文件），按 Ctrl + Enter 发送",
   "send": "发送",
   "expandInput": "展开输入框",
   "collapseInput": "退出大屏",

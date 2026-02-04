@@ -75,7 +75,7 @@
   "worktreeYoloHint": "Applies only to this operation and does not modify global settings.",
   "worktreeUseMultipleModels": "Mixed parallel mode",
   "worktreeTotalCount": "Total: {count} / 8",
-  "worktreeInitialPrompt": "Initial prompt (optional)",
+  "worktreeInitialPrompt": "Initial prompt",
   "worktreeCreating": "Creating…",
   "worktreeCreateCancelAction": "Cancel creation",
   "worktreeCreateCanceling": "Canceling…",
