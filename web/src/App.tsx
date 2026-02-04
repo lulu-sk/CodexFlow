@@ -1502,6 +1502,96 @@ export default function CodexFlowManagerUI() {
   const suppressAutoSelectRef = useRef(false);
   useEffect(() => { historySessionsRef.current = historySessions; }, [historySessions]);
 
+  const projectRowFocusTimerRef = useRef<number | null>(null);
+  const projectRowFocusSeqRef = useRef<number>(0);
+
+  /**
+   * 在左侧项目列表中定位并聚焦指定项目：
+   * - 若目标为子节点且其父节点处于折叠状态，则自动展开父节点
+   * - 通过有限次数重试等待渲染完成，避免因异步渲染导致定位失败
+   */
+  const revealProjectRowInSidebar = React.useCallback((projectId: string) => {
+    const id = String(projectId || "").trim();
+    if (!id) return;
+
+    // 先确保“子节点的父级”处于展开状态（否则子节点行不会被渲染出来）
+    setDirTreeStore((prev) => {
+      const parentId = String(prev.parentById[id] || "").trim();
+      if (!parentId) return prev;
+      if (prev.expandedById[parentId] !== false) return prev;
+      return { ...prev, expandedById: { ...prev.expandedById, [parentId]: true } };
+    });
+
+    // 取消上一次尚未完成的聚焦请求，避免多次滚动抢占
+    if (projectRowFocusTimerRef.current) {
+      try { window.clearTimeout(projectRowFocusTimerRef.current); } catch {}
+      projectRowFocusTimerRef.current = null;
+    }
+    const seq = (projectRowFocusSeqRef.current += 1);
+    const maxAttempts = 8;
+    const delayMs = 60;
+
+    /**
+     * 查找当前 DOM 中的项目行元素（使用 data 属性定位，避免对 id 格式做假设）。
+     */
+    const findRow = (): HTMLElement | null => {
+      try {
+        const nodes = document.querySelectorAll<HTMLElement>("[data-cf-project-row-id]");
+        for (const node of Array.from(nodes)) {
+          if (String(node.getAttribute("data-cf-project-row-id") || "") === id) return node;
+        }
+      } catch {}
+      return null;
+    };
+
+    /**
+     * 判断目标行是否需要滚动到可视区域（优先以滚动容器 viewport 为基准）。
+     */
+    const shouldScroll = (el: HTMLElement): boolean => {
+      try {
+        const rect = el.getBoundingClientRect();
+        const container = el.closest(".cf-scroll-area") as HTMLElement | null;
+        if (!container) return true;
+        const cRect = container.getBoundingClientRect();
+        const margin = 48;
+        const topLimit = cRect.top + margin;
+        const bottomLimit = cRect.bottom - margin;
+        return rect.top < topLimit || rect.bottom > bottomLimit;
+      } catch {
+        return true;
+      }
+    };
+
+    /**
+     * 按次数重试：等待渲染完成后定位元素并滚动聚焦。
+     */
+    const attemptFocus = (attempt: number) => {
+      if (projectRowFocusSeqRef.current !== seq) return;
+      const target = findRow();
+      if (target) {
+        if (!shouldScroll(target)) return;
+        try {
+          target.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+        } catch {}
+        return;
+      }
+      if (attempt >= maxAttempts) return;
+      projectRowFocusTimerRef.current = window.setTimeout(() => attemptFocus(attempt + 1), delayMs);
+    };
+
+    // defer：等待 React commit 后再尝试定位元素
+    try {
+      requestAnimationFrame(() => attemptFocus(0));
+    } catch {
+      attemptFocus(0);
+    }
+  }, [setDirTreeStore]);
+
+  /**
+   * 从完成通知跳转到指定 Tab：
+   * - 自动切换到该 Tab 所属项目
+   * - 必要时展开父级并滚动到项目行，确保上下文可见
+   */
   const focusTabFromNotification = React.useCallback((tabId: string) => {
     if (!tabId) return;
     let projectId = tabProjectRef.current[tabId];
@@ -1520,11 +1610,12 @@ export default function CodexFlowManagerUI() {
       suppressAutoSelectRef.current = true;
       setSelectedProjectId(projectId);
     }
+    revealProjectRowInSidebar(projectId);
     setCenterMode('console');
     setSelectedHistoryDir(null);
     setSelectedHistoryId(null);
     setActiveTab(tabId, { focusMode: 'immediate', allowDuringRename: true, delay: 0, projectId });
-  }, [selectedProjectId, setActiveTab, setCenterMode, setSelectedHistoryDir, setSelectedHistoryId, setSelectedProjectId]);
+  }, [revealProjectRowInSidebar, selectedProjectId, setActiveTab, setCenterMode, setSelectedHistoryDir, setSelectedHistoryId, setSelectedProjectId]);
 
   const [showHistoryPanel, setShowHistoryPanel] = useState(true);
   const [historyQuery, setHistoryQuery] = useState("");
