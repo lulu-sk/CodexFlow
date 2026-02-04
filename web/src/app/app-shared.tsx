@@ -255,6 +255,8 @@ type WorktreePostRecycleDialogState = {
 type GitActionErrorDialogState = {
   open: boolean;
   title: string;
+  /** 中文说明：可选说明文案；为空则回退到默认“Git 失败兜底提示”。 */
+  hint?: string;
   message: string;
   dir: string;
 };

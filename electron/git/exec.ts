@@ -2,6 +2,8 @@
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
 import { execFile, spawn } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 
 export type GitExecResult = {
   ok: boolean;
@@ -75,7 +77,35 @@ export type GitSpawnOptions = GitExecOptions & {
   onStdout?: (chunk: string) => void;
   /** 中文说明：stderr 数据到达时回调（用于流式日志展示）。 */
   onStderr?: (chunk: string) => void;
+  /** 中文说明：可选取消信号；触发后会尽快终止子进程并返回 aborted。 */
+  signal?: AbortSignal;
 };
+
+/**
+ * 中文说明：获取 Windows 下 `taskkill` 的可靠路径（避免某些运行环境 PATH 不包含 System32）。
+ *
+ * 设计要点：
+ * - Electron 打包/便携环境下 PATH 可能被裁剪，直接 spawn("taskkill") 可能失败
+ * - 优先使用绝对路径，其次回退到命令名让系统自行解析
+ */
+function resolveWindowsTaskkillPathBestEffort(): string {
+  const winRoot = String(process.env.SystemRoot || process.env.WINDIR || "").trim();
+  const candidates: string[] = [];
+  if (winRoot) {
+    // Sysnative：用于 32 位进程访问 64 位 System32（尽量兼容，存在就用）
+    candidates.push(path.join(winRoot, "Sysnative", "taskkill.exe"));
+    candidates.push(path.join(winRoot, "System32", "taskkill.exe"));
+  }
+  candidates.push("taskkill");
+
+  for (const candidate of candidates) {
+    if (candidate === "taskkill") return candidate;
+    try {
+      if (fs.existsSync(candidate)) return candidate;
+    } catch {}
+  }
+  return "taskkill";
+}
 
 /**
  * 以 spawn 方式执行 git 命令，支持流式读取 stdout/stderr，并在超时后强制终止。
@@ -95,7 +125,10 @@ export async function spawnGitAsync(opts: GitSpawnOptions): Promise<GitExecResul
     let stderr = "";
     let finished = false;
     let timedOut = false;
+    let aborted = false;
     let timeoutHandle: any = null;
+    const signal = opts?.signal;
+    let child: ReturnType<typeof spawn> | null = null;
 
     const finalize = (res: GitExecResult) => {
       if (finished) return;
@@ -104,18 +137,65 @@ export async function spawnGitAsync(opts: GitSpawnOptions): Promise<GitExecResul
         try { clearTimeout(timeoutHandle); } catch {}
         timeoutHandle = null;
       }
+      if (signal) {
+        try { signal.removeEventListener("abort", onAbort); } catch {}
+      }
       resolve(res);
     };
 
+    const killTreeBestEffort = () => {
+      const pid = typeof child?.pid === "number" ? child!.pid : 0;
+      if (!pid) return;
+
+      // Windows：Git for Windows 可能通过 shim/wrapper 再拉起真正的 git 进程。
+      // 若先 kill wrapper，再 taskkill 可能因 PID 不存在/树关系丢失而导致子进程残留；
+      // 因此在 Windows 下优先使用 taskkill /T /F 直接杀整棵树。
+      if (process.platform === "win32") {
+        try {
+          const taskkill = resolveWindowsTaskkillPathBestEffort();
+          const killer = spawn(taskkill, ["/PID", String(pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+          // 若 taskkill 启动失败，则回退到直接 kill（尽量让 wrapper 也能停止）
+          killer.on("error", () => {
+            try { child?.kill(); } catch {}
+            try { child?.kill("SIGKILL"); } catch {}
+          });
+          killer.unref?.();
+        } catch {
+          // 兜底：极端情况下 taskkill 无法启动时，至少终止当前子进程句柄对应的进程
+          try { child?.kill(); } catch {}
+          try { child?.kill("SIGKILL"); } catch {}
+        }
+        return;
+      }
+
+      // 非 Windows：直接终止当前进程（大多数场景已足够；必要时可在上层重试/超时兜底）
+      try { child?.kill(); } catch {}
+      try { child?.kill("SIGKILL"); } catch {}
+    };
+
+    const onAbort = () => {
+      aborted = true;
+      killTreeBestEffort();
+    };
+
     try {
-      const child = spawn(gitPath, argv, { cwd, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+      if (signal?.aborted) {
+        finalize({ ok: false, stdout: "", stderr: "", exitCode: -1, error: "aborted" });
+        return;
+      }
+
+      child = spawn(gitPath, argv, { cwd, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
 
       timeoutHandle = setTimeout(() => {
         timedOut = true;
-        try { child.kill(); } catch {}
-        // 兜底：若未退出，延迟再强杀一次
-        setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, 800);
+        killTreeBestEffort();
       }, timeoutMs);
+
+      if (signal) {
+        try { signal.addEventListener("abort", onAbort, { once: true }); } catch {}
+        // 中文说明：覆盖“在 spawn 与监听绑定之间触发 abort”的竞态，尽量做到及时终止
+        if (signal.aborted && !aborted) onAbort();
+      }
 
       child.stdout?.on("data", (buf: Buffer) => {
         const chunk = Buffer.isBuffer(buf) ? buf.toString("utf8") : String(buf || "");
@@ -130,6 +210,10 @@ export async function spawnGitAsync(opts: GitSpawnOptions): Promise<GitExecResul
 
       child.on("error", (err: any) => {
         const msg = String(err?.message || err);
+        if (aborted) {
+          finalize({ ok: false, stdout, stderr, exitCode: -1, error: "aborted" });
+          return;
+        }
         finalize({
           ok: false,
           stdout,
@@ -142,6 +226,10 @@ export async function spawnGitAsync(opts: GitSpawnOptions): Promise<GitExecResul
 
       child.on("close", (code: number | null) => {
         const exitCode = typeof code === "number" ? code : -1;
+        if (aborted) {
+          finalize({ ok: false, stdout, stderr, exitCode, error: "aborted" });
+          return;
+        }
         if (timedOut) {
           finalize({
             ok: false,

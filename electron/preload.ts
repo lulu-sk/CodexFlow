@@ -307,6 +307,10 @@ contextBridge.exposeInMainWorld('host', {
     createTaskGet: async (args: any) => {
       return await ipcRenderer.invoke("gitWorktree.createTaskGet", args);
     },
+    /** 请求取消 worktree 创建任务（并回滚清理已创建资源）。 */
+    createTaskCancel: async (args: any) => {
+      return await ipcRenderer.invoke("gitWorktree.createTaskCancel", args);
+    },
     /** 启动（或复用）worktree 回收后台任务（用于进度 UI）。 */
     recycleTaskStart: async (args: any) => {
       return await ipcRenderer.invoke("gitWorktree.recycleTaskStart", args);
