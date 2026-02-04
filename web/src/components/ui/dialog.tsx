@@ -178,7 +178,7 @@ export function DialogTrigger({ asChild, children }: { asChild?: boolean; childr
   return child;
 }
 
-export function DialogContent({ className, children }: React.HTMLAttributes<HTMLDivElement>) {
+export function DialogContent({ className, children, ...rest }: React.HTMLAttributes<HTMLDivElement>) {
   const ctx = React.useContext(DialogContext);
   const [isVisible, setIsVisible] = React.useState(false);
 
@@ -239,6 +239,7 @@ export function DialogContent({ className, children }: React.HTMLAttributes<HTML
           className
         )}
         data-cf-dialog-content="true"
+        {...rest}
       >
         {children}
       </div>

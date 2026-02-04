@@ -75,7 +75,7 @@
   "worktreeYoloHint": "仅对本次操作生效，不会修改全局设置。",
   "worktreeUseMultipleModels": "并行混合模式",
   "worktreeTotalCount": "总计：{count} / 8",
-  "worktreeInitialPrompt": "初始提示词（可选）",
+  "worktreeInitialPrompt": "初始提示词",
   "worktreeCreating": "创建中…",
   "worktreeCreateCancelAction": "取消创建",
   "worktreeCreateCanceling": "取消中…",
