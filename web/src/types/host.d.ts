@@ -272,7 +272,7 @@ export type CreatedWorktree = {
   warnings?: string[];
 };
 
-export type WorktreeCreateTaskStatus = "running" | "success" | "error";
+export type WorktreeCreateTaskStatus = "running" | "canceling" | "canceled" | "success" | "error";
 
 export type WorktreeCreateTaskSnapshot = {
   taskId: string;
@@ -359,6 +359,7 @@ export interface GitWorktreeAPI {
   create(args: { repoDir: string; baseBranch: string; instances: Array<{ providerId: "codex" | "claude" | "gemini"; count: number }>; copyRules?: boolean }): Promise<{ ok: boolean; items?: CreatedWorktree[]; error?: string }>;
   createTaskStart(args: { repoDir: string; baseBranch: string; instances: Array<{ providerId: "codex" | "claude" | "gemini"; count: number }>; copyRules?: boolean }): Promise<{ ok: boolean; taskId?: string; reused?: boolean; error?: string }>;
   createTaskGet(args: { taskId: string; from?: number }): Promise<{ ok: boolean; task?: WorktreeCreateTaskSnapshot; append?: string; error?: string }>;
+  createTaskCancel(args: { taskId: string }): Promise<{ ok: boolean; alreadyFinished?: boolean; error?: string }>;
   recycleTaskStart(args: { worktreePath: string; baseBranch: string; wtBranch: string; range?: RecycleWorktreeRange; forkBaseRef?: string; mode: "squash" | "rebase"; commitMessage?: string; autoStashBaseWorktree?: boolean }): Promise<{ ok: boolean; taskId?: string; reused?: boolean; error?: string }>;
   recycleTaskGet(args: { taskId: string; from?: number }): Promise<{ ok: boolean; task?: WorktreeRecycleTaskSnapshot; append?: string; error?: string }>;
   recycle(args: { worktreePath: string; baseBranch: string; wtBranch: string; range?: RecycleWorktreeRange; forkBaseRef?: string; mode: "squash" | "rebase"; commitMessage?: string; autoStashBaseWorktree?: boolean }): Promise<RecycleWorktreeResult>;

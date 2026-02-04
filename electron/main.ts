@@ -2151,6 +2151,17 @@ ipcMain.handle("gitWorktree.createTaskGet", async (_e, args: { taskId: string; f
 });
 
 /**
+ * Git：请求取消 worktree 创建后台任务（并回滚清理已创建资源）。
+ */
+ipcMain.handle("gitWorktree.createTaskCancel", async (_e, args: { taskId: string }) => {
+  try {
+    return worktreeCreateTasks.cancel({ taskId: String(args?.taskId || "").trim() });
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+});
+
+/**
  * Git：启动（或复用）worktree 回收后台任务，并返回 taskId（用于进度 UI）。
  */
 ipcMain.handle("gitWorktree.recycleTaskStart", async (_e, args: any) => {
