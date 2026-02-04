@@ -31,6 +31,12 @@ export type CreateWorktreesRequest = {
   copyRules?: boolean;
   /** 中文说明：创建过程日志回调（用于渲染层进度 UI 展示）。 */
   onLog?: (text: string) => void;
+  /** 中文说明：可选取消信号；触发后将尽快停止创建并返回 aborted。 */
+  signal?: AbortSignal;
+  /** 中文说明：每成功创建一个 worktree 后回调（用于任务取消时的回滚清理）。 */
+  onItemCreated?: (item: CreatedWorktree) => void;
+  /** 中文说明：在尝试创建某个 worktree 前回调（用于捕获“中断时的目标目录/分支”）。 */
+  onWorktreePlanned?: (args: { providerId: "codex" | "claude" | "gemini"; repoMainPath: string; worktreePath: string; baseBranch: string; wtBranch: string; index: number }) => void;
 };
 
 export type CreatedWorktree = {
@@ -180,6 +186,18 @@ async function runExclusiveInRepoAsync<T>(repoKey: string, task: () => Promise<T
 }
 
 /**
+ * 中文说明：best-effort 删除 worktree 目录（避免 `git worktree remove` 在文件占用/权限问题下残留目录）。
+ * - 仅作为兜底：失败不抛错。
+ */
+async function removeWorktreeDirBestEffortAsync(worktreePath: string): Promise<void> {
+  const wt = toFsPathAbs(worktreePath);
+  if (!wt) return;
+  try {
+    await fsp.rm(wt, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 } as any);
+  } catch {}
+}
+
+/**
  * 读取当前仓库的分支信息（用于 baseBranch 下拉）。
  */
 export async function listLocalBranchesAsync(args: { repoDir: string; gitPath?: string; timeoutMs?: number }): Promise<GitWorktreeBranchInfo> {
@@ -225,12 +243,22 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
   const timeoutMs = 15_000;
   const listTimeoutMs = 30_000;
   const worktreeAddTimeoutMs = 15 * 60_000;
+  const signal = req.signal;
 
   /**
    * 中文说明：安全写日志，避免日志回调抛错影响主流程。
    */
   const log = (text: string) => {
     try { req.onLog?.(String(text ?? "")); } catch {}
+  };
+
+  /**
+   * 中文说明：检查是否已取消；若已取消则返回一个统一的失败结果。
+   */
+  const checkAborted = (): { ok: false; error: string } | null => {
+    if (!signal?.aborted) return null;
+    log("\n已取消：停止创建\n");
+    return { ok: false, error: "aborted" };
   };
 
   /**
@@ -252,6 +280,8 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
 
   // 让进度面板能尽快出现内容
   log(`开始创建 worktree\nrepoDir: ${repoDirAbs}\nbaseBranch: ${String(req.baseBranch || "").trim()}\n\n`);
+  const preAbort = checkAborted();
+  if (preAbort) return preAbort;
 
   const top = await execGitAsync({ gitPath, argv: ["-C", repoDirAbs, "rev-parse", "--show-toplevel"], timeoutMs });
   if (!top.ok) {
@@ -377,13 +407,19 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
   const items: CreatedWorktree[] = [];
 
   for (const inst of req.instances) {
+    const a = checkAborted();
+    if (a) return a;
     const providerId = inst.providerId;
     const count = Math.max(0, Math.floor(Number(inst.count) || 0));
     for (let i = 0; i < count; i++) {
+      const a2 = checkAborted();
+      if (a2) return a2;
       // 5.7：从 1 开始找最小可用 n
       let chosenN = 0;
       let targetDir = "";
       for (let n = 1; n < 10_000; n++) {
+        const a3 = checkAborted();
+        if (a3) return a3;
         const candidate = path.join(poolDir, `${projectName}_wt${n}`);
         const ok1 = await dirAvailable(candidate);
         const ok2 = !registered.has(toFsPathKey(candidate));
@@ -396,6 +432,12 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
       if (!chosenN || !targetDir) return { ok: false, error: "no available worktree slot" };
 
       const wtBranch = makeUniqueWtBranch(providerId, chosenN);
+      try {
+        req.onWorktreePlanned?.({ providerId, repoMainPath: mainWorktreePath, worktreePath: targetDir, baseBranch: req.baseBranch, wtBranch, index: chosenN });
+      } catch {}
+
+      const a4 = checkAborted();
+      if (a4) return a4;
 
       log(`\n$ git -C "${repoRoot}" worktree add -b "${wtBranch}" "${targetDir}" "${String(req.baseBranch || "").trim()}"\n`);
       const add = await spawnGitAsync({
@@ -404,7 +446,10 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
         timeoutMs: worktreeAddTimeoutMs,
         onStdout: log,
         onStderr: log,
+        signal,
       });
+      const a5 = checkAborted();
+      if (a5) return a5;
       if (!add.ok) {
         const msg = formatGitFailure(add, "git worktree add failed");
         log(`\n失败：${msg}\n`);
@@ -420,7 +465,7 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
       const meta: WorktreeMeta = { repoMainPath: mainWorktreePath, baseBranch: req.baseBranch, baseRefAtCreate: baseRefAtCreateSha || undefined, wtBranch, createdAt: Date.now() };
       setWorktreeMeta(targetDir, meta);
 
-      items.push({
+      const item: CreatedWorktree = {
         providerId,
         repoMainPath: mainWorktreePath,
         worktreePath: targetDir,
@@ -428,7 +473,9 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
         wtBranch,
         index: chosenN,
         warnings: warnings.length > 0 ? warnings : undefined,
-      });
+      };
+      items.push(item);
+      try { req.onItemCreated?.(item); } catch {}
     }
   }
 
@@ -1468,6 +1515,8 @@ export async function removeWorktreeAsync(req: RemoveWorktreeRequest): Promise<R
 
     // 2) 清理元数据：无论是否删除分支，只要 worktree 已删除就应移除映射
     try { if (removedWorktree) deleteWorktreeMeta(wt); } catch {}
+    // 3) 兜底：强制删除目录（避免残留阻塞后续创建/删除）
+    try { if (removedWorktree) await removeWorktreeDirBestEffortAsync(wt); } catch {}
     return { ok: true, removedWorktree, removedBranch };
   })();
 

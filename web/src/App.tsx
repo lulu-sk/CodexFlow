@@ -443,7 +443,6 @@ export default function CodexFlowManagerUI() {
   const [worktreePostRecycleDialog, setWorktreePostRecycleDialog] = useState<WorktreePostRecycleDialogState>(() => ({ open: false, projectId: "", hint: undefined }));
   const worktreeDeleteInFlightByProjectIdRef = useRef<Record<string, boolean>>({});
   const [worktreeDeleteInFlightByProjectId, setWorktreeDeleteInFlightByProjectId] = useState<Record<string, boolean>>({});
-  const worktreeDeleteSubmitGuardRef = useRef<boolean>(false);
   const [worktreeBlockedDialog, setWorktreeBlockedDialog] = useState<{ open: boolean; count: number }>(() => ({ open: false, count: 0 }));
   const [worktreeRecycleTerminalAgentsDialog, setWorktreeRecycleTerminalAgentsDialog] = useState<{ open: boolean; count: number }>(() => ({ open: false, count: 0 }));
   const worktreeRecycleTerminalAgentsDialogResolverRef = useRef<((proceed: boolean) => void) | null>(null);
@@ -3887,7 +3886,7 @@ export default function CodexFlowManagerUI() {
     while (true) {
       try {
         const pull: any = await (window as any).host?.gitWorktree?.createTaskGet?.({ taskId, from: logOffset });
-        if (pull && pull.ok && pull.task) {
+          if (pull && pull.ok && pull.task) {
           snapshot = pull.task as WorktreeCreateTaskSnapshot;
           const append = String(pull.append || "");
           if (append) logText += append;
@@ -3903,7 +3902,7 @@ export default function CodexFlowManagerUI() {
               error: snapshot!.error ? String(snapshot!.error || "") : undefined,
             };
           });
-          if (snapshot.status !== "running") break;
+          if (snapshot.status !== "running" && snapshot.status !== "canceling") break;
         }
       } catch {}
 
@@ -4036,10 +4035,11 @@ export default function CodexFlowManagerUI() {
   /**
    * 打开“Git 操作失败”弹窗（提供外部 Git 工具/终端快捷入口）。
    */
-  const showGitActionErrorDialog = useCallback((args: { title: string; message: string; dir: string }) => {
+  const showGitActionErrorDialog = useCallback((args: { title: string; message: string; dir: string; hint?: string }) => {
     setGitActionErrorDialog({
       open: true,
       title: String(args.title || "").trim() || (t("projects:gitActionFailed", "Git 操作失败") as string),
+      hint: typeof args.hint === "string" ? String(args.hint || "").trim() || undefined : undefined,
       message: String(args.message || "").trim(),
       dir: String(args.dir || "").trim(),
     });
@@ -4787,7 +4787,6 @@ export default function CodexFlowManagerUI() {
 		  const submitWorktreeDelete = useCallback(async (opts?: { forceRemoveWorktree?: boolean; forceDeleteBranch?: boolean; forceResetWorktree?: boolean }) => {
 		    const dlg = worktreeDeleteDialog;
 		    if (!dlg.open || dlg.running) return;
-		    if (worktreeDeleteSubmitGuardRef.current) return;
 		    const project = projectsRef.current.find((x) => x.id === dlg.projectId) || null;
 		    if (!project) return;
 
@@ -4814,10 +4813,9 @@ export default function CodexFlowManagerUI() {
       return;
     }
 
-    worktreeDeleteSubmitGuardRef.current = true;
     setWorktreeDeleteInFlight(project.id, true);
 
-    setWorktreeDeleteDialog((prev) => ({ ...prev, running: true, error: undefined }));
+    setWorktreeDeleteDialog((prev) => (prev.open && prev.projectId === pid ? { ...prev, running: true, error: undefined } : prev));
     try {
       if (dlg.action === "reset") {
         const res: any = await (window as any).host?.gitWorktree?.reset?.({
@@ -4825,12 +4823,12 @@ export default function CodexFlowManagerUI() {
           force: opts?.forceResetWorktree === true,
         });
         if (res && res.ok) {
-          setWorktreeDeleteDialog((prev) => ({ ...prev, open: false, running: false }));
+          setWorktreeDeleteDialog((prev) => (prev.open && prev.projectId === pid ? { ...prev, open: false, running: false } : prev));
           void refreshGitInfoForProjectIds([project.id]);
           return;
         }
         if (res?.needsForce) {
-          setWorktreeDeleteDialog((prev) => ({ ...prev, running: false, needsForceResetWorktree: true, error: String(res?.error || "") }));
+          setWorktreeDeleteDialog((prev) => (prev.open && prev.projectId === pid ? { ...prev, running: false, needsForceResetWorktree: true, error: String(res?.error || "") } : prev));
           return;
         }
         throw new Error(res?.error || "reset failed");
@@ -4842,29 +4840,39 @@ export default function CodexFlowManagerUI() {
           forceDeleteBranch: opts?.forceDeleteBranch === true,
         });
         if (res && res.ok) {
-          setWorktreeDeleteDialog((prev) => ({ ...prev, open: false, running: false }));
+          setWorktreeDeleteDialog((prev) => (prev.open && prev.projectId === pid ? { ...prev, open: false, running: false } : prev));
           void refreshGitInfoForProjectIds([project.id]);
+          try {
+            const exists: any = await (window as any).host?.utils?.pathExists?.(project.winPath, true);
+            if (exists && exists.ok && exists.exists) {
+              showGitActionErrorDialog({
+                title: t("projects:worktreeDeleteManualCleanupTitle", "目录未完全删除") as string,
+                hint: t("projects:worktreeDeleteManualCleanupHint", "目录可能因文件占用未能删除。") as string,
+                message: (t("projects:worktreeDeleteManualCleanupDesc", "已解除 worktree 关联并删除分支，但目录仍存在：\n{path}\n请打开文件夹手动删除（可能有文件占用）。", { path: project.winPath }) as string),
+                dir: project.winPath,
+              });
+            }
+          } catch {}
           return;
         }
         if (res?.needsForceRemoveWorktree) {
-          setWorktreeDeleteDialog((prev) => ({ ...prev, running: false, needsForceRemoveWorktree: true, error: String(res?.error || "") }));
+          setWorktreeDeleteDialog((prev) => (prev.open && prev.projectId === pid ? { ...prev, running: false, needsForceRemoveWorktree: true, error: String(res?.error || "") } : prev));
           return;
         }
         if (res?.needsForceDeleteBranch) {
-          setWorktreeDeleteDialog((prev) => ({ ...prev, running: false, needsForceDeleteBranch: true, error: String(res?.error || "") }));
+          setWorktreeDeleteDialog((prev) => (prev.open && prev.projectId === pid ? { ...prev, running: false, needsForceDeleteBranch: true, error: String(res?.error || "") } : prev));
           return;
         }
         throw new Error(res?.error || "delete failed");
       }
     } catch (e: any) {
-      setWorktreeDeleteDialog((prev) => ({ ...prev, running: false, error: String(e?.message || e) }));
+      setWorktreeDeleteDialog((prev) => (prev.open && prev.projectId === pid ? { ...prev, running: false, error: String(e?.message || e) } : prev));
       showGitActionErrorDialog({
         title: dlg.action === "reset" ? (t("projects:worktreeResetFailed", "重置失败") as string) : (t("projects:worktreeDeleteFailed", "删除 worktree 失败") as string),
         message: String(e?.message || e),
         dir: project.winPath,
       });
     } finally {
-      worktreeDeleteSubmitGuardRef.current = false;
       setWorktreeDeleteInFlight(project.id, false);
     }
   }, [guardWorktreeDeleteAndResetByTerminalAgents, refreshGitInfoForProjectIds, setWorktreeDeleteInFlight, showGitActionErrorDialog, t, worktreeDeleteDialog]);
@@ -5038,7 +5046,8 @@ export default function CodexFlowManagerUI() {
           return;
         }
 
-        if (key === "d") {
+        // Delete/Del：在未命中历史项时，退化为项目列表删除快捷键（等同于 D）
+        if (key === "d" || isHistoryDeleteKey) {
           if (canDeleteWorktree) {
             event.preventDefault();
             openWorktreeDeleteDialog(project, false);
@@ -7491,14 +7500,20 @@ export default function CodexFlowManagerUI() {
             const statusLabel =
               status === "running"
                 ? (t("projects:worktreeCreating", "创建中…") as string)
+                : status === "canceling"
+                ? (t("projects:worktreeCreateCanceling", "取消中…") as string)
+                : status === "canceled"
+                ? (t("projects:worktreeCreateCanceled", "已取消") as string)
                 : status === "success"
                 ? (t("common:done", "完成") as string)
                 : (t("common:failed", "失败") as string);
             const statusIcon =
-              status === "running" ? (
+              status === "running" || status === "canceling" ? (
                 <Loader2 className="h-4 w-4 animate-spin text-slate-500" />
               ) : status === "success" ? (
                 <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+              ) : status === "canceled" ? (
+                <X className="h-4 w-4 text-slate-500" />
               ) : (
                 <TriangleAlert className="h-4 w-4 text-red-600" />
               );
@@ -7539,6 +7554,25 @@ export default function CodexFlowManagerUI() {
                 </div>
 
                 <div className="flex justify-end gap-2 pt-1">
+                  {status === "running" || status === "canceling" ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 text-xs"
+                      disabled={status !== "running"}
+                      onClick={async () => {
+                        const taskId = String(worktreeCreateProgress.taskId || "").trim();
+                        if (!taskId) return;
+                        // 乐观更新，避免用户感觉“点了没反应”
+                        setWorktreeCreateProgress((prev) => (prev.taskId === taskId ? { ...prev, status: "canceling" } : prev));
+                        try { await (window as any).host?.gitWorktree?.createTaskCancel?.({ taskId }); } catch {}
+                      }}
+                    >
+                      {status === "canceling"
+                        ? (t("projects:worktreeCreateCanceling", "取消中…") as string)
+                        : (t("projects:worktreeCreateCancelAction", "取消创建") as string)}
+                    </Button>
+                  ) : null}
                   <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => setWorktreeCreateProgress((prev) => ({ ...prev, open: false }))}>
                     {t("common:close", "关闭") as string}
                   </Button>
@@ -8268,7 +8302,10 @@ export default function CodexFlowManagerUI() {
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>{gitActionErrorDialog.title}</DialogTitle>
-            <DialogDescription>{t("projects:gitActionFailedHint", "请在外部工具中处理冲突/中断/hook 等问题后再重试。") as string}</DialogDescription>
+            <DialogDescription>
+              {String(gitActionErrorDialog.hint || "").trim() ||
+                (t("projects:gitActionFailedHint", "请在外部工具中处理冲突/中断/hook 等问题后再重试。") as string)}
+            </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             {gitActionErrorDialog.dir ? (
@@ -8281,9 +8318,19 @@ export default function CodexFlowManagerUI() {
 	                {gitActionErrorDialog.message}
 	              </div>
 	            ) : null}
-            <div className="flex justify-end gap-2 pt-1">
+            <div className="flex flex-wrap justify-end gap-2 pt-1">
               <Button variant="outline" onClick={closeGitActionErrorDialog}>
                 {t("common:close", "关闭") as string}
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={async () => {
+                  try { if (gitActionErrorDialog.dir) await (window as any).host?.utils?.openPath?.(gitActionErrorDialog.dir); } catch {}
+                  closeGitActionErrorDialog();
+                }}
+                disabled={!gitActionErrorDialog.dir}
+              >
+                {t("projects:gitOpenFolder", "打开文件夹") as string}
               </Button>
               <Button
                 variant="secondary"
