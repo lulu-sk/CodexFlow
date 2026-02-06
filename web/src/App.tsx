@@ -39,6 +39,7 @@ import {
   Trash2,
   X,
   Copy as CopyIcon,
+  FilePenLine,
   Info as InfoIcon,
   Maximize2,
   Minimize2,
@@ -74,6 +75,12 @@ import { resolveStartupCmdWithYolo } from "@/lib/providers/yolo";
 import { injectCodexTraceEnv } from "@/providers/codex/commands";
 import { buildClaudeResumeStartupCmd } from "@/providers/claude/commands";
 import { buildGeminiResumeStartupCmd } from "@/providers/gemini/commands";
+import {
+  BUILT_IN_RULE_PROVIDER_IDS,
+  getProjectRuleFilePath,
+  getProviderRuleFileName,
+  type BuiltInRuleProviderId,
+} from "@/lib/engine-rules";
 import { bashSingleQuote, buildPowerShellCall, powerShellArgToken, splitCommandLineToArgv } from "@/lib/shell";
 import SettingsDialog from "@/features/settings/settings-dialog";
 import {
@@ -1832,6 +1839,13 @@ export default function CodexFlowManagerUI() {
   // 历史索引失效计数：用于在不切换项目的情况下触发强制刷新。
   const [historyInvalidateNonce, setHistoryInvalidateNonce] = useState<number>(0);
   const [projectCtxMenu, setProjectCtxMenu] = useState<{ show: boolean; x: number; y: number; project: Project | null }>({ show: false, x: 0, y: 0, project: null });
+  type ProjectRuleMenuEntry = {
+    providerId: BuiltInRuleProviderId;
+    fileName: string;
+    filePath: string;
+  };
+  const [projectCtxRuleEntries, setProjectCtxRuleEntries] = useState<ProjectRuleMenuEntry[]>([]);
+  const projectCtxRuleScanSeqRef = useRef<number>(0);
   const [hideProjectConfirm, setHideProjectConfirm] = useState<{ open: boolean; project: Project | null }>({ open: false, project: null });
   const projectCtxMenuRef = useRef<HTMLDivElement | null>(null);
   type HoverProjectShortcutContext = {
@@ -5122,6 +5136,61 @@ export default function CodexFlowManagerUI() {
   }, [removeProjectFromUIList, upsertProjectInList]);
 
   /**
+   * 中文说明：扫描项目目录下存在的项目级规则文件（AGENTS/CLAUDE/GEMINI）。
+   */
+  const scanProjectRuleEntries = useCallback(async (project: Project | null): Promise<ProjectRuleMenuEntry[]> => {
+    const root = String(project?.winPath || "").trim();
+    if (!root) return [];
+    const out: ProjectRuleMenuEntry[] = [];
+    for (const providerId of BUILT_IN_RULE_PROVIDER_IDS) {
+      const filePath = getProjectRuleFilePath(providerId, root);
+      let exists = false;
+      try {
+        const stat = await window.host.utils.pathExists(filePath);
+        exists = !!(stat && stat.ok && stat.exists && stat.isFile);
+      } catch {}
+      if (!exists) continue;
+      out.push({
+        providerId,
+        fileName: getProviderRuleFileName(providerId),
+        filePath,
+      });
+    }
+    return out;
+  }, []);
+
+  /**
+   * 中文说明：打开项目右键菜单，并异步加载“项目级规则文件”可编辑入口。
+   */
+  const openProjectContextMenu = useCallback((project: Project, x: number, y: number) => {
+    setProjectCtxMenu({ show: true, x, y, project });
+    setProjectCtxRuleEntries([]);
+    const scanSeq = projectCtxRuleScanSeqRef.current + 1;
+    projectCtxRuleScanSeqRef.current = scanSeq;
+    void (async () => {
+      const entries = await scanProjectRuleEntries(project);
+      if (projectCtxRuleScanSeqRef.current !== scanSeq) return;
+      setProjectCtxRuleEntries(entries);
+    })();
+  }, [scanProjectRuleEntries]);
+
+  /**
+   * 中文说明：打开项目级规则文件进行编辑（系统默认编辑器）。
+   */
+  const editProjectRuleFile = useCallback(async (filePath: string) => {
+    const target = String(filePath || "").trim();
+    if (!target) return;
+    try {
+      const res: any = await window.host.utils.openPath(target);
+      if (!(res && res.ok)) throw new Error(res?.error || "failed");
+    } catch {
+      alert(String(t("common:files.cannotOpenPath")));
+    } finally {
+      setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
+    }
+  }, [t]);
+
+  /**
    * 中文说明：打开历史记录“删除到回收站”确认弹窗（用于悬停快捷键 Delete/Del）。
    */
   const openHistoryDeleteConfirm = useCallback((item: HistorySession | null, groupKey: string | null) => {
@@ -5491,7 +5560,7 @@ export default function CodexFlowManagerUI() {
                 }}
                 onContextMenu={(e) => {
                   e.preventDefault();
-                  setProjectCtxMenu({ show: true, x: e.clientX, y: e.clientY, project: p });
+                  openProjectContextMenu(p, e.clientX, e.clientY);
                 }}
 	                onDragOver={(e) => {
 	                  const src = dirDrag?.draggingId;
@@ -6814,7 +6883,7 @@ export default function CodexFlowManagerUI() {
             const dirExists = proj ? (projGit ? !!(projGit.exists && projGit.isDirectory) : true) : false;
             const dirRequiredBtnCls = "disabled:opacity-50 disabled:pointer-events-none";
             menuItems.push(
-              <button
+	              <button
                 key="show-in-explorer"
                 disabled={!dirExists}
                 className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast ${dirRequiredBtnCls}`}
@@ -6891,6 +6960,25 @@ export default function CodexFlowManagerUI() {
 	                <ExternalLink className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('projects:ctxOpenExternalConsoleWith', { env: toShellLabel(getProviderEnv(activeProviderId).terminal as any), provider: getProviderLabel(activeProviderId) })}
 	              </button>
 	            );
+            if (proj && projectCtxRuleEntries.length > 0) {
+              menuItems.push(
+                <div
+                  key="project-rule-separator"
+                  className="my-1 h-px bg-[var(--cf-border)]"
+                />,
+              );
+              for (const ruleEntry of projectCtxRuleEntries) {
+                menuItems.push(
+                  <button
+                    key={`edit-project-rule-${ruleEntry.providerId}`}
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
+                    onClick={() => { void editProjectRuleFile(ruleEntry.filePath); }}
+                  >
+                    <FilePenLine className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t("projects:ctxEditProjectRule", { file: ruleEntry.fileName })}
+                  </button>
+                );
+              }
+            }
             if (proj) {
               const isHidden = hiddenProjectIdSet.has(proj.id);
               if (isHidden) {
