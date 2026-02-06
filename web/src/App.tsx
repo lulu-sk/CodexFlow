@@ -88,6 +88,13 @@ import {
 import { getCachedThemeSetting, useThemeController, writeThemeSettingCache, type ThemeMode, type ThemeSetting } from "@/lib/theme";
 import { loadHiddenProjectIds, loadShowHiddenProjects, saveHiddenProjectIds, saveShowHiddenProjects } from "@/lib/projects-hidden";
 import { loadConsoleSession, saveConsoleSession, type PersistedConsoleTab } from "@/lib/console-session";
+import {
+  clearWorktreeCreatePromptPrefs,
+  loadWorktreeCreatePrefs,
+  saveWorktreeCreatePrefs,
+  type PersistedWorktreePromptChip,
+  type WorktreeCreatePrefs,
+} from "@/lib/worktree-create-prefs";
 import type {
   AppSettings,
   BuildRunCommandConfig,
@@ -106,7 +113,6 @@ import type {
 import type { TerminalThemeId } from "@/types/terminal-theme";
 
 import {
-  CHIP_COMMIT_RELEASE_DELAY_MS,
   clampText,
   DEFAULT_COMPLETION_PREFS,
   HISTORY_TITLE_MAX_CHARS,
@@ -380,6 +386,19 @@ export default function CodexFlowManagerUI() {
 	  }));
 	  const [worktreeCreatePromptFullscreenOpen, setWorktreeCreatePromptFullscreenOpen] = useState<boolean>(false);
 	  const worktreeCreateRunningTaskIdByRepoIdRef = useRef<Record<string, string>>({});
+	  /** worktree 创建面板的“上次设置”缓存：按 repoProjectId 隔离，避免不同项目互相覆盖。 */
+	  const worktreeCreateDraftByRepoIdRef = useRef<Record<string, {
+	    baseBranch: string;
+	    selectedChildWorktreeIds: string[];
+	    promptChips: PathChip[];
+	    promptDraft: string;
+	    useYolo: boolean;
+	    useMultipleModels: boolean;
+	    singleProviderId: GitWorktreeProviderId;
+	    multiCounts: WorktreeProviderCounts;
+	  }>>({});
+	  /** worktree 创建面板偏好落盘防抖计时器（localStorage，按 repo 隔离）。 */
+	  const worktreeCreatePrefsPersistTimersRef = useRef<Record<string, number>>({});
 	  /** 回收任务运行中的 taskId（用于“可关闭/可重开”的进度面板）。 */
 	  const worktreeRecycleRunningTaskIdByProjectIdRef = useRef<Record<string, string>>({});
 	  /** 回收弹窗：分叉点解析的请求序号（用于避免竞态覆盖）。 */
@@ -390,13 +409,176 @@ export default function CodexFlowManagerUI() {
 	  /**
 	   * 中文说明：worktree 创建面板关闭时，同步关闭“初始提示词大屏编辑”弹窗，避免状态残留导致下次打开直接弹出。
 	   */
-	  useEffect(() => {
-	    if (!worktreeCreateDialog.open) setWorktreeCreatePromptFullscreenOpen(false);
-	  }, [worktreeCreateDialog.open]);
-		  const [worktreeCreateProgress, setWorktreeCreateProgress] = useState<WorktreeCreateProgressState>(() => ({
-		    open: false,
-		    repoProjectId: "",
-		    taskId: "",
+		  useEffect(() => {
+		    if (!worktreeCreateDialog.open) setWorktreeCreatePromptFullscreenOpen(false);
+		  }, [worktreeCreateDialog.open]);
+
+		  /**
+		   * 中文说明：将 worktree 创建面板的 PathChip 转为可持久化的最小结构（用于 localStorage）。
+		   * - 会过滤 `fromPaste` 的临时图片：这些文件会在应用关闭/下次启动时清理，跨会话持久化没有意义；
+		   * - 去除 blob/previewUrl 等运行态字段，避免序列化失败或产生无效数据。
+		   */
+		  const toPersistedWorktreePromptChips = useCallback((chips: PathChip[]): PersistedWorktreePromptChip[] => {
+		    const list = Array.isArray(chips) ? chips : [];
+		    const out: PersistedWorktreePromptChip[] = [];
+		    for (const chip of list) {
+		      if (!chip) continue;
+		      if ((chip as any).fromPaste) continue;
+		      const winPath = String((chip as any).winPath || "").trim();
+		      const wslPath = String((chip as any).wslPath || "").trim();
+		      const fileName = String((chip as any).fileName || "").trim();
+		      const rulePath = String((chip as any).rulePath || "").trim();
+		      const kind = String((chip as any).chipKind || "").trim();
+		      const chipKind = (kind === "file" || kind === "image" || kind === "rule") ? (kind as any) : undefined;
+		      const isDir = typeof (chip as any).isDir === "boolean" ? (chip as any).isDir : undefined;
+		      if (!winPath && !wslPath && !fileName && !rulePath) continue;
+		      out.push({
+		        chipKind,
+		        winPath: winPath || undefined,
+		        wslPath: wslPath || undefined,
+		        fileName: fileName || undefined,
+		        isDir,
+		        rulePath: rulePath || undefined,
+		      });
+		    }
+		    return out;
+		  }, []);
+
+		  /**
+		   * 中文说明：将持久化的提示词 chips 还原为 PathChip（不恢复预览，仅用于显示与插入路径）。
+		   */
+		  const restoreWorktreePromptChips = useCallback((chips: PersistedWorktreePromptChip[] | null | undefined): PathChip[] => {
+		    const list = Array.isArray(chips) ? chips : [];
+		    const out: PathChip[] = [];
+		    for (const chip of list) {
+		      if (!chip) continue;
+		      const winPath = String(chip.winPath || "").trim();
+		      const wslPath = String(chip.wslPath || "").trim();
+		      const fileName = String(chip.fileName || "").trim();
+		      const rulePath = String(chip.rulePath || "").trim();
+		      const kind = String(chip.chipKind || "").trim();
+		      const chipKind = (kind === "file" || kind === "image" || kind === "rule") ? (kind as any) : undefined;
+		      const isDir = typeof chip.isDir === "boolean" ? chip.isDir : undefined;
+		      if (!winPath && !wslPath && !fileName && !rulePath) continue;
+		      out.push({
+		        id: uid(),
+		        blob: new Blob(),
+		        previewUrl: "",
+		        type: chipKind === "rule" ? "text/rule" : "text/path",
+		        size: 0,
+		        saved: true,
+		        fromPaste: false,
+		        winPath: winPath || undefined,
+		        wslPath: wslPath || undefined,
+		        fileName: fileName || (wslPath ? (wslPath.split("/").pop() || "") : "") || undefined,
+		        chipKind,
+		        rulePath: rulePath || undefined,
+		        isDir: isDir as any,
+		      } as any);
+		    }
+		    return out;
+		  }, []);
+
+		  /**
+		   * 中文说明：从 worktreeCreateDialog 状态提取可持久化偏好（用于“每个项目独立记录上次设置”）。
+		   */
+		  const buildWorktreeCreatePrefsFromDialog = useCallback((state: WorktreeCreateDialogState): WorktreeCreatePrefs => {
+		    const singleProviderId: GitWorktreeProviderId =
+		      (state.singleProviderId === "codex" || state.singleProviderId === "claude" || state.singleProviderId === "gemini")
+		        ? state.singleProviderId
+		        : "codex";
+		    const multiCounts: WorktreeProviderCounts = {
+		      codex: Math.max(0, Math.min(8, Math.floor(Number((state.multiCounts as any)?.codex) || 0))),
+		      claude: Math.max(0, Math.min(8, Math.floor(Number((state.multiCounts as any)?.claude) || 0))),
+		      gemini: Math.max(0, Math.min(8, Math.floor(Number((state.multiCounts as any)?.gemini) || 0))),
+		    };
+		    return {
+		      baseBranch: String(state.baseBranch || "").trim(),
+		      selectedChildWorktreeIds: Array.isArray(state.selectedChildWorktreeIds) ? state.selectedChildWorktreeIds.map((x) => String(x || "").trim()).filter(Boolean) : [],
+		      promptChips: toPersistedWorktreePromptChips(state.promptChips),
+		      promptDraft: String(state.promptDraft ?? ""),
+		      useYolo: !!state.useYolo,
+		      useMultipleModels: !!state.useMultipleModels,
+		      singleProviderId,
+		      multiCounts,
+		    };
+		  }, [toPersistedWorktreePromptChips]);
+
+		  /**
+		   * 中文说明：当初始提示词“已发送”后，清空其记录（内存缓存 + localStorage + 当前 UI 状态）。
+		   * - 仅清空提示词，不影响其他设置（baseBranch/引擎选择等仍会保留）。
+		   */
+			  const clearWorktreeCreateInitialPromptRecord = useCallback((repoProjectId: string) => {
+			    const repoId = String(repoProjectId || "").trim();
+			    if (!repoId) return;
+
+		    // 1) 内存缓存：清空提示词字段
+		    try {
+		      const prev = worktreeCreateDraftByRepoIdRef.current[repoId];
+		      if (prev) worktreeCreateDraftByRepoIdRef.current[repoId] = { ...prev, promptChips: [], promptDraft: "" };
+		    } catch {}
+
+		    // 2) localStorage：清空提示词字段
+		    try { clearWorktreeCreatePromptPrefs(repoId); } catch {}
+
+		    // 3) 当前 UI：若仍对应同一 repo，则同步清空，避免后续防抖持久化把提示词写回
+			    setWorktreeCreateDialog((prev) => {
+			      if (prev.repoProjectId !== repoId) return prev;
+			      if ((prev.promptChips?.length || 0) === 0 && !String(prev.promptDraft || "").trim()) return prev;
+			      return { ...prev, promptChips: [], promptDraft: "" };
+			    });
+			  }, []);
+
+			  /**
+			   * 中文说明：worktree 创建面板字段变更时，更新“按项目隔离”的内存缓存，并防抖写入 localStorage。
+			   */
+			  useEffect(() => {
+			    const repoId = String(worktreeCreateDialog.repoProjectId || "").trim();
+			    if (!repoId) return;
+
+			    // 内存缓存：保留完整 chips（含 fromPaste），保证“关闭/重新打开面板”时体验一致
+			    worktreeCreateDraftByRepoIdRef.current[repoId] = {
+			      baseBranch: String(worktreeCreateDialog.baseBranch || "").trim(),
+			      selectedChildWorktreeIds: Array.isArray(worktreeCreateDialog.selectedChildWorktreeIds) ? worktreeCreateDialog.selectedChildWorktreeIds : [],
+			      promptChips: Array.isArray(worktreeCreateDialog.promptChips) ? worktreeCreateDialog.promptChips : [],
+			      promptDraft: String(worktreeCreateDialog.promptDraft ?? ""),
+			      useYolo: !!worktreeCreateDialog.useYolo,
+			      useMultipleModels: !!worktreeCreateDialog.useMultipleModels,
+			      singleProviderId: worktreeCreateDialog.singleProviderId,
+			      multiCounts: worktreeCreateDialog.multiCounts,
+			    };
+
+				    // localStorage：仅保存可跨会话复用的字段（过滤 fromPaste、去掉运行态字段）
+				    try {
+				      const timers = worktreeCreatePrefsPersistTimersRef.current;
+				      const prevTimer = timers[repoId];
+				      if (typeof prevTimer === "number") {
+				        window.clearTimeout(prevTimer);
+				        delete timers[repoId];
+				      }
+				      const snapshot = worktreeCreateDialog;
+				      const timer = window.setTimeout(() => {
+				        try { saveWorktreeCreatePrefs(repoId, buildWorktreeCreatePrefsFromDialog(snapshot)); } catch {}
+				        try { delete worktreeCreatePrefsPersistTimersRef.current[repoId]; } catch {}
+				      }, 240);
+				      timers[repoId] = timer;
+				    } catch {}
+				  }, [
+			    buildWorktreeCreatePrefsFromDialog,
+			    worktreeCreateDialog.baseBranch,
+			    worktreeCreateDialog.multiCounts,
+			    worktreeCreateDialog.promptChips,
+			    worktreeCreateDialog.promptDraft,
+			    worktreeCreateDialog.repoProjectId,
+			    worktreeCreateDialog.selectedChildWorktreeIds,
+			    worktreeCreateDialog.singleProviderId,
+			    worktreeCreateDialog.useMultipleModels,
+			    worktreeCreateDialog.useYolo,
+			  ]);
+			  const [worktreeCreateProgress, setWorktreeCreateProgress] = useState<WorktreeCreateProgressState>(() => ({
+			    open: false,
+			    repoProjectId: "",
+			    taskId: "",
 	    status: "running",
 	    log: "",
 	    logOffset: 0,
@@ -1923,8 +2105,6 @@ export default function CodexFlowManagerUI() {
   const fullscreenCloseTimersRef = useRef<Record<string, number>>({});
   const chipPreviewUrlsRef = useRef<Set<string>>(new Set());
   const chipResourceRef = useRef<Map<string, PathChip>>(new Map());
-  const committedChipSnapshotRef = useRef<Map<string, PathChip>>(new Map());
-  const committedChipReleaseTimersRef = useRef<Record<string, number>>({});
 
   useEffect(() => {
     return () => {
@@ -1937,26 +2117,6 @@ export default function CodexFlowManagerUI() {
     };
   }, []);
 
-  const scheduleCommittedChipRelease = useCallback((chip: PathChip) => {
-    if (!chip || !chip.id || !chip.fromPaste || !chip.winPath) return;
-    const chipId = chip.id;
-    committedChipSnapshotRef.current.set(chipId, chip);
-    retainPastedImage(chip);
-    const prevTimer = committedChipReleaseTimersRef.current[chipId];
-    if (typeof prevTimer === 'number') {
-      window.clearTimeout(prevTimer);
-      delete committedChipReleaseTimersRef.current[chipId];
-    }
-    const timerId = window.setTimeout(() => {
-      delete committedChipReleaseTimersRef.current[chipId];
-      const snapshot = committedChipSnapshotRef.current.get(chipId);
-      committedChipSnapshotRef.current.delete(chipId);
-      if (!snapshot) return;
-      const result = releasePastedImage(snapshot);
-      if (result.shouldTrash) requestTrashWinPath(result.winPath);
-    }, CHIP_COMMIT_RELEASE_DELAY_MS);
-    committedChipReleaseTimersRef.current[chipId] = timerId;
-  }, []);
 
   useEffect(() => {
     const prev = chipPreviewUrlsRef.current;
@@ -2029,20 +2189,6 @@ export default function CodexFlowManagerUI() {
     }
   }, []);
 
-  useEffect(() => () => {
-    const timers = committedChipReleaseTimersRef.current;
-    committedChipReleaseTimersRef.current = {};
-    Object.values(timers).forEach((timerId) => { if (typeof timerId === 'number') window.clearTimeout(timerId); });
-    const snapshots = committedChipSnapshotRef.current;
-    committedChipSnapshotRef.current = new Map();
-    for (const chip of snapshots.values()) {
-      if (!chip?.fromPaste || !chip.winPath) continue;
-      const result = releasePastedImage(chip);
-      if (result.shouldTrash) {
-        requestTrashWinPath(result.winPath);
-      }
-    }
-  }, []);
 
   // 防御性清理：当视图中心从历史切回控制台、或窗口可见性发生变化时，强制关闭所有全屏遮罩
   useEffect(() => {
@@ -3185,7 +3331,6 @@ export default function CodexFlowManagerUI() {
 
   function sendCommand() {
     if (!activeTab) return;
-    const chipsSnapshot = chipsByTab[activeTab.id] || [];
     const text = compileTextFromChipsAndDraft(activeTab.id);
     if (!text.trim()) return;
     const pid = ptyByTabRef.current[activeTab.id];
@@ -3207,11 +3352,6 @@ export default function CodexFlowManagerUI() {
           if (sendMode === 'write_and_enter') { try { window.host.pty.write(pid, '\r'); } catch {} }
         }
       } catch {}
-    }
-    if (chipsSnapshot.length > 0) {
-      for (const chip of chipsSnapshot) {
-        scheduleCommittedChipRelease(chip);
-      }
     }
     setChipsByTab((m) => ({ ...m, [activeTab.id]: [] }));
     setDraftByTab((m) => ({ ...m, [activeTab.id]: "" }));
@@ -3673,40 +3813,77 @@ export default function CodexFlowManagerUI() {
     // 为 @ 引用准备文件索引根（避免用户未选中该项目时，@ 搜索仍指向旧项目）
     try { await setActiveFileIndexRoot(repoProject.winPath); } catch {}
 
-    const defaultProvider: GitWorktreeProviderId =
-      (activeProviderId === "codex" || activeProviderId === "claude" || activeProviderId === "gemini")
-        ? (activeProviderId as any)
-        : "codex";
+	    const defaultProvider: GitWorktreeProviderId =
+	      (activeProviderId === "codex" || activeProviderId === "claude" || activeProviderId === "gemini")
+	        ? (activeProviderId as any)
+	        : "codex";
 
-    setWorktreeCreateDialog({
-      open: true,
-      repoProjectId: repoId,
-      branches: [],
-      baseBranch: "",
-      loadingBranches: true,
-      selectedChildWorktreeIds: [],
-      promptChips: [],
-      promptDraft: "",
-      useYolo: true,
-      useMultipleModels: false,
-      singleProviderId: defaultProvider,
-      multiCounts: { codex: defaultProvider === "codex" ? 1 : 0, claude: defaultProvider === "claude" ? 1 : 0, gemini: defaultProvider === "gemini" ? 1 : 0 },
-      creating: false,
-      error: undefined,
-    });
+	    // 读取“按项目隔离”的上次设置：优先内存缓存（保留 fromPaste 图片），其次 localStorage（过滤 fromPaste）
+	    const cached = worktreeCreateDraftByRepoIdRef.current[repoId] || null;
+	    const persisted = loadWorktreeCreatePrefs(repoId);
+	    const restored = cached
+	      ? ({
+	          baseBranch: cached.baseBranch,
+	          selectedChildWorktreeIds: cached.selectedChildWorktreeIds,
+	          promptChips: cached.promptChips,
+	          promptDraft: cached.promptDraft,
+	          useYolo: cached.useYolo,
+	          useMultipleModels: cached.useMultipleModels,
+	          singleProviderId: cached.singleProviderId,
+	          multiCounts: cached.multiCounts,
+	        } as const)
+	      : (persisted
+	          ? ({
+	              baseBranch: persisted.baseBranch,
+	              selectedChildWorktreeIds: persisted.selectedChildWorktreeIds,
+	              promptChips: restoreWorktreePromptChips(persisted.promptChips),
+	              promptDraft: persisted.promptDraft,
+	              useYolo: persisted.useYolo,
+	              useMultipleModels: persisted.useMultipleModels,
+	              singleProviderId: persisted.singleProviderId as any,
+	              multiCounts: (persisted.multiCounts as any) as WorktreeProviderCounts,
+	            } as const)
+	          : null);
+
+	    const singleProviderId: GitWorktreeProviderId = restored?.singleProviderId || defaultProvider;
+	    const multiCountsDefault: WorktreeProviderCounts = { codex: defaultProvider === "codex" ? 1 : 0, claude: defaultProvider === "claude" ? 1 : 0, gemini: defaultProvider === "gemini" ? 1 : 0 };
+	    const multiCountsSource: WorktreeProviderCounts = restored?.multiCounts || multiCountsDefault;
+	    const multiCounts: WorktreeProviderCounts = { ...multiCountsSource };
+	    // 兜底：多模型模式若合计为 0，则默认给 singleProviderId 置 1，避免面板打开即不可用
+	    if (restored?.useMultipleModels && sumWorktreeProviderCounts(multiCounts) === 0) {
+	      multiCounts[singleProviderId] = 1;
+	    }
+
+	    setWorktreeCreateDialog({
+	      open: true,
+	      repoProjectId: repoId,
+	      branches: [],
+	      baseBranch: restored?.baseBranch || "",
+	      loadingBranches: true,
+	      selectedChildWorktreeIds: restored?.selectedChildWorktreeIds || [],
+	      promptChips: restored?.promptChips || [],
+	      promptDraft: restored?.promptDraft || "",
+	      useYolo: typeof restored?.useYolo === "boolean" ? restored.useYolo : true,
+	      useMultipleModels: typeof restored?.useMultipleModels === "boolean" ? restored.useMultipleModels : false,
+	      singleProviderId,
+	      multiCounts,
+	      creating: false,
+	      error: undefined,
+	    });
 
     try {
-      const res: any = await (window as any).host?.gitWorktree?.listBranches?.(repoProject.winPath);
-      if (!(res && res.ok)) throw new Error(res?.error || "failed");
-      const branches = Array.isArray(res.branches) ? res.branches.map((x: any) => String(x || "").trim()).filter(Boolean) : [];
-      const current = String(res.current || "").trim();
-      const baseBranch = current || branches[0] || "";
-      setWorktreeCreateDialog((prev) => {
-        if (!prev.open || prev.repoProjectId !== repoId) return prev;
-        return {
-          ...prev,
-          branches,
-          baseBranch,
+	      const res: any = await (window as any).host?.gitWorktree?.listBranches?.(repoProject.winPath);
+	      if (!(res && res.ok)) throw new Error(res?.error || "failed");
+	      const branches = Array.isArray(res.branches) ? res.branches.map((x: any) => String(x || "").trim()).filter(Boolean) : [];
+	      const current = String(res.current || "").trim();
+	      setWorktreeCreateDialog((prev) => {
+	        if (!prev.open || prev.repoProjectId !== repoId) return prev;
+	        const preferred = String(prev.baseBranch || "").trim();
+	        const baseBranch = (preferred && branches.includes(preferred)) ? preferred : (current || branches[0] || "");
+	        return {
+	          ...prev,
+	          branches,
+	          baseBranch,
           loadingBranches: false,
           error: baseBranch ? undefined : (t("projects:worktreeMissingBaseBranch", "未能读取到基分支") as string),
         };
@@ -3717,7 +3894,7 @@ export default function CodexFlowManagerUI() {
         return { ...prev, branches: [], baseBranch: "", loadingBranches: false, error: String(e?.message || e) };
       });
     }
-  }, [activeProviderId, t]);
+	  }, [activeProviderId, restoreWorktreePromptChips, t]);
 
   /**
    * 关闭 worktree 创建面板（不执行创建）。
@@ -3937,11 +4114,12 @@ export default function CodexFlowManagerUI() {
       return;
     }
 
-    const createdItems: CreatedWorktree[] = snapshot.items as any;
-    const prompt = String(args.prompt || "");
-    const warnings: string[] = Array.isArray(args.extraWarnings) ? args.extraWarnings.map((x: any) => String(x || "").trim()).filter(Boolean) : [];
-    let firstNewProjectId: string | null = null;
-    let firstTabId: string | null = null;
+	    const createdItems: CreatedWorktree[] = snapshot.items as any;
+	    const prompt = String(args.prompt || "");
+	    const warnings: string[] = Array.isArray(args.extraWarnings) ? args.extraWarnings.map((x: any) => String(x || "").trim()).filter(Boolean) : [];
+	    let promptCleared = false;
+	    let firstNewProjectId: string | null = null;
+	    let firstTabId: string | null = null;
 
     for (const item of createdItems) {
       const providerId = String(item?.providerId || "").trim().toLowerCase() as GitWorktreeProviderId;
@@ -3966,12 +4144,16 @@ export default function CodexFlowManagerUI() {
       attachDirChildToParent(repoId, wtProject.id);
 
       // 启动引擎 CLI（每个实例一个 worktree）
-      const started = await startProviderInstanceInProject({ project: wtProject, providerId, prompt, useYolo: args.useYolo });
-      if (started.ok && started.tabId) {
-        if (!firstTabId) firstTabId = started.tabId;
-      } else if (!started.ok && started.error) {
-        warnings.push(`${providerId}: ${started.error}`);
-      }
+	      const started = await startProviderInstanceInProject({ project: wtProject, providerId, prompt, useYolo: args.useYolo });
+	      if (started.ok && started.tabId) {
+	        if (!firstTabId) firstTabId = started.tabId;
+	        if (!promptCleared && prompt.trim()) {
+	          promptCleared = true;
+	          clearWorktreeCreateInitialPromptRecord(repoId);
+	        }
+	      } else if (!started.ok && started.error) {
+	        warnings.push(`${providerId}: ${started.error}`);
+	      }
 
       // 规则文件复制的非致命警告
       try {
@@ -4003,7 +4185,7 @@ export default function CodexFlowManagerUI() {
         message: (t("projects:worktreeCreateWarnings", "创建已完成，但存在警告：\n{{warnings}}") as any).replace("{{warnings}}", warnings.join("\n")),
       });
     }
-  }, [attachDirChildToParent, gitWorktreeCopyRulesOnCreate, setActiveTab, startProviderInstanceInProject, t, unhideProject, upsertProjectInList]);
+  }, [attachDirChildToParent, clearWorktreeCreateInitialPromptRecord, gitWorktreeCopyRulesOnCreate, setActiveTab, startProviderInstanceInProject, t, unhideProject, upsertProjectInList]);
 
   /**
    * Ctrl+单击：快速创建（不弹确认/不打开面板）。
@@ -7138,9 +7320,10 @@ export default function CodexFlowManagerUI() {
               });
 
               // 1) 优先在已选子 worktree 中启动实例（1:1 分配）
-              const extraWarnings: string[] = [];
-              let firstReuseProjectId: string | null = null;
-              let firstReuseTabId: string | null = null;
+	              const extraWarnings: string[] = [];
+	              let promptCleared = false;
+	              let firstReuseProjectId: string | null = null;
+	              let firstReuseTabId: string | null = null;
               for (let i = 0; i < selectedChildIdsOrdered.length; i++) {
                 const projectId = selectedChildIdsOrdered[i];
                 const wtProject = childWorktrees.find((p) => p.id === projectId) || null;
@@ -7148,12 +7331,16 @@ export default function CodexFlowManagerUI() {
                 const providerId = providerQueue[i] || worktreeCreateDialog.singleProviderId;
                 // 用户主动选择：若该 worktree 被隐藏，则自动取消隐藏
                 unhideProject(wtProject);
-                const started = await startProviderInstanceInProject({ project: wtProject, providerId, prompt, useYolo: worktreeCreateDialog.useYolo });
-                if (started.ok && started.tabId) {
-                  if (!firstReuseTabId) firstReuseTabId = started.tabId;
-                } else if (!started.ok && started.error) {
-                  extraWarnings.push(`${providerId}: ${started.error} (${getDirNodeLabel(wtProject)})`);
-                }
+	                const started = await startProviderInstanceInProject({ project: wtProject, providerId, prompt, useYolo: worktreeCreateDialog.useYolo });
+	                if (started.ok && started.tabId) {
+	                  if (!firstReuseTabId) firstReuseTabId = started.tabId;
+	                  if (!promptCleared && prompt.trim()) {
+	                    promptCleared = true;
+	                    clearWorktreeCreateInitialPromptRecord(repo.id);
+	                  }
+	                } else if (!started.ok && started.error) {
+	                  extraWarnings.push(`${providerId}: ${started.error} (${getDirNodeLabel(wtProject)})`);
+	                }
                 if (!firstReuseProjectId) firstReuseProjectId = wtProject.id;
               }
 

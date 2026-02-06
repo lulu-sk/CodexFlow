@@ -31,6 +31,18 @@ async function gitTry(repo: string, argv: string[], timeoutMs: number = 12_000) 
   return await execGitAsync({ argv: ["-C", repo, ...argv], timeoutMs });
 }
 
+/**
+ * 中文说明：异步判断文件/目录是否存在（用于断言残留标记是否被归档）。
+ */
+async function existsPathAsync(targetPath: string): Promise<boolean> {
+  try {
+    await fsp.access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 describe("worktree meta 缺失回退（recycle/reset/remove）", () => {
   it(
     "recycle：无创建记录时仍可推断主 worktree 并合并到目标分支，同时写入映射",
@@ -72,6 +84,95 @@ describe("worktree meta 缺失回退（recycle/reset/remove）", () => {
           expect(meta.baseBranch).toBe("main");
           expect(meta.wtBranch).toBe("wt");
         }
+      } finally {
+        try { await fsp.rm(wtParent, { recursive: true, force: true }); } catch {}
+        try { await fsp.rm(repo, { recursive: true, force: true }); } catch {}
+        try { await fsp.rm(userData, { recursive: true, force: true }); } catch {}
+      }
+    },
+    { timeout: 120_000 }
+  );
+
+  it(
+    "recycle：主 worktree 仅残留 REBASE_HEAD 时自动归档并继续回收",
+    async () => {
+      const repo = await fsp.mkdtemp(path.join(os.tmpdir(), "codexflow-wt-stale-rebase-head-main-"));
+      const wtParent = await fsp.mkdtemp(path.join(os.tmpdir(), "codexflow-wt-stale-rebase-head-child-parent-"));
+      const wtDir = path.join(wtParent, "wt");
+      const userData = await fsp.mkdtemp(path.join(os.tmpdir(), "codexflow-userdata-"));
+      userDataDir = userData;
+
+      try {
+        await git(repo, ["init"]);
+        await git(repo, ["config", "user.name", "CodexFlow"]);
+        await git(repo, ["config", "user.email", "codexflow@example.com"]);
+        await git(repo, ["config", "core.autocrlf", "false"]);
+        await git(repo, ["config", "core.eol", "lf"]);
+
+        await git(repo, ["checkout", "-b", "main"]);
+        await fsp.writeFile(path.join(repo, "a.txt"), "A\n", "utf8");
+        await git(repo, ["add", "a.txt"]);
+        await git(repo, ["commit", "-m", "main: init"]);
+
+        await git(repo, ["worktree", "add", "-b", "wt", wtDir, "main"]);
+        await fsp.writeFile(path.join(wtDir, "w.txt"), "W\n", "utf8");
+        await git(wtDir, ["add", "w.txt"]);
+        await git(wtDir, ["commit", "-m", "wt: change"]);
+
+        const headSha = (await git(repo, ["rev-parse", "HEAD"])).trim();
+        const staleMarkerPath = path.join(repo, ".git", "REBASE_HEAD");
+        await fsp.writeFile(staleMarkerPath, `${headSha}\n`, "utf8");
+        expect(await existsPathAsync(staleMarkerPath)).toBe(true);
+
+        const res = await recycleWorktreeAsync({ worktreePath: wtDir, baseBranch: "main", wtBranch: "wt", range: "full", mode: "rebase" });
+        expect(res.ok).toBe(true);
+
+        const subject = (await git(repo, ["log", "-1", "--format=%s"])).trim();
+        expect(subject).toBe("wt: change");
+
+        const gitDirEntries = await fsp.readdir(path.join(repo, ".git"));
+        expect(gitDirEntries.includes("REBASE_HEAD")).toBe(false);
+        expect(gitDirEntries.some((name) => name.startsWith("REBASE_HEAD.stale-"))).toBe(true);
+      } finally {
+        try { await fsp.rm(wtParent, { recursive: true, force: true }); } catch {}
+        try { await fsp.rm(repo, { recursive: true, force: true }); } catch {}
+        try { await fsp.rm(userData, { recursive: true, force: true }); } catch {}
+      }
+    },
+    { timeout: 120_000 }
+  );
+
+  it(
+    "recycle：主 worktree 存在真实进行中标记（rebase-merge）时应拒绝回收",
+    async () => {
+      const repo = await fsp.mkdtemp(path.join(os.tmpdir(), "codexflow-wt-active-rebase-main-"));
+      const wtParent = await fsp.mkdtemp(path.join(os.tmpdir(), "codexflow-wt-active-rebase-child-parent-"));
+      const wtDir = path.join(wtParent, "wt");
+      const userData = await fsp.mkdtemp(path.join(os.tmpdir(), "codexflow-userdata-"));
+      userDataDir = userData;
+
+      try {
+        await git(repo, ["init"]);
+        await git(repo, ["config", "user.name", "CodexFlow"]);
+        await git(repo, ["config", "user.email", "codexflow@example.com"]);
+        await git(repo, ["config", "core.autocrlf", "false"]);
+        await git(repo, ["config", "core.eol", "lf"]);
+
+        await git(repo, ["checkout", "-b", "main"]);
+        await fsp.writeFile(path.join(repo, "a.txt"), "A\n", "utf8");
+        await git(repo, ["add", "a.txt"]);
+        await git(repo, ["commit", "-m", "main: init"]);
+
+        await git(repo, ["worktree", "add", "-b", "wt", wtDir, "main"]);
+        await fsp.writeFile(path.join(wtDir, "w.txt"), "W\n", "utf8");
+        await git(wtDir, ["add", "w.txt"]);
+        await git(wtDir, ["commit", "-m", "wt: change"]);
+
+        await fsp.mkdir(path.join(repo, ".git", "rebase-merge"), { recursive: true });
+
+        const res = await recycleWorktreeAsync({ worktreePath: wtDir, baseBranch: "main", wtBranch: "wt", range: "full", mode: "rebase" });
+        expect(res.ok).toBe(false);
+        if (!res.ok) expect(res.errorCode).toBe("BASE_WORKTREE_IN_PROGRESS");
       } finally {
         try { await fsp.rm(wtParent, { recursive: true, force: true }); } catch {}
         try { await fsp.rm(repo, { recursive: true, force: true }); } catch {}

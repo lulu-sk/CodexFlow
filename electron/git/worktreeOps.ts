@@ -598,50 +598,150 @@ async function resolveGitPathAbsAsync(args: {
   return { ok: true, absPath };
 }
 
+type BaseWorktreeProgressMarkerKind = "merge" | "rebase" | "cherry-pick" | "revert" | "unmerged";
+
+type BaseWorktreeProgressMarker = {
+  name: string;
+  kind: BaseWorktreeProgressMarkerKind;
+  absPath?: string;
+};
+
+/**
+ * 中文说明：检查指定 Git 标记是否存在，并按需校验目录类型。
+ */
+async function checkGitProgressMarkerAsync(args: {
+  repoMainPath: string;
+  gitPath?: string;
+  name: string;
+  kind: Exclude<BaseWorktreeProgressMarkerKind, "unmerged">;
+  isDir?: boolean;
+}): Promise<{ ok: true; marker?: BaseWorktreeProgressMarker } | { ok: false; locked: boolean; stderr: string; stdout: string; error?: string }> {
+  const p = await resolveGitPathAbsAsync({ repoMainPath: args.repoMainPath, gitPath: args.gitPath, name: args.name, timeoutMs: 8000 });
+  if (!p.ok) return p;
+  try {
+    if (!fs.existsSync(p.absPath)) return { ok: true };
+    if (args.isDir) {
+      const st = fs.statSync(p.absPath);
+      if (!st.isDirectory()) return { ok: true };
+    }
+    return { ok: true, marker: { name: args.name, kind: args.kind, absPath: p.absPath } };
+  } catch {
+    return { ok: true };
+  }
+}
+
+/**
+ * 中文说明：为过期标记生成可读、可追溯的归档文件名（保留原始文件名语义）。
+ */
+function buildStaleMarkerBackupPath(absPath: string): string {
+  const dir = path.dirname(absPath);
+  const base = path.basename(absPath);
+  const stamp = new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14);
+  const rand = Math.random().toString(16).slice(2, 8);
+  return path.join(dir, `${base}.stale-${stamp}-${process.pid}-${rand}`);
+}
+
+/**
+ * 中文说明：将疑似“残留中的 Git 标记”改名归档，避免直接删除导致不可追溯。
+ */
+async function archiveStaleGitMarkerAsync(absPath: string): Promise<{ ok: true; backupPath?: string } | { ok: false; error: string }> {
+  const src = String(absPath || "").trim();
+  if (!src) return { ok: false, error: "缺少标记文件路径" };
+  const backupPath = buildStaleMarkerBackupPath(src);
+  try {
+    await fsp.rename(src, backupPath);
+    return { ok: true, backupPath };
+  } catch (e: any) {
+    if (String(e?.code || "").toUpperCase() === "ENOENT") return { ok: true };
+    return { ok: false, error: String(e?.message || e || "归档残留标记失败") };
+  }
+}
+
+/**
+ * 中文说明：将标记数组格式化为紧凑日志文本（便于进度窗口直观排障）。
+ */
+function formatProgressMarkers(markers: BaseWorktreeProgressMarker[]): string {
+  return markers.map((item) => item.name).filter(Boolean).join(", ");
+}
+
 /**
  * 中文说明：检测主 worktree 是否处于“中断/冲突态”，用于拒绝自动化流程（stash/回收/恢复）。
- * - 包含：merge/rebase/cherry-pick/revert 进行中，以及存在 unmerged files。
+ * - 强阻断：merge/rebase/cherry-pick/revert 进行中，以及存在 unmerged files。
+ * - 软修复：仅发现 REBASE_HEAD（且无真实 rebase 目录/冲突）时，自动归档后继续。
  */
 async function detectBaseWorktreeInProgressAsync(args: {
   repoMainPath: string;
   gitPath?: string;
-}): Promise<{ ok: true; inProgress: boolean } | { ok: false; locked: boolean; stderr: string; stdout: string; error?: string }> {
+  autoRepairStaleMarkers?: boolean;
+}): Promise<
+  | {
+      ok: true;
+      inProgress: boolean;
+      activeMarkers?: BaseWorktreeProgressMarker[];
+      repairedStaleMarkers?: Array<{ name: string; backupPath: string }>;
+      repairError?: string;
+    }
+  | { ok: false; locked: boolean; stderr: string; stdout: string; error?: string }
+> {
   const repoMainPath = toFsPathAbs(args.repoMainPath);
   const gitPath = args.gitPath;
-  const markers: Array<{ name: string; kind: string; isDir?: boolean }> = [
+  const autoRepairStaleMarkers = args.autoRepairStaleMarkers !== false;
+  const strongMarkers: Array<{ name: string; kind: Exclude<BaseWorktreeProgressMarkerKind, "unmerged">; isDir?: boolean }> = [
     { name: "MERGE_HEAD", kind: "merge" },
-    { name: "REBASE_HEAD", kind: "rebase" },
     { name: "rebase-apply", kind: "rebase", isDir: true },
     { name: "rebase-merge", kind: "rebase", isDir: true },
     { name: "CHERRY_PICK_HEAD", kind: "cherry-pick" },
     { name: "REVERT_HEAD", kind: "revert" },
   ];
+  const weakMarkers: Array<{ name: string; kind: Exclude<BaseWorktreeProgressMarkerKind, "unmerged"> }> = [
+    { name: "REBASE_HEAD", kind: "rebase" },
+  ];
+  const activeMarkers: BaseWorktreeProgressMarker[] = [];
 
-  for (const m of markers) {
-    const p = await resolveGitPathAbsAsync({ repoMainPath, gitPath, name: m.name, timeoutMs: 8000 });
-    if (!p.ok) return p;
-    try {
-      if (!fs.existsSync(p.absPath)) continue;
-      if (m.isDir) {
-        try {
-          const st = fs.statSync(p.absPath);
-          if (!st.isDirectory()) continue;
-        } catch {
-          continue;
-        }
-      }
-      return { ok: true, inProgress: true };
-    } catch {
-      // ignore
-    }
+  for (const marker of strongMarkers) {
+    const checked = await checkGitProgressMarkerAsync({ repoMainPath, gitPath, name: marker.name, kind: marker.kind, isDir: marker.isDir });
+    if (!checked.ok) return checked;
+    if (checked.marker) activeMarkers.push(checked.marker);
   }
+  if (activeMarkers.length > 0) return { ok: true, inProgress: true, activeMarkers };
 
   // unmerged files：通过 index 中的未合并条目判断
   const unmerged = await execGitAsync({ gitPath, argv: ["-C", repoMainPath, "ls-files", "-u"], timeoutMs: 8000 });
   if (!unmerged.ok) {
     return { ok: false, locked: isGitLockedFailure(unmerged), stderr: String(unmerged.stderr || ""), stdout: String(unmerged.stdout || ""), error: unmerged.error };
   }
-  if (String(unmerged.stdout || "").trim().length > 0) return { ok: true, inProgress: true };
+  if (String(unmerged.stdout || "").trim().length > 0) {
+    return { ok: true, inProgress: true, activeMarkers: [{ name: "UNMERGED_FILES", kind: "unmerged" }] };
+  }
+
+  const staleCandidates: BaseWorktreeProgressMarker[] = [];
+  for (const marker of weakMarkers) {
+    const checked = await checkGitProgressMarkerAsync({ repoMainPath, gitPath, name: marker.name, kind: marker.kind });
+    if (!checked.ok) return checked;
+    if (checked.marker) staleCandidates.push(checked.marker);
+  }
+  if (staleCandidates.length === 0) return { ok: true, inProgress: false };
+
+  if (!autoRepairStaleMarkers) {
+    return { ok: true, inProgress: true, activeMarkers: staleCandidates };
+  }
+
+  const repairedStaleMarkers: Array<{ name: string; backupPath: string }> = [];
+  for (const marker of staleCandidates) {
+    const archived = await archiveStaleGitMarkerAsync(String(marker.absPath || ""));
+    if (!archived.ok) {
+      return {
+        ok: true,
+        inProgress: true,
+        activeMarkers: staleCandidates,
+        repairError: `自动归档残留标记失败（${marker.name}）：${archived.error}`,
+      };
+    }
+    if (archived.backupPath) repairedStaleMarkers.push({ name: marker.name, backupPath: archived.backupPath });
+  }
+  if (repairedStaleMarkers.length > 0) {
+    return { ok: true, inProgress: false, repairedStaleMarkers };
+  }
   return { ok: true, inProgress: false };
 }
 
@@ -1208,12 +1308,24 @@ export async function recycleWorktreeAsync(req: RecycleWorktreeRequest): Promise
     log(`开始回收 worktree\nworktreePath: ${wt}\nrepoMainPath: ${repoMainPath}\nbaseBranch: ${baseBranch}\nwtBranch: ${wtBranch}\nrange: ${rangeLabel}\nmode: ${req.mode}\n\n`);
 
     // A) 二次校验：中断/冲突态直接拒绝自动化（同时也避免误导 UI 去弹“继续 stash”）
-    const inProg = await detectBaseWorktreeInProgressAsync({ repoMainPath, gitPath });
+    const inProg = await detectBaseWorktreeInProgressAsync({ repoMainPath, gitPath, autoRepairStaleMarkers: true });
     if (!inProg.ok) {
       const code: RecycleWorktreeErrorCode = inProg.locked ? "BASE_WORKTREE_LOCKED" : "UNKNOWN";
       return { ok: false, errorCode: code, details: { repoMainPath, baseBranch, wtBranch, stderr: inProg.stderr, stdout: inProg.stdout, error: inProg.error } };
     }
-    if (inProg.inProgress) return { ok: false, errorCode: "BASE_WORKTREE_IN_PROGRESS", details: { repoMainPath, baseBranch, wtBranch } };
+    if ((inProg.repairedStaleMarkers || []).length > 0) {
+      const repairedText = (inProg.repairedStaleMarkers || [])
+        .map((item) => `${item.name} -> ${item.backupPath}`)
+        .join("\n");
+      log(`检测到主 worktree 存在过期 Git 标记，已自动归档并继续：\n${repairedText}\n`);
+    }
+    if (inProg.inProgress) {
+      const markerText = formatProgressMarkers(inProg.activeMarkers || []);
+      const extraError = String(inProg.repairError || "").trim();
+      if (markerText) log(`主 worktree 仍存在进行中的 Git 状态：${markerText}\n`);
+      if (extraError) log(`${extraError}\n`);
+      return { ok: false, errorCode: "BASE_WORKTREE_IN_PROGRESS", details: { repoMainPath, baseBranch, wtBranch, error: extraError || undefined } };
+    }
 
     // 主 worktree 是否干净
     const mainStatus = await execGitAsync({ gitPath, argv: ["-C", repoMainPath, "status", "--porcelain"], timeoutMs: 8000 });

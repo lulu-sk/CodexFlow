@@ -539,6 +539,22 @@ async function cleanupPastedImages() {
   } catch {}
 }
 
+/**
+ * 中文说明：启动时清理上一次会话遗留的粘贴临时图片目录。
+ * - 兜底：处理崩溃/强制结束进程导致退出清理未执行的情况；
+ * - 仅清理 userData/assets（该目录当前仅用于粘贴图片的临时缓存）。
+ */
+async function cleanupPastedImagesFromPreviousSessionOnBoot(): Promise<void> {
+  try {
+    const userData = app.getPath("userData");
+    if (!userData) return;
+    const assetsRoot = path.join(userData, "assets");
+    if (!assetsRoot) return;
+    if (!fs.existsSync(assetsRoot)) return;
+    await fsp.rm(assetsRoot, { recursive: true, force: true });
+  } catch {}
+}
+
 function resolveCodexBridgeTarget(): CodexBridgeDescriptor {
   return deriveCodexBridgeDescriptor(settings.getSettings());
 }
@@ -1262,7 +1278,7 @@ if (!gotLock) {
     void handleSecondInstance(argv as any, workingDirectory);
   });
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     // 加载统一调试配置并建立监听
     try { readDebugConfig(); applyDebugGlobalsFromConfig(); watchDebugConfig(); } catch {}
     // Windows：尽早设置 AUMID（建议在创建窗口前完成）
@@ -1286,6 +1302,8 @@ if (!gotLock) {
     try { i18n.registerI18nIPC(); } catch {}
     // 构建应用菜单（包含 Toggle Developer Tools）
     try { setupAppMenu(); } catch {}
+    // 启动时清理上一次会话遗留的粘贴临时图片（崩溃/强杀兜底）
+    try { await cleanupPastedImagesFromPreviousSessionOnBoot(); } catch {}
     try { createWindow(); } catch (e) { if (DIAG) { try { perfLogger.log(`[BOOT] createWindow error: ${String(e)}`); } catch {} } }
     focusTabFromProtocol(extractProtocolUrl(process.argv));
     // 启动时的耗时初始化放到后台执行：避免新实例因外部命令/代理探测阻塞而“无窗口常驻后台”
