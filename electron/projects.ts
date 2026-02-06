@@ -7,7 +7,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { getDebugConfig } from './debugConfig';
 import { app } from 'electron';
-import { winToWsl, wslToUNC, isUNCPath, uncToWsl, listDistrosAsync, getDistroHomeAsync, execInWslAsync, readFileInWslAsync, winToWslAsync, getDefaultRootsAsync } from './wsl';
+import { wslToUNC, isUNCPath, uncToWsl, listDistrosAsync, getDistroHomeAsync, execInWslAsync, readFileInWslAsync, winToWslAsync, getDefaultRootsAsync, normalizeWinPath } from './wsl';
 
 /** 项目管理: scan/add/touch, 本地缓存 projects.json 存放 metadata */
 
@@ -154,6 +154,80 @@ async function pathExists(p: string): Promise<boolean> {
 
 async function statIsDir(p: string): Promise<boolean> {
   try { const s = await fsp.stat(p); return s.isDirectory(); } catch { return false; }
+}
+
+/**
+ * 尝试将 `/mnt/<drive>/...`（含反斜杠变体）转换为 `X:\...`。
+ */
+function toDrivePathFromMnt(input: string): string {
+  try {
+    const mnt = String(input || '').match(/^\/mnt\/([a-zA-Z])\/(.*)$/);
+    if (!mnt) return '';
+    return `${mnt[1].toUpperCase()}:\\${mnt[2].replace(/\//g, '\\')}`;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 尝试修复旧版本把 `/mnt/<drive>/...` 误归一化为 `<cwdDrive>:\mnt\<drive>\...` 的路径。
+ * 仅在“旧路径不存在且修复后路径存在”时生效，避免误伤合法目录。
+ */
+function tryRepairLegacyResolvedMntWinPath(normalizedRaw: string): string {
+  try {
+    const posixLike = normalizeWinPath(normalizedRaw || '').replace(/\\/g, '/');
+    const legacy = posixLike.match(/^[a-zA-Z]:\/mnt\/([a-zA-Z])\/(.*)$/);
+    if (!legacy) return '';
+    const repaired = normalizeWinPath(path.resolve(`${legacy[1].toUpperCase()}:\\${legacy[2].replace(/\//g, '\\')}`));
+    if (!repaired) return '';
+    if (normalizedRaw && normalizedRaw.toLowerCase() === repaired.toLowerCase()) return '';
+    if (normalizedRaw && fs.existsSync(normalizedRaw)) return '';
+    if (!fs.existsSync(repaired)) return '';
+    return repaired;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 仅基于规则将 Windows/UNC 路径转换为 WSL 路径（不调用 wsl.exe）。
+ */
+function ruleWinPathToWslPath(winPath: string): string {
+  try {
+    const s = normalizeWinPath(winPath || '');
+    if (!s) return '';
+    if (isUNCPath(s)) {
+      const u = uncToWsl(s);
+      if (u?.wslPath) return u.wslPath;
+    }
+    const m = s.match(/^([a-zA-Z]):\\(.*)$/);
+    if (m) return `/mnt/${m[1].toLowerCase()}/${m[2].replace(/\\/g, '/')}`;
+    return s;
+  } catch {
+    return String(winPath || '');
+  }
+}
+
+/**
+ * 将输入路径归一化为项目存储使用的 Windows 路径。
+ * - Windows 下：兼容 `/mnt/<drive>/...` 与 `\mnt\<drive>\...`，优先转换为 `X:\...`。
+ * - 兼容修复旧版本误存储的 `<cwdDrive>:\mnt\<drive>\...`（仅在可安全判定时修复）。
+ * - 其它格式保持原有 `path.resolve + normalizeWinPath` 行为。
+ */
+function normalizeProjectWinPath(input: string): string {
+  const raw = String(input || '').trim();
+  if (!raw) return '';
+  const normalizedRaw = normalizeWinPath(path.resolve(raw));
+  if (process.platform !== 'win32') return normalizedRaw;
+
+  const posixLike = raw.replace(/\\/g, '/');
+  const fromMnt = toDrivePathFromMnt(posixLike);
+  if (fromMnt) return normalizeWinPath(path.resolve(fromMnt));
+
+  const repaired = tryRepairLegacyResolvedMntWinPath(normalizedRaw);
+  if (repaired) return repaired;
+
+  return normalizedRaw;
 }
 
 
@@ -539,13 +613,39 @@ export async function scanProjectsAsync(roots?: string[], verbose = false): Prom
   return unique;
 }
 
+/**
+ * 将指定目录写入项目列表（用于“打开项目”等场景）。
+ */
 export function addProjectByWinPath(winPath: string): Project | null {
   try {
-    const normalized = path.resolve(winPath);
-    const wslPath = winToWsl(normalized);
+    const normalized = normalizeProjectWinPath(winPath);
+    if (!normalized) return null;
+    const wslPath = ruleWinPathToWslPath(normalized);
     const store = loadStore();
-    const exists = store.find((s) => s.winPath === normalized);
-    if (exists) return exists;
+    const idx = store.findIndex((s) => {
+      if (s.winPath === normalized) return true;
+      try {
+        const candidateWin = normalizeProjectWinPath(String(s?.winPath || ''));
+        if (!candidateWin) return false;
+        return ruleWinPathToWslPath(candidateWin) === wslPath;
+      } catch {
+        return false;
+      }
+    });
+    if (idx >= 0) {
+      const exists = store[idx] as Project;
+      let changed = false;
+      if (exists.winPath !== normalized) {
+        exists.winPath = normalized;
+        changed = true;
+      }
+      if (exists.wslPath !== wslPath) {
+        exists.wslPath = wslPath;
+        changed = true;
+      }
+      if (changed) saveStore(store);
+      return exists;
+    }
     const proj: Project = {
       id: uid(),
       name: path.basename(normalized),
