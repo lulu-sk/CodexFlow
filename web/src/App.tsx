@@ -7502,8 +7502,8 @@ export default function CodexFlowManagerUI() {
           closeWorktreeCreateDialog();
         }}
       >
-        <DialogContent className="max-w-lg">
-          <DialogHeader className="pb-2">
+        <DialogContent className="max-w-lg max-h-[calc(100vh-2rem)] overflow-hidden flex flex-col">
+          <DialogHeader className="pb-2 shrink-0">
             <DialogTitle>{t("projects:worktreeCreateTitle", "从分支创建 worktree") as string}</DialogTitle>
             <DialogDescription>
               {t("projects:worktreeCreateDesc", "每个引擎实例需要一个 worktree，并在控制台中启动对应 CLI。") as string}
@@ -7666,7 +7666,9 @@ export default function CodexFlowManagerUI() {
             };
 
             return (
-              <div className="space-y-3">
+              <div className="flex min-h-0 flex-1 flex-col">
+                <ScrollArea className="min-h-0 flex-1 pr-1">
+                  <div className="space-y-3 py-1">
                 {worktreeCreateDialog.error ? (
                   <div
                     className={`rounded-md border px-3 py-1.5 text-[11px] font-medium flex items-center gap-2 ${
@@ -7928,7 +7930,10 @@ export default function CodexFlowManagerUI() {
                   </div>
                 </div>
 
-                <div className="flex justify-end gap-2 pt-1 border-t border-slate-100 dark:border-slate-800/50 mt-1">
+                  </div>
+                </ScrollArea>
+
+                <div className="flex justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-800/50 mt-2 shrink-0">
                   <Button variant="outline" size="sm" className="h-8 text-xs" onClick={closeWorktreeCreateDialog} disabled={worktreeCreateDialog.creating}>
                     {t("common:cancel", "取消") as string}
                   </Button>
