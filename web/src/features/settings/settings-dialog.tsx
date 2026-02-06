@@ -17,6 +17,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  getCodexConfigTomlPath,
+  getGlobalRuleFilePath,
+  getProviderRuleFileName,
+  normalizeEngineRootPaths,
+  type BuiltInRuleProviderId,
+} from "@/lib/engine-rules";
 import { cn, formatBytes } from "@/lib/utils";
 import { listAvailableLanguages, changeAppLanguage } from "@/i18n/setup";
 import { CodexAccountInline } from "@/components/topbar/codex-status";
@@ -746,35 +753,134 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   }, [open, detectGitWorktreePaths]);
 
   /**
-   * 拉取指定引擎的会话根路径列表（优先使用 settings.sessionRoots；旧版本仅支持 codexRoots）。
+   * 拉取指定引擎的会话根路径列表，并规范为真实“引擎根路径”用于展示与操作。
    */
-  const fetchSessionRoots = useCallback(async (providerId: "codex" | "claude" | "gemini"): Promise<string[]> => {
+  const fetchSessionRoots = useCallback(async (providerId: BuiltInRuleProviderId): Promise<string[]> => {
     try {
       if (window.host.settings.sessionRoots) {
         const roots = await window.host.settings.sessionRoots({ providerId });
-        return Array.isArray(roots) ? roots : [];
+        return normalizeEngineRootPaths(providerId, Array.isArray(roots) ? roots : []);
       }
       if (providerId === "codex") {
         const roots = await window.host.settings.codexRoots();
-        return Array.isArray(roots) ? roots : [];
+        return normalizeEngineRootPaths(providerId, Array.isArray(roots) ? roots : []);
       }
     } catch { }
     return [];
   }, []);
 
   /**
-   * 在系统文件管理器中打开一个会话根路径（失败则给出统一提示）。
+   * 在系统文件管理器中打开给定路径（失败则给出统一提示）。
    */
-  const openSessionRootPath = useCallback(async (root: string) => {
-    const p = String(root || "").trim();
-    if (!p) return;
+  const openPathInSystem = useCallback(async (targetPath: string) => {
+    const p = String(targetPath || "").trim();
+    if (!p) return false;
     try {
       const res: any = await window.host.utils.openPath(p);
       if (!(res && res.ok)) throw new Error(res?.error || "failed");
+      return true;
     } catch {
       alert(String(t("common:files.cannotOpenPath")));
+      return false;
     }
   }, [t]);
+
+  /**
+   * 打开引擎根路径。
+   */
+  const openSessionRootPath = useCallback(async (root: string) => {
+    await openPathInSystem(root);
+  }, [openPathInSystem]);
+
+  /**
+   * 打开文本文件进行编辑（文件不存在时给出明确提示）。
+   */
+  const openEditableFile = useCallback(async (filePath: string, missingMessage: string) => {
+    const target = String(filePath || "").trim();
+    if (!target) return;
+    try {
+      const stat = await window.host.utils.pathExists(target);
+      if (!(stat && stat.ok && stat.exists && stat.isFile)) {
+        alert(missingMessage);
+        return;
+      }
+    } catch {
+      alert(missingMessage);
+      return;
+    }
+    await openPathInSystem(target);
+  }, [openPathInSystem]);
+
+  /**
+   * 编辑全局规则文件（按引擎映射 AGENTS/CLAUDE/GEMINI）。
+   */
+  const editGlobalRuleFile = useCallback(async (providerId: BuiltInRuleProviderId, root: string) => {
+    const ruleFileName = getProviderRuleFileName(providerId);
+    const target = getGlobalRuleFilePath(providerId, root);
+    await openEditableFile(
+      target,
+      String(t("settings:engineRoots.ruleMissing", { file: ruleFileName })),
+    );
+  }, [openEditableFile, t]);
+
+  /**
+   * 编辑 Codex 全局配置文件 config.toml。
+   */
+  const editCodexConfigFile = useCallback(async (root: string) => {
+    const target = getCodexConfigTomlPath(root);
+    await openEditableFile(
+      target,
+      String(t("settings:engineRoots.configMissing", { file: "config.toml" })),
+    );
+  }, [openEditableFile, t]);
+
+  /**
+   * 渲染引擎根路径列表（含紧凑操作入口：编辑规则/编辑配置/打开目录）。
+   */
+  const renderEngineRoots = useCallback((providerId: BuiltInRuleProviderId, roots: string[], emptyTextKey: string) => {
+    if (roots.length <= 0) {
+      return <div className="text-xs text-slate-400">{t(emptyTextKey)}</div>;
+    }
+    return (
+      <div className="max-h-48 overflow-auto rounded border bg-slate-50 p-2 text-xs">
+        <ul className="space-y-1">
+          {roots.map((root) => (
+            <li key={root} className="flex items-center gap-2" title={root}>
+              <span className="flex-1 min-w-0 truncate">{root}</span>
+              <div className="shrink-0 flex items-center gap-1">
+                {providerId === "codex" ? (
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    className="h-6 px-2"
+                    onClick={() => { void editCodexConfigFile(root); }}
+                  >
+                    {t("settings:engineRoots.actions.editConfig")}
+                  </Button>
+                ) : null}
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  className="h-6 px-2"
+                  onClick={() => { void editGlobalRuleFile(providerId, root); }}
+                >
+                  {t("settings:engineRoots.actions.editRule")}
+                </Button>
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  className="h-6 px-2"
+                  onClick={() => { void openSessionRootPath(root); }}
+                >
+                  {t("settings:engineRoots.actions.openRoot")}
+                </Button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  }, [editCodexConfigFile, editGlobalRuleFile, openSessionRootPath, t]);
 
   useEffect(() => {
     if (!open) return;
@@ -2278,44 +2384,18 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
               <CardHeader>
                 <CardTitle>{t("settings:codexRoots.label")}</CardTitle>
               </CardHeader>
-              <CardContent className="space-y-3">
-                <p className="text-sm text-slate-500">{t("settings:codexRoots.help")}</p>
-                {codexRoots.length > 0 ? (
-                  <div className="max-h-48 overflow-auto rounded border bg-slate-50 p-2 text-xs">
-                    <ul className="space-y-1">
-                      {codexRoots.map((root) => (
-                        <li key={root} className="flex items-center gap-2" title={root}>
-                          <span className="flex-1 min-w-0 truncate">{root}</span>
-                          <Button size="xs" variant="ghost" className="h-6 px-2" onClick={() => openSessionRootPath(root)}>{t("common:open")}</Button>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : (
-                  <div className="text-xs text-slate-400">{t("settings:codexRoots.empty")}</div>
-                )}
-              </CardContent>
-            </Card>
+                <CardContent className="space-y-3">
+                  <p className="text-sm text-slate-500">{t("settings:codexRoots.help")}</p>
+                {renderEngineRoots("codex", codexRoots, "settings:codexRoots.empty")}
+                </CardContent>
+              </Card>
             <Card>
               <CardHeader>
                 <CardTitle>{t("settings:claudeRoots.label")}</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
                 <p className="text-sm text-slate-500">{t("settings:claudeRoots.help")}</p>
-                {claudeRoots.length > 0 ? (
-                  <div className="max-h-48 overflow-auto rounded border bg-slate-50 p-2 text-xs">
-                    <ul className="space-y-1">
-                      {claudeRoots.map((root) => (
-                        <li key={root} className="flex items-center gap-2" title={root}>
-                          <span className="flex-1 min-w-0 truncate">{root}</span>
-                          <Button size="xs" variant="ghost" className="h-6 px-2" onClick={() => openSessionRootPath(root)}>{t("common:open")}</Button>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : (
-                  <div className="text-xs text-slate-400">{t("settings:claudeRoots.empty")}</div>
-                )}
+                {renderEngineRoots("claude", claudeRoots, "settings:claudeRoots.empty")}
               </CardContent>
             </Card>
             <Card>
@@ -2324,20 +2404,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
               </CardHeader>
               <CardContent className="space-y-3">
                 <p className="text-sm text-slate-500">{t("settings:geminiRoots.help")}</p>
-                {geminiRoots.length > 0 ? (
-                  <div className="max-h-48 overflow-auto rounded border bg-slate-50 p-2 text-xs">
-                    <ul className="space-y-1">
-                      {geminiRoots.map((root) => (
-                        <li key={root} className="flex items-center gap-2" title={root}>
-                          <span className="flex-1 min-w-0 truncate">{root}</span>
-                          <Button size="xs" variant="ghost" className="h-6 px-2" onClick={() => openSessionRootPath(root)}>{t("common:open")}</Button>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : (
-                  <div className="text-xs text-slate-400">{t("settings:geminiRoots.empty")}</div>
-                )}
+                {renderEngineRoots("gemini", geminiRoots, "settings:geminiRoots.empty")}
               </CardContent>
             </Card>
             <Card>
@@ -2654,6 +2721,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     codexRoots,
     claudeRoots,
     geminiRoots,
+    renderEngineRoots,
     openSessionRootPath,
     // 字体与显示相关依赖，确保“显示所有字体”等交互即时生效
     installedFonts,

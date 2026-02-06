@@ -312,6 +312,15 @@
       "switchFailed": "Switch failed"
     }
   },
+  "engineRoots": {
+    "actions": {
+      "editConfig": "Edit config.toml",
+      "editRule": "Edit global rule",
+      "openRoot": "Open root"
+    },
+    "ruleMissing": "Rule file not found: {file}",
+    "configMissing": "Config file not found: {file}"
+  },
   "codexRoots": {
     "label": ".codex roots (read-only)",
     "help": "Reference directories detected on disk. Useful for troubleshooting.",

@@ -312,6 +312,15 @@
       "switchFailed": "切换失败"
     }
   },
+  "engineRoots": {
+    "actions": {
+      "editConfig": "编辑 config.toml",
+      "editRule": "编辑全局规则",
+      "openRoot": "打开根目录"
+    },
+    "ruleMissing": "未检测到规则文件：{file}",
+    "configMissing": "未检测到配置文件：{file}"
+  },
   "codexRoots": {
     "label": ".codex 根路径（只读）",
     "help": "显示磁盘上检测到的 .codex 根目录，方便排查问题。",
