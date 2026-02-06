@@ -92,6 +92,61 @@ function ruleWinPathToWslPath(winPath: string): string {
   }
 }
 
+/**
+ * 尝试将 `/mnt/<drive>/...`（含反斜杠变体）转换为 `X:\...`。
+ */
+function toDrivePathFromMnt(input: string): string {
+  try {
+    const mnt = String(input || "").match(/^\/mnt\/([a-zA-Z])\/(.*)$/);
+    if (!mnt) return "";
+    return `${mnt[1].toUpperCase()}:\\${mnt[2].replace(/\//g, "\\")}`;
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * 尝试修复旧版本把 `/mnt/<drive>/...` 误归一化为 `<cwdDrive>:\mnt\<drive>\...` 的路径。
+ * 仅在“旧路径不存在且修复后路径存在”时生效，避免误伤合法目录。
+ */
+function tryRepairLegacyResolvedMntWinPath(normalizedRaw: string): string {
+  try {
+    const posixLike = normalizeWinPath(normalizedRaw || "").replace(/\\/g, "/");
+    const legacy = posixLike.match(/^[a-zA-Z]:\/mnt\/([a-zA-Z])\/(.*)$/);
+    if (!legacy) return "";
+    const repaired = normalizeWinPath(path.resolve(`${legacy[1].toUpperCase()}:\\${legacy[2].replace(/\//g, "\\")}`));
+    if (!repaired) return "";
+    if (normalizedRaw && normalizedRaw.toLowerCase() === repaired.toLowerCase()) return "";
+    if (normalizedRaw && fs.existsSync(normalizedRaw)) return "";
+    if (!fs.existsSync(repaired)) return "";
+    return repaired;
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * 将输入路径归一化为项目存储使用的 Windows 路径。
+ * - Windows 下：兼容 `/mnt/<drive>/...` 与 `\mnt\<drive>\...`，优先转换为 `X:\...`。
+ * - 兼容修复旧版本误存储的 `<cwdDrive>:\mnt\<drive>\...`（仅在可安全判定时修复）。
+ * - 其它格式保持原有 `path.resolve + normalizeWinPath` 行为。
+ */
+function normalizeProjectWinPath(input: string): string {
+  const raw = String(input || "").trim();
+  if (!raw) return "";
+  const normalizedRaw = normalizeWinPath(path.resolve(raw));
+  if (process.platform !== "win32") return normalizedRaw;
+
+  const posixLike = raw.replace(/\\/g, "/");
+  const fromMnt = toDrivePathFromMnt(posixLike);
+  if (fromMnt) return normalizeWinPath(path.resolve(fromMnt));
+
+  const repaired = tryRepairLegacyResolvedMntWinPath(normalizedRaw);
+  if (repaired) return repaired;
+
+  return normalizedRaw;
+}
+
 function getStorePath() { const dir = app.getPath('userData'); return path.join(dir, 'projects.json'); }
 function loadStore(): Project[] { try { const p = getStorePath(); if (!fs.existsSync(p)) return []; return JSON.parse(fs.readFileSync(p, 'utf8')) as Project[]; } catch { return []; } }
 function saveStore(list: Project[]) { try { fs.writeFileSync(getStorePath(), JSON.stringify(list, null, 2), 'utf8'); } catch {} }
@@ -538,7 +593,8 @@ export type AddProjectOptions = {
  */
 export function addProjectByWinPath(winPath: string, options?: AddProjectOptions): Project | null {
   try {
-    const normalized = normalizeWinPath(path.resolve(winPath));
+    const normalized = normalizeProjectWinPath(winPath);
+    if (!normalized) return null;
     // 仅规则转换，避免唤起 wsl.exe
     const wslPath = ruleWinPathToWslPath(normalized);
     const store = loadStore();
@@ -551,10 +607,27 @@ export function addProjectByWinPath(winPath: string, options?: AddProjectOptions
         })
       : undefined;
 
-    const idx = store.findIndex((s) => s.winPath === normalized);
+    const idx = store.findIndex((s) => {
+      if (s.winPath === normalized) return true;
+      try {
+        const candidateWin = normalizeProjectWinPath(String(s?.winPath || ""));
+        if (!candidateWin) return false;
+        return ruleWinPathToWslPath(candidateWin) === wslPath;
+      } catch {
+        return false;
+      }
+    });
     if (idx >= 0) {
       const exists = store[idx] as Project;
       let changed = false;
+      if (exists.winPath !== normalized) {
+        exists.winPath = normalized;
+        changed = true;
+      }
+      if (exists.wslPath !== wslPath) {
+        exists.wslPath = wslPath;
+        changed = true;
+      }
       // 仅当该目录尚未被确认存在内置会话时，才允许写入“自定义目录记录”
       if (nextRecord && exists.hasBuiltInSessions !== true) {
         exists.dirRecord = nextRecord;
