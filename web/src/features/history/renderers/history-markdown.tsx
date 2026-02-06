@@ -19,7 +19,7 @@ const CODE_BLOCK_CLASS_NAME =
   "overflow-x-auto rounded-apple bg-[var(--cf-surface-muted)] border border-[var(--cf-border)] p-3 text-xs text-[var(--cf-text-primary)] font-mono shadow-apple-inner";
 
 const INLINE_CODE_CLASS_NAME =
-  "rounded-apple-sm bg-[var(--cf-surface-muted)] px-1.5 py-0.5 text-[0.85em] text-[var(--cf-text-primary)] font-mono";
+  "rounded-apple-sm bg-[var(--cf-surface-muted)] px-1.5 py-0.5 text-[0.85em] text-[var(--cf-text-primary)] font-mono break-all [overflow-wrap:anywhere]";
 
 /**
  * 中文说明：判断当前行是否为 fenced code block 的起止行（``` 或 ~~~）。
