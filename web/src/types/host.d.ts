@@ -274,6 +274,20 @@ export type CreatedWorktree = {
 
 export type WorktreeCreateTaskStatus = "running" | "canceling" | "canceled" | "success" | "error";
 
+export type WorktreeCreateTaskItemStatus = "creating" | "success" | "error" | "canceled";
+
+export type WorktreeCreateTaskItemSnapshot = {
+  key: string;
+  providerId: "codex" | "claude" | "gemini";
+  worktreePath: string;
+  wtBranch: string;
+  index: number;
+  status: WorktreeCreateTaskItemStatus;
+  updatedAt: number;
+  error?: string;
+  warnings?: string[];
+};
+
 export type WorktreeCreateTaskSnapshot = {
   taskId: string;
   repoDir: string;
@@ -284,6 +298,12 @@ export type WorktreeCreateTaskSnapshot = {
   createdAt: number;
   updatedAt: number;
   logSize: number;
+  totalCount: number;
+  completedCount: number;
+  successCount: number;
+  failedCount: number;
+  allCompleted: boolean;
+  worktreeStates: WorktreeCreateTaskItemSnapshot[];
   error?: string;
   items?: CreatedWorktree[];
 };

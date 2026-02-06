@@ -97,6 +97,7 @@ import type {
   Project,
   ProviderItem,
   ProviderEnv,
+  WorktreeCreateTaskItemSnapshot,
   WorktreeCreateTaskSnapshot,
   WorktreeCreateTaskStatus,
   WorktreeRecycleTaskSnapshot,
@@ -265,6 +266,13 @@ type WorktreeCreateProgressState = {
   status: WorktreeCreateTaskStatus;
   log: string;
   logOffset: number;
+  totalCount: number;
+  completedCount: number;
+  successCount: number;
+  failedCount: number;
+  allCompleted: boolean;
+  worktreeStates: WorktreeCreateTaskItemSnapshot[];
+  postStateByKey: Record<string, { status: "idle" | "running" | "success" | "error"; error?: string; projectId?: string; tabId?: string }>;
   updatedAt: number;
   error?: string;
 };

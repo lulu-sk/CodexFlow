@@ -105,13 +105,14 @@ import {
 import type {
   AppSettings,
   BuildRunCommandConfig,
-  CreatedWorktree,
   DirBuildRunConfig,
   DirTreeStore,
   GitDirInfo,
   Project,
   ProviderItem,
   ProviderEnv,
+  WorktreeCreateTaskItemSnapshot,
+  WorktreeCreateTaskItemStatus,
   WorktreeCreateTaskSnapshot,
   WorktreeCreateTaskStatus,
   WorktreeRecycleTaskSnapshot,
@@ -589,6 +590,13 @@ export default function CodexFlowManagerUI() {
 	    status: "running",
 	    log: "",
 	    logOffset: 0,
+	    totalCount: 0,
+	    completedCount: 0,
+	    successCount: 0,
+	    failedCount: 0,
+	    allCompleted: false,
+	    worktreeStates: [],
+	    postStateByKey: {},
 	    updatedAt: 0,
 	    error: undefined,
 	  }));
@@ -3816,13 +3824,29 @@ export default function CodexFlowManagerUI() {
 
     // 若该仓库的 worktree 创建任务仍在进行，则优先打开进度面板
     const runningTaskId = String(worktreeCreateRunningTaskIdByRepoIdRef.current[repoId] || "").trim();
-    if (runningTaskId) {
-      setWorktreeCreateProgress((prev) => {
-        if (prev.taskId === runningTaskId) return { ...prev, open: true, repoProjectId: repoId };
-        return { open: true, repoProjectId: repoId, taskId: runningTaskId, status: "running", log: "", logOffset: 0, updatedAt: 0, error: undefined };
-      });
-      return;
-    }
+	    if (runningTaskId) {
+	      setWorktreeCreateProgress((prev) => {
+	        if (prev.taskId === runningTaskId) return { ...prev, open: true, repoProjectId: repoId };
+	        return {
+	          open: true,
+	          repoProjectId: repoId,
+	          taskId: runningTaskId,
+	          status: "running",
+	          log: "",
+	          logOffset: 0,
+	          totalCount: 0,
+	          completedCount: 0,
+	          successCount: 0,
+	          failedCount: 0,
+	          allCompleted: false,
+	          worktreeStates: [],
+	          postStateByKey: {},
+	          updatedAt: 0,
+	          error: undefined,
+	        };
+	      });
+	      return;
+	    }
 
     // 为 @ 引用准备文件索引根（避免用户未选中该项目时，@ 搜索仍指向旧项目）
     try { await setActiveFileIndexRoot(repoProject.winPath); } catch {}
@@ -4034,18 +4058,35 @@ export default function CodexFlowManagerUI() {
     }
 
     const instances = Array.isArray(args.instances)
-      ? args.instances.map((x) => ({ providerId: x.providerId, count: Math.max(0, Math.floor(Number(x.count) || 0)) })).filter((x) => x.count > 0)
+      ? args.instances.map((item) => ({ providerId: item.providerId, count: Math.max(0, Math.floor(Number(item.count) || 0)) })).filter((item) => item.count > 0)
       : [];
     if (instances.length === 0) return;
+
+    /**
+     * 中文说明：以统一结构重置“创建进度”面板状态，避免字段遗漏导致 UI 状态不一致。
+     */
+    const createWorktreeProgressInitialState = (nextTaskId: string): WorktreeCreateProgressState => ({
+      open: true,
+      repoProjectId: repoId,
+      taskId: nextTaskId,
+      status: "running",
+      log: "",
+      logOffset: 0,
+      totalCount: 0,
+      completedCount: 0,
+      successCount: 0,
+      failedCount: 0,
+      allCompleted: false,
+      worktreeStates: [],
+      postStateByKey: {},
+      updatedAt: Date.now(),
+      error: undefined,
+    });
 
     // 若该仓库已有创建任务在跑，则直接打开“创建中”面板查看进度，避免重复创建
     const runningTaskId = String(worktreeCreateRunningTaskIdByRepoIdRef.current[repoId] || "").trim();
     if (runningTaskId) {
-      setWorktreeCreateProgress((prev) => {
-        if (prev.taskId === runningTaskId) return { ...prev, open: true, repoProjectId: repoId };
-        return { open: true, repoProjectId: repoId, taskId: runningTaskId, status: "running", log: "", logOffset: 0, updatedAt: 0, error: undefined };
-      });
-      // 创建面板若仍打开则关闭（避免用户误以为会再创建一次）
+      setWorktreeCreateProgress((prev) => (prev.taskId === runningTaskId ? { ...prev, open: true, repoProjectId: repoId } : createWorktreeProgressInitialState(runningTaskId)));
       setWorktreeCreateDialog((prev) => (prev.open && prev.repoProjectId === repoId ? { ...prev, open: false, creating: false, error: undefined } : prev));
       return;
     }
@@ -4075,22 +4116,172 @@ export default function CodexFlowManagerUI() {
     worktreeCreateRunningTaskIdByRepoIdRef.current[repoId] = taskId;
 
     // 进入“创建中”进度面板，并关闭“创建配置”面板
-    setWorktreeCreateProgress({ open: true, repoProjectId: repoId, taskId, status: "running", log: "", logOffset: 0, updatedAt: Date.now(), error: undefined });
+    setWorktreeCreateProgress(createWorktreeProgressInitialState(taskId));
     setWorktreeCreateDialog((prev) => (prev.open && prev.repoProjectId === repoId ? { ...prev, open: false, creating: false, error: undefined } : prev));
 
-    // 轮询任务输出（支持关闭 UI 后继续执行；重新打开时可继续看到日志）
+    const prompt = String(args.prompt || "");
+    const warningSet = new Set<string>(
+      Array.isArray(args.extraWarnings) ? args.extraWarnings.map((item: any) => String(item || "").trim()).filter(Boolean) : []
+    );
+    const scheduledPostKeys = new Set<string>();
+    const postJobs: Promise<void>[] = [];
+    let promptCleared = false;
+    let firstNewProjectId: string | null = null;
+    let firstTabId: string | null = null;
     let snapshot: WorktreeCreateTaskSnapshot | null = null;
     let logText = "";
     let logOffset = 0;
     const startedAt = Date.now();
+    let stopPostCreate = false;
+
+    /**
+     * 中文说明：去重追加警告，避免重复提示相同信息。
+     */
+    const addWarning = (text: string): void => {
+      const msg = String(text || "").trim();
+      if (!msg) return;
+      warningSet.add(msg);
+    };
+
+    /**
+     * 中文说明：更新单个 worktree 的“后续逻辑”状态（启动中/成功/失败），供进度面板集中展示。
+     */
+    const updatePostState = (worktreeKey: string, patch: { status: "idle" | "running" | "success" | "error"; error?: string; projectId?: string; tabId?: string }): void => {
+      const key = String(worktreeKey || "").trim();
+      if (!key) return;
+      setWorktreeCreateProgress((prev) => {
+        if (prev.taskId !== taskId) return prev;
+        const previous = prev.postStateByKey?.[key] || { status: "idle" as const };
+        return {
+          ...prev,
+          postStateByKey: {
+            ...(prev.postStateByKey || {}),
+            [key]: {
+              ...previous,
+              ...patch,
+              error: typeof patch.error === "string" ? String(patch.error || "").trim() || undefined : previous.error,
+            },
+          },
+        };
+      });
+    };
+
+    /**
+     * 中文说明：若任务进入取消态，则停止分发/执行后续启动逻辑。
+     */
+    const stopPostCreateIfCanceled = (taskStatus: WorktreeCreateTaskStatus): void => {
+      if (taskStatus === "canceling" || taskStatus === "canceled") {
+        stopPostCreate = true;
+      }
+    };
+
+    /**
+     * 中文说明：当后续流程被取消时，统一将对应条目标记为“已取消”并终止执行。
+     */
+    const haltPostCreateIfCanceled = (worktreeKey: string, projectId?: string): boolean => {
+      if (!stopPostCreate) return false;
+      updatePostState(worktreeKey, {
+        status: "error",
+        error: t("projects:worktreeCreateCanceled", "已取消") as string,
+        projectId,
+      });
+      return true;
+    };
+
+    /**
+     * 中文说明：单个 worktree 创建成功后，立即并发执行后续逻辑（入库、挂树、启动对应引擎）。
+     */
+    const runPostCreateForWorktreeAsync = async (state: WorktreeCreateTaskItemSnapshot): Promise<void> => {
+      const worktreeKey = String(state?.key || "").trim();
+      if (!worktreeKey) return;
+      if (haltPostCreateIfCanceled(worktreeKey)) return;
+      updatePostState(worktreeKey, { status: "running", error: undefined });
+      try {
+        const providerIdRaw = String(state?.providerId || "").trim().toLowerCase();
+        const providerId = (providerIdRaw === "codex" || providerIdRaw === "claude" || providerIdRaw === "gemini")
+          ? (providerIdRaw as GitWorktreeProviderId)
+          : null;
+        const worktreePath = String(state?.worktreePath || "").trim();
+        if (!providerId || !worktreePath) {
+          const reason = t("projects:worktreeCreatePostMissingInfo", "缺少工作区信息，无法启动后续逻辑") as string;
+          updatePostState(worktreeKey, { status: "error", error: reason });
+          addWarning(reason);
+          return;
+        }
+        if (haltPostCreateIfCanceled(worktreeKey)) return;
+
+        let wtProject: Project | null = null;
+        try {
+          const addRes: any = await window.host.projects.add({ winPath: worktreePath });
+          if (addRes && addRes.ok && addRes.project) {
+            wtProject = addRes.project as Project;
+            upsertProjectInList(wtProject);
+            unhideProject(wtProject);
+          }
+        } catch {}
+
+        if (!wtProject) {
+          const reason = (t("projects:worktreeCreatePostProjectAttachFailed", "工作区已创建，但加入项目列表失败：{path}") as any).replace("{path}", worktreePath);
+          updatePostState(worktreeKey, { status: "error", error: reason });
+          addWarning(reason);
+          return;
+        }
+        if (haltPostCreateIfCanceled(worktreeKey, wtProject.id)) return;
+
+        if (!firstNewProjectId) firstNewProjectId = wtProject.id;
+        attachDirChildToParent(repoId, wtProject.id);
+
+        const started = await startProviderInstanceInProject({ project: wtProject, providerId, prompt, useYolo: args.useYolo });
+        if (started.ok && started.tabId) {
+          if (!firstTabId) firstTabId = started.tabId;
+          if (!promptCleared && prompt.trim()) {
+            promptCleared = true;
+            clearWorktreeCreateInitialPromptRecord(repoId);
+          }
+          updatePostState(worktreeKey, { status: "success", projectId: wtProject.id, tabId: started.tabId, error: undefined });
+        } else {
+          const reason = `${providerId}: ${String(started.error || t("projects:worktreeCreatePostStartFailed", "启动实例失败") as string)}`;
+          updatePostState(worktreeKey, { status: "error", error: reason, projectId: wtProject.id });
+          addWarning(reason);
+        }
+
+        for (const warning of Array.isArray(state?.warnings) ? state.warnings : []) {
+          const normalized = String(warning || "").trim();
+          if (normalized) addWarning(normalized);
+        }
+      } catch (e: any) {
+        const reason = String(e?.message || e || t("projects:worktreeCreatePostStartFailed", "启动实例失败"));
+        updatePostState(worktreeKey, { status: "error", error: reason });
+        addWarning(reason);
+      }
+    };
+
+    /**
+     * 中文说明：为新出现的成功项分发后续并发任务（同一 key 只分发一次）。
+     */
+    const dispatchPostCreateJobs = (states: WorktreeCreateTaskItemSnapshot[]): void => {
+      if (stopPostCreate) return;
+      for (const state of states) {
+        if (!state || state.status !== "success") continue;
+        const key = String(state.key || "").trim();
+        if (!key || scheduledPostKeys.has(key)) continue;
+        scheduledPostKeys.add(key);
+        const job = runPostCreateForWorktreeAsync(state).catch(() => {});
+        postJobs.push(job);
+      }
+    };
+
+    // 轮询任务输出（支持关闭 UI 后继续执行；重新打开时可继续看到日志）
     while (true) {
       try {
         const pull: any = await (window as any).host?.gitWorktree?.createTaskGet?.({ taskId, from: logOffset });
-          if (pull && pull.ok && pull.task) {
+        if (pull && pull.ok && pull.task) {
           snapshot = pull.task as WorktreeCreateTaskSnapshot;
           const append = String(pull.append || "");
           if (append) logText += append;
           logOffset = Math.max(logOffset, Math.floor(Number(snapshot.logSize) || 0));
+          stopPostCreateIfCanceled(snapshot.status);
+          const worktreeStates = Array.isArray(snapshot.worktreeStates) ? snapshot.worktreeStates : [];
           setWorktreeCreateProgress((prev) => {
             if (prev.taskId !== taskId) return prev;
             return {
@@ -4098,85 +4289,45 @@ export default function CodexFlowManagerUI() {
               status: snapshot!.status,
               log: logText,
               logOffset,
+              totalCount: Math.max(0, Math.floor(Number(snapshot!.totalCount) || 0)),
+              completedCount: Math.max(0, Math.floor(Number(snapshot!.completedCount) || 0)),
+              successCount: Math.max(0, Math.floor(Number(snapshot!.successCount) || 0)),
+              failedCount: Math.max(0, Math.floor(Number(snapshot!.failedCount) || 0)),
+              allCompleted: snapshot!.allCompleted === true,
+              worktreeStates,
               updatedAt: Math.floor(Number(snapshot!.updatedAt) || Date.now()),
               error: snapshot!.error ? String(snapshot!.error || "") : undefined,
             };
           });
+          dispatchPostCreateJobs(worktreeStates);
           if (snapshot.status !== "running" && snapshot.status !== "canceling") break;
         }
       } catch {}
 
       // 兜底：避免无限等待
       if (Date.now() - startedAt > 40 * 60_000) {
-        snapshot = snapshot || null;
         setWorktreeCreateProgress((prev) => {
           if (prev.taskId !== taskId) return prev;
-          return { ...prev, status: "error", error: "等待创建任务超时（请重试或在外部终端执行 git worktree add 诊断）" };
+          return {
+            ...prev,
+            status: "error",
+            allCompleted: true,
+            error: "等待创建任务超时（请重试或在外部终端执行 git worktree add 诊断）",
+          };
         });
         break;
       }
 
-      await new Promise((r) => setTimeout(r, 250));
+      await new Promise((resolve) => setTimeout(resolve, 250));
     }
 
     // 创建任务结束：允许再次创建（无论成功或失败）
     try { delete worktreeCreateRunningTaskIdByRepoIdRef.current[repoId]; } catch {}
 
-    // 失败：保留进度面板，让用户查看完整输出
-    if (!(snapshot && snapshot.status === "success" && Array.isArray(snapshot.items))) {
-      setWorktreeCreateProgress((prev) => (prev.taskId === taskId ? { ...prev, open: true } : prev));
-      return;
+    if (postJobs.length > 0) {
+      await Promise.allSettled(postJobs);
     }
 
-	    const createdItems: CreatedWorktree[] = snapshot.items as any;
-	    const prompt = String(args.prompt || "");
-	    const warnings: string[] = Array.isArray(args.extraWarnings) ? args.extraWarnings.map((x: any) => String(x || "").trim()).filter(Boolean) : [];
-	    let promptCleared = false;
-	    let firstNewProjectId: string | null = null;
-	    let firstTabId: string | null = null;
-
-    for (const item of createdItems) {
-      const providerId = String(item?.providerId || "").trim().toLowerCase() as GitWorktreeProviderId;
-      const worktreePath = String(item?.worktreePath || "").trim();
-      if (!worktreePath) continue;
-
-      // 将 worktree 目录加入项目列表（若已存在则复用）
-      let wtProject: Project | null = null;
-      try {
-        const addRes: any = await window.host.projects.add({ winPath: worktreePath });
-        if (addRes && addRes.ok && addRes.project) {
-          wtProject = addRes.project as Project;
-          upsertProjectInList(wtProject);
-          // 若该 worktree 项目此前处于“隐藏项目”列表，则在创建时自动取消隐藏，避免用户误以为未创建成功
-          unhideProject(wtProject);
-        }
-      } catch {}
-      if (!wtProject) continue;
-      if (!firstNewProjectId) firstNewProjectId = wtProject.id;
-
-      // 挂载到 UI 树结构：作为当前仓库节点的一级子级
-      attachDirChildToParent(repoId, wtProject.id);
-
-      // 启动引擎 CLI（每个实例一个 worktree）
-	      const started = await startProviderInstanceInProject({ project: wtProject, providerId, prompt, useYolo: args.useYolo });
-	      if (started.ok && started.tabId) {
-	        if (!firstTabId) firstTabId = started.tabId;
-	        if (!promptCleared && prompt.trim()) {
-	          promptCleared = true;
-	          clearWorktreeCreateInitialPromptRecord(repoId);
-	        }
-	      } else if (!started.ok && started.error) {
-	        warnings.push(`${providerId}: ${started.error}`);
-	      }
-
-      // 规则文件复制的非致命警告
-      try {
-        const ws = Array.isArray(item?.warnings) ? item.warnings.map((x: any) => String(x || "").trim()).filter(Boolean) : [];
-        for (const w of ws) warnings.push(w);
-      } catch {}
-    }
-
-    // 选择第一个新 worktree 节点
     if (firstNewProjectId) {
       suppressAutoSelectRef.current = true;
       setSelectedProjectId(firstNewProjectId);
@@ -4188,10 +4339,13 @@ export default function CodexFlowManagerUI() {
       }
     }
 
-    // 创建完成：关闭面板
-    setWorktreeCreateProgress((prev) => (prev.taskId === taskId ? { ...prev, open: false } : prev));
+    if (snapshot && snapshot.status === "success") {
+      setWorktreeCreateProgress((prev) => (prev.taskId === taskId ? { ...prev, open: false } : prev));
+    } else {
+      setWorktreeCreateProgress((prev) => (prev.taskId === taskId ? { ...prev, open: true } : prev));
+    }
 
-    // 提示：若有警告（如规则文件复制/启动失败），以轻量方式告知
+    const warnings = Array.from(warningSet.values());
     if (warnings.length > 0) {
       setNoticeDialog({
         open: true,
@@ -7864,8 +8018,8 @@ export default function CodexFlowManagerUI() {
           setWorktreeCreateProgress((prev) => ({ ...prev, open: false }));
         }}
       >
-        <DialogContent className="max-w-3xl">
-          <DialogHeader className="pb-2">
+        <DialogContent className="max-w-3xl w-[calc(100vw-2rem)] max-h-[calc(100vh-2rem)] overflow-hidden flex flex-col">
+          <DialogHeader className="pb-2 shrink-0">
             <DialogTitle>{t("projects:worktreeCreateProgressTitle", "创建 worktree（进度）") as string}</DialogTitle>
             <DialogDescription>
               {t("projects:worktreeCreateProgressDesc", "你可以随时关闭该窗口；重新点击项目右侧的分支徽标可再次打开查看进度。") as string}
@@ -7894,9 +8048,51 @@ export default function CodexFlowManagerUI() {
               ) : (
                 <TriangleAlert className="h-4 w-4 text-red-600" />
               );
+            const totalCount = Math.max(0, Math.floor(Number(worktreeCreateProgress.totalCount) || 0));
+            const completedCount = Math.max(0, Math.floor(Number(worktreeCreateProgress.completedCount) || 0));
+            const successCount = Math.max(0, Math.floor(Number(worktreeCreateProgress.successCount) || 0));
+            const failedCount = Math.max(0, Math.floor(Number(worktreeCreateProgress.failedCount) || 0));
+            const runningCount = Math.max(0, totalCount - completedCount);
+            const worktreeStates = Array.isArray(worktreeCreateProgress.worktreeStates) ? worktreeCreateProgress.worktreeStates : [];
+            const sortedStates = [...worktreeStates].sort((left, right) => {
+              const byIndex = Math.max(0, Math.floor(Number(left?.index) || 0)) - Math.max(0, Math.floor(Number(right?.index) || 0));
+              if (byIndex !== 0) return byIndex;
+              return String(left?.providerId || "").localeCompare(String(right?.providerId || ""));
+            });
+
+            /**
+             * 中文说明：将“创建状态”映射为可视化文案。
+             */
+            const toCreateStatusLabel = (createStatus: WorktreeCreateTaskItemStatus): string => {
+              if (createStatus === "creating") return t("projects:worktreeCreating", "创建中…") as string;
+              if (createStatus === "success") return t("common:done", "完成") as string;
+              if (createStatus === "canceled") return t("projects:worktreeCreateCanceled", "已取消") as string;
+              return t("common:failed", "失败") as string;
+            };
+
+            /**
+             * 中文说明：将“后续流程状态”映射为可视化文案。
+             */
+            const toPostStatusLabel = (postStatus: "idle" | "running" | "success" | "error"): string => {
+              if (postStatus === "running") return t("projects:worktreeCreatePostStarting", "后续处理中…") as string;
+              if (postStatus === "success") return t("projects:worktreeCreatePostStarted", "后续已启动") as string;
+              if (postStatus === "error") return t("projects:worktreeCreatePostFailed", "后续失败") as string;
+              return t("projects:worktreeCreatePostPending", "等待后续处理") as string;
+            };
+
+            /**
+             * 中文说明：按状态返回对应样式类名，便于在并发列表中快速定位异常。
+             */
+            const toStatusClassName = (value: "creating" | "success" | "error" | "canceled" | "idle" | "running"): string => {
+              if (value === "success") return "text-emerald-700 bg-emerald-50 border-emerald-200";
+              if (value === "error") return "text-red-700 bg-red-50 border-red-200";
+              if (value === "canceled") return "text-slate-700 bg-slate-100 border-slate-200";
+              return "text-slate-700 bg-slate-50 border-slate-200";
+            };
 
             return (
-              <div className="space-y-3">
+              <div className="flex h-full min-h-0 flex-col gap-3">
+                <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
                 {repo ? (
                   <div className="rounded-lg border border-slate-200/70 bg-white/60 px-3 py-2 text-xs text-slate-600 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:text-[var(--cf-text-secondary)] space-y-1">
                     <div className="text-[9px] uppercase font-bold text-slate-400 tracking-wider">Repo</div>
@@ -7909,12 +8105,82 @@ export default function CodexFlowManagerUI() {
                 <div className="flex items-center gap-2 text-xs text-slate-700 dark:text-[var(--cf-text-primary)]">
                   {statusIcon}
                   <span className="font-semibold">{statusLabel}</span>
+                  <span className="text-[10px] text-slate-400">
+                    {worktreeCreateProgress.allCompleted
+                      ? (t("projects:worktreeCreateAllCompleted", "全部创建流程已结束") as string)
+                      : (t("projects:worktreeCreateInProgressSummary", "已完成 {done}/{total}") as any)
+                          .replace("{done}", String(completedCount))
+                          .replace("{total}", String(totalCount))}
+                  </span>
                   {worktreeCreateProgress.updatedAt ? (
                     <span className="text-[10px] text-slate-400">
                       {new Date(worktreeCreateProgress.updatedAt).toLocaleTimeString()}
                     </span>
                   ) : null}
                 </div>
+
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-[11px]">
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)]">
+                    <div className="text-slate-400">{t("projects:worktreeCreateSummaryTotal", "总数") as string}</div>
+                    <div className="font-semibold text-slate-700 dark:text-[var(--cf-text-primary)]">{totalCount}</div>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)]">
+                    <div className="text-slate-400">{t("projects:worktreeCreateSummaryCompleted", "已完成") as string}</div>
+                    <div className="font-semibold text-slate-700 dark:text-[var(--cf-text-primary)]">{completedCount}</div>
+                  </div>
+                  <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1">
+                    <div className="text-emerald-500">{t("projects:worktreeCreateSummarySuccess", "成功") as string}</div>
+                    <div className="font-semibold text-emerald-700">{successCount}</div>
+                  </div>
+                  <div className="rounded-lg border border-red-200 bg-red-50 px-2 py-1">
+                    <div className="text-red-500">{t("projects:worktreeCreateSummaryFailed", "失败") as string}</div>
+                    <div className="font-semibold text-red-700">{failedCount}</div>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)]">
+                    <div className="text-slate-400">{t("projects:worktreeCreateSummaryRunning", "进行中") as string}</div>
+                    <div className="font-semibold text-slate-700 dark:text-[var(--cf-text-primary)]">{runningCount}</div>
+                  </div>
+                </div>
+
+                {sortedStates.length > 0 ? (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] overflow-hidden">
+                    <ScrollArea className="h-[min(15rem,30vh)]">
+                      <div className="p-2 space-y-2">
+                        {sortedStates.map((state) => {
+                          const worktreeKey = String(state?.key || "").trim();
+                          const postState = worktreeCreateProgress.postStateByKey?.[worktreeKey] || { status: "idle" as const };
+                          const createStatus = (state?.status || "creating") as WorktreeCreateTaskItemStatus;
+                          const postStatus = (postState.status || "idle") as "idle" | "running" | "success" | "error";
+                          return (
+                            <div key={worktreeKey || `${state.providerId}-${state.index}`} className="rounded-md border border-slate-200 bg-white p-2 dark:border-[var(--cf-border)] dark:bg-[var(--cf-bg)] space-y-1">
+                              <div className="flex items-center justify-between gap-2 text-[11px]">
+                                <div className="font-semibold text-slate-700 dark:text-[var(--cf-text-primary)]">
+                                  {String(state.providerId || "").toUpperCase()} · wt{Math.max(0, Math.floor(Number(state.index) || 0))}
+                                </div>
+                                <div className="flex items-center gap-1">
+                                  <span className={`rounded border px-1.5 py-0.5 ${toStatusClassName(createStatus)}`}>
+                                    {(t("projects:worktreeCreateItemStatusCreate", "创建") as string)}：{toCreateStatusLabel(createStatus)}
+                                  </span>
+                                  <span className={`rounded border px-1.5 py-0.5 ${toStatusClassName(postStatus === "running" ? "running" : postStatus)}`}>
+                                    {(t("projects:worktreeCreateItemStatusPost", "后续") as string)}：{toPostStatusLabel(postStatus)}
+                                  </span>
+                                </div>
+                              </div>
+                              <div className="text-[11px] text-slate-500 break-all font-mono">{state.worktreePath}</div>
+                              <div className="text-[11px] text-slate-500 break-all font-mono">{state.wtBranch}</div>
+                              {state.error ? (
+                                <div className="text-[11px] text-red-700 whitespace-pre-wrap break-words">{state.error}</div>
+                              ) : null}
+                              {postState.error ? (
+                                <div className="text-[11px] text-red-700 whitespace-pre-wrap break-words">{postState.error}</div>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </ScrollArea>
+                  </div>
+                ) : null}
 
                 {worktreeCreateProgress.error ? (
                   <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800 whitespace-pre-wrap break-words">
@@ -7923,14 +8189,15 @@ export default function CodexFlowManagerUI() {
                 ) : null}
 
                 <div className="rounded-lg border border-slate-200 bg-slate-50 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] overflow-hidden">
-                  <ScrollArea className="h-[22rem]">
+                  <ScrollArea className="h-[min(11rem,24vh)]">
                     <pre className="font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-words p-3 text-slate-700 dark:text-[var(--cf-text-secondary)]">
                       {worktreeCreateProgress.log || ""}
                     </pre>
                   </ScrollArea>
                 </div>
+                </div>
 
-                <div className="flex justify-end gap-2 pt-1">
+                <div className="flex flex-wrap justify-end gap-2 pt-1 shrink-0">
                   {status === "running" || status === "canceling" ? (
                     <Button
                       variant="outline"
