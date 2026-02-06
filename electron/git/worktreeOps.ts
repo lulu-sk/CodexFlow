@@ -35,6 +35,16 @@ export type CreateWorktreesRequest = {
   signal?: AbortSignal;
   /** 中文说明：每成功创建一个 worktree 后回调（用于任务取消时的回滚清理）。 */
   onItemCreated?: (item: CreatedWorktree) => void;
+  /** 中文说明：单个 worktree 创建失败时回调（用于 UI 逐项标记失败）。 */
+  onItemFailed?: (args: {
+    providerId: "codex" | "claude" | "gemini";
+    repoMainPath: string;
+    worktreePath: string;
+    baseBranch: string;
+    wtBranch: string;
+    index: number;
+    error: string;
+  }) => void;
   /** 中文说明：在尝试创建某个 worktree 前回调（用于捕获“中断时的目标目录/分支”）。 */
   onWorktreePlanned?: (args: { providerId: "codex" | "claude" | "gemini"; repoMainPath: string; worktreePath: string; baseBranch: string; wtBranch: string; index: number }) => void;
 };
@@ -244,6 +254,7 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
   const listTimeoutMs = 30_000;
   const worktreeAddTimeoutMs = 15 * 60_000;
   const signal = req.signal;
+  let abortLogged = false;
 
   /**
    * 中文说明：安全写日志，避免日志回调抛错影响主流程。
@@ -257,7 +268,10 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
    */
   const checkAborted = (): { ok: false; error: string } | null => {
     if (!signal?.aborted) return null;
-    log("\n已取消：停止创建\n");
+    if (!abortLogged) {
+      abortLogged = true;
+      log("\n已取消：停止创建\n");
+    }
     return { ok: false, error: "aborted" };
   };
 
@@ -404,82 +418,217 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
     return warnings;
   };
 
-  const items: CreatedWorktree[] = [];
+  /**
+   * 中文说明：创建计划项（每一项对应一个目标 worktree）。
+   */
+  type WorktreeCreatePlan = {
+    providerId: "codex" | "claude" | "gemini";
+    index: number;
+    targetDir: string;
+    wtBranch: string;
+  };
 
+  const plans: WorktreeCreatePlan[] = [];
   for (const inst of req.instances) {
-    const a = checkAborted();
-    if (a) return a;
     const providerId = inst.providerId;
     const count = Math.max(0, Math.floor(Number(inst.count) || 0));
-    for (let i = 0; i < count; i++) {
-      const a2 = checkAborted();
-      if (a2) return a2;
-      // 5.7：从 1 开始找最小可用 n
-      let chosenN = 0;
+    for (let createdIndex = 0; createdIndex < count; createdIndex++) {
+      const aborted = checkAborted();
+      if (aborted) return aborted;
+
+      let chosenIndex = 0;
       let targetDir = "";
-      for (let n = 1; n < 10_000; n++) {
-        const a3 = checkAborted();
-        if (a3) return a3;
-        const candidate = path.join(poolDir, `${projectName}_wt${n}`);
-        const ok1 = await dirAvailable(candidate);
-        const ok2 = !registered.has(toFsPathKey(candidate));
-        if (ok1 && ok2) {
-          chosenN = n;
+      for (let dirIndex = 1; dirIndex < 10_000; dirIndex++) {
+        const abortedInSearch = checkAborted();
+        if (abortedInSearch) return abortedInSearch;
+        const candidate = path.join(poolDir, `${projectName}_wt${dirIndex}`);
+        const available = await dirAvailable(candidate);
+        const notRegistered = !registered.has(toFsPathKey(candidate));
+        if (available && notRegistered) {
+          chosenIndex = dirIndex;
           targetDir = candidate;
           break;
         }
       }
-      if (!chosenN || !targetDir) return { ok: false, error: "no available worktree slot" };
-
-      const wtBranch = makeUniqueWtBranch(providerId, chosenN);
-      try {
-        req.onWorktreePlanned?.({ providerId, repoMainPath: mainWorktreePath, worktreePath: targetDir, baseBranch: req.baseBranch, wtBranch, index: chosenN });
-      } catch {}
-
-      const a4 = checkAborted();
-      if (a4) return a4;
-
-      log(`\n$ git -C "${repoRoot}" worktree add -b "${wtBranch}" "${targetDir}" "${String(req.baseBranch || "").trim()}"\n`);
-      const add = await spawnGitAsync({
-        gitPath,
-        argv: ["-C", repoRoot, "worktree", "add", "-b", wtBranch, targetDir, req.baseBranch],
-        timeoutMs: worktreeAddTimeoutMs,
-        onStdout: log,
-        onStderr: log,
-        signal,
-      });
-      const a5 = checkAborted();
-      if (a5) return a5;
-      if (!add.ok) {
-        const msg = formatGitFailure(add, "git worktree add failed");
-        log(`\n失败：${msg}\n`);
-        return { ok: false, error: msg };
-      }
-
-      // 记录到 worktree list 去重集合，避免同一批创建重复使用
+      if (!chosenIndex || !targetDir) return { ok: false, error: "no available worktree slot" };
       registered.add(toFsPathKey(targetDir));
-
-      const warnings = await copyRulesIfNeeded(targetDir);
-
-      // 持久化 baseBranch <-> wtBranch 映射
-      const meta: WorktreeMeta = { repoMainPath: mainWorktreePath, baseBranch: req.baseBranch, baseRefAtCreate: baseRefAtCreateSha || undefined, wtBranch, createdAt: Date.now() };
-      setWorktreeMeta(targetDir, meta);
-
-      const item: CreatedWorktree = {
+      plans.push({
         providerId,
-        repoMainPath: mainWorktreePath,
-        worktreePath: targetDir,
-        baseBranch: req.baseBranch,
-        wtBranch,
-        index: chosenN,
-        warnings: warnings.length > 0 ? warnings : undefined,
-      };
-      items.push(item);
-      try { req.onItemCreated?.(item); } catch {}
+        index: chosenIndex,
+        targetDir,
+        wtBranch: makeUniqueWtBranch(providerId, chosenIndex),
+      });
     }
   }
 
-  return { ok: true, items };
+  /**
+   * 中文说明：判断 `git worktree add` 失败是否属于并发可重试的锁冲突。
+   */
+  const isRetryableWorktreeAddError = (msg: string): boolean => {
+    const text = String(msg || "");
+    return (
+      /index\.lock/i.test(text) ||
+      /cannot lock ref/i.test(text) ||
+      /Unable to create '.*\.lock'/i.test(text) ||
+      /another git process seems to be running/i.test(text) ||
+      /failed to create lock file/i.test(text) ||
+      /is locked/i.test(text)
+    );
+  };
+
+  /**
+   * 中文说明：按尝试次数计算重试退避时间（毫秒）。
+   */
+  const computeRetryDelayMs = (attempt: number): number => {
+    const normalizedAttempt = Math.max(1, Math.floor(Number(attempt) || 1));
+    return Math.min(2_000, 160 * Math.pow(2, normalizedAttempt - 1));
+  };
+
+  /**
+   * 中文说明：异步等待指定毫秒。
+   */
+  const sleepAsync = async (delayMs: number): Promise<void> => {
+    const safeDelay = Math.max(0, Math.floor(Number(delayMs) || 0));
+    if (safeDelay <= 0) return;
+    await new Promise((resolve) => setTimeout(resolve, safeDelay));
+  };
+
+  /**
+   * 中文说明：执行单项 `git worktree add`，并在锁冲突时进行有限重试。
+   */
+  const runWorktreeAddWithRetryAsync = async (plan: WorktreeCreatePlan): Promise<{ ok: boolean; error?: string }> => {
+    const maxAttempts = 6;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const abortedBeforeRun = checkAborted();
+      if (abortedBeforeRun) return abortedBeforeRun;
+
+      log(`\n[${plan.providerId}#${plan.index}] $ git -C "${repoRoot}" worktree add -b "${plan.wtBranch}" "${plan.targetDir}" "${String(req.baseBranch || "").trim()}"\n`);
+      const add = await spawnGitAsync({
+        gitPath,
+        argv: ["-C", repoRoot, "worktree", "add", "-b", plan.wtBranch, plan.targetDir, req.baseBranch],
+        timeoutMs: worktreeAddTimeoutMs,
+        onStdout: (chunk) => log(`[${plan.providerId}#${plan.index}] ${chunk}`),
+        onStderr: (chunk) => log(`[${plan.providerId}#${plan.index}] ${chunk}`),
+        signal,
+      });
+      const abortedAfterRun = checkAborted();
+      if (abortedAfterRun) return abortedAfterRun;
+      if (add.ok) return { ok: true };
+
+      const failureMessage = formatGitFailure(add, "git worktree add failed");
+      if (attempt < maxAttempts && isRetryableWorktreeAddError(failureMessage)) {
+        const retryDelay = computeRetryDelayMs(attempt);
+        log(`[${plan.providerId}#${plan.index}] 检测到并发锁冲突，${retryDelay}ms 后重试（${attempt}/${maxAttempts}）\n`);
+        await sleepAsync(retryDelay);
+        continue;
+      }
+      return { ok: false, error: failureMessage };
+    }
+    return { ok: false, error: "git worktree add failed after retries" };
+  };
+
+  const createdItems: CreatedWorktree[] = [];
+  const failures: Array<{ plan: WorktreeCreatePlan; error: string }> = [];
+  let planCursor = 0;
+
+  /**
+   * 中文说明：从计划队列中提取下一项（无项时返回 null）。
+   */
+  const takeNextPlan = (): WorktreeCreatePlan | null => {
+    if (planCursor >= plans.length) return null;
+    const current = plans[planCursor];
+    planCursor += 1;
+    return current;
+  };
+
+  /**
+   * 中文说明：执行单个创建计划，并汇总成功项或失败项。
+   */
+  const executePlanAsync = async (plan: WorktreeCreatePlan): Promise<void> => {
+    try {
+      req.onWorktreePlanned?.({
+        providerId: plan.providerId,
+        repoMainPath: mainWorktreePath,
+        worktreePath: plan.targetDir,
+        baseBranch: req.baseBranch,
+        wtBranch: plan.wtBranch,
+        index: plan.index,
+      });
+    } catch {}
+
+    const addResult = await runWorktreeAddWithRetryAsync(plan);
+    if (!addResult.ok) {
+      const error = String(addResult.error || "git worktree add failed");
+      failures.push({ plan, error });
+      log(`\n[${plan.providerId}#${plan.index}] 失败：${error}\n`);
+      try {
+        req.onItemFailed?.({
+          providerId: plan.providerId,
+          repoMainPath: mainWorktreePath,
+          worktreePath: plan.targetDir,
+          baseBranch: req.baseBranch,
+          wtBranch: plan.wtBranch,
+          index: plan.index,
+          error,
+        });
+      } catch {}
+      return;
+    }
+
+    const warnings = await copyRulesIfNeeded(plan.targetDir);
+    const meta: WorktreeMeta = {
+      repoMainPath: mainWorktreePath,
+      baseBranch: req.baseBranch,
+      baseRefAtCreate: baseRefAtCreateSha || undefined,
+      wtBranch: plan.wtBranch,
+      createdAt: Date.now(),
+    };
+    setWorktreeMeta(plan.targetDir, meta);
+
+    const item: CreatedWorktree = {
+      providerId: plan.providerId,
+      repoMainPath: mainWorktreePath,
+      worktreePath: plan.targetDir,
+      baseBranch: req.baseBranch,
+      wtBranch: plan.wtBranch,
+      index: plan.index,
+      warnings: warnings.length > 0 ? warnings : undefined,
+    };
+    createdItems.push(item);
+    try { req.onItemCreated?.(item); } catch {}
+  };
+
+  const maxParallel = Math.max(1, Math.min(4, plans.length));
+  const workers = Array.from({ length: maxParallel }, async () => {
+    while (true) {
+      const aborted = checkAborted();
+      if (aborted) return;
+      const plan = takeNextPlan();
+      if (!plan) return;
+      await executePlanAsync(plan);
+    }
+  });
+  await Promise.all(workers);
+
+  const abortedAtEnd = checkAborted();
+  if (abortedAtEnd) return abortedAtEnd;
+
+  createdItems.sort((left, right) => {
+    const diff = left.index - right.index;
+    if (diff !== 0) return diff;
+    return String(left.providerId || "").localeCompare(String(right.providerId || ""));
+  });
+
+  if (failures.length > 0) {
+    const detail = failures.slice(0, 6).map(({ plan, error }) => `[${plan.providerId}#${plan.index}] ${error}`).join("\n");
+    const remains = failures.length > 6 ? `\n…以及另外 ${failures.length - 6} 项` : "";
+    const summary = `部分 worktree 创建失败（成功 ${createdItems.length}/${plans.length}，失败 ${failures.length}/${plans.length}）\n${detail}${remains}`;
+    log(`\n${summary}\n`);
+    return { ok: false, error: summary };
+  }
+
+  log(`\n完成：已创建 ${createdItems.length}/${plans.length} 个 worktree\n`);
+  return { ok: true, items: createdItems };
 }
 
 /**

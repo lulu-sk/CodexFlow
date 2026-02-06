@@ -9,6 +9,21 @@ import { deleteWorktreeMeta } from "../stores/worktreeMetaStore";
 
 export type WorktreeCreateTaskStatus = "running" | "canceling" | "canceled" | "success" | "error";
 
+export type WorktreeCreateTaskItemStatus = "creating" | "success" | "error" | "canceled";
+
+export type WorktreeCreateTaskItemSnapshot = {
+  /** 条目唯一 key（优先使用 worktreePath 归一化 key）。 */
+  key: string;
+  providerId: "codex" | "claude" | "gemini";
+  worktreePath: string;
+  wtBranch: string;
+  index: number;
+  status: WorktreeCreateTaskItemStatus;
+  updatedAt: number;
+  error?: string;
+  warnings?: string[];
+};
+
 export type WorktreeCreateTaskSnapshot = {
   taskId: string;
   repoDir: string;
@@ -20,6 +35,12 @@ export type WorktreeCreateTaskSnapshot = {
   updatedAt: number;
   /** 当前已累计日志字符数（用于增量拉取）。 */
   logSize: number;
+  totalCount: number;
+  completedCount: number;
+  successCount: number;
+  failedCount: number;
+  allCompleted: boolean;
+  worktreeStates: WorktreeCreateTaskItemSnapshot[];
   error?: string;
   items?: CreatedWorktree[];
 };
@@ -30,8 +51,8 @@ type WorktreeCreateTaskState = WorktreeCreateTaskSnapshot & {
   abortController: AbortController;
   /** 中文说明：已成功创建的 worktree 列表（用于取消时回滚清理）。 */
   createdSoFar: CreatedWorktree[];
-  /** 中文说明：当前正在尝试创建的 worktree（用于中断时尽量清理目录/分支）。 */
-  planned?: { worktreePath: string; wtBranch: string } | null;
+  /** 中文说明：本任务已规划过的 worktree（用于取消时清理全部目标目录/分支）。 */
+  plannedSoFar: Array<{ worktreePath: string; wtBranch: string }>;
   /** 中文说明：创建任务使用的 gitPath（用于取消时清理）。 */
   gitPath?: string;
 };
@@ -89,6 +110,7 @@ export class WorktreeCreateTaskManager {
 
     const taskId = this.uid();
     const now = Date.now();
+    const totalCount = instances.reduce((sum, item) => sum + Math.max(0, Math.floor(Number(item.count) || 0)), 0);
     const state: WorktreeCreateTaskState = {
       taskId,
       repoDir,
@@ -99,11 +121,17 @@ export class WorktreeCreateTaskManager {
       createdAt: now,
       updatedAt: now,
       logSize: 0,
+      totalCount,
+      completedCount: 0,
+      successCount: 0,
+      failedCount: 0,
+      allCompleted: totalCount <= 0,
+      worktreeStates: [],
       log: "",
       cancelRequested: false,
       abortController: new AbortController(),
       createdSoFar: [],
-      planned: null,
+      plannedSoFar: [],
       gitPath: typeof args?.gitPath === "string" ? String(args.gitPath || "").trim() || undefined : undefined,
     };
     this.tasks.set(taskId, state);
@@ -143,9 +171,116 @@ export class WorktreeCreateTaskManager {
       this.appendLog(taskId, "\n收到取消请求，正在终止并清理…\n");
       try { t.abortController.abort(); } catch {}
     }
-    t.updatedAt = Date.now();
-    t.logSize = t.log.length;
+    this.refreshTaskProgress(taskId);
     return { ok: true };
+  }
+
+  /**
+   * 中文说明：为 worktree 进度条目生成稳定 key（优先使用路径 key，兜底 provider/index/branch）。
+   */
+  private buildWorktreeItemKey(args: { worktreePath: string; providerId: string; index: number; wtBranch: string }): string {
+    const byPath = toFsPathKey(args.worktreePath);
+    if (byPath) return byPath;
+    const providerId = String(args.providerId || "").trim().toLowerCase() || "unknown";
+    const index = Math.max(1, Math.floor(Number(args.index) || 1));
+    const branch = String(args.wtBranch || "").trim();
+    return `${providerId}#${index}:${branch}`;
+  }
+
+  /**
+   * 中文说明：插入或更新单个 worktree 的进度状态，并同步汇总计数。
+   */
+  private upsertWorktreeState(taskId: string, args: {
+    providerId: "codex" | "claude" | "gemini";
+    worktreePath: string;
+    wtBranch: string;
+    index: number;
+    status: WorktreeCreateTaskItemStatus;
+    error?: string;
+    warnings?: string[];
+  }): void {
+    const task = this.tasks.get(taskId);
+    if (!task) return;
+    const key = this.buildWorktreeItemKey({
+      worktreePath: args.worktreePath,
+      providerId: args.providerId,
+      index: args.index,
+      wtBranch: args.wtBranch,
+    });
+    const updatedAt = Date.now();
+    const nextItem: WorktreeCreateTaskItemSnapshot = {
+      key,
+      providerId: args.providerId,
+      worktreePath: String(args.worktreePath || "").trim(),
+      wtBranch: String(args.wtBranch || "").trim(),
+      index: Math.max(1, Math.floor(Number(args.index) || 1)),
+      status: args.status,
+      updatedAt,
+      error: typeof args.error === "string" ? String(args.error || "").trim() || undefined : undefined,
+      warnings: Array.isArray(args.warnings) ? args.warnings.map((item) => String(item || "").trim()).filter(Boolean) : undefined,
+    };
+
+    const index = task.worktreeStates.findIndex((item) => item.key === key);
+    if (index >= 0) {
+      task.worktreeStates[index] = { ...task.worktreeStates[index], ...nextItem };
+    } else {
+      task.worktreeStates.push(nextItem);
+    }
+    task.worktreeStates.sort((left, right) => {
+      const byIndex = left.index - right.index;
+      if (byIndex !== 0) return byIndex;
+      const byProvider = String(left.providerId || "").localeCompare(String(right.providerId || ""));
+      if (byProvider !== 0) return byProvider;
+      return String(left.worktreePath || "").localeCompare(String(right.worktreePath || ""));
+    });
+    this.refreshTaskProgress(taskId);
+  }
+
+  /**
+   * 中文说明：根据当前条目状态刷新任务级统计（总数/完成数/成功数/失败数/是否全部结束）。
+   */
+  private refreshTaskProgress(taskId: string): void {
+    const task = this.tasks.get(taskId);
+    if (!task) return;
+    let successCount = 0;
+    let failedCount = 0;
+    for (const item of task.worktreeStates) {
+      if (item.status === "success") successCount += 1;
+      if (item.status === "error" || item.status === "canceled") failedCount += 1;
+    }
+    const completed = successCount + failedCount;
+    const total = Math.max(0, Math.floor(Number(task.totalCount) || 0));
+    const status = task.status;
+    const terminal = status === "success" || status === "error" || status === "canceled";
+
+    task.successCount = successCount;
+    task.failedCount = failedCount;
+    task.completedCount = terminal ? total : Math.min(total, completed);
+    task.allCompleted = terminal ? true : total > 0 && task.completedCount >= total;
+    task.updatedAt = Date.now();
+    task.logSize = task.log.length;
+  }
+
+  /**
+   * 中文说明：在任务终态时，将尚未结束的条目标记为统一状态，避免 UI 悬停在“创建中”。
+   */
+  private settleUnfinishedStates(taskId: string, status: "error" | "canceled", fallbackError?: string): void {
+    const task = this.tasks.get(taskId);
+    if (!task) return;
+    const now = Date.now();
+    const next = task.worktreeStates.map((item) => {
+      if (item.status === "creating") {
+        return {
+          ...item,
+          status,
+          updatedAt: now,
+          error: status === "error" ? (item.error || fallbackError || "创建失败") : item.error,
+        };
+      }
+      return item;
+    });
+    task.worktreeStates = next;
+    this.refreshTaskProgress(taskId);
   }
 
   /**
@@ -172,9 +307,40 @@ export class WorktreeCreateTaskManager {
         signal: t.abortController.signal,
         onItemCreated: (item) => {
           try { t.createdSoFar.push(item); } catch {}
+          t.items = [...t.createdSoFar];
+          this.upsertWorktreeState(taskId, {
+            providerId: item.providerId,
+            worktreePath: String(item.worktreePath || "").trim(),
+            wtBranch: String(item.wtBranch || "").trim(),
+            index: Math.max(1, Math.floor(Number(item.index) || 1)),
+            status: "success",
+            warnings: Array.isArray(item.warnings) ? item.warnings : undefined,
+          });
+        },
+        onItemFailed: (failed) => {
+          this.upsertWorktreeState(taskId, {
+            providerId: failed.providerId,
+            worktreePath: String(failed.worktreePath || "").trim(),
+            wtBranch: String(failed.wtBranch || "").trim(),
+            index: Math.max(1, Math.floor(Number(failed.index) || 1)),
+            status: "error",
+            error: String(failed.error || "").trim() || "创建失败",
+          });
         },
         onWorktreePlanned: (p) => {
-          t.planned = { worktreePath: String(p?.worktreePath || "").trim(), wtBranch: String(p?.wtBranch || "").trim() };
+          const planned = { worktreePath: String(p?.worktreePath || "").trim(), wtBranch: String(p?.wtBranch || "").trim() };
+          if (planned.worktreePath) {
+            const plannedKey = toFsPathKey(planned.worktreePath) || planned.worktreePath;
+            const existed = t.plannedSoFar.some((item) => (toFsPathKey(item.worktreePath) || item.worktreePath) === plannedKey);
+            if (!existed) t.plannedSoFar.push(planned);
+          }
+          this.upsertWorktreeState(taskId, {
+            providerId: p.providerId,
+            worktreePath: planned.worktreePath,
+            wtBranch: planned.wtBranch,
+            index: Math.max(1, Math.floor(Number(p.index) || 1)),
+            status: "creating",
+          });
         },
       });
 
@@ -187,11 +353,12 @@ export class WorktreeCreateTaskManager {
         t.status = "success";
         t.items = res.items as CreatedWorktree[];
         t.error = undefined;
+        this.refreshTaskProgress(taskId);
         append(`\n完成：已创建 ${res.items.length} 个 worktree\n`);
       } else {
         t.status = "error";
-        t.items = undefined;
         t.error = String(res?.error || "create failed");
+        this.settleUnfinishedStates(taskId, "error", t.error);
         append(`\n失败：${t.error}\n`);
       }
     } catch (e: any) {
@@ -200,12 +367,13 @@ export class WorktreeCreateTaskManager {
         return;
       }
       t.status = "error";
-      t.items = undefined;
       t.error = String(e?.message || e);
+      this.settleUnfinishedStates(taskId, "error", t.error);
       append(`\n失败：${t.error}\n`);
     } finally {
       t.updatedAt = Date.now();
       t.logSize = t.log.length;
+      this.refreshTaskProgress(taskId);
       // 清理 running 映射
       try {
         const cur = this.runningByRepoKey.get(repoKey);
@@ -228,24 +396,27 @@ export class WorktreeCreateTaskManager {
     t.items = undefined;
     t.error = undefined;
     t.updatedAt = Date.now();
+    this.refreshTaskProgress(taskId);
 
     const cleanup = await this.cleanupCreatedResourcesAsync({
       repoDir: t.repoDir,
       gitPath: t.gitPath,
       created: t.createdSoFar,
-      planned: t.planned,
+      planned: t.plannedSoFar,
       onLog: append,
     });
 
     t.status = "canceled";
     t.updatedAt = Date.now();
     t.logSize = t.log.length;
-    t.planned = null;
+    t.plannedSoFar = [];
     t.createdSoFar = [];
+    this.settleUnfinishedStates(taskId, "canceled");
 
     if (!cleanup.ok) {
       t.error = cleanup.error || "清理失败";
     }
+    this.refreshTaskProgress(taskId);
   }
 
   /**
@@ -255,7 +426,7 @@ export class WorktreeCreateTaskManager {
     repoDir: string;
     gitPath?: string;
     created: CreatedWorktree[];
-    planned?: { worktreePath: string; wtBranch: string } | null;
+    planned?: Array<{ worktreePath: string; wtBranch: string }>;
     onLog: (text: string) => void;
   }): Promise<{ ok: boolean; error?: string }> {
     const repoDirAbs = toFsPathAbs(args.repoDir);
@@ -293,10 +464,13 @@ export class WorktreeCreateTaskManager {
       if (!key || targets.has(key)) continue;
       targets.set(key, { worktreePath: p, wtBranch: String(it?.wtBranch || "").trim() || undefined });
     }
-    if (args.planned && String(args.planned.worktreePath || "").trim()) {
-      const p = String(args.planned.worktreePath || "").trim();
+    for (const planned of Array.isArray(args.planned) ? args.planned : []) {
+      const p = String(planned?.worktreePath || "").trim();
+      if (!p) continue;
       const key = toFsPathKey(p);
-      if (key && !targets.has(key)) targets.set(key, { worktreePath: p, wtBranch: String(args.planned.wtBranch || "").trim() || undefined });
+      if (key && !targets.has(key)) {
+        targets.set(key, { worktreePath: p, wtBranch: String(planned?.wtBranch || "").trim() || undefined });
+      }
     }
 
     if (targets.size === 0) {
@@ -419,6 +593,12 @@ export class WorktreeCreateTaskManager {
       createdAt: t.createdAt,
       updatedAt: t.updatedAt,
       logSize: t.log.length,
+      totalCount: t.totalCount,
+      completedCount: t.completedCount,
+      successCount: t.successCount,
+      failedCount: t.failedCount,
+      allCompleted: t.allCompleted,
+      worktreeStates: Array.isArray(t.worktreeStates) ? [...t.worktreeStates] : [],
       error: t.error,
       items: t.items,
     };
