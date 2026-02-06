@@ -104,9 +104,6 @@ import type {
 } from "@/types/host";
 import type { TerminalThemeId } from "@/types/terminal-theme";
 
-// 发送命令后延迟清理粘贴图片 3 分钟，避免命令执行期间文件提前被删除
-const CHIP_COMMIT_RELEASE_DELAY_MS = 180_000;
-
 // ---------- Types ----------
 
 type TerminalMode = NonNullable<AppSettings["terminal"]>;
@@ -1619,7 +1616,6 @@ function TerminalView({
 }
 
 export {
-  CHIP_COMMIT_RELEASE_DELAY_MS,
   GEMINI_NOTIFY_ENV_KEYS,
   CLAUDE_NOTIFY_ENV_KEYS,
   PROJECT_SORT_STORAGE_KEY,
