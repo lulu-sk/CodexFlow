@@ -56,6 +56,8 @@ type PersistDetails = {
 
 // 单次偏好的详情缓存大小：保留最近查看的几条，防止无限增长
 const DETAILS_CACHE_LIMIT = 8;
+// 历史首条输入预览的索引长度上限：用于搜索匹配（展示仍由前端自行截断）
+const HISTORY_PREVIEW_SEARCH_MAX_CHARS = 240;
 
 const g: any = global as any;
 if (!g.__indexer) g.__indexer = {};
@@ -136,7 +138,7 @@ function stripDetailsForPersist(details: Details): Details {
   return { ...rest, messages: [] };
 }
 
-const VERSION = "v8";
+const VERSION = "v9";
 
 /**
  * 读取 Claude Code 的 Agent 历史开关（默认 false）。
@@ -786,7 +788,7 @@ async function parseCodexDetails(fp: string, stat: fs.Stats, opts?: { summaryOnl
                       if (t) {
                         // 预览行级过滤：跳过路径/空行，直到遇到有效内容
                         const filtered = filterHistoryPreviewText(t);
-                        if (filtered) { preview = filtered.slice(0, 40); break; }
+                        if (filtered) { preview = filtered.slice(0, HISTORY_PREVIEW_SEARCH_MAX_CHARS); break; }
                       }
                     }
                   }
@@ -797,7 +799,7 @@ async function parseCodexDetails(fp: string, stat: fs.Stats, opts?: { summaryOnl
                       const t = String((it as any)?.text || '').trim();
                       if (t) {
                         const filtered = filterHistoryPreviewText(t);
-                        if (filtered) { preview = filtered.slice(0, 40); break; }
+                        if (filtered) { preview = filtered.slice(0, HISTORY_PREVIEW_SEARCH_MAX_CHARS); break; }
                       }
                     }
                   }

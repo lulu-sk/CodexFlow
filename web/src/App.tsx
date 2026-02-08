@@ -1700,6 +1700,15 @@ export default function CodexFlowManagerUI() {
   const [historySessions, setHistorySessions] = useState<HistorySession[]>([]);
   const historySessionsRef = useRef<HistorySession[]>(historySessions);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyLoadingMore, setHistoryLoadingMore] = useState(false);
+  const [historyHasMore, setHistoryHasMore] = useState(false);
+  const [historyNextOffset, setHistoryNextOffset] = useState(0);
+  const historyHasMoreRef = useRef<boolean>(false);
+  const historyNextOffsetRef = useRef<number>(0);
+  const historyLoadingMoreRef = useRef<boolean>(false);
+  useEffect(() => { historyHasMoreRef.current = historyHasMore; }, [historyHasMore]);
+  useEffect(() => { historyNextOffsetRef.current = historyNextOffset; }, [historyNextOffset]);
+  useEffect(() => { historyLoadingMoreRef.current = historyLoadingMore; }, [historyLoadingMore]);
   const [selectedHistoryDir, setSelectedHistoryDir] = useState<string | null>(null);
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
   // 用于在点击项目时抑制自动选中历史的标志
@@ -1865,12 +1874,50 @@ export default function CodexFlowManagerUI() {
   type HoverHistoryShortcutContext = { item: HistorySession; groupKey: string };
   const hoveredProjectShortcutRef = useRef<HoverProjectShortcutContext | null>(null);
   const hoveredHistoryShortcutRef = useRef<HoverHistoryShortcutContext | null>(null);
-  // Simple in-memory cache to show previous results instantly when switching projects
-  const historyCacheRef = useRef<Record<string, HistorySession[]>>({});
+  type HistoryProjectCacheEntry = { sessions: HistorySession[]; hasMore: boolean; nextOffset: number };
+  // 项目历史缓存：仅保留最近使用的少量项目，避免切换大量项目导致内存持续增长
+  const HISTORY_PROJECT_CACHE_MAX = 6;
+  const HISTORY_PAGE_INITIAL_LIMIT = 300;
+  const HISTORY_PAGE_SIZE = 200;
+  const historyCacheRef = useRef<Map<string, HistoryProjectCacheEntry>>(new Map());
+  /**
+   * 读取指定项目的历史缓存，并刷新 LRU 顺序。
+   */
+  const getHistoryCache = useCallback((projectKey: string): HistoryProjectCacheEntry | undefined => {
+    const key = String(projectKey || "").trim();
+    if (!key) return undefined;
+    const mp = historyCacheRef.current;
+    const cached = mp.get(key);
+    if (!cached) return undefined;
+    mp.delete(key);
+    mp.set(key, cached);
+    return cached;
+  }, []);
+  /**
+   * 写入指定项目的历史缓存，并控制缓存项目数量上限。
+   */
+  const setHistoryCache = useCallback((projectKey: string, entry: HistoryProjectCacheEntry): void => {
+    const key = String(projectKey || "").trim();
+    if (!key) return;
+    const mp = historyCacheRef.current;
+    mp.delete(key);
+    mp.set(key, entry);
+    while (mp.size > HISTORY_PROJECT_CACHE_MAX) {
+      const oldest = mp.keys().next().value;
+      if (!oldest) break;
+      mp.delete(String(oldest));
+    }
+  }, []);
+  /**
+   * 删除指定项目的历史缓存。
+   */
+  const deleteHistoryCache = useCallback((projectKey: string): void => {
+    const key = String(projectKey || "").trim();
+    if (!key) return;
+    historyCacheRef.current.delete(key);
+  }, []);
   // Gemini：基于项目路径计算 projectHash，用于在会话缺失 cwd 时仍能正确归属到项目。
   const geminiProjectHashNeedlesRef = useRef<Set<string>>(new Set());
-  // UI 仅显示预览，预览由外部（后端/初始化流程）负责准备和缓存
-  const [sessionPreviewMap, setSessionPreviewMap] = useState<Record<string, string>>({});
 
   const monthFormatter = useMemo(() => {
     try {
@@ -1884,15 +1931,156 @@ export default function CodexFlowManagerUI() {
   const sessionMatchesQuery = useCallback(
     (session: HistorySession, q: string) => {
       if (!q) return true;
-      const previewSource = (session.preview || sessionPreviewMap[session.filePath || session.id] || '').toLowerCase();
+      const titleSource = (session.title || '').toLowerCase();
+      const pathSource = (session.filePath || '').toLowerCase();
+      const previewSource = (session.preview || '').toLowerCase();
+      const normalizedQuery = q.replace(/\\/g, '/');
+      const relaxedQuery = normalizedQuery.replace(/\/+$/g, '');
+      const normalizedTitle = titleSource.replace(/\\/g, '/');
+      const normalizedPath = pathSource.replace(/\\/g, '/');
+      const normalizedPreview = previewSource.replace(/\\/g, '/');
       return (
-        (session.title || '').toLowerCase().includes(q) ||
-        (session.filePath || '').toLowerCase().includes(q) ||
-        previewSource.includes(q)
+        titleSource.includes(q) ||
+        pathSource.includes(q) ||
+        previewSource.includes(q) ||
+        normalizedTitle.includes(normalizedQuery) ||
+        normalizedPath.includes(normalizedQuery) ||
+        normalizedPreview.includes(normalizedQuery) ||
+        (!!relaxedQuery && (
+          normalizedTitle.includes(relaxedQuery) ||
+          normalizedPath.includes(relaxedQuery) ||
+          normalizedPreview.includes(relaxedQuery)
+        ))
       );
     },
-    [sessionPreviewMap]
+    []
   );
+  const selectedProjectHistoryKeyRef = useRef<string>("");
+  useEffect(() => {
+    if (!selectedProject) {
+      selectedProjectHistoryKeyRef.current = "";
+      return;
+    }
+    selectedProjectHistoryKeyRef.current = canonicalizePath(selectedProject.wslPath || selectedProject.winPath || selectedProject.id);
+  }, [selectedProject]);
+
+  /**
+   * 更新历史分页状态，并同步 ref（供异步加载逻辑读取最新值）。
+   */
+  const applyHistoryPagination = useCallback((state: { hasMore: boolean; nextOffset: number }) => {
+    const nextHasMore = !!state.hasMore;
+    const nextOffset = Math.max(0, Number(state.nextOffset || 0));
+    historyHasMoreRef.current = nextHasMore;
+    historyNextOffsetRef.current = nextOffset;
+    setHistoryHasMore(nextHasMore);
+    setHistoryNextOffset(nextOffset);
+  }, []);
+  /**
+   * 将后端 history.list 的单条记录映射为前端会话结构。
+   */
+  const mapHistoryListItemToSession = useCallback((it: any): HistorySession => {
+    return {
+      providerId: (it?.providerId === "claude" || it?.providerId === "gemini") ? it.providerId : "codex",
+      id: String(it?.id || ""),
+      title: typeof it?.rawDate === "string" ? String(it.rawDate) : String(it?.title || ""),
+      date: normalizeMsToIso(it?.date),
+      rawDate: (typeof it?.rawDate === "string" ? it.rawDate : undefined),
+      preview: (typeof it?.preview === "string" ? String(it.preview) : undefined),
+      messages: [],
+      filePath: String(it?.filePath || ""),
+      resumeMode: normalizeResumeMode(it?.resumeMode),
+      resumeId: typeof it?.resumeId === "string" ? it.resumeId : undefined,
+      runtimeShell: it?.runtimeShell === "windows" ? "windows" : (it?.runtimeShell === "wsl" ? "wsl" : "unknown"),
+    };
+  }, []);
+  /**
+   * 按会话主键合并历史列表，并按时间倒序返回。
+   */
+  const mergeHistorySessions = useCallback((base: HistorySession[], incoming: HistorySession[]): HistorySession[] => {
+    const mp = new Map<string, HistorySession>();
+    for (const it of base) mp.set(String(it.filePath || it.id), it);
+    for (const it of incoming) mp.set(String(it.filePath || it.id), it);
+    return Array.from(mp.values()).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }, []);
+  /**
+   * 拉取指定项目的一页历史记录。
+   */
+  const fetchHistoryPage = useCallback(async (project: Project, offset: number, limit: number): Promise<HistorySession[]> => {
+    const safeOffset = Math.max(0, Number(offset || 0));
+    const safeLimit = Math.max(1, Number(limit || 1));
+    const res: any = await window.host.history.list({
+      projectWslPath: project.wslPath,
+      projectWinPath: project.winPath,
+      limit: safeLimit,
+      offset: safeOffset,
+    });
+    if (!(res && res.ok && Array.isArray(res.sessions))) throw new Error("history.list failed");
+    return res.sessions.map((h: any) => mapHistoryListItemToSession(h));
+  }, [mapHistoryListItemToSession]);
+  /**
+   * 加载当前项目的下一页历史记录，并同步缓存与分页状态。
+   */
+  const loadMoreHistorySessions = useCallback(async (): Promise<number> => {
+    if (!selectedProject) return 0;
+    if (!historyHasMoreRef.current) return 0;
+    if (historyLoadingMoreRef.current) return 0;
+    const targetProjectKey = selectedProjectHistoryKeyRef.current;
+    if (!targetProjectKey) return 0;
+    const offset = Math.max(0, Number(historyNextOffsetRef.current || 0));
+    historyLoadingMoreRef.current = true;
+    setHistoryLoadingMore(true);
+    try {
+      const page = await fetchHistoryPage(selectedProject, offset, HISTORY_PAGE_SIZE);
+      if (targetProjectKey !== selectedProjectHistoryKeyRef.current) return 0;
+      const loadedCount = page.length;
+      const nextOffset = offset + loadedCount;
+      const hasMore = loadedCount >= HISTORY_PAGE_SIZE;
+      applyHistoryPagination({ hasMore, nextOffset });
+      setHistorySessions((cur) => {
+        const merged = mergeHistorySessions(cur, page);
+        setHistoryCache(targetProjectKey, { sessions: merged, hasMore, nextOffset });
+        return merged;
+      });
+      return loadedCount;
+    } catch (e) {
+      console.warn("history.loadMore failed", e);
+      return 0;
+    } finally {
+      historyLoadingMoreRef.current = false;
+      setHistoryLoadingMore(false);
+    }
+  }, [selectedProject, fetchHistoryPage, HISTORY_PAGE_SIZE, applyHistoryPagination, mergeHistorySessions, setHistoryCache]);
+  /**
+   * 为查询补齐分页范围：当前无命中时继续加载，直到出现命中或无更多数据。
+   */
+  const ensureHistoryMatchLoaded = useCallback(async (query: string): Promise<void> => {
+    const q = String(query || "").trim().toLowerCase();
+    if (!q) return;
+    const maxRounds = 20;
+    for (let round = 0; round < maxRounds; round++) {
+      const hasMatch = historySessionsRef.current.some((s) => sessionMatchesQuery(s, q));
+      if (hasMatch) return;
+      if (!historyHasMoreRef.current) return;
+      const loaded = await loadMoreHistorySessions();
+      if (loaded <= 0) return;
+    }
+  }, [sessionMatchesQuery, loadMoreHistorySessions]);
+  /**
+   * 处理历史搜索回车：优先补齐可搜索分页，再定位到最新命中。
+   */
+  const handleHistorySearchEnter = useCallback(async (): Promise<void> => {
+    const q = historyQuery.trim().toLowerCase();
+    if (!q) return;
+    await ensureHistoryMatchLoaded(q);
+    const first = historySessionsRef.current
+      .filter((s) => sessionMatchesQuery(s, q))
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
+    if (!first) return;
+    const key = historyTimelineGroupKey(first, new Date());
+    setSelectedHistoryDir(key);
+    setSelectedHistoryId(first.id);
+    setCenterMode("history");
+  }, [historyQuery, ensureHistoryMatchLoaded, sessionMatchesQuery]);
 
   // Auto-adjust history context menu position to stay within viewport (pre-paint to avoid visible jump)
   useLayoutEffect(() => {
@@ -2651,14 +2839,14 @@ export default function CodexFlowManagerUI() {
     }
     try {
       const projectKey = canonicalizePath(project.wslPath || project.winPath || project.id);
-      if (projectKey) delete historyCacheRef.current[projectKey];
+      if (projectKey) deleteHistoryCache(projectKey);
     } catch {}
     setSelectedProjectId((prev) => (prev === project.id ? "" : prev));
     try { suppressAutoSelectRef.current = true; } catch {}
     setSelectedHistoryDir(null);
     setSelectedHistoryId(null);
     setCenterMode('console');
-  }, [activeTabId, setActiveTab, tabsByProject, tm]);
+  }, [activeTabId, deleteHistoryCache, setActiveTab, tabsByProject, tm]);
 
   /**
    * 隐藏项目：关闭该项目下的所有控制台/PTY，并将其加入隐藏列表（会持久化）。
@@ -2959,6 +3147,9 @@ export default function CodexFlowManagerUI() {
     (async () => {
       if (!selectedProject) {
         setHistorySessions([]);
+        applyHistoryPagination({ hasMore: false, nextOffset: 0 });
+        historyLoadingMoreRef.current = false;
+        setHistoryLoadingMore(false);
         setSelectedHistoryDir(null);
         setSelectedHistoryId(null);
         setHistoryLoading(false);
@@ -2967,21 +3158,25 @@ export default function CodexFlowManagerUI() {
       // 如果是用户刚刚通过点击项目触发的切换，则抑制自动选中历史（保持控制台视图）
       const skipAuto = suppressAutoSelectRef.current;
       const projectKey = canonicalizePath(selectedProject.wslPath || selectedProject.winPath || selectedProject.id);
-      const ensureIso = (d: any): string => normalizeMsToIso(d);
       // 先显示缓存
-      const cached = historyCacheRef.current[projectKey];
-      const hasCache = !!(cached && cached.length > 0);
+      const cached = getHistoryCache(projectKey);
+      const cachedSessions = cached?.sessions || [];
+      const hasCache = cachedSessions.length > 0;
       setHistoryLoading(!hasCache);
       if (hasCache) {
-        setHistorySessions(cached);
+        setHistorySessions(cachedSessions);
+        applyHistoryPagination({
+          hasMore: !!cached?.hasMore,
+          nextOffset: Math.max(0, Number(cached?.nextOffset || cachedSessions.length)),
+        });
         // 若当前选择无效或为空，重置为缓存中的第一组（除非是点击项目触发的切换）
         if (!skipAuto) {
           const nowRef = new Date();
           const keyOf = (item?: HistorySession) => historyTimelineGroupKey(item, nowRef);
-          const dirs = new Set(cached.map((x) => keyOf(x)));
-          const ids = new Set(cached.map((x) => x.id));
+          const dirs = new Set(cachedSessions.map((x) => keyOf(x)));
+          const ids = new Set(cachedSessions.map((x) => x.id));
           const invalidSelection = (!selectedHistoryId || !ids.has(selectedHistoryId) || !selectedHistoryDir || !dirs.has(selectedHistoryDir));
-          const firstKey = cached.length > 0 ? keyOf(cached[0]) : null;
+          const firstKey = cachedSessions.length > 0 ? keyOf(cachedSessions[0]) : null;
           if (invalidSelection && firstKey) {
             // 仅优化默认 UI：展开最新分组，不自动选择会话，也不切换到详情
             setSelectedHistoryDir(null);
@@ -2991,39 +3186,19 @@ export default function CodexFlowManagerUI() {
         }
       } else {
         setHistorySessions([]);
+        applyHistoryPagination({ hasMore: false, nextOffset: 0 });
         setSelectedHistoryDir(null);
         setSelectedHistoryId(null);
       }
       try {
-        // 固定为项目范围历史
-        const res: any = await window.host.history.list({ projectWslPath: selectedProject.wslPath, projectWinPath: selectedProject.winPath });
+        // 固定为项目范围历史（分页首屏）
+        const mapped = await fetchHistoryPage(selectedProject, 0, HISTORY_PAGE_INITIAL_LIMIT);
         if (cancelled) return;
-        if (!(res && res.ok && Array.isArray(res.sessions))) throw new Error('history.list failed');
-        // 映射时：优先将后端提供的 rawDate 作为 title（原始字符串），避免前端再做时区/格式化转换
-        // 同时接收后端提供的 preview 字段，并把它同步到前端只读映射 sessionPreviewMap
-        const mapped: HistorySession[] = res.sessions.map((h: any) => ({
-          providerId: (h.providerId === "claude" || h.providerId === "gemini") ? h.providerId : "codex",
-          id: h.id,
-          title: (typeof h.rawDate === 'string' ? String(h.rawDate) : h.title),
-          date: ensureIso(h.date),
-          rawDate: (typeof h.rawDate === 'string' ? h.rawDate : undefined),
-          preview: (typeof h.preview === 'string' ? String(h.preview) : undefined),
-          messages: [],
-          filePath: h.filePath,
-          resumeMode: normalizeResumeMode(h.resumeMode),
-          resumeId: typeof h.resumeId === 'string' ? h.resumeId : undefined,
-          runtimeShell: h.runtimeShell === 'windows' ? 'windows' : (h.runtimeShell === 'wsl' ? 'wsl' : 'unknown'),
-        }));
+        const hasMore = mapped.length >= HISTORY_PAGE_INITIAL_LIMIT;
+        const nextOffset = mapped.length;
+        applyHistoryPagination({ hasMore, nextOffset });
         setHistorySessions(mapped as any);
-        setSessionPreviewMap((cur) => {
-          const next = { ...cur } as Record<string, string>;
-          for (const s of mapped) {
-            const key = s.filePath || s.id;
-            if (s.preview && key && !next[key]) next[key] = clampText(s.preview, 40);
-          }
-          return next;
-        });
-        historyCacheRef.current[projectKey] = mapped;
+        setHistoryCache(projectKey, { sessions: mapped, hasMore, nextOffset });
         // 校验并修正当前选择，避免缓存残留导致的空白详情
         if (!skipAuto) {
           const ids = new Set(mapped.map((x) => x.id));
@@ -3052,7 +3227,7 @@ export default function CodexFlowManagerUI() {
     return () => {
       cancelled = true;
     };
-  }, [selectedProject, historyInvalidateNonce]);
+  }, [selectedProject, historyInvalidateNonce, getHistoryCache, fetchHistoryPage, HISTORY_PAGE_INITIAL_LIMIT, applyHistoryPagination, setHistoryCache]);
 
   // 订阅索引器事件：新增/更新/删除时，若属于当前选中项目则立即更新 UI
   useEffect(() => {
@@ -3090,22 +3265,6 @@ export default function CodexFlowManagerUI() {
       } catch {}
       return false;
     };
-    const toSession = (it: any): HistorySession => {
-      const ensureIso = (d: any): string => normalizeMsToIso(d);
-      return {
-        providerId: (it.providerId === "claude" || it.providerId === "gemini") ? it.providerId : "codex",
-        id: String(it.id || ''),
-        title: typeof it.rawDate === 'string' ? String(it.rawDate) : String(it.title || ''),
-        date: ensureIso(it.date),
-        rawDate: (typeof it.rawDate === 'string' ? it.rawDate : undefined),
-        preview: (typeof it.preview === 'string' ? it.preview : undefined),
-        messages: [],
-        filePath: String(it.filePath || ''),
-        resumeMode: normalizeResumeMode(it.resumeMode),
-        resumeId: typeof it.resumeId === 'string' ? it.resumeId : undefined,
-        runtimeShell: it.runtimeShell === 'windows' ? 'windows' : (it.runtimeShell === 'wsl' ? 'wsl' : 'unknown'),
-      };
-    };
     const upsertSessions = (items: any[]) => {
       if (!Array.isArray(items) || items.length === 0) return;
       setHistorySessions((cur) => {
@@ -3114,7 +3273,7 @@ export default function CodexFlowManagerUI() {
         let changed = false;
         for (const it of items) {
           if (!belongsToSelected(it)) continue;
-          const s = toSession(it);
+          const s = mapHistoryListItemToSession(it);
           const key = s.filePath || s.id;
           const prev = mp.get(key);
           if (
@@ -3136,14 +3295,10 @@ export default function CodexFlowManagerUI() {
         const next = Array.from(mp.values()).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
         try {
           const projectKey = canonicalizePath(selectedProject.wslPath || selectedProject.winPath || selectedProject.id);
-          historyCacheRef.current[projectKey] = next;
-          setSessionPreviewMap((curMap) => {
-            const mm = { ...curMap } as Record<string, string>;
-            for (const s of next) {
-              const key = s.filePath || s.id;
-              if (s.preview && key && !mm[key]) mm[key] = clampText(s.preview, 40);
-            }
-            return mm;
+          setHistoryCache(projectKey, {
+            sessions: next,
+            hasMore: historyHasMoreRef.current,
+            nextOffset: historyNextOffsetRef.current,
           });
         } catch {}
         return next;
@@ -3157,7 +3312,11 @@ export default function CodexFlowManagerUI() {
         if (next.length === cur.length) return cur;
         try {
           const projectKey = canonicalizePath(selectedProject.wslPath || selectedProject.winPath || selectedProject.id);
-          historyCacheRef.current[projectKey] = next;
+          setHistoryCache(projectKey, {
+            sessions: next,
+            hasMore: historyHasMoreRef.current,
+            nextOffset: historyNextOffsetRef.current,
+          });
         } catch {}
         // 若当前选中项被移除，选择同组最新一条
         if (selectedHistoryId && !next.some((x) => x.id === selectedHistoryId)) {
@@ -3199,12 +3358,12 @@ export default function CodexFlowManagerUI() {
     const unsubInvalidate = window.host.history.onIndexInvalidate?.((_payload: { reason?: string }) => {
       try {
         const projectKey = canonicalizePath(selectedProject.wslPath || selectedProject.winPath || selectedProject.id);
-        delete historyCacheRef.current[projectKey];
+        deleteHistoryCache(projectKey);
       } catch {}
       try { setHistoryInvalidateNonce((x) => x + 1); } catch {}
     }) || (() => {});
     return () => { try { unsubAdd(); } catch {}; try { unsubUpd(); } catch {}; try { unsubRem(); } catch {}; try { unsubInvalidate(); } catch {}; };
-  }, [selectedProject, selectedHistoryId, selectedHistoryDir]);
+  }, [selectedProject, selectedHistoryId, selectedHistoryDir, setHistoryCache, deleteHistoryCache, mapHistoryListItemToSession]);
 
   // Subscribe to PTY exit/error events：标记退出并更新计数（不修改标签名）
   useEffect(() => {
@@ -6592,17 +6751,7 @@ export default function CodexFlowManagerUI() {
           data-cf-hover-shortcuts-ignore="true"
           onKeyDown={(e: React.KeyboardEvent<any>) => {
             if (e.key === 'Enter') {
-              const q = historyQuery.trim().toLowerCase();
-              if (!q) return;
-              const first = historySessions
-                .filter((s) => sessionMatchesQuery(s, q))
-                .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
-              if (first) {
-                const key = historyTimelineGroupKey(first, new Date());
-                setSelectedHistoryDir(key);
-                setSelectedHistoryId(first.id);
-                setCenterMode('history');
-              }
+              void handleHistorySearchEnter();
             }
           }}
         />
@@ -6670,7 +6819,7 @@ export default function CodexFlowManagerUI() {
                       const anchor = historySessionDate(s);
                       const absoluteLabel = anchor ? formatAsLocal(anchor) : timeFromFilename(s.filePath);
                       const active = selectedHistoryId === s.id;
-                      const previewSource = sessionPreviewMap[s.filePath || s.id] || s.preview || s.title || s.filePath || '';
+                      const previewSource = s.preview || s.title || s.filePath || '';
                       const providerIconSrc = getProviderIconSrc(s.providerId, providerItemById, themeMode);
                       const relativeLabel = describeRelativeAge(anchor, historyNow) || '--';
                       const tooltip = [absoluteLabel, previewSource].filter(Boolean).join('  ');
@@ -6713,6 +6862,18 @@ export default function CodexFlowManagerUI() {
               </div>
             );
           })}
+          {historySessions.length > 0 && historyHasMore && (
+            <div className="px-2 py-1">
+              <Button
+                variant="outline"
+                className="w-full h-8 text-xs"
+                disabled={historyLoadingMore}
+                onClick={() => { void loadMoreHistorySessions(); }}
+              >
+                {historyLoadingMore ? (t("history:loading", "加载中…") as string) : (t("history:loadMore", "加载更多历史") as string)}
+              </Button>
+            </div>
+          )}
           {historySessions.length === 0 && !historyLoading && (
             <div className="px-4 py-8 text-center">
               <div className="mb-3 flex justify-center">
@@ -6731,6 +6892,18 @@ export default function CodexFlowManagerUI() {
                 </div>
               </div>
               <div className="text-sm text-[var(--cf-text-muted)] font-apple-medium">{t('history:noMatch')}</div>
+              {historyHasMore && (
+                <div className="mt-3">
+                  <Button
+                    variant="outline"
+                    className="h-8 text-xs"
+                    disabled={historyLoadingMore}
+                    onClick={() => { void ensureHistoryMatchLoaded(historyQuery); }}
+                  >
+                    {historyLoadingMore ? (t("history:loading", "加载中…") as string) : (t("history:loadMoreAndSearch", "继续加载并搜索") as string)}
+                  </Button>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -6815,7 +6988,13 @@ export default function CodexFlowManagerUI() {
                 setHistorySessions((cur) => {
                   const list = cur.filter((x) => (x.filePath || x.id) !== (it.filePath || it.id));
                   const projectKey = canonicalizePath((selectedProject?.wslPath || selectedProject?.winPath || selectedProject?.id || '') as string);
-                  if (projectKey) historyCacheRef.current[projectKey] = list;
+                  if (projectKey) {
+                    setHistoryCache(projectKey, {
+                      sessions: list,
+                      hasMore: historyHasMoreRef.current,
+                      nextOffset: historyNextOffsetRef.current,
+                    });
+                  }
                   if (selectedHistoryId === it.id) {
                     const nowRef = new Date();
                     const keyOf = (item?: HistorySession) => historyTimelineGroupKey(item, nowRef);
