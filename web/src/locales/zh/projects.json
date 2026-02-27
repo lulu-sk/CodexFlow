@@ -197,6 +197,8 @@
   "worktreeResetDesc": "将该 worktree 对齐到主 worktree 当前签出版本，并清理工作区。未提交修改会被丢弃。",
   "worktreeDeleteResetOption": "保留目录并对齐到主 worktree",
   "worktreeDeleteResetHint": "不移除 worktree；对齐到主 worktree 当前签出版本并清理。",
+  "worktreeDeleteResetHintChecked": "将对齐到主 worktree 当前签出版本并清理；不会执行“移除 worktree”。",
+  "worktreeDeleteResetHintAligned": "检测到当前已与主 worktree 对齐，已隐藏对齐选项。",
   "worktreeDeleteForceRemoveHint": "有未提交修改：强制删除会丢弃这些修改。",
   "worktreeDeleteForceBranchHint": "分支未合并：强制删除会丢弃该分支提交。",
   "worktreeDeleteForceAction": "强制删除",

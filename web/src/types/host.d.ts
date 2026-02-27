@@ -259,8 +259,12 @@ export type RecycleWorktreeResult =
   | { ok: false; errorCode: RecycleWorktreeErrorCode; details?: RecycleWorktreeDetails };
 
 export type ResetWorktreeResult =
-  | { ok: true }
+  | { ok: true; alreadyAligned?: boolean }
   | { ok: false; needsForce?: boolean; error?: string };
+
+export type IsWorktreeAlignedToMainResult =
+  | { ok: true; aligned: boolean }
+  | { ok: false; error?: string };
 
 export type CreatedWorktree = {
   providerId: "codex" | "claude" | "gemini";
@@ -388,6 +392,7 @@ export interface GitWorktreeAPI {
   validateForkPointRef(args: { worktreePath: string; wtBranch: string; ref: string }): Promise<{ ok: boolean; commit?: GitCommitSummary; error?: string }>;
   remove(args: { worktreePath: string; deleteBranch?: boolean; forceDeleteBranch?: boolean; forceRemoveWorktree?: boolean }): Promise<any>;
   reset(args: { worktreePath: string; targetRef?: string; force?: boolean }): Promise<ResetWorktreeResult>;
+  isAlignedToMain(args: { worktreePath: string; targetRef?: string }): Promise<IsWorktreeAlignedToMainResult>;
   autoCommit(args: { worktreePath: string; message: string }): Promise<{ ok: boolean; committed: boolean; error?: string }>;
   openExternalTool(dir: string): Promise<{ ok: boolean; error?: string }>;
   openTerminal(dir: string): Promise<{ ok: boolean; error?: string }>;
