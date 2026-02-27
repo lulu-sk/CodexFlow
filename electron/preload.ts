@@ -343,6 +343,10 @@ contextBridge.exposeInMainWorld('host', {
     reset: async (args: any) => {
       return await ipcRenderer.invoke("gitWorktree.reset", args);
     },
+    /** 检测 worktree 是否已与主工作区当前基线对齐（只读，不修改状态）。 */
+    isAlignedToMain: async (args: any) => {
+      return await ipcRenderer.invoke("gitWorktree.isAlignedToMain", args);
+    },
     /** worktree 自动提交（有变更才提交）。 */
     autoCommit: async (args: any) => {
       return await ipcRenderer.invoke("gitWorktree.autoCommit", args);

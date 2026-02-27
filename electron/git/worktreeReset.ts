@@ -7,8 +7,12 @@ import { resolveRepoMainPathFromWorktreeAsync } from "./worktreeMetaResolve";
 import { buildNextWorktreeMeta, getWorktreeMeta, setWorktreeMeta, type WorktreeMeta } from "../stores/worktreeMetaStore";
 
 export type ResetWorktreeResult =
-  | { ok: true }
+  | { ok: true; alreadyAligned?: boolean }
   | { ok: false; needsForce?: boolean; error?: string };
+
+export type IsWorktreeAlignedToMainResult =
+  | { ok: true; aligned: boolean }
+  | { ok: false; error?: string };
 
 const resetWorktreeTaskByPathKey = new Map<string, Promise<ResetWorktreeResult>>();
 
@@ -19,6 +23,7 @@ const resetWorktreeTaskByPathKey = new Map<string, Promise<ResetWorktreeResult>>
  * - 以 targetRef 为“主工作区当前基线”；若未提供 targetRef，则默认使用主 worktree 的 `HEAD` 提交号（更符合“当前签出的修订版”语义）。
  * - 将 worktree 分支（wtBranch）强制 reset 到 targetRef，并执行 `git clean -fd` 清理未跟踪文件（保留 ignored）。
  * - 若 worktree 有未提交修改且未传 force，则返回 needsForce=true，等待 UI 二次确认。
+ * - 若已与目标基线对齐且工作区干净，则直接返回 ok=true + alreadyAligned=true（避免重复执行重置）。
  * - 成功后会把 meta.baseRefAtCreate 更新为 targetRef 的最新提交号，确保后续“按分叉点回收”边界正确。
  */
 export async function resetWorktreeAsync(req: {
@@ -77,6 +82,8 @@ export async function resetWorktreeAsync(req: {
       targetRef = String(baseBranchFromMain || metaBaseBranch).trim();
     }
     if (!targetRef) return { ok: false, needsForce: false, error: "无法确定目标基线（请手动指定 targetRef）" };
+    const targetShaRes = await execGitAsync({ gitPath, argv: ["-C", wt, "rev-parse", targetRef], timeoutMs: 12_000 });
+    const targetSha = targetShaRes.ok ? String(targetShaRes.stdout || "").trim() : "";
 
     // 2) 写入/更新映射，保证后续 delete/recycle/fork-point 等功能无需依赖“创建时记录”
     let meta: WorktreeMeta = buildNextWorktreeMeta({ existing: existingMeta, repoMainPath, baseBranch: String(baseBranchFromMain || metaBaseBranch).trim(), wtBranch });
@@ -86,6 +93,15 @@ export async function resetWorktreeAsync(req: {
     const st = await execGitAsync({ gitPath, argv: ["-C", wt, "status", "--porcelain"], timeoutMs: 8000 });
     if (!st.ok) return { ok: false, needsForce: false, error: String(st.stderr || st.error || st.stdout || "git status failed").trim() || "git status failed" };
     const isDirty = String(st.stdout || "").trim().length > 0;
+    if (!isDirty && targetSha) {
+      const wtHeadRes = await execGitAsync({ gitPath, argv: ["-C", wt, "rev-parse", "HEAD"], timeoutMs: 8000 });
+      const wtHeadSha = wtHeadRes.ok ? String(wtHeadRes.stdout || "").trim() : "";
+      if (wtHeadSha && wtHeadSha === targetSha) {
+        meta = buildNextWorktreeMeta({ existing: meta, repoMainPath, baseBranch: meta.baseBranch, wtBranch, baseRefAtCreate: targetSha || meta.baseRefAtCreate });
+        try { setWorktreeMeta(wt, meta); } catch {}
+        return { ok: true, alreadyAligned: true };
+      }
+    }
     if (isDirty && req.force !== true) return { ok: false, needsForce: true, error: "检测到未提交修改" };
 
     // 2) 切回 worktree 分支并对齐到目标基线
@@ -103,8 +119,7 @@ export async function resetWorktreeAsync(req: {
     if (!cleanRes.ok) return { ok: false, needsForce: false, error: String(cleanRes.stderr || cleanRes.stdout || cleanRes.error || "git clean -fd failed").trim() || "git clean -fd failed" };
 
     // 3) 更新创建基线（用于后续回收默认边界）
-    const shaRes = await execGitAsync({ gitPath, argv: ["-C", repoMainPath, "rev-parse", targetRef], timeoutMs: 12_000 });
-    const sha = shaRes.ok ? String(shaRes.stdout || "").trim() : "";
+    const sha = targetSha || "";
     meta = buildNextWorktreeMeta({ existing: meta, repoMainPath, baseBranch: meta.baseBranch, wtBranch, baseRefAtCreate: sha || meta.baseRefAtCreate });
     try { setWorktreeMeta(wt, meta); } catch {}
     return { ok: true };
@@ -116,4 +131,52 @@ export async function resetWorktreeAsync(req: {
   } finally {
     resetWorktreeTaskByPathKey.delete(key);
   }
+}
+
+/**
+ * 中文说明：检测指定 worktree 是否已与主 worktree 当前基线对齐。
+ * - 默认基线为主 worktree `HEAD`（可选 targetRef 覆盖）；
+ * - 仅做只读判断，不修改工作区状态。
+ */
+export async function isWorktreeAlignedToMainAsync(req: {
+  worktreePath: string;
+  gitPath?: string;
+  targetRef?: string;
+}): Promise<IsWorktreeAlignedToMainResult> {
+  const wt = toFsPathAbs(req.worktreePath);
+  const key = toFsPathKey(wt);
+  if (!key) return { ok: false, error: "missing worktreePath" };
+  const gitPath = req.gitPath;
+
+  const existingMeta = getWorktreeMeta(wt);
+  let repoMainPath = toFsPathAbs(String(existingMeta?.repoMainPath || ""));
+  if (!repoMainPath) {
+    const inferred = await resolveRepoMainPathFromWorktreeAsync({ worktreePath: wt, gitPath, timeoutMs: 12_000 });
+    if (!inferred.ok) return { ok: false, error: inferred.error || "missing repoMainPath" };
+    repoMainPath = inferred.repoMainPath;
+  }
+
+  const reqTargetRef = String(req.targetRef || "").trim();
+  let targetRef = reqTargetRef;
+  if (!targetRef) {
+    const head = await execGitAsync({ gitPath, argv: ["-C", repoMainPath, "rev-parse", "HEAD"], timeoutMs: 12_000 });
+    targetRef = head.ok ? String(head.stdout || "").trim() : "";
+  }
+  if (!targetRef) return { ok: false, error: "无法确定目标基线（请手动指定 targetRef）" };
+
+  const targetShaRes = await execGitAsync({ gitPath, argv: ["-C", wt, "rev-parse", targetRef], timeoutMs: 12_000 });
+  if (!targetShaRes.ok) {
+    return { ok: false, error: String(targetShaRes.stderr || targetShaRes.error || targetShaRes.stdout || "resolve targetRef failed").trim() || "resolve targetRef failed" };
+  }
+  const targetSha = String(targetShaRes.stdout || "").trim();
+  if (!targetSha) return { ok: false, error: "目标基线提交为空" };
+
+  const wtHeadRes = await execGitAsync({ gitPath, argv: ["-C", wt, "rev-parse", "HEAD"], timeoutMs: 8_000 });
+  if (!wtHeadRes.ok) {
+    return { ok: false, error: String(wtHeadRes.stderr || wtHeadRes.error || wtHeadRes.stdout || "resolve worktree head failed").trim() || "resolve worktree head failed" };
+  }
+  const wtHeadSha = String(wtHeadRes.stdout || "").trim();
+  if (!wtHeadSha) return { ok: false, error: "worktree 当前提交为空" };
+
+  return { ok: true, aligned: wtHeadSha === targetSha };
 }

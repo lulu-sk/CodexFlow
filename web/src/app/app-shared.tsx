@@ -230,6 +230,10 @@ type BaseWorktreeDirtyDialogState = {
 type WorktreeDeleteDialogState = {
   open: boolean;
   projectId: string;
+  /** 偏好存储维度 key（通常为主 worktree 路径归一化结果）。 */
+  prefsKey?: string;
+  /** 当前 worktree 是否已与主 worktree 对齐（用于面板说明提示）。 */
+  alignedToMain?: boolean;
   /** 操作类型：delete=删除 worktree；reset=对齐到主工作区当前基线（保持目录，不删除）。 */
   action: "delete" | "reset";
   /** 是否为“回收成功后”的推荐删除（仅用于 UI 文案） */

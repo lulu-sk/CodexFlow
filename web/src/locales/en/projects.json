@@ -197,6 +197,8 @@
   "worktreeResetDesc": "Resets this worktree to match the revision currently checked out in the main worktree, and cleans it. Uncommitted changes will be discarded.",
   "worktreeDeleteResetOption": "Keep directory and sync to main",
   "worktreeDeleteResetHint": "Does not remove the worktree; syncs to the main worktree revision and cleans.",
+  "worktreeDeleteResetHintChecked": "Will sync to the main worktree revision and clean; it will not remove the worktree.",
+  "worktreeDeleteResetHintAligned": "It is already aligned with the main worktree, and the alignment option is hidden.",
   "worktreeDeleteForceRemoveHint": "Uncommitted changes: force delete will discard them.",
   "worktreeDeleteForceBranchHint": "Branch not merged: force delete will lose its commits.",
   "worktreeDeleteForceAction": "Force delete",

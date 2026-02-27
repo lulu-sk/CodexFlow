@@ -102,6 +102,10 @@ import {
   type PersistedWorktreePromptChip,
   type WorktreeCreatePrefs,
 } from "@/lib/worktree-create-prefs";
+import {
+  loadWorktreeDeletePrefs,
+  saveWorktreeDeletePrefs,
+} from "@/lib/worktree-delete-prefs";
 import type {
   AppSettings,
   BuildRunCommandConfig,
@@ -683,6 +687,8 @@ export default function CodexFlowManagerUI() {
   const [worktreeDeleteDialog, setWorktreeDeleteDialog] = useState<WorktreeDeleteDialogState>(() => ({
     open: false,
     projectId: "",
+    prefsKey: undefined,
+    alignedToMain: undefined,
     action: "delete",
     afterRecycle: false,
     afterRecycleHint: undefined,
@@ -5017,6 +5023,51 @@ export default function CodexFlowManagerUI() {
   }, [countRunningTerminalAgentsByProjectId]);
 
   /**
+   * 中文说明：计算“删除/对齐偏好”的仓库维度 key。
+   * - 优先使用主 worktree 路径（同仓库多个子 worktree 共用一份记忆）；
+   * - 回退到当前项目路径，保证异常场景下仍可用。
+   */
+  const resolveWorktreeDeletePrefsKey = useCallback((project: Project | null): string => {
+    const pid = String(project?.id || "").trim();
+    if (!pid) return "";
+    const info = gitInfoByProjectId[pid];
+    const mainWorktree = String(info?.mainWorktree || "").trim();
+    const fallback = String(project?.winPath || "").trim();
+    return toDirKeyForCache(mainWorktree || fallback);
+  }, [gitInfoByProjectId]);
+
+  /**
+   * 中文说明：主动查询“当前 worktree 与主 worktree 是否已对齐”。
+   * - 优先使用主进程只读接口直接比较提交 SHA，避免受前端缓存影响；
+   * - 仅在删除/重置弹窗仍停留在同一 projectId 时写回结果，避免竞态覆盖。
+   */
+  const refreshWorktreeDeleteAlignedState = useCallback(async (project: Project): Promise<void> => {
+    const pid = String(project?.id || "").trim();
+    const worktreePath = String(project?.winPath || "").trim();
+    if (!pid || !worktreePath) return;
+    try {
+      const res: any = await (window as any).host?.gitWorktree?.isAlignedToMain?.({ worktreePath });
+      const aligned = !!(res && res.ok && res.aligned === true);
+      setWorktreeDeleteDialog((prev) => {
+        if (!prev.open || prev.projectId !== pid) return prev;
+        if (aligned !== true) return { ...prev, alignedToMain: false };
+        // 已对齐时不允许勾选“保留目录并对齐到主 worktree”，避免无意义操作。
+        return {
+          ...prev,
+          alignedToMain: true,
+          action: "delete",
+          needsForceRemoveWorktree: false,
+          needsForceDeleteBranch: false,
+          needsForceResetWorktree: false,
+          error: undefined,
+        };
+      });
+    } catch {
+      setWorktreeDeleteDialog((prev) => (prev.open && prev.projectId === pid ? { ...prev, alignedToMain: false } : prev));
+    }
+  }, []);
+
+  /**
    * 打开“回收 worktree 到基分支”对话框（默认分支来自 worktree 元数据）。
    */
 		  const openWorktreeRecycleDialog = useCallback(async (project: Project) => {
@@ -5623,10 +5674,17 @@ export default function CodexFlowManagerUI() {
 	      });
 	      return;
 	    }
+	    const prefsKey = resolveWorktreeDeletePrefsKey(project);
+	    const persisted = prefsKey ? loadWorktreeDeletePrefs(prefsKey) : null;
+	    const rememberedAction: "delete" | "reset" = persisted?.preferResetToMain ? "reset" : "delete";
+	    const nextAction: "delete" | "reset" = action === "reset" ? "reset" : action === "delete" ? "delete" : rememberedAction;
+	    if (prefsKey) saveWorktreeDeletePrefs(prefsKey, { preferResetToMain: nextAction === "reset" });
 	    setWorktreeDeleteDialog({
 	      open: true,
 	      projectId: pid,
-	      action: action === "reset" ? "reset" : "delete",
+	      prefsKey: prefsKey || undefined,
+	      alignedToMain: undefined,
+	      action: nextAction,
 	      afterRecycle: !!afterRecycle,
 	      afterRecycleHint: afterRecycleHint || undefined,
 	      running: false,
@@ -5635,17 +5693,20 @@ export default function CodexFlowManagerUI() {
 	      needsForceResetWorktree: false,
 	      error: undefined,
 	    });
-	  }, [guardWorktreeDeleteAndResetByTerminalAgents, t]);
+	    void refreshWorktreeDeleteAlignedState(project);
+	  }, [guardWorktreeDeleteAndResetByTerminalAgents, refreshWorktreeDeleteAlignedState, resolveWorktreeDeletePrefsKey, t]);
 
   /**
    * 关闭“删除 worktree / 对齐到主工作区”对话框。
    */
-	  const closeWorktreeDeleteDialog = useCallback(() => {
-	    setWorktreeDeleteDialog((prev) => ({
-	      ...prev,
-	      open: false,
-	      action: "delete",
-	      afterRecycleHint: undefined,
+		  const closeWorktreeDeleteDialog = useCallback(() => {
+		    setWorktreeDeleteDialog((prev) => ({
+		      ...prev,
+		      open: false,
+		      prefsKey: undefined,
+		      alignedToMain: undefined,
+		      action: "delete",
+		      afterRecycleHint: undefined,
 	      running: false,
 	      needsForceRemoveWorktree: false,
 	      needsForceDeleteBranch: false,
@@ -9231,7 +9292,8 @@ export default function CodexFlowManagerUI() {
             const project = projectsRef.current.find((x) => x.id === worktreeDeleteDialog.projectId) || null;
             if (!project) return null;
             const isReset = worktreeDeleteDialog.action === "reset";
-	            const needForceReset = isReset && worktreeDeleteDialog.needsForceResetWorktree === true;
+            const alreadyAligned = worktreeDeleteDialog.alignedToMain === true;
+		            const needForceReset = isReset && worktreeDeleteDialog.needsForceResetWorktree === true;
             const needForceRemove = !isReset && worktreeDeleteDialog.needsForceRemoveWorktree === true;
             const needForceBranch = !isReset && worktreeDeleteDialog.needsForceDeleteBranch === true;
 	            const forceHint = needForceReset
@@ -9257,37 +9319,50 @@ export default function CodexFlowManagerUI() {
 	                  <div className="font-mono text-[10px] break-all text-slate-700 dark:text-[var(--cf-text-secondary)] leading-tight">{project.winPath}</div>
 	                </div>
 
-                  <div className="rounded-md border border-slate-200/60 bg-white/60 px-2.5 py-2 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)]">
-                    <label className="flex gap-2 items-start cursor-pointer">
-                      <input
-                        type="checkbox"
-                        className="mt-0.5"
-                        checked={worktreeDeleteDialog.action === "reset"}
-                        disabled={worktreeDeleteDialog.running}
-                        onChange={(e) =>
-                          setWorktreeDeleteDialog((prev) => ({
+                  {alreadyAligned ? (
+                    <div className="rounded-md border border-slate-200/60 bg-slate-50/50 px-2.5 py-2 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)]">
+                      <div className="text-[10px] text-slate-600 dark:text-[var(--cf-text-secondary)] leading-snug">
+                        {t("projects:worktreeDeleteResetHintAligned", "检测到当前已与主 worktree 对齐，已隐藏对齐选项。") as string}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="rounded-md border border-slate-200/60 bg-white/60 px-2.5 py-2 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)]">
+                      <label className="flex gap-2 items-start cursor-pointer">
+	                      <input
+	                        type="checkbox"
+	                        className="mt-0.5"
+	                        checked={worktreeDeleteDialog.action === "reset"}
+	                        disabled={worktreeDeleteDialog.running}
+	                        onChange={(e) => {
+	                          const preferResetToMain = e.target.checked === true;
+	                          const prefsKey = String(worktreeDeleteDialog.prefsKey || "").trim();
+	                          if (prefsKey) saveWorktreeDeletePrefs(prefsKey, { preferResetToMain });
+	                          setWorktreeDeleteDialog((prev) => ({
                             ...prev,
-                            action: e.target.checked ? "reset" : "delete",
+                            action: preferResetToMain ? "reset" : "delete",
                             needsForceRemoveWorktree: false,
                             needsForceDeleteBranch: false,
                             needsForceResetWorktree: false,
                             error: undefined,
-                          }))
-                        }
+                          }));
+                        }}
                       />
-                      <div className="space-y-0.5">
-	                        <div className="text-[11px] font-semibold text-slate-700 dark:text-[var(--cf-text-primary)]">
-	                          {t("projects:worktreeDeleteResetOption", "保留并重置该目录（不移除worktree）") as string}
-	                        </div>
-	                        <div className="text-[10px] text-slate-500 dark:text-[var(--cf-text-secondary)] leading-snug">
-	                          {t(
-	                            "projects:worktreeDeleteResetHint",
-	                            "仅重置到与主 worktree 当前签出的修订版一致并清理；不会执行“移除worktree”。"
-	                          ) as string}
-	                        </div>
-                      </div>
-                    </label>
-                  </div>
+			                      <div className="space-y-0.5">
+			                        <div className="text-[11px] font-semibold text-slate-700 dark:text-[var(--cf-text-primary)]">
+			                          {t("projects:worktreeDeleteResetOption", "保留并重置该目录（不移除worktree）") as string}
+			                        </div>
+			                        <div className="text-[10px] text-slate-500 dark:text-[var(--cf-text-secondary)] leading-snug">
+			                          {isReset
+			                            ? (t("projects:worktreeDeleteResetHintChecked", "将对齐到主 worktree 当前签出版本并清理；不会执行“移除worktree”。") as string)
+			                            : (t(
+			                                "projects:worktreeDeleteResetHint",
+			                                "仅重置到与主 worktree 当前签出的修订版一致并清理；不会执行“移除worktree”。"
+			                              ) as string)}
+			                        </div>
+		                      </div>
+                      </label>
+                    </div>
+                  )}
 	                {worktreeDeleteDialog.afterRecycleHint ? (
 	                  <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800 whitespace-pre-line">
 	                    {worktreeDeleteDialog.afterRecycleHint}

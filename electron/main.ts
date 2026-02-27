@@ -46,7 +46,7 @@ import { getBaseUserDataDir, getFeatureFlags, updateFeatureFlags } from "./featu
 import { readDebugConfig, getDebugConfig, onDebugChanged, watchDebugConfig, updateDebugConfig, resetDebugConfig, unwatchDebugConfig } from "./debugConfig";
 import { getGitDirInfoBatchAsync } from "./git/status";
 import { autoCommitWorktreeIfDirtyAsync, createWorktreesAsync, listLocalBranchesAsync, recycleWorktreeAsync, removeWorktreeAsync } from "./git/worktreeOps";
-import { resetWorktreeAsync } from "./git/worktreeReset";
+import { isWorktreeAlignedToMainAsync, resetWorktreeAsync } from "./git/worktreeReset";
 import { resolveWorktreeForkPointAsync, searchForkPointCommitsAsync, validateForkPointRefAsync } from "./git/worktreeForkPoint";
 import { WorktreeCreateTaskManager } from "./git/worktreeCreateTasks";
 import { WorktreeRecycleTaskManager } from "./git/worktreeRecycleTasks";
@@ -2270,6 +2270,22 @@ ipcMain.handle("gitWorktree.reset", async (_e, args: any) => {
     return await resetWorktreeAsync({ worktreePath, targetRef, force, gitPath });
   } catch (e: any) {
     return { ok: false, needsForce: false, error: String(e?.message || e) };
+  }
+});
+
+/**
+ * Git：检测 worktree 是否已与主工作区当前基线对齐（只读，不修改状态）。
+ */
+ipcMain.handle("gitWorktree.isAlignedToMain", async (_e, args: any) => {
+  try {
+    const worktreePath = String(args?.worktreePath || "").trim();
+    if (!worktreePath) return { ok: false, error: "missing worktreePath" };
+    const targetRef = typeof args?.targetRef === "string" ? String(args.targetRef).trim() : undefined;
+    const cfg = settings.getSettings() as any;
+    const gitPath = String(cfg?.gitWorktree?.gitPath || "").trim() || "git";
+    return await isWorktreeAlignedToMainAsync({ worktreePath, targetRef, gitPath });
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) };
   }
 });
 
