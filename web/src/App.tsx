@@ -223,6 +223,53 @@ import type {
   WorktreeRecycleProgressState,
 } from "@/app/app-shared";
 
+type AgentTurnTimerStatus = "working" | "done" | "interrupted";
+
+type AgentTurnTimerState = {
+  status: AgentTurnTimerStatus;
+  startedAt: number;
+  elapsedMs: number;
+  finishedAt?: number;
+};
+
+/**
+ * 中文说明：将耗时（毫秒）格式化为带单位文本（如 `2s`、`1m 05s`、`1h 02m 05s`）。
+ */
+function formatElapsedClock(elapsedMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(Number(elapsedMs) / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) {
+    const mm = String(minutes).padStart(2, "0");
+    const ss = String(seconds).padStart(2, "0");
+    return `${hours}h ${mm}m ${ss}s`;
+  }
+  if (minutes > 0) {
+    const ss = String(seconds).padStart(2, "0");
+    return `${minutes}m ${ss}s`;
+  }
+  return `${seconds}s`;
+}
+
+/**
+ * 中文说明：计算当前计时状态对应的“展示耗时”（工作中按当前时间实时增长，完成态使用固定耗时）。
+ */
+function resolveAgentTurnElapsedMs(state?: AgentTurnTimerState): number {
+  if (!state) return 0;
+  if (state.status === "working") return Math.max(0, Date.now() - state.startedAt);
+  return Math.max(0, Number(state.elapsedMs) || 0);
+}
+
+/**
+ * 中文说明：判断某个 DOM 节点是否位于终端区域内，用于识别“终端内按下 ESC”。
+ */
+function isNodeInsideTerminal(node: EventTarget | null | undefined): boolean {
+  const el = node && typeof (node as any).closest === "function" ? (node as HTMLElement) : null;
+  if (!el) return false;
+  return !!el.closest(".xterm, .cf-terminal-chrome");
+}
+
 export default function CodexFlowManagerUI() {
   const { t, i18n } = useTranslation(["projects", "history", "terminal", "settings", "common", "about"]);
   const localeForI18n = useMemo(() => {
@@ -940,6 +987,16 @@ export default function CodexFlowManagerUI() {
   const notificationPrefsRef = useRef<CompletionPreferences>(DEFAULT_COMPLETION_PREFS);
   const [pendingCompletions, setPendingCompletions] = useState<Record<string, number>>({});
   const pendingCompletionsRef = useRef<Record<string, number>>({});
+  const [agentTurnTimerByTab, setAgentTurnTimerByTab] = useState<Record<string, AgentTurnTimerState>>({});
+  const agentTurnTimerByTabRef = useRef<Record<string, AgentTurnTimerState>>({});
+  const [agentTurnClockTick, setAgentTurnClockTick] = useState(0);
+  const [agentTurnCtxMenu, setAgentTurnCtxMenu] = useState<{ show: boolean; x: number; y: number; tabId: string | null }>({
+    show: false,
+    x: 0,
+    y: 0,
+    tabId: null,
+  });
+  const agentTurnCtxMenuRef = useRef<HTMLDivElement | null>(null);
   const completionSnapshotRef = useRef<Record<string, { preview: string; ts: number }>>({});
   const ptyNotificationBuffersRef = useRef<Record<string, string>>({});
   const ptyListenersRef = useRef<Record<string, () => void>>({});
@@ -953,6 +1010,7 @@ export default function CodexFlowManagerUI() {
 
   useEffect(() => { editingTabIdRef.current = editingTabId; }, [editingTabId]);
   useEffect(() => { notificationPrefsRef.current = notificationPrefs; }, [notificationPrefs]);
+  useEffect(() => { agentTurnTimerByTabRef.current = agentTurnTimerByTab; }, [agentTurnTimerByTab]);
   useEffect(() => { tabsByProjectRef.current = tabsByProject; }, [tabsByProject]);
   useEffect(() => { projectsRef.current = projects; }, [projects]);
   useEffect(() => { dirTreeStoreRef.current = dirTreeStore; }, [dirTreeStore]);
@@ -1139,6 +1197,260 @@ export default function CodexFlowManagerUI() {
   }
   const tabsListRef = useRef<HTMLDivElement | null>(null);
   const [centerMode, setCenterMode] = useState<'console' | 'history'>('console');
+
+  /**
+   * 中文说明：按标签页 id 反查当前 providerId（用于判断是否允许启用计时功能）。
+   */
+  const resolveTabProviderId = useCallback((tabId: string): string => {
+    const id = String(tabId || "").trim();
+    if (!id) return "";
+    for (const list of Object.values(tabsByProjectRef.current || {})) {
+      for (const tab of list || []) {
+        if (tab?.id === id) return String(tab.providerId || "").trim();
+      }
+    }
+    return "";
+  }, []);
+
+  /**
+   * 中文说明：判断某个 provider 是否允许触发“Working/完成计时”功能（仅会话型内置引擎）。
+   */
+  const shouldEnableAgentTimerForProvider = useCallback((providerId: string): boolean => {
+    const pid = String(providerId || "").trim();
+    if (!pid) return false;
+    return isBuiltInSessionProviderId(pid);
+  }, []);
+
+  /**
+   * 中文说明：在用户发送消息时启动计时；若当前标签页已在计时中则保持不变，避免重复发送打断计时。
+   */
+  const startAgentTurnTimer = useCallback((tabId: string) => {
+    const id = String(tabId || "").trim();
+    if (!id) return;
+    const now = Date.now();
+    setAgentTurnTimerByTab((prev) => {
+      const current = prev[id];
+      if (current?.status === "working") return prev;
+      return {
+        ...prev,
+        [id]: {
+          status: "working",
+          startedAt: now,
+          elapsedMs: 0,
+        },
+      };
+    });
+    notifyLog(`agentTimer.start tab=${id}`);
+  }, [notifyLog]);
+
+  /**
+   * 中文说明：在收到代理完成通知时结束计时，并固化本轮总耗时。
+   */
+  const completeAgentTurnTimer = useCallback((tabId: string) => {
+    const id = String(tabId || "").trim();
+    if (!id) return;
+    const now = Date.now();
+    setAgentTurnTimerByTab((prev) => {
+      const current = prev[id];
+      if (!current || current.status !== "working") return prev;
+      const elapsedMs = Math.max(0, now - current.startedAt);
+      return {
+        ...prev,
+        [id]: {
+          ...current,
+          status: "done",
+          elapsedMs,
+          finishedAt: now,
+        },
+      };
+    });
+    notifyLog(`agentTimer.done tab=${id}`);
+  }, [notifyLog]);
+
+  /**
+   * 中文说明：将指定标签页的计时标记为“中断”，并保留当前已耗时（用于终端 ESC 中断场景）。
+   */
+  const interruptAgentTurnTimer = useCallback((tabId: string, source: string) => {
+    const id = String(tabId || "").trim();
+    if (!id) return;
+    const now = Date.now();
+    setAgentTurnTimerByTab((prev) => {
+      const current = prev[id];
+      if (!current || current.status !== "working") return prev;
+      const elapsedMs = Math.max(0, now - current.startedAt);
+      return {
+        ...prev,
+        [id]: {
+          ...current,
+          status: "interrupted",
+          elapsedMs,
+          finishedAt: now,
+        },
+      };
+    });
+    notifyLog(`agentTimer.interrupt tab=${id} source=${source}`);
+  }, [notifyLog]);
+
+  /**
+   * 中文说明：取消指定标签页的计时状态（用于右键手动取消）。
+   */
+  const cancelAgentTurnTimer = useCallback((tabId: string, source: string) => {
+    const id = String(tabId || "").trim();
+    if (!id) return;
+    setAgentTurnTimerByTab((prev) => {
+      if (!prev[id]) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    notifyLog(`agentTimer.cancel tab=${id} source=${source}`);
+  }, [notifyLog]);
+
+  /**
+   * 中文说明：生成标签页计时状态展示文本，支持“计时中/已完成”两种状态。
+   */
+  const resolveAgentTurnStatusText = useCallback((tabId: string): string => {
+    const id = String(tabId || "").trim();
+    if (!id) return "";
+    const state = agentTurnTimerByTab[id];
+    if (!state) return "";
+    const elapsed = formatElapsedClock(resolveAgentTurnElapsedMs(state));
+    if (state.status === "working") return t("terminal:agentWorking", { elapsed }) as string;
+    if (state.status === "interrupted") return t("terminal:agentInterrupted", { elapsed }) as string;
+    return t("terminal:agentDone", { elapsed }) as string;
+  }, [agentTurnClockTick, agentTurnTimerByTab, t]);
+
+  /**
+   * 中文说明：打开计时状态的右键菜单，提供“取消计时”操作入口。
+   */
+  const openAgentTurnContextMenu = useCallback((event: React.MouseEvent, tabId: string) => {
+    const id = String(tabId || "").trim();
+    if (!id || !agentTurnTimerByTabRef.current[id]) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setAgentTurnCtxMenu({ show: true, x: event.clientX, y: event.clientY, tabId: id });
+  }, []);
+
+  /**
+   * 中文说明：渲染输入区上方的计时状态条（仅在存在计时状态时显示）。
+   */
+  const renderAgentTurnStatusBar = useCallback((tabId: string, wrapperClassName: string = "mb-0.5 px-1") => {
+    const id = String(tabId || "").trim();
+    const state = id ? agentTurnTimerByTab[id] : undefined;
+    if (!state) return null;
+    const working = state?.status === "working";
+    const interrupted = state?.status === "interrupted";
+    const statusText = resolveAgentTurnStatusText(id);
+    return (
+      <div className={wrapperClassName}>
+        <div className="relative">
+          <div
+            className={working
+              ? "text-[10px] sm:text-xs text-slate-500/80 dark:text-slate-400/70 px-2 py-0.5 flex items-center gap-2 select-none cursor-default hover:text-slate-600 dark:hover:text-slate-300 transition-colors"
+              : "text-[10px] sm:text-xs text-slate-500/80 dark:text-slate-400/70 px-2 py-0.5 flex items-center gap-2 select-none cursor-default transition-colors"}
+            onContextMenu={(event) => {
+              openAgentTurnContextMenu(event, id);
+            }}
+            title={t("terminal:timerContextHint") as string}
+          >
+            {working ? (
+              <span className="flex items-center gap-1.5">
+                <span className="relative flex h-1.5 w-1.5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-sky-500"></span>
+                </span>
+                {statusText}
+              </span>
+            ) : interrupted ? (
+              <span className="flex items-center gap-1.5">
+                <span className="h-1.5 w-1.5 rounded-full bg-amber-500 dark:bg-amber-400"></span>
+                {statusText}
+              </span>
+            ) : (
+              <span className="flex items-center gap-1.5">
+                <span className="h-1.5 w-1.5 rounded-full bg-slate-400 dark:bg-slate-600"></span>
+                {statusText}
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }, [agentTurnTimerByTab, openAgentTurnContextMenu, resolveAgentTurnStatusText, t]);
+
+  /**
+   * 中文说明：判断是否存在任意“进行中”计时；存在时驱动 1 秒一次的 UI 刷新。
+   */
+  const hasWorkingAgentTimer = useMemo(() => {
+    for (const state of Object.values(agentTurnTimerByTab)) {
+      if (state?.status === "working") return true;
+    }
+    return false;
+  }, [agentTurnTimerByTab]);
+
+  /**
+   * 中文说明：存在运行中计时时，每秒更新一次渲染节拍以刷新“已耗时”显示。
+   */
+  useEffect(() => {
+    if (!hasWorkingAgentTimer) return;
+    const timer = window.setInterval(() => setAgentTurnClockTick((tick) => tick + 1), 1000);
+    return () => { window.clearInterval(timer); };
+  }, [hasWorkingAgentTimer]);
+
+  /**
+   * 中文说明：监听键盘 ESC；当焦点位于终端区域且该标签页计时中时，执行取消计时。
+   */
+  useEffect(() => {
+    const onKeyDownCapture = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (!isNodeInsideTerminal(event.target) && !isNodeInsideTerminal(document.activeElement)) return;
+      const tabId = activeTabIdRef.current;
+      if (!tabId) return;
+      const state = agentTurnTimerByTabRef.current[tabId];
+      if (!state || state.status !== "working") return;
+      interruptAgentTurnTimer(tabId, "terminal-esc");
+    };
+    document.addEventListener("keydown", onKeyDownCapture, true);
+    return () => { document.removeEventListener("keydown", onKeyDownCapture, true); };
+  }, [interruptAgentTurnTimer]);
+
+  /**
+   * 中文说明：当标签集合变化时，清理已不存在标签页的计时状态，防止状态泄漏。
+   */
+  useEffect(() => {
+    const activeTabSet = new Set<string>();
+    const tabProviderById: Record<string, string> = {};
+    for (const list of Object.values(tabsByProject)) {
+      for (const tab of list || []) {
+        const id = String(tab.id || "").trim();
+        if (!id) continue;
+        activeTabSet.add(id);
+        tabProviderById[id] = String(tab.providerId || "").trim();
+      }
+    }
+    setAgentTurnTimerByTab((prev) => {
+      let changed = false;
+      const next: Record<string, AgentTurnTimerState> = {};
+      for (const [tabId, state] of Object.entries(prev)) {
+        if (!activeTabSet.has(tabId)) {
+          changed = true;
+          continue;
+        }
+        if (!shouldEnableAgentTimerForProvider(tabProviderById[tabId] || "")) {
+          changed = true;
+          continue;
+        }
+        next[tabId] = state;
+      }
+      if (!changed) return prev;
+      return next;
+    });
+    setAgentTurnCtxMenu((prev) => {
+      if (!prev.show || !prev.tabId) return prev;
+      if (activeTabSet.has(prev.tabId)) return prev;
+      return { show: false, x: 0, y: 0, tabId: null };
+    });
+  }, [shouldEnableAgentTimerForProvider, tabsByProject]);
 
   function computePendingTotal(map: Record<string, number>): number {
     let total = 0;
@@ -1442,8 +1754,14 @@ export default function CodexFlowManagerUI() {
     );
   }
 
+  /**
+   * 中文说明：处理代理完成事件，统一刷新通知、铃声、用量与本轮输入计时状态。
+   */
   function handleAgentCompletion(tabId: string, preview: string) {
     if (!tabId) return;
+    const providerId = resolveTabProviderId(tabId);
+    if (shouldEnableAgentTimerForProvider(providerId)) completeAgentTurnTimer(tabId);
+    else cancelAgentTurnTimer(tabId, "provider-not-supported");
     const cleanedPreview = normalizeCompletionPreview(preview);
     recordCompletionSnapshot(tabId, cleanedPreview);
     const foreground = isAppForeground();
@@ -2138,6 +2456,34 @@ export default function CodexFlowManagerUI() {
     return () => { window.removeEventListener('resize', onResize); };
   }, [projectCtxMenu.show, projectCtxMenu.x, projectCtxMenu.y]);
 
+  // Auto-adjust agent timer context menu position to stay within viewport (pre-paint to avoid visible jump)
+  useLayoutEffect(() => {
+    if (!agentTurnCtxMenu.show) return;
+    const margin = 8;
+    const adjust = () => {
+      try {
+        const el = agentTurnCtxMenuRef.current;
+        if (!el) return;
+        const rect = el.getBoundingClientRect();
+        let left = agentTurnCtxMenu.x;
+        let top = agentTurnCtxMenu.y;
+        const maxLeft = Math.max(margin, window.innerWidth - rect.width - margin);
+        const maxTop = Math.max(margin, window.innerHeight - rect.height - margin);
+        if (left > maxLeft) left = maxLeft;
+        if (top > maxTop) top = maxTop;
+        if (left < margin) left = margin;
+        if (top < margin) top = margin;
+        if (left !== agentTurnCtxMenu.x || top !== agentTurnCtxMenu.y) {
+          setAgentTurnCtxMenu((m) => ({ ...m, x: left, y: top }));
+        }
+      } catch {}
+    };
+    adjust();
+    const onResize = () => adjust();
+    window.addEventListener("resize", onResize);
+    return () => { window.removeEventListener("resize", onResize); };
+  }, [agentTurnCtxMenu.show, agentTurnCtxMenu.x, agentTurnCtxMenu.y]);
+
   // Settings
   const [settingsOpen, setSettingsOpen] = useState(false);
   // Provider：决定后续“新建/启动”的命令与环境（与设置面板一致，且可扩展）
@@ -2406,6 +2752,7 @@ export default function CodexFlowManagerUI() {
       dumpOverlayDiagnostics('before-clear-onCenterConsole');
       try { setHistoryCtxMenu((m) => ({ ...m, show: false })); } catch {}
       try { setProjectCtxMenu((m) => ({ ...m, show: false })); } catch {}
+      try { setAgentTurnCtxMenu((m) => ({ ...m, show: false, tabId: null })); } catch {}
       // 释放可能残留的指针捕获（例如原生 confirm 期间的鼠标按下未正确收尾）
       try { document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); } catch {}
       try { document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true } as any)); } catch {}
@@ -2425,6 +2772,7 @@ export default function CodexFlowManagerUI() {
     const onVisibility = () => {
       try { setHistoryCtxMenu((m) => ({ ...m, show: false })); } catch {}
       try { setProjectCtxMenu((m) => ({ ...m, show: false })); } catch {}
+      try { setAgentTurnCtxMenu((m) => ({ ...m, show: false, tabId: null })); } catch {}
     };
     document.addEventListener('visibilitychange', onVisibility);
     window.addEventListener('blur', onVisibility);
@@ -3510,12 +3858,17 @@ export default function CodexFlowManagerUI() {
     else requestInputFullscreenOpen(tabId);
   }, [inputFullscreenByTab, inputFullscreenClosingTabs, requestInputFullscreenClose, requestInputFullscreenOpen]);
 
+  /**
+   * 中文说明：将输入区内容发送到当前标签页终端，并在首条发送时启动“Working 计时”。
+   */
   function sendCommand() {
     if (!activeTab) return;
     const text = compileTextFromChipsAndDraft(activeTab.id);
     if (!text.trim()) return;
     const pid = ptyByTabRef.current[activeTab.id];
     if (!pid) return;
+    if (shouldEnableAgentTimerForProvider(activeTab.providerId)) startAgentTurnTimer(activeTab.id);
+    else cancelAgentTurnTimer(activeTab.id, "provider-not-supported");
     // 统一改用 TerminalManager 的封装，保证行为一致且便于复用
     try {
       if (sendMode === 'write_and_enter') tm.sendTextAndEnter(activeTab.id, text, { providerId: activeTab.providerId });
@@ -3550,6 +3903,9 @@ export default function CodexFlowManagerUI() {
     } catch {}
   }
 
+  /**
+   * 中文说明：关闭指定标签页，并清理与该标签页关联的 PTY、通知和计时状态。
+   */
   function closeTab(id: string) {
     if (!selectedProject) return;
     const pid = ptyByTabRef.current[id];
@@ -3566,6 +3922,7 @@ export default function CodexFlowManagerUI() {
       return { ...m, [selectedProject.id]: next };
     });
     clearPendingForTab(id);
+    cancelAgentTurnTimer(id, "close-tab");
     unregisterTabProject(id);
     try { delete userInputCountByTabIdRef.current[id]; } catch {}
     setInputFullscreenByTab((m) => {
@@ -6261,6 +6618,7 @@ export default function CodexFlowManagerUI() {
             const isInputFullscreen = !!inputFullscreenByTab[tab.id];
             const isInputClosing = !!inputFullscreenClosingTabs[tab.id];
             const showFullscreenInput = isInputFullscreen || isInputClosing;
+            const hasAgentTimer = !!agentTurnTimerByTab[tab.id];
             const fullscreenState = isInputClosing ? "closing" : "open";
             const inputPlaceholder = t('terminal:inputPlaceholder') as string;
             const sendLabel = t('terminal:send') as string;
@@ -6300,6 +6658,7 @@ export default function CodexFlowManagerUI() {
                             data-state={fullscreenState}
                           className="relative flex flex-1 flex-col rounded-[26px] bg-[var(--cf-surface-solid)] shadow-apple-lg animate-[cfFullscreenPanelEnter_260ms_cubic-bezier(0.4,0,0.2,1)_both] data-[state=closing]:animate-[cfFullscreenPanelExit_220ms_cubic-bezier(0.4,0,0.2,1)_forwards]"
                           >
+                            {renderAgentTurnStatusBar(tab.id, "px-4 pt-0.5 pb-0.5")}
                             <PathChipsInput
                               placeholder={inputPlaceholder}
                               chips={chipsByTab[tab.id] || []}
@@ -6345,8 +6704,9 @@ export default function CodexFlowManagerUI() {
                       </div>
                     ) : null}
                     {!isInputFullscreen ? (
-                      <div className="mt-3 w-full">
+                      <div className={`${hasAgentTimer ? "mt-0.5" : "mt-3"} w-full`}>
                         <div className="relative w-full">
+                          {renderAgentTurnStatusBar(tab.id)}
                           <PathChipsInput
                             placeholder={inputPlaceholder}
                             chips={chipsByTab[tab.id] || []}
@@ -7054,6 +7414,7 @@ export default function CodexFlowManagerUI() {
                   // 返回控制台：先关闭任意可能遗留的全屏遮罩，避免拦截点击/键盘事件
                   try { setHistoryCtxMenu((m) => ({ ...m, show: false })); } catch {}
                   try { setProjectCtxMenu((m) => ({ ...m, show: false })); } catch {}
+                  try { setAgentTurnCtxMenu((m) => ({ ...m, show: false, tabId: null })); } catch {}
                   // 释放可能卡死的鼠标捕获：主动派发一次 mouseup/pointerup
                   try { document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); } catch {}
                   try { document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true } as any)); } catch {}
@@ -7362,6 +7723,38 @@ export default function CodexFlowManagerUI() {
                 onClick={(e) => e.stopPropagation()}
               >
                 {menuItems}
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {agentTurnCtxMenu.show && (
+        <div
+          className="fixed inset-0 z-50"
+          onClick={() => setAgentTurnCtxMenu((m) => ({ ...m, show: false, tabId: null }))}
+          onContextMenu={(event) => { event.preventDefault(); setAgentTurnCtxMenu((m) => ({ ...m, show: false, tabId: null })); }}
+        >
+          {(function renderAgentTimerMenu() {
+            const tabId = String(agentTurnCtxMenu.tabId || "").trim();
+            const timerState = tabId ? agentTurnTimerByTab[tabId] : undefined;
+            if (!tabId || !timerState) return null;
+            return (
+              <div
+                ref={agentTurnCtxMenuRef}
+                className="absolute z-50 min-w-[160px] rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple shadow-apple-lg p-1.5 text-sm text-[var(--cf-text-primary)] dark:shadow-apple-dark-lg"
+                style={{ left: agentTurnCtxMenu.x, top: agentTurnCtxMenu.y }}
+                onClick={(event) => event.stopPropagation()}
+              >
+                <button
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-red)] rounded-apple-sm hover:bg-[var(--cf-red-light)] transition-all duration-apple-fast"
+                  onClick={() => {
+                    cancelAgentTurnTimer(tabId, "context-menu");
+                    setAgentTurnCtxMenu((m) => ({ ...m, show: false, tabId: null }));
+                  }}
+                >
+                  <X className="h-4 w-4" /> {t("terminal:cancelTimer") as string}
+                </button>
               </div>
             );
           })()}
