@@ -1038,8 +1038,10 @@ function createWindow() {
   const windowIcon = resolveAppIcon();
   try { perfLogger.log(`[WIN] create pid=${process.pid} userData=${app.getPath('userData')}`); } catch {}
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 800,
+    width: 1376,
+    height: 860,
+    minWidth: 1216,
+    minHeight: 760,
     icon: windowIcon,
     // 恢复系统默认标题栏/菜单栏布局
     autoHideMenuBar: false,
