@@ -11,6 +11,10 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { FolderOpen, Folder, File, Puzzle, Tag, BadgeCheck, ChevronRight, FileText, FolderOpenDot, ScrollText } from "lucide-react";
 
+const BASE_PANEL_WIDTH = 360;
+const PANEL_WIDTH_SCALE = 1.5;
+const DEFAULT_PANEL_WIDTH = Math.round(BASE_PANEL_WIDTH * PANEL_WIDTH_SCALE);
+
 // 图标解析：基于字符串名称返回具体图标
 function IconByName({ name, className }: { name?: string; className?: string }) {
   const map: Record<string, React.ReactNode> = {
@@ -40,6 +44,22 @@ function highlight(text: string, q: string) {
       {text.slice(idx + query.length)}
     </>
   );
+}
+
+/**
+ * 中文说明：对过长标题执行“中间省略”，保留首尾关键信息，便于区分长文件名。
+ * @param text - 原始文本
+ * @param maxChars - 最大显示字符数（<=0 时返回空串）
+ */
+function middleEllipsis(text: string, maxChars: number): string {
+  const raw = String(text || "");
+  const limit = Math.max(0, Math.floor(maxChars));
+  if (limit <= 0) return "";
+  if (raw.length <= limit) return raw;
+  if (limit <= 3) return raw.slice(0, limit);
+  const headLen = Math.max(1, Math.ceil((limit - 1) * 0.6));
+  const tailLen = Math.max(1, limit - 1 - headLen);
+  return `${raw.slice(0, headLen)}…${raw.slice(raw.length - tailLen)}`;
 }
 
 export type PaletteLevel = "categories" | "results";
@@ -147,15 +167,15 @@ export default function AtCommandPalette(props: AtCommandPaletteProps) {
 
   if (!open || !anchor) return null;
 
-  // 固定尺寸（整体收缩约 50%）：保持大小一致避免“仅两项时留出大片空白”视觉
-  const PANEL_W = 360; // 结果与分类统一宽度
+  // 固定高度 + 默认加宽（宽度从 360 提升为 1.5 倍）：保持列表信息密度与可读性平衡
   const PANEL_H_RESULTS = 250; // 结果面板固定高
   const PANEL_H_CATEGORIES = 160; // 一级分类固定高
   // 智能定位：默认在输入框下方；若下方空间不足则放到上方；若左右越界则夹紧到边界内
   const viewW = typeof window !== 'undefined' ? window.innerWidth : 1920;
   const viewH = typeof window !== 'undefined' ? window.innerHeight : 1080;
-  const panelW = PANEL_W;
+  const panelW = Math.min(DEFAULT_PANEL_WIDTH, Math.max(0, viewW - 16));
   const panelH = (level === 'results') ? PANEL_H_RESULTS : PANEL_H_CATEGORIES;
+  const titleMaxChars = Math.max(24, Math.floor(panelW / 8));
   let left = Math.round(anchor.left);
   let top = Math.round(anchor.top + anchor.height + 4);
   // 水平夹紧
@@ -168,7 +188,7 @@ export default function AtCommandPalette(props: AtCommandPaletteProps) {
     position: "fixed",
     left,
     top,
-    width: PANEL_W,
+    width: panelW,
     zIndex: 1000,
   };
 
@@ -207,7 +227,7 @@ export default function AtCommandPalette(props: AtCommandPaletteProps) {
           </ScrollArea>
         </div>
       ) : (
-        <div className="w-[360px] h-[250px]">
+        <div className="w-full h-[250px]">
           <div className="flex items-center gap-2 border-b border-[var(--cf-border)] px-3 py-1.5">
             <div className="text-xs text-[var(--cf-text-muted)]">
               {scope === "all" ? t('at:scopeAll') : t(`at:category.${scope as string}`)}
@@ -223,6 +243,7 @@ export default function AtCommandPalette(props: AtCommandPaletteProps) {
                 const it = r.item;
                 const active = idx === hiRes;
                 const cat: AtCategory | undefined = getCategoryById(it.categoryId as AtCategoryId);
+                const titleText = middleEllipsis(it.title, titleMaxChars);
                 return (
                   <button
                     key={`${it.categoryId}-${it.id}`}
@@ -238,9 +259,9 @@ export default function AtCommandPalette(props: AtCommandPaletteProps) {
                   >
                     <IconByName name={it.icon || cat?.icon} className="h-4 w-4 text-[var(--cf-text-secondary)]" />
                     <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm font-medium text-[var(--cf-text-primary)]">{highlight(it.title, query)}</div>
+                      <div className="truncate text-sm font-medium text-[var(--cf-text-primary)]" title={it.title}>{highlight(titleText, query)}</div>
                       {it.subtitle && (
-                        <div className="truncate text-xs text-[var(--cf-text-muted)]">{it.subtitle}</div>
+                        <div className="truncate text-xs text-[var(--cf-text-muted)]" title={it.subtitle}>{it.subtitle}</div>
                       )}
                     </div>
                     {/* 去除右侧的分类标签显示，按设计不需要在结果行重复展示 */}
