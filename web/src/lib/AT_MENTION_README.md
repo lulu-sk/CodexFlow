@@ -33,7 +33,7 @@ import AtInput from "@/components/at-mention-new/CommandInputWithAt";
   className="pr-12"
 />
 ```
-- `AtInput` 内部仍渲染 `Input`，因此样式/大小与现有一致（已微调为更加紧凑的 360×280/160 面板）。
+- `AtInput` 内部仍渲染 `Input`，因此样式/大小与现有一致（当前默认宽度 540，结果区高度 250，分类区高度 160；小屏会按视口自适应收缩）。
 
 ## 接入真实数据（替换 Mock）
 当前 `searchAtItems()` 使用 `MOCK_ITEMS`。接入真实数据时，建议按以下最小改动路径：
@@ -52,7 +52,7 @@ import AtInput from "@/components/at-mention-new/CommandInputWithAt";
 - 进入新分类：在 `AT_CATEGORIES` 中新增条目，并确保你的数据映射产出对应 `categoryId` 的 `AtItem`。
 - 选中后的业务联动：当前默认“仅替换文本”。如需额外动作（如跳转/打开文件），可在 `AtInput` 的 `handlePick` 内扩展；或将其重构为支持外部回调（例如 `onPickItem`）。
 - 主题与尺寸：
-  - 固定宽度 `360px`；分类高度 `160px`、结果高度 `280px`；
+  - 默认宽度 `540px`（相较 360 提升 1.5 倍，且会按视口自适应收缩）；分类高度 `160px`、结果高度 `250px`；
   - 若下方空间不足自动上翻；左右贴边距 8px。
 
 ## 行为细节（校验点）
