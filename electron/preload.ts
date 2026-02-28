@@ -510,6 +510,12 @@ contextBridge.exposeInMainWorld('host', {
     copyText: async (text: string) => {
       return await ipcRenderer.invoke('utils.copyText', { text });
     },
+    /**
+     * 中文说明：将路径转换为当前系统可直接使用的格式（如 Windows 盘符路径）。
+     */
+    normalizePathForClipboard: async (p: string) => {
+      return await ipcRenderer.invoke('utils.normalizePathForClipboard', { path: p });
+    },
     readText: async () => {
       return await ipcRenderer.invoke('utils.readText');
     },
@@ -524,6 +530,24 @@ contextBridge.exposeInMainWorld('host', {
     },
     openPath: async (p: string) => {
       return await ipcRenderer.invoke('utils.openPath', { path: p });
+    },
+    openPathAtPosition: async (p: string, pos?: { line?: number; column?: number; projectPath?: string }) => {
+      return await ipcRenderer.invoke('utils.openPathAtPosition', { path: p, line: pos?.line, column: pos?.column, projectPath: pos?.projectPath });
+    },
+    // 中文说明：读取项目绑定的 IDE（用于“按项目复用已打开 IDE”跳转策略）。
+    getProjectPreferredIde: async (projectPath: string) => {
+      return await ipcRenderer.invoke("utils.projectIde.get", { projectPath });
+    },
+    // 中文说明：设置或清除项目绑定的 IDE（兼容旧版 ideId 字符串与新版结构化 config）。
+    // - 清除绑定请显式传入 null，避免遗漏参数导致误清除。
+    setProjectPreferredIde: async (
+      projectPath: string,
+      config: { mode?: "builtin" | "custom"; builtinId?: "vscode" | "cursor" | "windsurf" | "rider"; customName?: string; customCommand?: string } | "vscode" | "cursor" | "windsurf" | "rider" | null,
+    ) => {
+      if (typeof config === "string" || config === null) {
+        return await ipcRenderer.invoke("utils.projectIde.set", { projectPath, ideId: config ?? null });
+      }
+      return await ipcRenderer.invoke("utils.projectIde.set", { projectPath, config });
     },
     openExternalUrl: async (url: string) => {
       return await ipcRenderer.invoke('utils.openExternalUrl', { url });

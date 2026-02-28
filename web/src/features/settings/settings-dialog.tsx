@@ -92,11 +92,43 @@ type NetworkPrefs = {
 type CodexAccountPrefs = {
   recordEnabled: boolean;
 };
+type BuiltinIdeId = "vscode" | "cursor" | "windsurf" | "rider";
+type IdeOpenPrefs = {
+  mode: "auto" | "builtin" | "custom";
+  builtinId: BuiltinIdeId;
+  customName: string;
+  customCommand: string;
+};
 
 const normalizeThemeSetting = (value: any): ThemeSetting => {
   if (value === "light" || value === "dark") return value;
   return "system";
 };
+
+/**
+ * 归一化内置 IDE 标识，非法时回退到 Cursor。
+ */
+function normalizeBuiltinIdeId(value: unknown): BuiltinIdeId {
+  const raw = String(value || "").trim().toLowerCase();
+  if (raw === "vscode" || raw === "cursor" || raw === "windsurf" || raw === "rider") return raw as BuiltinIdeId;
+  return "cursor";
+}
+
+/**
+ * 归一化默认 IDE 配置，保证设置面板状态结构稳定。
+ */
+function normalizeIdeOpenPrefs(value: unknown): IdeOpenPrefs {
+  const raw = value && typeof value === "object" ? (value as any) : {};
+  const modeRaw = String(raw.mode || "").trim().toLowerCase();
+  const mode: IdeOpenPrefs["mode"] =
+    modeRaw === "builtin" ? "builtin" : modeRaw === "custom" ? "custom" : "auto";
+  return {
+    mode,
+    builtinId: normalizeBuiltinIdeId(raw.builtinId),
+    customName: String(raw.customName || ""),
+    customCommand: String(raw.customCommand || ""),
+  };
+}
 
 export type SettingsDialogProps = {
   open: boolean;
@@ -115,6 +147,7 @@ export type SettingsDialogProps = {
     notifications: NotificationPrefs;
     network?: NetworkPrefs;
     codexAccount: CodexAccountPrefs;
+    defaultIde: IdeOpenPrefs;
     terminalFontFamily: string;
     terminalTheme: TerminalThemeId;
     claudeCodeReadAgentHistory: boolean;
@@ -135,6 +168,7 @@ export type SettingsDialogProps = {
     notifications: NotificationPrefs;
     network: NetworkPrefs;
     codexAccount: CodexAccountPrefs;
+    defaultIde: IdeOpenPrefs;
     terminalFontFamily: string;
     terminalTheme: TerminalThemeId;
     claudeCodeReadAgentHistory: boolean;
@@ -543,6 +577,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   const [codexAccount, setCodexAccount] = useState<CodexAccountPrefs>(() => ({
     recordEnabled: !!values.codexAccount?.recordEnabled,
   }));
+  const [defaultIde, setDefaultIde] = useState<IdeOpenPrefs>(() => normalizeIdeOpenPrefs(values.defaultIde));
   const [claudeCodeReadAgentHistory, setClaudeCodeReadAgentHistory] = useState<boolean>(!!values.claudeCodeReadAgentHistory);
   const [gitWorktreeGitPath, setGitWorktreeGitPath] = useState<string>(String(values.gitWorktree?.gitPath || ""));
   const [gitWorktreeExternalGitToolId, setGitWorktreeExternalGitToolId] = useState<ExternalGitToolId>(
@@ -686,6 +721,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
       noProxy: values.network?.noProxy ?? "",
     });
     setCodexAccount({ recordEnabled: !!values.codexAccount?.recordEnabled });
+    setDefaultIde(normalizeIdeOpenPrefs(values.defaultIde));
     setClaudeCodeReadAgentHistory(!!values.claudeCodeReadAgentHistory);
     setGitWorktreeGitPath(String(values.gitWorktree?.gitPath || ""));
     setGitWorktreeExternalGitToolId((values.gitWorktree?.externalGitToolId as ExternalGitToolId) || "rider");
@@ -1402,6 +1438,90 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                   <div className="text-xs text-slate-500">
                     {t("settings:appearance.theme.note", { current: themeLabel(normalizeThemeSetting(theme === "system" ? systemTheme : theme)) })}
                   </div>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardTitle>{t("settings:ideOpen.label")}</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <p className="text-sm text-slate-500">{t("settings:ideOpen.help")}</p>
+                  <div className="max-w-xs">
+                    <Select
+                      value={defaultIde.mode}
+                      onValueChange={(value) => {
+                        const mode = value === "builtin" ? "builtin" : value === "custom" ? "custom" : "auto";
+                        setDefaultIde((prev) => ({ ...prev, mode }));
+                      }}
+                    >
+                      <SelectTrigger>
+                        <span className="truncate text-left">
+                          {defaultIde.mode === "builtin"
+                            ? t("settings:ideOpen.modeBuiltin")
+                            : defaultIde.mode === "custom"
+                              ? t("settings:ideOpen.modeCustom")
+                              : t("settings:ideOpen.modeAuto")}
+                        </span>
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="auto">{t("settings:ideOpen.modeAuto")}</SelectItem>
+                        <SelectItem value="builtin">{t("settings:ideOpen.modeBuiltin")}</SelectItem>
+                        <SelectItem value="custom">{t("settings:ideOpen.modeCustom")}</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {defaultIde.mode === "builtin" ? (
+                    <div className="max-w-xs space-y-1.5">
+                      <Label className="text-xs text-slate-600">{t("settings:ideOpen.builtinLabel")}</Label>
+                      <Select
+                        value={defaultIde.builtinId}
+                        onValueChange={(value) => {
+                          const builtinId = normalizeBuiltinIdeId(value);
+                          setDefaultIde((prev) => ({ ...prev, builtinId }));
+                        }}
+                      >
+                        <SelectTrigger>
+                          <span className="truncate text-left">
+                            {defaultIde.builtinId === "vscode"
+                              ? t("settings:ideOpen.builtinVsCode")
+                              : defaultIde.builtinId === "cursor"
+                                ? t("settings:ideOpen.builtinCursor")
+                                : defaultIde.builtinId === "windsurf"
+                                  ? t("settings:ideOpen.builtinWindsurf")
+                                  : t("settings:ideOpen.builtinRider")}
+                          </span>
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="vscode">{t("settings:ideOpen.builtinVsCode")}</SelectItem>
+                          <SelectItem value="cursor">{t("settings:ideOpen.builtinCursor")}</SelectItem>
+                          <SelectItem value="windsurf">{t("settings:ideOpen.builtinWindsurf")}</SelectItem>
+                          <SelectItem value="rider">{t("settings:ideOpen.builtinRider")}</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  ) : null}
+                  {defaultIde.mode === "custom" ? (
+                    <div className="space-y-3">
+                      <div className="max-w-xs space-y-1.5">
+                        <Label className="text-xs text-slate-600">{t("settings:ideOpen.customNameLabel")}</Label>
+                        <Input
+                          value={defaultIde.customName}
+                          onChange={(e) => setDefaultIde((prev) => ({ ...prev, customName: String(e.target.value || "") }))}
+                          placeholder={t("settings:ideOpen.customNamePlaceholder") as string}
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label className="text-xs text-slate-600">{t("settings:ideOpen.customCommandLabel")}</Label>
+                        <Input
+                          value={defaultIde.customCommand}
+                          onChange={(e) => setDefaultIde((prev) => ({ ...prev, customCommand: String(e.target.value || "") }))}
+                          placeholder={t("settings:ideOpen.customCommandPlaceholder") as string}
+                          className="font-mono text-xs"
+                        />
+                        <p className="text-xs text-slate-500">{t("settings:ideOpen.customCommandHint")}</p>
+                      </div>
+                    </div>
+                  ) : null}
                 </CardContent>
               </Card>
               <Card>
@@ -2738,6 +2858,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     notifications,
     network,
     codexAccount,
+    defaultIde,
     sendMode,
     showDarkIconOverride,
     storageInfo,
@@ -2935,6 +3056,12 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
 	                        notifications,
 	                        network,
 	                        codexAccount,
+                          defaultIde: {
+                            mode: defaultIde.mode,
+                            builtinId: defaultIde.builtinId,
+                            customName: defaultIde.customName,
+                            customCommand: defaultIde.customCommand,
+                          },
                           gitWorktree: {
                             gitPath: gitWorktreeGitPath,
                             externalGitToolId: gitWorktreeExternalGitToolId,

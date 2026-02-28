@@ -108,10 +108,12 @@ import {
 } from "@/lib/worktree-delete-prefs";
 import type {
   AppSettings,
+  BuiltinIdeId,
   BuildRunCommandConfig,
   DirBuildRunConfig,
   DirTreeStore,
   GitDirInfo,
+  IdeOpenSettings,
   Project,
   ProviderItem,
   ProviderEnv,
@@ -272,6 +274,38 @@ function isNodeInsideTerminal(node: EventTarget | null | undefined): boolean {
   const el = node && typeof (node as any).closest === "function" ? (node as HTMLElement) : null;
   if (!el) return false;
   return !!el.closest(".xterm, .cf-terminal-chrome");
+}
+
+type IdeOpenPrefs = {
+  mode: "auto" | "builtin" | "custom";
+  builtinId: BuiltinIdeId;
+  customName: string;
+  customCommand: string;
+};
+
+/**
+ * 中文说明：归一化内置 IDE 标识，非法值统一回退到 Cursor。
+ */
+function normalizeBuiltinIdeId(value: unknown): BuiltinIdeId {
+  const raw = String(value || "").trim().toLowerCase();
+  if (raw === "vscode" || raw === "cursor" || raw === "windsurf" || raw === "rider") return raw as BuiltinIdeId;
+  return "cursor";
+}
+
+/**
+ * 中文说明：归一化默认 IDE 设置，确保渲染层始终使用稳定结构。
+ */
+function normalizeIdeOpenPrefs(value: unknown): IdeOpenPrefs {
+  const raw = value && typeof value === "object" ? (value as any) : {};
+  const modeRaw = String(raw.mode || "").trim().toLowerCase();
+  const mode: IdeOpenPrefs["mode"] =
+    modeRaw === "builtin" ? "builtin" : modeRaw === "custom" ? "custom" : "auto";
+  return {
+    mode,
+    builtinId: normalizeBuiltinIdeId(raw.builtinId),
+    customName: String(raw.customName || ""),
+    customCommand: String(raw.customCommand || ""),
+  };
 }
 
 export default function CodexFlowManagerUI() {
@@ -2561,6 +2595,8 @@ export default function CodexFlowManagerUI() {
   const [networkPrefs, setNetworkPrefs] = useState<NetworkPrefs>({ proxyEnabled: true, proxyMode: "system", proxyUrl: "", noProxy: "" });
   // ChatGPT/Codex：是否启用“记录账号”（用于自动备份与快速切换）
   const [codexAccountRecordEnabled, setCodexAccountRecordEnabled] = useState<boolean>(false);
+  // 默认 IDE 打开策略（用于文件“定位打开”链路）。
+  const [defaultIdePrefs, setDefaultIdePrefs] = useState<IdeOpenPrefs>(() => normalizeIdeOpenPrefs(undefined));
   // 实验性：是否允许多实例（Profile）（需要重启后生效）
   const [multiInstanceEnabled, setMultiInstanceEnabled] = useState<boolean>(false);
   const [sendMode, setSendMode] = useState<'write_only' | 'write_and_enter'>("write_and_enter");
@@ -2988,6 +3024,10 @@ export default function CodexFlowManagerUI() {
           // 同步“记录账号”偏好
           try {
             setCodexAccountRecordEnabled(!!(s as any)?.codexAccount?.recordEnabled);
+          } catch {}
+          // 同步“默认 IDE”偏好
+          try {
+            setDefaultIdePrefs(normalizeIdeOpenPrefs((s as any)?.ideOpen));
           } catch {}
           // historyRoot 自动计算，无需显示设置
         }
@@ -7525,7 +7565,7 @@ export default function CodexFlowManagerUI() {
               {centerMode === 'console' ? (
                 ConsoleArea
               ) : (
-                <HistoryDetail sessions={historySessions} selectedHistoryId={selectedHistoryId} onBack={() => {
+                <HistoryDetail sessions={historySessions} selectedHistoryId={selectedHistoryId} projectWinPath={selectedProject?.winPath} onBack={() => {
                   dumpOverlayDiagnostics('onBack.enter');
                   // 返回控制台：先关闭任意可能遗留的全屏遮罩，避免拦截点击/键盘事件
                   try { setHistoryCtxMenu((m) => ({ ...m, show: false })); } catch {}
@@ -7624,14 +7664,22 @@ export default function CodexFlowManagerUI() {
 	                </button>
 	              </>
 	            ) : null}
-            <button
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
-              onClick={async () => {
-                const f = historyCtxMenu.item?.filePath;
-                if (f) { try { await window.host.utils.copyText(f); } catch {} }
-                setHistoryCtxMenu((m) => ({ ...m, show: false }));
-              }}
-            >
+                <button
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
+                  onClick={async () => {
+                    const f = historyCtxMenu.item?.filePath;
+                    if (f) {
+                      let copyText = String(f);
+                      try {
+                        const res: any = await window.host.utils.normalizePathForClipboard(copyText);
+                        const normalized = res && res.ok ? String(res.path || "").trim() : "";
+                        if (normalized) copyText = normalized;
+                      } catch {}
+                      try { await window.host.utils.copyText(copyText); } catch {}
+                    }
+                    setHistoryCtxMenu((m) => ({ ...m, show: false }));
+                  }}
+                >
               <CopyIcon className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('history:copyPath')}
             </button>
             <button
@@ -9804,6 +9852,7 @@ export default function CodexFlowManagerUI() {
           notifications: notificationPrefs,
           network: networkPrefs,
           codexAccount: { recordEnabled: codexAccountRecordEnabled },
+          defaultIde: defaultIdePrefs,
           terminalFontFamily,
           terminalTheme,
           claudeCodeReadAgentHistory,
@@ -9827,6 +9876,7 @@ export default function CodexFlowManagerUI() {
           const nextTerminalTheme = normalizeTerminalTheme(v.terminalTheme);
           const nextTheme = normalizeThemeSetting(v.theme);
           const nextClaudeAgentHistory = !!v.claudeCodeReadAgentHistory;
+          const nextDefaultIde = normalizeIdeOpenPrefs((v as any).defaultIde);
           const nextMultiInstanceEnabled = !!v.multiInstanceEnabled;
           const nextGitWorktree = (v as any).gitWorktree || {};
           const nextGitWorktreeGitPath = String(nextGitWorktree.gitPath || "");
@@ -9858,6 +9908,12 @@ export default function CodexFlowManagerUI() {
               notifications: nextNotifications,
               network: v.network,
               codexAccount: v.codexAccount as any,
+              ideOpen: {
+                mode: nextDefaultIde.mode,
+                builtinId: nextDefaultIde.builtinId,
+                customName: nextDefaultIde.customName,
+                customCommand: nextDefaultIde.customCommand,
+              } as IdeOpenSettings,
               gitWorktree: {
                 gitPath: nextGitWorktreeGitPath,
                 externalGitTool: { id: nextExternalGitToolId, customCommand: nextExternalGitToolCustomCommand },
@@ -9896,6 +9952,7 @@ export default function CodexFlowManagerUI() {
           setNotificationPrefs(nextNotifications);
           setNetworkPrefs(v.network);
           setCodexAccountRecordEnabled(!!v.codexAccount?.recordEnabled);
+          setDefaultIdePrefs(nextDefaultIde);
           setMultiInstanceEnabled(nextMultiInstanceEnabled);
           setTerminalFontFamily(nextFontFamily);
           setTerminalTheme(nextTerminalTheme);
@@ -10138,7 +10195,7 @@ function highlightSearchMatches(text: string, matches?: FieldMatch[], activeMatc
   return fragments.length > 0 ? fragments : value;
 }
 
-function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?: string }) {
+function ContentRenderer({ items, kprefix, projectWinPath }: { items: MessageContent[]; kprefix?: string; projectWinPath?: string }) {
   if (!Array.isArray(items) || items.length === 0) return null;
   return (
     <div className="space-y-2">
@@ -10230,7 +10287,7 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
           return (
             <div key={`${kprefix || 'itm'}-sum-${i}`} className="relative rounded-apple border border-[var(--cf-border)] bg-[var(--cf-purple-light)] p-2 text-xs text-[var(--cf-text-primary)] font-apple-regular">
               <HistoryCopyButton text={text} className="absolute right-2 top-2" />
-              <HistoryMarkdown text={text} />
+              <HistoryMarkdown text={text} projectRootPath={projectWinPath} />
             </div>
           );
         }
@@ -10255,7 +10312,7 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
                 <span>input</span>
                 <HistoryCopyButton text={text} />
               </div>
-              <HistoryMarkdown text={text} />
+              <HistoryMarkdown text={text} projectRootPath={projectWinPath} />
             </div>
           );
         }
@@ -10266,7 +10323,7 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
                 <span>output</span>
                 <HistoryCopyButton text={text} />
               </div>
-              <HistoryMarkdown text={text} />
+              <HistoryMarkdown text={text} projectRootPath={projectWinPath} />
             </div>
           );
         }
@@ -10302,7 +10359,7 @@ function ContentRenderer({ items, kprefix }: { items: MessageContent[]; kprefix?
         return (
           <div key={`${kprefix || 'itm'}-txt-${i}`} className="relative">
             <HistoryCopyButton text={text} className="absolute right-0 -top-1" />
-            <HistoryMarkdown text={text} />
+            <HistoryMarkdown text={text} projectRootPath={projectWinPath} />
           </div>
         );
       })}
@@ -10334,6 +10391,7 @@ type HistoryFilterResult = {
 type HistoryRenderOptions = {
   activeMessageKey?: string;
   registerMessageRef?: (key: string, node: HTMLDivElement | null) => void;
+  projectWinPath?: string;
 };
 
 /**
@@ -10369,7 +10427,7 @@ function renderHistoryBlocks(session: HistorySession, messages: HistoryMessageVi
               className={`rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple p-2 shadow-apple-sm text-[var(--cf-text-primary)] transition-all duration-apple hover:shadow-apple dark:shadow-apple-dark-sm dark:hover:shadow-apple-dark ${isActive ? 'ring-1 ring-[var(--cf-accent)]/70 shadow-apple dark:ring-[var(--cf-accent)]/40' : ''}`}
             >
               <div data-history-search-scope className="mb-1 text-xs uppercase tracking-wider font-apple-semibold text-[var(--cf-text-secondary)]">{m.role}</div>
-              <ContentRenderer items={m.content} kprefix={messageKey} />
+              <ContentRenderer items={m.content} kprefix={messageKey} projectWinPath={options?.projectWinPath} />
             </div>
           );
         })}
@@ -10475,7 +10533,7 @@ function filterHistoryMessages(session: HistorySession, typeFilter: Record<strin
   return { messages: filteredMessages, matches, fieldMatches };
 }
 
-function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResumeExternal, getResumeShellLabel }: { sessions: HistorySession[]; selectedHistoryId: string | null; onBack?: () => void; onResume?: (filePath?: string) => void; onResumeExternal?: (filePath?: string) => void; getResumeShellLabel: (filePath?: string) => ShellLabel }) {
+function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, onResume, onResumeExternal, getResumeShellLabel }: { sessions: HistorySession[]; selectedHistoryId: string | null; projectWinPath?: string; onBack?: () => void; onResume?: (filePath?: string) => void; onResumeExternal?: (filePath?: string) => void; getResumeShellLabel: (filePath?: string) => ShellLabel }) {
   const { t } = useTranslation(['history', 'common']);
   const MAX_HISTORY_MESSAGE_CACHE = 5;
   const [loaded, setLoaded] = useState(false);
@@ -11077,11 +11135,13 @@ function HistoryDetail({ sessions, selectedHistoryId, onBack, onResume, onResume
                 ? renderHistoryBlocks(detailSession, filteredMessages, {
                     activeMessageKey: detailSearchActive ? activeMatch?.messageKey : undefined,
                     registerMessageRef,
+                    projectWinPath,
                   })
                 : (selectedSession
                     ? renderHistoryBlocks(selectedSession, filteredMessages, {
                         activeMessageKey: detailSearchActive ? activeMatch?.messageKey : undefined,
                         registerMessageRef,
+                        projectWinPath,
                       })
                     : null)
               }
