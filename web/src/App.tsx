@@ -1004,6 +1004,7 @@ export default function CodexFlowManagerUI() {
   });
   const agentTurnCtxMenuRef = useRef<HTMLDivElement | null>(null);
   const completionSnapshotRef = useRef<Record<string, { preview: string; ts: number }>>({});
+  const resumeCompletionGuardByTabRef = useRef<Record<string, number>>({});
   const ptyNotificationBuffersRef = useRef<Record<string, string>>({});
   const ptyListenersRef = useRef<Record<string, () => void>>({});
   const ptyToTabRef = useRef<Record<string, string>>({});
@@ -1013,6 +1014,7 @@ export default function CodexFlowManagerUI() {
   const audioContextRef = useRef<AudioContext | null>(null);
   const userInputCountByTabIdRef = useRef<Record<string, number>>({});
   const autoCommitQueueByProjectIdRef = useRef<Record<string, Promise<void>>>({});
+  const RESUME_COMPLETION_GUARD_MS = 8_000;
 
   useEffect(() => { editingTabIdRef.current = editingTabId; }, [editingTabId]);
   useEffect(() => { notificationPrefsRef.current = notificationPrefs; }, [notificationPrefs]);
@@ -1451,6 +1453,11 @@ export default function CodexFlowManagerUI() {
       if (!changed) return prev;
       return next;
     });
+    // 清理已不存在标签页的恢复期完成通知守卫，防止状态泄漏。
+    for (const tabId of Object.keys(resumeCompletionGuardByTabRef.current)) {
+      if (activeTabSet.has(tabId)) continue;
+      delete resumeCompletionGuardByTabRef.current[tabId];
+    }
     setAgentTurnCtxMenu((prev) => {
       if (!prev.show || !prev.tabId) return prev;
       if (activeTabSet.has(prev.tabId)) return prev;
@@ -1635,6 +1642,44 @@ export default function CodexFlowManagerUI() {
   }
 
   /**
+   * 中文说明：为“继续对话”创建的标签页设置短时守卫，避免会话恢复阶段误触发完成通知。
+   */
+  function armResumeCompletionGuard(tabId: string, providerId: string) {
+    const safeId = String(tabId || "").trim();
+    if (!safeId) return;
+    const pid = String(providerId || "").trim().toLowerCase();
+    if (pid !== "codex") return;
+    resumeCompletionGuardByTabRef.current[safeId] = Date.now() + RESUME_COMPLETION_GUARD_MS;
+    notifyLog(`resumeGuard.arm tab=${safeId} ttlMs=${RESUME_COMPLETION_GUARD_MS}`);
+  }
+
+  /**
+   * 中文说明：判断并消费恢复期守卫；命中时返回 true，表示本次完成通知应被抑制。
+   * 说明：守卫仅在 Codex 恢复路径中被设置，因此这里不再依赖 providerId，避免标签映射尚未同步时误清除守卫。
+   */
+  function consumeResumeCompletionGuardIfNeeded(tabId: string, hasWorkingTimer: boolean): boolean {
+    const safeId = String(tabId || "").trim();
+    if (!safeId) return false;
+    const expireAt = Number(resumeCompletionGuardByTabRef.current[safeId] || 0);
+    if (!expireAt) return false;
+    const now = Date.now();
+    if (now > expireAt) {
+      delete resumeCompletionGuardByTabRef.current[safeId];
+      notifyLog(`resumeGuard.expire tab=${safeId}`);
+      return false;
+    }
+    // 一旦进入真实“working”状态，说明用户已发起新一轮输入，不再拦截完成通知。
+    if (hasWorkingTimer) {
+      delete resumeCompletionGuardByTabRef.current[safeId];
+      notifyLog(`resumeGuard.clear-working tab=${safeId}`);
+      return false;
+    }
+    delete resumeCompletionGuardByTabRef.current[safeId];
+    notifyLog(`resumeGuard.hit tab=${safeId}`);
+    return true;
+  }
+
+  /**
    * 中文说明：根据外部通知负载推断对应的 tabId。
    */
   function resolveExternalTabId(payload: { tabId?: string; providerId?: string; envLabel?: string }): string | null {
@@ -1765,6 +1810,8 @@ export default function CodexFlowManagerUI() {
    */
   function handleAgentCompletion(tabId: string, preview: string) {
     if (!tabId) return;
+    const hasWorkingTimer = agentTurnTimerByTabRef.current[String(tabId || "")]?.status === "working";
+    if (consumeResumeCompletionGuardIfNeeded(tabId, hasWorkingTimer)) return;
     const providerId = resolveTabProviderId(tabId);
     if (shouldEnableAgentTimerForProvider(providerId)) completeAgentTurnTimer(tabId);
     else cancelAgentTurnTimer(tabId, "provider-not-supported");
@@ -3873,6 +3920,8 @@ export default function CodexFlowManagerUI() {
     if (!text.trim()) return;
     const pid = ptyByTabRef.current[activeTab.id];
     if (!pid) return;
+    // 用户开始新一轮输入后，立即取消恢复期守卫，避免影响真实完成通知。
+    delete resumeCompletionGuardByTabRef.current[activeTab.id];
     if (shouldEnableAgentTimerForProvider(activeTab.providerId)) startAgentTurnTimer(activeTab.id);
     else cancelAgentTurnTimer(activeTab.id, "provider-not-supported");
     // 统一改用 TerminalManager 的封装，保证行为一致且便于复用
@@ -7008,6 +7057,7 @@ export default function CodexFlowManagerUI() {
           setPtyByTab((m) => ({ ...m, [tab.id]: ptyId }));
           ptyAliveRef.current[tab.id] = true;
           setPtyAlive((m) => ({ ...m, [tab.id]: true }));
+          armResumeCompletionGuard(tab.id, providerId);
           registerPtyForTab(tab.id, ptyId);
           try {
             await (window as any).host?.utils?.perfLog?.(`[ui] history.resume pty=${ptyId} tab=${tab.id} - listener registered`);
