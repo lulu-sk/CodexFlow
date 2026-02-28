@@ -1664,7 +1664,24 @@ export default function CodexFlowManagerUI() {
   }
 
   /**
-   * 中文说明：判断是否为短时间内重复通知。
+   * 中文说明：判断两条完成预览是否可视为“同一条完成事件”。
+   * - 优先严格相等；
+   * - 兼容“一个是另一个前缀”的截断差异（例如 OSC 截断 vs hook 完整预览）。
+   */
+  function isEquivalentCompletionPreview(leftRaw: string, rightRaw: string): boolean {
+    const left = normalizeCompletionPreview(leftRaw);
+    const right = normalizeCompletionPreview(rightRaw);
+    if (!left && !right) return true;
+    if (!left || !right) return false;
+    if (left === right) return true;
+    const shorter = left.length <= right.length ? left : right;
+    const longer = shorter === left ? right : left;
+    if (shorter.length < 8) return false;
+    return longer.startsWith(shorter);
+  }
+
+  /**
+   * 中文说明：判断是否为短时间内重复通知（支持相似预览去重）。
    */
   function isDuplicateCompletion(tabId: string, preview: string, windowMs: number): boolean {
     const safeId = String(tabId || "").trim();
@@ -1672,7 +1689,8 @@ export default function CodexFlowManagerUI() {
     const last = completionSnapshotRef.current[safeId];
     if (!last) return false;
     const delta = Date.now() - last.ts;
-    return delta >= 0 && delta <= windowMs && String(last.preview || "") === String(preview || "");
+    if (!(delta >= 0 && delta <= windowMs)) return false;
+    return isEquivalentCompletionPreview(String(last.preview || ""), String(preview || ""));
   }
 
   /**
@@ -1719,7 +1737,7 @@ export default function CodexFlowManagerUI() {
   function resolveExternalTabId(payload: { tabId?: string; providerId?: string; envLabel?: string }): string | null {
     const direct = String(payload?.tabId || "").trim();
     if (direct) return direct;
-    const providerId = String(payload?.providerId || "gemini").trim().toLowerCase();
+    const providerId = String(payload?.providerId || "codex").trim().toLowerCase();
     const envLabel = String(payload?.envLabel || "").trim();
     const matched: ConsoleTab[] = [];
     for (const list of Object.values(tabsByProjectRef.current)) {
@@ -3119,17 +3137,17 @@ export default function CodexFlowManagerUI() {
     return () => { try { off && off(); } catch {} };
   }, [focusTabFromNotification]);
 
-  // 监听主进程转发的外部完成通知（Gemini/Claude，JSONL 桥接）
+  // 监听主进程转发的外部完成通知（Codex/Gemini/Claude，JSONL 桥接）
   useEffect(() => {
     let off: (() => void) | undefined;
     try {
       off = window.host.notifications?.onExternalAgentComplete?.((payload: { providerId?: string; tabId?: string; envLabel?: string; preview?: string; timestamp?: string; eventId?: string }) => {
         const providerId = String(payload?.providerId || "").trim().toLowerCase();
-        if (providerId && providerId !== "gemini" && providerId !== "claude") return;
+        if (providerId && providerId !== "codex" && providerId !== "gemini" && providerId !== "claude") return;
         const preview = String(payload?.preview || "");
         const resolvedTabId = resolveExternalTabId({
           tabId: payload?.tabId,
-          providerId: providerId || "gemini",
+          providerId: providerId || "codex",
           envLabel: payload?.envLabel,
         });
         if (!resolvedTabId) {

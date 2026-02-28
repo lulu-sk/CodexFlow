@@ -310,6 +310,12 @@ const CLAUDE_NOTIFY_ENV_KEYS = {
   providerId: "CLAUDE_CODEXFLOW_PROVIDER_ID",
 } as const;
 
+const CODEX_NOTIFY_ENV_KEYS = {
+  tabId: "CODEXFLOW_NOTIFY_TAB_ID",
+  envLabel: "CODEXFLOW_NOTIFY_ENV_LABEL",
+  providerId: "CODEXFLOW_NOTIFY_PROVIDER_ID",
+} as const;
+
 /**
  * 构建 ProviderItem 的 id -> item 索引，避免在标签渲染时重复线性扫描。
  */
@@ -360,9 +366,27 @@ function buildClaudeNotifyEnv(tabId: string, providerId: string, envLabel: strin
  * 中文说明：构造 Provider 完成通知链路所需的环境变量（按 providerId 注入）。
  * - Gemini：用于 AfterAgent hook（JSONL 桥接）
  * - Claude：用于 Stop hook（JSONL 桥接）
+ * - Codex：用于 legacy notify（JSONL 桥接）
+ */
+function buildCodexNotifyEnv(tabId: string, providerId: string, envLabel: string): Record<string, string> {
+  const pid = String(providerId || "").trim().toLowerCase();
+  if (pid !== "codex") return {};
+  const tid = String(tabId || "").trim();
+  if (!tid) return {};
+  const label = String(envLabel || "").trim();
+  return {
+    [CODEX_NOTIFY_ENV_KEYS.tabId]: tid,
+    [CODEX_NOTIFY_ENV_KEYS.envLabel]: label,
+    [CODEX_NOTIFY_ENV_KEYS.providerId]: pid,
+  };
+}
+
+/**
+ * 中文说明：构造 Provider 完成通知链路所需的环境变量（按 providerId 注入）。
  */
 function buildProviderNotifyEnv(tabId: string, providerId: string, envLabel: string): Record<string, string> {
   const pid = String(providerId || "").trim().toLowerCase();
+  if (pid === "codex") return buildCodexNotifyEnv(tabId, pid, envLabel);
   if (pid === "gemini") return buildGeminiNotifyEnv(tabId, pid, envLabel);
   if (pid === "claude") return buildClaudeNotifyEnv(tabId, pid, envLabel);
   return {};
@@ -1630,6 +1654,7 @@ function TerminalView({
 export {
   GEMINI_NOTIFY_ENV_KEYS,
   CLAUDE_NOTIFY_ENV_KEYS,
+  CODEX_NOTIFY_ENV_KEYS,
   PROJECT_SORT_STORAGE_KEY,
   INPUT_FULLSCREEN_TRANSITION_MS,
   OSC_NOTIFICATION_PREFIX,
