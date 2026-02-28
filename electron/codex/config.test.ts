@@ -49,12 +49,49 @@ function writeCodexConfigToml(home: string, content: string): void {
 }
 
 /**
+ * 中文说明：读取当前 HOME 下生成的 Codex notify 脚本内容（按平台优先级自动选择）。
+ */
+function readCodexNotifyScript(home: string): string {
+  const dir = path.join(home, ".codex");
+  const candidates = process.platform === "win32"
+    ? ["codexflow_after_agent_notify.ps1", "codexflow_after_agent_notify.sh"]
+    : ["codexflow_after_agent_notify.sh", "codexflow_after_agent_notify.ps1"];
+  for (const file of candidates) {
+    try { return fs.readFileSync(path.join(dir, file), "utf8"); } catch {}
+  }
+  return "";
+}
+
+/**
+ * 中文说明：断言 root notify 命令按当前平台写入为正确执行器。
+ */
+function expectRootNotifyCommand(body: string): void {
+  if (process.platform === "win32") {
+    expect(body).toContain('notify = ["powershell.exe", ');
+  } else {
+    expect(body).toContain('notify = ["sh", ');
+  }
+}
+
+/**
+ * 中文说明：断言 notify 脚本文件名按当前平台写入正确。
+ */
+function expectNotifyScriptFileName(body: string): void {
+  if (process.platform === "win32") {
+    expect(body).toContain("codexflow_after_agent_notify.ps1");
+  } else {
+    expect(body).toContain("codexflow_after_agent_notify.sh");
+  }
+}
+
+/**
  * 中文说明：加载 config.ts，并 mock 掉 getCodexRootsFastAsync，避免测试访问真实环境。
  */
 async function loadConfigModule(): Promise<{ ensureAllCodexNotifications: () => Promise<void> }> {
   vi.resetModules();
   vi.doMock("../wsl", () => ({
     getCodexRootsFastAsync: vi.fn(async () => ({ wsl: [], windowsCodex: null })),
+    uncToWsl: vi.fn(() => null),
   }));
   return await import("./config");
 }
@@ -73,6 +110,11 @@ describe("electron/codex/config（tui 通知配置修复）", () => {
       expect(body).toContain("[tui]");
       expect(body).toContain('notification_method = "osc9"');
       expect(body).toContain('notifications = ["agent-turn-complete"]');
+      expectRootNotifyCommand(body);
+      expectNotifyScriptFileName(body);
+      const script = readCodexNotifyScript(home);
+      expect(script).toContain("CODEXFLOW_NOTIFY_TAB_ID");
+      expect(script).toContain("agent-turn-complete");
     } finally {
       cleanup();
     }
@@ -144,6 +186,30 @@ describe("electron/codex/config（tui 通知配置修复）", () => {
       expect(body).not.toContain("tui.notification_method");
       expect((body.match(/\bnotifications\s*=/g) || []).length).toBe(1);
       expect((body.match(/\bnotification_method\s*=/g) || []).length).toBe(1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("已有 root notify：替换为 CodexFlow notify 命令并去重", async () => {
+    const { home, cleanup } = createTempHome();
+    try {
+      writeCodexConfigToml(home, [
+        'notify = ["echo", "foo"]',
+        'notify = ["echo", "bar"]',
+        "",
+        "[tui]",
+        'notifications = ["agent-turn-complete"]',
+        'notification_method = "osc9"',
+        "",
+      ].join("\n"));
+      const mod = await loadConfigModule();
+      await mod.ensureAllCodexNotifications();
+      const body = readCodexConfigToml(home);
+      expectRootNotifyCommand(body);
+      expectNotifyScriptFileName(body);
+      expect(body).not.toContain('notify = ["echo", "foo"]');
+      expect((body.match(/\bnotify\s*=/g) || []).length).toBe(1);
     } finally {
       cleanup();
     }

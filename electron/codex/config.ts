@@ -5,16 +5,130 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { perfLogger } from "../log";
-import { getCodexRootsFastAsync } from "../wsl";
+import { getCodexRootsFastAsync, uncToWsl } from "../wsl";
 
 const REQUIRED_NOTIFICATION = "agent-turn-complete";
 const REQUIRED_NOTIFICATION_METHOD = "osc9";
 const NOTIFICATIONS_KEY = "notifications";
 const NOTIFICATION_METHOD_KEY = "notification_method";
+const ROOT_NOTIFY_KEY = "notify";
 const DOTTED_TUI_NOTIFICATIONS_KEY = "tui.notifications";
 const DOTTED_TUI_NOTIFICATION_METHOD_KEY = "tui.notification_method";
+const CODEX_NOTIFY_SH_FILENAME = "codexflow_after_agent_notify.sh";
+const CODEX_NOTIFY_PS1_FILENAME = "codexflow_after_agent_notify.ps1";
+const CODEX_NOTIFY_JSONL_FILENAME = "codexflow_after_agent_notify.jsonl";
+const CODEX_NOTIFY_FILE_MAX_BYTES = 512 * 1024;
+const CODEX_NOTIFY_ENV_TAB_ID = "CODEXFLOW_NOTIFY_TAB_ID";
+const CODEX_NOTIFY_ENV_ENV_LABEL = "CODEXFLOW_NOTIFY_ENV_LABEL";
+const CODEX_NOTIFY_ENV_PROVIDER_ID = "CODEXFLOW_NOTIFY_PROVIDER_ID";
+
+const CODEX_NOTIFY_SH_SCRIPT = [
+  "#!/usr/bin/env sh",
+  "# SPDX-License-Identifier: Apache-2.0",
+  "# Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)",
+  "",
+  "# 中文说明：Codex legacy notify hook -> CodexFlow JSONL 完成事件桥接（无论终端焦点如何均写入）。",
+  "set -eu",
+  "",
+  "SCRIPT_DIR=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)",
+  "NOTIFY_PATH=\"${SCRIPT_DIR}/" + CODEX_NOTIFY_JSONL_FILENAME + "\"",
+  "TAB_ID=\"${" + CODEX_NOTIFY_ENV_TAB_ID + ":-}\"",
+  "ENV_LABEL=\"${" + CODEX_NOTIFY_ENV_ENV_LABEL + ":-}\"",
+  "PROVIDER_ID=\"${" + CODEX_NOTIFY_ENV_PROVIDER_ID + ":-codex}\"",
+  "RAW_PAYLOAD=\"${1-}\"",
+  "",
+  "json_escape() {",
+  "  printf \"%s\" \"$1\" | sed 's/\\\\/\\\\\\\\/g; s/\"/\\\\\"/g'",
+  "}",
+  "",
+  "PREVIEW=\"\"",
+  "if [ -n \"$RAW_PAYLOAD\" ]; then",
+  "  PREVIEW=$(printf \"%s\" \"$RAW_PAYLOAD\" | sed -n 's/.*\"last-assistant-message\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p' | head -n 1 || true)",
+  "fi",
+  "PREVIEW=$(printf \"%s\" \"$PREVIEW\" | tr '\\r\\n\\t' '   ' | sed 's/[[:space:]][[:space:]]*/ /g; s/^ *//; s/ *$//')",
+  "if [ -z \"$PREVIEW\" ]; then",
+  "  PREVIEW=\"agent-turn-complete\"",
+  "fi",
+  "",
+  "if [ -f \"$NOTIFY_PATH\" ]; then",
+  "  SIZE=$(wc -c < \"$NOTIFY_PATH\" 2>/dev/null || echo 0)",
+  "  if [ \"${SIZE:-0}\" -gt \"" + String(CODEX_NOTIFY_FILE_MAX_BYTES) + "\" ]; then",
+  "    : > \"$NOTIFY_PATH\"",
+  "  fi",
+  "fi",
+  "",
+  "EVENT_ID=\"$$-$(date +%s 2>/dev/null || echo 0)\"",
+  "TIMESTAMP=\"$(date -u +\"%Y-%m-%dT%H:%M:%SZ\" 2>/dev/null || date +\"%Y-%m-%dT%H:%M:%S%z\" 2>/dev/null || echo \"\")\"",
+  "",
+  "printf '{\"v\":1,\"eventId\":\"%s\",\"providerId\":\"%s\",\"tabId\":\"%s\",\"envLabel\":\"%s\",\"preview\":\"%s\",\"timestamp\":\"%s\"}\\n' \\",
+  "  \"$(json_escape \"$EVENT_ID\")\" \\",
+  "  \"$(json_escape \"$PROVIDER_ID\")\" \\",
+  "  \"$(json_escape \"$TAB_ID\")\" \\",
+  "  \"$(json_escape \"$ENV_LABEL\")\" \\",
+  "  \"$(json_escape \"$PREVIEW\")\" \\",
+  "  \"$(json_escape \"$TIMESTAMP\")\" >> \"$NOTIFY_PATH\" 2>/dev/null || true",
+  "",
+  "exit 0",
+].join("\n") + "\n";
+
+const CODEX_NOTIFY_PS1_SCRIPT = [
+  "# SPDX-License-Identifier: Apache-2.0",
+  "# Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)",
+  "",
+  "param(",
+  "  [Parameter(ValueFromRemainingArguments=$true)]",
+  "  [string[]]$RemainingArgs",
+  ")",
+  "",
+  "$ErrorActionPreference = \"SilentlyContinue\"",
+  "$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path",
+  `$NotifyPath = Join-Path $ScriptDir "${CODEX_NOTIFY_JSONL_FILENAME}"`,
+  `$TabId = [string]$env:${CODEX_NOTIFY_ENV_TAB_ID}`,
+  `$EnvLabel = [string]$env:${CODEX_NOTIFY_ENV_ENV_LABEL}`,
+  `$ProviderId = [string]$env:${CODEX_NOTIFY_ENV_PROVIDER_ID}`,
+  "if ([string]::IsNullOrWhiteSpace($ProviderId)) { $ProviderId = \"codex\" }",
+  "",
+  "$RawPayload = \"\"",
+  "if ($RemainingArgs -and $RemainingArgs.Count -gt 0) {",
+  "  $RawPayload = [string]$RemainingArgs[$RemainingArgs.Count - 1]",
+  "}",
+  "",
+  "$Preview = \"\"",
+  "if (-not [string]::IsNullOrWhiteSpace($RawPayload)) {",
+  "  try {",
+  "    $obj = $RawPayload | ConvertFrom-Json -ErrorAction Stop",
+  "    $Preview = [string]$obj.\"last-assistant-message\"",
+  "  } catch {}",
+  "}",
+  "if (-not [string]::IsNullOrWhiteSpace($Preview)) {",
+  "  $Preview = ($Preview -replace \"\\s+\", \" \").Trim()",
+  "}",
+  "if ([string]::IsNullOrWhiteSpace($Preview)) { $Preview = \"agent-turn-complete\" }",
+  "",
+  "try {",
+  "  if (Test-Path -LiteralPath $NotifyPath) {",
+  `    if ((Get-Item -LiteralPath $NotifyPath).Length -gt ${CODEX_NOTIFY_FILE_MAX_BYTES}) {`,
+  "      Set-Content -LiteralPath $NotifyPath -Value \"\" -Encoding UTF8",
+  "    }",
+  "  }",
+  "} catch {}",
+  "",
+  "$LineObj = @{",
+  "  v = 1",
+  "  eventId = \"${PID}-$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())\"",
+  "  providerId = $ProviderId",
+  "  tabId = $TabId",
+  "  envLabel = $EnvLabel",
+  "  preview = $Preview",
+  "  timestamp = [DateTime]::UtcNow.ToString(\"o\")",
+  "}",
+  "$Line = $LineObj | ConvertTo-Json -Compress",
+  "Add-Content -LiteralPath $NotifyPath -Value $Line -Encoding UTF8",
+  "exit 0",
+].join("\n") + "\n";
 
 type NormalizeResult = { updated: string; changed: boolean };
+type CodexNotifyCommandSpec = { scriptPath: string; scriptBody: string; commandArgv: string[] };
 
 type ArrayScanState = {
   depth: number;
@@ -579,6 +693,147 @@ function updateNotificationsSection(normalized: string): NormalizeResult {
   return { updated, changed };
 }
 
+/**
+ * 中文说明：根据配置路径生成 Codex notify hook 的脚本与命令参数。
+ * - Windows 本地目录：写入 .ps1，使用 powershell 执行。
+ * - WSL UNC / 非 Windows：写入 .sh，使用 sh 执行。
+ */
+function resolveCodexNotifyCommandSpec(configPath: string): CodexNotifyCommandSpec | null {
+  const safeConfigPath = String(configPath || "").trim();
+  if (!safeConfigPath) return null;
+  const configDir = path.dirname(safeConfigPath);
+  if (!configDir) return null;
+
+  if (process.platform === "win32") {
+    const uncInfo = uncToWsl(configDir);
+    if (uncInfo?.wslPath) {
+      const scriptPath = path.join(configDir, CODEX_NOTIFY_SH_FILENAME);
+      const wslScriptPath = path.posix.join(uncInfo.wslPath, CODEX_NOTIFY_SH_FILENAME);
+      return {
+        scriptPath,
+        scriptBody: CODEX_NOTIFY_SH_SCRIPT,
+        commandArgv: ["sh", wslScriptPath],
+      };
+    }
+    const scriptPath = path.join(configDir, CODEX_NOTIFY_PS1_FILENAME);
+    return {
+      scriptPath,
+      scriptBody: CODEX_NOTIFY_PS1_SCRIPT,
+      commandArgv: ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath],
+    };
+  }
+
+  const scriptPath = path.join(configDir, CODEX_NOTIFY_SH_FILENAME);
+  return {
+    scriptPath,
+    scriptBody: CODEX_NOTIFY_SH_SCRIPT,
+    commandArgv: ["sh", scriptPath],
+  };
+}
+
+/**
+ * 中文说明：仅在内容变化时写入文本文件，避免无意义覆盖。
+ */
+function writeTextFileIfChanged(filePath: string, content: string): { ok: boolean; changed: boolean } {
+  try {
+    if (fs.existsSync(filePath)) {
+      const current = fs.readFileSync(filePath, "utf8");
+      if (current === content) return { ok: true, changed: false };
+    }
+  } catch {}
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, content, "utf8");
+    return { ok: true, changed: true };
+  } catch {
+    return { ok: false, changed: false };
+  }
+}
+
+/**
+ * 中文说明：确保 Codex notify hook 脚本存在且内容最新。
+ */
+function ensureCodexNotifyScript(spec: CodexNotifyCommandSpec, source?: string): boolean {
+  const result = writeTextFileIfChanged(spec.scriptPath, spec.scriptBody);
+  if (!result.ok) {
+    try { perfLogger.log(`[codex.config] write notify script failed path=${spec.scriptPath} source=${source || "n/a"}`); } catch {}
+    return false;
+  }
+  if (result.changed) {
+    try { perfLogger.log(`[codex.config] ensure notify script path=${spec.scriptPath} source=${source || "n/a"} changed=1`); } catch {}
+  }
+  return true;
+}
+
+/**
+ * 中文说明：确保 root 级 notify 命令为 CodexFlow 预期值，并清理重复键。
+ */
+function updateRootNotifyCommand(normalized: string, commandArgv: string[]): NormalizeResult {
+  const lines = normalized.length > 0 ? normalized.split("\n") : [];
+  const renderedValue = `[${serializeTomlStringArray(commandArgv)}]`;
+  let changed = false;
+  let found = false;
+  let sawAnySection = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const sectionMatch = String(lines[i] || "").match(/^(\s*\[([^\]\[]+)\])(\s*)(.*)$/);
+    if (sectionMatch) {
+      sawAnySection = true;
+      continue;
+    }
+    if (sawAnySection) continue;
+
+    const parsed = parseTomlArrayAssignment(lines, i, /^(\s*)(notify)(\s*=\s*)(.*)$/i);
+    if (parsed) {
+      const rendered = `${parsed.indent}${ROOT_NOTIFY_KEY} = ${renderedValue}${parsed.comment ? ` ${parsed.comment}` : ""}`;
+      if (!found) {
+        const originalBlock = lines.slice(i, parsed.endIndex + 1);
+        lines.splice(i, parsed.endIndex - i + 1, rendered);
+        if (originalBlock.length !== 1 || originalBlock[0] !== rendered) changed = true;
+        found = true;
+      } else {
+        lines.splice(i, parsed.endIndex - i + 1);
+        i -= 1;
+        changed = true;
+      }
+      continue;
+    }
+
+    const { code, comment } = splitInlineComment(lines[i] ?? "");
+    const notifyMatch = code.match(/^(\s*)(notify)(\s*=\s*)(.*)$/i);
+    if (!notifyMatch) continue;
+    const indent = notifyMatch[1] ?? "";
+    const rendered = `${indent}${ROOT_NOTIFY_KEY} = ${renderedValue}${comment ? ` ${comment}` : ""}`;
+    if (!found) {
+      if (lines[i] !== rendered) {
+        lines[i] = rendered;
+        changed = true;
+      }
+      found = true;
+    } else {
+      lines.splice(i, 1);
+      i -= 1;
+      changed = true;
+    }
+  }
+
+  if (!found) {
+    let insertIndex = lines.length;
+    for (let i = 0; i < lines.length; i++) {
+      if (/^(\s*\[([^\]\[]+)\])(\s*)(.*)$/.test(String(lines[i] || ""))) {
+        insertIndex = i;
+        break;
+      }
+    }
+    const inserts = [`${ROOT_NOTIFY_KEY} = ${renderedValue}`];
+    if (insertIndex < lines.length && lines[insertIndex].trim() !== "") inserts.push("");
+    lines.splice(insertIndex, 0, ...inserts);
+    changed = true;
+  }
+
+  return { updated: lines.join("\n"), changed };
+}
+
 function ensureNotificationsAtConfigPath(configPath: string, source?: string): boolean {
   if (!configPath) return false;
   try { fs.mkdirSync(path.dirname(configPath), { recursive: true }); } catch {}
@@ -595,8 +850,18 @@ function ensureNotificationsAtConfigPath(configPath: string, source?: string): b
     return false;
   }
 
+  const notifySpec = resolveCodexNotifyCommandSpec(configPath);
+  const notifyScriptReady = notifySpec ? ensureCodexNotifyScript(notifySpec, source) : false;
+
   const { normalized, newline } = normalizeLineEndings(original);
-  const { updated, changed } = updateNotificationsSection(normalized);
+  const tuiResult = updateNotificationsSection(normalized);
+  let updated = tuiResult.updated;
+  let changed = tuiResult.changed;
+  if (notifySpec && notifyScriptReady) {
+    const notifyResult = updateRootNotifyCommand(updated, notifySpec.commandArgv);
+    updated = notifyResult.updated;
+    changed = changed || notifyResult.changed;
+  }
   if (!changed && existed) return false;
 
   let finalContent = updated;

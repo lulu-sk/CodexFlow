@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  CODEX_NOTIFY_ENV_KEYS,
   CLAUDE_NOTIFY_ENV_KEYS,
   GEMINI_NOTIFY_ENV_KEYS,
   buildProviderNotifyEnv,
@@ -35,8 +36,16 @@ describe("app-shared（完成通知：识别与环境变量注入）", () => {
     });
   });
 
+  it("buildProviderNotifyEnv：Codex 注入 CODEXFLOW_NOTIFY_*", () => {
+    const env = buildProviderNotifyEnv("tab-3", "codex", "Ubuntu-24.04");
+    expect(env).toEqual({
+      [CODEX_NOTIFY_ENV_KEYS.tabId]: "tab-3",
+      [CODEX_NOTIFY_ENV_KEYS.envLabel]: "Ubuntu-24.04",
+      [CODEX_NOTIFY_ENV_KEYS.providerId]: "codex",
+    });
+  });
+
   it("buildProviderNotifyEnv：其它 provider 不注入", () => {
-    expect(buildProviderNotifyEnv("tab-3", "codex", "Ubuntu-24.04")).toEqual({});
     expect(buildProviderNotifyEnv("tab-3", "terminal", "Ubuntu-24.04")).toEqual({});
   });
 });
