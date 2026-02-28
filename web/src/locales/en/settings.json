@@ -150,6 +150,23 @@
       }
     }
   },
+  "ideOpen": {
+    "label": "Default IDE",
+    "help": "Global default strategy for “open file at line/column”. Auto mode tries compatible IDEs in order; choose manual built-in mode if you always use one IDE.",
+    "modeAuto": "Auto choose available IDE",
+    "modeBuiltin": "Manually choose built-in IDE",
+    "modeCustom": "Custom command",
+    "builtinLabel": "Built-in IDE",
+    "builtinVsCode": "VS Code",
+    "builtinCursor": "Cursor",
+    "builtinWindsurf": "Windsurf",
+    "builtinRider": "Rider",
+    "customNameLabel": "Custom IDE Name (Optional)",
+    "customNamePlaceholder": "e.g. IntelliJ IDEA",
+    "customCommandLabel": "Command template",
+    "customCommandPlaceholder": "e.g. \"C:\\\\Path\\\\IDE.exe\" --line {line} {path}",
+    "customCommandHint": "Placeholders: {path} {line} {column} {project} {pathLineCol} (plus rawPath/rawProject/rawPathLineCol)."
+  },
   "experimental": {
     "title": "Experimental",
     "desc": "These features are still evolving and may cause unexpected issues.",

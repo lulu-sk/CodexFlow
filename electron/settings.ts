@@ -70,6 +70,19 @@ export type GitWorktreeSettings = {
   copyRulesOnCreate?: boolean;
 };
 
+export type BuiltinIdeId = "vscode" | "cursor" | "windsurf" | "rider";
+
+export type IdeOpenSettings = {
+  /** 默认 IDE 模式：auto=自动探测；builtin=固定内置 IDE；custom=自定义命令模板。 */
+  mode?: "auto" | "builtin" | "custom";
+  /** 内置 IDE 标识（mode=builtin 时生效）。 */
+  builtinId?: BuiltinIdeId;
+  /** 自定义 IDE 展示名（可选，仅用于界面展示）。 */
+  customName?: string;
+  /** 自定义 IDE 命令模板（mode=custom 时生效）。 */
+  customCommand?: string;
+};
+
 export type ThemeSetting = 'light' | 'dark' | 'system';
 
 export type ProviderId = string;
@@ -145,6 +158,8 @@ export type AppSettings = {
   experimental?: ExperimentalSettings;
   /** git worktree 相关设置（仅影响 worktree/Build-Run 等功能，不影响 Provider/PTY 既有策略） */
   gitWorktree?: GitWorktreeSettings;
+  /** 默认 IDE 打开策略（用于“文件定位跳转”链路）。 */
+  ideOpen?: IdeOpenSettings;
 };
 
 function getStorePath() {
@@ -186,6 +201,85 @@ const DEFAULT_GIT_WORKTREE: Required<GitWorktreeSettings> = {
   autoCommitEnabled: true,
   copyRulesOnCreate: true,
 };
+const DEFAULT_IDE_OPEN: Required<IdeOpenSettings> = {
+  mode: "auto",
+  builtinId: "cursor",
+  customName: "",
+  customCommand: "",
+};
+
+/**
+ * 归一化内置 IDE 标识，非法时回退为 null。
+ */
+function normalizeBuiltinIdeId(raw: unknown): BuiltinIdeId | null {
+  const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  if (value === "vscode" || value === "cursor" || value === "windsurf" || value === "rider") {
+    return value as BuiltinIdeId;
+  }
+  return null;
+}
+
+/**
+ * 归一化默认 IDE 设置：保证结构稳定，避免旧版本/脏数据导致逻辑分支散落。
+ */
+function normalizeIdeOpenSettings(raw: unknown): IdeOpenSettings {
+  try {
+    const obj = raw && typeof raw === "object" ? (raw as any) : {};
+    const modeRaw = typeof obj.mode === "string" ? obj.mode.trim().toLowerCase() : "";
+    const builtinId = normalizeBuiltinIdeId(obj.builtinId) || DEFAULT_IDE_OPEN.builtinId;
+    const customName = typeof obj.customName === "string" ? obj.customName.trim() : "";
+    const customCommand = typeof obj.customCommand === "string" ? obj.customCommand.trim() : "";
+
+    if (modeRaw === "builtin") {
+      return {
+        mode: "builtin",
+        builtinId,
+        customName: "",
+        customCommand: "",
+      };
+    }
+
+    if (modeRaw === "custom") {
+      if (!customCommand) return { ...DEFAULT_IDE_OPEN };
+      return {
+        mode: "custom",
+        builtinId,
+        customName,
+        customCommand,
+      };
+    }
+
+    if (modeRaw === "auto") {
+      return {
+        mode: "auto",
+        builtinId,
+        customName: "",
+        customCommand: "",
+      };
+    }
+
+    // 兼容旧数据：无 mode 但有具体字段。
+    if (customCommand) {
+      return {
+        mode: "custom",
+        builtinId,
+        customName,
+        customCommand,
+      };
+    }
+    if (normalizeBuiltinIdeId(obj.builtinId)) {
+      return {
+        mode: "builtin",
+        builtinId,
+        customName: "",
+        customCommand: "",
+      };
+    }
+    return { ...DEFAULT_IDE_OPEN };
+  } catch {
+    return { ...DEFAULT_IDE_OPEN };
+  }
+}
 
 function normalizeTheme(raw: unknown): ThemeSetting {
   const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
@@ -404,6 +498,7 @@ function mergeWithDefaults(raw: Partial<AppSettings>, preloadedDistros?: DistroI
     dragDrop: { ...DEFAULT_DRAG_DROP },
     claudeCode: { ...DEFAULT_CLAUDE_CODE },
     gitWorktree: { ...DEFAULT_GIT_WORKTREE },
+    ideOpen: { ...DEFAULT_IDE_OPEN },
   };
   const merged = Object.assign({}, defaults, raw);
   // experimental 由主进程统一维护（全局共享），不写入/不读取 profile settings.json，避免各 profile 状态不一致。
@@ -455,6 +550,7 @@ function mergeWithDefaults(raw: Partial<AppSettings>, preloadedDistros?: DistroI
   merged.providers = normalizeProviders(merged, distros);
   merged.claudeCode = normalizeClaudeCodeSettings((merged as any).claudeCode);
   merged.gitWorktree = normalizeGitWorktreeSettings((raw as any)?.gitWorktree);
+  merged.ideOpen = normalizeIdeOpenSettings((raw as any)?.ideOpen);
 
   // 与旧字段保持双写兼容：codex provider 的 env/cmd 同步写回 legacy 字段
   try {
@@ -526,6 +622,17 @@ export function updateSettings(partial: Partial<AppSettings>) {
           ...curGt,
           ...nextGt,
           externalGitTool: nextTool ? { ...curTool, ...nextTool } : curTool,
+        };
+      }
+    } catch {}
+    // 对 ideOpen 做浅层合并，避免渲染层仅更新单字段时覆盖其它字段
+    try {
+      const curIde = (cur as any)?.ideOpen && typeof (cur as any).ideOpen === "object" ? (cur as any).ideOpen : {};
+      const nextIde = (partial as any)?.ideOpen && typeof (partial as any).ideOpen === "object" ? (partial as any).ideOpen : null;
+      if (nextIde) {
+        (mergedRaw as any).ideOpen = {
+          ...curIde,
+          ...nextIde,
         };
       }
     } catch {}

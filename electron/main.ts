@@ -21,7 +21,7 @@ import { parseClaudeSessionFile } from "./agentSessions/claude/parser";
 import { parseGeminiSessionFile, extractGeminiProjectHashFromPath, deriveGeminiProjectHashCandidatesFromPath } from "./agentSessions/gemini/parser";
 import { hasNonEmptyIOFromMessages } from "./agentSessions/shared/empty";
 import { perfLogger } from "./log";
-import settings, { ensureSettingsAutodetect, ensureFirstRunTerminalSelection, type ThemeSetting as SettingsThemeSetting, type AppSettings } from "./settings";
+import settings, { ensureSettingsAutodetect, ensureFirstRunTerminalSelection, type ThemeSetting as SettingsThemeSetting, type AppSettings, type IdeOpenSettings } from "./settings";
 import { normalizeTerminal, resolveWindowsShell, detectPwshExecutable } from "./shells";
 import { resolveActiveProviderId, resolveProviderRuntimeEnvFromSettings, resolveProviderStartupCmdFromSettings } from "./providers/runtime";
 import i18n from "./i18n";
@@ -53,6 +53,15 @@ import { WorktreeRecycleTaskManager } from "./git/worktreeRecycleTasks";
 import { loadDirTreeStore, saveDirTreeStore } from "./stores/dirTreeStore";
 import { getDirBuildRunConfig, setDirBuildRunConfig } from "./stores/buildRunStore";
 import { getWorktreeMeta } from "./stores/worktreeMetaStore";
+import {
+  findProjectPreferredIdeForTargetPath,
+  getProjectPreferredIde,
+  normalizeBuiltinIdeId,
+  normalizeProjectIdePreference,
+  setProjectPreferredIde,
+  type BuiltinIdeId,
+  type ProjectIdePreference,
+} from "./stores/projectIdeStore";
 
 // 使用 CommonJS 编译输出时，运行时环境会提供 `__dirname`，直接使用即可
 
@@ -80,6 +89,38 @@ function applyDebugGlobalsFromConfig(): void {
     const cfg = getDebugConfig();
     DIAG = !!(cfg?.global?.diagLog);
   } catch { DIAG = false; }
+}
+
+/**
+ * 中文说明：裁剪日志字段长度，避免路径/命令过长导致 perf.log 难以阅读。
+ */
+function clampLogValue(value: unknown, maxLen = 260): string {
+  const text = String(value ?? "");
+  if (text.length <= maxLen) return text;
+  return `${text.slice(0, Math.max(0, maxLen - 3))}...`;
+}
+
+/**
+ * 中文说明：写入 IDE 打开链路诊断日志。
+ * - 默认关闭；仅在 debug.config.jsonc 开启 global.diagLog 时记录。
+ */
+function logIdeOpenTrace(message: string): void {
+  if (!DIAG) return;
+  const line = `[ide.open] ${String(message || "")}`;
+  try { perfLogger.log(line); } catch {}
+}
+
+type CursorOpenStrategy = "auto" | "protocol" | "command";
+let cursorPreferredStrategy: CursorOpenStrategy = "auto";
+
+/**
+ * 中文说明：更新 Cursor 当前优先策略，用于加速后续文件定位打开。
+ */
+function setCursorPreferredStrategy(next: CursorOpenStrategy): void {
+  const target = next === "protocol" || next === "command" ? next : "auto";
+  if (cursorPreferredStrategy === target) return;
+  cursorPreferredStrategy = target;
+  logIdeOpenTrace(`cursor.strategy=${target}`);
 }
 const APP_USER_MODEL_ID = 'com.codexflow.app';
 const DEV_APP_USER_MODEL_ID = 'com.codexflow.app.dev';
@@ -2939,6 +2980,45 @@ ipcMain.handle('utils.copyText', async (_e, { text }: { text: string }) => {
   try { clipboard.writeText(String(text ?? '')); return { ok: true }; } catch (e: any) { return { ok: false, error: String(e) }; }
 });
 
+/**
+ * 中文说明：将路径规范化为“当前系统最可用”的剪贴板格式。
+ * - Windows 下优先盘符路径（如 `C:\...`），其次 UNC；
+ * - 其他平台优先返回存在的候选路径，最后回退原始值。
+ */
+function normalizePathForClipboard(rawPath: string): string {
+  const raw = String(rawPath || "").trim();
+  if (!raw) return "";
+  const candidates = buildPathOpenCandidates(raw);
+  if (candidates.length === 0) return raw;
+
+  if (process.platform === "win32") {
+    const drivePath = candidates.find((cand) => /^[a-zA-Z]:\\/.test(String(cand || "")));
+    if (drivePath) return drivePath;
+    const uncPath = candidates.find((cand) => /^\\\\/.test(String(cand || "")));
+    if (uncPath) return uncPath;
+  }
+
+  for (const cand of candidates) {
+    try {
+      if (fs.existsSync(cand)) return cand;
+    } catch {}
+  }
+  return candidates[0] || raw;
+}
+
+/**
+ * 中文说明：把路径转换为“当前系统可直接粘贴使用”的格式（用于复制路径）。
+ */
+ipcMain.handle('utils.normalizePathForClipboard', async (_e, { path: p }: { path: string }) => {
+  try {
+    const normalized = normalizePathForClipboard(String(p || ""));
+    if (!normalized) return { ok: false, error: "invalid path" };
+    return { ok: true, path: normalized };
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
+  }
+});
+
 ipcMain.handle('utils.readText', async () => {
   try {
     const text = clipboard.readText();
@@ -3008,18 +3088,7 @@ ipcMain.handle('utils.saveText', async (_e, { content, defaultPath }: { content:
 ipcMain.handle('utils.showInFolder', async (_e, { path: p }: { path: string }) => {
   try {
     if (!p || typeof p !== 'string') throw new Error('invalid path');
-    const candidates: string[] = [];
-    const push = (x?: string) => { if (x && !candidates.includes(x)) candidates.push(x); };
-    const normSlashes = (s: string) => (process.platform === 'win32' ? s.replace(/\//g, '\\') : s);
-    const raw = String(p);
-    push(normSlashes(raw));
-    if (process.platform === 'win32') {
-      const m = raw.match(/^\/mnt\/([a-zA-Z])\/(.*)$/);
-      if (m) push(`${m[1].toUpperCase()}:\\${m[2].replace(/\//g, '\\')}`);
-      if (/^\//.test(raw)) {
-        try { const unc = wsl.wslToUNC(raw, settings.getSettings().distro || 'Ubuntu-24.04'); push(unc); } catch {}
-      }
-    }
+    const candidates = buildPathOpenCandidates(String(p));
     // Try showItemInFolder for first existing file; else open containing directory
     for (const cand of candidates) {
       try {
@@ -3079,21 +3148,639 @@ ipcMain.handle('images.trash', async (_e, { winPath }: { winPath: string }) => {
   }
 });
 
+/**
+ * 中文说明：构造“系统可打开路径”候选列表（兼容 Windows + WSL + /mnt）。
+ */
+function buildPathOpenCandidates(rawPath: string): string[] {
+  const candidates: string[] = [];
+  const push = (value?: string) => {
+    const next = String(value || "").trim();
+    if (!next) return;
+    if (!candidates.includes(next)) candidates.push(next);
+  };
+
+  const raw = String(rawPath || "");
+  const normSlashes = (s: string) => (process.platform === "win32" ? s.replace(/\//g, "\\") : s);
+  push(normSlashes(raw));
+
+  if (process.platform === "win32") {
+    const m = raw.match(/^\/mnt\/([a-zA-Z])\/(.*)$/);
+    if (m) push(`${m[1].toUpperCase()}:\\${m[2].replace(/\//g, "\\")}`);
+    if (/^\//.test(raw)) {
+      try {
+        const unc = wsl.wslToUNC(raw, settings.getSettings().distro || "Ubuntu-24.04");
+        push(unc);
+      } catch {}
+    }
+  }
+
+  return candidates;
+}
+
+/**
+ * 中文说明：将位置参数归一化为正整数（1-based），非法时返回 undefined。
+ */
+function normalizeOpenPosition(value: unknown): number | undefined {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  return Math.floor(n);
+}
+
+/**
+ * 中文说明：生成“路径:行:列”参数。
+ */
+function buildPathLineColumnArg(targetPath: string, line: number, column: number): string {
+  const p = String(targetPath || "").trim();
+  if (!p) return "";
+  const l = Math.max(1, Math.floor(line));
+  const c = Math.max(1, Math.floor(column));
+  return `${p}:${l}:${c}`;
+}
+
+/**
+ * 中文说明：将参数安全转为 shell 字面量（用于命令模板占位符替换）。
+ */
+function escapeShellArg(raw: string): string {
+  const value = String(raw || "");
+  if (process.platform === "win32") return `"${value.replace(/"/g, '\\"')}"`;
+  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+}
+
+/**
+ * 中文说明：将命令模板中的占位符替换为具体值（未知占位符保持原样）。
+ */
+function applyCommandTemplate(template: string, variables: Record<string, string>): string {
+  return String(template || "").replace(/\{([a-zA-Z][a-zA-Z0-9_]*)\}/g, (all, key) => {
+    if (Object.prototype.hasOwnProperty.call(variables, key)) return variables[key] as string;
+    return all;
+  });
+}
+
+/**
+ * 中文说明：解析命令模板所需的项目路径；若未提供项目路径则退化为目标文件所在目录。
+ */
+function resolveProjectPathForIdeCommand(rawProjectPath: string, targetPath: string): string {
+  const projectPath = String(rawProjectPath || "").trim();
+  if (!projectPath) return path.dirname(targetPath);
+  const candidates = buildPathOpenCandidates(projectPath);
+  for (const cand of candidates) {
+    try {
+      if (fs.existsSync(cand)) return cand;
+    } catch {}
+  }
+  return candidates[0] || projectPath;
+}
+
+/**
+ * 中文说明：构造自定义 IDE 命令模板占位符。
+ */
+function buildIdeCommandTemplateVars(targetPath: string, line: number, column: number, projectPath?: string): Record<string, string> {
+  const p = String(targetPath || "").trim();
+  const l = Math.max(1, Math.floor(line));
+  const c = Math.max(1, Math.floor(column));
+  const project = String(projectPath || "").trim() || path.dirname(p);
+  const pathLineCol = buildPathLineColumnArg(p, l, c);
+  return {
+    line: String(l),
+    column: String(c),
+    path: escapeShellArg(p),
+    project: escapeShellArg(project),
+    pathLineCol: escapeShellArg(pathLineCol),
+    rawPath: p,
+    rawProject: project,
+    rawPathLineCol: pathLineCol,
+  };
+}
+
+/**
+ * 中文说明：执行自定义 IDE 命令模板（成功启动即返回 true）。
+ */
+async function tryOpenPathAtPositionWithCustomCommand(
+  template: string,
+  targetPath: string,
+  line: number,
+  column: number,
+  projectPath?: string,
+): Promise<boolean> {
+  const cmdTemplate = String(template || "").trim();
+  if (!cmdTemplate) return false;
+  const p = String(targetPath || "").trim();
+  if (!p) return false;
+  const vars = buildIdeCommandTemplateVars(p, line, column, projectPath);
+  const rendered = applyCommandTemplate(cmdTemplate, vars).trim();
+  if (!rendered) return false;
+  try {
+    return await spawnDetachedShellSafe(rendered, { windowsHide: false, timeoutMs: 2400 });
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 中文说明：判定命令候选是否为绝对路径。
+ */
+function isAbsoluteCommandPath(cmd: string): boolean {
+  const s = String(cmd || "").trim();
+  if (!s) return false;
+  if (path.isAbsolute(s)) return true;
+  if (/^[a-zA-Z]:[\\/]/.test(s)) return true;
+  if (/^\\\\/.test(s)) return true;
+  return false;
+}
+
+/**
+ * 中文说明：过滤“明显不存在的绝对路径命令”，避免无意义启动开销。
+ */
+function canTryCommand(file: string): boolean {
+  const target = String(file || "").trim();
+  if (!target) return false;
+  if (!isAbsoluteCommandPath(target)) return true;
+  try {
+    return fs.existsSync(target);
+  } catch {
+    return false;
+  }
+}
+
+type ExternalEditorCommandCandidate = {
+  /** 可执行文件（可为 PATH 命令名或绝对路径）。 */
+  file: string;
+  /** 启动参数。 */
+  args: string[];
+};
+
+/**
+ * 中文说明：判断命令是否为 Windows 批处理脚本（.cmd/.bat）。
+ */
+function isWindowsBatchCommand(file: string): boolean {
+  if (process.platform !== "win32") return false;
+  return /\.(cmd|bat)$/i.test(String(file || "").trim());
+}
+
+/**
+ * 中文说明：将“命令 + 参数”拼成 shell 命令行（用于 .cmd/.bat 兼容启动）。
+ */
+function buildShellCommandLine(file: string, argv: string[]): string {
+  const parts = [String(file || "").trim(), ...argv.map((item) => String(item || ""))]
+    .filter((item) => item.length > 0)
+    .map((item) => escapeShellArg(item));
+  return parts.join(" ");
+}
+
+/**
+ * 中文说明：执行编辑器命令候选。
+ * - 普通可执行文件：走 spawn（参数数组）
+ * - Windows .cmd/.bat：走 shell 命令行，兼容批处理入口
+ */
+async function tryLaunchEditorCommand(candidate: ExternalEditorCommandCandidate, timeoutMs: number): Promise<boolean> {
+  const file = String(candidate.file || "").trim();
+  if (!file) return false;
+  const args = Array.isArray(candidate.args) ? candidate.args.map((item) => String(item || "")) : [];
+  const fileTag = clampLogValue(file);
+  const argsTag = clampLogValue(JSON.stringify(args));
+  logIdeOpenTrace(`launch.begin mode=${isWindowsBatchCommand(file) ? "shell-batch" : "spawn"} file="${fileTag}" args=${argsTag}`);
+  if (isWindowsBatchCommand(file)) {
+    const cmdLine = buildShellCommandLine(file, args);
+    if (!cmdLine) return false;
+    const ok = await spawnDetachedShellSafe(cmdLine, { windowsHide: false, timeoutMs });
+    logIdeOpenTrace(`launch.done mode=shell-batch ok=${ok ? 1 : 0} file="${fileTag}"`);
+    return ok;
+  }
+  const ok = await spawnDetachedSafe(file, args, {
+    windowsHide: false,
+    timeoutMs,
+    minAliveMs: 0,
+    acceptExit0BeforeMinAliveMs: true,
+  });
+  logIdeOpenTrace(`launch.done mode=spawn ok=${ok ? 1 : 0} file="${fileTag}"`);
+  return ok;
+}
+
+/**
+ * 中文说明：尝试让编辑器以“文件+行列”方式打开（优先复用已打开窗口）。
+ */
+async function tryOpenPathAtPositionWithEditors(targetPath: string, line: number, column: number): Promise<boolean> {
+  const gotoArg = buildPathLineColumnArg(targetPath, line, column);
+  if (!gotoArg) return false;
+
+  const editorCommands: ExternalEditorCommandCandidate[] = [
+    { file: "code", args: ["--reuse-window", "--goto", gotoArg] },
+    { file: "code-insiders", args: ["--reuse-window", "--goto", gotoArg] },
+    { file: "cursor", args: ["--reuse-window", "--goto", gotoArg] },
+    { file: "cursor.cmd", args: ["--reuse-window", "--goto", gotoArg] },
+    { file: "cursor.exe", args: ["--reuse-window", "--goto", gotoArg] },
+    { file: "windsurf", args: ["--reuse-window", "--goto", gotoArg] },
+  ];
+
+  for (const cmd of editorCommands) {
+    if (!canTryCommand(cmd.file)) continue;
+    try {
+      const ok = await tryLaunchEditorCommand(cmd, 1600);
+      if (ok) return true;
+    } catch {}
+  }
+
+  const esc = gotoArg.replace(/"/g, '\\"');
+  const editorShellCommands = [
+    `code --reuse-window --goto "${esc}"`,
+    `code-insiders --reuse-window --goto "${esc}"`,
+    `cursor --reuse-window --goto "${esc}"`,
+    `cursor.cmd --reuse-window --goto "${esc}"`,
+    `cursor.exe --reuse-window --goto "${esc}"`,
+    `windsurf --reuse-window --goto "${esc}"`,
+  ];
+  for (const cmd of editorShellCommands) {
+    try {
+      const ok = await spawnDetachedShellSafe(cmd, { windowsHide: false, timeoutMs: 1600 });
+      if (ok) return true;
+    } catch {}
+  }
+
+  return false;
+}
+
+/**
+ * 中文说明：尝试使用 VS Code 系列按“文件+行列”定位打开。
+ */
+async function tryOpenPathAtPositionWithVsCode(targetPath: string, line: number, column: number): Promise<boolean> {
+  const gotoArg = buildPathLineColumnArg(targetPath, line, column);
+  if (!gotoArg) return false;
+  const commands: ExternalEditorCommandCandidate[] = [
+    { file: "code", args: ["--reuse-window", "--goto", gotoArg] },
+    { file: "code-insiders", args: ["--reuse-window", "--goto", gotoArg] },
+  ];
+  for (const cmd of commands) {
+    if (!canTryCommand(cmd.file)) continue;
+    try {
+      const ok = await tryLaunchEditorCommand(cmd, 1600);
+      if (ok) return true;
+    } catch {}
+  }
+  const esc = gotoArg.replace(/"/g, '\\"');
+  const shellCommands = [
+    `code --reuse-window --goto "${esc}"`,
+    `code-insiders --reuse-window --goto "${esc}"`,
+  ];
+  for (const cmd of shellCommands) {
+    try {
+      const ok = await spawnDetachedShellSafe(cmd, { windowsHide: false, timeoutMs: 1600 });
+      if (ok) return true;
+    } catch {}
+  }
+  return false;
+}
+
+/**
+ * 中文说明：构造 Cursor 启动命令候选列表（含常见 Windows 安装位置与参数兼容）。
+ */
+function buildCursorCommandCandidates(targetPath: string, gotoArg: string): ExternalEditorCommandCandidate[] {
+  const p = String(targetPath || "").trim();
+  const g = String(gotoArg || "").trim();
+  if (!p || !g) return [];
+  const pathCommandArgVariants: string[][] = [
+    ["--reuse-window", "--goto", g],
+    ["--goto", g],
+    ["-g", g],
+    ["--reuse-window", p],
+    [p],
+  ];
+  const absoluteCommandArgVariants: string[][] = [
+    ["--goto", g],
+    ["-g", g],
+    [p],
+  ];
+  const commands: ExternalEditorCommandCandidate[] = [];
+  const appended = new Set<string>();
+  const append = (file: string) => {
+    const normalizedFile = String(file || "").trim();
+    if (!normalizedFile) return;
+    const variants = isAbsoluteCommandPath(normalizedFile) ? absoluteCommandArgVariants : pathCommandArgVariants;
+    for (const args of variants) {
+      const key = `${normalizedFile.toLowerCase()}::${args.join("\u0001")}`;
+      if (appended.has(key)) continue;
+      appended.add(key);
+      commands.push({ file: normalizedFile, args: args.slice() });
+    }
+  };
+  append("cursor");
+  append("cursor.cmd");
+  append("cursor.exe");
+  if (process.platform !== "win32") return commands;
+
+  const localAppData = String(process.env.LOCALAPPDATA || "").trim();
+  const userProfile = String(process.env.USERPROFILE || "").trim();
+  const programFiles = String(process.env.ProgramFiles || "C:\\Program Files").trim();
+  const programFilesX86 = String(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)").trim();
+
+  const absCandidates = [
+    localAppData ? path.join(localAppData, "Programs", "Cursor", "Cursor.exe") : "",
+    localAppData ? path.join(localAppData, "Programs", "cursor", "Cursor.exe") : "",
+    localAppData ? path.join(localAppData, "Programs", "Cursor", "resources", "app", "bin", "cursor.cmd") : "",
+    localAppData ? path.join(localAppData, "Programs", "Cursor", "resources", "app", "bin", "cursor") : "",
+    localAppData ? path.join(localAppData, "Programs", "cursor", "resources", "app", "bin", "cursor.cmd") : "",
+    localAppData ? path.join(localAppData, "Programs", "cursor", "resources", "app", "bin", "cursor") : "",
+    localAppData ? path.join(localAppData, "Microsoft", "WinGet", "Links", "cursor.exe") : "",
+    userProfile ? path.join(userProfile, "AppData", "Local", "Programs", "Cursor", "resources", "app", "bin", "cursor.cmd") : "",
+    userProfile ? path.join(userProfile, "AppData", "Local", "Programs", "Cursor", "resources", "app", "bin", "cursor") : "",
+    userProfile ? path.join(userProfile, "AppData", "Local", "Programs", "Cursor", "Cursor.exe") : "",
+    userProfile ? path.join(userProfile, "scoop", "apps", "cursor", "current", "bin", "cursor.cmd") : "",
+    userProfile ? path.join(userProfile, "scoop", "apps", "cursor", "current", "Cursor.exe") : "",
+    programFiles ? path.join(programFiles, "Cursor", "Cursor.exe") : "",
+    programFilesX86 ? path.join(programFilesX86, "Cursor", "Cursor.exe") : "",
+  ];
+  for (const file of absCandidates) {
+    const next = String(file || "").trim();
+    if (!next) continue;
+    append(next);
+  }
+  return commands;
+}
+
+/**
+ * 中文说明：通过 Cursor 协议兜底尝试打开文件定位（仅用于命令唤起失败后的最后手段）。
+ */
+async function tryOpenPathAtPositionWithCursorProtocol(targetPath: string, line: number, column: number): Promise<boolean> {
+  if (process.platform !== "win32") return false;
+  const p = String(targetPath || "").trim();
+  if (!p) return false;
+  const l = Math.max(1, Math.floor(line));
+  const c = Math.max(1, Math.floor(column));
+  const normalized = p.replace(/\\/g, "/");
+  const filePart = /^[a-zA-Z]:\//.test(normalized) ? `/${normalized}` : normalized;
+  const fileUri = `file://${filePart}`;
+  const uriCandidates = [
+    `cursor://file${encodeURI(filePart)}:${l}:${c}`,
+    `cursor://file${encodeURI(filePart)}`,
+    `cursor://open?url=${encodeURIComponent(fileUri)}&line=${l}&column=${c}`,
+  ];
+  for (const uri of uriCandidates) {
+    logIdeOpenTrace(`cursor.protocol.begin uri="${clampLogValue(uri)}"`);
+    try {
+      await shell.openExternal(uri);
+      logIdeOpenTrace(`cursor.protocol.done ok=1 uri="${clampLogValue(uri)}"`);
+      return true;
+    } catch (e: any) {
+      logIdeOpenTrace(`cursor.protocol.done ok=0 uri="${clampLogValue(uri)}" err="${clampLogValue(String(e?.message || e))}"`);
+    }
+  }
+  return false;
+}
+
+/**
+ * 中文说明：尝试使用 Cursor 按“文件+行列”定位打开（含路径候选与协议兜底）。
+ */
+async function tryOpenPathAtPositionWithCursor(targetPath: string, line: number, column: number): Promise<boolean> {
+  const gotoArg = buildPathLineColumnArg(targetPath, line, column);
+  if (!gotoArg) return false;
+  if (cursorPreferredStrategy === "protocol") {
+    logIdeOpenTrace("cursor.fast-path strategy=protocol");
+    if (await tryOpenPathAtPositionWithCursorProtocol(targetPath, line, column)) {
+      logIdeOpenTrace("cursor.success stage=protocol-fast-path");
+      return true;
+    }
+    // 已缓存的协议策略失效时回退到 auto，重新探测。
+    setCursorPreferredStrategy("auto");
+  }
+  const cursorCandidates = buildCursorCommandCandidates(targetPath, gotoArg);
+  let batchTentativeSuccess = false;
+  logIdeOpenTrace(
+    `cursor.start path="${clampLogValue(targetPath)}" line=${line} column=${column} goto="${clampLogValue(gotoArg)}" candidates=${cursorCandidates.length} strategy=${cursorPreferredStrategy}`,
+  );
+  for (let i = 0; i < cursorCandidates.length; i += 1) {
+    const cmd = cursorCandidates[i];
+    if (!canTryCommand(cmd.file)) {
+      if (isAbsoluteCommandPath(cmd.file))
+        logIdeOpenTrace(`cursor.skip idx=${i + 1} file="${clampLogValue(cmd.file)}" reason=abs_not_found`);
+      continue;
+    }
+    try {
+      const ok = await tryLaunchEditorCommand(cmd, 2200);
+      if (ok) {
+        if (isWindowsBatchCommand(cmd.file)) {
+          batchTentativeSuccess = true;
+          logIdeOpenTrace(`cursor.tentative stage=candidate idx=${i + 1} file="${clampLogValue(cmd.file)}" reason=batch-success`);
+          continue;
+        }
+        logIdeOpenTrace(`cursor.success stage=candidate idx=${i + 1} file="${clampLogValue(cmd.file)}"`);
+        setCursorPreferredStrategy("command");
+        return true;
+      }
+    } catch {}
+  }
+
+  const esc = gotoArg.replace(/"/g, '\\"');
+  const shellCommands = [
+    `cursor --reuse-window --goto "${esc}"`,
+    `cursor.cmd --reuse-window --goto "${esc}"`,
+    `cursor.exe --reuse-window --goto "${esc}"`,
+  ];
+  for (const cmd of shellCommands) {
+    logIdeOpenTrace(`cursor.shell.begin cmd="${clampLogValue(cmd)}"`);
+    try {
+      const ok = await spawnDetachedShellSafe(cmd, { windowsHide: false, timeoutMs: 2000 });
+      logIdeOpenTrace(`cursor.shell.done ok=${ok ? 1 : 0} cmd="${clampLogValue(cmd)}"`);
+      if (ok) {
+        batchTentativeSuccess = true;
+        logIdeOpenTrace(`cursor.tentative stage=shell cmd="${clampLogValue(cmd)}" reason=shell-success`);
+        continue;
+      }
+    } catch (e: any) {
+      logIdeOpenTrace(`cursor.shell.done ok=0 cmd="${clampLogValue(cmd)}" err="${clampLogValue(String(e?.message || e))}"`);
+    }
+  }
+
+  if (await tryOpenPathAtPositionWithCursorProtocol(targetPath, line, column)) {
+    logIdeOpenTrace("cursor.success stage=protocol");
+    setCursorPreferredStrategy("protocol");
+    return true;
+  }
+  if (batchTentativeSuccess) {
+    logIdeOpenTrace("cursor.fail tentative-batch-only");
+  }
+  logIdeOpenTrace("cursor.fail all strategies exhausted");
+  return false;
+}
+
+/**
+ * 中文说明：尝试使用 Windsurf 按“文件+行列”定位打开。
+ */
+async function tryOpenPathAtPositionWithWindsurf(targetPath: string, line: number, column: number): Promise<boolean> {
+  const gotoArg = buildPathLineColumnArg(targetPath, line, column);
+  if (!gotoArg) return false;
+  try {
+    const ok = await spawnDetachedSafe("windsurf", ["--reuse-window", "--goto", gotoArg], {
+      windowsHide: false,
+      timeoutMs: 1600,
+      minAliveMs: 0,
+      acceptExit0BeforeMinAliveMs: true,
+    });
+    if (ok) return true;
+  } catch {}
+  try {
+    const esc = gotoArg.replace(/"/g, '\\"');
+    const ok = await spawnDetachedShellSafe(`windsurf --reuse-window --goto "${esc}"`, { windowsHide: false, timeoutMs: 1600 });
+    if (ok) return true;
+  } catch {}
+  return false;
+}
+
+/**
+ * 中文说明：尝试使用 Rider 按“文件+行号”定位打开（列号不强依赖）。
+ */
+async function tryOpenPathAtPositionWithRider(targetPath: string, line: number): Promise<boolean> {
+  const p = String(targetPath || "").trim();
+  if (!p) return false;
+  const l = Math.max(1, Math.floor(line));
+  const lineArg = String(l);
+  const platform = process.platform;
+  if (platform === "darwin") {
+    try {
+      const ok = await spawnDetachedSafe("open", ["-a", "Rider", "--args", "--line", lineArg, p], {
+        windowsHide: false,
+        timeoutMs: 1600,
+        minAliveMs: 0,
+        acceptExit0BeforeMinAliveMs: true,
+      });
+      if (ok) return true;
+    } catch {}
+  } else if (platform === "win32") {
+    try {
+      const ok = await spawnDetachedSafe("rider64.exe", ["--line", lineArg, p], {
+        windowsHide: false,
+        timeoutMs: 1600,
+        minAliveMs: 0,
+        acceptExit0BeforeMinAliveMs: true,
+      });
+      if (ok) return true;
+    } catch {}
+    try {
+      const ok = await spawnDetachedSafe("rider.exe", ["--line", lineArg, p], {
+        windowsHide: false,
+        timeoutMs: 1600,
+        minAliveMs: 0,
+        acceptExit0BeforeMinAliveMs: true,
+      });
+      if (ok) return true;
+    } catch {}
+  } else {
+    try {
+      const ok = await spawnDetachedSafe("rider", ["--line", lineArg, p], {
+        windowsHide: false,
+        timeoutMs: 1600,
+        minAliveMs: 0,
+        acceptExit0BeforeMinAliveMs: true,
+      });
+      if (ok) return true;
+    } catch {}
+  }
+  try {
+    const esc = p.replace(/"/g, '\\"');
+    const ok = await spawnDetachedShellSafe(`rider --line ${lineArg} "${esc}"`, { windowsHide: false, timeoutMs: 1600 });
+    if (ok) return true;
+  } catch {}
+  return false;
+}
+
+/**
+ * 中文说明：按内置 IDE 标识执行“文件+行列”定位打开。
+ */
+async function tryOpenPathAtPositionWithBuiltinIde(
+  ideId: BuiltinIdeId,
+  targetPath: string,
+  line: number,
+  column: number,
+): Promise<boolean> {
+  if (ideId === "vscode") return await tryOpenPathAtPositionWithVsCode(targetPath, line, column);
+  if (ideId === "cursor") return await tryOpenPathAtPositionWithCursor(targetPath, line, column);
+  if (ideId === "windsurf") return await tryOpenPathAtPositionWithWindsurf(targetPath, line, column);
+  if (ideId === "rider") return await tryOpenPathAtPositionWithRider(targetPath, line);
+  logIdeOpenTrace(`builtin.open.skip ide="${ideId}" reason=unsupported`);
+  return false;
+}
+
+/**
+ * 中文说明：从设置中解析“全局默认 IDE”策略（auto 模式返回 null）。
+ */
+function resolveGlobalPreferredIde(config: AppSettings): ProjectIdePreference | null {
+  const ideOpen = ((config as any)?.ideOpen || {}) as IdeOpenSettings;
+  const mode = String((ideOpen as any)?.mode || "").trim().toLowerCase();
+  if (!mode || mode === "auto") return null;
+  if (mode === "builtin") {
+    const builtinId = normalizeBuiltinIdeId((ideOpen as any)?.builtinId);
+    return builtinId ? { mode: "builtin", builtinId } : null;
+  }
+  if (mode === "custom") {
+    return normalizeProjectIdePreference({
+      mode: "custom",
+      customName: (ideOpen as any)?.customName,
+      customCommand: (ideOpen as any)?.customCommand,
+    });
+  }
+  return null;
+}
+
+/**
+ * 中文说明：格式化 IDE 偏好配置，便于输出诊断日志。
+ */
+function formatIdePreferenceForLog(preferred: ProjectIdePreference | null | undefined): string {
+  const normalized = preferred ? normalizeProjectIdePreference(preferred) : null;
+  if (!normalized) return "none";
+  if (normalized.mode === "builtin") return `builtin:${String(normalized.builtinId || "")}`;
+  return `custom:${clampLogValue(String(normalized.customName || "unnamed"))}`;
+}
+
+/**
+ * 中文说明：按 IDE 偏好配置执行“文件+行列”定位打开（支持 builtin/custom）。
+ */
+async function tryOpenPathAtPositionWithIdePreference(
+  preferred: ProjectIdePreference,
+  targetPath: string,
+  line: number,
+  column: number,
+  projectPath?: string,
+): Promise<boolean> {
+  const normalized = normalizeProjectIdePreference(preferred);
+  if (!normalized) {
+    logIdeOpenTrace("pref.open.skip reason=invalid_preference");
+    return false;
+  }
+  if (normalized.mode === "builtin") {
+    const builtinId = normalizeBuiltinIdeId(normalized.builtinId);
+    if (!builtinId) {
+      logIdeOpenTrace("pref.open.skip reason=invalid_builtin");
+      return false;
+    }
+    logIdeOpenTrace(`pref.open.begin mode=builtin ide=${builtinId} path="${clampLogValue(targetPath)}" line=${line} column=${column}`);
+    const ok = await tryOpenPathAtPositionWithBuiltinIde(builtinId, targetPath, line, column);
+    logIdeOpenTrace(`pref.open.done mode=builtin ide=${builtinId} ok=${ok ? 1 : 0}`);
+    return ok;
+  }
+  const customCommand = String(normalized.customCommand || "").trim();
+  if (!customCommand) {
+    logIdeOpenTrace("pref.open.skip reason=empty_custom_command");
+    return false;
+  }
+  logIdeOpenTrace(`pref.open.begin mode=custom name="${clampLogValue(normalized.customName || "")}" path="${clampLogValue(targetPath)}"`);
+  const ok = await tryOpenPathAtPositionWithCustomCommand(customCommand, targetPath, line, column, projectPath);
+  logIdeOpenTrace(`pref.open.done mode=custom ok=${ok ? 1 : 0}`);
+  return ok;
+}
+
+/**
+ * 中文说明：无显式绑定时的自动 IDE 探测顺序。
+ */
+async function tryOpenPathAtPositionAuto(targetPath: string, line: number, column: number): Promise<boolean> {
+  if (await tryOpenPathAtPositionWithCursor(targetPath, line, column)) return true;
+  if (await tryOpenPathAtPositionWithWindsurf(targetPath, line, column)) return true;
+  if (await tryOpenPathAtPositionWithVsCode(targetPath, line, column)) return true;
+  if (await tryOpenPathAtPositionWithRider(targetPath, line)) return true;
+  return false;
+}
+
 ipcMain.handle('utils.openPath', async (_e, { path: p }: { path: string }) => {
   try {
     if (!p || typeof p !== 'string') throw new Error('invalid path');
-    const candidates: string[] = [];
-    const push = (x?: string) => { if (x && !candidates.includes(x)) candidates.push(x); };
-    const normSlashes = (s: string) => (process.platform === 'win32' ? s.replace(/\//g, '\\') : s);
-    const raw = String(p);
-    push(normSlashes(raw));
-    if (process.platform === 'win32') {
-      const m = raw.match(/^\/mnt\/([a-zA-Z])\/(.*)$/);
-      if (m) push(`${m[1].toUpperCase()}:\\${m[2].replace(/\//g, '\\')}`);
-      if (/^\//.test(raw)) {
-        try { const unc = wsl.wslToUNC(raw, settings.getSettings().distro || 'Ubuntu-24.04'); push(unc); } catch {}
-      }
-    }
+    const candidates = buildPathOpenCandidates(String(p));
     for (const cand of candidates) {
       try {
         if (fs.existsSync(cand)) {
@@ -3103,6 +3790,124 @@ ipcMain.handle('utils.openPath', async (_e, { path: p }: { path: string }) => {
       } catch {}
     }
     throw new Error('no valid path');
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+/**
+ * 中文说明：按“文件+行列”打开本地路径，优先尝试编辑器定位能力，失败后回退普通打开。
+ */
+ipcMain.handle('utils.openPathAtPosition', async (_e, args: { path: string; line?: number; column?: number; projectPath?: string }) => {
+  try {
+    const p = String(args?.path || "").trim();
+    if (!p) throw new Error('invalid path');
+    const line = normalizeOpenPosition(args?.line);
+    const column = normalizeOpenPosition(args?.column) || 1;
+    const projectPath = String(args?.projectPath || "").trim();
+    const candidates = buildPathOpenCandidates(p);
+    const preferredIdeFromProject = projectPath ? getProjectPreferredIde(projectPath) : null;
+    const globalPreferredIde = resolveGlobalPreferredIde(settings.getSettings());
+    logIdeOpenTrace(
+      `openPathAtPosition.begin path="${clampLogValue(p)}" line=${line || 0} column=${column} project="${clampLogValue(projectPath || "-")}" candidates=${candidates.length} projectPref=${formatIdePreferenceForLog(preferredIdeFromProject)} globalPref=${formatIdePreferenceForLog(globalPreferredIde)}`,
+    );
+
+    for (const cand of candidates) {
+      try {
+        const exists = fs.existsSync(cand);
+        logIdeOpenTrace(`candidate.check path="${clampLogValue(cand)}" exists=${exists ? 1 : 0}`);
+        if (!exists) continue;
+        if (line) {
+          const projectPreferredIde = preferredIdeFromProject || findProjectPreferredIdeForTargetPath(cand);
+          const projectPathForCommand = resolveProjectPathForIdeCommand(projectPath, cand);
+          let openedByEditor = false;
+          logIdeOpenTrace(
+            `candidate.position path="${clampLogValue(cand)}" projectPref=${formatIdePreferenceForLog(projectPreferredIde)} commandProject="${clampLogValue(projectPathForCommand)}"`,
+          );
+          if (projectPreferredIde) {
+            openedByEditor = await tryOpenPathAtPositionWithIdePreference(projectPreferredIde, cand, line, column, projectPathForCommand);
+            logIdeOpenTrace(`candidate.stage path="${clampLogValue(cand)}" stage=projectPref ok=${openedByEditor ? 1 : 0}`);
+          }
+          if (!openedByEditor && !projectPreferredIde && globalPreferredIde) {
+            openedByEditor = await tryOpenPathAtPositionWithIdePreference(globalPreferredIde, cand, line, column, projectPathForCommand);
+            logIdeOpenTrace(`candidate.stage path="${clampLogValue(cand)}" stage=globalPref ok=${openedByEditor ? 1 : 0}`);
+          }
+          if (!openedByEditor && !projectPreferredIde && !globalPreferredIde) {
+            openedByEditor = await tryOpenPathAtPositionAuto(cand, line, column);
+            logIdeOpenTrace(`candidate.stage path="${clampLogValue(cand)}" stage=auto ok=${openedByEditor ? 1 : 0}`);
+          }
+          if (!openedByEditor && !projectPreferredIde && !globalPreferredIde) {
+            openedByEditor = await tryOpenPathAtPositionWithEditors(cand, line, column);
+            logIdeOpenTrace(`candidate.stage path="${clampLogValue(cand)}" stage=editorsFallback ok=${openedByEditor ? 1 : 0}`);
+          }
+          if (openedByEditor) {
+            logIdeOpenTrace(`openPathAtPosition.done ok=1 fallback=0 path="${clampLogValue(cand)}"`);
+            return { ok: true, fallback: false };
+          }
+        }
+        const err = await shell.openPath(cand);
+        if (!err) {
+          logIdeOpenTrace(`openPathAtPosition.done ok=1 fallback=${line ? 1 : 0} path="${clampLogValue(cand)}"`);
+          return { ok: true, fallback: !!line };
+        }
+        logIdeOpenTrace(`candidate.shellOpenPath.fail path="${clampLogValue(cand)}" err="${clampLogValue(err)}"`);
+      } catch (e: any) {
+        logIdeOpenTrace(`candidate.error path="${clampLogValue(cand)}" err="${clampLogValue(String(e?.message || e))}"`);
+      }
+    }
+    logIdeOpenTrace(`openPathAtPosition.done ok=0 err="no valid path" raw="${clampLogValue(p)}"`);
+    throw new Error('no valid path');
+  } catch (e: any) {
+    logIdeOpenTrace(`openPathAtPosition.error err="${clampLogValue(String(e?.message || e))}"`);
+    return { ok: false, error: String(e) };
+  }
+});
+
+/**
+ * 中文说明：读取指定项目根目录绑定的 IDE。
+ */
+ipcMain.handle("utils.projectIde.get", async (_e, args: { projectPath: string }) => {
+  try {
+    const projectPath = String(args?.projectPath || "").trim();
+    if (!projectPath) return { ok: false, error: "missing projectPath" };
+    const config = getProjectPreferredIde(projectPath);
+    const ideId = config && config.mode === "builtin" ? normalizeBuiltinIdeId(config.builtinId) : null;
+    return { ok: true, config, ideId };
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+/**
+ * 中文说明：设置或清除指定项目根目录的 IDE 绑定。
+ */
+ipcMain.handle("utils.projectIde.set", async (_e, args: { projectPath: string; ideId?: string | null; config?: ProjectIdePreference | null }) => {
+  try {
+    const projectPath = String(args?.projectPath || "").trim();
+    if (!projectPath) return { ok: false, error: "missing projectPath" };
+    const hasIdeId = !!(args && Object.prototype.hasOwnProperty.call(args, "ideId"));
+    let normalized: ProjectIdePreference | null = null;
+    const hasConfig = !!(args && Object.prototype.hasOwnProperty.call(args, "config"));
+    if (!hasConfig && !hasIdeId) return { ok: false, error: "missing config or ideId" };
+    if (hasConfig) {
+      if (args?.config == null) {
+        normalized = null;
+      } else {
+        normalized = normalizeProjectIdePreference(args.config);
+        if (!normalized) return { ok: false, error: "invalid config" };
+      }
+    } else {
+      const ideRaw = String(args?.ideId || "").trim().toLowerCase();
+      if (!ideRaw) {
+        normalized = null;
+      } else {
+        const builtinId = normalizeBuiltinIdeId(ideRaw);
+        if (!builtinId) return { ok: false, error: "invalid ideId" };
+        normalized = { mode: "builtin", builtinId };
+      }
+    }
+    setProjectPreferredIde(projectPath, normalized);
+    return { ok: true };
   } catch (e: any) {
     return { ok: false, error: String(e) };
   }

@@ -23,6 +23,30 @@ export type ProviderEnv = {
   distro?: string;
 };
 
+export type BuiltinIdeId = "vscode" | "cursor" | "windsurf" | "rider";
+
+export type ProjectIdePreference = {
+  /** 项目绑定模式：builtin=内置 IDE；custom=自定义命令模板。 */
+  mode?: "builtin" | "custom";
+  /** 内置 IDE 标识（mode=builtin 时生效）。 */
+  builtinId?: BuiltinIdeId;
+  /** 自定义 IDE 展示名（可选）。 */
+  customName?: string;
+  /** 自定义 IDE 命令模板（mode=custom 时生效）。 */
+  customCommand?: string;
+};
+
+export type IdeOpenSettings = {
+  /** 默认 IDE 模式：auto=自动探测；builtin=固定内置 IDE；custom=自定义命令模板。 */
+  mode?: "auto" | "builtin" | "custom";
+  /** 内置 IDE 标识（mode=builtin 时生效）。 */
+  builtinId?: BuiltinIdeId;
+  /** 自定义 IDE 展示名（可选）。 */
+  customName?: string;
+  /** 自定义 IDE 命令模板（mode=custom 时生效）。 */
+  customCommand?: string;
+};
+
 export type ClaudeCodeSettings = {
   readAgentHistory?: boolean;
 };
@@ -92,6 +116,8 @@ export type AppSettings = {
     /** 创建 worktree 时自动拷贝 AI 规则文件 */
     copyRulesOnCreate?: boolean;
   };
+  /** 默认 IDE 打开策略（用于“文件定位跳转”链路）。 */
+  ideOpen?: IdeOpenSettings;
 };
 
 export type Project = {
@@ -596,6 +622,8 @@ export interface GeminiAPI {
   getUsage(): Promise<{ ok: boolean; snapshot?: GeminiQuotaSnapshot; error?: string }>;
 }
 
+export type ProjectPreferredIde = BuiltinIdeId;
+
 export interface NotificationsAPI {
   setBadgeCount(count: number): void;
   showAgentCompletion(payload: { tabId: string; tabName?: string; projectName?: string; preview?: string; title: string; body: string; appTitle?: string }): void;
@@ -608,11 +636,19 @@ export interface UtilsAPI {
   perfLog(text: string): Promise<{ ok: boolean; error?: string }>;
   getWindowsInfo(): Promise<{ ok: boolean; platform?: string; buildNumber?: number; backend?: string; conptyAvailable?: boolean; error?: string }>;
   copyText(text: string): Promise<{ ok: boolean; error?: string }>;
+  /** 将路径转换为当前系统可直接使用的剪贴板格式。 */
+  normalizePathForClipboard(p: string): Promise<{ ok: boolean; path?: string; error?: string }>;
   readText(): Promise<{ ok: boolean; text?: string; error?: string }>;
   saveText(content: string, defaultPath?: string): Promise<{ ok: boolean; path?: string; canceled?: boolean; error?: string }>;
   fetchJson(args: { url: string; timeoutMs?: number; headers?: Record<string, string> }): Promise<{ ok: boolean; status?: number; data?: any; error?: string; raw?: string }>;
   showInFolder(p: string): Promise<{ ok: boolean; openedDir?: string; error?: string }>;
   openPath(p: string): Promise<{ ok: boolean; error?: string }>;
+  /** 按“文件+行列”定位打开；若编辑器能力不可用则回退为普通打开。 */
+  openPathAtPosition(p: string, pos?: { line?: number; column?: number; projectPath?: string }): Promise<{ ok: boolean; fallback?: boolean; error?: string }>;
+  /** 读取指定项目根目录绑定的 IDE。 */
+  getProjectPreferredIde(projectPath: string): Promise<{ ok: boolean; config?: ProjectIdePreference | null; ideId?: ProjectPreferredIde | null; error?: string }>;
+  /** 设置或清除指定项目根目录的 IDE 绑定（清除时需显式传入 null）。 */
+  setProjectPreferredIde(projectPath: string, config: ProjectIdePreference | ProjectPreferredIde | null): Promise<{ ok: boolean; error?: string }>;
   openExternalUrl(url: string): Promise<{ ok: boolean; error?: string }>;
   openExternalConsole(args: { terminal?: 'wsl' | 'windows' | 'pwsh'; wslPath?: string; winPath?: string; distro?: string; startupCmd?: string; title?: string }): Promise<{ ok: boolean; error?: string }>;
   // 兼容旧名

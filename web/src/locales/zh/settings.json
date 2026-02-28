@@ -150,6 +150,23 @@
       }
     }
   },
+  "ideOpen": {
+    "label": "默认 IDE",
+    "help": "用于“点击路径定位到文件行列”时的全局默认策略。自动模式会按兼容性依次尝试可用 IDE；若你固定用某个 IDE，可改为手动指定。",
+    "modeAuto": "自动选择可用 IDE",
+    "modeBuiltin": "手动指定内置 IDE",
+    "modeCustom": "自定义命令",
+    "builtinLabel": "内置 IDE",
+    "builtinVsCode": "VS Code",
+    "builtinCursor": "Cursor",
+    "builtinWindsurf": "Windsurf",
+    "builtinRider": "Rider",
+    "customNameLabel": "自定义 IDE 名称（可选）",
+    "customNamePlaceholder": "例如：IntelliJ IDEA",
+    "customCommandLabel": "命令模板",
+    "customCommandPlaceholder": "例如：\"C:\\\\Path\\\\IDE.exe\" --line {line} {path}",
+    "customCommandHint": "可用占位符：{path} {line} {column} {project} {pathLineCol}（以及 rawPath/rawProject/rawPathLineCol）。"
+  },
   "experimental": {
     "title": "实验性功能",
     "desc": "以下功能仍在打磨中，可能存在兼容性与稳定性风险。",
