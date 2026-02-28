@@ -4598,11 +4598,16 @@ export default function CodexFlowManagerUI() {
       const env = getProviderEnv(providerId);
       const baseCmd = buildProviderStartupCmdForWorktreeCreate({ providerId, env, useYolo: args.useYolo });
       const startupCmd = buildProviderStartupCmdWithInitialPrompt({ providerId, terminalMode: env.terminal as any, baseCmd, prompt: args.prompt });
-      return await openProviderConsoleInProject({ project, providerId, startupCmd });
+      const started = await openProviderConsoleInProject({ project, providerId, startupCmd });
+      const hasInitialPrompt = String(args.prompt || "").trim().length > 0;
+      const tabId = String(started.tabId || "").trim();
+      if (started.ok && tabId && hasInitialPrompt && shouldEnableAgentTimerForProvider(providerId))
+        startAgentTurnTimer(tabId);
+      return started;
     } catch (e: any) {
       return { ok: false, error: String(e?.message || e) };
     }
-  }, [buildProviderStartupCmdForWorktreeCreate, getProviderEnv, openProviderConsoleInProject]);
+  }, [buildProviderStartupCmdForWorktreeCreate, getProviderEnv, openProviderConsoleInProject, shouldEnableAgentTimerForProvider, startAgentTurnTimer]);
 
   /**
    * 执行创建 worktree，并在每个 worktree 内启动对应引擎 CLI。
