@@ -402,9 +402,20 @@ export type GitDirInfo = {
   error?: string;
 };
 
+export type InitGitRepositoryResult = {
+  ok: boolean;
+  dir: string;
+  repoRoot?: string;
+  branch?: string;
+  alreadyRepo?: boolean;
+  log?: string;
+  error?: string;
+};
+
 export interface GitWorktreeAPI {
   statusBatch(dirs: string[]): Promise<{ ok: boolean; items?: GitDirInfo[]; error?: string }>;
   listBranches(repoDir: string): Promise<{ ok: boolean; repoRoot?: string; branches?: string[]; current?: string; detached?: boolean; headSha?: string; error?: string }>;
+  initRepo(args: { dir: string }): Promise<InitGitRepositoryResult>;
   getMeta(worktreePath: string): Promise<{ ok: boolean; meta?: WorktreeMeta | null; error?: string }>;
   create(args: { repoDir: string; baseBranch: string; instances: Array<{ providerId: "codex" | "claude" | "gemini"; count: number }>; copyRules?: boolean }): Promise<{ ok: boolean; items?: CreatedWorktree[]; error?: string }>;
   createTaskStart(args: { repoDir: string; baseBranch: string; instances: Array<{ providerId: "codex" | "claude" | "gemini"; count: number }>; copyRules?: boolean }): Promise<{ ok: boolean; taskId?: string; reused?: boolean; error?: string }>;

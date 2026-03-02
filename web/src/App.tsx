@@ -238,6 +238,31 @@ type AgentTurnTimerState = {
   finishedAt?: number;
 };
 
+type GitRepoInitStatus = "running" | "success" | "error";
+
+type GitRepoInitDialogState = {
+  open: boolean;
+  projectId: string;
+  running: boolean;
+  error?: string;
+};
+
+type GitRepoInitProgressState = {
+  open: boolean;
+  projectId: string;
+  status: GitRepoInitStatus;
+  log: string;
+  updatedAt: number;
+  error?: string;
+};
+
+type GitRepoInitProgressSnapshot = {
+  status: GitRepoInitStatus;
+  log: string;
+  updatedAt: number;
+  error?: string;
+};
+
 /**
  * 中文说明：将耗时（毫秒）格式化为带单位文本（如 `2s`、`1m 05s`、`1h 02m 05s`）。
  */
@@ -745,6 +770,23 @@ export default function CodexFlowManagerUI() {
     message: "",
     dir: "",
   }));
+  const [gitRepoInitDialog, setGitRepoInitDialog] = useState<GitRepoInitDialogState>(() => ({
+    open: false,
+    projectId: "",
+    running: false,
+    error: undefined,
+  }));
+  const [gitRepoInitProgress, setGitRepoInitProgress] = useState<GitRepoInitProgressState>(() => ({
+    open: false,
+    projectId: "",
+    status: "running",
+    log: "",
+    updatedAt: 0,
+    error: undefined,
+  }));
+  const gitRepoInitRunningByProjectIdRef = useRef<Record<string, boolean>>({});
+  const [gitRepoInitRunningByProjectId, setGitRepoInitRunningByProjectId] = useState<Record<string, boolean>>({});
+  const gitRepoInitProgressByProjectIdRef = useRef<Record<string, GitRepoInitProgressSnapshot>>({});
 
   /**
    * 中文说明：设置某个 worktree 的“删除进行中”标记。
@@ -1252,6 +1294,44 @@ export default function CodexFlowManagerUI() {
       }
     }
     return "";
+  }, []);
+  /**
+   * 中文说明：设置某个项目“创建 Git 仓库”进行中标记（用于按钮禁用与进度面板重入）。
+   */
+  const setGitRepoInitInFlight = useCallback((projectId: string, inFlight: boolean) => {
+    const pid = String(projectId || "").trim();
+    if (!pid) return;
+    gitRepoInitRunningByProjectIdRef.current[pid] = inFlight;
+    setGitRepoInitRunningByProjectId((prev) => {
+      const next = { ...(prev || {}) } as Record<string, boolean>;
+      if (inFlight) next[pid] = true;
+      else delete next[pid];
+      return next;
+    });
+  }, []);
+
+  /**
+   * 中文说明：读取某项目的 Git 初始化进度快照（用于并发任务时恢复对应日志与状态）。
+   */
+  const getGitRepoInitProgressSnapshot = useCallback((projectId: string): GitRepoInitProgressSnapshot | null => {
+    const pid = String(projectId || "").trim();
+    if (!pid) return null;
+    const snapshot = gitRepoInitProgressByProjectIdRef.current[pid];
+    return snapshot ? { ...snapshot } : null;
+  }, []);
+
+  /**
+   * 中文说明：写入某项目的 Git 初始化进度快照（覆盖写，用于状态收敛）。
+   */
+  const setGitRepoInitProgressSnapshot = useCallback((projectId: string, snapshot: GitRepoInitProgressSnapshot): void => {
+    const pid = String(projectId || "").trim();
+    if (!pid) return;
+    gitRepoInitProgressByProjectIdRef.current[pid] = {
+      status: snapshot.status,
+      log: String(snapshot.log || ""),
+      updatedAt: Number(snapshot.updatedAt || Date.now()),
+      error: snapshot.error ? String(snapshot.error) : undefined,
+    };
   }, []);
 
   /**
@@ -5075,6 +5155,203 @@ export default function CodexFlowManagerUI() {
   }, []);
 
   /**
+   * 主动探测单个项目的最新 Git 状态，并同步写回缓存（点击主按钮时用于“实时分流”）。
+   */
+  const probeGitInfoForProject = useCallback(async (project: Project): Promise<GitDirInfo | null> => {
+    const pid = String(project?.id || "").trim();
+    const dir = String(project?.winPath || "").trim();
+    if (!pid || !dir) return null;
+    try {
+      const res: any = await (window as any).host?.gitWorktree?.statusBatch?.([dir]);
+      const info = res && res.ok && Array.isArray(res.items) ? (res.items[0] as GitDirInfo | null) : null;
+      if (!info) return gitInfoByProjectId[pid] || null;
+      setGitInfoByProjectId((prev) => ({ ...prev, [pid]: info }));
+      return info;
+    } catch {
+      return gitInfoByProjectId[pid] || null;
+    }
+  }, [gitInfoByProjectId]);
+
+  /**
+   * 打开“创建 Git 仓库”弹窗；若该项目已在创建中，则直接打开进度弹窗。
+   */
+  const openGitRepoInitDialog = useCallback((project: Project) => {
+    const pid = String(project?.id || "").trim();
+    if (!pid) return;
+    const running = !!gitRepoInitRunningByProjectIdRef.current[pid];
+    if (running) {
+      const snapshot = getGitRepoInitProgressSnapshot(pid);
+      setGitRepoInitProgress({
+        open: true,
+        projectId: pid,
+        status: snapshot?.status || "running",
+        log: snapshot?.log || "",
+        updatedAt: snapshot?.updatedAt || Date.now(),
+        error: snapshot?.error,
+      });
+      return;
+    }
+    setGitRepoInitDialog({ open: true, projectId: pid, running: false, error: undefined });
+  }, [getGitRepoInitProgressSnapshot]);
+
+  /**
+   * 关闭“创建 Git 仓库”弹窗（不影响已启动的后台执行）。
+   */
+  const closeGitRepoInitDialog = useCallback(() => {
+    setGitRepoInitDialog((prev) => ({ ...prev, open: false, running: false }));
+  }, []);
+
+  /**
+   * 追加 Git 初始化进度日志（统一处理换行与空文本）。
+   */
+  const appendGitRepoInitProgressLog = useCallback((projectId: string, text: string) => {
+    const pid = String(projectId || "").trim();
+    const line = String(text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+    if (!pid || !line) return;
+    const prevSnapshot = getGitRepoInitProgressSnapshot(pid) || {
+      status: "running",
+      log: "",
+      updatedAt: Date.now(),
+      error: undefined,
+    };
+    const left = String(prevSnapshot.log || "").trimEnd();
+    const nextSnapshot: GitRepoInitProgressSnapshot = {
+      ...prevSnapshot,
+      log: left ? `${left}\n${line}` : line,
+      updatedAt: Date.now(),
+    };
+    setGitRepoInitProgressSnapshot(pid, nextSnapshot);
+    setGitRepoInitProgress((prev) => (prev.projectId === pid ? { ...prev, ...nextSnapshot } : prev));
+  }, [getGitRepoInitProgressSnapshot, setGitRepoInitProgressSnapshot]);
+
+  /**
+   * 执行“创建 Git 仓库”流程（与 worktree 创建流程一致：配置弹窗 -> 进度弹窗 -> 状态收敛）。
+   */
+  const startGitRepoInit = useCallback(async () => {
+    const dlg = gitRepoInitDialog;
+    if (!dlg.open || dlg.running) return;
+    const pid = String(dlg.projectId || "").trim();
+    if (!pid) return;
+    const project = projectsRef.current.find((x) => x.id === pid) || null;
+    if (!project?.winPath) return;
+    if (gitRepoInitRunningByProjectIdRef.current[pid]) {
+      const snapshot = getGitRepoInitProgressSnapshot(pid);
+      setGitRepoInitProgress({
+        open: true,
+        projectId: pid,
+        status: snapshot?.status || "running",
+        log: snapshot?.log || "",
+        updatedAt: snapshot?.updatedAt || Date.now(),
+        error: snapshot?.error,
+      });
+      return;
+    }
+
+    const startSnapshot: GitRepoInitProgressSnapshot = {
+      status: "running",
+      log: "[START] 创建 Git 仓库",
+      updatedAt: Date.now(),
+      error: undefined,
+    };
+    setGitRepoInitProgressSnapshot(pid, startSnapshot);
+    setGitRepoInitInFlight(pid, true);
+    setGitRepoInitDialog((prev) => (prev.open && prev.projectId === pid ? { ...prev, running: true, error: undefined } : prev));
+    setGitRepoInitProgress({
+      open: true,
+      projectId: pid,
+      ...startSnapshot,
+    });
+
+    try {
+      const res: any = await (window as any).host?.gitWorktree?.initRepo?.({ dir: project.winPath });
+      const backendLog = String(res?.log || "").trim();
+      if (backendLog) appendGitRepoInitProgressLog(pid, backendLog);
+      if (!(res && res.ok)) {
+        const errMsg = String(res?.error || (t("projects:initRepoFailed", "创建 Git 仓库失败") as string)).trim();
+        const errorSnapshot: GitRepoInitProgressSnapshot = {
+          ...(getGitRepoInitProgressSnapshot(pid) || startSnapshot),
+          status: "error",
+          error: errMsg,
+          updatedAt: Date.now(),
+        };
+        setGitRepoInitProgressSnapshot(pid, errorSnapshot);
+        setGitRepoInitDialog((prev) => (prev.open && prev.projectId === pid ? { ...prev, running: false, error: errMsg } : prev));
+        setGitRepoInitProgress((prev) => (prev.projectId === pid ? { ...prev, ...errorSnapshot, open: true } : prev));
+        return;
+      }
+
+      appendGitRepoInitProgressLog(pid, `[STEP 3/3] ${t("projects:initRepoRefreshStatus", "刷新项目 Git 状态…") as string}`);
+      await refreshGitInfoForProjectIds([pid]);
+      appendGitRepoInitProgressLog(pid, `[DONE] ${t("projects:initRepoRefreshDone", "项目 Git 状态已刷新") as string}`);
+      const successSnapshot: GitRepoInitProgressSnapshot = {
+        ...(getGitRepoInitProgressSnapshot(pid) || startSnapshot),
+        status: "success",
+        error: undefined,
+        updatedAt: Date.now(),
+      };
+      setGitRepoInitProgressSnapshot(pid, successSnapshot);
+      setGitRepoInitDialog((prev) => (prev.open && prev.projectId === pid ? { ...prev, open: false, running: false, error: undefined } : prev));
+      setGitRepoInitProgress((prev) => (prev.projectId === pid ? { ...prev, ...successSnapshot, open: true } : prev));
+    } catch (e: any) {
+      const errMsg = String(e?.message || e || (t("projects:initRepoFailed", "创建 Git 仓库失败") as string)).trim();
+      const errorSnapshot: GitRepoInitProgressSnapshot = {
+        ...(getGitRepoInitProgressSnapshot(pid) || startSnapshot),
+        status: "error",
+        error: errMsg,
+        updatedAt: Date.now(),
+      };
+      setGitRepoInitProgressSnapshot(pid, errorSnapshot);
+      setGitRepoInitDialog((prev) => (prev.open && prev.projectId === pid ? { ...prev, running: false, error: errMsg } : prev));
+      setGitRepoInitProgress((prev) => (prev.projectId === pid ? { ...prev, ...errorSnapshot, open: true } : prev));
+    } finally {
+      setGitRepoInitInFlight(pid, false);
+    }
+  }, [appendGitRepoInitProgressLog, getGitRepoInitProgressSnapshot, gitRepoInitDialog, refreshGitInfoForProjectIds, setGitRepoInitInFlight, setGitRepoInitProgressSnapshot, t]);
+
+  /**
+   * 目录右侧主按钮入口：每次点击先探测最新 Git 状态，再决定打开“创建 Git 仓库”或“创建工作区”。
+   */
+  const handleProjectGitPrimaryAction = useCallback(async (args: { project: Project; ctrlKey?: boolean }) => {
+    const project = args.project;
+    const pid = String(project?.id || "").trim();
+    if (!pid) return;
+    const info = await probeGitInfoForProject(project);
+    if (!info) return;
+    const canOperateOnDir = !!info.exists && !!info.isDirectory;
+    const isRepoRoot = !!info.isRepoRoot;
+    const isWorktreeNode = !!info.isWorktree && isRepoRoot;
+    const isMainWorktree = isWorktreeNode && !!info.mainWorktree && toDirKeyForCache(info.mainWorktree) === toDirKeyForCache(info.dir);
+    const isSecondaryWorktree = isWorktreeNode && !isMainWorktree;
+    const isChildNode = isDirChild(pid);
+    const canCreateWorktree = canOperateOnDir && isRepoRoot && !isSecondaryWorktree && !isChildNode;
+
+    if (canCreateWorktree) {
+      if (args.ctrlKey) await quickCreateWorktree(project);
+      else await openWorktreeCreateDialog(project);
+      return;
+    }
+    if (canOperateOnDir && !info.isInsideWorkTree) {
+      openGitRepoInitDialog(project);
+      return;
+    }
+    if (isRepoRoot && isChildNode) {
+      setNoticeDialog({
+        open: true,
+        title: t("projects:worktreeActionBlockedTitle", "操作不可用") as string,
+        message: t("projects:worktreeCreateDisabledChild", "该节点已为子级，无法再创建 worktree（层级至多一级）") as string,
+      });
+      return;
+    }
+    if (canOperateOnDir && info.isInsideWorkTree && !isRepoRoot) {
+      setNoticeDialog({
+        open: true,
+        title: t("projects:worktreeActionBlockedTitle", "操作不可用") as string,
+        message: t("projects:worktreeCreateNeedRepoRoot", "当前目录不是 Git 仓库根目录，无法创建工作区。") as string,
+      });
+    }
+  }, [isDirChild, openGitRepoInitDialog, openWorktreeCreateDialog, probeGitInfoForProject, quickCreateWorktree, t]);
+
+  /**
    * 中文说明：统计指定项目仍在运行的终端代理数量（以 tab 是否仍绑定 PTY 为准）。
    */
   const countRunningTerminalAgentsByProjectId = useCallback((projectId: string): number => {
@@ -6375,6 +6652,8 @@ export default function CodexFlowManagerUI() {
             const isEditingDirLabel = dirLabelDialog.open && dirLabelDialog.projectId === p.id;
             const isChildNode = isDirChild(p.id);
             const canCreateWorktree = canOperateOnDir && isRepoRoot && !isSecondaryWorktree && !isChildNode;
+            const canInitGitRepo = canOperateOnDir && !!git && !git.isInsideWorkTree;
+            const isGitRepoInitRunning = !!gitRepoInitRunningByProjectId[p.id];
             const canRemoveDirRecord = !!(p.dirRecord && p.dirRecord.kind === "custom_provider" && p.hasBuiltInSessions !== true);
 
             const rowClass = `group relative flex items-center justify-between rounded-lg transition cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800 ${isHidden ? "opacity-60" : ""} ${selected ? "bg-slate-100 dark:bg-slate-800/80 dark:text-slate-100" : ""}`;
@@ -6524,12 +6803,28 @@ export default function CodexFlowManagerUI() {
 
                 {/* 右侧：动作区（目录缺失时仍允许选择/展开，仅禁用需要真实目录的操作） */}
                 <div className="ml-2 shrink-0 flex items-center gap-1">
-	                  {canOperateOnDir ? (
-	                    <WorktreeControlPad
-	                      mode={isSecondaryWorktree ? "secondary" : isRepoRoot ? "root" : "normal"}
-	                      deleteDisabledReason={
-	                        isSecondaryWorktree && !!worktreeDeleteInFlightByProjectId[p.id]
-	                          ? "deleting"
+		                  {canOperateOnDir ? (
+		                    <WorktreeControlPad
+		                      mode={isSecondaryWorktree ? "secondary" : isRepoRoot ? "root" : "normal"}
+                      normalPrimaryAction={
+                        !isRepoRoot && canInitGitRepo
+                          ? {
+                              text: isGitRepoInitRunning
+                                ? (t("projects:initRepoActionCompactBusy", "进行中") as string)
+                                : (t("projects:initRepoActionCompact", "Git+") as string),
+                              title: isGitRepoInitRunning
+                                ? (t("projects:initRepoProgressHint", "创建 Git 仓库进行中：点击可打开进度面板") as string)
+                                : (t("projects:initRepoHint", "单击：创建 Git 仓库") as string),
+                              disabled: false,
+                              onClick: () => {
+                                void handleProjectGitPrimaryAction({ project: p, ctrlKey: false });
+                              },
+                            }
+                          : undefined
+                      }
+		                      deleteDisabledReason={
+		                        isSecondaryWorktree && !!worktreeDeleteInFlightByProjectId[p.id]
+		                          ? "deleting"
 	                          : isSecondaryWorktree && !!String(worktreeRecycleRunningTaskIdByProjectIdRef.current[p.id] || "").trim()
 	                            ? "recycling"
 	                            : undefined
@@ -6553,12 +6848,10 @@ export default function CodexFlowManagerUI() {
                             }
                           : undefined
                       }
-                      onBranchClick={(e) => {
-                        e.stopPropagation();
-                        if (!canCreateWorktree || !isRepoRoot) return;
-                        if (e.ctrlKey) void quickCreateWorktree(p);
-                        else void openWorktreeCreateDialog(p);
-	                      }}
+		                      onBranchClick={(e) => {
+		                        e.stopPropagation();
+	                        void handleProjectGitPrimaryAction({ project: p, ctrlKey: e.ctrlKey });
+		                      }}
 	                      onBuild={(isRightClick) => void triggerBuildRun(p, "build", isRightClick)}
 	                      onRun={(isRightClick) => void triggerBuildRun(p, "run", isRightClick)}
 	                      onRecycle={() => void openWorktreeRecycleDialog(p)}
@@ -8240,6 +8533,186 @@ export default function CodexFlowManagerUI() {
                   </Button>
                   <Button variant="secondary" size="sm" className="h-8 text-xs min-w-[4rem]" onClick={() => void saveBuildRunDialog()}>
                     {t("common:save", "保存") as string}
+                  </Button>
+                </div>
+              </div>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
+
+      {/* 非 Git 项目：创建 Git 仓库（git init）配置弹窗 */}
+      <Dialog
+        open={gitRepoInitDialog.open}
+        onOpenChange={(open) => {
+          if (open) return;
+          closeGitRepoInitDialog();
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader className="pb-2">
+            <DialogTitle>{t("projects:initRepoTitle", "创建 Git 仓库") as string}</DialogTitle>
+            <DialogDescription>
+              {t("projects:initRepoDesc", "将在该目录执行 git init，并自动刷新项目状态。") as string}
+            </DialogDescription>
+          </DialogHeader>
+          {(function renderGitRepoInitDialogBody() {
+            const project = projectsRef.current.find((x) => x.id === gitRepoInitDialog.projectId) || null;
+            return (
+              <div className="space-y-3">
+                {project ? (
+                  <div className="rounded-lg border border-slate-200/70 bg-white/60 px-3 py-2 text-xs text-slate-600 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:text-[var(--cf-text-secondary)] space-y-1">
+                    <div className="text-[9px] uppercase font-bold text-slate-400 tracking-wider">Project</div>
+                    <div className="font-mono break-all">{project.winPath}</div>
+                  </div>
+                ) : null}
+                <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-600 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:text-[var(--cf-text-secondary)]">
+                  <div className="font-semibold mb-1">{t("projects:initRepoFlowTitle", "执行流程") as string}</div>
+                  <ol className="list-decimal pl-4 space-y-0.5">
+                    <li>{t("projects:initRepoFlowStepCheck", "检查目标目录与 Git 状态") as string}</li>
+                    <li>{t("projects:initRepoFlowStepInit", "执行 git init 初始化仓库") as string}</li>
+                    <li>{t("projects:initRepoFlowStepRefresh", "刷新项目 Git 状态并更新按钮") as string}</li>
+                  </ol>
+                </div>
+                {gitRepoInitDialog.error ? (
+                  <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800 whitespace-pre-wrap break-words">
+                    {gitRepoInitDialog.error}
+                  </div>
+                ) : null}
+                <div className="flex justify-end gap-2 pt-1">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 text-xs"
+                    onClick={closeGitRepoInitDialog}
+                    disabled={gitRepoInitDialog.running}
+                  >
+                    {t("common:cancel", "取消") as string}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="h-8 text-xs"
+                    onClick={() => void startGitRepoInit()}
+                    disabled={gitRepoInitDialog.running}
+                  >
+                    {gitRepoInitDialog.running
+                      ? (t("projects:initRepoRunning", "创建中…") as string)
+                      : (t("projects:initRepoStartAction", "创建 Git 仓库") as string)}
+                  </Button>
+                </div>
+              </div>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
+
+      {/* 非 Git 项目：创建 Git 仓库进度（可关闭并通过按钮重新打开） */}
+      <Dialog
+        open={gitRepoInitProgress.open}
+        onOpenChange={(open) => {
+          if (open) return;
+          setGitRepoInitProgress((prev) => ({ ...prev, open: false }));
+        }}
+      >
+        <DialogContent className="max-w-2xl w-[calc(100vw-2rem)] max-h-[calc(100vh-2rem)] overflow-hidden flex flex-col">
+          <DialogHeader className="pb-2 shrink-0">
+            <DialogTitle>{t("projects:initRepoProgressTitle", "创建 Git 仓库（进度）") as string}</DialogTitle>
+            <DialogDescription>
+              {t("projects:initRepoProgressDesc", "展示创建过程输出；可关闭窗口后通过项目右侧按钮再次打开。") as string}
+            </DialogDescription>
+          </DialogHeader>
+          {(function renderGitRepoInitProgressBody() {
+            const project = projectsRef.current.find((x) => x.id === gitRepoInitProgress.projectId) || null;
+            const status = gitRepoInitProgress.status;
+            const statusLabel =
+              status === "running"
+                ? (t("projects:initRepoRunning", "创建中…") as string)
+                : status === "success"
+                ? (t("common:done", "完成") as string)
+                : (t("common:failed", "失败") as string);
+            const statusIcon =
+              status === "running" ? (
+                <Loader2 className="h-4 w-4 animate-spin text-slate-500" />
+              ) : status === "success" ? (
+                <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+              ) : (
+                <TriangleAlert className="h-4 w-4 text-red-600" />
+              );
+            return (
+              <div className="flex min-h-0 flex-1 flex-col gap-3">
+                <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
+                  {project ? (
+                    <div className="rounded-lg border border-slate-200/70 bg-white/60 px-3 py-2 text-xs text-slate-600 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:text-[var(--cf-text-secondary)] space-y-1">
+                      <div className="text-[9px] uppercase font-bold text-slate-400 tracking-wider">Project</div>
+                      <div className="font-mono break-all">{project.winPath}</div>
+                    </div>
+                  ) : null}
+                  <div className="flex items-center gap-2 text-xs text-slate-700 dark:text-[var(--cf-text-primary)]">
+                    {statusIcon}
+                    <span className="font-semibold">{statusLabel}</span>
+                    {gitRepoInitProgress.updatedAt ? (
+                      <span className="text-[10px] text-slate-400">
+                        {new Date(gitRepoInitProgress.updatedAt).toLocaleTimeString()}
+                      </span>
+                    ) : null}
+                  </div>
+                  {gitRepoInitProgress.error ? (
+                    <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800 whitespace-pre-wrap break-words">
+                      {gitRepoInitProgress.error}
+                    </div>
+                  ) : null}
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] overflow-hidden">
+                    <ScrollArea className="h-[min(16rem,38vh)]">
+                      <pre className="font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-words p-3 text-slate-700 dark:text-[var(--cf-text-secondary)]">
+                        {gitRepoInitProgress.log || ""}
+                      </pre>
+                    </ScrollArea>
+                  </div>
+                </div>
+                <div className="flex justify-end gap-2 pt-1 shrink-0">
+                  {status === "success" && project ? (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="h-8 text-xs"
+                      onClick={() => {
+                        setGitRepoInitProgress((prev) => ({ ...prev, open: false }));
+                        void handleProjectGitPrimaryAction({ project, ctrlKey: false });
+                      }}
+                    >
+                      {t("projects:initRepoContinueWorktreeAction", "继续创建工作区") as string}
+                    </Button>
+                  ) : null}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 text-xs"
+                    onClick={() => setGitRepoInitProgress((prev) => ({ ...prev, open: false }))}
+                  >
+                    {t("common:close", "关闭") as string}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="h-8 text-xs"
+                    onClick={async () => {
+                      try { if (project?.winPath) await (window as any).host?.gitWorktree?.openExternalTool?.(project.winPath); } catch {}
+                    }}
+                    disabled={!project?.winPath}
+                  >
+                    {t("projects:gitOpenExternalTool", "打开外部 Git 工具") as string}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="h-8 text-xs"
+                    onClick={async () => {
+                      try { if (project?.winPath) await (window as any).host?.gitWorktree?.openTerminal?.(project.winPath); } catch {}
+                    }}
+                    disabled={!project?.winPath}
+                  >
+                    {t("projects:gitOpenTerminal", "在外部终端 / Git Bash 打开") as string}
                   </Button>
                 </div>
               </div>

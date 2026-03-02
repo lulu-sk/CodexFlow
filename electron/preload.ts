@@ -291,6 +291,10 @@ contextBridge.exposeInMainWorld('host', {
     listBranches: async (repoDir: string) => {
       return await ipcRenderer.invoke("gitWorktree.listBranches", { repoDir });
     },
+    /** 在指定目录初始化 Git 仓库（`git init`）。 */
+    initRepo: async (args: { dir: string }) => {
+      return await ipcRenderer.invoke("gitWorktree.initRepo", args);
+    },
     /** 读取 worktree 的创建元数据（用于回收/删除等默认分支选择）。 */
     getMeta: async (worktreePath: string) => {
       return await ipcRenderer.invoke("gitWorktree.getMeta", { worktreePath });

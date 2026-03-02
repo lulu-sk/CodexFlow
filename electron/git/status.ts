@@ -39,6 +39,22 @@ type CacheEntry = { at: number; value: GitDirInfo };
 const cache = new Map<string, CacheEntry>();
 
 /**
+ * 清理 git 状态缓存（用于 `git init`、worktree 变更后强制刷新 UI）。
+ */
+export function invalidateGitDirInfoCache(args?: { dirs?: string[]; clearAll?: boolean }): void {
+  if (args?.clearAll) {
+    cache.clear();
+    return;
+  }
+  const dirs = Array.isArray(args?.dirs) ? args!.dirs : [];
+  for (const dir of dirs) {
+    const key = toFsPathKey(toFsPathAbs(String(dir || "")));
+    if (!key) continue;
+    cache.delete(key);
+  }
+}
+
+/**
  * 获取指定目录的 git 仓库/工作树信息（带短 TTL 缓存，避免列表渲染时重复调用）。
  */
 export async function getGitDirInfoAsync(args: {

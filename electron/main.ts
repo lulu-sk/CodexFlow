@@ -45,7 +45,8 @@ import { registerNotificationIPC, unregisterNotificationIPC } from "./notificati
 import { applyInstanceProfile, normalizeProfileId, resolveProfileUserDataDir } from "./instance";
 import { getBaseUserDataDir, getFeatureFlags, updateFeatureFlags } from "./featureFlags";
 import { readDebugConfig, getDebugConfig, onDebugChanged, watchDebugConfig, updateDebugConfig, resetDebugConfig, unwatchDebugConfig } from "./debugConfig";
-import { getGitDirInfoBatchAsync } from "./git/status";
+import { getGitDirInfoBatchAsync, invalidateGitDirInfoCache } from "./git/status";
+import { initGitRepositoryAsync } from "./git/repoInit";
 import { autoCommitWorktreeIfDirtyAsync, createWorktreesAsync, listLocalBranchesAsync, recycleWorktreeAsync, removeWorktreeAsync } from "./git/worktreeOps";
 import { isWorktreeAlignedToMainAsync, resetWorktreeAsync } from "./git/worktreeReset";
 import { resolveWorktreeForkPointAsync, searchForkPointCommitsAsync, validateForkPointRefAsync } from "./git/worktreeForkPoint";
@@ -2142,6 +2143,27 @@ ipcMain.handle("gitWorktree.listBranches", async (_e, args: { repoDir: string })
     return await listLocalBranchesAsync({ repoDir, gitPath, timeoutMs: 8000 });
   } catch (e: any) {
     return { ok: false, error: String(e?.message || e) };
+  }
+});
+
+/**
+ * Git：在指定目录执行 `git init`（用于“非 Git 项目 -> 创建 Git 仓库”流程）。
+ */
+ipcMain.handle("gitWorktree.initRepo", async (_e, args: { dir: string }) => {
+  try {
+    const dir = String(args?.dir || "").trim();
+    if (!dir) return { ok: false, dir: "", error: "missing dir", log: "" };
+    const cfg = settings.getSettings() as any;
+    const gitPath = String(cfg?.gitWorktree?.gitPath || "").trim() || "git";
+    const res = await initGitRepositoryAsync({ dir, gitPath, timeoutMs: 15_000 });
+    if (res.ok) {
+      try {
+        invalidateGitDirInfoCache({ dirs: [dir, String(res.repoRoot || "").trim()].filter(Boolean) });
+      } catch {}
+    }
+    return res;
+  } catch (e: any) {
+    return { ok: false, dir: String(args?.dir || "").trim(), error: String(e?.message || e), log: "" };
   }
 });
 
