@@ -769,6 +769,13 @@ function BranchChip(props: {
 	  function WorktreeControlPad(props: {
 	    mode: "secondary" | "root" | "normal";
 	    branch?: { short: string; full: string; isDetached: boolean; headSha?: string; disabled?: boolean; title?: string };
+	    /** Normal 模式顶部主按钮（用于“创建 Git 仓库”等入口）。 */
+	    normalPrimaryAction?: {
+	      text: string;
+	      title?: string;
+	      disabled?: boolean;
+	      onClick?: (e: React.MouseEvent) => void;
+	    };
 	    onBranchClick?: (e: React.MouseEvent) => void;
 	    onBuild: (isRightClick: boolean) => void;
 	    onRun: (isRightClick: boolean) => void;
@@ -778,7 +785,7 @@ function BranchChip(props: {
 	    deleteDisabledReason?: "deleting" | "recycling";
 	    t: (...args: any[]) => any;
 	  }) {
-	    const { mode, branch, onBranchClick, onBuild, onRun, onRecycle, onDelete, t } = props;
+	    const { mode, branch, normalPrimaryAction, onBranchClick, onBuild, onRun, onRecycle, onDelete, t } = props;
 	    const deleteDisabled = props.deleteDisabledReason === "deleting" || props.deleteDisabledReason === "recycling";
 		    const deleteTitle =
 		      props.deleteDisabledReason === "deleting"
@@ -802,29 +809,66 @@ function BranchChip(props: {
       "flex items-center justify-center transition-colors hover:bg-slate-200/80 dark:hover:bg-slate-700/80 active:scale-95 cursor-pointer disabled:opacity-50 disabled:pointer-events-none disabled:cursor-default";
     const iconClass = "h-3 w-3 text-slate-600 dark:text-slate-400";
 
-    if (mode === "normal") {
-      // Normal 模式：仅两个按钮并排，无容器背景
-      return (
-        <div className="flex items-center justify-end gap-1 w-[47px]">
-          <button
-            className="h-6 w-6 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center transition-colors"
-            title={t("projects:build", "Build")}
-            onClick={(e) => { e.stopPropagation(); onBuild(false); }}
-            onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onBuild(true); }}
-          >
-            <Hammer className={iconClass} />
-          </button>
-          <button
-            className="h-6 w-6 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center transition-colors"
-            title={t("projects:run", "Run")}
-            onClick={(e) => { e.stopPropagation(); onRun(false); }}
-            onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onRun(true); }}
-          >
-            <Play className={iconClass} />
-          </button>
-        </div>
-      );
-    }
+	    if (mode === "normal") {
+	      // Normal 模式：默认保持原有 Build/Run 布局；仅在存在主按钮时展示两层结构。
+	      if (!normalPrimaryAction) {
+	        return (
+	          <div className="flex items-center justify-end gap-1 w-[47px]">
+	            <button
+	              className="h-6 w-6 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center transition-colors"
+	              title={t("projects:build", "Build")}
+	              onClick={(e) => { e.stopPropagation(); onBuild(false); }}
+	              onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onBuild(true); }}
+	            >
+	              <Hammer className={iconClass} />
+	            </button>
+	            <button
+	              className="h-6 w-6 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center transition-colors"
+	              title={t("projects:run", "Run")}
+	              onClick={(e) => { e.stopPropagation(); onRun(false); }}
+	              onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onRun(true); }}
+	            >
+	              <Play className={iconClass} />
+	            </button>
+	          </div>
+	        );
+	      }
+
+	      // Normal 模式（带主按钮）：顶部“创建 Git 仓库”，下方 Build/Run。
+	      return (
+	        <div className="w-[47px] flex flex-col items-center gap-0.5">
+	          <BranchChip
+	            mode="button"
+	            text={normalPrimaryAction.text}
+	            title={normalPrimaryAction.title}
+	            disabled={normalPrimaryAction.disabled}
+	            onClick={(e) => {
+	              e.stopPropagation();
+	              normalPrimaryAction.onClick?.(e);
+	            }}
+	            className="h-[16px] text-[8px] font-semibold"
+	          />
+	          <div className="flex items-center justify-end gap-1 w-[47px]">
+	            <button
+	              className="h-6 w-6 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center transition-colors"
+	              title={t("projects:build", "Build")}
+	              onClick={(e) => { e.stopPropagation(); onBuild(false); }}
+	              onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onBuild(true); }}
+	            >
+	              <Hammer className={iconClass} />
+	            </button>
+	            <button
+	              className="h-6 w-6 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center transition-colors"
+	              title={t("projects:run", "Run")}
+	              onClick={(e) => { e.stopPropagation(); onRun(false); }}
+	              onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onRun(true); }}
+	            >
+	              <Play className={iconClass} />
+	            </button>
+	          </div>
+	        </div>
+	      );
+	    }
 
     return (
       <div className={`${containerBase} ${containerStyle} py-0.5`}>
