@@ -1876,7 +1876,17 @@ export default function CodexFlowManagerUI() {
    */
   function resolveExternalTabId(payload: { tabId?: string; providerId?: string; envLabel?: string }): string | null {
     const direct = String(payload?.tabId || "").trim();
-    if (direct) return direct;
+    if (direct) {
+      let existsInCurrentWindow = false;
+      for (const list of Object.values(tabsByProjectRef.current)) {
+        if ((list || []).some((tab) => String(tab?.id || "").trim() === direct)) {
+          existsInCurrentWindow = true;
+          break;
+        }
+      }
+      if (existsInCurrentWindow) return direct;
+      return null;
+    }
     const providerId = String(payload?.providerId || "codex").trim().toLowerCase();
     const envLabel = String(payload?.envLabel || "").trim();
     const matched: ConsoleTab[] = [];
@@ -3291,7 +3301,7 @@ export default function CodexFlowManagerUI() {
           envLabel: payload?.envLabel,
         });
         if (!resolvedTabId) {
-          notifyLog(`externalCompletion skip: no tab match provider=${providerId} env=${payload?.envLabel || ""}`);
+          notifyLog(`externalCompletion skip: no tab match provider=${providerId} tab=${String(payload?.tabId || "")} env=${payload?.envLabel || ""}`);
           return;
         }
         const cleanedPreview = normalizeCompletionPreview(preview);
