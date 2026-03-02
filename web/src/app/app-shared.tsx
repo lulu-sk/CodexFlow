@@ -155,6 +155,8 @@ type WorktreeCreateDialogState = {
   baseBranch: string;
   /** 是否正在加载分支列表 */
   loadingBranches: boolean;
+  /** 新建子 worktree 的备注基名（用于自动生成 `1.xxx`、`2.xxx`）。 */
+  remarkBaseName: string;
   /** 复用的子 worktree（projectId，多选；默认不选） */
   selectedChildWorktreeIds: string[];
   /** 初始提示词：chips */

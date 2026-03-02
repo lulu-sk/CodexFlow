@@ -301,6 +301,61 @@ function isNodeInsideTerminal(node: EventTarget | null | undefined): boolean {
   return !!el.closest(".xterm, .cf-terminal-chrome");
 }
 
+/**
+ * 中文说明：归一化 worktree 备注基名（去首尾空白，并压缩连续空白为单个空格）。
+ */
+function normalizeWorktreeRemarkBaseName(value: unknown): string {
+  return String(value ?? "").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * 中文说明：从 `序号.备注名` 文本中解析序号；不匹配时返回 null。
+ */
+function parseWorktreeRemarkIndex(label: string, remarkBaseName: string): number | null {
+  const text = String(label || "").trim();
+  const base = normalizeWorktreeRemarkBaseName(remarkBaseName);
+  if (!text || !base) return null;
+  const match = /^(\d+)\.(.+)$/.exec(text);
+  if (!match) return null;
+  if (String(match[2] || "").trim() !== base) return null;
+  const value = Number(match[1]);
+  if (!Number.isInteger(value) || value <= 0) return null;
+  return value;
+}
+
+/**
+ * 中文说明：根据父节点当前子节点备注，计算下一个可用的 worktree 备注序号（最小为 1）。
+ */
+function resolveNextWorktreeRemarkIndex(args: {
+  store: DirTreeStore | null | undefined;
+  projects: Project[];
+  parentProjectId: string;
+  remarkBaseName: string;
+}): number {
+  const parentId = String(args.parentProjectId || "").trim();
+  const base = normalizeWorktreeRemarkBaseName(args.remarkBaseName);
+  if (!parentId || !base) return 1;
+  const store = args.store || null;
+  if (!store) return 1;
+  const children = Array.isArray(store.childOrderByParent?.[parentId]) ? store.childOrderByParent[parentId] : [];
+  if (children.length === 0) return 1;
+  const projectById = new Map<string, Project>();
+  for (const item of Array.isArray(args.projects) ? args.projects : []) {
+    const id = String(item?.id || "").trim();
+    if (!id) continue;
+    projectById.set(id, item);
+  }
+  let maxIndex = 0;
+  for (const childIdRaw of children) {
+    const childId = String(childIdRaw || "").trim();
+    if (!childId) continue;
+    const label = String(store.labelById?.[childId] || projectById.get(childId)?.name || "").trim();
+    const index = parseWorktreeRemarkIndex(label, base);
+    if (index && index > maxIndex) maxIndex = index;
+  }
+  return maxIndex + 1;
+}
+
 type IdeOpenPrefs = {
   mode: "auto" | "builtin" | "custom";
   builtinId: BuiltinIdeId;
@@ -486,15 +541,16 @@ export default function CodexFlowManagerUI() {
 	  const [gitWorktreeExternalGitToolId, setGitWorktreeExternalGitToolId] = useState<ExternalGitToolId>("rider");
 	  const [gitWorktreeExternalGitToolCustomCommand, setGitWorktreeExternalGitToolCustomCommand] = useState<string>("");
 	  const [gitWorktreeTerminalCommand, setGitWorktreeTerminalCommand] = useState<string>("");
-	  const [worktreeCreateDialog, setWorktreeCreateDialog] = useState<WorktreeCreateDialogState>(() => ({
-	    open: false,
-    repoProjectId: "",
-    branches: [],
-    baseBranch: "",
-    loadingBranches: false,
-    selectedChildWorktreeIds: [],
-    promptChips: [],
-    promptDraft: "",
+		  const [worktreeCreateDialog, setWorktreeCreateDialog] = useState<WorktreeCreateDialogState>(() => ({
+		    open: false,
+	    repoProjectId: "",
+	    branches: [],
+	    baseBranch: "",
+	    loadingBranches: false,
+	    remarkBaseName: "",
+	    selectedChildWorktreeIds: [],
+	    promptChips: [],
+	    promptDraft: "",
     useYolo: true,
     useMultipleModels: false,
     singleProviderId: "codex",
@@ -507,6 +563,7 @@ export default function CodexFlowManagerUI() {
 	  /** worktree 创建面板的“上次设置”缓存：按 repoProjectId 隔离，避免不同项目互相覆盖。 */
 	  const worktreeCreateDraftByRepoIdRef = useRef<Record<string, {
 	    baseBranch: string;
+	    remarkBaseName: string;
 	    selectedChildWorktreeIds: string[];
 	    promptChips: PathChip[];
 	    promptDraft: string;
@@ -612,6 +669,7 @@ export default function CodexFlowManagerUI() {
 		    };
 		    return {
 		      baseBranch: String(state.baseBranch || "").trim(),
+		      remarkBaseName: normalizeWorktreeRemarkBaseName(state.remarkBaseName),
 		      selectedChildWorktreeIds: Array.isArray(state.selectedChildWorktreeIds) ? state.selectedChildWorktreeIds.map((x) => String(x || "").trim()).filter(Boolean) : [],
 		      promptChips: toPersistedWorktreePromptChips(state.promptChips),
 		      promptDraft: String(state.promptDraft ?? ""),
@@ -657,6 +715,7 @@ export default function CodexFlowManagerUI() {
 			    // 内存缓存：保留完整 chips（含 fromPaste），保证“关闭/重新打开面板”时体验一致
 			    worktreeCreateDraftByRepoIdRef.current[repoId] = {
 			      baseBranch: String(worktreeCreateDialog.baseBranch || "").trim(),
+			      remarkBaseName: normalizeWorktreeRemarkBaseName(worktreeCreateDialog.remarkBaseName),
 			      selectedChildWorktreeIds: Array.isArray(worktreeCreateDialog.selectedChildWorktreeIds) ? worktreeCreateDialog.selectedChildWorktreeIds : [],
 			      promptChips: Array.isArray(worktreeCreateDialog.promptChips) ? worktreeCreateDialog.promptChips : [],
 			      promptDraft: String(worktreeCreateDialog.promptDraft ?? ""),
@@ -687,6 +746,7 @@ export default function CodexFlowManagerUI() {
 			    worktreeCreateDialog.multiCounts,
 			    worktreeCreateDialog.promptChips,
 			    worktreeCreateDialog.promptDraft,
+			    worktreeCreateDialog.remarkBaseName,
 			    worktreeCreateDialog.repoProjectId,
 			    worktreeCreateDialog.selectedChildWorktreeIds,
 			    worktreeCreateDialog.singleProviderId,
@@ -4174,6 +4234,17 @@ export default function CodexFlowManagerUI() {
   }, [dirTreeStore.labelById]);
 
   /**
+   * 中文说明：解析“创建 worktree”默认备注基名。
+   * 优先级：外部显式值（含空串） > 当前项目备注名 > 项目名。
+   */
+  const resolveDefaultWorktreeRemarkBaseName = useCallback((project: Project, explicitValue?: string): string => {
+    if (typeof explicitValue === "string") return normalizeWorktreeRemarkBaseName(explicitValue);
+    const fromLabel = normalizeWorktreeRemarkBaseName(getDirNodeLabel(project));
+    if (fromLabel) return fromLabel;
+    return normalizeWorktreeRemarkBaseName(project?.name || "");
+  }, [getDirNodeLabel]);
+
+  /**
    * 判断目录节点是否为子级（仅 UI 结构，与文件系统无关）。
    */
   const isDirChild = useCallback((projectId: string): boolean => {
@@ -4571,6 +4642,7 @@ export default function CodexFlowManagerUI() {
 	    const restored = cached
 	      ? ({
 	          baseBranch: cached.baseBranch,
+	          remarkBaseName: cached.remarkBaseName,
 	          selectedChildWorktreeIds: cached.selectedChildWorktreeIds,
 	          promptChips: cached.promptChips,
 	          promptDraft: cached.promptDraft,
@@ -4582,6 +4654,7 @@ export default function CodexFlowManagerUI() {
 	      : (persisted
 	          ? ({
 	              baseBranch: persisted.baseBranch,
+	              remarkBaseName: persisted.remarkBaseName,
 	              selectedChildWorktreeIds: persisted.selectedChildWorktreeIds,
 	              promptChips: restoreWorktreePromptChips(persisted.promptChips),
 	              promptDraft: persisted.promptDraft,
@@ -4600,6 +4673,7 @@ export default function CodexFlowManagerUI() {
 	    if (restored?.useMultipleModels && sumWorktreeProviderCounts(multiCounts) === 0) {
 	      multiCounts[singleProviderId] = 1;
 	    }
+      const remarkBaseName = resolveDefaultWorktreeRemarkBaseName(repoProject, restored?.remarkBaseName);
 
 	    setWorktreeCreateDialog({
 	      open: true,
@@ -4607,6 +4681,7 @@ export default function CodexFlowManagerUI() {
 	      branches: [],
 	      baseBranch: restored?.baseBranch || "",
 	      loadingBranches: true,
+	      remarkBaseName,
 	      selectedChildWorktreeIds: restored?.selectedChildWorktreeIds || [],
 	      promptChips: restored?.promptChips || [],
 	      promptDraft: restored?.promptDraft || "",
@@ -4641,7 +4716,7 @@ export default function CodexFlowManagerUI() {
         return { ...prev, branches: [], baseBranch: "", loadingBranches: false, error: String(e?.message || e) };
       });
     }
-	  }, [activeProviderId, restoreWorktreePromptChips, t]);
+	  }, [activeProviderId, resolveDefaultWorktreeRemarkBaseName, restoreWorktreePromptChips, t]);
 
   /**
    * 关闭 worktree 创建面板（不执行创建）。
@@ -4756,6 +4831,8 @@ export default function CodexFlowManagerUI() {
     baseBranch: string;
     instances: Array<{ providerId: GitWorktreeProviderId; count: number }>;
     prompt: string;
+    /** 新建子 worktree 的备注基名；为空则不自动写入备注。 */
+    remarkBaseName?: string;
     /** 是否在本次创建/启动中临时启用 YOLO（不影响全局设置）。 */
     useYolo?: boolean;
     /** 额外警告（用于把“复用已有 worktree 的启动失败”合并到同一份提示里）。 */
@@ -4834,6 +4911,13 @@ export default function CodexFlowManagerUI() {
     setWorktreeCreateDialog((prev) => (prev.open && prev.repoProjectId === repoId ? { ...prev, open: false, creating: false, error: undefined } : prev));
 
     const prompt = String(args.prompt || "");
+    const remarkBaseName = normalizeWorktreeRemarkBaseName(args.remarkBaseName);
+    let nextWorktreeRemarkIndex = resolveNextWorktreeRemarkIndex({
+      store: dirTreeStoreRef.current,
+      projects: projectsRef.current,
+      parentProjectId: repoId,
+      remarkBaseName,
+    });
     const warningSet = new Set<string>(
       Array.isArray(args.extraWarnings) ? args.extraWarnings.map((item: any) => String(item || "").trim()).filter(Boolean) : []
     );
@@ -4855,6 +4939,20 @@ export default function CodexFlowManagerUI() {
       const msg = String(text || "").trim();
       if (!msg) return;
       warningSet.add(msg);
+    };
+
+    /**
+     * 中文说明：为新建子 worktree 自动写入 `序号.备注名` 备注；备注基名为空时跳过。
+     */
+    const assignAutoRemarkLabelForWorktree = (projectId: string): void => {
+      const pid = String(projectId || "").trim();
+      if (!pid || !remarkBaseName) return;
+      const nextLabel = `${nextWorktreeRemarkIndex}.${remarkBaseName}`;
+      nextWorktreeRemarkIndex += 1;
+      setDirTreeStore((prev) => {
+        if (String(prev.labelById?.[pid] || "").trim() === nextLabel) return prev;
+        return { ...prev, labelById: { ...(prev.labelById || {}), [pid]: nextLabel } };
+      });
     };
 
     /**
@@ -4944,6 +5042,7 @@ export default function CodexFlowManagerUI() {
 
         if (!firstNewProjectId) firstNewProjectId = wtProject.id;
         attachDirChildToParent(repoId, wtProject.id);
+        assignAutoRemarkLabelForWorktree(wtProject.id);
 
         const started = await startProviderInstanceInProject({ project: wtProject, providerId, prompt, useYolo: args.useYolo });
         if (started.ok && started.tabId) {
@@ -5102,8 +5201,9 @@ export default function CodexFlowManagerUI() {
       baseBranch,
       instances: [{ providerId: defaultProvider, count: 1 }],
       prompt: "",
+      remarkBaseName: resolveDefaultWorktreeRemarkBaseName(repoProject),
     });
-  }, [activeProviderId, createWorktreesAndStartAgents, gitInfoByProjectId, openWorktreeCreateDialog]);
+  }, [activeProviderId, createWorktreesAndStartAgents, gitInfoByProjectId, openWorktreeCreateDialog, resolveDefaultWorktreeRemarkBaseName]);
 
   /**
    * 打开“Git 操作失败”弹窗（提供外部 Git 工具/终端快捷入口）。
@@ -8729,7 +8829,7 @@ export default function CodexFlowManagerUI() {
           closeWorktreeCreateDialog();
         }}
       >
-        <DialogContent className="max-w-lg max-h-[calc(100vh-2rem)] overflow-hidden flex flex-col">
+        <DialogContent className="w-[min(96vw,56rem)] max-w-2xl max-h-[calc(100vh-2rem)] overflow-hidden flex flex-col">
           <DialogHeader className="pb-2 shrink-0">
             <DialogTitle>{t("projects:worktreeCreateTitle", "从分支创建 worktree") as string}</DialogTitle>
             <DialogDescription>
@@ -8761,6 +8861,19 @@ export default function CodexFlowManagerUI() {
             });
             const reuseCount = selectedChildIdsOrdered.length;
             const createCount = Math.max(0, total - reuseCount);
+            const remarkBaseName = normalizeWorktreeRemarkBaseName(worktreeCreateDialog.remarkBaseName);
+            const nextRemarkIndex = resolveNextWorktreeRemarkIndex({
+              store: dirTreeStore,
+              projects,
+              parentProjectId: repo.id,
+              remarkBaseName,
+            });
+            const remarkHint = remarkBaseName
+              ? (t("projects:worktreeRemarkHintWithName", "新建子 worktree 将自动备注为 {first}、{second}…；创建后可双击项目名称独立编辑。", {
+                  first: `${nextRemarkIndex}.${remarkBaseName}`,
+                  second: `${nextRemarkIndex + 1}.${remarkBaseName}`,
+                }) as string)
+              : (t("projects:worktreeRemarkHintEmpty", "填写备注名后，新建子 worktree 会按 1.备注名、2.备注名… 自动命名；创建后可双击项目名称独立编辑。") as string);
 
             const canSubmit =
               !worktreeCreateDialog.creating &&
@@ -8822,7 +8935,15 @@ export default function CodexFlowManagerUI() {
                   setDialog({ creating: false, error: t("projects:worktreeMissingBaseBranch", "未能读取到基分支") as string });
                   return;
                 }
-                await createWorktreesAndStartAgents({ repoProject: repo, baseBranch, instances: remainingInstances, prompt, useYolo: worktreeCreateDialog.useYolo, extraWarnings });
+                await createWorktreesAndStartAgents({
+                  repoProject: repo,
+                  baseBranch,
+                  instances: remainingInstances,
+                  prompt,
+                  remarkBaseName: worktreeCreateDialog.remarkBaseName,
+                  useYolo: worktreeCreateDialog.useYolo,
+                  extraWarnings,
+                });
                 return;
               }
 
@@ -8895,7 +9016,7 @@ export default function CodexFlowManagerUI() {
             return (
               <div className="flex min-h-0 flex-1 flex-col">
                 <ScrollArea className="min-h-0 flex-1 pr-1">
-                  <div className="space-y-3 py-1">
+                  <div className="space-y-2.5 py-1">
                 {worktreeCreateDialog.error ? (
                   <div
                     className={`rounded-md border px-3 py-1.5 text-[11px] font-medium flex items-center gap-2 ${
@@ -8912,22 +9033,40 @@ export default function CodexFlowManagerUI() {
                   </div>
                 ) : null}
 
-                <div className="space-y-1">
-                  <label className={labelClass}>
-                    {t("projects:worktreeBaseBranch", "基分支（baseBranch）")}
-                  </label>
-                  <select
-                    className="h-8 w-full rounded-md border border-slate-300 bg-white px-2 text-xs text-slate-900 focus:border-[var(--cf-accent)] focus:outline-none focus:ring-1 focus:ring-[var(--cf-accent)] dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-solid)] dark:text-[var(--cf-text-primary)]"
-                    value={worktreeCreateDialog.baseBranch}
-                    disabled={worktreeCreateDialog.loadingBranches || worktreeCreateDialog.creating || createCount === 0}
-                    onChange={(e) => setDialog({ baseBranch: e.target.value })}
-                  >
-                    {(worktreeCreateDialog.branches.length > 0 ? worktreeCreateDialog.branches : [worktreeCreateDialog.baseBranch]).filter(Boolean).map((b) => (
-                      <option key={b} value={b}>
-                        {b}
-                      </option>
-                    ))}
-                  </select>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <label className={labelClass}>
+                      {t("projects:worktreeBaseBranch", "基分支（baseBranch）")}
+                    </label>
+                    <select
+                      className="h-8 w-full rounded-md border border-slate-300 bg-white px-2 text-xs text-slate-900 focus:border-[var(--cf-accent)] focus:outline-none focus:ring-1 focus:ring-[var(--cf-accent)] dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-solid)] dark:text-[var(--cf-text-primary)]"
+                      value={worktreeCreateDialog.baseBranch}
+                      disabled={worktreeCreateDialog.loadingBranches || worktreeCreateDialog.creating || createCount === 0}
+                      onChange={(e) => setDialog({ baseBranch: e.target.value })}
+                    >
+                      {(worktreeCreateDialog.branches.length > 0 ? worktreeCreateDialog.branches : [worktreeCreateDialog.baseBranch]).filter(Boolean).map((b) => (
+                        <option key={b} value={b}>
+                          {b}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className={labelClass}>
+                      {t("projects:worktreeRemarkBase", "工作区备注名")}
+                    </label>
+                    <Input
+                      className="h-8 text-xs"
+                      value={worktreeCreateDialog.remarkBaseName}
+                      maxLength={64}
+                      disabled={worktreeCreateDialog.creating}
+                      placeholder={t("projects:worktreeRemarkBasePlaceholder", "例如：需求A") as string}
+                      onChange={(e: any) => setDialog({ remarkBaseName: String(e?.target?.value || "") })}
+                    />
+                  </div>
+                  <div className="sm:col-span-2 text-[10px] text-slate-500 dark:text-[var(--cf-text-secondary)]">
+                    {remarkHint}
+                  </div>
                 </div>
 
                 <div className="space-y-1.5">
@@ -8982,7 +9121,7 @@ export default function CodexFlowManagerUI() {
                                           setDialog({ singleProviderId: pid });
                                       }
                                   }}
-                                  className={`group relative cursor-pointer rounded-md border px-2 py-1.5 transition-all flex flex-col items-center justify-center gap-1 h-16 ${
+                                  className={`group relative cursor-pointer rounded-md border px-2 py-1 transition-all flex flex-col items-center justify-center gap-1 h-14 ${
                                       isActive
                                           ? "border-[var(--cf-accent)] bg-[var(--cf-accent)]/5 ring-1 ring-[var(--cf-accent)] shadow-sm"
                                           : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-solid)] dark:hover:bg-[var(--cf-surface-hover)]"
@@ -9069,7 +9208,7 @@ export default function CodexFlowManagerUI() {
                     </div>
 
                     <div className="rounded-md border border-slate-200/70 bg-white/50 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] overflow-hidden">
-                      <div className="max-h-40 overflow-auto divide-y divide-slate-100 dark:divide-slate-800/50">
+                      <div className="max-h-36 overflow-auto divide-y divide-slate-100 dark:divide-slate-800/50">
                         {childWorktrees.map((p) => {
                           const checked = selectedSet.has(p.id);
                           const disabled = worktreeCreateDialog.creating || (!checked && reuseCount >= total) || total === 0;

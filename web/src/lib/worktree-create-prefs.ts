@@ -26,6 +26,7 @@ export type PersistedWorktreePromptChip = {
 
 export type WorktreeCreatePrefs = {
   baseBranch: string;
+  remarkBaseName: string;
   selectedChildWorktreeIds: string[];
   promptChips: PersistedWorktreePromptChip[];
   promptDraft: string;
@@ -140,6 +141,7 @@ function normalizePrefs(input: unknown): WorktreeCreatePrefs {
   const multiCounts = normalizeMultiCounts(obj.multiCounts);
   return {
     baseBranch: toNonEmptyString(obj.baseBranch),
+    remarkBaseName: toNonEmptyString(obj.remarkBaseName),
     selectedChildWorktreeIds: normalizeStringArray(obj.selectedChildWorktreeIds),
     promptChips: normalizePromptChips(obj.promptChips),
     promptDraft: String(obj.promptDraft ?? ""),
