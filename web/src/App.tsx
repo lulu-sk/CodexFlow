@@ -8432,6 +8432,7 @@ export default function CodexFlowManagerUI() {
             };
 
             const labelClass = "text-[10px] font-bold uppercase tracking-wider text-slate-500/80 dark:text-slate-400/80 mb-1 block";
+            const cwdHintText = t("projects:buildRunCwdHint", "支持绝对路径与相对路径；相对路径基于当前项目目录。") as string;
 
             return (
               <div className="flex flex-col max-h-[75vh]">
@@ -8527,6 +8528,7 @@ export default function CodexFlowManagerUI() {
                                       placeholder={t("projects:buildRunCwdPlaceholder", "默认为当前节点") as string}
                                       className="font-mono text-xs h-7"
                                     />
+                                    <p className="text-[10px] text-slate-500 dark:text-[var(--cf-text-secondary)] leading-tight">{cwdHintText}</p>
                                 </div>
 
                                 <div className="space-y-1.5">
@@ -8630,6 +8632,7 @@ export default function CodexFlowManagerUI() {
                                 placeholder={t("projects:buildRunCwdPlaceholder", "默认为当前节点") as string}
                                 className="font-mono text-xs h-8"
                               />
+                              <p className="text-[10px] text-slate-500 dark:text-[var(--cf-text-secondary)] leading-tight">{cwdHintText}</p>
                             </div>
 
                             <div className="space-y-1.5">
