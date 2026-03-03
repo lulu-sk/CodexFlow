@@ -1502,6 +1502,23 @@ function normalizeCompletionPreview(raw: string): string {
   return text.replace(/^agent-turn-complete\s*[:：]?\s*/i, "").trim();
 }
 
+/**
+ * 中文说明：生成用于“完成事件去重”的预览指纹。
+ * - 先复用 `normalizeCompletionPreview` 去掉统一前缀；
+ * - 将“分隔符语义”的字面量转义空白（如 `\n`/`\t`/`\r`）归一为空格，兼容 JSONL 与 OSC 之间的编码差异；
+ *   同时避免误伤 Windows 路径中的 `\n` / `\t` 片段（例如 `C:\new\temp`）；
+ * - 再将连续空白折叠为单空格，减少格式差异造成的误判。
+ */
+function normalizeCompletionPreviewForDedupe(raw: string): string {
+  const normalized = normalizeCompletionPreview(raw);
+  if (!normalized) return "";
+  const normalizedLiteralWhitespace = normalized.replace(
+    /(^|[^A-Za-z0-9_])\\[rnt](?=$|[^A-Za-z0-9_])/g,
+    (_match, prefix: string) => `${prefix} `,
+  );
+  return normalizedLiteralWhitespace.replace(/\s+/g, " ").trim();
+}
+
 // 筛选键规范化：将等价的 tags 与 type 统一到一个"规范键"，用于去重显示与匹配
 function canonicalFilterKey(k?: string): string {
   try {
@@ -1763,6 +1780,7 @@ export {
   normalizeCompletionPrefs,
   isAgentCompletionMessage,
   normalizeCompletionPreview,
+  normalizeCompletionPreviewForDedupe,
   canonicalFilterKey,
   keysOfItemCanonical,
   StatusDot,
