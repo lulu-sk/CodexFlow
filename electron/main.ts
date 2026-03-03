@@ -1966,6 +1966,64 @@ ipcMain.handle("buildRun.set", async (_e, args: { dir: string; cfg: any }) => {
 });
 
 /**
+ * Build/Run：判断是否为“无需按项目目录补全”的绝对路径。
+ * - Windows：盘符路径 / UNC / 以 `/` 开头（兼容 WSL 绝对路径）
+ * - 非 Windows：使用 Node 的绝对路径判定
+ */
+function isBuildRunAbsoluteCwd(input: string): boolean {
+  const value = String(input || "").trim();
+  if (!value) return false;
+  if (process.platform === "win32") {
+    if (/^[a-zA-Z]:[\\/]/.test(value)) return true;
+    if (/^\\\\/.test(value)) return true;
+    if (value.startsWith("/")) return true;
+    return false;
+  }
+  return path.isAbsolute(value);
+}
+
+/**
+ * Build/Run：将工作目录解析为可执行路径。
+ * - 空值：回退到项目目录
+ * - 相对路径：按项目目录解析
+ * - 绝对路径：保持输入语义（Windows 下会做分隔符规范化）
+ */
+function resolveBuildRunCwd(baseDir: string, cwdInput: string): string {
+  const base = String(baseDir || "").trim();
+  const raw = String(cwdInput || "").trim();
+  if (!base && !raw) return "";
+  if (!raw) return base;
+  if (isBuildRunAbsoluteCwd(raw)) {
+    if (process.platform !== "win32") return raw;
+    if (raw.startsWith("/")) return raw;
+    return wsl.normalizeWinPath(raw);
+  }
+  try {
+    const resolved = path.resolve(base || process.cwd(), raw);
+    return process.platform === "win32" ? wsl.normalizeWinPath(resolved) : resolved;
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * Build/Run：解析 WSL 后端使用的工作目录。
+ * - 若用户直接填写 `/...`，按 WSL 绝对路径直接使用
+ * - 否则基于已解析的 Windows 路径执行 win->wsl 转换
+ * - 转换失败回退为 `~`
+ */
+function resolveBuildRunWslCwd(resolvedHostCwd: string, rawCwdInput: string, distro?: string): string {
+  const raw = String(rawCwdInput || "").trim();
+  if (raw.startsWith("/")) return raw;
+  try {
+    const winCwd = wsl.normalizeWinPath(String(resolvedHostCwd || "").trim());
+    const converted = wsl.winToWsl(winCwd, distro);
+    if (converted && converted.startsWith("/")) return converted;
+  } catch {}
+  return "~";
+}
+
+/**
  * Build/Run：在外部终端执行（硬性要求：不走内置 PTY）。
  * - 默认只按 OS 环境选择终端（不跟随 Provider/全局终端切换器）
  * - WSL 仅在该命令显式选择或用户命令显式写 wsl.exe 时进入
@@ -1979,7 +2037,8 @@ ipcMain.handle("buildRun.exec", async (_e, args: any) => {
     if (!command) return { ok: false, error: "missing command" };
 
     const mode = String(command.mode || "").trim();
-    const cwd = String(args?.cwd || "").trim() || dir;
+    const rawCwdInput = String(args?.cwd || "").trim();
+    const cwd = resolveBuildRunCwd(dir, rawCwdInput);
     const backend = (command.backend && typeof command.backend === "object") ? command.backend : (args?.backend && typeof args.backend === "object" ? args.backend : { kind: "system" });
     const backendKind = String(backend?.kind || "system").trim();
 
@@ -2043,12 +2102,7 @@ ipcMain.handle("buildRun.exec", async (_e, args: any) => {
         const distro = String(backend?.distro || "").trim();
         const hasDistro = (() => { try { return distro ? wsl.distroExists(distro) : false; } catch { return false; } })();
         const distroArgv = hasDistro ? ["-d", distro] : [];
-        // WSL cwd：优先用 winPath -> wsl；失败则回退 ~
-        let wslCwd = "~";
-        try {
-          const w = wsl.winToWsl(wsl.normalizeWinPath(cwd), hasDistro ? distro : undefined);
-          if (w && w.startsWith("/")) wslCwd = w;
-        } catch {}
+        const wslCwd = resolveBuildRunWslCwd(cwd, rawCwdInput, hasDistro ? distro : undefined);
         const bashLines: string[] = [];
         bashLines.push(`cd ${quoteBash(wslCwd)} 2>/dev/null || cd ~`);
         for (const [k, v] of Object.entries(envMap)) bashLines.push(`export ${k}=${quoteBash(v)}`);
