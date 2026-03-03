@@ -248,58 +248,60 @@ export const GeminiUsageHoverCard: React.FC<GeminiUsageHoverCardProps> = ({
       {renderTrigger({ usageState, percentLabel, summaryLabel })}
       {hover.open && (
         <div
-          className={`absolute top-full z-[70] mt-2 w-[380px] rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple-lg p-4 text-sm text-[var(--cf-text-primary)] shadow-apple-xl dark:shadow-apple-dark-xl ${panelAlign === "end" ? "right-0" : "left-0"}`}
+          className={`absolute top-full z-[70] mt-2 flex max-h-[calc(100vh-6rem)] w-[380px] flex-col overflow-hidden rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] p-4 text-sm text-[var(--cf-text-primary)] shadow-apple-xl backdrop-blur-apple-lg dark:shadow-apple-dark-xl ${panelAlign === "end" ? "right-0" : "left-0"}`}
         >
-          {usageState.error ? (
-            <div className="flex flex-col gap-1">
-              <div className="text-[var(--cf-red)]">{errorLines.title || t("common:geminiUsage.unavailable", "用量信息不可用")}</div>
-              {errorLines.hint ? (
-                <div className="text-xs text-[var(--cf-text-secondary)]">{errorLines.hint}</div>
-              ) : null}
-            </div>
-          ) : usageState.data ? (
-            <div className="flex flex-col gap-3">
-              {usageState.data.buckets.length > 0 ? (
-                <div className="flex flex-col gap-2">
-                  {usageState.data.buckets.map((b, idx) => {
-                    const label = resolveBucketLabel(b, `bucket-${idx + 1}`);
-                    const usedPct = typeof b.remainingFraction === "number" && Number.isFinite(b.remainingFraction)
-                      ? clampPercent0To100((1 - b.remainingFraction) * 100)
-                      : null;
-                    return (
-                      <div
-                        key={`${label}-${idx}`}
-                        className="flex flex-col gap-1.5 rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-solid)] px-3 py-2.5 shadow-apple-xs"
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-apple-medium text-[var(--cf-text-secondary)]">
-                            {t("common:geminiUsage.bucket", { index: idx + 1 })}
-                          </span>
-                          <Badge variant="outline" className="max-w-[220px]" title={label}>
-                            <span className="truncate">{label}</span>
-                          </Badge>
+          <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+            {usageState.error ? (
+              <div className="flex flex-col gap-1">
+                <div className="text-[var(--cf-red)]">{errorLines.title || t("common:geminiUsage.unavailable", "用量信息不可用")}</div>
+                {errorLines.hint ? (
+                  <div className="text-xs text-[var(--cf-text-secondary)]">{errorLines.hint}</div>
+                ) : null}
+              </div>
+            ) : usageState.data ? (
+              <div className="flex flex-col gap-3">
+                {usageState.data.buckets.length > 0 ? (
+                  <div className="flex flex-col gap-2">
+                    {usageState.data.buckets.map((b, idx) => {
+                      const label = resolveBucketLabel(b, `bucket-${idx + 1}`);
+                      const usedPct = typeof b.remainingFraction === "number" && Number.isFinite(b.remainingFraction)
+                        ? clampPercent0To100((1 - b.remainingFraction) * 100)
+                        : null;
+                      return (
+                        <div
+                          key={`${label}-${idx}`}
+                          className="flex flex-col gap-1.5 rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-solid)] px-3 py-2.5 shadow-apple-xs"
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-apple-medium text-[var(--cf-text-secondary)]">
+                              {t("common:geminiUsage.bucket", { index: idx + 1 })}
+                            </span>
+                            <Badge variant="outline" className="max-w-[220px]" title={label}>
+                              <span className="truncate">{label}</span>
+                            </Badge>
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span className="font-apple-medium">
+                              {t("common:codexUsage.summary", { percent: formatPercent(usedPct) })}
+                            </span>
+                            <span className="text-xs text-[var(--cf-text-secondary)]">
+                              {t("common:codexUsage.reset", {
+                                time: formatResetTimeIso(b.resetTime, i18n.language, resetFallback, resetFinished),
+                              })}
+                            </span>
+                          </div>
                         </div>
-                        <div className="flex items-center justify-between">
-                          <span className="font-apple-medium">
-                            {t("common:codexUsage.summary", { percent: formatPercent(usedPct) })}
-                          </span>
-                          <span className="text-xs text-[var(--cf-text-secondary)]">
-                            {t("common:codexUsage.reset", {
-                              time: formatResetTimeIso(b.resetTime, i18n.language, resetFallback, resetFinished),
-                            })}
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div className="text-[var(--cf-text-secondary)]">{t("common:geminiUsage.empty", "暂无用量信息")}</div>
-              )}
-            </div>
-          ) : (
-            <div className="text-[var(--cf-text-secondary)]">{t("common:geminiUsage.empty", "暂无用量信息")}</div>
-          )}
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="text-[var(--cf-text-secondary)]">{t("common:geminiUsage.empty", "暂无用量信息")}</div>
+                )}
+              </div>
+            ) : (
+              <div className="text-[var(--cf-text-secondary)]">{t("common:geminiUsage.empty", "暂无用量信息")}</div>
+            )}
+          </div>
 
           <div className="mt-3 flex justify-end">
             <Button
