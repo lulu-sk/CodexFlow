@@ -238,6 +238,14 @@ type AgentTurnTimerState = {
   finishedAt?: number;
 };
 
+type CompletionEventSource = "osc" | "external" | "manual" | "unknown";
+
+type CompletionSnapshot = {
+  preview: string;
+  ts: number;
+  source: CompletionEventSource;
+};
+
 type GitRepoInitStatus = "running" | "success" | "error";
 
 type GitRepoInitDialogState = {
@@ -1139,7 +1147,7 @@ export default function CodexFlowManagerUI() {
     tabId: null,
   });
   const agentTurnCtxMenuRef = useRef<HTMLDivElement | null>(null);
-  const completionSnapshotRef = useRef<Record<string, { preview: string; ts: number }>>({});
+  const completionSnapshotRef = useRef<Record<string, CompletionSnapshot>>({});
   const resumeCompletionGuardByTabRef = useRef<Record<string, number>>({});
   const ptyNotificationBuffersRef = useRef<Record<string, string>>({});
   const ptyListenersRef = useRef<Record<string, () => void>>({});
@@ -1151,6 +1159,8 @@ export default function CodexFlowManagerUI() {
   const userInputCountByTabIdRef = useRef<Record<string, number>>({});
   const autoCommitQueueByProjectIdRef = useRef<Record<string, Promise<void>>>({});
   const RESUME_COMPLETION_GUARD_MS = 8_000;
+  const COMPLETION_DEDUPE_WINDOW_MS = 1_600;
+  const COMPLETION_CROSS_SOURCE_WINDOW_MS = 450;
 
   useEffect(() => { editingTabIdRef.current = editingTabId; }, [editingTabId]);
   useEffect(() => { notificationPrefsRef.current = notificationPrefs; }, [notificationPrefs]);
@@ -1797,10 +1807,14 @@ export default function CodexFlowManagerUI() {
   /**
    * 中文说明：记录最近一次完成通知，用于去重。
    */
-  function recordCompletionSnapshot(tabId: string, preview: string) {
+  function recordCompletionSnapshot(tabId: string, preview: string, source: CompletionEventSource) {
     const safeId = String(tabId || "").trim();
     if (!safeId) return;
-    completionSnapshotRef.current[safeId] = { preview: String(preview || ""), ts: Date.now() };
+    completionSnapshotRef.current[safeId] = {
+      preview: String(preview || ""),
+      ts: Date.now(),
+      source: source || "unknown",
+    };
   }
 
   /**
@@ -1823,14 +1837,27 @@ export default function CodexFlowManagerUI() {
   /**
    * 中文说明：判断是否为短时间内重复通知（支持相似预览去重）。
    */
-  function isDuplicateCompletion(tabId: string, preview: string, windowMs: number): boolean {
+  function isDuplicateCompletion(
+    tabId: string,
+    preview: string,
+    windowMs: number,
+    source: CompletionEventSource,
+    hasWorkingTimer: boolean,
+  ): boolean {
     const safeId = String(tabId || "").trim();
     if (!safeId) return false;
     const last = completionSnapshotRef.current[safeId];
     if (!last) return false;
     const delta = Date.now() - last.ts;
     if (!(delta >= 0 && delta <= windowMs)) return false;
-    return isEquivalentCompletionPreview(String(last.preview || ""), String(preview || ""));
+    if (isEquivalentCompletionPreview(String(last.preview || ""), String(preview || ""))) return true;
+    const currentSource = source || "unknown";
+    const crossSource =
+      (last.source === "osc" && currentSource === "external") ||
+      (last.source === "external" && currentSource === "osc");
+    if (!crossSource) return false;
+    if (hasWorkingTimer) return false;
+    return delta <= COMPLETION_CROSS_SOURCE_WINDOW_MS;
   }
 
   /**
@@ -1985,7 +2012,7 @@ export default function CodexFlowManagerUI() {
       if (ptyId) {
         try { processPtyNotificationChunk(ptyId, chunk); notifyLog(`ctx.osc.inject pty=${ptyId}`); } catch {}
       } else {
-        try { handleAgentCompletion(id, payload); notifyLog('ctx.osc.fallback.handle'); } catch {}
+        try { handleAgentCompletion(id, payload, "manual"); notifyLog('ctx.osc.fallback.handle'); } catch {}
       }
       close("osc-chain");
     };
@@ -2010,18 +2037,26 @@ export default function CodexFlowManagerUI() {
   /**
    * 中文说明：处理代理完成事件，统一刷新通知、铃声、用量与本轮输入计时状态。
    */
-  function handleAgentCompletion(tabId: string, preview: string) {
+  function handleAgentCompletion(tabId: string, preview: string, source: CompletionEventSource = "unknown") {
     if (!tabId) return;
     const hasWorkingTimer = agentTurnTimerByTabRef.current[String(tabId || "")]?.status === "working";
-    if (consumeResumeCompletionGuardIfNeeded(tabId, hasWorkingTimer)) return;
+    const cleanedPreview = normalizeCompletionPreview(preview);
+    if (isDuplicateCompletion(tabId, cleanedPreview, COMPLETION_DEDUPE_WINDOW_MS, source, hasWorkingTimer)) {
+      notifyLog(`handleAgentCompletion dedupe tab=${tabId} source=${source} previewLength=${cleanedPreview.length}`);
+      return;
+    }
+    if (consumeResumeCompletionGuardIfNeeded(tabId, hasWorkingTimer)) {
+      recordCompletionSnapshot(tabId, cleanedPreview, source);
+      notifyLog(`handleAgentCompletion resume-guard tab=${tabId} source=${source} previewLength=${cleanedPreview.length}`);
+      return;
+    }
     const providerId = resolveTabProviderId(tabId);
     if (shouldEnableAgentTimerForProvider(providerId)) completeAgentTurnTimer(tabId);
     else cancelAgentTurnTimer(tabId, "provider-not-supported");
-    const cleanedPreview = normalizeCompletionPreview(preview);
-    recordCompletionSnapshot(tabId, cleanedPreview);
+    recordCompletionSnapshot(tabId, cleanedPreview, source);
     const foreground = isAppForeground();
     const activeMatch = activeTabIdRef.current === tabId;
-    notifyLog(`handleAgentCompletion tab=${tabId} previewLength=${cleanedPreview.length} sound=${notificationPrefsRef.current.sound} foreground=${foreground ? '1' : '0'} activeMatch=${activeMatch ? '1' : '0'}`);
+    notifyLog(`handleAgentCompletion tab=${tabId} source=${source} previewLength=${cleanedPreview.length} sound=${notificationPrefsRef.current.sound} foreground=${foreground ? '1' : '0'} activeMatch=${activeMatch ? '1' : '0'}`);
     const current = pendingCompletionsRef.current;
     if (foreground && activeMatch) {
       notifyLog(`handleAgentCompletion auto-clear tab=${tabId}`);
@@ -2113,7 +2148,7 @@ export default function CodexFlowManagerUI() {
       if (tabId && isCompletion) {
         const activeMatch = activeTabIdRef.current === tabId;
         notifyLog(`processPtyNotificationChunk hit tab=${tabId} active=${activeMatch ? '1' : '0'} message="${message.slice(0, 80)}"`);
-        handleAgentCompletion(tabId, message);
+        handleAgentCompletion(tabId, message, "osc");
       } else if (tabId) {
         notifyLog(`processPtyNotificationChunk ignore tab=${tabId} isCompletion=${isCompletion} message="${message.slice(0, 80)}"`);
       } else {
@@ -3305,16 +3340,12 @@ export default function CodexFlowManagerUI() {
           return;
         }
         const cleanedPreview = normalizeCompletionPreview(preview);
-        if (isDuplicateCompletion(resolvedTabId, cleanedPreview, 1500)) {
-          notifyLog(`externalCompletion dedupe tab=${resolvedTabId}`);
-          return;
-        }
         notifyLog(`externalCompletion ok tab=${resolvedTabId} previewLen=${cleanedPreview.length}`);
-        handleAgentCompletion(resolvedTabId, preview);
+        handleAgentCompletion(resolvedTabId, preview, "external");
       });
     } catch {}
     return () => { try { off && off(); } catch {} };
-  }, [handleAgentCompletion, isDuplicateCompletion, notifyLog, resolveExternalTabId]);
+  }, [handleAgentCompletion, notifyLog, resolveExternalTabId]);
 
   // 监听主进程“退出确认”请求：用应用内 Dialog 替代原生对话框，保持 UI 风格一致
   useEffect(() => {
