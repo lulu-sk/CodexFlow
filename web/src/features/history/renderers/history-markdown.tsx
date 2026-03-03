@@ -344,6 +344,53 @@ export function resolveHistoryLocalPathLink(href: string | null | undefined): Re
 }
 
 /**
+ * 中文说明：将“行/列”信息格式化为 `:line[:column]` 文本后缀。
+ */
+export function formatHistoryLocalPathPositionSuffix(link: Pick<ResolvedHistoryLocalLink, "line" | "column"> | null | undefined): string {
+  const line = typeof link?.line === "number" && link.line > 0 ? Math.floor(link.line) : 0;
+  const column = typeof link?.column === "number" && link.column > 0 ? Math.floor(link.column) : 0;
+  if (!line) return "";
+  if (!column) return `:${line}`;
+  return `:${line}:${column}`;
+}
+
+/**
+ * 中文说明：判断链接文本是否需要追加 `:line[:column]` 后缀，避免重复展示行号。
+ */
+export function shouldAppendHistoryLocalPathPositionSuffix(
+  labelText: string,
+  link: Pick<ResolvedHistoryLocalLink, "line" | "column"> | null | undefined,
+): boolean {
+  const suffix = formatHistoryLocalPathPositionSuffix(link);
+  if (!suffix) return false;
+
+  const compact = String(labelText || "").replace(/\s+/g, "");
+  if (!compact) return false;
+  if (compact.endsWith(suffix)) return false;
+
+  const line = typeof link?.line === "number" && link.line > 0 ? Math.floor(link.line) : 0;
+  if (!line) return false;
+
+  const suffixPattern = new RegExp(`(?:#L${line}(?:C\\d+)?|:${line}(?::\\d+)?)$`, "i");
+  if (suffixPattern.test(compact)) return false;
+  return true;
+}
+
+/**
+ * 中文说明：提取 React 子节点中的纯文本，用于判断链接文本是否已包含行号信息。
+ */
+function extractPlainTextFromReactNode(node: React.ReactNode): string {
+  if (node === null || node === undefined || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map((it) => extractPlainTextFromReactNode(it)).join("");
+  if (React.isValidElement(node)) {
+    const child = (node.props as { children?: React.ReactNode } | null | undefined)?.children;
+    return extractPlainTextFromReactNode(child);
+  }
+  return "";
+}
+
+/**
  * 中文说明：归一化内置 IDE 标识，非法时返回 null。
  */
 function normalizeHistoryBuiltinIdeId(raw: unknown): HistoryBuiltinIdeId | null {
@@ -464,9 +511,15 @@ async function openHistoryLocalPath(link: ResolvedHistoryLocalLink, projectRootP
  * 中文说明：Markdown 链接渲染，默认走 Host API 打开外部链接，避免在 Electron 内部直接跳转。
  */
 function MarkdownLink(props: MarkdownAnchorProps) {
-  const { href, onClick, onContextMenu, ...rest } = props;
+  const { href, onClick, onContextMenu, children, ...rest } = props;
   const { t } = useTranslation(["history"]);
   const localLink = useMemo(() => resolveHistoryLocalPathLink(String(href || "")), [href]);
+  const labelText = useMemo(() => extractPlainTextFromReactNode(children), [children]);
+  const positionSuffix = useMemo(() => formatHistoryLocalPathPositionSuffix(localLink), [localLink]);
+  const shouldAppendPositionSuffix = useMemo(
+    () => shouldAppendHistoryLocalPathPositionSuffix(labelText, localLink),
+    [labelText, localLink],
+  );
   const menuCtx = useContext(HistoryMarkdownLinkMenuContext);
   return (
     <a
@@ -507,7 +560,10 @@ function MarkdownLink(props: MarkdownAnchorProps) {
           }
         } catch {}
       }}
-    />
+    >
+      {children}
+      {shouldAppendPositionSuffix ? positionSuffix : null}
+    </a>
   );
 }
 
