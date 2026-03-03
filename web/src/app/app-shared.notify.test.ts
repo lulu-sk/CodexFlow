@@ -5,6 +5,7 @@ import {
   GEMINI_NOTIFY_ENV_KEYS,
   buildProviderNotifyEnv,
   isAgentCompletionMessage,
+  normalizeCompletionPreviewForDedupe,
 } from "./app-shared";
 
 describe("app-shared（完成通知：识别与环境变量注入）", () => {
@@ -16,6 +17,18 @@ describe("app-shared（完成通知：识别与环境变量注入）", () => {
   it("isAgentCompletionMessage：过滤非完成类通知（approval requested / codex wants to edit）", () => {
     expect(isAgentCompletionMessage("Approval requested: run rm -rf")).toBe(false);
     expect(isAgentCompletionMessage("codex wants to edit foo.ts")).toBe(false);
+  });
+
+  it("normalizeCompletionPreviewForDedupe：统一空白并清理前缀", () => {
+    expect(normalizeCompletionPreviewForDedupe(" agent-turn-complete:\n已完成\t任务   输出 ")).toBe("已完成 任务 输出");
+  });
+
+  it("normalizeCompletionPreviewForDedupe：兼容字面量转义空白", () => {
+    expect(normalizeCompletionPreviewForDedupe("agent-turn-complete: 已完成\\n- 位置： [accountStore.ts]")).toBe("已完成 - 位置： [accountStore.ts]");
+  });
+
+  it("normalizeCompletionPreviewForDedupe：不误伤 Windows 路径中的反斜杠片段", () => {
+    expect(normalizeCompletionPreviewForDedupe("agent-turn-complete: 已完成 C:\\new\\temp\\task.md")).toBe("已完成 C:\\new\\temp\\task.md");
   });
 
   it("buildProviderNotifyEnv：Gemini 注入 GEMINI_CLI_CODEXFLOW_*", () => {
@@ -49,4 +62,3 @@ describe("app-shared（完成通知：识别与环境变量注入）", () => {
     expect(buildProviderNotifyEnv("tab-3", "terminal", "Ubuntu-24.04")).toEqual({});
   });
 });
-

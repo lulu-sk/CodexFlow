@@ -170,6 +170,7 @@ import {
   normDir,
   normalizeCompletionPrefs,
   normalizeCompletionPreview,
+  normalizeCompletionPreviewForDedupe,
   normalizeDirTreeStore,
   normalizeMsToIso,
   normalizeResumeMode,
@@ -1160,7 +1161,7 @@ export default function CodexFlowManagerUI() {
   const autoCommitQueueByProjectIdRef = useRef<Record<string, Promise<void>>>({});
   const RESUME_COMPLETION_GUARD_MS = 8_000;
   const COMPLETION_DEDUPE_WINDOW_MS = 1_600;
-  const COMPLETION_CROSS_SOURCE_WINDOW_MS = 450;
+  const COMPLETION_CROSS_SOURCE_WINDOW_MS = 5_000;
 
   useEffect(() => { editingTabIdRef.current = editingTabId; }, [editingTabId]);
   useEffect(() => { notificationPrefsRef.current = notificationPrefs; }, [notificationPrefs]);
@@ -1823,8 +1824,8 @@ export default function CodexFlowManagerUI() {
    * - 兼容“一个是另一个前缀”的截断差异（例如 OSC 截断 vs hook 完整预览）。
    */
   function isEquivalentCompletionPreview(leftRaw: string, rightRaw: string): boolean {
-    const left = normalizeCompletionPreview(leftRaw);
-    const right = normalizeCompletionPreview(rightRaw);
+    const left = normalizeCompletionPreviewForDedupe(leftRaw);
+    const right = normalizeCompletionPreviewForDedupe(rightRaw);
     if (!left && !right) return true;
     if (!left || !right) return false;
     if (left === right) return true;
@@ -1849,8 +1850,11 @@ export default function CodexFlowManagerUI() {
     const last = completionSnapshotRef.current[safeId];
     if (!last) return false;
     const delta = Date.now() - last.ts;
-    if (!(delta >= 0 && delta <= windowMs)) return false;
-    if (isEquivalentCompletionPreview(String(last.preview || ""), String(preview || ""))) return true;
+    if (delta < 0) return false;
+    if (
+      delta <= windowMs &&
+      isEquivalentCompletionPreview(String(last.preview || ""), String(preview || ""))
+    ) return true;
     const currentSource = source || "unknown";
     const crossSource =
       (last.source === "osc" && currentSource === "external") ||
