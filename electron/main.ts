@@ -3028,7 +3028,9 @@ ipcMain.handle('history.list', async (_e, args: { projectWslPath?: string; proje
         : all.filter((s) => {
             if (needles.some((n) => startsWithBoundary(s.dirKey, n))) return true;
             if (s.providerId === 'gemini' && geminiHashNeedles.size > 0) {
-              const h = extractGeminiProjectHashFromPath(String(s.filePath || ''));
+              const hs = String((s as any)?.projectHash || '').trim().toLowerCase();
+              const hp = extractGeminiProjectHashFromPath(String(s.filePath || ''));
+              const h = hs || hp || '';
               if (h && geminiHashNeedles.has(h)) return true;
             }
             return false;
@@ -3055,6 +3057,7 @@ ipcMain.handle('history.list', async (_e, args: { projectWslPath?: string; proje
         filePath: x.filePath,
         rawDate: x.rawDate,
         preview: (x as any).preview,
+        projectHash: (x as any).projectHash,
         resumeMode: (x as any).resumeMode,
         resumeId: (x as any).resumeId,
         runtimeShell: (x as any).runtimeShell,
