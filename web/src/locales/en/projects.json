@@ -38,6 +38,8 @@
   "worktreeDelete": "Delete worktree",
   "worktreeActionBlockedTitle": "Action Unavailable",
   "worktreeActionBlockedByTerminals": "Deleting or resetting the worktree is unavailable because the current project has {count} terminal agent(s) running. Close all terminal agents and try again.",
+  "worktreeDeleteResetTerminalAgentsTitle": "Terminal agent(s) still running",
+  "worktreeDeleteResetTerminalAgentsDesc": "Detected {count} terminal agent(s) still running in this project. Continuing to delete/reset the worktree may affect running tasks/processes. Continue?",
   "worktreeRecycleTerminalAgentsTitle": "Terminal agent(s) still running",
   "worktreeRecycleTerminalAgentsDesc": "Detected {count} terminal agent(s) still running in this project. Continuing the merge may affect running tasks/processes. Continue?",
   "worktreeCreateDisabledChild": "This node is already a child; cannot create a worktree (max depth: 1).",
