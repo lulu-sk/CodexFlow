@@ -38,6 +38,8 @@
   "worktreeDelete": "删除工作区",
   "worktreeActionBlockedTitle": "操作不可用",
   "worktreeActionBlockedByTerminals": "当前项目存在 {count} 个终端代理，删除/重置 worktree 功能不可用。请关闭所有终端代理再尝试。",
+  "worktreeDeleteResetTerminalAgentsTitle": "检测到终端代理仍在运行",
+  "worktreeDeleteResetTerminalAgentsDesc": "当前项目存在 {count} 个终端代理仍在运行。继续删除/重置 worktree 可能影响正在执行的任务。是否继续？",
   "worktreeRecycleTerminalAgentsTitle": "终端代理仍在运行",
   "worktreeRecycleTerminalAgentsDesc": "检测到当前项目存在 {count} 个终端代理仍在运行。继续合并可能影响正在运行的任务/进程。是否继续？",
   "worktreeCreateDisabledChild": "该节点已为子级，无法再创建 worktree（层级至多一级）",
