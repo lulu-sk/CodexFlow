@@ -6797,8 +6797,24 @@ export default function CodexFlowManagerUI() {
             const p = row.project;
             const depth = row.depth;
             const tabsInProject = tabsByProject[p.id] || [];
-            const liveCount = tabsInProject.filter((tab) => !!ptyAlive[tab.id]).length;
-            const pendingCount = pendingByProject[p.id] ?? 0;
+            const ownLiveCount = tabsInProject.filter((tab) => !!ptyAlive[tab.id]).length;
+            const ownPendingCount = pendingByProject[p.id] ?? 0;
+            const hasChildren = depth === 0 && hasDirChildren(p.id);
+            const expanded = hasChildren && dirTreeStore.expandedById[p.id] !== false;
+
+            let childLiveCount = 0;
+            let childPendingCount = 0;
+            if (depth === 0 && !expanded) {
+              const childIds = dirTreeStore.childOrderByParent[p.id] || [];
+              for (const childId of childIds) {
+                const childTabs = tabsByProject[childId] || [];
+                childLiveCount += childTabs.filter((tab) => !!ptyAlive[tab.id]).length;
+                childPendingCount += pendingByProject[childId] ?? 0;
+              }
+            }
+            const hasActiveChild = childLiveCount > 0 || childPendingCount > 0;
+            const liveCount = ownLiveCount;
+            const pendingCount = ownPendingCount;
             const isHidden = hiddenProjectIdSet.has(p.id);
             const git = gitInfoByProjectId[p.id];
             const exists = git ? git.exists && git.isDirectory : true;
@@ -6810,8 +6826,6 @@ export default function CodexFlowManagerUI() {
             const isWorktreeNode = !!git?.isWorktree && !!git?.isRepoRoot;
             const isSecondaryWorktree = isWorktreeNode && !isMainWorktree;
             const selected = p.id === selectedProjectId;
-            const hasChildren = depth === 0 && hasDirChildren(p.id);
-            const expanded = hasChildren && dirTreeStore.expandedById[p.id] !== false;
             const canOperateOnDir = exists;
             const canDrag = !query.trim();
             const isEditingDirLabel = dirLabelDialog.open && dirLabelDialog.projectId === p.id;
@@ -7031,15 +7045,23 @@ export default function CodexFlowManagerUI() {
                       title={t("common:notifications.openTabHint", "点击查看详情") as string}
                     ></span>
                   ) : null}
-                  {liveCount > 0 ? (
-                    <span className="ml-1 inline-flex items-center justify-center rounded-full bg-[var(--cf-accent)] text-white text-[10px] font-apple-semibold h-5 min-w-[20px] px-1 shadow-apple-xs ring-1 ring-[var(--cf-accent)]/20">
-                      {liveCount}
-                    </span>
-                  ) : null}
-                </div>
+                {liveCount > 0 ? (
+                  <span className="ml-1 inline-flex items-center justify-center rounded-full bg-[var(--cf-accent)] text-white text-[10px] font-apple-semibold h-5 min-w-[20px] px-1 shadow-apple-xs ring-1 ring-[var(--cf-accent)]/20">
+                    {liveCount}
+                  </span>
+                ) : null}
               </div>
-            );
-          })}
+
+              {/* 右上角指示器：当项目折叠且子项目有活动项时显示 */}
+              {hasActiveChild && !expanded ? (
+                <div
+                  className="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-[var(--cf-accent)] ring-1 ring-white dark:ring-slate-900 shadow-sm animate-in fade-in zoom-in duration-300"
+                  title={t("terminal:childTerminalsActive", "子项目有活动项") as string}
+                />
+              ) : null}
+            </div>
+          );
+        })}
         </div>
       </ScrollArea>
     </div>
