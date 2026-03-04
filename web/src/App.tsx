@@ -3416,8 +3416,12 @@ export default function CodexFlowManagerUI() {
   const filtered = useMemo(() => {
     if (!query.trim()) return sortedProjects;
     const q = query.toLowerCase();
-    return sortedProjects.filter((p) => `${p.name} ${p.winPath}`.toLowerCase().includes(q));
-  }, [sortedProjects, query]);
+    return sortedProjects.filter((p) => {
+      const id = String(p?.id || "").trim();
+      const label = id ? String(dirTreeStore.labelById?.[id] || "") : "";
+      return `${p.name} ${p.winPath} ${label}`.toLowerCase().includes(q);
+    });
+  }, [dirTreeStore.labelById, sortedProjects, query]);
 
   const tabsForProject = tabsByProject[selectedProjectId] || [];
   const activeTab = useMemo(() => tabsForProject.find((tab) => tab.id === activeTabId) || null, [tabsForProject, activeTabId]);
