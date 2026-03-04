@@ -24,7 +24,7 @@ try { chokidar = require("chokidar"); } catch {}
 
 type ProviderId = "codex" | "claude" | "gemini";
 type FileSig = { mtimeMs: number; size: number };
-type IndexSummary = HistorySummary & { providerId: ProviderId; dirKey: string };
+type IndexSummary = HistorySummary & { providerId: ProviderId; dirKey: string; projectHash?: string };
 type Details = {
   providerId: ProviderId;
   id: string;
@@ -37,6 +37,7 @@ type Details = {
   cwd?: string;
   dirKey?: string;
   preview?: string;
+  projectHash?: string;
   resumeMode?: 'modern' | 'legacy' | 'unknown';
   resumeId?: string;
   runtimeShell?: RuntimeShell;
@@ -1310,6 +1311,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
               rawDate: details.rawDate,
               dirKey: details.dirKey || dirKeyOf(fp),
               preview: details.preview,
+              projectHash: (details as any).projectHash,
               resumeMode: details.resumeMode,
               resumeId: details.resumeId,
               runtimeShell: details.runtimeShell && details.runtimeShell !== 'unknown' ? details.runtimeShell : detectRuntimeShell(fp),
@@ -1367,6 +1369,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
             rawDate: details.rawDate,
             dirKey: details.dirKey || dirKeyOf(fp),
             preview: details.preview,
+            projectHash: (details as any).projectHash,
             resumeMode: details.resumeMode,
             resumeId: details.resumeId,
             runtimeShell: details.runtimeShell && details.runtimeShell !== 'unknown' ? details.runtimeShell : detectRuntimeShell(fp),
@@ -1432,6 +1435,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
             rawDate: details.rawDate,
             dirKey: details.dirKey || dirKeyOf(fp),
             preview: details.preview,
+            projectHash: (details as any).projectHash,
             resumeMode: details.resumeMode,
             resumeId: details.resumeId,
             runtimeShell: details.runtimeShell && details.runtimeShell !== 'unknown' ? details.runtimeShell : detectRuntimeShell(fp),
@@ -1649,6 +1653,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
                 rawDate: details.rawDate,
                 dirKey: details.dirKey || dirKeyOf(fp),
                 preview: details.preview,
+                projectHash: (details as any).projectHash,
                 resumeMode: details.resumeMode,
                 resumeId: details.resumeId,
                 runtimeShell: details.runtimeShell && details.runtimeShell !== 'unknown' ? details.runtimeShell : detectRuntimeShell(fp),

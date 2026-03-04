@@ -78,8 +78,11 @@ export async function getGeminiRootCandidatesFastAsync(): Promise<SessionsRootCa
 
 /**
  * 扫描 Gemini CLI 会话文件：
- * - 目录结构：`root/<projectHash>/chats/session-*.json`（优先）
- * - 兼容：`root/<projectHash>/session-*.json`
+ * - 目录结构：`root/<projectKey>/chats/session-*.json`（优先）
+ * - 兼容：`root/<projectKey>/session-*.json`
+ *
+ * 说明：
+ * - `projectKey` 既可能是旧版 `projectHash`（32~64 hex），也可能是新版可读目录名（如项目名）。
  */
 export async function discoverGeminiSessionFiles(root: string): Promise<string[]> {
   const out: string[] = [];
@@ -93,8 +96,6 @@ export async function discoverGeminiSessionFiles(root: string): Promise<string[]
       if (!ent.isDirectory()) continue;
       const name = ent.name;
       if (!name) continue;
-      // 过滤：Gemini 项目目录通常是 hash（32~64 hex）
-      if (!(name.length >= 32 && name.length <= 64 && /^[0-9a-fA-F]+$/.test(name))) continue;
       const projDir = path.join(baseRoot, name);
 
       // chats/session-*.json

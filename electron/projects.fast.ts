@@ -468,10 +468,20 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
           const files = await discoverGeminiSessionFiles(root);
           const picked: string[] = [];
           const seenHash = new Set<string>();
+          const seenProjectKey = new Set<string>();
           for (const fp of files) {
             const h = extractGeminiProjectHashFromPath(fp);
-            if (!h || seenHash.has(h)) continue;
-            seenHash.add(h);
+            if (h) {
+              if (seenHash.has(h)) continue;
+              seenHash.add(h);
+              picked.push(fp);
+              continue;
+            }
+            // 非 hash 目录（如 root/<projectName>/chats/session-*.json）按项目目录去重，避免被全部跳过。
+            const rel = path.relative(root, fp).replace(/\\/g, "/");
+            const projectKey = String(rel.split("/").filter(Boolean)[0] || path.dirname(fp)).toLowerCase();
+            if (!projectKey || seenProjectKey.has(projectKey)) continue;
+            seenProjectKey.add(projectKey);
             picked.push(fp);
           }
           for (const fp of picked) {

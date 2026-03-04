@@ -3902,7 +3902,9 @@ export default function CodexFlowManagerUI() {
       try {
         const pid = String(item?.providerId || '').toLowerCase();
         if (pid === 'gemini') {
-          const h = extractGeminiProjectHashFromPath(String(item?.filePath || ''));
+          const hs = String(item?.projectHash || '').trim().toLowerCase();
+          const hp = extractGeminiProjectHashFromPath(String(item?.filePath || ''));
+          const h = hs || hp || '';
           if (h && geminiProjectHashNeedlesRef.current.has(h)) return true;
         }
       } catch {}

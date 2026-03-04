@@ -30,6 +30,7 @@ export type HistorySummary = {
   filePath: string;
   rawDate?: string;
   preview?: string;
+  projectHash?: string;
   resumeMode?: 'modern' | 'legacy' | 'unknown';
   resumeId?: string;
   runtimeShell?: RuntimeShell;

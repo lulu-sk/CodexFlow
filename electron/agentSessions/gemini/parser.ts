@@ -126,7 +126,7 @@ export async function parseGeminiSessionFile(filePath: string, stat: Stats, opts
   const sizeBytes = Number((stat as any)?.size ?? 0);
   let runtimeShell: RuntimeShell = detectRuntimeShell(filePath);
   const id = `gemini:${sha256Hex(filePath)}`;
-  const projectHash = extractGeminiProjectHashFromPath(filePath) || undefined;
+  let projectHash = extractGeminiProjectHashFromPath(filePath) || undefined;
 
   let rawDate: string | undefined = undefined;
   let cwd: string | undefined = undefined;
@@ -150,6 +150,7 @@ export async function parseGeminiSessionFile(filePath: string, stat: Stats, opts
       if (extracted.resumeId) resumeId = extracted.resumeId;
       if (extracted.cwd) cwd = extracted.cwd;
       if (extracted.preview) preview = extracted.preview;
+      if (!projectHash && extracted.projectHash) projectHash = extracted.projectHash;
     } catch {}
 
     // hash 校验（避免把别的项目路径误归到当前会话）
@@ -218,6 +219,10 @@ export async function parseGeminiSessionFile(filePath: string, stat: Stats, opts
   const { items, meta } = extractGeminiItemsAndMeta(any);
   rawDate = pickFirstStringOrNumberAsString(meta.lastUpdated ?? meta.startTime ?? meta.firstTS ?? meta.lastTS);
   if (typeof any?.sessionId === "string" && any.sessionId.trim()) resumeId = any.sessionId.trim();
+  if (!projectHash) {
+    const normalizedHash = normalizeGeminiProjectHash(any?.projectHash ?? any?.project_hash);
+    if (normalizedHash) projectHash = normalizedHash;
+  }
 
   // 先尝试从元信息与对象字段提取 cwd，再做 hash 校验
   cwd = tryExtractGeminiCwdFromAny(any, items) || undefined;
@@ -281,7 +286,7 @@ export async function parseGeminiSessionFile(filePath: string, stat: Stats, opts
 }
 
 type GeminiExtractedMeta = { startTime?: unknown; lastUpdated?: unknown; firstTS?: unknown; lastTS?: unknown };
-type GeminiPrefixExtracted = { rawDate?: string; cwd?: string; preview?: string; resumeId?: string };
+type GeminiPrefixExtracted = { rawDate?: string; cwd?: string; preview?: string; resumeId?: string; projectHash?: string };
 
 /**
  * 在不读取完整文件的情况下，从 Gemini 会话 JSON 的“前缀内容”中提取摘要信息：
@@ -309,6 +314,9 @@ async function extractGeminiSummaryFromJsonPrefix(filePath: string, prefixBytes:
 
     const resumeId = extractJsonStringFieldFromPrefix(head, "sessionId");
     const rawDate = extractJsonStringFieldFromPrefix(head, "lastUpdated") || extractJsonStringFieldFromPrefix(head, "startTime");
+    const projectHash = normalizeGeminiProjectHash(
+      extractJsonStringFieldFromPrefix(head, "projectHash") || extractJsonStringFieldFromPrefix(head, "project_hash"),
+    );
 
     // 预览：尽量从 messages 数组中解析出前几条 item，找到首条 user 文本。
     const preview = tryExtractGeminiPreviewFromMessagesPrefix(prefix);
@@ -325,6 +333,7 @@ async function extractGeminiSummaryFromJsonPrefix(filePath: string, prefixBytes:
       resumeId: resumeId ? String(resumeId).trim() : undefined,
       cwd: cwd ? tidyPathCandidate(cwd) : undefined,
       preview,
+      projectHash,
     };
   } catch {
     return {};
@@ -658,4 +667,20 @@ function pickFirstStringOrNumberAsString(value: unknown): string | undefined {
   if (typeof value === "string" && value.trim()) return value.trim();
   if (typeof value === "number" && isFinite(value)) return String(value);
   return undefined;
+}
+
+/**
+ * 规范化并校验 Gemini projectHash（仅接受 32~64 位十六进制）。
+ */
+function normalizeGeminiProjectHash(value: unknown): string | undefined {
+  try {
+    if (typeof value !== "string") return undefined;
+    const hash = value.trim().toLowerCase();
+    if (!hash) return undefined;
+    if (hash.length < 32 || hash.length > 64) return undefined;
+    if (!/^[0-9a-f]+$/.test(hash)) return undefined;
+    return hash;
+  } catch {
+    return undefined;
+  }
 }
