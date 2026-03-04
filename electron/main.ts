@@ -86,6 +86,38 @@ let mainWindow: BrowserWindow | null = null;
 let DIAG = false;
 let quitConfirmed = false;
 let quitConfirming = false;
+let gpuFallbackActive = false;
+
+type RendererRecoveryReason = "render-process-gone" | "did-fail-load" | "unresponsive-timeout" | "gpu-process-gone";
+type RendererRecoveryAction = "reload" | "recreate";
+type RendererRecoveryState = {
+  attempts: number[];
+  unresponsiveTimer: ReturnType<typeof setTimeout> | null;
+  recoverInFlight: boolean;
+};
+
+type CreateWindowOptions = {
+  restoreBounds?: Electron.Rectangle;
+  startMaximized?: boolean;
+  startFullScreen?: boolean;
+  recoveryReason?: string;
+};
+
+type GpuRecoverySnapshot = {
+  lastCrashAt: number;
+  crashCount: number;
+  disableUntil: number;
+};
+
+const RENDERER_RECOVERY_WINDOW_MS = 120_000;
+const RENDERER_RECOVERY_MAX_RELOADS = 2;
+const RENDERER_UNRESPONSIVE_TIMEOUT_MS = 12_000;
+const RENDERER_RECOVERY_IN_FLIGHT_TIMEOUT_MS = 15_000;
+
+const GPU_RECOVERY_FILE = "gpu-recovery.json";
+const GPU_RECOVERY_WINDOW_MS = 30 * 60_000;
+const GPU_RECOVERY_FORCE_DISABLE_MS = 24 * 60 * 60_000;
+const GPU_RECOVERY_TRIGGER_COUNT = 2;
 function applyDebugGlobalsFromConfig(): void {
   try {
     const cfg = getDebugConfig();
@@ -863,6 +895,196 @@ function forceShowWindow(win: BrowserWindow, reason: string): void {
   } catch {}
 }
 
+const rendererRecoveryStateByWindow = new WeakMap<BrowserWindow, RendererRecoveryState>();
+
+/**
+ * 中文说明：读取窗口恢复状态（按窗口实例隔离），用于控制自动恢复节流与防重入。
+ */
+function getRendererRecoveryState(win: BrowserWindow): RendererRecoveryState {
+  const existing = rendererRecoveryStateByWindow.get(win);
+  if (existing) return existing;
+  const created: RendererRecoveryState = { attempts: [], unresponsiveTimer: null, recoverInFlight: false };
+  rendererRecoveryStateByWindow.set(win, created);
+  return created;
+}
+
+/**
+ * 中文说明：清理窗口级“无响应超时器”，避免重复触发恢复。
+ */
+function clearWindowUnresponsiveTimer(win: BrowserWindow): void {
+  try {
+    const state = rendererRecoveryStateByWindow.get(win);
+    if (!state?.unresponsiveTimer) return;
+    clearTimeout(state.unresponsiveTimer);
+    state.unresponsiveTimer = null;
+  } catch {}
+}
+
+/**
+ * 中文说明：清理窗口恢复状态，防止窗口销毁后残留计时器与闭包引用。
+ */
+function clearRendererRecoveryState(win: BrowserWindow): void {
+  try {
+    const state = rendererRecoveryStateByWindow.get(win);
+    if (state?.unresponsiveTimer) {
+      try { clearTimeout(state.unresponsiveTimer); } catch {}
+      state.unresponsiveTimer = null;
+    }
+    rendererRecoveryStateByWindow.delete(win);
+  } catch {}
+}
+
+/**
+ * 中文说明：裁剪恢复尝试记录，仅保留最近时间窗内的数据。
+ */
+function pruneRendererRecoveryAttempts(state: RendererRecoveryState, now: number): void {
+  const keepAfter = now - RENDERER_RECOVERY_WINDOW_MS;
+  state.attempts = state.attempts.filter((ts) => ts >= keepAfter);
+}
+
+/**
+ * 中文说明：记录一次恢复尝试并返回当前时间窗内的序号（从 1 开始）。
+ */
+function recordRendererRecoveryAttempt(state: RendererRecoveryState, now: number): number {
+  pruneRendererRecoveryAttempts(state, now);
+  state.attempts.push(now);
+  return state.attempts.length;
+}
+
+/**
+ * 中文说明：执行渲染层自愈恢复。
+ * - 前几次优先 reload（保留 PTY 与当前主进程会话）
+ * - 连续失败后重建窗口（处理可能的渲染进程僵死态）
+ */
+function recoverMainWindowRenderer(win: BrowserWindow, reason: RendererRecoveryReason, detail?: string): void {
+  try {
+    if (quitConfirmed) return;
+    if (win.isDestroyed()) return;
+    const wc = win.webContents;
+    if (!wc || wc.isDestroyed()) return;
+
+    const state = getRendererRecoveryState(win);
+    if (state.recoverInFlight) return;
+    clearWindowUnresponsiveTimer(win);
+
+    const now = Date.now();
+    const attempt = recordRendererRecoveryAttempt(state, now);
+    const action: RendererRecoveryAction = attempt <= RENDERER_RECOVERY_MAX_RELOADS ? "reload" : "recreate";
+    const detailText = detail ? ` detail=${clampLogValue(detail, 320)}` : "";
+    try { perfLogger.log(`[RECOVERY] trigger=${reason} action=${action} attempt=${attempt}${detailText}`); } catch {}
+
+    state.recoverInFlight = true;
+    if (action === "recreate") {
+      try {
+        recreateMainWindowForRecovery(win, reason);
+      } finally {
+        state.recoverInFlight = false;
+      }
+      return;
+    }
+
+    const release = () => {
+      try {
+        const cur = rendererRecoveryStateByWindow.get(win);
+        if (!cur) return;
+        cur.recoverInFlight = false;
+      } catch {}
+    };
+    try { wc.once("did-finish-load", release); } catch {}
+    try {
+      const t = setTimeout(release, RENDERER_RECOVERY_IN_FLIGHT_TIMEOUT_MS);
+      try { (t as any).unref?.(); } catch {}
+    } catch {}
+
+    try { wc.reload(); } catch {
+      release();
+      recreateMainWindowForRecovery(win, `${reason}:reload-failed`);
+    }
+  } catch {}
+}
+
+/**
+ * 中文说明：在恢复失败时重建主窗口，并尽量保留原窗口的几何状态。
+ */
+function recreateMainWindowForRecovery(win: BrowserWindow, reason: string): void {
+  try {
+    const restoreBounds = (() => { try { return win.getBounds(); } catch { return undefined; } })();
+    const startMaximized = (() => { try { return win.isMaximized(); } catch { return false; } })();
+    const startFullScreen = (() => { try { return win.isFullScreen(); } catch { return false; } })();
+    try { perfLogger.log(`[RECOVERY] recreate reason=${reason}`); } catch {}
+    clearRendererRecoveryState(win);
+    try { win.removeAllListeners("close"); } catch {}
+    try { win.removeAllListeners("closed"); } catch {}
+    try { win.destroy(); } catch {}
+    if (mainWindow === win) mainWindow = null;
+    createWindow({ restoreBounds, startMaximized, startFullScreen, recoveryReason: reason });
+  } catch (e) {
+    try { perfLogger.log(`[RECOVERY] recreate failed reason=${reason} err=${String(e)}`); } catch {}
+  }
+}
+
+/**
+ * 中文说明：安装主窗口自愈监听器，覆盖崩溃/卡死/加载失败三类白屏来源。
+ */
+function installMainWindowSelfHealHooks(win: BrowserWindow): void {
+  try {
+    const wc = win.webContents;
+    const isDevServerMode = !!resolveDevServerUrl(process.argv);
+    wc.on("render-process-gone", (_event, details) => {
+      const d: any = details as any;
+      const crashReason = String(d?.reason || "");
+      const exitCode = Number(d?.exitCode ?? 0);
+      try { perfLogger.log(`[WC] render-process-gone reason=${crashReason} exitCode=${exitCode}`); } catch {}
+      if (crashReason === "clean-exit") return;
+      recoverMainWindowRenderer(win, "render-process-gone", `reason=${crashReason} exit=${exitCode}`);
+    });
+    wc.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+      const mainFrame = typeof isMainFrame === "boolean" ? isMainFrame : true;
+      try { perfLogger.log(`[WC] did-fail-load code=${errorCode} desc=${errorDescription} url=${validatedURL} main=${mainFrame ? 1 : 0}`); } catch {}
+      if (!mainFrame) return;
+      if (errorCode === -3) return;
+      if (isDevServerMode) return;
+      const url = String(validatedURL || "");
+      if (url.startsWith("devtools://")) return;
+      recoverMainWindowRenderer(win, "did-fail-load", `code=${errorCode} desc=${errorDescription}`);
+    });
+    wc.on("unresponsive", () => {
+      try { perfLogger.log("[WC] unresponsive"); } catch {}
+      const state = getRendererRecoveryState(win);
+      if (state.unresponsiveTimer) return;
+      state.unresponsiveTimer = setTimeout(() => {
+        state.unresponsiveTimer = null;
+        recoverMainWindowRenderer(win, "unresponsive-timeout");
+      }, RENDERER_UNRESPONSIVE_TIMEOUT_MS);
+      try { (state.unresponsiveTimer as any).unref?.(); } catch {}
+    });
+    wc.on("responsive", () => {
+      try { perfLogger.log("[WC] responsive"); } catch {}
+      clearWindowUnresponsiveTimer(win);
+    });
+    win.on("closed", () => {
+      clearRendererRecoveryState(win);
+    });
+  } catch {}
+}
+
+/**
+ * 中文说明：归一化恢复窗口的初始几何信息，避免越界与异常尺寸。
+ */
+function normalizeRestoreBounds(bounds?: Electron.Rectangle): Electron.Rectangle | null {
+  if (!bounds) return null;
+  try {
+    const width = Math.max(640, Math.min(8000, Math.floor(Number(bounds.width || 0))));
+    const height = Math.max(480, Math.min(8000, Math.floor(Number(bounds.height || 0))));
+    const x = Math.floor(Number(bounds.x || 0));
+    const y = Math.floor(Number(bounds.y || 0));
+    if (!isFinite(width) || !isFinite(height) || !isFinite(x) || !isFinite(y)) return null;
+    return { x, y, width, height };
+  } catch {
+    return null;
+  }
+}
+
 function ensureDetachedDevtoolsInView(): void {
   const wc = mainWindow?.webContents;
   if (!wc) return;
@@ -1077,12 +1299,20 @@ function focusTabFromProtocol(rawUrl?: string | null) {
 }
 
 
-function createWindow() {
+/**
+ * 中文说明：创建主窗口（支持恢复场景下复用原窗口几何状态）。
+ */
+function createWindow(options?: CreateWindowOptions): void {
   const windowIcon = resolveAppIcon();
-  try { perfLogger.log(`[WIN] create pid=${process.pid} userData=${app.getPath('userData')}`); } catch {}
-  mainWindow = new BrowserWindow({
-    width: 1376,
-    height: 860,
+  const restored = normalizeRestoreBounds(options?.restoreBounds);
+  const restoreTag = options?.recoveryReason ? ` recovery=${clampLogValue(options.recoveryReason, 80)}` : "";
+  try { perfLogger.log(`[WIN] create pid=${process.pid} userData=${app.getPath('userData')}${restoreTag}`); } catch {}
+
+  const win = new BrowserWindow({
+    width: restored?.width ?? 1376,
+    height: restored?.height ?? 860,
+    x: restored?.x,
+    y: restored?.y,
     minWidth: 1216,
     minHeight: 760,
     icon: windowIcon,
@@ -1097,20 +1327,27 @@ function createWindow() {
     },
     show: true
   });
+  mainWindow = win;
 
-  mainWindow.webContents.on('devtools-opened', () => {
+  try {
+    if (options?.startMaximized) win.maximize();
+    if (options?.startFullScreen) win.setFullScreen(true);
+  } catch {}
+
+  win.webContents.on('devtools-opened', () => {
     setTimeout(() => { try { ensureDetachedDevtoolsInView(); } catch {} }, 0);
   });
 
   // 安装输入框右键菜单（撤销/重做/剪切/复制/粘贴/全选，支持多语言）
-  try { installInputContextMenu(mainWindow.webContents); } catch {}
+  try { installInputContextMenu(win.webContents); } catch {}
 
   // 通过响应头补齐部分 CSP 指令（例如 frame-ancestors），避免 meta 方式被 Chromium 忽略
-  try { installRendererResponseSecurityHeaders(mainWindow.webContents.session); } catch {}
+  try { installRendererResponseSecurityHeaders(win.webContents.session); } catch {}
+  // 安装渲染崩溃/挂起自愈机制：避免运行中白屏后只能手动重启
+  try { installMainWindowSelfHealHooks(win); } catch {}
 
   // 窗口可见性兜底：避免多开实例“只有进程没窗口”的误感知
   try {
-    const win = mainWindow;
     win.once('ready-to-show', () => {
       try { ensureWindowInView(win); } catch {}
       try { forceShowWindow(win, 'ready-to-show'); } catch {}
@@ -1132,40 +1369,35 @@ function createWindow() {
   if (DIAG) { try { perfLogger.log(`[WIN] create BrowserWindow devUrl=${devUrl || ''}`); } catch {} }
   if (devUrl) {
     if (DIAG) { try { perfLogger.log(`[WIN] loadURL ${devUrl}`); } catch {} }
-    mainWindow.loadURL(devUrl);
-    mainWindow.webContents.openDevTools({ mode: 'detach' });
+    win.loadURL(devUrl);
+    win.webContents.openDevTools({ mode: 'detach' });
   } else {
     const entryFile = resolveRendererEntry();
     if (DIAG) { try { perfLogger.log(`[WIN] loadFile ${entryFile}`); } catch {} }
-    mainWindow.loadFile(entryFile);
+    win.loadFile(entryFile);
     // 支持通过统一调试配置强制打开 DevTools（无论是否走本地文件或打包产物）
     try {
       const cfg = getDebugConfig();
-      if (cfg?.global?.openDevtools) mainWindow.webContents.openDevTools({ mode: 'detach' });
+      if (cfg?.global?.openDevtools) win.webContents.openDevTools({ mode: 'detach' });
     } catch {}
   }
 
   // 渲染进程诊断钩子
   if (DIAG) try {
-    const wc = mainWindow.webContents;
+    const wc = win.webContents;
     wc.on('did-start-loading', () => { try { perfLogger.log('[WC] did-start-loading'); } catch {} });
     wc.on('dom-ready', () => { try { perfLogger.log('[WC] dom-ready'); } catch {} });
     wc.on('did-finish-load', () => { try { perfLogger.log('[WC] did-finish-load'); } catch {} });
     wc.on('did-frame-finish-load', (_e, isMain) => { try { perfLogger.log(`[WC] did-frame-finish-load main=${isMain}`); } catch {} });
-    wc.on('did-fail-load', (_e, errorCode, errorDescription, validatedURL) => {
-      try { perfLogger.log(`[WC] did-fail-load code=${errorCode} desc=${errorDescription} url=${validatedURL}`); } catch {}
-    });
     wc.on('did-navigate', (_e, url) => { try { perfLogger.log(`[WC] did-navigate url=${url}`); } catch {} });
     wc.on('did-navigate-in-page', (_e, url) => { try { perfLogger.log(`[WC] did-navigate-in-page url=${url}`); } catch {} });
-    wc.on('render-process-gone', (_e, details) => { try { perfLogger.log(`[WC] render-process-gone reason=${(details as any)?.reason} exitCode=${(details as any)?.exitCode}`); } catch {} });
-    wc.on('unresponsive', () => { try { perfLogger.log('[WC] unresponsive'); } catch {} });
     wc.on('console-message', (_e, level, message, line, sourceId) => {
       try { perfLogger.log(`[WC.console] level=${level} ${sourceId}:${line} ${message}`); } catch {}
     });
   } catch {}
 
   // 关闭窗口/退出应用前：若仍有终端会话未关闭，弹窗确认（避免误关导致任务中断）
-  mainWindow.on("close", (event) => {
+  win.on("close", (event) => {
     try {
       if (quitConfirmed) return;
       const count = ptyManager.getActiveSessionCount();
@@ -1173,7 +1405,6 @@ function createWindow() {
       event.preventDefault();
       if (quitConfirming) return;
       quitConfirming = true;
-      const win = mainWindow;
       void (async () => {
         try {
           const ok = await confirmQuitWithActiveTerminals(win, count);
@@ -1187,8 +1418,8 @@ function createWindow() {
     } catch {}
   });
 
-  mainWindow.on('closed', () => {
-    mainWindow = null;
+  win.on('closed', () => {
+    if (mainWindow === win) mainWindow = null;
   });
 }
 
@@ -1242,6 +1473,108 @@ ipcMain.handle('app.setTitleBarTheme', async (_e, payload: { mode?: string; sour
   }
 });
 
+/**
+ * 中文说明：获取 GPU 恢复快照文件路径（按 profile 隔离）。
+ */
+function getGpuRecoveryFilePath(userDataDir: string): string {
+  return path.join(userDataDir, GPU_RECOVERY_FILE);
+}
+
+/**
+ * 中文说明：读取 GPU 恢复快照；文件缺失或损坏时返回默认值。
+ */
+function readGpuRecoverySnapshot(userDataDir: string): GpuRecoverySnapshot {
+  const fallback: GpuRecoverySnapshot = { lastCrashAt: 0, crashCount: 0, disableUntil: 0 };
+  try {
+    const p = getGpuRecoveryFilePath(userDataDir);
+    if (!fs.existsSync(p)) return fallback;
+    const raw = JSON.parse(fs.readFileSync(p, "utf8")) as Partial<GpuRecoverySnapshot>;
+    const lastCrashAt = Math.max(0, Number(raw?.lastCrashAt || 0));
+    const crashCount = Math.max(0, Number(raw?.crashCount || 0));
+    const disableUntil = Math.max(0, Number(raw?.disableUntil || 0));
+    if (!isFinite(lastCrashAt) || !isFinite(crashCount) || !isFinite(disableUntil)) return fallback;
+    return { lastCrashAt, crashCount, disableUntil };
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * 中文说明：写入 GPU 恢复快照，用于跨重启持久化降级状态。
+ */
+function writeGpuRecoverySnapshot(userDataDir: string, snapshot: GpuRecoverySnapshot): void {
+  try {
+    const p = getGpuRecoveryFilePath(userDataDir);
+    try { fs.mkdirSync(path.dirname(p), { recursive: true }); } catch {}
+    fs.writeFileSync(p, JSON.stringify(snapshot, null, 2), "utf8");
+  } catch {}
+}
+
+/**
+ * 中文说明：记录一次 GPU 崩溃并更新降级状态（连续崩溃将触发“下次启动禁用 GPU”）。
+ */
+function markGpuCrashAndPersist(userDataDir: string, now = Date.now()): GpuRecoverySnapshot {
+  const prev = readGpuRecoverySnapshot(userDataDir);
+  const withinWindow = prev.lastCrashAt > 0 && (now - prev.lastCrashAt) >= 0 && (now - prev.lastCrashAt) <= GPU_RECOVERY_WINDOW_MS;
+  const crashCount = withinWindow ? prev.crashCount + 1 : 1;
+  const disableUntil = crashCount >= GPU_RECOVERY_TRIGGER_COUNT
+    ? Math.max(prev.disableUntil, now + GPU_RECOVERY_FORCE_DISABLE_MS)
+    : (prev.disableUntil > now ? prev.disableUntil : 0);
+  const next: GpuRecoverySnapshot = {
+    lastCrashAt: now,
+    crashCount: Math.min(99, Math.max(1, crashCount)),
+    disableUntil,
+  };
+  writeGpuRecoverySnapshot(userDataDir, next);
+  return next;
+}
+
+/**
+ * 中文说明：若历史记录命中降级窗口，则在启动早期禁用硬件加速，降低跨屏全屏白屏风险。
+ */
+function applyGpuFallbackIfArmed(userDataDir: string): void {
+  try {
+    const byArg = process.argv.some((arg) => String(arg || "").trim().toLowerCase() === "--disable-gpu");
+    if (byArg) {
+      gpuFallbackActive = true;
+      try { perfLogger.log("[GPU] disable-gpu by argv"); } catch {}
+      return;
+    }
+    const snapshot = readGpuRecoverySnapshot(userDataDir);
+    const now = Date.now();
+    if (!snapshot.disableUntil || snapshot.disableUntil <= now) return;
+    try { app.disableHardwareAcceleration(); } catch {}
+    try { app.commandLine.appendSwitch("disable-gpu"); } catch {}
+    gpuFallbackActive = true;
+    const remainMs = Math.max(0, snapshot.disableUntil - now);
+    try { perfLogger.log(`[GPU] fallback enabled remainMs=${remainMs}`); } catch {}
+  } catch {}
+}
+
+/**
+ * 中文说明：安装 GPU 进程异常监听，统一记录并触发渲染层自愈恢复。
+ */
+function installGpuProcessRecoveryHooks(userDataDir: string): void {
+  app.on("child-process-gone", (_event, details) => {
+    try {
+      const d: any = details as any;
+      const type = String(d?.type || "").toLowerCase();
+      if (type !== "gpu") return;
+      const reason = String(d?.reason || "");
+      const exitCode = Number(d?.exitCode ?? 0);
+      try { perfLogger.log(`[GPU] child-process-gone reason=${reason} exitCode=${exitCode}`); } catch {}
+      if (reason === "clean-exit") return;
+      const snap = markGpuCrashAndPersist(userDataDir);
+      if (snap.disableUntil > Date.now() && !gpuFallbackActive) {
+        try { perfLogger.log(`[GPU] fallback armed until=${snap.disableUntil}`); } catch {}
+      }
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        recoverMainWindowRenderer(mainWindow, "gpu-process-gone", `reason=${reason} exit=${exitCode}`);
+      }
+    } catch {}
+  });
+}
+
 // Single instance lock
 const instanceProfile = applyInstanceProfile();
 const gotLock = app.requestSingleInstanceLock({ profileId: instanceProfile.profileId } as any);
@@ -1261,6 +1594,10 @@ if (!gotLock) {
   } catch {}
   try { app.quit(); } catch {}
 } else {
+  // 启动早期应用 GPU 回退策略（必须在 app.ready 前执行）
+  try { applyGpuFallbackIfArmed(instanceProfile.userDataDir); } catch {}
+  // 监听 GPU 子进程异常：记录并触发窗口自愈
+  try { installGpuProcessRecoveryHooks(instanceProfile.userDataDir); } catch {}
   /**
    * 处理“二次启动”：
    * - 优先处理协议激活（如 Windows 通知点击）
