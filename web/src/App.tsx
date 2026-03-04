@@ -7045,12 +7045,12 @@ export default function CodexFlowManagerUI() {
 
                   {pendingCount > 0 ? (
                     <span
-                      className="ml-1 inline-flex h-2 w-2 rounded-full bg-red-500 dark:bg-[var(--cf-red)] dark:shadow-sm"
+                      className="ml-1 inline-flex h-2.5 w-2.5 rounded-full bg-[var(--cf-red)] ring-2 ring-white dark:ring-slate-900 shadow-md transition-transform"
                       title={t("common:notifications.openTabHint", "点击查看详情") as string}
                     ></span>
                   ) : null}
                 {liveCount > 0 ? (
-                  <span className="ml-1 inline-flex items-center justify-center rounded-full bg-[var(--cf-accent)] text-white text-[10px] font-apple-semibold h-5 min-w-[20px] px-1 shadow-apple-xs ring-1 ring-[var(--cf-accent)]/20">
+                  <span className="ml-1 inline-flex items-center justify-center rounded-full bg-[var(--cf-accent)] text-white text-[10px] font-bold h-[18px] min-w-[20px] px-1.5 shadow-apple-sm ring-1 ring-white/10">
                     {liveCount}
                   </span>
                 ) : null}
@@ -7059,7 +7059,7 @@ export default function CodexFlowManagerUI() {
               {/* 右上角指示器：当项目折叠且子项目有活动项时显示 */}
               {hasActiveChild && !expanded ? (
                 <div
-                  className="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-[var(--cf-accent)] ring-1 ring-white dark:ring-slate-900 shadow-sm animate-in fade-in zoom-in duration-300"
+                  className="absolute -top-1 -right-1 h-2.5 w-2.5 rounded-full bg-[var(--cf-accent)] ring-2 ring-white dark:ring-slate-900 shadow-md animate-in fade-in zoom-in duration-300"
                   title={t("terminal:childTerminalsActive", "子项目有活动项") as string}
                 />
               ) : null}
@@ -7241,7 +7241,7 @@ export default function CodexFlowManagerUI() {
                         <span id={`tab-label-${tab.id}`} className="truncate max-w-[8rem]">{tab.name}</span>
                         {hasPending ? (
                           <span
-                            className="inline-flex h-2 w-2 rounded-full bg-red-500 dark:bg-[var(--cf-red)] dark:shadow-sm"
+                            className="ml-0.5 inline-flex h-2 w-2 rounded-full bg-[var(--cf-red)] ring-2 ring-white dark:ring-slate-950 shadow-sm"
                             title={t('common:notifications.openTabHint', '点击查看详情') as string}
                           ></span>
                         ) : null}
