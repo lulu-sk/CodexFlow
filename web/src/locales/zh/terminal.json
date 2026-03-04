@@ -12,6 +12,7 @@
   "collapseInput": "退出大屏",
   "readyPlaceholder": "# 终端就绪。这里是内嵌控制台的视觉占位（UI 原型，未接真 PTY）。",
   "openFailed": "启动终端失败：{error}",
+  "childTerminalsActive": "子项目有活动项",
   "ctx": {
     "copy": "复制",
     "copyLine": "复制整行",
