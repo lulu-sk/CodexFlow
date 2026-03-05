@@ -7061,7 +7061,7 @@ export default function CodexFlowManagerUI() {
               {/* 右上角指示器：当项目折叠且子项目有活动项时显示 */}
               {hasActiveChild && !expanded ? (
                 <div
-                  className="absolute -top-1 -right-1 h-2.5 w-2.5 rounded-full bg-[var(--cf-accent)] ring-2 ring-white dark:ring-slate-900 shadow-md animate-in fade-in zoom-in duration-300"
+                  className="absolute top-1 right-1 h-[7px] w-[7px] rounded-full bg-[var(--cf-accent)] ring-1 ring-white dark:ring-slate-900 shadow-md animate-in fade-in zoom-in duration-300"
                   title={t("terminal:childTerminalsActive", "子项目有活动项") as string}
                 />
               ) : null}
