@@ -1141,6 +1141,9 @@ export default function CodexFlowManagerUI() {
   const pendingCompletionsRef = useRef<Record<string, number>>({});
   const [agentTurnTimerByTab, setAgentTurnTimerByTab] = useState<Record<string, AgentTurnTimerState>>({});
   const agentTurnTimerByTabRef = useRef<Record<string, AgentTurnTimerState>>({});
+  const [agentTurnHistoryByTab, setAgentTurnHistoryByTab] = useState<Record<string, AgentTurnTimerState[]>>({});
+  const agentTurnHistoryByTabRef = useRef<Record<string, AgentTurnTimerState[]>>({});
+  const MAX_AGENT_TURN_HISTORY = 200;
   const [agentTurnClockTick, setAgentTurnClockTick] = useState(0);
   const [agentTurnCtxMenu, setAgentTurnCtxMenu] = useState<{ show: boolean; x: number; y: number; tabId: string | null }>({
     show: false,
@@ -1167,6 +1170,7 @@ export default function CodexFlowManagerUI() {
   useEffect(() => { editingTabIdRef.current = editingTabId; }, [editingTabId]);
   useEffect(() => { notificationPrefsRef.current = notificationPrefs; }, [notificationPrefs]);
   useEffect(() => { agentTurnTimerByTabRef.current = agentTurnTimerByTab; }, [agentTurnTimerByTab]);
+  useEffect(() => { agentTurnHistoryByTabRef.current = agentTurnHistoryByTab; }, [agentTurnHistoryByTab]);
   useEffect(() => { tabsByProjectRef.current = tabsByProject; }, [tabsByProject]);
   useEffect(() => { projectsRef.current = projects; }, [projects]);
   useEffect(() => { dirTreeStoreRef.current = dirTreeStore; }, [dirTreeStore]);
@@ -1421,67 +1425,106 @@ export default function CodexFlowManagerUI() {
   const startAgentTurnTimer = useCallback((tabId: string) => {
     const id = String(tabId || "").trim();
     if (!id) return;
+    if (agentTurnTimerByTabRef.current[id]?.status === "working") return;
     const now = Date.now();
+    const nextState: AgentTurnTimerState = {
+      status: "working",
+      startedAt: now,
+      elapsedMs: 0,
+    };
+    agentTurnTimerByTabRef.current = {
+      ...agentTurnTimerByTabRef.current,
+      [id]: nextState,
+    };
     setAgentTurnTimerByTab((prev) => {
       const current = prev[id];
       if (current?.status === "working") return prev;
       return {
         ...prev,
-        [id]: {
-          status: "working",
-          startedAt: now,
-          elapsedMs: 0,
-        },
+        [id]: nextState,
       };
     });
     notifyLog(`agentTimer.start tab=${id}`);
   }, [notifyLog]);
 
   /**
-   * 中文说明：在收到代理完成通知时结束计时，并固化本轮总耗时。
+   * 中文说明：在收到代理完成通知时结束计时，并固化本轮总耗时，同时记入历史。
    */
   const completeAgentTurnTimer = useCallback((tabId: string) => {
     const id = String(tabId || "").trim();
     if (!id) return;
     const now = Date.now();
-    setAgentTurnTimerByTab((prev) => {
-      const current = prev[id];
-      if (!current || current.status !== "working") return prev;
+    
+    // 获取当前状态，避免在 updater 内部执行副作用
+    const current = agentTurnTimerByTabRef.current[id];
+    if (!current || current.status !== "working") return;
+
       const elapsedMs = Math.max(0, now - current.startedAt);
-      return {
-        ...prev,
-        [id]: {
+    const finished: AgentTurnTimerState = {
           ...current,
           status: "done",
           elapsedMs,
           finishedAt: now,
-        },
       };
-    });
+    const nextHistory = [finished, ...(agentTurnHistoryByTabRef.current[id] || [])].slice(0, MAX_AGENT_TURN_HISTORY);
+    agentTurnTimerByTabRef.current = {
+      ...agentTurnTimerByTabRef.current,
+      [id]: finished,
+    };
+    agentTurnHistoryByTabRef.current = {
+      ...agentTurnHistoryByTabRef.current,
+      [id]: nextHistory,
+    };
+
+    setAgentTurnTimerByTab((prev) => ({
+      ...prev,
+      [id]: finished,
+    }));
+    setAgentTurnHistoryByTab((hPrev) => ({
+      ...hPrev,
+      [id]: nextHistory,
+    }));
+    
     notifyLog(`agentTimer.done tab=${id}`);
   }, [notifyLog]);
 
   /**
-   * 中文说明：将指定标签页的计时标记为“中断”，并保留当前已耗时（用于终端 ESC 中断场景）。
+   * 中文说明：将指定标签页的计时标记为“中断”，并保留当前已耗时（用于终端 ESC 中断场景），同时记入历史。
    */
   const interruptAgentTurnTimer = useCallback((tabId: string, source: string) => {
     const id = String(tabId || "").trim();
     if (!id) return;
     const now = Date.now();
-    setAgentTurnTimerByTab((prev) => {
-      const current = prev[id];
-      if (!current || current.status !== "working") return prev;
+
+    const current = agentTurnTimerByTabRef.current[id];
+    if (!current || current.status !== "working") return;
+
       const elapsedMs = Math.max(0, now - current.startedAt);
-      return {
-        ...prev,
-        [id]: {
+    const finished: AgentTurnTimerState = {
           ...current,
           status: "interrupted",
           elapsedMs,
           finishedAt: now,
-        },
       };
-    });
+    const nextHistory = [finished, ...(agentTurnHistoryByTabRef.current[id] || [])].slice(0, MAX_AGENT_TURN_HISTORY);
+    agentTurnTimerByTabRef.current = {
+      ...agentTurnTimerByTabRef.current,
+      [id]: finished,
+    };
+    agentTurnHistoryByTabRef.current = {
+      ...agentTurnHistoryByTabRef.current,
+      [id]: nextHistory,
+    };
+
+    setAgentTurnTimerByTab((prev) => ({
+      ...prev,
+      [id]: finished,
+    }));
+    setAgentTurnHistoryByTab((hPrev) => ({
+      ...hPrev,
+      [id]: nextHistory,
+    }));
+
     notifyLog(`agentTimer.interrupt tab=${id} source=${source}`);
   }, [notifyLog]);
 
@@ -1491,6 +1534,11 @@ export default function CodexFlowManagerUI() {
   const cancelAgentTurnTimer = useCallback((tabId: string, source: string) => {
     const id = String(tabId || "").trim();
     if (!id) return;
+    if (agentTurnTimerByTabRef.current[id]) {
+      const nextRef = { ...agentTurnTimerByTabRef.current };
+      delete nextRef[id];
+      agentTurnTimerByTabRef.current = nextRef;
+    }
     setAgentTurnTimerByTab((prev) => {
       if (!prev[id]) return prev;
       const next = { ...prev };
@@ -1535,9 +1583,15 @@ export default function CodexFlowManagerUI() {
     const working = state?.status === "working";
     const interrupted = state?.status === "interrupted";
     const statusText = resolveAgentTurnStatusText(id);
+
+    // 计算总耗时（包含历史和当前进行中的）
+    const historyForTab = agentTurnHistoryByTab[id] || [];
+    const totalMs = historyForTab.reduce((acc, curr) => acc + (Number(curr.elapsedMs) || 0), 0) + (working ? resolveAgentTurnElapsedMs(state) : 0);
+    const totalText = formatElapsedClock(totalMs);
+
     return (
       <div className={wrapperClassName}>
-        <div className="relative">
+        <div className="relative group/agent-timer inline-block">
           <div
             className={working
               ? "text-[10px] sm:text-xs text-slate-500/80 dark:text-slate-400/70 px-2 py-0.5 flex items-center gap-2 select-none cursor-default hover:text-slate-600 dark:hover:text-slate-300 transition-colors"
@@ -1567,10 +1621,50 @@ export default function CodexFlowManagerUI() {
               </span>
             )}
           </div>
+
+          {/* 悬停历史面板 */}
+          <div className="invisible group-hover/agent-timer:visible absolute bottom-full left-0 mb-1 z-50 min-w-[220px] max-w-[360px] rounded-lg border border-slate-200 bg-white/95 p-2 shadow-lg dark:border-slate-700 dark:bg-slate-900/95 animate-in fade-in slide-in-from-bottom-1 duration-200 pointer-events-none group-hover/agent-timer:pointer-events-auto">
+            <div className="mb-1.5 flex items-center justify-between border-b border-slate-100 pb-1.5 dark:border-slate-800">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{t("terminal:usageHistory")}</span>
+              <span className="text-[10px] font-mono text-slate-500">{t("terminal:totalDuration", { total: totalText })}</span>
+            </div>
+            <ScrollArea className="max-h-[240px]">
+              <div className="space-y-1.5 pr-3">
+                {working && (
+                  <div className="flex items-center justify-between gap-4 text-[11px] text-sky-600 dark:text-sky-400 font-medium">
+                    <span className="flex items-center gap-1.5">
+                      <span className="h-1.5 w-1.5 rounded-full bg-sky-500 animate-pulse"></span>
+                      {t("terminal:timerStatusWorking")}
+                    </span>
+                    <span className="font-mono">{formatElapsedClock(resolveAgentTurnElapsedMs(state))}</span>
+                  </div>
+                )}
+                {historyForTab.length === 0 && !working ? (
+                  <div className="py-2 text-center text-[10px] text-slate-400 italic">{t("terminal:noHistory")}</div>
+                ) : (
+                  historyForTab.map((h, idx) => {
+                    const startTime = new Date(h.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+                    const endTime = h.finishedAt ? new Date(h.finishedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }) : "--:--:--";
+                    return (
+                      <div key={idx} className="flex items-center justify-between gap-3 text-[11px] text-slate-600 dark:text-slate-300">
+                        <span className="font-mono text-[9px] opacity-60 flex-shrink-0">
+                          {startTime} - {endTime}
+                        </span>
+                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                          {h.status === "interrupted" && <span className="h-1.5 w-1.5 rounded-full bg-amber-400" title={t("terminal:agentInterrupted", { elapsed: formatElapsedClock(h.elapsedMs) }) as string}></span>}
+                          <span className="font-mono">{formatElapsedClock(h.elapsedMs)}</span>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </ScrollArea>
+          </div>
         </div>
       </div>
     );
-  }, [agentTurnTimerByTab, openAgentTurnContextMenu, resolveAgentTurnStatusText, t]);
+  }, [agentTurnHistoryByTab, agentTurnTimerByTab, agentTurnClockTick, openAgentTurnContextMenu, resolveAgentTurnStatusText, t]);
 
   /**
    * 中文说明：判断是否存在任意“进行中”计时；存在时驱动 1 秒一次的 UI 刷新。
@@ -1637,6 +1731,21 @@ export default function CodexFlowManagerUI() {
         next[tabId] = state;
       }
       if (!changed) return prev;
+      agentTurnTimerByTabRef.current = next;
+      return next;
+    });
+    setAgentTurnHistoryByTab((prev) => {
+      let changed = false;
+      const next: Record<string, AgentTurnTimerState[]> = {};
+      for (const [tabId, history] of Object.entries(prev)) {
+        if (!activeTabSet.has(tabId)) {
+          changed = true;
+          continue;
+        }
+        next[tabId] = history;
+      }
+      if (!changed) return prev;
+      agentTurnHistoryByTabRef.current = next;
       return next;
     });
     // 清理已不存在标签页的恢复期完成通知守卫，防止状态泄漏。
