@@ -304,7 +304,7 @@ function VirtualizedListInner<TItem>({
   if (items.length === 0) return null;
 
   return (
-    <div ref={hostRef} style={{ position: "relative", minHeight: 0, height: layout.totalHeight }}>
+    <div ref={hostRef} style={{ position: "relative", minHeight: 0, minWidth: 0, height: layout.totalHeight }}>
       {visibleItems.map(({ item, index, key, top }) => (
         <VirtualizedMeasuredRow key={key} itemKey={key} top={top} onHeightChange={handleHeightChange}>
           {renderItem(item, index)}

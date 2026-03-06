@@ -7974,22 +7974,23 @@ export default function CodexFlowManagerUI() {
   }, [timelineGroups, historyQuery, sessionMatchesQuery]);
 
   const HistorySidebar = (
-    <div className="grid h-full min-w-[240px] grid-rows-[auto_auto_auto_1fr] min-h-0 border-l bg-white/70 backdrop-blur-sm dark:border-slate-800 dark:bg-slate-900/60">
+    <div className="grid h-full min-h-0 min-w-0 grid-rows-[auto_auto_auto_1fr] overflow-hidden border-l bg-white/70 backdrop-blur-sm dark:border-slate-800 dark:bg-slate-900/60">
       {/* Header with enhanced modern styling */}
-      <div className="flex items-center justify-between px-3 pt-3 pb-5 border-b border-slate-100 dark:border-slate-700/50">
-        <div className="flex items-center gap-2 font-medium shrink-0">
-          <HistoryIcon className="h-4 w-4" /> {t('history:panelTitle')}
+      <div className="flex min-w-0 items-center justify-between border-b border-slate-100 px-3 pb-5 pt-3 dark:border-slate-700/50">
+        <div className="flex min-w-0 items-center gap-2 font-medium">
+          <HistoryIcon className="h-4 w-4 shrink-0" />
+          <span className="truncate">{t('history:panelTitle')}</span>
         </div>
       </div>
 
       {/* Enhanced search with original design */}
-      <div className="px-3 py-2">
+      <div className="min-w-0 px-3 py-2">
         <Input
           value={historyQuery}
           onChange={(e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setHistoryQuery((e.target as any).value)}
           placeholder={t('history:searchPlaceholder') as string}
           title={t('history:searchPlaceholderHint') as string}
-          className="h-9"
+          className="h-9 min-w-0"
           data-cf-hover-shortcuts-ignore="true"
           onKeyDown={(e: React.KeyboardEvent<any>) => {
             if (e.key === 'Enter') {
@@ -7998,8 +7999,8 @@ export default function CodexFlowManagerUI() {
           }}
         />
       </div>
-      <ScrollArea className="history-scroll-area h-full min-h-0 px-2 pb-2">
-        <div className="space-y-1 pt-2">
+      <ScrollArea className="history-scroll-area h-full min-h-0 min-w-0 px-2 pb-2">
+        <div className="min-w-0 space-y-1 pt-2">
           {filteredTimelineGroups.map((g) => {
             const inGroup = g.sessions;
             const q = historyQuery.trim().toLowerCase();
@@ -8022,8 +8023,8 @@ export default function CodexFlowManagerUI() {
             const expanded = (expandedGroups[g.key] ?? defaultExpanded);
             const displayList = q ? inGroup.filter((s) => sessionMatchesQuery(s, q)) : inGroup;
             const isSelectedGroup = selectedHistoryDir === g.key;
-            const groupShellClass = `rounded-xl bg-transparent overflow-hidden`;
-            const headerButtonClass = `group sticky -top-1 z-20 flex items-center gap-2 px-2 py-1.5 w-full text-left border border-transparent outline-none focus:outline-none transition-colors ${
+            const groupShellClass = `min-w-0 rounded-xl bg-transparent overflow-hidden`;
+            const headerButtonClass = `group sticky -top-1 z-20 flex min-w-0 items-center gap-2 overflow-hidden px-2 py-1.5 w-full text-left border border-transparent outline-none focus:outline-none transition-colors ${
               isSelectedGroup
                 ? 'bg-slate-100 border-slate-200/60 text-[var(--cf-text-primary)] font-medium dark:bg-slate-800/80 dark:border-slate-700 dark:text-[var(--cf-text-primary)]'
                 : 'bg-transparent text-[var(--cf-text-secondary)] hover:bg-slate-100 hover:border-slate-200/40 dark:hover:bg-slate-800/60 dark:hover:border-slate-600/30'
@@ -8051,12 +8052,12 @@ export default function CodexFlowManagerUI() {
                     <div className="font-medium max-w-full truncate" title={g.label}>
                       {clampText(g.label, HISTORY_TITLE_MAX_CHARS)}
                     </div>
-                    <div className="mt-0 max-w-full truncate text-[11px] text-slate-500" title={g.latestRaw || latestLabel}>{latestLabel}</div>
+                    <div className="mt-0 block max-w-full truncate text-[11px] text-slate-500" title={g.latestRaw || latestLabel}>{latestLabel}</div>
                   </div>
 
                 </button>
                 {expanded && displayList.length > 0 && (
-                  <div className="pb-1 pl-2 pr-2 space-y-0.5 mt-0.5">
+                  <div className="mt-0.5 min-w-0 space-y-0.5 pb-1 pl-2 pr-2">
                     {displayList.map((s) => {
                       const anchor = historySessionDate(s);
                       const absoluteLabel = anchor ? formatAsLocal(anchor) : timeFromFilename(s.filePath);
@@ -8065,7 +8066,7 @@ export default function CodexFlowManagerUI() {
                       const providerIconSrc = getProviderIconSrc(s.providerId, providerItemById, themeMode);
                       const relativeLabel = describeRelativeAge(anchor, historyNow) || '--';
                       const tooltip = [absoluteLabel, previewSource].filter(Boolean).join('  ');
-                      const itemClass = `block w-full rounded px-2 py-0.5 text-left text-xs border outline-none focus:outline-none ${
+                      const itemClass = `block w-full min-w-0 overflow-hidden rounded px-2 py-0.5 text-left text-xs border outline-none focus:outline-none ${
                         active
                           ? 'bg-slate-200 border-slate-300 dark:bg-slate-700 dark:border-slate-600 dark:text-slate-100'
                           : 'bg-transparent border-transparent text-slate-800 dark:text-slate-200 hover:bg-slate-100 hover:border-slate-200 dark:hover:bg-slate-900/40 dark:hover:border-slate-700'
@@ -8086,18 +8087,28 @@ export default function CodexFlowManagerUI() {
                           className={itemClass}
                           title={tooltip}
                         >
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="flex items-center gap-2 min-w-0">
+                          <div className="flex min-w-0 items-center justify-between gap-2 overflow-hidden">
+                            <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
                               {providerIconSrc ? <img src={providerIconSrc} className="h-3.5 w-3.5 shrink-0 opacity-90" alt={s.providerId} /> : null}
-                              <span className={`text-sm leading-5 truncate ${active ? 'text-slate-900 dark:text-slate-50 font-medium' : 'text-slate-800 dark:text-slate-200'}`}>{previewSource || absoluteLabel || '--'}</span>
+                              <span
+                                className={`block min-w-0 flex-1 truncate text-sm leading-5 ${active ? 'text-slate-900 dark:text-slate-50 font-medium' : 'text-slate-800 dark:text-slate-200'}`}
+                                title={previewSource || absoluteLabel || '--'}
+                              >
+                                {previewSource || absoluteLabel || '--'}
+                              </span>
                             </div>
-                            <span className={`shrink-0 text-[11px] ${active ? 'text-slate-600 dark:text-slate-400' : 'text-slate-500 dark:text-slate-400'}`}>{relativeLabel}</span>
+                            <span
+                              className={`max-w-[4.75rem] shrink-0 truncate text-right text-[11px] ${active ? 'text-slate-600 dark:text-slate-400' : 'text-slate-500 dark:text-slate-400'}`}
+                              title={relativeLabel}
+                            >
+                              {relativeLabel}
+                            </span>
                           </div>
                         </button>
                       );
                     })}
                     {!q && inGroup.length > displayList.length && (
-                      <div className="px-2 py-1 text-[11px] text-slate-500">{t('history:showing', { total: inGroup.length, count: displayList.length })}</div>
+                      <div className="truncate px-2 py-1 text-[11px] text-slate-500">{t('history:showing', { total: inGroup.length, count: displayList.length })}</div>
                     )}
                   </div>
                 )}
@@ -11138,23 +11149,24 @@ function EmptyState({ onCreate }: { onCreate: () => void }) {
 const HISTORY_DETAIL_VIRTUAL_ESTIMATED_HEIGHT = 240;
 const HISTORY_DETAIL_VIRTUAL_OVERSCAN = 1600;
 const HISTORY_DETAIL_SEARCH_DEBOUNCE_MS = 120;
+const HISTORY_DETAIL_PRE_CLASS_NAME = "mt-2 max-w-full overflow-x-auto whitespace-pre-wrap font-apple-regular";
 
 function ContentRenderer({ items, kprefix, projectWinPath }: { items: MessageContent[]; kprefix?: string; projectWinPath?: string }) {
   if (!Array.isArray(items) || items.length === 0) return null;
   return (
-    <div className="space-y-2">
+    <div className="min-w-0 space-y-2">
       {items.map((c, i) => {
         const ty = (c?.type || '').toLowerCase();
         const text = String(c?.text ?? '');
         if (ty === 'user_instructions') {
           // 展开显示 user_instructions（移除折叠）
           return (
-            <div key={`${kprefix || 'itm'}-uinst-${i}`} className="rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-muted)] p-2 text-xs text-[var(--cf-text-primary)]">
-              <div className="flex items-center justify-between text-[var(--cf-text-secondary)] font-apple-medium">
+            <div key={`${kprefix || 'itm'}-uinst-${i}`} className="min-w-0 rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-muted)] p-2 text-xs text-[var(--cf-text-primary)]">
+              <div className="flex min-w-0 items-center justify-between gap-2 text-[var(--cf-text-secondary)] font-apple-medium">
                 <div>user_instructions</div>
                 <HistoryCopyButton text={text} />
               </div>
-              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-apple-regular">
+              <pre className={HISTORY_DETAIL_PRE_CLASS_NAME}>
                 <code data-history-search-scope>{text}</code>
               </pre>
             </div>
@@ -11164,12 +11176,12 @@ function ContentRenderer({ items, kprefix, projectWinPath }: { items: MessageCon
         if (ty === 'environment_context') {
           // 展开显示 environment_context（移除折叠）
           return (
-            <div key={`${kprefix || 'itm'}-env-${i}`} className="rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-muted)] p-2 text-xs text-[var(--cf-text-primary)]">
-              <div className="flex items-center justify-between text-[var(--cf-text-secondary)] font-apple-medium">
+            <div key={`${kprefix || 'itm'}-env-${i}`} className="min-w-0 rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-muted)] p-2 text-xs text-[var(--cf-text-primary)]">
+              <div className="flex min-w-0 items-center justify-between gap-2 text-[var(--cf-text-secondary)] font-apple-medium">
                 <div>environment_context</div>
                 <HistoryCopyButton text={text} />
               </div>
-              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-apple-regular">
+              <pre className={HISTORY_DETAIL_PRE_CLASS_NAME}>
                 <code data-history-search-scope>{text}</code>
               </pre>
             </div>
@@ -11178,12 +11190,12 @@ function ContentRenderer({ items, kprefix, projectWinPath }: { items: MessageCon
         if (ty === 'instructions') {
           // 展开显示 instructions（移除折叠）
           return (
-            <div key={`${kprefix || 'itm'}-instr-${i}`} className="rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-muted)] p-2 text-xs text-[var(--cf-text-primary)]">
-              <div className="flex items-center justify-between text-[var(--cf-text-secondary)] font-apple-medium">
+            <div key={`${kprefix || 'itm'}-instr-${i}`} className="min-w-0 rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-muted)] p-2 text-xs text-[var(--cf-text-primary)]">
+              <div className="flex min-w-0 items-center justify-between gap-2 text-[var(--cf-text-secondary)] font-apple-medium">
                 <div>instructions</div>
                 <HistoryCopyButton text={text} />
               </div>
-              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-apple-regular">
+              <pre className={HISTORY_DETAIL_PRE_CLASS_NAME}>
                 <code data-history-search-scope>{text}</code>
               </pre>
             </div>
@@ -11191,9 +11203,9 @@ function ContentRenderer({ items, kprefix, projectWinPath }: { items: MessageCon
         }
         if (ty === 'code') {
           return (
-            <div key={`${kprefix || 'itm'}-code-${i}`} className="relative">
+            <div key={`${kprefix || 'itm'}-code-${i}`} className="relative min-w-0">
               <HistoryCopyButton text={text} variant="secondary" className="absolute right-2 top-2" />
-              <pre className="overflow-x-auto rounded-apple bg-[var(--cf-surface-muted)] border border-[var(--cf-border)] p-3 text-xs text-[var(--cf-text-primary)] font-mono shadow-apple-inner">
+              <pre className="max-w-full overflow-x-auto rounded-apple bg-[var(--cf-surface-muted)] border border-[var(--cf-border)] p-3 text-xs text-[var(--cf-text-primary)] font-mono shadow-apple-inner">
                 <code data-history-search-scope>{text}</code>
               </pre>
             </div>
@@ -11202,12 +11214,12 @@ function ContentRenderer({ items, kprefix, projectWinPath }: { items: MessageCon
         if (ty === 'function_call') {
           // 展开显示 function_call
           return (
-            <div key={`${kprefix || 'itm'}-fnc-${i}`} className="rounded-apple border border-[var(--cf-border)] bg-[var(--cf-accent-light)] p-2 text-xs text-[var(--cf-text-primary)]">
-              <div className="flex items-center justify-between text-[var(--cf-accent)] font-apple-semibold">
+            <div key={`${kprefix || 'itm'}-fnc-${i}`} className="min-w-0 rounded-apple border border-[var(--cf-border)] bg-[var(--cf-accent-light)] p-2 text-xs text-[var(--cf-text-primary)]">
+              <div className="flex min-w-0 items-center justify-between gap-2 text-[var(--cf-accent)] font-apple-semibold">
                 <div>function_call</div>
                 <HistoryCopyButton text={text} />
               </div>
-              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-apple-regular">
+              <pre className={HISTORY_DETAIL_PRE_CLASS_NAME}>
                 <code data-history-search-scope>{text}</code>
               </pre>
             </div>
@@ -11216,12 +11228,12 @@ function ContentRenderer({ items, kprefix, projectWinPath }: { items: MessageCon
         if (ty === 'function_output') {
           // 展开显示 function_output
           return (
-            <div key={`${kprefix || 'itm'}-fno-${i}`} className="rounded-apple border border-[var(--cf-border)] bg-[var(--cf-teal-light)] p-2 text-xs text-[var(--cf-text-primary)]">
-              <div className="flex items-center justify-between text-[var(--cf-teal)] font-apple-semibold">
+            <div key={`${kprefix || 'itm'}-fno-${i}`} className="min-w-0 rounded-apple border border-[var(--cf-border)] bg-[var(--cf-teal-light)] p-2 text-xs text-[var(--cf-text-primary)]">
+              <div className="flex min-w-0 items-center justify-between gap-2 text-[var(--cf-teal)] font-apple-semibold">
                 <div>function_output</div>
                 <HistoryCopyButton text={text} />
               </div>
-              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-apple-regular">
+              <pre className={HISTORY_DETAIL_PRE_CLASS_NAME}>
                 <code data-history-search-scope>{text}</code>
               </pre>
             </div>
@@ -11229,7 +11241,7 @@ function ContentRenderer({ items, kprefix, projectWinPath }: { items: MessageCon
         }
         if (ty === 'summary') {
           return (
-            <div key={`${kprefix || 'itm'}-sum-${i}`} className="relative rounded-apple border border-[var(--cf-border)] bg-[var(--cf-purple-light)] p-2 text-xs text-[var(--cf-text-primary)] font-apple-regular">
+            <div key={`${kprefix || 'itm'}-sum-${i}`} className="relative min-w-0 rounded-apple border border-[var(--cf-border)] bg-[var(--cf-purple-light)] p-2 text-xs text-[var(--cf-text-primary)] font-apple-regular">
               <HistoryCopyButton text={text} className="absolute right-2 top-2" />
               <HistoryMarkdown text={text} projectRootPath={projectWinPath} />
             </div>
@@ -11238,12 +11250,12 @@ function ContentRenderer({ items, kprefix, projectWinPath }: { items: MessageCon
         if (ty === 'git') {
           // 展开显示 git
           return (
-            <div key={`${kprefix || 'itm'}-git-${i}`} className="rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-muted)] p-2 text-xs text-[var(--cf-text-primary)]">
-              <div className="flex items-center justify-between text-[var(--cf-text-secondary)] font-apple-medium">
+            <div key={`${kprefix || 'itm'}-git-${i}`} className="min-w-0 rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-muted)] p-2 text-xs text-[var(--cf-text-primary)]">
+              <div className="flex min-w-0 items-center justify-between gap-2 text-[var(--cf-text-secondary)] font-apple-medium">
                 <div>git</div>
                 <HistoryCopyButton text={text} />
               </div>
-              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-apple-regular">
+              <pre className={HISTORY_DETAIL_PRE_CLASS_NAME}>
                 <code data-history-search-scope>{text}</code>
               </pre>
             </div>
@@ -11251,8 +11263,8 @@ function ContentRenderer({ items, kprefix, projectWinPath }: { items: MessageCon
         }
         if (ty === 'input_text') {
           return (
-            <div key={`${kprefix || 'itm'}-in-${i}`} className="rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-solid)] p-3 text-sm leading-6 text-[var(--cf-text-primary)] shadow-apple-xs">
-              <div className="mb-1 flex items-center justify-between text-xs uppercase tracking-wider text-[var(--cf-text-secondary)] font-apple-semibold">
+            <div key={`${kprefix || 'itm'}-in-${i}`} className="min-w-0 overflow-hidden rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-solid)] p-3 text-sm leading-6 text-[var(--cf-text-primary)] shadow-apple-xs">
+              <div className="mb-1 flex min-w-0 items-center justify-between gap-2 text-xs uppercase tracking-wider text-[var(--cf-text-secondary)] font-apple-semibold">
                 <span>input</span>
                 <HistoryCopyButton text={text} />
               </div>
@@ -11262,8 +11274,8 @@ function ContentRenderer({ items, kprefix, projectWinPath }: { items: MessageCon
         }
         if (ty === 'output_text') {
           return (
-            <div key={`${kprefix || 'itm'}-out-${i}`} className="rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-solid)] p-3 text-sm leading-6 text-[var(--cf-text-primary)] shadow-apple-xs">
-              <div className="mb-1 flex items-center justify-between text-xs uppercase tracking-wider text-[var(--cf-text-secondary)] font-apple-semibold">
+            <div key={`${kprefix || 'itm'}-out-${i}`} className="min-w-0 overflow-hidden rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-solid)] p-3 text-sm leading-6 text-[var(--cf-text-primary)] shadow-apple-xs">
+              <div className="mb-1 flex min-w-0 items-center justify-between gap-2 text-xs uppercase tracking-wider text-[var(--cf-text-secondary)] font-apple-semibold">
                 <span>output</span>
                 <HistoryCopyButton text={text} />
               </div>
@@ -11274,12 +11286,12 @@ function ContentRenderer({ items, kprefix, projectWinPath }: { items: MessageCon
         if (ty === 'state') {
           // 展开显示 state
           return (
-            <div key={`${kprefix || 'itm'}-state-${i}`} className="rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-muted)] p-2 text-xs text-[var(--cf-text-primary)]">
-              <div className="flex items-center justify-between text-[var(--cf-text-secondary)] font-apple-medium">
+            <div key={`${kprefix || 'itm'}-state-${i}`} className="min-w-0 rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-muted)] p-2 text-xs text-[var(--cf-text-primary)]">
+              <div className="flex min-w-0 items-center justify-between gap-2 text-[var(--cf-text-secondary)] font-apple-medium">
                 <div>state</div>
                 <HistoryCopyButton text={text} />
               </div>
-              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-apple-regular">
+              <pre className={HISTORY_DETAIL_PRE_CLASS_NAME}>
                 <code data-history-search-scope>{text}</code>
               </pre>
             </div>
@@ -11288,12 +11300,12 @@ function ContentRenderer({ items, kprefix, projectWinPath }: { items: MessageCon
         if (ty === 'session_meta') {
           // 展开显示 session_meta
           return (
-            <div key={`${kprefix || 'itm'}-meta-${i}`} className="rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-muted)] p-2 text-xs text-[var(--cf-text-primary)]">
-              <div className="flex items-center justify-between text-[var(--cf-text-secondary)] font-apple-medium">
+            <div key={`${kprefix || 'itm'}-meta-${i}`} className="min-w-0 rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-muted)] p-2 text-xs text-[var(--cf-text-primary)]">
+              <div className="flex min-w-0 items-center justify-between gap-2 text-[var(--cf-text-secondary)] font-apple-medium">
                 <div>session_meta</div>
                 <HistoryCopyButton text={text} />
               </div>
-              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-apple-regular">
+              <pre className={HISTORY_DETAIL_PRE_CLASS_NAME}>
                 <code data-history-search-scope>{text}</code>
               </pre>
             </div>
@@ -11301,7 +11313,7 @@ function ContentRenderer({ items, kprefix, projectWinPath }: { items: MessageCon
         }
         // default: treat as plain text, including input_text/output_text etc.
         return (
-          <div key={`${kprefix || 'itm'}-txt-${i}`} className="relative">
+          <div key={`${kprefix || 'itm'}-txt-${i}`} className="relative min-w-0">
             <HistoryCopyButton text={text} className="absolute right-0 -top-1" />
             <HistoryMarkdown text={text} projectRootPath={projectWinPath} />
           </div>
@@ -11392,9 +11404,9 @@ function HistoryMessageCard({ view, options }: { view: HistoryMessageView; optio
     <div
       ref={(node) => options?.registerMessageRef?.(messageKey, node)}
       data-history-message-key={messageKey}
-      className={`rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple p-2 shadow-apple-sm text-[var(--cf-text-primary)] transition-all duration-apple hover:shadow-apple dark:shadow-apple-dark-sm dark:hover:shadow-apple-dark ${isActive ? 'ring-1 ring-[var(--cf-accent)]/70 shadow-apple dark:ring-[var(--cf-accent)]/40' : ''}`}
+      className={`min-w-0 overflow-hidden rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple p-2 shadow-apple-sm text-[var(--cf-text-primary)] transition-all duration-apple hover:shadow-apple dark:shadow-apple-dark-sm dark:hover:shadow-apple-dark ${isActive ? 'ring-1 ring-[var(--cf-accent)]/70 shadow-apple dark:ring-[var(--cf-accent)]/40' : ''}`}
     >
-      <div data-history-search-scope className="mb-1 text-xs uppercase tracking-wider font-apple-semibold text-[var(--cf-text-secondary)]">{message.role}</div>
+      <div data-history-search-scope className="mb-1 truncate text-xs uppercase tracking-wider font-apple-semibold text-[var(--cf-text-secondary)]">{message.role}</div>
       <ContentRenderer items={message.content} kprefix={messageKey} projectWinPath={options?.projectWinPath} />
     </div>
   );
@@ -11406,7 +11418,7 @@ function HistoryMessageCard({ view, options }: { view: HistoryMessageView; optio
  */
 function renderHistoryMessageList(messages: HistoryMessageView[], options?: HistoryRenderOptions) {
   return (
-    <div className="space-y-2">
+    <div className="min-w-0 space-y-2">
       {messages.map((view) => (
         <HistoryMessageCard key={view.messageKey} view={view} options={options} />
       ))}
@@ -11435,7 +11447,7 @@ function estimateHistoryMessageHeight(view: HistoryMessageView): number {
 function renderHistoryBlocks(session: HistorySession, messages: HistoryMessageView[], options?: HistoryRenderOptions) {
   if (!session) return null;
   return (
-    <div>
+    <div className="min-w-0">
       {renderHistoryHeader(session)}
       {renderHistoryMessageList(messages, options)}
     </div>
@@ -11998,16 +12010,16 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
 
   return (
     <>
-      <div className="grid h-full min-h-0 grid-rows-[auto_auto_1fr]">
+      <div className="grid h-full min-h-0 min-w-0 grid-rows-[auto_auto_1fr] overflow-hidden">
       {/* 紧凑的标题栏 - 减少垂直间距 */}
-      <div className="flex items-center justify-between px-3 py-1.5 border-b border-[var(--cf-border)]">
-        <div className="flex items-center gap-2 text-sm">
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-[var(--cf-border)] px-3 py-1.5">
+        <div className="flex min-w-0 items-center gap-2 text-sm">
           {/* 返回箭头：点击返回到控制台 */}
-          <button className="flex items-center gap-2 text-sm font-apple-medium text-[var(--cf-text-secondary)] hover:text-[var(--cf-text-primary)] transition-colors duration-apple" onClick={() => { if (onBack) onBack(); }} aria-label={t('history:detailTitle') as string}>
-            <ChevronLeft className="h-4 w-4" /> <span>{t('history:detailTitle')}</span>
+          <button className="flex min-w-0 items-center gap-2 text-sm font-apple-medium text-[var(--cf-text-secondary)] transition-colors duration-apple hover:text-[var(--cf-text-primary)]" onClick={() => { if (onBack) onBack(); }} aria-label={t('history:detailTitle') as string}>
+            <ChevronLeft className="h-4 w-4 shrink-0" /> <span className="truncate">{t('history:detailTitle')}</span>
           </button>
         </div>
-        <div className="flex items-center gap-1.5">
+        <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-1.5">
           {detailSession?.filePath ? (
             <>
               <Button size="sm" variant="secondary" onClick={() => {
@@ -12042,8 +12054,8 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
       {/* 紧凑的过滤和搜索区域 */}
       <div className="flex flex-col gap-1.5 px-3 py-1.5 text-xs text-[var(--cf-text-secondary)] bg-[var(--cf-bg-secondary)]">
         {/* 第一行：搜索框和过滤器切换 */}
-        <div className="flex items-center gap-2">
-          <div className="relative flex-1 max-w-xs">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <div className="relative min-w-0 max-w-xs flex-1 basis-[14rem]">
             <Input
               value={detailSearchInput}
               onChange={(e) => setDetailSearchInput((e.target as HTMLInputElement).value)}
@@ -12056,7 +12068,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
           </div>
 
           {detailSearchActive && matches.length > 0 && (
-            <div className="flex items-center gap-1.5">
+            <div className="flex shrink-0 items-center gap-1.5">
               <div className="text-[0.65rem] text-[var(--cf-text-muted)] font-apple-medium whitespace-nowrap">
                 {normalizedMatchIndex + 1} / {matches.length}
               </div>
@@ -12091,7 +12103,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
             </div>
           )}
 
-          <div className="flex items-center gap-1.5 ml-auto">
+          <div className="ml-auto flex shrink-0 items-center gap-1.5">
             <span className="text-[var(--cf-text-muted)] font-apple-medium whitespace-nowrap">{Object.values(typeFilter).filter(Boolean).length}/{Object.keys(typeFilter).length}</span>
             <Button
               size="sm"
@@ -12214,11 +12226,11 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
         )}
       </div>
 
-      <div className="relative group/history-detail flex-1 min-h-0">
+      <div className="relative group/history-detail flex-1 min-h-0 min-w-0 overflow-hidden">
         <ScrollArea
           ref={detailScrollAreaRef}
           key={selectedHistoryId || 'none'}
-          className="h-full min-h-0 p-2 focus-visible:outline-none"
+          className="h-full min-h-0 min-w-0 p-2 focus-visible:outline-none"
           tabIndex={0}
           onPointerDownCapture={focusHistoryDetailViewport}
           onKeyDownCapture={handleHistoryDetailBoundaryShortcut}
@@ -12227,10 +12239,10 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
             showNoMatch ? (
               <div className="p-4 text-sm text-[var(--cf-text-secondary)] font-apple-regular">{t('history:noMatch')}</div>
             ) : (
-              <div ref={historyFindRootRef} data-history-find-root className="space-y-2">
+              <div ref={historyFindRootRef} data-history-find-root className="min-w-0 space-y-2">
                 {detailRenderSession ? (
                   useVirtualizedHistory ? (
-                    <div>
+                    <div className="min-w-0">
                       {renderHistoryHeader(detailRenderSession)}
                       <VirtualizedList
                         ref={historyVirtualListRef}

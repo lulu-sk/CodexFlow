@@ -63,7 +63,7 @@ type HistoryGlobalIdeConfig = {
 };
 
 const CODE_BLOCK_CLASS_NAME =
-  "overflow-x-auto rounded-apple bg-[var(--cf-surface-muted)] border border-[var(--cf-border)] p-3 text-xs text-[var(--cf-text-primary)] font-mono shadow-apple-inner";
+  "max-w-full overflow-x-auto rounded-apple bg-[var(--cf-surface-muted)] border border-[var(--cf-border)] p-3 text-xs text-[var(--cf-text-primary)] font-mono shadow-apple-inner";
 
 const INLINE_CODE_CLASS_NAME =
   "rounded-apple-sm bg-[var(--cf-surface-muted)] px-1.5 py-0.5 text-[0.85em] text-[var(--cf-text-primary)] font-mono break-all [overflow-wrap:anywhere]";
@@ -511,7 +511,7 @@ async function openHistoryLocalPath(link: ResolvedHistoryLocalLink, projectRootP
  * 中文说明：Markdown 链接渲染，默认走 Host API 打开外部链接，避免在 Electron 内部直接跳转。
  */
 function MarkdownLink(props: MarkdownAnchorProps) {
-  const { href, onClick, onContextMenu, children, ...rest } = props;
+  const { href, onClick, onContextMenu, children, className, ...rest } = props;
   const { t } = useTranslation(["history"]);
   const localLink = useMemo(() => resolveHistoryLocalPathLink(String(href || "")), [href]);
   const labelText = useMemo(() => extractPlainTextFromReactNode(children), [children]);
@@ -524,6 +524,7 @@ function MarkdownLink(props: MarkdownAnchorProps) {
   return (
     <a
       {...rest}
+      className={cn("break-words [overflow-wrap:anywhere]", className)}
       href={href}
       onContextMenu={async (e) => {
         try {
@@ -591,7 +592,7 @@ function MarkdownCode(props: MarkdownCodeProps) {
 function MarkdownTable(props: MarkdownTableProps) {
   const { className, ...rest } = props;
   return (
-    <div className="overflow-x-auto">
+    <div className="max-w-full overflow-x-auto">
       <table {...rest} className={cn("w-full", className)} />
     </div>
   );
@@ -809,7 +810,7 @@ export function HistoryMarkdown(props: HistoryMarkdownProps) {
       <HistoryMarkdownLinkMenuContext.Provider value={contextValue}>
         <div
           data-history-search-scope
-          className={cn("prose prose-sm max-w-none dark:prose-invert cf-history-markdown", className)}
+          className={cn("cf-history-markdown prose prose-sm min-w-0 max-w-none overflow-hidden break-words [overflow-wrap:anywhere] dark:prose-invert", className)}
         >
           <MarkdownHooks
             remarkPlugins={[remarkGfm, remarkBreaks]}
@@ -830,7 +831,7 @@ export function HistoryMarkdown(props: HistoryMarkdownProps) {
             components={MARKDOWN_COMPONENTS}
             fallback={
               // 说明：异步高亮尚未完成时的兜底展示，尽量维持旧版“按换行展示”的直观效果。
-              <div className="whitespace-pre-wrap break-words text-[var(--cf-text-primary)]">{text}</div>
+              <div className="min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-[var(--cf-text-primary)]">{text}</div>
             }
           >
             {processed}
