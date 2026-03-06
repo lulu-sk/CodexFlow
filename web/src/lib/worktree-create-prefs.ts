@@ -212,13 +212,40 @@ export function saveWorktreeCreatePrefs(repoProjectId: string, prefs: WorktreeCr
 }
 
 /**
- * 中文说明：清空指定 repoProjectId 的“初始提示词记录”（chips + draft），保留其他设置不变。
+ * 中文说明：按 repoProjectId 更新已保存的 worktree 创建面板偏好。
+ * - 若当前没有已保存记录，则直接跳过；
+ * - 调用方只需关注字段变更规则，底层统一复用 load/save 的归一化逻辑。
  */
-export function clearWorktreeCreatePromptPrefs(repoProjectId: string): void {
+function updateWorktreeCreatePrefs(repoProjectId: string, updater: (current: WorktreeCreatePrefs) => WorktreeCreatePrefs): void {
   const repoId = toNonEmptyString(repoProjectId);
   if (!repoId) return;
   const existing = loadWorktreeCreatePrefs(repoId);
   if (!existing) return;
-  saveWorktreeCreatePrefs(repoId, { ...existing, promptChips: [], promptDraft: "" });
+  saveWorktreeCreatePrefs(repoId, updater(existing));
+}
+
+/**
+ * 中文说明：清空指定 repoProjectId 的“初始提示词记录”（chips + draft），保留其他设置不变。
+ */
+export function clearWorktreeCreatePromptPrefs(repoProjectId: string): void {
+  updateWorktreeCreatePrefs(repoProjectId, (current) => ({ ...current, promptChips: [], promptDraft: "" }));
+}
+
+/**
+ * 中文说明：清空指定 repoProjectId 的“非模型实例类记忆”，仅保留模型实例相关设置。
+ * - 保留：`useYolo`、`useMultipleModels`、`singleProviderId`、`multiCounts`；
+ * - 清空：`baseBranch`、`selectedChildWorktreeIds`、`promptChips`、`promptDraft`；
+ * - `remarkBaseName` 支持由调用方传入“重置后的默认值”，以便 UI 下次打开时恢复为初始默认备注，而不是空白。
+ */
+export function clearWorktreeCreateTransientPrefs(repoProjectId: string, options?: { remarkBaseName?: string }): void {
+  const nextRemarkBaseName = toNonEmptyString(options?.remarkBaseName);
+  updateWorktreeCreatePrefs(repoProjectId, (current) => ({
+    ...current,
+    baseBranch: "",
+    remarkBaseName: nextRemarkBaseName,
+    selectedChildWorktreeIds: [],
+    promptChips: [],
+    promptDraft: "",
+  }));
 }
 

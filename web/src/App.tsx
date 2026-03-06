@@ -102,7 +102,7 @@ import { getCachedThemeSetting, useThemeController, writeThemeSettingCache, type
 import { loadHiddenProjectIds, loadShowHiddenProjects, saveHiddenProjectIds, saveShowHiddenProjects } from "@/lib/projects-hidden";
 import { loadConsoleSession, saveConsoleSession, type PersistedConsoleTab } from "@/lib/console-session";
 import {
-  clearWorktreeCreatePromptPrefs,
+  clearWorktreeCreateTransientPrefs,
   loadWorktreeCreatePrefs,
   saveWorktreeCreatePrefs,
   type PersistedWorktreePromptChip,
@@ -703,29 +703,74 @@ export default function CodexFlowManagerUI() {
 		  }, [toPersistedWorktreePromptChips]);
 
 		  /**
-		   * 中文说明：当初始提示词“已发送”后，清空其记录（内存缓存 + localStorage + 当前 UI 状态）。
-		   * - 仅清空提示词，不影响其他设置（baseBranch/引擎选择等仍会保留）。
+		   * 中文说明：清理指定 repo 的 worktree 创建偏好防抖计时器，避免旧快照在重置后回写。
 		   */
-			  const clearWorktreeCreateInitialPromptRecord = useCallback((repoProjectId: string) => {
+			  const clearWorktreeCreatePrefsPersistTimer = useCallback((repoProjectId: string) => {
 			    const repoId = String(repoProjectId || "").trim();
 			    if (!repoId) return;
+			    try {
+			      const timers = worktreeCreatePrefsPersistTimersRef.current;
+			      const timerId = timers[repoId];
+			      if (typeof timerId !== "number") return;
+			      window.clearTimeout(timerId);
+			      delete timers[repoId];
+			    } catch {}
+			  }, []);
 
-		    // 1) 内存缓存：清空提示词字段
+			  /**
+			   * 中文说明：在“从分支创建 worktree”首次成功启动实例后，重置非模型实例类记忆。
+			   * - 当前需求规则要求：仅保留模型实例相关设置（YOLO、多模型开关、引擎选择与计数）；
+			   * - 其余记忆（baseBranch、工作区备注名、复用已有子 worktree、初始提示词）全部清空；
+			   * - 这样下次打开面板时，会回到接近初始提示的状态，避免把上一次的分支/复用选择继续带入。
+			   */
+			  const resetWorktreeCreateTransientRecord = useCallback((repoProjectId: string) => {
+			    const repoId = String(repoProjectId || "").trim();
+			    if (!repoId) return;
+			    const repoProject = projectsRef.current.find((item) => String(item?.id || "").trim() === repoId) || null;
+			    const nextRemarkBaseName = repoProject ? resolveDefaultWorktreeRemarkBaseName(repoProject) : "";
+
+		    clearWorktreeCreatePrefsPersistTimer(repoId);
+
+		    // 1) 内存缓存：保留模型实例相关设置，清空其余瞬时字段
 		    try {
 		      const prev = worktreeCreateDraftByRepoIdRef.current[repoId];
-		      if (prev) worktreeCreateDraftByRepoIdRef.current[repoId] = { ...prev, promptChips: [], promptDraft: "" };
+		      if (prev) {
+		        worktreeCreateDraftByRepoIdRef.current[repoId] = {
+		          ...prev,
+		          baseBranch: "",
+		          remarkBaseName: nextRemarkBaseName,
+		          selectedChildWorktreeIds: [],
+		          promptChips: [],
+		          promptDraft: "",
+		        };
+		      }
 		    } catch {}
 
-		    // 2) localStorage：清空提示词字段
-		    try { clearWorktreeCreatePromptPrefs(repoId); } catch {}
+		    // 2) localStorage：只保留模型实例相关设置，并将备注恢复为“首次打开时的默认值”
+		    try { clearWorktreeCreateTransientPrefs(repoId, { remarkBaseName: nextRemarkBaseName }); } catch {}
 
-		    // 3) 当前 UI：若仍对应同一 repo，则同步清空，避免后续防抖持久化把提示词写回
+		    // 3) 当前 UI：若仍对应同一 repo，则同步清空，避免后续重新打开仍看到旧值
 			    setWorktreeCreateDialog((prev) => {
 			      if (prev.repoProjectId !== repoId) return prev;
-			      if ((prev.promptChips?.length || 0) === 0 && !String(prev.promptDraft || "").trim()) return prev;
-			      return { ...prev, promptChips: [], promptDraft: "" };
+			      if (
+			        !String(prev.baseBranch || "").trim()
+			        && !normalizeWorktreeRemarkBaseName(prev.remarkBaseName)
+			        && (prev.selectedChildWorktreeIds?.length || 0) === 0
+			        && (prev.promptChips?.length || 0) === 0
+			        && !String(prev.promptDraft || "").trim()
+			      ) {
+			        return prev;
+			      }
+			      return {
+			        ...prev,
+			        baseBranch: "",
+			        remarkBaseName: nextRemarkBaseName,
+			        selectedChildWorktreeIds: [],
+			        promptChips: [],
+			        promptDraft: "",
+			      };
 			    });
-			  }, []);
+			  }, [clearWorktreeCreatePrefsPersistTimer, resolveDefaultWorktreeRemarkBaseName]);
 
 			  /**
 			   * 中文说明：worktree 创建面板字段变更时，更新“按项目隔离”的内存缓存，并防抖写入 localStorage。
@@ -750,11 +795,7 @@ export default function CodexFlowManagerUI() {
 				    // localStorage：仅保存可跨会话复用的字段（过滤 fromPaste、去掉运行态字段）
 				    try {
 				      const timers = worktreeCreatePrefsPersistTimersRef.current;
-				      const prevTimer = timers[repoId];
-				      if (typeof prevTimer === "number") {
-				        window.clearTimeout(prevTimer);
-				        delete timers[repoId];
-				      }
+				      clearWorktreeCreatePrefsPersistTimer(repoId);
 				      const snapshot = worktreeCreateDialog;
 				      const timer = window.setTimeout(() => {
 				        try { saveWorktreeCreatePrefs(repoId, buildWorktreeCreatePrefsFromDialog(snapshot)); } catch {}
@@ -774,6 +815,7 @@ export default function CodexFlowManagerUI() {
 			    worktreeCreateDialog.singleProviderId,
 			    worktreeCreateDialog.useMultipleModels,
 			    worktreeCreateDialog.useYolo,
+			    clearWorktreeCreatePrefsPersistTimer,
 			  ]);
 			  const [worktreeCreateProgress, setWorktreeCreateProgress] = useState<WorktreeCreateProgressState>(() => ({
 			    open: false,
@@ -5063,6 +5105,8 @@ export default function CodexFlowManagerUI() {
     remarkBaseName?: string;
     /** 是否在本次创建/启动中临时启用 YOLO（不影响全局设置）。 */
     useYolo?: boolean;
+    /** 是否在首次成功启动实例后，重置除模型实例设置外的面板记忆。 */
+    resetTransientPrefsOnSuccess?: boolean;
     /** 额外警告（用于把“复用已有 worktree 的启动失败”合并到同一份提示里）。 */
     extraWarnings?: string[];
   }) => {
@@ -5151,7 +5195,7 @@ export default function CodexFlowManagerUI() {
     );
     const scheduledPostKeys = new Set<string>();
     const postJobs: Promise<void>[] = [];
-    let promptCleared = false;
+    let transientRecordReset = false;
     let firstNewProjectId: string | null = null;
     let firstTabId: string | null = null;
     let snapshot: WorktreeCreateTaskSnapshot | null = null;
@@ -5275,9 +5319,9 @@ export default function CodexFlowManagerUI() {
         const started = await startProviderInstanceInProject({ project: wtProject, providerId, prompt, useYolo: args.useYolo });
         if (started.ok && started.tabId) {
           if (!firstTabId) firstTabId = started.tabId;
-          if (!promptCleared && prompt.trim()) {
-            promptCleared = true;
-            clearWorktreeCreateInitialPromptRecord(repoId);
+          if (args.resetTransientPrefsOnSuccess && !transientRecordReset) {
+            transientRecordReset = true;
+            resetWorktreeCreateTransientRecord(repoId);
           }
           updatePostState(worktreeKey, { status: "success", projectId: wtProject.id, tabId: started.tabId, error: undefined });
         } else {
@@ -5394,7 +5438,7 @@ export default function CodexFlowManagerUI() {
         message: (t("projects:worktreeCreateWarnings", "创建已完成，但存在警告：\n{{warnings}}") as any).replace("{{warnings}}", warnings.join("\n")),
       });
     }
-  }, [attachDirChildToParent, clearWorktreeCreateInitialPromptRecord, gitWorktreeCopyRulesOnCreate, setActiveTab, startProviderInstanceInProject, t, unhideProject, upsertProjectInList]);
+  }, [attachDirChildToParent, gitWorktreeCopyRulesOnCreate, resetWorktreeCreateTransientRecord, setActiveTab, startProviderInstanceInProject, t, unhideProject, upsertProjectInList]);
 
   /**
    * Ctrl+单击：快速创建（不弹确认/不打开面板）。
@@ -9177,7 +9221,7 @@ export default function CodexFlowManagerUI() {
 
               // 1) 优先在已选子 worktree 中启动实例（1:1 分配）
 	              const extraWarnings: string[] = [];
-	              let promptCleared = false;
+	              let transientRecordReset = false;
 	              let firstReuseProjectId: string | null = null;
 	              let firstReuseTabId: string | null = null;
               for (let i = 0; i < selectedChildIdsOrdered.length; i++) {
@@ -9190,9 +9234,9 @@ export default function CodexFlowManagerUI() {
 	                const started = await startProviderInstanceInProject({ project: wtProject, providerId, prompt, useYolo: worktreeCreateDialog.useYolo });
 	                if (started.ok && started.tabId) {
 	                  if (!firstReuseTabId) firstReuseTabId = started.tabId;
-	                  if (!promptCleared && prompt.trim()) {
-	                    promptCleared = true;
-	                    clearWorktreeCreateInitialPromptRecord(repo.id);
+	                  if (!transientRecordReset) {
+	                    transientRecordReset = true;
+	                    resetWorktreeCreateTransientRecord(repo.id);
 	                  }
 	                } else if (!started.ok && started.error) {
 	                  extraWarnings.push(`${providerId}: ${started.error} (${getDirNodeLabel(wtProject)})`);
@@ -9216,6 +9260,7 @@ export default function CodexFlowManagerUI() {
                   prompt,
                   remarkBaseName: worktreeCreateDialog.remarkBaseName,
                   useYolo: worktreeCreateDialog.useYolo,
+                  resetTransientPrefsOnSuccess: true,
                   extraWarnings,
                 });
                 return;
