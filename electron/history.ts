@@ -1129,14 +1129,31 @@ export async function listHistorySplit(project: { wslPath?: string; winPath?: st
 }
 
 export async function readHistoryFile(filePath: string, opts?: { chunkSize?: number; maxLines?: number }): Promise<{ id: string; title: string; date: number; messages: Message[]; skippedLines: number }> {
-  // 简单缓存：基于文件 mtimeMs + size，避免重复解析未变更文件
-  type CacheVal = { mtimeMs: number; size: number; result: { id: string; title: string; date: number; messages: Message[]; skippedLines: number } };
+  // 简单缓存：基于文件 mtimeMs + size，避免重复解析未变更文件。
+  // 关键点：缓存需要感知“是否完整解析”，避免较小 maxLines 的截断结果污染后续完整详情读取。
+  type CacheVal = {
+    mtimeMs: number;
+    size: number;
+    complete: boolean;
+    maxLines: number;
+    result: { id: string; title: string; date: number; messages: Message[]; skippedLines: number };
+  };
   const g: any = global as any;
   if (!g.__historyCache) g.__historyCache = new Map<string, CacheVal>();
   const cache: Map<string, CacheVal> = g.__historyCache;
 
   const chunk = opts?.chunkSize || 1024 * 1024; // 1MB
-  const maxLines = Math.max(1, Math.min(100000, opts?.maxLines ?? 5000));
+  /**
+   * 中文说明：规范化读取上限。
+   * - 未传时沿用旧默认值 5000 行，保护摘要/预览等轻量调用；
+   * - 传入 `<= 0` 时表示不限行数，用于历史详情全量读取；
+   * - 其它显式值仍保留保护上限，避免误传极端数字。
+   */
+  const maxLines = (() => {
+    if (typeof opts?.maxLines !== 'number') return 5000;
+    if (!Number.isFinite(opts.maxLines) || opts.maxLines <= 0) return Number.POSITIVE_INFINITY;
+    return Math.max(1, Math.min(100000, Math.floor(opts.maxLines)));
+  })();
   const messages: Message[] = [];
   let skipped = 0;
   let id = path.basename(filePath).replace(/\.jsonl$/, '');
@@ -1152,7 +1169,7 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
   if (stat) {
     const key = filePath;
     const prev = cache.get(key);
-    if (prev && prev.mtimeMs === stat.mtimeMs && prev.size === stat.size) {
+    if (prev && prev.mtimeMs === stat.mtimeMs && prev.size === stat.size && (prev.complete || prev.maxLines >= maxLines)) {
       return prev.result;
     }
   }
@@ -1409,6 +1426,7 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
       const rl = readline.createInterface({ input: rs, crlfDelay: Infinity });
       let lineIndex = 0;
       let done = false;
+      let hitLineLimit = false;
       const finish = () => {
         if (done) return;
         done = true;
@@ -1423,7 +1441,13 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
               let i = 0;
               for (const k of cache.keys()) { cache.delete(k); if (++i >= 50) break; }
             }
-            cache.set(key, { mtimeMs: stat.mtimeMs, size: stat.size, result });
+            cache.set(key, {
+              mtimeMs: stat.mtimeMs,
+              size: stat.size,
+              complete: !hitLineLimit,
+              maxLines,
+              result,
+            });
           }
         } catch {}
         resolve(result);
@@ -1438,7 +1462,8 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
       rl.on('line', (line) => {
         if (done) return;
         lineIndex = parseLine(line, lineIndex);
-        if (lineIndex >= maxLines) {
+        if (Number.isFinite(maxLines) && lineIndex >= maxLines) {
+          hitLineLimit = true;
           finish();
         }
       });
@@ -1465,7 +1490,13 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
             let i = 0;
             for (const k of cache.keys()) { cache.delete(k); if (++i >= 50) break; }
           }
-          cache.set(key, { mtimeMs: stat.mtimeMs, size: stat.size, result });
+          cache.set(key, {
+            mtimeMs: stat.mtimeMs,
+            size: stat.size,
+            complete: !Number.isFinite(maxLines),
+            maxLines,
+            result,
+          });
         }
       } catch {}
       resolve(result);
