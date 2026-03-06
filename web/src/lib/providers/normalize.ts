@@ -10,6 +10,32 @@ export type NormalizedProviders = {
   env: Record<ProviderId, Required<ProviderEnv>>;
 };
 
+export function getDefaultRendererTerminalMode(): Required<ProviderEnv>["terminal"] {
+  try {
+    const nav = (globalThis as any)?.navigator;
+    const raw = String(nav?.userAgentData?.platform || nav?.platform || nav?.userAgent || "").toLowerCase();
+    if (raw.includes("win")) return "wsl";
+  } catch {}
+  return "native";
+}
+
+export function getDefaultRendererDistro(terminal: ProviderEnv["terminal"] | undefined): string {
+  return terminal === "wsl" ? "Ubuntu-24.04" : "";
+}
+
+export function getDefaultRendererProviderEnv(overrides?: Partial<ProviderEnv>): Required<ProviderEnv> {
+  const terminal = overrides?.terminal || getDefaultRendererTerminalMode();
+  const distro = typeof overrides?.distro === "string"
+    ? overrides.distro.trim()
+    : getDefaultRendererDistro(terminal);
+  const shell = typeof overrides?.shell === "string" ? overrides.shell.trim() : "";
+  return {
+    terminal,
+    distro: terminal === "wsl" ? (distro || getDefaultRendererDistro(terminal)) : "",
+    shell,
+  };
+}
+
 /**
  * 将 providers 配置归一化为稳定结构：
  * - 官方内置 Provider 固定顺序在前（便于后续新增官方 Provider 时保持自定义引擎始终在后）
@@ -63,14 +89,26 @@ export function normalizeProvidersSettings(
   for (const [id, v] of Object.entries(envInput || {})) {
     const key = String(id || "").trim();
     if (!key) continue;
-    const terminal = (v?.terminal === "pwsh" || v?.terminal === "windows" || v?.terminal === "wsl") ? v.terminal : legacy.terminal;
-    const distro = String(v?.distro || legacy.distro).trim() || legacy.distro;
-    env[key] = { terminal, distro };
+    const validTerminals = ["native", "wsl", "windows", "pwsh"] as const;
+    type ValidTerminal = typeof validTerminals[number];
+    const rawTerminal = v?.terminal;
+    const terminal = (rawTerminal && validTerminals.includes(rawTerminal as ValidTerminal))
+      ? rawTerminal as ValidTerminal
+      : legacy.terminal;
+    const distro = terminal === "wsl"
+      ? (String(v?.distro || legacy.distro).trim() || legacy.distro)
+      : "";
+    const shell = typeof v?.shell === "string" ? v.shell.trim() : "";
+    env[key] = { terminal, distro, shell };
   }
 
   for (const builtIn of builtIns) {
     if (env[builtIn.id]) continue;
-    env[builtIn.id] = { terminal: legacy.terminal, distro: legacy.distro };
+    env[builtIn.id] = {
+      terminal: legacy.terminal,
+      distro: legacy.terminal === "wsl" ? legacy.distro : "",
+      shell: "",
+    };
   }
 
   // codexCmd：对 codex 的 startupCmd 做兜底填充（仅在缺失时）

@@ -586,6 +586,38 @@ contextBridge.exposeInMainWorld('host', {
     , detectPwsh: async (): Promise<{ ok: boolean; available?: boolean; path?: string; error?: string }> => {
       try { return await ipcRenderer.invoke('utils.detectPwsh'); } catch (e: any) { return { ok: false, available: false, error: String(e) }; }
     }
+    , getPlatformCapabilities: async (): Promise<{
+      ok: boolean;
+      platform: string;
+      isWindows: boolean;
+      isMac: boolean;
+      isLinux: boolean;
+      supportsWsl: boolean;
+      supportsGitBash: boolean;
+      supportsWindowsTerminal: boolean;
+      supportsNativeShell: boolean;
+      defaultTerminalMode: string;
+      defaultShell?: string;
+      error?: string;
+    }> => {
+      try {
+        return await ipcRenderer.invoke('utils.getPlatformCapabilities');
+      } catch (e: any) {
+        return {
+          ok: false,
+          platform: 'unknown',
+          isWindows: false,
+          isMac: false,
+          isLinux: false,
+          supportsWsl: false,
+          supportsGitBash: false,
+          supportsWindowsTerminal: false,
+          supportsNativeShell: true,
+          defaultTerminalMode: 'native',
+          error: String(e),
+        };
+      }
+    }
   }
   , images: {
     saveDataURL: async (args: { dataURL: string; projectWinRoot?: string; projectName?: string; ext?: string; prefix?: string }) => {

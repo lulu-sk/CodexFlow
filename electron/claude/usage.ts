@@ -9,6 +9,20 @@ import { execFile } from "node:child_process";
 import { perfLogger } from "../log";
 import { winToWslAsync } from "../wsl";
 
+/**
+ * 读取 native 模式下的 Claude 缓存文件（macOS/Linux 本地路径）。
+ */
+async function readClaudeCacheFileNativeAsync(): Promise<string | null> {
+  const home = os.homedir();
+  const p = path.join(home, ".claude", "ccline", ".api_usage_cache.json");
+  try {
+    const buf = await fs.readFile(p, "utf8");
+    return String(buf ?? "").trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 export type ClaudeUsageWindow = {
   /** 剩余百分比（0-100），不可用时为 null。 */
   remainingPercent: number | null;
@@ -36,7 +50,7 @@ export type ClaudeUsageSnapshot = {
   };
 };
 
-type ProviderRuntimeEnv = { terminal: "wsl" | "windows" | "pwsh"; distro?: string };
+type ProviderRuntimeEnv = { terminal: "native" | "wsl" | "windows" | "pwsh"; distro?: string; shell?: string };
 
 type ClaudeApiUsageCache = {
   five_hour_utilization?: number;
@@ -233,6 +247,15 @@ async function runClaudeUsageCaptureWslAsync(
 export async function getClaudeUsageSnapshotAsync(env: ProviderRuntimeEnv): Promise<ClaudeUsageSnapshot> {
   return perfLogger.time("[claude] usage snapshot", async () => {
     const terminal = env.terminal;
+
+    // native 模式：读取 macOS/Linux 本地路径
+    if (terminal === "native") {
+      const cache = await readClaudeCacheFileNativeAsync();
+      const parsed = cache ? parseClaudeCclineCache(cache) : null;
+      if (parsed) return parsed;
+      throw new Error("未找到 Claude 用量缓存文件：~/.claude/ccline/.api_usage_cache.json");
+    }
+
     if (terminal === "wsl") {
       const cache = await readClaudeCacheFileWslAsync(env.distro);
       const parsed = cache ? parseClaudeCclineCache(cache) : null;

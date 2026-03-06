@@ -189,7 +189,11 @@
     "wsl": "WSL",
     "pwsh": "Windows (PowerShell 7)",
     "windows": "Windows (PowerShell)",
+    "native": "Native Terminal",
+    "nativeMac": "macOS Terminal",
+    "nativeLinux": "Linux Terminal",
     "help": "Switch between WSL, PowerShell 7, and Windows PowerShell.",
+    "helpMulti": "Choose the execution environment. macOS/Linux uses the native system terminal.",
     "pwshDetecting": "Detecting PowerShell 7 availability...",
     "pwshDetected": "PowerShell 7 detected:",
     "pwshUnavailable": "PowerShell 7 is not available. Falling back to Windows PowerShell."

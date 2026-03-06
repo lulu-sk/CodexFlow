@@ -18,9 +18,20 @@ export type ProviderItem = {
   startupCmd?: string;
 };
 
+/**
+ * 终端运行模式：
+ * - native: macOS/Linux 原生 shell
+ * - wsl: Windows Subsystem for Linux
+ * - windows: Windows PowerShell 5
+ * - pwsh: PowerShell 7
+ */
+export type TerminalMode = 'native' | 'wsl' | 'windows' | 'pwsh';
+
 export type ProviderEnv = {
-  terminal?: 'wsl' | 'windows' | 'pwsh';
+  terminal?: TerminalMode;
   distro?: string;
+  /** native 模式下的 shell 路径（可选，默认使用 $SHELL） */
+  shell?: string;
 };
 
 export type BuiltinIdeId = "vscode" | "cursor" | "windsurf" | "rider";
@@ -58,7 +69,7 @@ export type ProvidersSettings = {
 };
 
 export type AppSettings = {
-  terminal?: 'wsl' | 'windows' | 'pwsh';
+  terminal?: TerminalMode;
   terminalTheme?: TerminalThemeId;
   distro: string;
   codexCmd: string;
@@ -153,7 +164,7 @@ export type HistoryMessage = { role: string; content: MessageContent[] };
 
 // ---- Host API 声明 ----
 export interface PtyAPI {
-  openWSLConsole(args: { terminal?: 'wsl' | 'windows' | 'pwsh'; distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string; env?: Record<string, string> }): Promise<{ id: string }>;
+  openWSLConsole(args: { terminal?: TerminalMode; distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string; env?: Record<string, string> }): Promise<{ id: string }>;
   /** 读取 PTY 的尾部输出缓存（用于渲染进程 reload/HMR 后恢复终端滚动区）。 */
   backlog?: (id: string, args?: { maxChars?: number }) => Promise<{ ok: boolean; data?: string; error?: string }>;
   write(id: string, data: string): void;
@@ -662,7 +673,7 @@ export interface UtilsAPI {
   /** 设置或清除指定项目根目录的 IDE 绑定（清除时需显式传入 null）。 */
   setProjectPreferredIde(projectPath: string, config: ProjectIdePreference | ProjectPreferredIde | null): Promise<{ ok: boolean; error?: string }>;
   openExternalUrl(url: string): Promise<{ ok: boolean; error?: string }>;
-  openExternalConsole(args: { terminal?: 'wsl' | 'windows' | 'pwsh'; wslPath?: string; winPath?: string; distro?: string; startupCmd?: string; title?: string }): Promise<{ ok: boolean; error?: string }>;
+  openExternalConsole(args: { terminal?: TerminalMode; wslPath?: string; winPath?: string; distro?: string; startupCmd?: string; title?: string }): Promise<{ ok: boolean; error?: string }>;
   // 兼容旧名
   openExternalWSLConsole?(args: { wslPath?: string; winPath?: string; distro?: string; startupCmd?: string }): Promise<{ ok: boolean; error?: string }>;
   pathExists(p: string, dirOnly?: boolean): Promise<{ ok: boolean; exists?: boolean; isDirectory?: boolean; isFile?: boolean; error?: string }>;
@@ -677,6 +688,21 @@ export interface UtilsAPI {
   listFontsDetailed(): Promise<Array<{ name: string; file?: string; monospace: boolean }>>;
   /** 检测系统是否安装 PowerShell 7（pwsh）。仅 Windows 返回可用性与路径。 */
   detectPwsh(): Promise<{ ok: boolean; available?: boolean; path?: string; error?: string }>;
+  /** 获取当前平台的能力与默认配置，用于 UI 条件渲染。 */
+  getPlatformCapabilities(): Promise<{
+    ok: boolean;
+    platform: string;
+    isWindows: boolean;
+    isMac: boolean;
+    isLinux: boolean;
+    supportsWsl: boolean;
+    supportsGitBash: boolean;
+    supportsWindowsTerminal: boolean;
+    supportsNativeShell: boolean;
+    defaultTerminalMode: string;
+    defaultShell?: string;
+    error?: string;
+  }>;
 }
 
 // 仅声明渲染层使用到的最小 API（与 preload.ts 暴露保持一致）

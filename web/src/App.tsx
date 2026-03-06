@@ -68,7 +68,11 @@ import { HistoryMarkdown } from "@/features/history/renderers/history-markdown";
 import { applyHistoryFindHighlights, clearHistoryFindHighlights, setActiveHistoryFindMatch } from "@/features/history/find/history-find";
 import { toWSLForInsert } from "@/lib/wsl";
 import { extractGeminiProjectHashFromPath, deriveGeminiProjectHashCandidatesFromPath } from "@/lib/gemini-hash";
-import { normalizeProvidersSettings } from "@/lib/providers/normalize";
+import {
+  getDefaultRendererDistro,
+  getDefaultRendererProviderEnv,
+  normalizeProvidersSettings,
+} from "@/lib/providers/normalize";
 import { isBuiltInSessionProviderId, openaiIconUrl, openaiDarkIconUrl, claudeIconUrl, geminiIconUrl } from "@/lib/providers/builtins";
 import { resolveProvider } from "@/lib/providers/resolve";
 import { resolveStartupCmdWithYolo } from "@/lib/providers/yolo";
@@ -1117,8 +1121,11 @@ export default function CodexFlowManagerUI() {
     setTabCtxMenu({ show: true, x: event.clientX, y: event.clientY, tabId });
     notifyLog(`ctx.menu.open source=${source} tab=${id} x=${Math.round(event.clientX)} y=${Math.round(event.clientY)}`);
   }, [notifyLog, setTabCtxMenu, showNotifDebugMenu]);
+  const defaultRendererEnv = getDefaultRendererProviderEnv();
+  const defaultRendererDistro = getDefaultRendererDistro(defaultRendererEnv.terminal);
+
   // Terminal adapters 与 PTY 状态
-  const [terminalMode, setTerminalMode] = useState<TerminalMode>('wsl');
+  const [terminalMode, setTerminalMode] = useState<TerminalMode>(defaultRendererEnv.terminal);
   const [terminalFontFamily, setTerminalFontFamily] = useState<string>(DEFAULT_TERMINAL_FONT_FAMILY);
   const [terminalTheme, setTerminalTheme] = useState<TerminalThemeId>(DEFAULT_TERMINAL_THEME_ID);
   const terminalThemeDef = useMemo(() => getTerminalTheme(terminalTheme), [terminalTheme]);
@@ -2913,11 +2920,11 @@ export default function CodexFlowManagerUI() {
   ]);
   const providerItemById = useMemo(() => buildProviderItemIndex(providerItems), [providerItems]);
   const [providerEnvById, setProviderEnvById] = useState<Record<string, Required<ProviderEnv>>>(() => ({
-    codex: { terminal: "wsl", distro: "Ubuntu-24.04" },
-    claude: { terminal: "wsl", distro: "Ubuntu-24.04" },
-    gemini: { terminal: "wsl", distro: "Ubuntu-24.04" },
+    codex: { terminal: "native", distro: "", shell: "" },
+    claude: { terminal: "native", distro: "", shell: "" },
+    gemini: { terminal: "native", distro: "", shell: "" },
   }));
-  const [wslDistro, setWslDistro] = useState("Ubuntu-24.04");
+  const [wslDistro, setWslDistro] = useState(defaultRendererDistro);
   // 基础命令（默认 'codex'），不做 tmux 包装，直接在 WSL 中执行。
   const [codexCmd, setCodexCmd] = useState("codex");
   // Claude Code：是否读取 agent-*.jsonl 等不推荐历史（仅影响历史索引/预览）。
@@ -2964,7 +2971,7 @@ export default function CodexFlowManagerUI() {
   const persistProviders = useCallback(async (next: { activeId: string; items: ProviderItem[]; env: Record<string, Required<ProviderEnv>> }) => {
     const codexItem = next.items.find((x) => x.id === "codex");
     const codexResolved = resolveProvider(codexItem ?? { id: "codex" });
-    const codexEnv = next.env["codex"] || { terminal: "wsl", distro: wslDistro };
+    const codexEnv = next.env["codex"] || { ...defaultRendererEnv };
     try {
       await window.host.settings.update({
         providers: next as any,
@@ -2985,7 +2992,7 @@ export default function CodexFlowManagerUI() {
     if (hit) return hit;
     const fallback = providerEnvById["codex"];
     if (fallback) return fallback;
-    return { terminal: terminalMode, distro: wslDistro };
+    return { terminal: terminalMode, distro: terminalMode === "wsl" ? wslDistro : "", shell: "" };
   }, [providerEnvById, terminalMode, wslDistro]);
 
   /**
@@ -3046,9 +3053,48 @@ export default function CodexFlowManagerUI() {
     const env = getProviderEnv(id);
     setActiveProviderId(id);
     setTerminalMode(env.terminal as any);
-    setWslDistro(env.distro);
+    setWslDistro(env.terminal === "wsl" ? (env.distro || "") : "");
     await persistProviders({ activeId: id, items: providerItems, env: providerEnvById });
   }, [activeProviderId, getProviderEnv, persistProviders, providerEnvById, providerItems]);
+
+  // 平台能力检测：用于判断是否显示 Windows 选项或 macOS/Linux 选项
+  const [platformCapabilities, setPlatformCapabilities] = useState<{
+    isWindows: boolean;
+    isMac: boolean;
+    isLinux: boolean;
+    defaultTerminalMode: TerminalMode;
+  } | null>(null);
+
+  // 初始化平台能力
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await window.host.utils.getPlatformCapabilities();
+        if (res && res.ok) {
+          setPlatformCapabilities({
+            isWindows: res.isWindows ?? false,
+            isMac: res.isMac ?? false,
+            isLinux: res.isLinux ?? false,
+            defaultTerminalMode: (res.defaultTerminalMode as TerminalMode) || defaultRendererEnv.terminal,
+          });
+        } else {
+          setPlatformCapabilities({
+            isWindows: defaultRendererEnv.terminal === 'wsl',
+            isMac: false,
+            isLinux: defaultRendererEnv.terminal === 'native',
+            defaultTerminalMode: defaultRendererEnv.terminal,
+          });
+        }
+      } catch {
+        setPlatformCapabilities({
+          isWindows: defaultRendererEnv.terminal === 'wsl',
+          isMac: false,
+          isLinux: defaultRendererEnv.terminal === 'native',
+          defaultTerminalMode: defaultRendererEnv.terminal,
+        });
+      }
+    })();
+  }, []);
 
   // WSL 发行版列表：供环境下拉与设置面板复用（缓存到内存，避免重复请求）
   const [availableDistros, setAvailableDistros] = useState<string[]>([]);
@@ -3302,7 +3348,7 @@ export default function CodexFlowManagerUI() {
         const s = await window.host.settings.get();
         if (s) {
           const legacyTerminal = normalizeTerminalMode((s as any).terminal);
-          const legacyDistro = String(s.distro || wslDistro);
+          const legacyDistro = legacyTerminal === "wsl" ? String(s.distro || defaultRendererDistro) : "";
           const legacyCodexCmd = String(s.codexCmd || codexCmd);
           const normalizedProviders = normalizeProvidersSettings((s as any).providers, {
             terminal: legacyTerminal,
@@ -3313,9 +3359,9 @@ export default function CodexFlowManagerUI() {
           setProviderEnvById(normalizedProviders.env);
           setActiveProviderId(normalizedProviders.activeId);
 
-          const activeEnv = normalizedProviders.env[normalizedProviders.activeId] || { terminal: legacyTerminal, distro: legacyDistro };
+          const activeEnv = normalizedProviders.env[normalizedProviders.activeId] || { terminal: legacyTerminal, distro: legacyDistro, shell: "" };
           setTerminalMode(activeEnv.terminal);
-          setWslDistro(activeEnv.distro);
+          setWslDistro(activeEnv.terminal === "wsl" ? (activeEnv.distro || "") : "");
 
           const codexItem = normalizedProviders.items.find((x) => x.id === "codex");
           const codexResolved = resolveProvider(codexItem ?? { id: "codex" });
@@ -3719,9 +3765,10 @@ export default function CodexFlowManagerUI() {
 
   async function openConsoleForProject(project: Project) {
     if (!project) return;
-    const tabName = isWindowsLike(terminalMode)
-      ? toShellLabel(terminalMode)
-      : (wslDistro || `Console ${((tabsByProject[project.id] || []).length + 1).toString()}`);
+    const env = getProviderEnv(activeProviderId);
+    const tabName = env.terminal !== "wsl"
+      ? toShellLabel(env.terminal as any)
+      : (env.distro || `Console ${((tabsByProject[project.id] || []).length + 1).toString()}`);
     const tab: ConsoleTab = {
       id: uid(),
       name: String(tabName),
@@ -3732,7 +3779,6 @@ export default function CodexFlowManagerUI() {
     const notifyEnv = buildProviderNotifyEnv(tab.id, tab.providerId, tab.name);
     let ptyId: string | undefined;
     try {
-      const env = getProviderEnv(activeProviderId);
       const startupCmd = buildProviderStartupCmd(activeProviderId, env);
       const { id } = await window.host.pty.openWSLConsole({
         terminal: env.terminal,
@@ -3817,9 +3863,10 @@ export default function CodexFlowManagerUI() {
 
   async function openNewConsole() {
     if (!selectedProject) return;
-    const tabName = isWindowsLike(terminalMode)
-      ? toShellLabel(terminalMode)
-      : (wslDistro || `Console ${((tabsByProject[selectedProject.id] || []).length + 1).toString()}`);
+    const env = getProviderEnv(activeProviderId);
+    const tabName = env.terminal !== "wsl"
+      ? toShellLabel(env.terminal as any)
+      : (env.distro || `Console ${((tabsByProject[selectedProject.id] || []).length + 1).toString()}`);
     const tab: ConsoleTab = {
       id: uid(),
       // 默认使用当前设置中的终端名称
@@ -3833,7 +3880,6 @@ export default function CodexFlowManagerUI() {
     // Open PTY in main (WSL)
     try {
       try { await (window as any).host?.utils?.perfLog?.(`[ui] openNewConsole start project=${selectedProject?.name}`); } catch {}
-      const env = getProviderEnv(activeProviderId);
       const startupCmd = buildProviderStartupCmd(activeProviderId, env);
       const { id } = await window.host.pty.openWSLConsole({
         terminal: env.terminal,
@@ -6808,48 +6854,77 @@ export default function CodexFlowManagerUI() {
             <DropdownMenuLabel className="text-xs text-slate-500">
               {t("settings:terminalMode.label")}
             </DropdownMenuLabel>
-            <DropdownMenuItem
-              className="flex items-center justify-between gap-2"
-              onClick={async () => {
-                const nextEnv: Required<ProviderEnv> = { ...getProviderEnv(activeProviderId), terminal: "wsl" };
-                const nextMap = { ...providerEnvById, [activeProviderId]: nextEnv };
-                setProviderEnvById(nextMap);
-                setTerminalMode("wsl");
-                setWslDistro(nextEnv.distro);
-                await persistProviders({ activeId: activeProviderId, items: providerItems, env: nextMap });
-              }}
-            >
-              <span>{t("settings:terminalMode.wsl")}</span>
-              {terminalMode === "wsl" ? <Check className="h-4 w-4 text-slate-600" /> : null}
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              className="flex items-center justify-between gap-2"
-              onClick={async () => {
-                const nextEnv: Required<ProviderEnv> = { ...getProviderEnv(activeProviderId), terminal: "windows" };
-                const nextMap = { ...providerEnvById, [activeProviderId]: nextEnv };
-                setProviderEnvById(nextMap);
-                setTerminalMode("windows" as any);
-                await persistProviders({ activeId: activeProviderId, items: providerItems, env: nextMap });
-              }}
-            >
-              <span>{t("settings:terminalMode.windows")}</span>
-              {terminalMode === "windows" ? <Check className="h-4 w-4 text-slate-600" /> : null}
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              className="flex items-center justify-between gap-2"
-              onClick={async () => {
-                const nextEnv: Required<ProviderEnv> = { ...getProviderEnv(activeProviderId), terminal: "pwsh" };
-                const nextMap = { ...providerEnvById, [activeProviderId]: nextEnv };
-                setProviderEnvById(nextMap);
-                setTerminalMode("pwsh" as any);
-                await persistProviders({ activeId: activeProviderId, items: providerItems, env: nextMap });
-              }}
-            >
-              <span>{t("settings:terminalMode.pwsh")}</span>
-              {terminalMode === "pwsh" ? <Check className="h-4 w-4 text-slate-600" /> : null}
-            </DropdownMenuItem>
+            {/* macOS/Linux 显示原生终端选项 */}
+            {platformCapabilities && !platformCapabilities.isWindows && (
+              <DropdownMenuItem
+                className="flex items-center justify-between gap-2"
+                onClick={async () => {
+                  const nextEnv: Required<ProviderEnv> = { ...getProviderEnv(activeProviderId), terminal: "native", distro: "" };
+                    const nextMap = { ...providerEnvById, [activeProviderId]: nextEnv };
+                    setProviderEnvById(nextMap);
+                    setTerminalMode("native" as any);
+                    setWslDistro("");
+                    await persistProviders({ activeId: activeProviderId, items: providerItems, env: nextMap });
+                }}
+              >
+                <span>{platformCapabilities.isMac ? t("settings:terminalMode.nativeMac") : t("settings:terminalMode.nativeLinux")}</span>
+                {terminalMode === "native" ? <Check className="h-4 w-4 text-slate-600" /> : null}
+              </DropdownMenuItem>
+            )}
+            {/* Windows 选项 */}
+            {platformCapabilities?.isWindows && (
+              <>
+                <DropdownMenuItem
+                  className="flex items-center justify-between gap-2"
+                  onClick={async () => {
+                    const currentEnv = getProviderEnv(activeProviderId);
+                    const nextEnv: Required<ProviderEnv> = {
+                      ...currentEnv,
+                      terminal: "wsl",
+                      distro: currentEnv.distro || wslDistro || defaultRendererDistro || "Ubuntu-24.04",
+                    };
+                    const nextMap = { ...providerEnvById, [activeProviderId]: nextEnv };
+                    setProviderEnvById(nextMap);
+                    setTerminalMode("wsl");
+                    setWslDistro(nextEnv.distro);
+                    await persistProviders({ activeId: activeProviderId, items: providerItems, env: nextMap });
+                  }}
+                >
+                  <span>{t("settings:terminalMode.wsl")}</span>
+                  {terminalMode === "wsl" ? <Check className="h-4 w-4 text-slate-600" /> : null}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  className="flex items-center justify-between gap-2"
+                  onClick={async () => {
+                    const nextEnv: Required<ProviderEnv> = { ...getProviderEnv(activeProviderId), terminal: "windows", distro: "" };
+                    const nextMap = { ...providerEnvById, [activeProviderId]: nextEnv };
+                    setProviderEnvById(nextMap);
+                    setTerminalMode("windows" as any);
+                    setWslDistro("");
+                    await persistProviders({ activeId: activeProviderId, items: providerItems, env: nextMap });
+                  }}
+                >
+                  <span>{t("settings:terminalMode.windows")}</span>
+                  {terminalMode === "windows" ? <Check className="h-4 w-4 text-slate-600" /> : null}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  className="flex items-center justify-between gap-2"
+                  onClick={async () => {
+                    const nextEnv: Required<ProviderEnv> = { ...getProviderEnv(activeProviderId), terminal: "pwsh", distro: "" };
+                    const nextMap = { ...providerEnvById, [activeProviderId]: nextEnv };
+                    setProviderEnvById(nextMap);
+                    setTerminalMode("pwsh" as any);
+                    setWslDistro("");
+                    await persistProviders({ activeId: activeProviderId, items: providerItems, env: nextMap });
+                  }}
+                >
+                  <span>{t("settings:terminalMode.pwsh")}</span>
+                  {terminalMode === "pwsh" ? <Check className="h-4 w-4 text-slate-600" /> : null}
+                </DropdownMenuItem>
+              </>
+            )}
 
-            {terminalMode === "wsl" ? (
+            {terminalMode === "wsl" && platformCapabilities?.isWindows ? (
               <>
                 <DropdownMenuSeparator />
                 <DropdownMenuLabel className="text-xs text-slate-500">{t("settings:wslDistro")}</DropdownMenuLabel>
@@ -10821,7 +10896,7 @@ export default function CodexFlowManagerUI() {
           try {
             const codexItem = Array.isArray(nextProviders?.items) ? nextProviders.items.find((x: any) => x && x.id === "codex") : null;
             const codexResolved = resolveProvider(codexItem ?? { id: "codex" });
-            const codexEnv = (nextProviders?.env && nextProviders.env.codex) ? nextProviders.env.codex : (providerEnvById.codex || { terminal: "wsl", distro: wslDistro });
+            const codexEnv = (nextProviders?.env && nextProviders.env.codex) ? nextProviders.env.codex : (providerEnvById.codex || { ...defaultRendererEnv });
             await window.host.settings.update({
               providers: nextProviders,
               terminal: codexEnv.terminal,
@@ -10855,7 +10930,9 @@ export default function CodexFlowManagerUI() {
           } catch (e) { console.warn('settings.update failed', e); }
           try {
             const legacyTerminal = normalizeTerminalMode((nextProviders as any)?.env?.codex?.terminal ?? providerEnvById.codex?.terminal ?? terminalMode);
-            const legacyDistro = String((nextProviders as any)?.env?.codex?.distro ?? providerEnvById.codex?.distro ?? wslDistro);
+            const legacyDistro = legacyTerminal === "wsl"
+              ? String((nextProviders as any)?.env?.codex?.distro ?? providerEnvById.codex?.distro ?? defaultRendererDistro)
+              : "";
             const legacyCodexCmd = String(resolveProvider((nextProviders as any)?.items?.find((x: any) => x && x.id === "codex") ?? { id: "codex" }).startupCmd || codexCmd);
             const normalizedProviders = normalizeProvidersSettings(nextProviders, {
               terminal: legacyTerminal,
@@ -10865,9 +10942,9 @@ export default function CodexFlowManagerUI() {
             setProviderItems(normalizedProviders.items);
             setProviderEnvById(normalizedProviders.env);
             setActiveProviderId(normalizedProviders.activeId);
-            const activeEnv = normalizedProviders.env[normalizedProviders.activeId] || { terminal: legacyTerminal, distro: legacyDistro };
+            const activeEnv = normalizedProviders.env[normalizedProviders.activeId] || { terminal: legacyTerminal, distro: legacyDistro, shell: "" };
             setTerminalMode(activeEnv.terminal);
-            setWslDistro(activeEnv.distro);
+            setWslDistro(activeEnv.terminal === "wsl" ? (activeEnv.distro || "") : "");
             const codexItem = normalizedProviders.items.find((x) => x.id === "codex");
             setCodexCmd(resolveProvider(codexItem ?? { id: "codex" }).startupCmd || legacyCodexCmd);
           } catch {}

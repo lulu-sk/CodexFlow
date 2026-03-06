@@ -231,6 +231,20 @@ const DEFAULT_LANGS = ["zh", "en"];
 
 type ProviderEnvMap = Record<string, { terminal: TerminalMode; distro: string }>;
 
+function detectDefaultRendererTerminalMode(): TerminalMode {
+  try {
+    const nav = (globalThis as any)?.navigator;
+    const raw = String(nav?.userAgentData?.platform || nav?.platform || nav?.userAgent || "").toLowerCase();
+    if (raw.includes("win")) return "wsl";
+  } catch {}
+  return "native";
+}
+
+function getDefaultProviderEnv(): { terminal: TerminalMode; distro: string } {
+  const terminal = detectDefaultRendererTerminalMode();
+  return { terminal, distro: terminal === "wsl" ? "Ubuntu-24.04" : "" };
+}
+
 /**
  * 将 Provider 环境表归一化：补齐 terminal/distro，并确保内置 Provider 至少存在默认条目。
  */
@@ -240,20 +254,23 @@ function normalizeProviderEnvMap(
 ): ProviderEnvMap {
   const env: ProviderEnvMap = {};
   const src = input && typeof input === "object" ? input : {};
+  const validTerminals: TerminalMode[] = ["native", "wsl", "windows", "pwsh"];
   for (const [id, v] of Object.entries(src)) {
     const key = String(id || "").trim();
     if (!key) continue;
     const terminal: TerminalMode =
-      v?.terminal === "wsl" || v?.terminal === "windows" || v?.terminal === "pwsh"
-        ? v.terminal
+      v?.terminal && validTerminals.includes(v.terminal as TerminalMode)
+        ? (v.terminal as TerminalMode)
         : fallback.terminal;
-    const distro = String(v?.distro || fallback.distro).trim() || fallback.distro;
+    const distro = terminal === "wsl"
+      ? (String(v?.distro || fallback.distro).trim() || fallback.distro)
+      : "";
     env[key] = { terminal, distro };
   }
 
   for (const builtIn of getBuiltInProviders()) {
     if (env[builtIn.id]) continue;
-    env[builtIn.id] = { terminal: fallback.terminal, distro: fallback.distro };
+    env[builtIn.id] = { terminal: fallback.terminal, distro: fallback.terminal === "wsl" ? fallback.distro : "" };
   }
 
   return env;
@@ -312,6 +329,37 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   const [availableLangs, setAvailableLangs] = useState<string[]>(DEFAULT_LANGS);
   const [pwshAvailable, setPwshAvailable] = useState<boolean | null>(null);
   const [pwshPath, setPwshPath] = useState<string>("");
+  // 平台能力检测状态
+  const [platformCapabilities, setPlatformCapabilities] = useState<{
+    isWindows: boolean;
+    isMac: boolean;
+    isLinux: boolean;
+    defaultTerminalMode: TerminalMode;
+  } | null>(null);
+
+  // 获取平台能力
+  useEffect(() => {
+    if (!open) return;
+    window.host.utils.getPlatformCapabilities().then((res) => {
+      if (res && res.ok) {
+        setPlatformCapabilities({
+          isWindows: res.isWindows ?? false,
+          isMac: res.isMac ?? false,
+          isLinux: res.isLinux ?? false,
+          defaultTerminalMode: (res.defaultTerminalMode as TerminalMode) || (res.isWindows ? "wsl" : "native"),
+        });
+      }
+    }).catch((e) => {
+      console.warn("getPlatformCapabilities failed", e);
+      const fallback = getDefaultProviderEnv();
+      setPlatformCapabilities({
+        isWindows: fallback.terminal === "wsl",
+        isMac: false,
+        isLinux: fallback.terminal === "native",
+        defaultTerminalMode: fallback.terminal,
+      });
+    });
+  }, [open]);
 
   const [providersActiveId, setProvidersActiveId] = useState<string>(values.providers?.activeId || "codex");
   const [providerEditingId, setProviderEditingId] = useState<string>(values.providers?.activeId || "codex");
@@ -322,18 +370,29 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     Array.isArray(values.providers?.items) ? (values.providers.items as any) : [],
   );
   const [providerEnvMap, setProviderEnvMap] = useState<ProviderEnvMap>(() => {
-    const fallback = { terminal: "wsl" as TerminalMode, distro: "Ubuntu-24.04" };
+    // 使用平台感知的默认值
+    const fallback = getDefaultProviderEnv();
     return normalizeProviderEnvMap(values.providers?.env, fallback);
   });
 
   const editingEnv = useMemo(() => {
-    return providerEnvMap[providerEditingId] || providerEnvMap[providersActiveId] || { terminal: "wsl" as TerminalMode, distro: "Ubuntu-24.04" };
-  }, [providerEditingId, providerEnvMap, providersActiveId]);
+    const fallbackEnv = getDefaultProviderEnv();
+    const defaultEnv = {
+      terminal: (platformCapabilities?.defaultTerminalMode || fallbackEnv.terminal) as TerminalMode,
+      distro: (platformCapabilities?.defaultTerminalMode || fallbackEnv.terminal) === "wsl" ? "Ubuntu-24.04" : "",
+    };
+    return providerEnvMap[providerEditingId] || providerEnvMap[providersActiveId] || defaultEnv;
+  }, [providerEditingId, providerEnvMap, providersActiveId, platformCapabilities]);
   const editingTerminalLabel = useMemo(() => {
     if (editingEnv.terminal === "pwsh") return t("settings:terminalMode.pwsh");
     if (editingEnv.terminal === "windows") return t("settings:terminalMode.windows");
+    if (editingEnv.terminal === "native") {
+      if (platformCapabilities?.isMac) return t("settings:terminalMode.nativeMac");
+      if (platformCapabilities?.isLinux) return t("settings:terminalMode.nativeLinux");
+      return t("settings:terminalMode.native");
+    }
     return t("settings:terminalMode.wsl");
-  }, [editingEnv.terminal, t]);
+  }, [editingEnv.terminal, t, platformCapabilities]);
   const pwshDetectedText = useMemo(() => {
     const label = t("settings:terminalMode.pwshDetected");
     const path = pwshPath || "pwsh";
@@ -366,15 +425,22 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     const id = String(providerId || "").trim();
     if (!id) return;
     setProviderEnvMap((prev) => {
-      const cur = prev[id] || prev[providersActiveId] || { terminal: "wsl" as TerminalMode, distro: "Ubuntu-24.04" };
+      const fallback = getDefaultProviderEnv();
+      const nextTerminalDefault = (platformCapabilities?.defaultTerminalMode || fallback.terminal) as TerminalMode;
+      const defaultEnv = { terminal: nextTerminalDefault, distro: nextTerminalDefault === "wsl" ? "Ubuntu-24.04" : "" };
+      const cur = prev[id] || prev[providersActiveId] || defaultEnv;
       const next: ProviderEnvMap = { ...prev };
-      next[id] = {
-        terminal: (patch.terminal === "wsl" || patch.terminal === "windows" || patch.terminal === "pwsh") ? patch.terminal : cur.terminal,
-        distro: typeof patch.distro === "string" && patch.distro.trim().length > 0 ? patch.distro.trim() : cur.distro,
-      };
+      const validTerminals: TerminalMode[] = ["native", "wsl", "windows", "pwsh"];
+      const terminal = (patch.terminal && validTerminals.includes(patch.terminal)) ? patch.terminal : cur.terminal;
+      const distro = terminal === "wsl"
+        ? (typeof patch.distro === "string" && patch.distro.trim().length > 0
+            ? patch.distro.trim()
+            : (cur.terminal === "wsl" ? cur.distro : "Ubuntu-24.04"))
+        : "";
+      next[id] = { terminal, distro };
       return next;
     });
-  }, [providersActiveId]);
+  }, [providersActiveId, platformCapabilities]);
 
   /**
    * 更新指定 Provider 的 item 字段（启动命令、图标、展示名）。
@@ -478,9 +544,15 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     const id = createCustomProviderId("custom", existing);
     const defaultName = String(t("settings:providers.defaultName", "自定义引擎") || "").trim() || "自定义引擎";
     setProviderItems((prev) => [...prev, { id, displayName: defaultName, startupCmd: "" }]);
-    setProviderEnvMap((prev) => ({ ...prev, [id]: prev[providersActiveId] || { terminal: "wsl", distro: "Ubuntu-24.04" } }));
+    const fallbackEnv = getDefaultProviderEnv();
+    const defaultTerminal = (platformCapabilities?.defaultTerminalMode || fallbackEnv.terminal) as TerminalMode;
+    const defaultEnv = {
+      terminal: defaultTerminal,
+      distro: defaultTerminal === "wsl" ? "Ubuntu-24.04" : "",
+    };
+    setProviderEnvMap((prev) => ({ ...prev, [id]: prev[providersActiveId] || defaultEnv }));
     setProviderEditingId(id);
-  }, [providerItems, providersActiveId, t]);
+  }, [providerItems, providersActiveId, t, platformCapabilities]);
 
   /**
    * 触发亮色图标选择器（隐藏 input 的 click），用于统一按钮风格。
@@ -703,7 +775,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     setProvidersActiveId(activeId);
     setProviderEditingId(activeId);
     setProviderItems(Array.isArray(values.providers?.items) ? (values.providers.items as any) : []);
-    setProviderEnvMap(normalizeProviderEnvMap(values.providers?.env, { terminal: "wsl", distro: "Ubuntu-24.04" }));
+    setProviderEnvMap(normalizeProviderEnvMap(values.providers?.env, getDefaultProviderEnv()));
     // 默认不展开“暗色图标”设置，避免用户误解必须配置两张图标
     setShowDarkIconOverride(false);
 
@@ -1843,9 +1915,20 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="wsl">{t("settings:terminalMode.wsl")}</SelectItem>
-                              <SelectItem value="pwsh" disabled={pwshAvailable === false}>{t("settings:terminalMode.pwsh")}</SelectItem>
-                              <SelectItem value="windows">{t("settings:terminalMode.windows")}</SelectItem>
+                              {/* macOS/Linux 显示原生终端选项 */}
+                              {platformCapabilities && !platformCapabilities.isWindows && (
+                                <SelectItem value="native">
+                                  {platformCapabilities.isMac ? t("settings:terminalMode.nativeMac") : t("settings:terminalMode.nativeLinux")}
+                                </SelectItem>
+                              )}
+                              {/* Windows 选项 */}
+                              {platformCapabilities?.isWindows && (
+                                <>
+                                  <SelectItem value="wsl">{t("settings:terminalMode.wsl")}</SelectItem>
+                                  <SelectItem value="pwsh" disabled={pwshAvailable === false}>{t("settings:terminalMode.pwsh")}</SelectItem>
+                                  <SelectItem value="windows">{t("settings:terminalMode.windows")}</SelectItem>
+                                </>
+                              )}
                             </SelectContent>
                           </Select>
                         </div>
@@ -1868,10 +1951,19 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
 	                        </div>
                         )}
                       </div>
-                      <div className="flex items-center gap-2 p-2.5 rounded-xl bg-blue-50/50 dark:bg-blue-500/5 text-[10px] text-blue-600 dark:text-blue-400">
-                        <Info className="h-3 w-3 shrink-0" />
-                        <span className="truncate">{pwshAvailable === null ? t("settings:terminalMode.pwshDetecting") : (pwshAvailable ? pwshDetectedText : t("settings:terminalMode.pwshUnavailable"))}</span>
-                      </div>
+                      {/* 平台相关提示 */}
+                      {platformCapabilities?.isWindows && (
+                        <div className="flex items-center gap-2 p-2.5 rounded-xl bg-blue-50/50 dark:bg-blue-500/5 text-[10px] text-blue-600 dark:text-blue-400">
+                          <Info className="h-3 w-3 shrink-0" />
+                          <span className="truncate">{pwshAvailable === null ? t("settings:terminalMode.pwshDetecting") : (pwshAvailable ? pwshDetectedText : t("settings:terminalMode.pwshUnavailable"))}</span>
+                        </div>
+                      )}
+                      {platformCapabilities && !platformCapabilities.isWindows && (
+                        <div className="flex items-center gap-2 p-2.5 rounded-xl bg-blue-50/50 dark:bg-blue-500/5 text-[10px] text-blue-600 dark:text-blue-400">
+                          <Info className="h-3 w-3 shrink-0" />
+                          <span className="truncate">{t("settings:terminalMode.helpMulti")}</span>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -2478,8 +2570,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                   <CodexAccountInline
                     className="w-full"
                     auto={open}
-                    terminalMode={providerEnvMap["codex"]?.terminal || "wsl"}
-                    distro={(providerEnvMap["codex"]?.terminal || "wsl") === "wsl" ? (providerEnvMap["codex"]?.distro || "Ubuntu-24.04") : undefined}
+                    terminalMode={providerEnvMap["codex"]?.terminal || getDefaultProviderEnv().terminal}
+                    distro={(providerEnvMap["codex"]?.terminal || getDefaultProviderEnv().terminal) === "wsl" ? (providerEnvMap["codex"]?.distro || "Ubuntu-24.04") : undefined}
                     expanded
                   />
                   <Separator className="my-4" />

@@ -434,7 +434,7 @@ type HistoryTimelineGroup = {
 
 type ResumeExecutionMode = 'internal' | 'external';
 type LegacyResumePrompt = { filePath: string; mode: ResumeExecutionMode };
-type ShellLabel = 'PowerShell' | 'PowerShell 7' | 'WSL';
+type ShellLabel = 'PowerShell' | 'PowerShell 7' | 'WSL' | 'Native';
 type BlockingNotice =
   | { type: 'shell-mismatch'; expected: ShellLabel; current: ShellLabel }
   | { type: 'external-console'; env: ShellLabel };
@@ -1251,6 +1251,7 @@ function buildAutoCommitMessage(source: "user" | "agent", text: string): string 
 	const toShellLabel = (mode: TerminalMode): ShellLabel => {
 	  if (mode === "pwsh") return "PowerShell 7";
 	  if (mode === "windows") return "PowerShell";
+	  if (mode === "native") return "Native";
 	  return "WSL";
 	};
 
@@ -1261,13 +1262,21 @@ function buildAutoCommitMessage(source: "user" | "agent", text: string): string 
 	  const v = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
 	  if (v === 'pwsh') return 'pwsh';
 	  if (v === 'windows') return 'windows';
-	  return 'wsl';
+	  if (v === 'native') return 'native';
+	  if (v === 'wsl') return 'wsl';
+	  try {
+	    const nav = (globalThis as any)?.navigator;
+	    const platform = String(nav?.userAgentData?.platform || nav?.platform || nav?.userAgent || '').toLowerCase();
+	    if (platform.includes('win')) return 'wsl';
+	  } catch {}
+	  return 'native';
 	};
 
 	/**
 	 * 中文说明：判断当前终端是否属于 Windows 家族（PowerShell / PowerShell 7）。
+	 * 注意：native 模式不属于 Windows 家族。
 	 */
-	const isWindowsLike = (mode: TerminalMode): boolean => mode !== 'wsl';
+	const isWindowsLike = (mode: TerminalMode): boolean => mode !== 'wsl' && mode !== 'native';
 
 function normDir(p?: string): string { return canonicalizePath(getDir(p)); }
 

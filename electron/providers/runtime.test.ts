@@ -88,7 +88,26 @@ describe("providers/runtime（主进程 Provider 默认值解析）", () => {
         },
       },
     } as any;
-    expect(resolveProviderRuntimeEnvFromSettings(cfg, "custom-1")).toEqual({ terminal: "windows", distro: "Ubuntu-22.04" });
-    expect(resolveProviderRuntimeEnvFromSettings(cfg, "missing")).toEqual({ terminal: "wsl", distro: "Ubuntu-24.04" });
+    // windows 模式下 distro 被忽略，返回 undefined
+    expect(resolveProviderRuntimeEnvFromSettings(cfg, "custom-1")).toEqual({ terminal: "windows", distro: undefined, shell: undefined });
+    // wsl 模式下返回 legacy distro
+    expect(resolveProviderRuntimeEnvFromSettings(cfg, "missing")).toEqual({ terminal: "wsl", distro: "Ubuntu-24.04", shell: undefined });
+  });
+
+  it("resolveProviderRuntimeEnvFromSettings native 模式下返回 shell 字段", () => {
+    const cfg = {
+      terminal: "native",
+      codexCmd: "codex",
+      historyRoot: "~/.codex/sessions",
+      providers: {
+        activeId: "custom-1",
+        items: [],
+        env: {
+          "custom-1": { terminal: "native", shell: "/bin/bash" },
+        },
+      },
+    } as any;
+    expect(resolveProviderRuntimeEnvFromSettings(cfg, "custom-1")).toEqual({ terminal: "native", distro: undefined, shell: "/bin/bash" });
+    expect(resolveProviderRuntimeEnvFromSettings(cfg, "missing")).toEqual({ terminal: "native", distro: undefined, shell: undefined });
   });
 });

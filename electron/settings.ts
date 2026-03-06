@@ -414,8 +414,8 @@ function defaultProviderItems(): ProviderItem[] {
  * 将 providers 字段归一化为稳定结构，并对旧版本的 terminal/distro/codexCmd 做迁移映射。
  */
 function normalizeProviders(raw: Partial<AppSettings>, distros: DistroInfo[]): ProvidersSettings {
-  const legacyTerminal = normalizeTerminal((raw as any)?.terminal ?? 'wsl');
-  const legacyDistro = pickPreferredDistro((raw as any)?.distro, distros);
+  const legacyTerminal = normalizeTerminal((raw as any)?.terminal);
+  const legacyDistro = legacyTerminal === 'wsl' ? pickPreferredDistro((raw as any)?.distro, distros) : '';
   const legacyCodexCmd =
     typeof (raw as any)?.codexCmd === 'string' && String((raw as any).codexCmd).trim().length > 0
       ? String((raw as any).codexCmd).trim()
@@ -454,16 +454,16 @@ function normalizeProviders(raw: Partial<AppSettings>, distros: DistroInfo[]): P
     const key = String(id || '').trim();
     if (!key) continue;
     const t = normalizeTerminal((val as any)?.terminal ?? legacyTerminal);
-    const d = pickPreferredDistro((val as any)?.distro ?? legacyDistro, distros);
+    const d = t === 'wsl' ? pickPreferredDistro((val as any)?.distro ?? legacyDistro, distros) : '';
     env[key] = { terminal: t, distro: d };
   }
 
   // 迁移策略：
   // - codex：使用旧版 terminal/distro/codexCmd 作为默认；允许 providers 覆盖
   // - 其它内置/自定义：若缺失则继承旧版 terminal/distro（仅做初始填充，保证不为空）
-  if (!env.codex) env.codex = { terminal: legacyTerminal, distro: legacyDistro };
-  if (!env.claude) env.claude = { terminal: legacyTerminal, distro: legacyDistro };
-  if (!env.gemini) env.gemini = { terminal: legacyTerminal, distro: legacyDistro };
+  if (!env.codex) env.codex = { terminal: legacyTerminal, distro: legacyTerminal === 'wsl' ? legacyDistro : '' };
+  if (!env.claude) env.claude = { terminal: legacyTerminal, distro: legacyTerminal === 'wsl' ? legacyDistro : '' };
+  if (!env.gemini) env.gemini = { terminal: legacyTerminal, distro: legacyTerminal === 'wsl' ? legacyDistro : '' };
 
   // 将 legacyCodexCmd 写入 codex 的 startupCmd 兜底（仅当 providers 未显式覆盖）
   const codexItem = items.find((x) => x.id === 'codex');
@@ -476,10 +476,12 @@ function normalizeProviders(raw: Partial<AppSettings>, distros: DistroInfo[]): P
 
 function mergeWithDefaults(raw: Partial<AppSettings>, preloadedDistros?: DistroInfo[]): AppSettings {
   const distros = preloadedDistros ?? loadDistroList();
+  // 使用平台感知的默认终端模式：Windows -> wsl, macOS/Linux -> native
+  const defaultTerminal = normalizeTerminal(undefined);
   const defaults: AppSettings = {
-    terminal: 'wsl',
+    terminal: defaultTerminal,
     terminalTheme: DEFAULT_TERMINAL_THEME,
-    distro: pickPreferredDistro('', distros),
+    distro: defaultTerminal === 'wsl' ? pickPreferredDistro('', distros) : '',
     // 渲染层会按“每标签独立 tmux 会话”包装该命令；默认仅保存基础命令
     codexCmd: 'codex',
     providers: {
@@ -544,7 +546,7 @@ function mergeWithDefaults(raw: Partial<AppSettings>, preloadedDistros?: DistroI
       return { ...DEFAULT_CODEX_ACCOUNT };
     }
   })();
-  merged.distro = pickPreferredDistro(merged.distro, distros);
+  merged.distro = merged.terminal === 'wsl' ? pickPreferredDistro(merged.distro, distros) : '';
   merged.theme = normalizeTheme((raw as any)?.theme ?? merged.theme);
   merged.terminalTheme = normalizeTerminalTheme((raw as any)?.terminalTheme ?? merged.terminalTheme);
   merged.providers = normalizeProviders(merged, distros);
@@ -556,7 +558,9 @@ function mergeWithDefaults(raw: Partial<AppSettings>, preloadedDistros?: DistroI
   try {
     const codexEnv = merged.providers?.env?.codex;
     if (codexEnv?.terminal) merged.terminal = normalizeTerminal(codexEnv.terminal);
-    if (codexEnv?.distro) merged.distro = pickPreferredDistro(codexEnv.distro, distros);
+    merged.distro = merged.terminal === 'wsl'
+      ? pickPreferredDistro(codexEnv?.distro, distros)
+      : '';
     const codexCmd = merged.providers?.items?.find((x) => x.id === 'codex')?.startupCmd;
     if (typeof codexCmd === 'string' && codexCmd.trim().length > 0) merged.codexCmd = codexCmd.trim();
   } catch {}
