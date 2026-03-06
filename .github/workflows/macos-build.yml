@@ -1,0 +1,35 @@
+name: macos-build
+
+on:
+  push:
+    branches: [ macos ]
+  pull_request:
+    branches: [ macos ]
+
+jobs:
+  macos-build:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install (ignore postinstall)
+        run: npm ci --ignore-scripts
+        env:
+          HUSKY: 0
+
+      - name: Build Electron
+        run: npm run build:electron
+
+      - name: Typecheck Web
+        run: npm run typecheck:web
+
+      - name: Build Web
+        run: npm run build:web
