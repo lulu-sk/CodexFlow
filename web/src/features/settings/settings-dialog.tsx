@@ -245,6 +245,33 @@ function getDefaultProviderEnv(): { terminal: TerminalMode; distro: string } {
   return { terminal, distro: terminal === "wsl" ? "Ubuntu-24.04" : "" };
 }
 
+function detectRendererPlatformCapabilities(): {
+  isWindows: boolean;
+  isMac: boolean;
+  isLinux: boolean;
+  defaultTerminalMode: TerminalMode;
+} {
+  try {
+    const nav = (globalThis as any)?.navigator;
+    const raw = String(nav?.userAgentData?.platform || nav?.platform || nav?.userAgent || "").toLowerCase();
+    const isWindows = raw.includes("win");
+    const isMac = raw.includes("mac") || raw.includes("darwin");
+    const isLinux = !isWindows && !isMac && raw.includes("linux");
+    return {
+      isWindows,
+      isMac,
+      isLinux,
+      defaultTerminalMode: isWindows ? "wsl" : "native",
+    };
+  } catch {}
+  return {
+    isWindows: false,
+    isMac: true,
+    isLinux: false,
+    defaultTerminalMode: "native",
+  };
+}
+
 /**
  * 将 Provider 环境表归一化：补齐 terminal/distro，并确保内置 Provider 至少存在默认条目。
  */
@@ -255,13 +282,15 @@ function normalizeProviderEnvMap(
   const env: ProviderEnvMap = {};
   const src = input && typeof input === "object" ? input : {};
   const validTerminals: TerminalMode[] = ["native", "wsl", "windows", "pwsh"];
+  const nativeOnlyPlatform = fallback.terminal === "native";
   for (const [id, v] of Object.entries(src)) {
     const key = String(id || "").trim();
     if (!key) continue;
-    const terminal: TerminalMode =
+    const terminalCandidate: TerminalMode =
       v?.terminal && validTerminals.includes(v.terminal as TerminalMode)
         ? (v.terminal as TerminalMode)
         : fallback.terminal;
+    const terminal = nativeOnlyPlatform ? "native" : terminalCandidate;
     const distro = terminal === "wsl"
       ? (String(v?.distro || fallback.distro).trim() || fallback.distro)
       : "";
@@ -335,7 +364,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     isMac: boolean;
     isLinux: boolean;
     defaultTerminalMode: TerminalMode;
-  } | null>(null);
+  } | null>(() => detectRendererPlatformCapabilities());
 
   // 获取平台能力
   useEffect(() => {
@@ -351,13 +380,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
       }
     }).catch((e) => {
       console.warn("getPlatformCapabilities failed", e);
-      const fallback = getDefaultProviderEnv();
-      setPlatformCapabilities({
-        isWindows: fallback.terminal === "wsl",
-        isMac: false,
-        isLinux: fallback.terminal === "native",
-        defaultTerminalMode: fallback.terminal,
-      });
+      setPlatformCapabilities(detectRendererPlatformCapabilities());
     });
   }, [open]);
 

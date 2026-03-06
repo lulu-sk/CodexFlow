@@ -53,7 +53,7 @@ function hasNonAsciiOrControl(text: string): boolean {
  * 判断是否为 Windows 系终端（PowerShell / PowerShell 7）。
  */
 export function isWindowsLikeTerminal(mode: TerminalMode): boolean {
-  return mode !== "wsl";
+  return mode === "windows" || mode === "pwsh";
 }
 
 /**

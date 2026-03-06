@@ -418,7 +418,7 @@ type HistorySession = {
   filePath?: string;
   resumeMode?: 'modern' | 'legacy' | 'unknown';
   resumeId?: string;
-  runtimeShell?: 'wsl' | 'windows' | 'unknown';
+  runtimeShell?: 'wsl' | 'windows' | 'native' | 'unknown';
 };
 
 type HistoryTimelineGroup = {
@@ -434,7 +434,7 @@ type HistoryTimelineGroup = {
 
 type ResumeExecutionMode = 'internal' | 'external';
 type LegacyResumePrompt = { filePath: string; mode: ResumeExecutionMode };
-type ShellLabel = 'PowerShell' | 'PowerShell 7' | 'WSL' | 'Native';
+type ShellLabel = 'PowerShell' | 'PowerShell 7' | 'WSL' | 'macOS 终端' | 'Linux 终端' | '未知';
 type BlockingNotice =
   | { type: 'shell-mismatch'; expected: ShellLabel; current: ShellLabel }
   | { type: 'external-console'; env: ShellLabel };
@@ -1247,11 +1247,24 @@ function buildAutoCommitMessage(source: "user" | "agent", text: string): string 
 
 	/**
 	 * 中文说明：将终端运行模式映射为 UI 展示标签。
+	 * native 模式根据平台返回对应的名称（macOS 终端 / Linux 终端）。
 	 */
 	const toShellLabel = (mode: TerminalMode): ShellLabel => {
 	  if (mode === "pwsh") return "PowerShell 7";
 	  if (mode === "windows") return "PowerShell";
-	  if (mode === "native") return "Native";
+	  if (mode === "native") {
+	    // 检测平台以返回正确的 native 终端名称
+	    try {
+	      const nav = (globalThis as any)?.navigator;
+	      const platform = String(nav?.userAgentData?.platform || nav?.platform || nav?.userAgent || '').toLowerCase();
+	      if (platform.includes('mac') || platform.includes('darwin')) return "macOS 终端";
+	      if (platform.includes('linux')) return "Linux 终端";
+	      // 无法检测平台时返回"未知"
+	      return "未知";
+	    } catch {
+	      return "未知";
+	    }
+	  }
 	  return "WSL";
 	};
 

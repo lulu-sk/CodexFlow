@@ -156,7 +156,7 @@ export type HistorySummary = {
   projectHash?: string;
   resumeMode?: 'modern' | 'legacy' | 'unknown';
   resumeId?: string;
-  runtimeShell?: 'wsl' | 'windows' | 'unknown';
+  runtimeShell?: 'wsl' | 'windows' | 'native' | 'unknown';
 };
 
 export type MessageContent = { type: string; text: string };

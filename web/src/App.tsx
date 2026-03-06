@@ -2733,7 +2733,7 @@ export default function CodexFlowManagerUI() {
       filePath: String(it?.filePath || ""),
       resumeMode: normalizeResumeMode(it?.resumeMode),
       resumeId: typeof it?.resumeId === "string" ? it.resumeId : undefined,
-      runtimeShell: it?.runtimeShell === "windows" ? "windows" : (it?.runtimeShell === "wsl" ? "wsl" : "unknown"),
+      runtimeShell: it?.runtimeShell === "windows" ? "windows" : (it?.runtimeShell === "wsl" ? "wsl" : (it?.runtimeShell === "native" ? "native" : "unknown")),
     };
   }, []);
   /**
@@ -7802,7 +7802,7 @@ export default function CodexFlowManagerUI() {
 	        await (window as any).host?.utils?.perfLog?.(`${base}${extra}`);
 	      } catch {}
 	      if (mode === 'internal') {
-	        const tabName = isWindowsLike(execEnv.terminal as any)
+	        const tabName = execEnv.terminal !== "wsl"
 	          ? toShellLabel(execEnv.terminal as any)
 	          : (execEnv.distro || `Console ${((tabsByProject[selectedProject.id] || []).length + 1).toString()}`);
         const tab: ConsoleTab = {
@@ -7889,11 +7889,23 @@ export default function CodexFlowManagerUI() {
 	    const sessionMode = session?.resumeMode || 'unknown';
 	    const enforceShell = sessionMode !== 'legacy' && !options?.forceLegacyCli;
 	    if (enforceShell) {
-	      const sessionShell = session?.runtimeShell === 'windows' ? 'windows' : (session?.runtimeShell === 'wsl' ? 'wsl' : null);
+	      // 解析会话的运行环境：wsl / windows / native
+	      const sessionShell = session?.runtimeShell === 'windows' ? 'windows' : (session?.runtimeShell === 'wsl' ? 'wsl' : (session?.runtimeShell === 'native' ? 'native' : null));
 	      if (sessionShell) {
-	        const mismatch = sessionShell === 'wsl' ? env.terminal !== 'wsl' : !isWindowsLike(env.terminal as any);
+	        // 判断当前环境是否与会话环境匹配
+	        // - wsl: 只允许 wsl
+	        // - windows: 允许 windows / pwsh
+	        // - native: 只允许 native（macOS/Linux 原生终端）
+	        let mismatch = false;
+	        if (sessionShell === 'wsl') {
+	          mismatch = env.terminal !== 'wsl';
+	        } else if (sessionShell === 'windows') {
+	          mismatch = !isWindowsLike(env.terminal as any);
+	        } else if (sessionShell === 'native') {
+	          mismatch = env.terminal !== 'native';
+	        }
 	        if (mismatch) {
-	          const expected = toShellLabel(sessionShell === 'wsl' ? 'wsl' : 'windows');
+	          const expected = toShellLabel(sessionShell as any);
 	          const current = toShellLabel(env.terminal as any);
 	          setBlockingNotice({ type: 'shell-mismatch', expected, current });
 	          return 'blocked-shell';

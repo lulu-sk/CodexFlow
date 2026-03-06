@@ -86,15 +86,17 @@ export function normalizeProvidersSettings(
 
   const env: Record<string, Required<ProviderEnv>> = {};
   const envInput = (input && typeof input.env === "object" && input.env) ? input.env : {};
+  const nativeOnlyPlatform = getDefaultRendererTerminalMode() === "native";
   for (const [id, v] of Object.entries(envInput || {})) {
     const key = String(id || "").trim();
     if (!key) continue;
     const validTerminals = ["native", "wsl", "windows", "pwsh"] as const;
     type ValidTerminal = typeof validTerminals[number];
     const rawTerminal = v?.terminal;
-    const terminal = (rawTerminal && validTerminals.includes(rawTerminal as ValidTerminal))
+    const terminalCandidate = (rawTerminal && validTerminals.includes(rawTerminal as ValidTerminal))
       ? rawTerminal as ValidTerminal
       : legacy.terminal;
+    const terminal = nativeOnlyPlatform ? "native" : terminalCandidate;
     const distro = terminal === "wsl"
       ? (String(v?.distro || legacy.distro).trim() || legacy.distro)
       : "";
@@ -104,9 +106,10 @@ export function normalizeProvidersSettings(
 
   for (const builtIn of builtIns) {
     if (env[builtIn.id]) continue;
+    const terminal = nativeOnlyPlatform ? "native" : legacy.terminal;
     env[builtIn.id] = {
-      terminal: legacy.terminal,
-      distro: legacy.terminal === "wsl" ? legacy.distro : "",
+      terminal,
+      distro: terminal === "wsl" ? legacy.distro : "",
       shell: "",
     };
   }
