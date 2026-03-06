@@ -7,10 +7,10 @@ import { cn } from '@/lib/utils';
 /**
  * 可滚动容器（默认应用更精致的滚动条样式）。
  */
-export const ScrollArea = React.forwardRef<HTMLDivElement, { className?: string; children: React.ReactNode }>(
-  function ScrollArea({ className, children }, ref) {
+export const ScrollArea = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
+  function ScrollArea({ className, children, ...props }, ref) {
     return (
-      <div ref={ref} className={cn('cf-scroll-area overflow-auto', className)}>
+      <div ref={ref} className={cn('cf-scroll-area overflow-auto', className)} {...props}>
         {children}
       </div>
     );

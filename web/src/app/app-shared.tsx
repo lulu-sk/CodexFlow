@@ -1570,6 +1570,8 @@ function TerminalView({
   ptyId,
   attachTerminal,
   onContextMenuDebug,
+  onScrollToTop,
+  onScrollToBottom,
   theme,
 }: {
   logs: string[];
@@ -1577,9 +1579,11 @@ function TerminalView({
   ptyId?: string | null;
   attachTerminal?: (tabId: string, el: HTMLDivElement) => void;
   onContextMenuDebug?: (event: React.MouseEvent) => void;
+  onScrollToTop?: (tabId: string) => void;
+  onScrollToBottom?: (tabId: string) => void;
   theme: TerminalThemeDefinition;
 }) {
-  const { t } = useTranslation(['terminal']);
+  const { t } = useTranslation(['terminal', 'common']);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const chromeRef = useRef<HTMLDivElement | null>(null);
   const [mounted, setMounted] = useState(false);
@@ -1587,6 +1591,8 @@ function TerminalView({
   const palette = theme?.palette;
   const backgroundColor = palette?.background || "var(--cf-surface-muted)";
   const placeholderColor = palette?.foreground || "var(--cf-text-primary)";
+  const scrollToTopTitle = t("common:scrollToTopWithShortcut") as string;
+  const scrollToBottomTitle = t("common:scrollToBottomWithShortcut") as string;
   const chrome = useMemo(() => buildTerminalChromeColors(theme), [theme]);
   const frameStyle = useMemo<React.CSSProperties>(
     () => ({
@@ -1684,7 +1690,7 @@ function TerminalView({
   }, [mounted, triggerScrollChrome]);
   return (
     <div
-      className="relative h-full min-h-0"
+      className="relative h-full min-h-0 group/terminal"
       onContextMenu={(event) => {
         if (onContextMenuDebug) {
           onContextMenuDebug(event);
@@ -1709,6 +1715,32 @@ function TerminalView({
             logs.map((l, i) => <div key={i}>{l}</div>)
           )}
         </pre>
+
+        {/* 滚动条端点辅助：极简、分体式锚定设计 */}
+        <div className="absolute inset-y-0 right-0 z-30 flex flex-col justify-between py-2 px-1 opacity-0 transition-opacity duration-300 group-hover/terminal:opacity-100 pointer-events-none">
+          <button
+            type="button"
+            className="pointer-events-auto flex h-7 w-7 items-center justify-center rounded-full text-slate-500/40 transition-all hover:bg-slate-500/10 hover:text-slate-600 dark:text-slate-400/30 dark:hover:bg-white/5 dark:hover:text-slate-300"
+            title={scrollToTopTitle}
+            onClick={(e) => {
+              e.stopPropagation();
+              onScrollToTop?.(tabId);
+            }}
+          >
+            <ChevronUp className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            className="pointer-events-auto flex h-7 w-7 items-center justify-center rounded-full text-slate-500/40 transition-all hover:bg-slate-500/10 hover:text-slate-600 dark:text-slate-400/30 dark:hover:bg-white/5 dark:hover:text-slate-300"
+            title={scrollToBottomTitle}
+            onClick={(e) => {
+              e.stopPropagation();
+              onScrollToBottom?.(tabId);
+            }}
+          >
+            <ChevronDown className="h-4 w-4" />
+          </button>
+        </div>
       </div>
     </div>
   );
