@@ -3557,6 +3557,21 @@ export default function CodexFlowManagerUI() {
   }, [pendingCompletions, tabsByProject]);
 
   /**
+   * 中文说明：按项目聚合仍处于 working 状态的标签页数量，用于驱动项目行数量徽标的动态提示。
+   */
+  const workingByProject = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const [projectId, list] of Object.entries(tabsByProject)) {
+      let sum = 0;
+      for (const tab of list || []) {
+        if (agentTurnTimerByTab[tab.id]?.status === "working") sum += 1;
+      }
+      if (sum > 0) map[projectId] = sum;
+    }
+    return map;
+  }, [agentTurnTimerByTab, tabsByProject]);
+
+  /**
    * 将项目列表映射为“最多一级”的目录树行：
    * - 根节点按当前排序（recent/name/manual）输出
    * - 子节点按 childOrderByParent 输出（仅在父节点展开时展示）
@@ -7025,22 +7040,27 @@ export default function CodexFlowManagerUI() {
             const tabsInProject = tabsByProject[p.id] || [];
             const ownLiveCount = tabsInProject.filter((tab) => !!ptyAlive[tab.id]).length;
             const ownPendingCount = pendingByProject[p.id] ?? 0;
+            const ownWorkingCount = workingByProject[p.id] ?? 0;
             const hasChildren = depth === 0 && hasDirChildren(p.id);
             const expanded = hasChildren && dirTreeStore.expandedById[p.id] !== false;
 
             let childLiveCount = 0;
             let childPendingCount = 0;
+            let childWorkingCount = 0;
             if (depth === 0 && !expanded) {
               const childIds = dirTreeStore.childOrderByParent[p.id] || [];
               for (const childId of childIds) {
                 const childTabs = tabsByProject[childId] || [];
                 childLiveCount += childTabs.filter((tab) => !!ptyAlive[tab.id]).length;
                 childPendingCount += pendingByProject[childId] ?? 0;
+                childWorkingCount += workingByProject[childId] ?? 0;
               }
             }
             const hasActiveChild = childLiveCount > 0 || childPendingCount > 0;
             const liveCount = ownLiveCount;
             const pendingCount = ownPendingCount;
+            const hasWorkingTab = liveCount > 0 && ownWorkingCount > 0;
+            const hasWorkingChild = childWorkingCount > 0;
             const isHidden = hiddenProjectIdSet.has(p.id);
             const git = gitInfoByProjectId[p.id];
             const exists = git ? git.exists && git.isDirectory : true;
@@ -7272,8 +7292,10 @@ export default function CodexFlowManagerUI() {
                     ></span>
                   ) : null}
                 {liveCount > 0 ? (
-                  <span className="ml-1 inline-flex items-center justify-center rounded-full bg-[var(--cf-accent)] text-white text-[10px] font-bold h-[18px] min-w-[20px] px-1.5 shadow-apple-sm ring-1 ring-white/10">
-                    {liveCount}
+                  <span
+                    className={`cf-project-live-badge ml-1 inline-flex h-[18px] min-w-[20px] items-center justify-center rounded-full bg-[var(--cf-accent)] px-1.5 text-[10px] font-bold text-white shadow-apple-sm ring-1 ring-white/10 ${hasWorkingTab ? "cf-project-live-badge-working" : ""}`}
+                  >
+                    <span className="relative z-[1]">{liveCount}</span>
                   </span>
                 ) : null}
               </div>
@@ -7281,7 +7303,7 @@ export default function CodexFlowManagerUI() {
               {/* 右上角指示器：当项目折叠且子项目有活动项时显示 */}
               {hasActiveChild && !expanded ? (
                 <div
-                  className="absolute top-1 right-1 h-[7px] w-[7px] rounded-full bg-[var(--cf-accent)] ring-1 ring-white dark:ring-slate-900 shadow-md animate-in fade-in zoom-in duration-300"
+                  className={`absolute top-1 right-1 h-[7px] w-[7px] rounded-full bg-[var(--cf-accent)] ring-1 ring-white dark:ring-slate-900 shadow-md animate-in fade-in zoom-in duration-300 ${hasWorkingChild ? "cf-project-child-indicator-working" : ""}`}
                   title={t("terminal:childTerminalsActive", "子项目有活动项") as string}
                 />
               ) : null}
