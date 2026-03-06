@@ -272,6 +272,13 @@ type GitRepoInitProgressSnapshot = {
   error?: string;
 };
 
+type CloseWorkingTabConfirmState = {
+  open: boolean;
+  tabId: string | null;
+  projectId: string | null;
+  tabName: string;
+};
+
 /**
  * 中文说明：将耗时（毫秒）格式化为带单位文本（如 `2s`、`1m 05s`、`1h 02m 05s`）。
  */
@@ -2559,6 +2566,13 @@ export default function CodexFlowManagerUI() {
   const historyCtxMenuRef = useRef<HTMLDivElement | null>(null);
   // 历史删除确认（应用内对话框，替代 window.confirm，避免同步阻塞导致的焦点/指针异常）
   const [confirmDelete, setConfirmDelete] = useState<{ open: boolean; item: HistorySession | null; groupKey: string | null }>({ open: false, item: null, groupKey: null });
+  // 标签关闭确认：仅当手动关闭且标签处于 working 状态时弹出。
+  const [closeWorkingTabConfirm, setCloseWorkingTabConfirm] = useState<CloseWorkingTabConfirmState>({
+    open: false,
+    tabId: null,
+    projectId: null,
+    tabName: "",
+  });
   // 退出确认（主进程发起，渲染层展示以保持 UI 风格一致）
   const [quitConfirm, setQuitConfirm] = useState<{ open: boolean; token: string | null; count: number }>(() => ({ open: false, token: null, count: 0 }));
   const quitConfirmTokenRef = useRef<string | null>(null);
@@ -4318,34 +4332,81 @@ export default function CodexFlowManagerUI() {
   }
 
   /**
+   * 中文说明：关闭“进行中标签页关闭确认”弹窗并清空上下文。
+   */
+  function dismissCloseWorkingTabConfirm() {
+    setCloseWorkingTabConfirm({ open: false, tabId: null, projectId: null, tabName: "" });
+  }
+
+  /**
    * 中文说明：关闭指定标签页，并清理与该标签页关联的 PTY、通知和计时状态。
    */
-  function closeTab(id: string) {
-    if (!selectedProject) return;
-    const pid = ptyByTabRef.current[id];
+  function closeTab(id: string, projectIdOverride?: string) {
+    const tabId = String(id || "").trim();
+    if (!tabId) return;
+    const projectId = String(projectIdOverride || selectedProject?.id || "").trim();
+    if (!projectId) return;
+    const pid = ptyByTabRef.current[tabId];
     if (pid) {
       try { window.host.pty.close(pid); } catch {}
-      delete ptyByTabRef.current[id];
+      delete ptyByTabRef.current[tabId];
       unregisterPtyListener(pid);
     }
-    try { delete ptyAliveRef.current[id]; setPtyAlive((m) => { const n = { ...m }; delete n[id]; return n; }); } catch {}
+    try { delete ptyAliveRef.current[tabId]; setPtyAlive((m) => { const n = { ...m }; delete n[tabId]; return n; }); } catch {}
     // let manager dispose the tab (adapter/container and optionally close PTY)
-    try { tm.disposeTab(id, true); } catch (err) { console.warn('tm.disposeTab failed', err); }
+    try { tm.disposeTab(tabId, true); } catch (err) { console.warn('tm.disposeTab failed', err); }
     setTabsByProject((m) => {
-      const next = (m[selectedProject.id] || []).filter((tab) => tab.id !== id);
-      return { ...m, [selectedProject.id]: next };
+      const next = (m[projectId] || []).filter((tab) => tab.id !== tabId);
+      return { ...m, [projectId]: next };
     });
-    clearPendingForTab(id);
-    cancelAgentTurnTimer(id, "close-tab");
-    unregisterTabProject(id);
-    try { delete userInputCountByTabIdRef.current[id]; } catch {}
+    clearPendingForTab(tabId);
+    cancelAgentTurnTimer(tabId, "close-tab");
+    unregisterTabProject(tabId);
+    try { delete userInputCountByTabIdRef.current[tabId]; } catch {}
     setInputFullscreenByTab((m) => {
-      if (!m[id]) return m;
+      if (!m[tabId]) return m;
       const next = { ...m } as Record<string, boolean>;
-      delete next[id];
+      delete next[tabId];
       return next;
     });
-    if (activeTabId === id) setActiveTab(null);
+    if (activeTabId === tabId) setActiveTab(null, { projectId, focusMode: "immediate", allowDuringRename: true });
+  }
+
+  /**
+   * 中文说明：请求关闭标签页；若为手动关闭且标签处于 working 状态，则先弹出确认框。
+   */
+  function requestCloseTab(id: string, source: "manual" | "auto" = "manual") {
+    const tabId = String(id || "").trim();
+    if (!tabId) return;
+    const projectId = String(tabProjectRef.current[tabId] || selectedProjectId || "").trim();
+    if (!projectId) return;
+    if (source !== "manual") {
+      closeTab(tabId, projectId);
+      return;
+    }
+    const timerState = agentTurnTimerByTabRef.current[tabId];
+    if (timerState?.status !== "working") {
+      closeTab(tabId, projectId);
+      return;
+    }
+    const tabName = String((tabsByProject[projectId] || []).find((tab) => tab.id === tabId)?.name || "").trim();
+    setCloseWorkingTabConfirm({
+      open: true,
+      tabId,
+      projectId,
+      tabName,
+    });
+  }
+
+  /**
+   * 中文说明：确认关闭处于 working 状态的标签页。
+   */
+  function confirmCloseWorkingTab() {
+    const tabId = String(closeWorkingTabConfirm.tabId || "").trim();
+    const projectId = String(closeWorkingTabConfirm.projectId || "").trim();
+    dismissCloseWorkingTabConfirm();
+    if (!tabId || !projectId) return;
+    closeTab(tabId, projectId);
   }
 
   /**
@@ -7365,7 +7426,7 @@ export default function CodexFlowManagerUI() {
                     title={closeTabLabel}
                     className={`pointer-events-auto absolute right-1 top-1/2 inline-flex h-[18px] w-[18px] -translate-y-1/2 items-center justify-center rounded-full border border-transparent text-[var(--cf-text-secondary)] transition-all duration-apple ease-apple opacity-0 scale-90 group-hover/tab:opacity-100 group-hover/tab:scale-100 group-focus-within/tab:opacity-100 group-focus-within/tab:scale-100 hover:bg-[var(--cf-tab-pill-hover)] hover:text-[var(--cf-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cf-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--cf-app-bg)] ${isActiveTab ? 'opacity-100 scale-100 bg-[var(--cf-tab-pill-hover)] text-[var(--cf-text-primary)]' : ''}`}
                     onMouseDown={(e) => { e.stopPropagation(); }}
-                    onClick={(e) => { e.stopPropagation(); closeTab(tab.id); }}
+                    onClick={(e) => { e.stopPropagation(); requestCloseTab(tab.id, "manual"); }}
                   >
                     <X className="h-3 w-3" />
                   </button>
@@ -10618,6 +10679,33 @@ export default function CodexFlowManagerUI() {
                 {t("common:close", "关闭") as string}
               </Button>
             </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={closeWorkingTabConfirm.open}
+        onOpenChange={(open) => {
+          if (open) return;
+          dismissCloseWorkingTabConfirm();
+        }}
+      >
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>{t("terminal:closeWorkingConfirm.title", "确认关闭进行中的标签页？") as string}</DialogTitle>
+            <DialogDescription>
+              {closeWorkingTabConfirm.tabName
+                ? (t("terminal:closeWorkingConfirm.desc", { name: closeWorkingTabConfirm.tabName }) as string)
+                : (t("terminal:closeWorkingConfirm.descNoName", "该终端标签页仍在进行中。关闭后将中断当前任务/进程，是否继续？") as string)}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" onClick={dismissCloseWorkingTabConfirm}>
+              {t("common:cancel", "取消") as string}
+            </Button>
+            <Button variant="danger" data-cf-dialog-primary="true" onClick={confirmCloseWorkingTab}>
+              {t("terminal:closeWorkingConfirm.confirm", "仍然关闭") as string}
+            </Button>
           </div>
         </DialogContent>
       </Dialog>
