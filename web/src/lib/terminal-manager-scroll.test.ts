@@ -77,4 +77,32 @@ describe("TerminalManager（终端滚动快照）", () => {
     expect(adapter.restoreScrollSnapshot).toHaveBeenCalledWith(null);
     tm.disposeAll(false);
   });
+
+  it("scrollToTop 与 scrollToBottom 会透传到适配器", () => {
+    const adapter: any = {
+      mount: vi.fn(() => ({ cols: 80, rows: 24 })),
+      write: vi.fn(),
+      paste: vi.fn(),
+      onData: vi.fn(() => () => {}),
+      resize: vi.fn(() => ({ cols: 80, rows: 24 })),
+      getScrollSnapshot: vi.fn(() => null),
+      restoreScrollSnapshot: vi.fn(),
+      focus: vi.fn(),
+      blur: vi.fn(),
+      setAppearance: vi.fn(),
+      scrollToTop: vi.fn(),
+      scrollToBottom: vi.fn(),
+      dispose: vi.fn(),
+    };
+    createTerminalAdapterMock.mockReturnValue(adapter);
+
+    const tm = new TerminalManager(() => undefined, createHostPtyStub() as any, {});
+    tm.ensurePersistentContainer("tab-c");
+    tm.scrollToTop("tab-c");
+    tm.scrollToBottom("tab-c");
+
+    expect(adapter.scrollToTop).toHaveBeenCalledTimes(1);
+    expect(adapter.scrollToBottom).toHaveBeenCalledTimes(1);
+    tm.disposeAll(false);
+  });
 });

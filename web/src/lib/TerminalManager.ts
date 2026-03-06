@@ -778,6 +778,20 @@ export default class TerminalManager {
     }
   }
 
+  scrollToTop(tabId: string): void {
+    const adapter = this.adapters[tabId];
+    if (adapter) {
+      try { adapter.scrollToTop(); } catch {}
+    }
+  }
+
+  scrollToBottom(tabId: string): void {
+    const adapter = this.adapters[tabId];
+    if (adapter) {
+      try { adapter.scrollToBottom(); } catch {}
+    }
+  }
+
   /**
    * 清理所有 tab 的资源
    */

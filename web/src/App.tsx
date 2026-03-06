@@ -7469,7 +7469,10 @@ export default function CodexFlowManagerUI() {
                         ptyId={ptyByTab[tab.id]}
                         attachTerminal={attachTerminal}
                         onContextMenuDebug={(event) => openTabContextMenu(event, tab.id, "terminal-body")}
+                        onScrollToTop={(tid) => terminalManagerRef.current?.scrollToTop(tid)}
+                        onScrollToBottom={(tid) => terminalManagerRef.current?.scrollToBottom(tid)}
                         theme={terminalThemeDef}
+
                       />
                     </div>
 
@@ -11597,6 +11600,9 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
 
   const [activeMatchIndex, setActiveMatchIndex] = useState(0);
   const messageRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const historyScrollViewportRef = useRef<HTMLDivElement | null>(null);
+  const historyScrollToTopTitle = t("common:scrollToTopWithShortcut") as string;
+  const historyScrollToBottomTitle = t("common:scrollToBottomWithShortcut") as string;
   const registerMessageRef = useCallback((key: string, node: HTMLDivElement | null) => {
     if (node) {
       messageRefs.current[key] = node;
@@ -11721,6 +11727,66 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
     if (!matches.length) return;
     setActiveMatchIndex((prev) => (prev - 1 + matches.length) % matches.length);
   }, [matches.length]);
+
+  /**
+   * 中文说明：将历史详情滚动区滚动到顶部。
+   */
+  const scrollHistoryDetailToTop = useCallback(() => {
+    const viewport = historyScrollViewportRef.current;
+    if (!viewport || viewport.scrollTop <= 0) return;
+    viewport.scrollTop = 0;
+  }, []);
+
+  /**
+   * 中文说明：将历史详情滚动区滚动到底部。
+   */
+  const scrollHistoryDetailToBottom = useCallback(() => {
+    const viewport = historyScrollViewportRef.current;
+    if (!viewport) return;
+    const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+    if (maxScrollTop <= 0 || viewport.scrollTop >= maxScrollTop - 1) return;
+    viewport.scrollTop = viewport.scrollHeight;
+  }, []);
+
+  /**
+   * 中文说明：当用户点击历史详情正文时，让滚动区获得焦点，以便响应快捷键。
+   */
+  const focusHistoryDetailViewport = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const viewport = historyScrollViewportRef.current;
+    if (!viewport) return;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest("button, a, input, textarea, select, [role='button'], [contenteditable='true']")) return;
+    try {
+      viewport.focus({ preventScroll: true });
+    } catch {
+      viewport.focus();
+    }
+  }, []);
+
+  /**
+   * 中文说明：在历史详情滚动区内处理 Ctrl + Home / Ctrl + End 快捷键。
+   */
+  const handleHistoryDetailBoundaryShortcut = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    const viewport = historyScrollViewportRef.current;
+    if (!viewport) return;
+    const nativeEvent = event.nativeEvent as KeyboardEvent | undefined;
+    if (!event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || nativeEvent?.isComposing) return;
+    const key = String(event.key || "").toLowerCase();
+    if (key === "home") {
+      if (viewport.scrollTop <= 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      scrollHistoryDetailToTop();
+      return;
+    }
+    if (key === "end") {
+      const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+      if (maxScrollTop <= 0 || viewport.scrollTop >= maxScrollTop - 1) return;
+      event.preventDefault();
+      event.stopPropagation();
+      scrollHistoryDetailToBottom();
+    }
+  }, [scrollHistoryDetailToBottom, scrollHistoryDetailToTop]);
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
@@ -12052,33 +12118,70 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
         )}
       </div>
 
-      <ScrollArea key={selectedHistoryId || 'none'} className="h-full min-h-0 p-2">
-        {selectedHistoryId ? (
-          showNoMatch ? (
-            <div className="p-4 text-sm text-[var(--cf-text-secondary)] font-apple-regular">{t('history:noMatch')}</div>
+      <div className="relative group/history-detail flex-1 min-h-0">
+        <ScrollArea
+          key={selectedHistoryId || 'none'}
+          className="h-full min-h-0 p-2 focus-visible:outline-none"
+          ref={(el) => {
+            historyScrollViewportRef.current = el;
+          }}
+          tabIndex={0}
+          onPointerDownCapture={focusHistoryDetailViewport}
+          onKeyDownCapture={handleHistoryDetailBoundaryShortcut}
+        >
+          {selectedHistoryId ? (
+            showNoMatch ? (
+              <div className="p-4 text-sm text-[var(--cf-text-secondary)] font-apple-regular">{t('history:noMatch')}</div>
+            ) : (
+              <div ref={historyFindRootRef} data-history-find-root className="space-y-2">
+                {detailSession
+                  ? renderHistoryBlocks(detailSession, filteredMessages, {
+                      activeMessageKey: detailSearchActive ? activeMatch?.messageKey : undefined,
+                      registerMessageRef,
+                      projectWinPath,
+                    })
+                  : (selectedSession
+                      ? renderHistoryBlocks(selectedSession, filteredMessages, {
+                          activeMessageKey: detailSearchActive ? activeMatch?.messageKey : undefined,
+                          registerMessageRef,
+                          projectWinPath,
+                        })
+                      : null)
+                }
+                {loaded && skipped > 0 && <div className="text-xs text-[var(--cf-text-secondary)] font-apple-regular">{t('history:skippedLines', { count: skipped })}</div>}
+              </div>
+            )
           ) : (
-            <div ref={historyFindRootRef} data-history-find-root className="space-y-2">
-              {detailSession
-                ? renderHistoryBlocks(detailSession, filteredMessages, {
-                    activeMessageKey: detailSearchActive ? activeMatch?.messageKey : undefined,
-                    registerMessageRef,
-                    projectWinPath,
-                  })
-                : (selectedSession
-                    ? renderHistoryBlocks(selectedSession, filteredMessages, {
-                        activeMessageKey: detailSearchActive ? activeMatch?.messageKey : undefined,
-                        registerMessageRef,
-                        projectWinPath,
-                      })
-                    : null)
-              }
-              {loaded && skipped > 0 && <div className="text-xs text-[var(--cf-text-secondary)] font-apple-regular">{t('history:skippedLines', { count: skipped })}</div>}
-            </div>
-          )
-        ) : (
-          <div className="p-4 text-sm text-[var(--cf-text-secondary)] font-apple-regular">{t('history:selectRightToView')}</div>
-        )}
-      </ScrollArea>
+            <div className="p-4 text-sm text-[var(--cf-text-secondary)] font-apple-regular">{t('history:selectRightToView')}</div>
+          )}
+        </ScrollArea>
+
+        {/* 滚动条端点辅助：极简、分体式锚定设计 */}
+        <div className="absolute inset-y-0 right-0 z-30 flex flex-col justify-between py-2 px-1 opacity-0 transition-opacity duration-300 group-hover/history-detail:opacity-100 pointer-events-none">
+          <button
+            type="button"
+            className="pointer-events-auto flex h-7 w-7 items-center justify-center rounded-full text-slate-500/40 transition-all hover:bg-slate-500/10 hover:text-slate-600 dark:text-slate-400/30 dark:hover:bg-white/5 dark:hover:text-slate-300"
+            title={historyScrollToTopTitle}
+            onClick={(e) => {
+              e.stopPropagation();
+              scrollHistoryDetailToTop();
+            }}
+          >
+            <ChevronUp className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            className="pointer-events-auto flex h-7 w-7 items-center justify-center rounded-full text-slate-500/40 transition-all hover:bg-slate-500/10 hover:text-slate-600 dark:text-slate-400/30 dark:hover:bg-white/5 dark:hover:text-slate-300"
+            title={historyScrollToBottomTitle}
+            onClick={(e) => {
+              e.stopPropagation();
+              scrollHistoryDetailToBottom();
+            }}
+          >
+            <ChevronDown className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
       </div>
     </>
   );

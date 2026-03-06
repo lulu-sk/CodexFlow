@@ -13,6 +13,10 @@
   "remove": "Remove",
   "expand": "Expand",
   "collapse": "Collapse",
+  "scrollToTop": "Scroll to Top",
+  "scrollToBottom": "Scroll to Bottom",
+  "scrollToTopWithShortcut": "Scroll to top (Ctrl + Home)",
+  "scrollToBottomWithShortcut": "Scroll to bottom (Ctrl + End)",
   "account": "Account",
   "app": {
     "name": "CodexFlow",
