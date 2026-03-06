@@ -1433,7 +1433,7 @@ export default function CodexFlowManagerUI() {
   }, []);
 
   /**
-   * 中文说明：在用户发送消息时启动计时；若当前标签页已在计时中则保持不变，避免重复发送打断计时。
+   * 中文说明：在用户发送消息或手动继续计时时启动计时；若当前标签页已在计时中则保持不变，避免重复启动。
    */
   const startAgentTurnTimer = useCallback((tabId: string) => {
     const id = String(tabId || "").trim();
@@ -1562,7 +1562,7 @@ export default function CodexFlowManagerUI() {
   }, [notifyLog]);
 
   /**
-   * 中文说明：生成标签页计时状态展示文本，支持“计时中/已完成”两种状态。
+   * 中文说明：生成标签页计时状态展示文本，支持“计时中/中断/已完成”三种状态。
    */
   const resolveAgentTurnStatusText = useCallback((tabId: string): string => {
     const id = String(tabId || "").trim();
@@ -1576,7 +1576,7 @@ export default function CodexFlowManagerUI() {
   }, [agentTurnClockTick, agentTurnTimerByTab, t]);
 
   /**
-   * 中文说明：打开计时状态的右键菜单，提供“取消计时”操作入口。
+   * 中文说明：打开计时状态的右键菜单，提供“继续计时/取消计时”等操作入口。
    */
   const openAgentTurnContextMenu = useCallback((event: React.MouseEvent, tabId: string) => {
     const id = String(tabId || "").trim();
@@ -8585,6 +8585,7 @@ export default function CodexFlowManagerUI() {
             const tabId = String(agentTurnCtxMenu.tabId || "").trim();
             const timerState = tabId ? agentTurnTimerByTab[tabId] : undefined;
             if (!tabId || !timerState) return null;
+            const canContinueTimer = timerState.status !== "working";
             return (
               <div
                 ref={agentTurnCtxMenuRef}
@@ -8592,6 +8593,17 @@ export default function CodexFlowManagerUI() {
                 style={{ left: agentTurnCtxMenu.x, top: agentTurnCtxMenu.y }}
                 onClick={(event) => event.stopPropagation()}
               >
+                <button
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] disabled:opacity-40 disabled:pointer-events-none transition-all duration-apple-fast"
+                  disabled={!canContinueTimer}
+                  onClick={() => {
+                    if (!canContinueTimer) return;
+                    startAgentTurnTimer(tabId);
+                    setAgentTurnCtxMenu((m) => ({ ...m, show: false, tabId: null }));
+                  }}
+                >
+                  <Play className="h-4 w-4" /> {t("terminal:continueTimer") as string}
+                </button>
                 <button
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-red)] rounded-apple-sm hover:bg-[var(--cf-red-light)] transition-all duration-apple-fast"
                   onClick={() => {
