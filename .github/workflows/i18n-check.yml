@@ -2,9 +2,9 @@ name: i18n-check
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, macos ]
   pull_request:
-    branches: [ main, master ]
+    branches: [ main, master, macos ]
 
 jobs:
   i18n:
@@ -21,4 +21,3 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Run i18n check
         run: npm run i18n:check
-
