@@ -18,7 +18,7 @@ import { extractTaggedPrefix } from './agentSessions/shared/taggedPrefix';
  * History 读取模块: 支持逐行解析 JSONL, list/read 接口
  */
 
-export type RuntimeShell = 'wsl' | 'windows' | 'unknown';
+export type RuntimeShell = 'wsl' | 'windows' | 'native' | 'unknown';
 
 export type ProviderId = 'codex' | 'claude' | 'gemini';
 
@@ -115,8 +115,13 @@ async function readPrefixChunk(fp: string, maxBytes = SUMMARY_PREFIX_BYTES): Pro
 }
 
 /**
- * 从历史文件路径推断运行环境（WSL / Windows / unknown）。
- * 用途：用于“继续对话”时的跨环境阻断提示，需要兼容 Windows 盘符路径与 UNC 路径的多种写法。
+ * 从历史文件路径推断运行环境（WSL / Windows / native / unknown）。
+ * 用途：用于”继续对话”时的跨环境阻断提示，需要兼容 Windows 盘符路径与 UNC 路径的多种写法。
+ *
+ * 识别规则：
+ * - WSL 路径（\\wsl.localhost\, /mnt/..., /home/..., /root/...）返回 'wsl'
+ * - Windows 盘符路径返回 'windows'
+ * - macOS/Linux 本地 POSIX 路径（/Users/..., /var/... 等）返回 'native'
  */
 export function detectRuntimeShell(filePath?: string): RuntimeShell {
   try {
@@ -127,17 +132,29 @@ export function detectRuntimeShell(filePath?: string): RuntimeShell {
     if (raw.startsWith('\\\\?\\UNC\\')) raw = '\\\\' + raw.slice(8);
     if (raw.startsWith('\\\\?\\')) raw = raw.slice(4);
     const lowered = raw.toLowerCase();
+    // WSL UNC 路径
     if (lowered.startsWith('\\\\wsl.localhost\\') || lowered.startsWith('\\\\wsl$\\') || lowered.startsWith('//wsl.localhost/')) {
       return 'wsl';
     }
     const replaced = lowered.replace(/\\/g, '/');
     const collapsed = replaced.replace(/\/+/g, '/');
+    // WSL 挂载路径
     if (collapsed.startsWith('/mnt/')) return 'wsl';
-    if (collapsed.startsWith('/home/') || collapsed.startsWith('/root/')) return 'wsl';
     // Windows 盘符路径：兼容 C:\... 与 C:/... 两种分隔符
     if (/^[a-z]:[\\/]/i.test(raw) || /^[a-z]:\//i.test(collapsed)) return 'windows';
     // 其他 UNC / 网络共享：归类为 Windows（例如 \\server\share\... 或 //server/share/...）
     if (raw.startsWith('\\\\') || replaced.startsWith('//')) return 'windows';
+    // macOS/Linux 本地 POSIX 路径（注意：/home/ 和 /root/ 在 WSL 场景已在前面的 /mnt/ 检查中被捕获）
+    // 当路径以 / 开头但不是 WSL 路径时，归类为 native
+    if (collapsed.startsWith('/')) {
+      // 排除明确的 WSL 发行版路径（通过发行版名称识别）
+      const wslDistroHints = ['ubuntu', 'debian', 'arch', 'alpine', 'fedora', 'kali', 'opensuse'];
+      for (const hint of wslDistroHints) {
+        if (collapsed.includes('/' + hint + '/')) return 'wsl';
+      }
+      // 其他 POSIX 路径归类为 native（macOS /Users/..., /Applications/... 或 Linux /var/..., /opt/... 等）
+      return 'native';
+    }
     return 'unknown';
   } catch {
     return 'unknown';
@@ -148,13 +165,27 @@ function classifyRuntimeShell(raw?: string): RuntimeShell {
   try {
     const s = String(raw || '').trim().toLowerCase();
     if (!s) return 'unknown';
+    // Windows 专属 shell 提示
     const windowsHints = ['powershell', 'pwsh', 'cmd.exe', 'command prompt', 'cmd'];
     for (const hint of windowsHints) {
       if (s.includes(hint)) return 'windows';
     }
-    const wslHints = ['bash', 'zsh', 'fish', 'wsl', 'ubuntu', 'debian', 'arch', 'alpine', '/bin/bash', '/bin/zsh'];
-    for (const hint of wslHints) {
-      if (s.includes(hint)) return 'wsl';
+    // POSIX shell 提示：在 macOS/Linux 上归类为 native，在 Windows 上归类为 wsl
+    const posixShells = ['bash', 'zsh', 'fish', '/bin/bash', '/bin/zsh', '/bin/fish', '/usr/bin/zsh', '/usr/bin/bash'];
+    for (const hint of posixShells) {
+      if (s.includes(hint)) {
+        // Windows 上运行 POSIX shell 意味着 WSL 环境
+        if (process.platform === 'win32') return 'wsl';
+        // macOS/Linux 上运行 POSIX shell 是原生环境
+        return 'native';
+      }
+    }
+    // WSL 发行版名称提示（仅 Windows）
+    if (process.platform === 'win32') {
+      const wslDistroHints = ['wsl', 'ubuntu', 'debian', 'arch', 'alpine', 'fedora', 'kali'];
+      for (const hint of wslDistroHints) {
+        if (s.includes(hint)) return 'wsl';
+      }
     }
     return 'unknown';
   } catch {
