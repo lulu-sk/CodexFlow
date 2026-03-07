@@ -18,6 +18,7 @@
   "readyPlaceholder": "# 终端就绪。这里是内嵌控制台的视觉占位（UI 原型，未接真 PTY）。",
   "openFailed": "启动终端失败：{error}",
   "childTerminalsActive": "子项目有活动项",
+  "childTerminalsPending": "子项目有已完成待查看任务",
   "closeWorkingConfirm": {
     "title": "确认关闭进行中的标签页？",
     "desc": "终端标签页“{name}”仍在进行中。关闭后将中断当前任务/进程，是否继续？",

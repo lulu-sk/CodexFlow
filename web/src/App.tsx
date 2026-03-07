@@ -7085,7 +7085,8 @@ export default function CodexFlowManagerUI() {
                 childWorkingCount += workingByProject[childId] ?? 0;
               }
             }
-            const hasActiveChild = childLiveCount > 0 || childPendingCount > 0;
+            const hasPendingChild = childPendingCount > 0;
+            const hasActiveChild = childLiveCount > 0 || hasPendingChild;
             const liveCount = ownLiveCount;
             const pendingCount = ownPendingCount;
             const hasWorkingTab = liveCount > 0 && ownWorkingCount > 0;
@@ -7332,8 +7333,8 @@ export default function CodexFlowManagerUI() {
               {/* 右上角指示器：当项目折叠且子项目有活动项时显示 */}
               {hasActiveChild && !expanded ? (
                 <div
-                  className={`absolute top-1 right-1 h-[7px] w-[7px] rounded-full bg-[var(--cf-accent)] ring-1 ring-white dark:ring-slate-900 shadow-md animate-in fade-in zoom-in duration-300 ${hasWorkingChild ? "cf-project-child-indicator-working" : ""}`}
-                  title={t("terminal:childTerminalsActive", "子项目有活动项") as string}
+                  className={`absolute top-1 right-1 h-[7px] w-[7px] rounded-full ${hasPendingChild ? "bg-[var(--cf-red)]" : "bg-[var(--cf-accent)]"} ring-1 ring-white dark:ring-slate-900 shadow-md animate-in fade-in zoom-in duration-300 ${hasWorkingChild ? "cf-project-child-indicator-working" : ""}`}
+                  title={t(hasPendingChild ? "terminal:childTerminalsPending" : "terminal:childTerminalsActive", hasPendingChild ? "子项目有已完成待查看任务" : "子项目有活动项") as string}
                 />
               ) : null}
             </div>
