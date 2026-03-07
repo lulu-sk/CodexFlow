@@ -74,6 +74,10 @@ import { VirtualizedList, type VirtualizedListHandle } from "@/features/history/
 import { applyHistoryFindHighlights, clearHistoryFindHighlights, setActiveHistoryFindMatch } from "@/features/history/find/history-find";
 import { toWSLForInsert } from "@/lib/wsl";
 import { extractGeminiProjectHashFromPath, deriveGeminiProjectHashCandidatesFromPath } from "@/lib/gemini-hash";
+import {
+  listManagedWorktreeChildIds as listManagedWorktreeChildIdsFromStore,
+  resolveWorktreeManagementParentProjectId as resolveWorktreeManagementParentProjectIdFromStore,
+} from "@/lib/worktree-management";
 import { normalizeProvidersSettings } from "@/lib/providers/normalize";
 import { isBuiltInSessionProviderId, openaiIconUrl, openaiDarkIconUrl, claudeIconUrl, geminiIconUrl } from "@/lib/providers/builtins";
 import { resolveProvider } from "@/lib/providers/resolve";
@@ -350,20 +354,23 @@ function parseWorktreeRemarkIndex(label: string, remarkBaseName: string): number
 }
 
 /**
- * 中文说明：根据父节点当前子节点备注，计算下一个可用的 worktree 备注序号（最小为 1）。
+ * 中文说明：根据当前管理作用域下的副 worktree 备注，计算下一个可用的 worktree 备注序号（最小为 1）。
  */
 function resolveNextWorktreeRemarkIndex(args: {
   store: DirTreeStore | null | undefined;
   projects: Project[];
   parentProjectId: string;
   remarkBaseName: string;
+  childProjectIds?: string[];
 }): number {
   const parentId = String(args.parentProjectId || "").trim();
   const base = normalizeWorktreeRemarkBaseName(args.remarkBaseName);
   if (!parentId || !base) return 1;
   const store = args.store || null;
   if (!store) return 1;
-  const children = Array.isArray(store.childOrderByParent?.[parentId]) ? store.childOrderByParent[parentId] : [];
+  const children = Array.isArray(args.childProjectIds)
+    ? args.childProjectIds.map((item) => String(item || "").trim()).filter(Boolean)
+    : (Array.isArray(store.childOrderByParent?.[parentId]) ? store.childOrderByParent[parentId] : []);
   if (children.length === 0) return 1;
   const projectById = new Map<string, Project>();
   for (const item of Array.isArray(args.projects) ? args.projects : []) {
@@ -585,7 +592,8 @@ export default function CodexFlowManagerUI() {
 	    error: undefined,
 	  }));
 	  const [worktreeCreatePromptFullscreenOpen, setWorktreeCreatePromptFullscreenOpen] = useState<boolean>(false);
-	  const worktreeCreateRunningTaskIdByRepoIdRef = useRef<Record<string, string>>({});
+	  /** worktree 创建任务中的 taskId（按同一主工作区的管理作用域复用，避免主/子级并发创建）。 */
+	  const worktreeCreateRunningTaskIdByScopeIdRef = useRef<Record<string, string>>({});
 	  /** worktree 创建面板的“上次设置”缓存：按 repoProjectId 隔离，避免不同项目互相覆盖。 */
 	  const worktreeCreateDraftByRepoIdRef = useRef<Record<string, {
 	    baseBranch: string;
@@ -1070,6 +1078,33 @@ export default function CodexFlowManagerUI() {
     return () => { cancelled = true; };
   }, [projectsHydrated, projects]);
 
+  /**
+   * 中文说明：解析当前节点所属 worktree 组的“管理父节点”。
+   * - 主工作区返回自身；
+   * - 子 worktree 返回其主工作区节点；
+   * - 被提升为根级的副 worktree 也会尽量回溯到主工作区节点。
+   */
+  const resolveWorktreeManagementParentProjectId = useCallback((projectId: string): string => {
+    return resolveWorktreeManagementParentProjectIdFromStore({
+      projectId,
+      store: dirTreeStore,
+      projects,
+      gitInfoByProjectId,
+    });
+  }, [dirTreeStore, gitInfoByProjectId, projects]);
+
+  /**
+   * 中文说明：获取当前节点所在 worktree 组下可复用的子 worktree 顺序列表。
+   */
+  const listManagedWorktreeChildIds = useCallback((projectId: string): string[] => {
+    return listManagedWorktreeChildIdsFromStore({
+      projectId,
+      store: dirTreeStore,
+      projects,
+      gitInfoByProjectId,
+    });
+  }, [dirTreeStore, gitInfoByProjectId, projects]);
+
   // Worktree 创建面板：当实例数/子节点变化时，裁剪“复用子 worktree”的选择，避免超出上限或引用失效
   useEffect(() => {
     if (!worktreeCreateDialog.open) return;
@@ -1080,8 +1115,7 @@ export default function CodexFlowManagerUI() {
     if (selectedRaw.length === 0) return;
 
     const total = worktreeCreateDialog.useMultipleModels ? sumWorktreeProviderCounts(worktreeCreateDialog.multiCounts) : 1;
-    const childIds = dirTreeStore.childOrderByParent[repoId] || [];
-    const allowedOrder = childIds.filter((id) => !!gitInfoByProjectId[id]?.isWorktree);
+    const allowedOrder = listManagedWorktreeChildIds(repoId);
     const trimmed = trimSelectedIdsByOrder({ selectedIds: selectedRaw, allowedOrder, limit: total });
 
     if (areStringArraysEqual(selectedRaw, trimmed)) return;
@@ -1090,8 +1124,7 @@ export default function CodexFlowManagerUI() {
       return { ...prev, selectedChildWorktreeIds: trimmed };
     });
   }, [
-    dirTreeStore.childOrderByParent,
-    gitInfoByProjectId,
+    listManagedWorktreeChildIds,
     worktreeCreateDialog.multiCounts,
     worktreeCreateDialog.open,
     worktreeCreateDialog.repoProjectId,
@@ -4896,9 +4929,10 @@ export default function CodexFlowManagerUI() {
   const openWorktreeCreateDialog = useCallback(async (repoProject: Project) => {
     const repoId = String(repoProject?.id || "").trim();
     if (!repoId) return;
+    const taskScopeId = resolveWorktreeManagementParentProjectId(repoId) || repoId;
 
     // 若该仓库的 worktree 创建任务仍在进行，则优先打开进度面板
-    const runningTaskId = String(worktreeCreateRunningTaskIdByRepoIdRef.current[repoId] || "").trim();
+    const runningTaskId = String(worktreeCreateRunningTaskIdByScopeIdRef.current[taskScopeId] || "").trim();
 	    if (runningTaskId) {
 	      setWorktreeCreateProgress((prev) => {
 	        if (prev.taskId === runningTaskId) return { ...prev, open: true, repoProjectId: repoId };
@@ -5011,7 +5045,7 @@ export default function CodexFlowManagerUI() {
         return { ...prev, branches: [], baseBranch: "", loadingBranches: false, error: String(e?.message || e) };
       });
     }
-	  }, [activeProviderId, resolveDefaultWorktreeRemarkBaseName, restoreWorktreePromptChips, t]);
+	  }, [activeProviderId, resolveDefaultWorktreeRemarkBaseName, resolveWorktreeManagementParentProjectId, restoreWorktreePromptChips, t]);
 
   /**
    * 关闭 worktree 创建面板（不执行创建）。
@@ -5138,6 +5172,8 @@ export default function CodexFlowManagerUI() {
     const repoProject = args.repoProject;
     const repoId = String(repoProject?.id || "").trim();
     if (!repoId) return;
+    const managementParentProjectId = resolveWorktreeManagementParentProjectId(repoId) || repoId;
+    const taskScopeId = managementParentProjectId || repoId;
 
     const baseBranch = String(args.baseBranch || "").trim();
     if (!baseBranch) {
@@ -5172,7 +5208,7 @@ export default function CodexFlowManagerUI() {
     });
 
     // 若该仓库已有创建任务在跑，则直接打开“创建中”面板查看进度，避免重复创建
-    const runningTaskId = String(worktreeCreateRunningTaskIdByRepoIdRef.current[repoId] || "").trim();
+    const runningTaskId = String(worktreeCreateRunningTaskIdByScopeIdRef.current[taskScopeId] || "").trim();
     if (runningTaskId) {
       setWorktreeCreateProgress((prev) => (prev.taskId === runningTaskId ? { ...prev, open: true, repoProjectId: repoId } : createWorktreeProgressInitialState(runningTaskId)));
       setWorktreeCreateDialog((prev) => (prev.open && prev.repoProjectId === repoId ? { ...prev, open: false, creating: false, error: undefined } : prev));
@@ -5201,7 +5237,7 @@ export default function CodexFlowManagerUI() {
     }
 
     if (!taskId) return;
-    worktreeCreateRunningTaskIdByRepoIdRef.current[repoId] = taskId;
+    worktreeCreateRunningTaskIdByScopeIdRef.current[taskScopeId] = taskId;
 
     // 进入“创建中”进度面板，并关闭“创建配置”面板
     setWorktreeCreateProgress(createWorktreeProgressInitialState(taskId));
@@ -5209,11 +5245,13 @@ export default function CodexFlowManagerUI() {
 
     const prompt = String(args.prompt || "");
     const remarkBaseName = normalizeWorktreeRemarkBaseName(args.remarkBaseName);
+    const managedChildProjectIds = listManagedWorktreeChildIds(repoId);
     let nextWorktreeRemarkIndex = resolveNextWorktreeRemarkIndex({
       store: dirTreeStoreRef.current,
       projects: projectsRef.current,
-      parentProjectId: repoId,
+      parentProjectId: managementParentProjectId,
       remarkBaseName,
+      childProjectIds: managedChildProjectIds,
     });
     const warningSet = new Set<string>(
       Array.isArray(args.extraWarnings) ? args.extraWarnings.map((item: any) => String(item || "").trim()).filter(Boolean) : []
@@ -5338,7 +5376,7 @@ export default function CodexFlowManagerUI() {
         if (haltPostCreateIfCanceled(worktreeKey, wtProject.id)) return;
 
         if (!firstNewProjectId) firstNewProjectId = wtProject.id;
-        attachDirChildToParent(repoId, wtProject.id);
+        attachDirChildToParent(managementParentProjectId, wtProject.id);
         assignAutoRemarkLabelForWorktree(wtProject.id);
 
         const started = await startProviderInstanceInProject({ project: wtProject, providerId, prompt, useYolo: args.useYolo });
@@ -5432,7 +5470,7 @@ export default function CodexFlowManagerUI() {
     }
 
     // 创建任务结束：允许再次创建（无论成功或失败）
-    try { delete worktreeCreateRunningTaskIdByRepoIdRef.current[repoId]; } catch {}
+    try { delete worktreeCreateRunningTaskIdByScopeIdRef.current[taskScopeId]; } catch {}
 
     if (postJobs.length > 0) {
       await Promise.allSettled(postJobs);
@@ -5463,7 +5501,7 @@ export default function CodexFlowManagerUI() {
         message: (t("projects:worktreeCreateWarnings", "创建已完成，但存在警告：\n{{warnings}}") as any).replace("{{warnings}}", warnings.join("\n")),
       });
     }
-  }, [attachDirChildToParent, gitWorktreeCopyRulesOnCreate, resetWorktreeCreateTransientRecord, setActiveTab, startProviderInstanceInProject, t, unhideProject, upsertProjectInList]);
+  }, [attachDirChildToParent, gitWorktreeCopyRulesOnCreate, listManagedWorktreeChildIds, resetWorktreeCreateTransientRecord, resolveWorktreeManagementParentProjectId, setActiveTab, startProviderInstanceInProject, t, unhideProject, upsertProjectInList]);
 
   /**
    * Ctrl+单击：快速创建（不弹确认/不打开面板）。
@@ -5716,11 +5754,7 @@ export default function CodexFlowManagerUI() {
     if (!info) return;
     const canOperateOnDir = !!info.exists && !!info.isDirectory;
     const isRepoRoot = !!info.isRepoRoot;
-    const isWorktreeNode = !!info.isWorktree && isRepoRoot;
-    const isMainWorktree = isWorktreeNode && !!info.mainWorktree && toDirKeyForCache(info.mainWorktree) === toDirKeyForCache(info.dir);
-    const isSecondaryWorktree = isWorktreeNode && !isMainWorktree;
-    const isChildNode = isDirChild(pid);
-    const canCreateWorktree = canOperateOnDir && isRepoRoot && !isSecondaryWorktree && !isChildNode;
+    const canCreateWorktree = canOperateOnDir && isRepoRoot;
 
     if (canCreateWorktree) {
       if (args.ctrlKey) await quickCreateWorktree(project);
@@ -5731,14 +5765,6 @@ export default function CodexFlowManagerUI() {
       openGitRepoInitDialog(project);
       return;
     }
-    if (isRepoRoot && isChildNode) {
-      setNoticeDialog({
-        open: true,
-        title: t("projects:worktreeActionBlockedTitle", "操作不可用") as string,
-        message: t("projects:worktreeCreateDisabledChild", "该节点已为子级，无法再创建 worktree（层级至多一级）") as string,
-      });
-      return;
-    }
     if (canOperateOnDir && info.isInsideWorkTree && !isRepoRoot) {
       setNoticeDialog({
         open: true,
@@ -5746,7 +5772,7 @@ export default function CodexFlowManagerUI() {
         message: t("projects:worktreeCreateNeedRepoRoot", "当前目录不是 Git 仓库根目录，无法创建工作区。") as string,
       });
     }
-  }, [isDirChild, openGitRepoInitDialog, openWorktreeCreateDialog, probeGitInfoForProject, quickCreateWorktree, t]);
+  }, [openGitRepoInitDialog, openWorktreeCreateDialog, probeGitInfoForProject, quickCreateWorktree, t]);
 
   /**
    * 中文说明：统计指定项目仍在运行的终端代理数量（以 tab 是否仍绑定 PTY 为准）。
@@ -7105,8 +7131,6 @@ export default function CodexFlowManagerUI() {
             const canOperateOnDir = exists;
             const canDrag = !query.trim();
             const isEditingDirLabel = dirLabelDialog.open && dirLabelDialog.projectId === p.id;
-            const isChildNode = isDirChild(p.id);
-            const canCreateWorktree = canOperateOnDir && isRepoRoot && !isSecondaryWorktree && !isChildNode;
             const canInitGitRepo = canOperateOnDir && !!git && !git.isInsideWorkTree;
             const isGitRepoInitRunning = !!gitRepoInitRunningByProjectId[p.id];
             const canRemoveDirRecord = !!(p.dirRecord && p.dirRecord.kind === "custom_provider" && p.hasBuiltInSessions !== true);
@@ -7291,11 +7315,9 @@ export default function CodexFlowManagerUI() {
                               full: branch.full,
                               isDetached,
                               headSha: git?.headSha,
-                              disabled: !canCreateWorktree && isRepoRoot,
+                              disabled: false,
                               title:
-                                isRepoRoot && !canCreateWorktree
-                                  ? (t("projects:worktreeCreateDisabledChild", "该节点已为子级，无法再创建 worktree（层级至多一级）") as string)
-                                  : isDetached
+                                isDetached
                                   ? `Detached HEAD ${git?.headSha ? `(${git.headSha})` : ""}`.trim()
                                   : isRepoRoot
                                   ? `${branch.full}\n${t("projects:worktreeCreateBranchHint", "单击：打开创建面板；Ctrl + 左键：快速创建工作区") as string}`
@@ -9241,11 +9263,11 @@ export default function CodexFlowManagerUI() {
             const total = providerQueue.length;
             const tooMany = total > 8;
 
-            const childIds = dirTreeStore.childOrderByParent[worktreeCreateDialog.repoProjectId] || [];
+            const managedParentProjectId = resolveWorktreeManagementParentProjectId(worktreeCreateDialog.repoProjectId) || repo.id;
+            const childIds = listManagedWorktreeChildIds(worktreeCreateDialog.repoProjectId);
             const childWorktrees = childIds
               .map((id) => projectsRef.current.find((x) => x.id === id) || null)
-              .filter((p): p is Project => !!p)
-              .filter((p) => !!gitInfoByProjectId[p.id]?.isWorktree);
+              .filter((p): p is Project => !!p);
             const childWorktreeIdsOrdered = childWorktrees.map((p) => p.id);
             const selectedChildIdsOrdered = trimSelectedIdsByOrder({
               selectedIds: worktreeCreateDialog.selectedChildWorktreeIds,
@@ -9258,8 +9280,9 @@ export default function CodexFlowManagerUI() {
             const nextRemarkIndex = resolveNextWorktreeRemarkIndex({
               store: dirTreeStore,
               projects,
-              parentProjectId: repo.id,
+              parentProjectId: managedParentProjectId,
               remarkBaseName,
+              childProjectIds: childWorktreeIdsOrdered,
             });
             const remarkHint = remarkBaseName
               ? (t("projects:worktreeRemarkHintWithName", "新建子 worktree 将自动备注为 {first}、{second}…；创建后可双击项目名称独立编辑。", {

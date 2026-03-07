@@ -147,7 +147,7 @@ type WorktreeProviderCounts = Record<GitWorktreeProviderId, number>;
 
 type WorktreeCreateDialogState = {
   open: boolean;
-  /** 触发创建的仓库节点（父节点）的 projectId */
+  /** 触发创建的仓库节点（即当前操作节点）的 projectId。 */
   repoProjectId: string;
   /** baseBranch 下拉可选项 */
   branches: string[];
@@ -878,7 +878,7 @@ function BranchChip(props: {
          <div className="h-3.5 mb-0.5 flex items-center justify-center px-[2px] w-full">
             {branch && (
                <BranchChip
-                 mode={mode === "root" ? "button" : "static"}
+                 mode={onBranchClick ? "button" : "static"}
                  text={branch.short}
                  isDetached={branch.isDetached}
                  disabled={branch.disabled}
