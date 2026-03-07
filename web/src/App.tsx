@@ -109,6 +109,10 @@ import {
   type WorktreeCreatePrefs,
 } from "@/lib/worktree-create-prefs";
 import {
+  buildWorktreeRecycleBranchListCandidates,
+  resolveWorktreeRecycleRepoMainPath,
+} from "@/lib/worktree-recycle";
+import {
   loadWorktreeDeletePrefs,
   saveWorktreeDeletePrefs,
 } from "@/lib/worktree-delete-prefs";
@@ -727,7 +731,13 @@ export default function CodexFlowManagerUI() {
 			    const repoId = String(repoProjectId || "").trim();
 			    if (!repoId) return;
 			    const repoProject = projectsRef.current.find((item) => String(item?.id || "").trim() === repoId) || null;
-			    const nextRemarkBaseName = repoProject ? resolveDefaultWorktreeRemarkBaseName(repoProject) : "";
+			    const nextRemarkBaseName = repoProject
+			      ? (() => {
+			          const label = normalizeWorktreeRemarkBaseName(dirTreeStore.labelById[String(repoProject?.id || "").trim()] || "");
+			          if (label) return label;
+			          return normalizeWorktreeRemarkBaseName(repoProject?.name || "");
+			        })()
+			      : "";
 
 		    clearWorktreeCreatePrefsPersistTimer(repoId);
 
@@ -770,7 +780,7 @@ export default function CodexFlowManagerUI() {
 			        promptDraft: "",
 			      };
 			    });
-			  }, [clearWorktreeCreatePrefsPersistTimer, resolveDefaultWorktreeRemarkBaseName]);
+			  }, [clearWorktreeCreatePrefsPersistTimer, dirTreeStore.labelById]);
 
 			  /**
 			   * 中文说明：worktree 创建面板字段变更时，更新“按项目隔离”的内存缓存，并防抖写入 localStorage。
@@ -5907,25 +5917,44 @@ export default function CodexFlowManagerUI() {
       const metaRes: any = await (window as any).host?.gitWorktree?.getMeta?.(project.winPath);
       const meta = metaRes && metaRes.ok ? metaRes.meta : null;
 
-      // 中文说明：创建记录缺失时，不阻断流程：优先从 git worktree 信息推断主 worktree 路径，并允许用户手动选择分支。
+      // 中文说明：创建记录缺失或路径已失效时，不阻断流程：优先从 git worktree 信息推断可用的默认操作落点，并允许用户手动选择分支。
       let repoMainPath = String(meta?.repoMainPath || "").trim();
       let cachedWtBranch = "";
-      if (!repoMainPath) {
-        try {
-          const st: any = await (window as any).host?.gitWorktree?.statusBatch?.([project.winPath]);
-          const info = st && st.ok && Array.isArray(st.items) ? (st.items[0] as any) : null;
-          const main = String(info?.mainWorktree || info?.repoRoot || "").trim();
-          repoMainPath = main || project.winPath;
-          const b = info && info.detached !== true ? String(info.branch || "").trim() : "";
-          if (b) cachedWtBranch = b;
-        } catch {
-          repoMainPath = project.winPath;
+      let fallbackRepoPath = project.winPath;
+      try {
+        const st: any = await (window as any).host?.gitWorktree?.statusBatch?.([project.winPath]);
+        const info = st && st.ok && Array.isArray(st.items) ? (st.items[0] as any) : null;
+        const main = String(info?.mainWorktree || info?.repoRoot || "").trim();
+        fallbackRepoPath = main || project.winPath;
+        const b = info && info.detached !== true ? String(info.branch || "").trim() : "";
+        if (b) cachedWtBranch = b;
+      } catch {}
+      if (!repoMainPath) repoMainPath = fallbackRepoPath;
+      else repoMainPath = String(meta.repoMainPath || project.winPath);
+
+      const branchListCandidates = buildWorktreeRecycleBranchListCandidates({
+        repoMainPath,
+        fallbackRepoPath,
+        projectPath: project.winPath,
+      });
+      let listRes: any = null;
+      let listError = "";
+      let branchListPath = "";
+      for (const candidatePath of branchListCandidates) {
+        const one: any = await (window as any).host?.gitWorktree?.listBranches?.(candidatePath);
+        if (one && one.ok) {
+          listRes = one;
+          branchListPath = candidatePath;
+          break;
         }
-      } else {
-        repoMainPath = String(meta.repoMainPath || project.winPath);
+        listError = String(one?.error || "").trim() || listError;
       }
-      const listRes: any = await (window as any).host?.gitWorktree?.listBranches?.(repoMainPath);
-      if (!(listRes && listRes.ok)) throw new Error(listRes?.error || (t("projects:worktreeListBranchesFailed", "读取分支列表失败") as string));
+      if (!(listRes && listRes.ok)) throw new Error(listError || (t("projects:worktreeListBranchesFailed", "读取分支列表失败") as string));
+      repoMainPath = resolveWorktreeRecycleRepoMainPath({
+        branchListPath,
+        fallbackRepoPath,
+        projectPath: project.winPath,
+      });
       const branchesRaw: string[] = Array.isArray(listRes.branches) ? listRes.branches.map((x: any) => String(x || "").trim()).filter(Boolean) : [];
       const branches: string[] = Array.from(new Set<string>(branchesRaw));
       const branchSet = new Set<string>(branches);
@@ -6367,7 +6396,7 @@ export default function CodexFlowManagerUI() {
             const hasStash = stashInfo.items.length > 0;
             const restoreCmd = stashInfo.restoreCmd;
             const restoreLine = restoreCmd
-              ? (t("projects:worktreeRecycleSuggestedRestore", "待主 worktree 状态正常后，可手动执行：{cmd}", { cmd: restoreCmd }) as string)
+              ? (t("projects:worktreeRecycleSuggestedRestore", "待目标 worktree 状态正常后，可手动执行：{cmd}", { cmd: restoreCmd }) as string)
               : "";
             const mapped =
               errorCode === "FORK_POINT_UNAVAILABLE"
@@ -6375,18 +6404,18 @@ export default function CodexFlowManagerUI() {
                 : errorCode === "FORK_POINT_INVALID"
                   ? (t("projects:worktreeRecycleError_FORK_POINT_INVALID", "分叉点无效（需为源分支祖先提交）。请手动指定正确的分叉点，或切换到“完整回收”。") as string)
                   : errorCode === "BASE_WORKTREE_IN_PROGRESS"
-                ? (t("projects:worktreeRecycleError_BASE_WORKTREE_IN_PROGRESS", "主 worktree 存在未完成的 Git 操作或冲突文件。请先在外部工具完成/中止当前操作后再重试。") as string)
+                ? (t("projects:worktreeRecycleError_BASE_WORKTREE_IN_PROGRESS", "目标 worktree 存在未完成的 Git 操作或冲突文件。请先在外部工具完成/中止当前操作后再重试。") as string)
                 : errorCode === "BASE_WORKTREE_LOCKED"
                   ? (t("projects:worktreeRecycleError_BASE_WORKTREE_LOCKED", "仓库当前被锁定（可能存在 index.lock 或其他 Git 进程正在运行）。请关闭占用进程后重试。") as string)
                   : errorCode === "BASE_WORKTREE_STASH_FAILED"
-                    ? (t("projects:worktreeRecycleError_BASE_WORKTREE_STASH_FAILED", "自动暂存主 worktree 失败。请在外部工具检查 Git 状态并手动处理。") as string)
+                    ? (t("projects:worktreeRecycleError_BASE_WORKTREE_STASH_FAILED", "自动暂存目标 worktree 失败。请在外部工具检查 Git 状态并手动处理。") as string)
                     : errorCode === "BASE_WORKTREE_DIRTY_AFTER_STASH"
-                      ? (t("projects:worktreeRecycleError_BASE_WORKTREE_DIRTY_AFTER_STASH", "已创建 stash，但主 worktree 仍然不干净（例如子模块/嵌套仓库修改等 stash 无法覆盖的情况）。请在外部工具处理。") as string)
+                      ? (t("projects:worktreeRecycleError_BASE_WORKTREE_DIRTY_AFTER_STASH", "已创建 stash，但目标 worktree 仍然不干净（例如子模块/嵌套仓库修改等 stash 无法覆盖的情况）。请在外部工具处理。") as string)
                       : errorCode === "WORKTREE_DIRTY"
                         ? (t("projects:worktreeRecycleError_WORKTREE_DIRTY", "该 worktree 存在未提交修改。请先提交/暂存或取消修改后再回收。") as string)
                         : errorCode === "RECYCLE_FAILED"
                           ? (hasStash
-                              ? (t("projects:worktreeRecycleError_RECYCLE_FAILED_STASHED", "回收过程中失败。为避免把主 worktree 改动叠加到冲突/中断态，未自动恢复 stash。请先在外部工具中处理回收失败原因后再自行恢复。") as string)
+                              ? (t("projects:worktreeRecycleError_RECYCLE_FAILED_STASHED", "回收过程中失败。为避免把目标 worktree 改动叠加到冲突/中断态，未自动恢复 stash。请先在外部工具中处理回收失败原因后再自行恢复。") as string)
                               : (t("projects:worktreeRecycleError_RECYCLE_FAILED", "回收过程中失败。请在外部工具中查看冲突/中断/hook 等原因并处理后再重试。") as string))
 	                          : (String(details?.stderr || details?.error || "").trim() || (t("projects:worktreeRecycleFailed", "合并 worktree 失败") as string));
 
@@ -6415,9 +6444,9 @@ export default function CodexFlowManagerUI() {
           const restoreCmd = stashInfo.restoreCmd;
           const warningHint =
             warningCode === "BASE_WORKTREE_RESTORE_CONFLICT"
-              ? (t("projects:worktreeRecycleWarning_BASE_WORKTREE_RESTORE_CONFLICT", "提示：回收已完成，但主 worktree 自动恢复发生冲突。请用外部工具解决冲突；stash 仍保留：{msg} {sha}", { msg: stashMsg || "-", sha: stashSha || "" }) as string)
+              ? (t("projects:worktreeRecycleWarning_BASE_WORKTREE_RESTORE_CONFLICT", "提示：回收已完成，但目标 worktree 自动恢复发生冲突。请用外部工具解决冲突；stash 仍保留：{msg} {sha}", { msg: stashMsg || "-", sha: stashSha || "" }) as string)
               : warningCode === "BASE_WORKTREE_RESTORE_FAILED"
-                ? (t("projects:worktreeRecycleWarning_BASE_WORKTREE_RESTORE_FAILED", "提示：回收已完成，但主 worktree 自动恢复失败。stash 仍保留：{msg} {sha}\n你可以手动执行：{cmd}", { msg: stashMsg || "-", sha: stashSha || "", cmd: restoreCmd || (stashSha ? `git stash apply --index ${stashSha}` : "") }) as string)
+                ? (t("projects:worktreeRecycleWarning_BASE_WORKTREE_RESTORE_FAILED", "提示：回收已完成，但目标 worktree 自动恢复失败。stash 仍保留：{msg} {sha}\n你可以手动执行：{cmd}", { msg: stashMsg || "-", sha: stashSha || "", cmd: restoreCmd || (stashSha ? `git stash apply --index ${stashSha}` : "") }) as string)
                 : warningCode === "BASE_WORKTREE_STASH_DROP_FAILED"
                   ? (t("projects:worktreeRecycleWarning_BASE_WORKTREE_STASH_DROP_FAILED", "提示：回收已完成且已尝试恢复，但自动清理 stash 失败。你可以稍后手动删除该 stash：{sha}", { sha: stashSha || "" }) as string)
                   : undefined;
@@ -6439,7 +6468,7 @@ export default function CodexFlowManagerUI() {
 		  }, [confirmWorktreeRecycleByTerminalAgents, showGitActionErrorDialog, t, worktreeRecycleDialog]);
 
   /**
-   * 打开“删除 worktree / 对齐到主工作区”对话框。
+   * 打开“删除 worktree / 对齐到基工作区”对话框。
    */
 		  const openWorktreeDeleteDialog = useCallback(async (project: Project, afterRecycle?: boolean, action?: "delete" | "reset", afterRecycleHint?: string) => {
 		    const pid = String(project?.id || "").trim();
@@ -6494,7 +6523,7 @@ export default function CodexFlowManagerUI() {
 	  }, [confirmWorktreeDeleteAndResetByTerminalAgents, refreshWorktreeDeleteAlignedState, resolveWorktreeDeletePrefsKey, t]);
 
   /**
-   * 关闭“删除 worktree / 对齐到主工作区”对话框。
+   * 关闭“删除 worktree / 对齐到基工作区”对话框。
    */
 		  const closeWorktreeDeleteDialog = useCallback(() => {
 		    setWorktreeDeleteDialog((prev) => ({
@@ -6513,9 +6542,9 @@ export default function CodexFlowManagerUI() {
 	  }, []);
 
   /**
-   * 执行“删除 worktree / 对齐到主工作区”。
+   * 执行“删除 worktree / 对齐到基工作区”。
    * - 删除：worktree remove + 删除专用分支；必要时二次强确认。
-   * - 对齐：保持目录不删除，将该子 worktree 强制更新到主工作区当前基线并恢复为干净状态；必要时二次强确认。
+   * - 对齐：保持目录不删除，将该子 worktree 强制更新到基工作区当前基线并恢复为干净状态；必要时二次强确认。
    */
 		  const submitWorktreeDelete = useCallback(async (opts?: { forceRemoveWorktree?: boolean; forceDeleteBranch?: boolean; forceResetWorktree?: boolean }) => {
 		    const dlg = worktreeDeleteDialog;
@@ -10362,7 +10391,7 @@ export default function CodexFlowManagerUI() {
         </DialogContent>
       </Dialog>
 
-	      {/* 删除 worktree / 重置为主 worktree 状态（必要时强确认） */}
+	      {/* 删除 worktree / 重置为基 worktree 状态（必要时强确认） */}
       <Dialog
         open={worktreeDeleteDialog.open}
         onOpenChange={(open) => {
@@ -10374,14 +10403,14 @@ export default function CodexFlowManagerUI() {
           <DialogHeader className="pb-2 border-b border-slate-100 dark:border-slate-800/50">
 	            <DialogTitle>
 	              {worktreeDeleteDialog.action === "reset"
-	                ? (t("projects:worktreeResetTitle", "重置为主 worktree 状态") as string)
+	                ? (t("projects:worktreeResetTitle", "重置为基 worktree 状态") as string)
 	                : worktreeDeleteDialog.afterRecycle
 	                  ? (t("projects:worktreeDeleteAfterRecycleTitle", "合并成功，是否删除该 worktree？") as string)
 	                  : (t("projects:worktreeDeleteTitle", "删除 worktree") as string)}
 	            </DialogTitle>
 	            <DialogDescription className={worktreeDeleteDialog.action === "reset" ? "whitespace-pre-line" : ""}>
 	              {worktreeDeleteDialog.action === "reset"
-	                ? (t("projects:worktreeResetDesc", "将此 worktree 重置到与主 worktree 当前签出的修订版一致，并清理工作区使其恢复为干净状态。\n此操作会丢弃未提交的修改，并删除未跟踪的文件（默认不删除被忽略的文件）。") as string)
+	                ? (t("projects:worktreeResetDesc", "将此 worktree 重置到与基 worktree 当前签出的修订版一致，并清理工作区使其恢复为干净状态。\n此操作会丢弃未提交的修改，并删除未跟踪的文件（默认不删除被忽略的文件）。") as string)
 	                : (t("projects:worktreeDeleteDesc", "将执行 git worktree remove，并删除该 worktree 的专用分支。") as string)}
 	            </DialogDescription>
           </DialogHeader>
@@ -10419,7 +10448,7 @@ export default function CodexFlowManagerUI() {
                   {alreadyAligned ? (
                     <div className="rounded-md border border-slate-200/60 bg-slate-50/50 px-2.5 py-2 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)]">
                       <div className="text-[10px] text-slate-600 dark:text-[var(--cf-text-secondary)] leading-snug">
-                        {t("projects:worktreeDeleteResetHintAligned", "检测到当前已与主 worktree 对齐，已隐藏对齐选项。") as string}
+                        {t("projects:worktreeDeleteResetHintAligned", "检测到当前已与基 worktree 对齐，已隐藏对齐选项。") as string}
                       </div>
                     </div>
                   ) : (
@@ -10446,14 +10475,14 @@ export default function CodexFlowManagerUI() {
                       />
 			                      <div className="space-y-0.5">
 			                        <div className="text-[11px] font-semibold text-slate-700 dark:text-[var(--cf-text-primary)]">
-			                          {t("projects:worktreeDeleteResetOption", "保留并重置该目录（不移除worktree）") as string}
+			                          {t("projects:worktreeDeleteResetOption", "保留目录并对齐到基 worktree") as string}
 			                        </div>
 			                        <div className="text-[10px] text-slate-500 dark:text-[var(--cf-text-secondary)] leading-snug">
 			                          {isReset
-			                            ? (t("projects:worktreeDeleteResetHintChecked", "将对齐到主 worktree 当前签出版本并清理；不会执行“移除worktree”。") as string)
+			                            ? (t("projects:worktreeDeleteResetHintChecked", "将对齐到基 worktree 当前签出版本并清理；不会执行“移除worktree”。") as string)
 			                            : (t(
 			                                "projects:worktreeDeleteResetHint",
-			                                "仅重置到与主 worktree 当前签出的修订版一致并清理；不会执行“移除worktree”。"
+			                                "仅重置到与基 worktree 当前签出的修订版一致并清理；不会执行“移除worktree”。"
 			                              ) as string)}
 			                        </div>
 		                      </div>
@@ -10512,7 +10541,7 @@ export default function CodexFlowManagerUI() {
           <DialogHeader className="pb-2 border-b border-slate-100 dark:border-slate-800/50">
 	            <DialogTitle>{t("projects:worktreePostRecycleTitle", "合并完成") as string}</DialogTitle>
 	            <DialogDescription>
-	              {t("projects:worktreePostRecycleDesc", "已将变更合并到目标分支。你可以选择删除该 worktree，或将其重置为主 worktree 状态以便复用。") as string}
+	              {t("projects:worktreePostRecycleDesc", "已将变更合并到目标分支。你可以选择删除该 worktree，或将其重置为基 worktree 状态以便复用。") as string}
 	            </DialogDescription>
           </DialogHeader>
           {(function renderPostRecycleBody() {
@@ -10541,7 +10570,7 @@ export default function CodexFlowManagerUI() {
                       void openWorktreeDeleteDialog(project, true, "reset", hint);
                     }}
                   >
-	                    {t("projects:worktreePostRecycleActionReset", "重置为主 worktree 状态") as string}
+	                    {t("projects:worktreePostRecycleActionReset", "重置为基 worktree 状态") as string}
 	                  </Button>
                   <Button
                     variant="danger"
@@ -10619,7 +10648,7 @@ export default function CodexFlowManagerUI() {
         </DialogContent>
       </Dialog>
 
-      {/* 主 worktree 不干净：允许用户选择外部处理或“我知道风险，继续（自动 stash/恢复）” */}
+      {/* 目标 worktree 不干净：允许用户选择外部处理或“我知道风险，继续（自动 stash/恢复）” */}
       <Dialog
         open={baseWorktreeDirtyDialog.open}
         onOpenChange={(open) => {
@@ -10629,9 +10658,9 @@ export default function CodexFlowManagerUI() {
       >
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>{t("projects:worktreeRecycleBaseDirtyTitle", "主 worktree 不干净") as string}</DialogTitle>
+            <DialogTitle>{t("projects:worktreeRecycleBaseDirtyTitle", "目标 worktree 不干净") as string}</DialogTitle>
             <DialogDescription>
-              {t("projects:worktreeRecycleBaseDirtyDesc", "回收需要在主 worktree 上执行 checkout/merge 等操作。检测到主 worktree 存在未提交修改，你可以选择：") as string}
+              {t("projects:worktreeRecycleBaseDirtyDesc", "回收需要在目标 worktree（通常为基分支当前所在工作区）上执行 checkout/merge 等操作。检测到目标 worktree 存在未提交修改，你可以选择：") as string}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
@@ -10643,7 +10672,7 @@ export default function CodexFlowManagerUI() {
             <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 whitespace-pre-line">
               {t(
                 "projects:worktreeRecycleBaseDirtyBody",
-                "继续将执行以下操作：\n- 创建“事务化快照”，最大化保持主 worktree 的三态（已暂存/未暂存/未跟踪）：\n  - 执行 `git stash push -u` 保存工作区内容（含未跟踪；不含 ignored）。\n  - 同时对 `.git/index` 做字节级快照，用于 100% 还原 staged 语义。\n- 回收完成后自动恢复：先清空到确定态，再“只覆盖、不合并”回放工作区快照，并原样恢复 index；会做一致性校验。\n- 若恢复/校验失败：stash/快照将保留，你需要用外部 Git 工具手动处理。"
+                "继续将执行以下操作：\n- 创建“事务化快照”，最大化保持目标 worktree 的三态（已暂存/未暂存/未跟踪）：\n  - 执行 `git stash push -u` 保存工作区内容（含未跟踪；不含 ignored）。\n  - 同时对 `.git/index` 做字节级快照，用于 100% 还原 staged 语义。\n- 回收完成后自动恢复：先清空到确定态，再“只覆盖、不合并”回放工作区快照，并原样恢复 index；会做一致性校验。\n- 若恢复/校验失败：stash/快照将保留，你需要用外部 Git 工具手动处理。"
               ) as string}
             </div>
             {baseWorktreeDirtyDialog.preCommitHint ? (

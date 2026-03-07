@@ -7,7 +7,7 @@ import { app } from "electron";
 import { toFsPathAbs, toFsPathKey } from "../git/pathKey";
 
 export type WorktreeMeta = {
-  /** 该 worktree 所属仓库的主 worktree 路径（用于回收/删除等操作的落点） */
+  /** 该 worktree 所属仓库的默认操作落点 worktree 路径（通常为主 worktree；若基分支由其他 worktree 持有，则可能为该基 worktree） */
   repoMainPath: string;
   /** 创建时选择的基分支 */
   baseBranch: string;

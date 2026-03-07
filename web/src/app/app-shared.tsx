@@ -191,7 +191,7 @@ type ForkPointOption = {
 type WorktreeRecycleDialogState = {
   open: boolean;
   projectId: string;
-  /** 主 worktree 路径（用于“主 worktree 脏”场景提供外部工具入口）。 */
+  /** 默认操作落点 worktree 路径（用于“目标 worktree 脏”场景提供外部工具入口；字段名为兼容历史沿用）。 */
   repoMainPath: string;
   branches: string[];
   baseBranch: string;
@@ -223,7 +223,7 @@ type WorktreeRecycleDialogState = {
 
 type BaseWorktreeDirtyDialogState = {
   open: boolean;
-  /** 主 worktree 路径（用于打开外部 Git 工具/终端）。 */
+  /** 目标 worktree 路径（用于打开外部 Git 工具/终端；字段名为兼容历史沿用）。 */
   repoMainPath: string;
   /** 回收前自动提交提示（可选）。 */
   preCommitHint?: string;
@@ -232,11 +232,11 @@ type BaseWorktreeDirtyDialogState = {
 type WorktreeDeleteDialogState = {
   open: boolean;
   projectId: string;
-  /** 偏好存储维度 key（通常为主 worktree 路径归一化结果）。 */
+  /** 偏好存储维度 key（通常为默认操作落点 worktree 路径归一化结果）。 */
   prefsKey?: string;
-  /** 当前 worktree 是否已与主 worktree 对齐（用于面板说明提示）。 */
+  /** 当前 worktree 是否已与基 worktree 对齐（字段名为兼容历史沿用）。 */
   alignedToMain?: boolean;
-  /** 操作类型：delete=删除 worktree；reset=对齐到主工作区当前基线（保持目录，不删除）。 */
+  /** 操作类型：delete=删除 worktree；reset=对齐到基工作区当前基线（保持目录，不删除）。 */
   action: "delete" | "reset";
   /** 是否为“回收成功后”的推荐删除（仅用于 UI 文案） */
   afterRecycle?: boolean;
@@ -1200,7 +1200,7 @@ function parseRecycleStashes(details: any, t: any): {
   const stashListText = items.map((s) => `- ${kindLabelOf(s.kind)}: ${s.sha}`).join("\n");
   const stashLine =
     items.length > 0
-      ? (t("projects:worktreeRecycleStashInfo", "主 worktree 改动已保存到 stash：{msg} {sha}", { msg: `\n${stashListText}`, sha: "" }) as string).trim()
+      ? (t("projects:worktreeRecycleStashInfo", "目标 worktree 改动已保存到 stash：{msg} {sha}", { msg: `\n${stashListText}`, sha: "" }) as string).trim()
       : "";
 
   let restoreCmd = String(details?.suggestedRestoreCommand || "").trim();

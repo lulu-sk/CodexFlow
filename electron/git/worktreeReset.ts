@@ -3,7 +3,7 @@
 
 import { execGitAsync, spawnGitAsync } from "./exec";
 import { toFsPathAbs, toFsPathKey } from "./pathKey";
-import { resolveRepoMainPathFromWorktreeAsync } from "./worktreeMetaResolve";
+import { resolveRepoMainPathForBranchAsync, resolveRepoMainPathFromWorktreeAsync } from "./worktreeMetaResolve";
 import { buildNextWorktreeMeta, getWorktreeMeta, setWorktreeMeta, type WorktreeMeta } from "../stores/worktreeMetaStore";
 
 export type ResetWorktreeResult =
@@ -17,10 +17,10 @@ export type IsWorktreeAlignedToMainResult =
 const resetWorktreeTaskByPathKey = new Map<string, Promise<ResetWorktreeResult>>();
 
 /**
- * 中文说明：对齐 worktree 到主工作区当前基线，并恢复为干净状态（保持目录，不删除）。
+ * 中文说明：对齐 worktree 到基工作区当前基线，并恢复为干净状态（保持目录，不删除）。
  *
  * 行为约定：
- * - 以 targetRef 为“主工作区当前基线”；若未提供 targetRef，则默认使用主 worktree 的 `HEAD` 提交号（更符合“当前签出的修订版”语义）。
+ * - 以 targetRef 为“基工作区当前基线”；若未提供 targetRef，则默认使用基 worktree 的 `HEAD` 提交号（更符合“当前签出的修订版”语义）。
  * - 将 worktree 分支（wtBranch）强制 reset 到 targetRef，并执行 `git clean -fd` 清理未跟踪文件（保留 ignored）。
  * - 若 worktree 有未提交修改且未传 force，则返回 needsForce=true，等待 UI 二次确认。
  * - 若已与目标基线对齐且工作区干净，则直接返回 ok=true + alreadyAligned=true（避免重复执行重置）。
@@ -44,15 +44,16 @@ export async function resetWorktreeAsync(req: {
 
     // 1) 读取创建记录；缺失时通过 git worktree 信息推断 repoMainPath/baseBranch/wtBranch
     const existingMeta = getWorktreeMeta(wt);
+    const metaWtBranch = String(existingMeta?.wtBranch || "").trim();
+    const metaBaseBranch = String(existingMeta?.baseBranch || "").trim();
     let repoMainPath = toFsPathAbs(String(existingMeta?.repoMainPath || ""));
+    const preferredRepoMain = await resolveRepoMainPathForBranchAsync({ dir: wt, branch: metaBaseBranch, fallbackPath: repoMainPath, gitPath, timeoutMs: 12_000 });
+    if (preferredRepoMain.ok) repoMainPath = preferredRepoMain.repoMainPath;
     if (!repoMainPath) {
       const inferred = await resolveRepoMainPathFromWorktreeAsync({ worktreePath: wt, gitPath, timeoutMs: 12_000 });
       if (!inferred.ok) return { ok: false, needsForce: false, error: inferred.error || "missing repoMainPath" };
       repoMainPath = inferred.repoMainPath;
     }
-
-    const metaWtBranch = String(existingMeta?.wtBranch || "").trim();
-    const metaBaseBranch = String(existingMeta?.baseBranch || "").trim();
 
     // worktree 分支：优先以 worktree 当前分支为准；仅在 detached 时回退到元数据（并做 refs/heads 校验，避免元数据异常导致 reset 失败）。
     let wtBranch = "";
@@ -64,7 +65,7 @@ export async function resetWorktreeAsync(req: {
     }
     if (!wtBranch) return { ok: false, needsForce: false, error: "无法确定 worktree 当前分支（可能处于 detached HEAD）" };
 
-    // 目标基线：默认对齐到主 worktree 当前 HEAD（而不是创建时记录的 baseBranch，避免分支改名/删除导致 reset 失败）
+    // 目标基线：默认对齐到基 worktree 当前 HEAD（而不是创建时记录的 baseBranch，避免分支改名/删除导致 reset 失败）
     const reqTargetRef = String(req.targetRef || "").trim();
     let baseBranchFromMain = "";
     try {
@@ -78,7 +79,7 @@ export async function resetWorktreeAsync(req: {
       targetRef = head.ok ? String(head.stdout || "").trim() : "";
     }
     if (!targetRef) {
-      // 兜底：若无法读取主 worktree HEAD，则退回到基分支名（尽量保持可用）
+      // 兜底：若无法读取基 worktree HEAD，则退回到基分支名（尽量保持可用）
       targetRef = String(baseBranchFromMain || metaBaseBranch).trim();
     }
     if (!targetRef) return { ok: false, needsForce: false, error: "无法确定目标基线（请手动指定 targetRef）" };
@@ -134,8 +135,8 @@ export async function resetWorktreeAsync(req: {
 }
 
 /**
- * 中文说明：检测指定 worktree 是否已与主 worktree 当前基线对齐。
- * - 默认基线为主 worktree `HEAD`（可选 targetRef 覆盖）；
+ * 中文说明：检测指定 worktree 是否已与基 worktree 当前基线对齐。
+ * - 默认基线为基 worktree `HEAD`（可选 targetRef 覆盖）；
  * - 仅做只读判断，不修改工作区状态。
  */
 export async function isWorktreeAlignedToMainAsync(req: {
@@ -150,6 +151,9 @@ export async function isWorktreeAlignedToMainAsync(req: {
 
   const existingMeta = getWorktreeMeta(wt);
   let repoMainPath = toFsPathAbs(String(existingMeta?.repoMainPath || ""));
+  const metaBaseBranch = String(existingMeta?.baseBranch || "").trim();
+  const preferredRepoMain = await resolveRepoMainPathForBranchAsync({ dir: wt, branch: metaBaseBranch, fallbackPath: repoMainPath, gitPath, timeoutMs: 12_000 });
+  if (preferredRepoMain.ok) repoMainPath = preferredRepoMain.repoMainPath;
   if (!repoMainPath) {
     const inferred = await resolveRepoMainPathFromWorktreeAsync({ worktreePath: wt, gitPath, timeoutMs: 12_000 });
     if (!inferred.ok) return { ok: false, error: inferred.error || "missing repoMainPath" };

@@ -84,6 +84,76 @@ export type ResolveRepoMainPathResult =
   | { ok: true; repoMainPath: string; repoRoot: string; source: "worktree-list" | "repo-root" }
   | { ok: false; error: string };
 
+export type PickRepoMainPathSource = "branch-owner" | "fallback" | "main-worktree" | "repo-root";
+
+export type PickRepoMainPathResult = {
+  repoMainPath: string;
+  repoRoot: string;
+  source: PickRepoMainPathSource;
+};
+
+/**
+ * 中文说明：将 worktree 条目解析为绝对路径；失败时返回空字符串。
+ */
+function resolveWorktreeEntryPath(snapshot: WorktreeListSnapshot, entry: WorktreeListEntry | null | undefined): string {
+  const repoRoot = toFsPathAbs(snapshot.repoRoot);
+  const raw = String(entry?.worktree || "").trim();
+  if (!repoRoot || !raw) return "";
+  return resolveGitPath(repoRoot, raw);
+}
+
+/**
+ * 中文说明：在快照中查找“当前持有指定分支”的 worktree 路径。
+ */
+function findWorktreePathByBranch(snapshot: WorktreeListSnapshot, branch: string): string {
+  const shortBranch = toShortBranchName(branch);
+  if (!shortBranch) return "";
+  for (const item of snapshot.worktrees) {
+    if (toShortBranchName(String(item?.branch || "").trim()) !== shortBranch) continue;
+    const abs = resolveWorktreeEntryPath(snapshot, item);
+    if (abs) return abs;
+  }
+  return "";
+}
+
+/**
+ * 中文说明：在快照中查找“与给定路径匹配”的已登记 worktree 路径。
+ */
+function findWorktreePathByKey(snapshot: WorktreeListSnapshot, candidatePath: string): string {
+  const targetKey = toFsPathKey(candidatePath);
+  if (!targetKey) return "";
+  for (const item of snapshot.worktrees) {
+    const abs = resolveWorktreeEntryPath(snapshot, item);
+    if (!abs) continue;
+    if (toFsPathKey(abs) === targetKey) return abs;
+  }
+  return "";
+}
+
+/**
+ * 中文说明：基于 worktree 快照挑选“最适合作为后续操作落点”的 repoMainPath。
+ * - 若基分支当前已被某个 worktree 持有，则优先返回该 worktree；
+ * - 否则优先复用调用方给定的 fallbackPath（前提是它仍登记在 worktree 列表中）；
+ * - 再回退到主 worktree，最后回退到 repoRoot。
+ */
+export function pickRepoMainPathFromSnapshot(args: {
+  snapshot: WorktreeListSnapshot;
+  branch?: string;
+  fallbackPath?: string;
+}): PickRepoMainPathResult {
+  const snapshot = args.snapshot;
+  const repoRoot = toFsPathAbs(snapshot.repoRoot);
+  const byBranch = findWorktreePathByBranch(snapshot, String(args.branch || "").trim());
+  if (byBranch) return { repoMainPath: byBranch, repoRoot, source: "branch-owner" };
+
+  const byFallback = findWorktreePathByKey(snapshot, String(args.fallbackPath || "").trim());
+  if (byFallback) return { repoMainPath: byFallback, repoRoot, source: "fallback" };
+
+  const mainWorktree = toFsPathAbs(String(snapshot.mainWorktree || "").trim());
+  if (mainWorktree) return { repoMainPath: mainWorktree, repoRoot, source: "main-worktree" };
+  return { repoMainPath: repoRoot, repoRoot, source: "repo-root" };
+}
+
 /**
  * 中文说明：在缺失创建记录时，从 git 信息推断主 worktree 路径（repoMainPath）。
  * - 优先使用 `git worktree list --porcelain` 的第一项。
@@ -100,10 +170,43 @@ export async function resolveRepoMainPathFromWorktreeAsync(args: {
   const snap = await readWorktreeListSnapshotAsync({ dir: wt, gitPath: args.gitPath, timeoutMs: args.timeoutMs });
   if (!snap.ok) return { ok: false, error: snap.error };
 
-  const repoRoot = toFsPathAbs(snap.snapshot.repoRoot);
-  const mainWorktree = toFsPathAbs(String(snap.snapshot.mainWorktree || "").trim());
-  if (mainWorktree) return { ok: true, repoMainPath: mainWorktree, repoRoot, source: "worktree-list" };
-  return { ok: true, repoMainPath: repoRoot, repoRoot, source: "repo-root" };
+  const picked = pickRepoMainPathFromSnapshot({ snapshot: snap.snapshot });
+  return {
+    ok: true,
+    repoMainPath: picked.repoMainPath,
+    repoRoot: picked.repoRoot,
+    source: picked.source === "repo-root" ? "repo-root" : "worktree-list",
+  };
+}
+
+export type ResolveRepoMainPathForBranchResult =
+  | { ok: true; repoMainPath: string; repoRoot: string; source: PickRepoMainPathSource }
+  | { ok: false; error: string };
+
+/**
+ * 中文说明：按“基分支当前所属 worktree”优先解析 repoMainPath。
+ * - 适用场景：回收/重置等需要在某个可切换到基分支的 worktree 上执行；
+ * - 若基分支未被任何 worktree 持有，则回退到 fallbackPath / 主 worktree / repoRoot。
+ */
+export async function resolveRepoMainPathForBranchAsync(args: {
+  dir: string;
+  branch?: string;
+  fallbackPath?: string;
+  gitPath?: string;
+  timeoutMs?: number;
+}): Promise<ResolveRepoMainPathForBranchResult> {
+  const dirAbs = toFsPathAbs(args.dir);
+  if (!dirAbs) return { ok: false, error: "missing dir" };
+
+  const snap = await readWorktreeListSnapshotAsync({ dir: dirAbs, gitPath: args.gitPath, timeoutMs: args.timeoutMs });
+  if (!snap.ok) return { ok: false, error: snap.error };
+
+  const picked = pickRepoMainPathFromSnapshot({
+    snapshot: snap.snapshot,
+    branch: String(args.branch || "").trim(),
+    fallbackPath: String(args.fallbackPath || "").trim(),
+  });
+  return { ok: true, ...picked };
 }
 
 export type ResolveWorktreeBranchResult =
