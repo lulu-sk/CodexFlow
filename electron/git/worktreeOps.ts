@@ -9,7 +9,7 @@ import path from "node:path";
 import { execGitAsync, isGitExecutableUnavailable, spawnGitAsync } from "./exec";
 import { toFsPathAbs, toFsPathKey } from "./pathKey";
 import { parseWorktreeListPorcelain } from "./worktreeList";
-import { resolveRepoMainPathFromWorktreeAsync, resolveWorktreeBranchNameAsync } from "./worktreeMetaResolve";
+import { pickRepoMainPathFromSnapshot, resolveRepoMainPathForBranchAsync, resolveRepoMainPathFromWorktreeAsync, resolveWorktreeBranchNameAsync } from "./worktreeMetaResolve";
 import { buildRestoreCommandsForWorktreeStateSnapshot, cleanupWorktreeStateSnapshotAsync, createWorktreeStateSnapshotAsync, restoreWorktreeStateSnapshotAsync, type WorktreeStateSnapshot } from "./worktreeStateSnapshot";
 import { buildNextWorktreeMeta, deleteWorktreeMeta, getWorktreeMeta, setWorktreeMeta, type WorktreeMeta } from "../stores/worktreeMetaStore";
 
@@ -81,8 +81,8 @@ export type RecycleWorktreeRequest = {
   gitPath?: string;
   commitMessage?: string;
   /**
-   * 中文说明：当主 worktree 不干净时，是否允许自动暂存并在回收后恢复。
-   * - true：使用“事务化快照”策略，最大化保持主 worktree 原本的三态不被打乱：
+   * 中文说明：当回收目标 worktree（通常为基分支当前所在 worktree）不干净时，是否允许自动暂存并在回收后恢复。
+   * - true：使用“事务化快照”策略，最大化保持目标 worktree 原本的三态不被打乱：
    *   - 1) Working Tree：用单个 `git stash push -u` 保存内容级快照（tracked + untracked）
    *   - 2) Index：对 `.git/index` 做字节级快照（这是 staged 语义的权威来源）
    *   - 3) 回收完成后：先将工作区清空到确定态，再“只覆盖、不合并”回放工作区快照，最后原样覆盖恢复 index，并做指纹校验
@@ -121,7 +121,7 @@ export type RecycleBaseWorktreeStash = {
 };
 
 export type RecycleWorktreeDetails = {
-  /** 主 worktree 路径（用于 UI 提供“外部工具打开”入口）。 */
+  /** 回收实际执行所在的目标 worktree 路径（字段名为兼容历史沿用）。 */
   repoMainPath?: string;
   /** 回收操作涉及的基/源分支（用于 UI 展示/诊断）。 */
   baseBranch?: string;
@@ -320,7 +320,17 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
     return { ok: false, error: msg };
   }
   const wtList = parseWorktreeListPorcelain(wtListRes.stdout);
-  const mainWorktreePath = String(wtList[0]?.worktree || repoRoot).trim() || repoRoot;
+  const worktreeSnapshot = {
+    repoRoot: toFsPathAbs(repoRoot),
+    worktrees: wtList,
+    mainWorktree: toFsPathAbs(String(wtList[0]?.worktree || repoRoot).trim() || repoRoot) || toFsPathAbs(repoRoot),
+  };
+  const mainWorktreePath = String(worktreeSnapshot.mainWorktree || repoRoot).trim() || repoRoot;
+  const baseRepoMainPath = pickRepoMainPathFromSnapshot({
+    snapshot: worktreeSnapshot,
+    branch: baseBranch,
+    fallbackPath: mainWorktreePath,
+  }).repoMainPath;
   const projectName = path.basename(mainWorktreePath);
   const projectParent = path.dirname(mainWorktreePath);
   const poolDir = path.join(projectParent, `${projectName}_wt`);
@@ -548,7 +558,7 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
     try {
       req.onWorktreePlanned?.({
         providerId: plan.providerId,
-        repoMainPath: mainWorktreePath,
+        repoMainPath: baseRepoMainPath,
         worktreePath: plan.targetDir,
         baseBranch: req.baseBranch,
         wtBranch: plan.wtBranch,
@@ -564,7 +574,7 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
       try {
         req.onItemFailed?.({
           providerId: plan.providerId,
-          repoMainPath: mainWorktreePath,
+          repoMainPath: baseRepoMainPath,
           worktreePath: plan.targetDir,
           baseBranch: req.baseBranch,
           wtBranch: plan.wtBranch,
@@ -577,7 +587,7 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
 
     const warnings = await copyRulesIfNeeded(plan.targetDir);
     const meta: WorktreeMeta = {
-      repoMainPath: mainWorktreePath,
+      repoMainPath: baseRepoMainPath,
       baseBranch: req.baseBranch,
       baseRefAtCreate: baseRefAtCreateSha || undefined,
       wtBranch: plan.wtBranch,
@@ -587,7 +597,7 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
 
     const item: CreatedWorktree = {
       providerId: plan.providerId,
-      repoMainPath: mainWorktreePath,
+      repoMainPath: baseRepoMainPath,
       worktreePath: plan.targetDir,
       baseBranch: req.baseBranch,
       wtBranch: plan.wtBranch,
@@ -1255,8 +1265,8 @@ async function resolveForkBaseShaAsync(args: {
 }
 
 /**
- * 中文说明：执行实际的回收逻辑（假设主 worktree 已处于可操作状态）。
- * - 该方法不负责处理“主 worktree 脏”的策略；由外层决定是提示用户还是自动 stash。
+ * 中文说明：执行实际的回收逻辑（假设目标 worktree 已处于可操作状态）。
+ * - 该方法不负责处理“目标 worktree 脏”的策略；由外层决定是提示用户还是自动 stash。
  */
 async function recycleWorktreeCoreAsync(args: {
   wt: string;
@@ -1326,14 +1336,14 @@ async function recycleWorktreeCoreAsync(args: {
           return { ok: true };
         }
 
-        // B) 应用补丁到主 worktree（带 --3way 优先，失败自动回退）
+        // B) 应用补丁到目标 worktree（带 --3way 优先，失败自动回退）
         const baseArgv = ["-C", repoMainPath, "apply", "--index", "--whitespace=nowarn"];
         const try1 = await runGit([...baseArgv, "--3way", patchFile], applyTimeoutMs);
         if (!try1.ok) {
           const msg = `${String(try1.stderr || "")}\n${String(try1.stdout || "")}`.trim();
           const isUnknown3way = /unknown option.*--3way|unknown option.*3way|unrecognized option.*--3way/i.test(msg);
           if (!isUnknown3way) {
-            log("提示：补丁应用失败，正在回滚主 worktree 到干净状态。\n");
+            log("提示：补丁应用失败，正在回滚目标 worktree 到干净状态。\n");
             try { await runGit(["-C", repoMainPath, "reset", "--hard"], rollbackTimeoutMs); } catch {}
             try { await runGit(["-C", repoMainPath, "clean", "-fd"], rollbackTimeoutMs); } catch {}
             return { ok: false, errorCode: isGitLockedFailure(try1) ? "BASE_WORKTREE_LOCKED" : undefined, stderr: String(try1.stderr || ""), stdout: String(try1.stdout || ""), error: try1.error || msg || "git apply failed" };
@@ -1341,7 +1351,7 @@ async function recycleWorktreeCoreAsync(args: {
 
           const try2 = await runGit([...baseArgv, patchFile], applyTimeoutMs);
           if (!try2.ok) {
-            log("提示：补丁应用失败，正在回滚主 worktree 到干净状态。\n");
+            log("提示：补丁应用失败，正在回滚目标 worktree 到干净状态。\n");
             try { await runGit(["-C", repoMainPath, "reset", "--hard"], rollbackTimeoutMs); } catch {}
             try { await runGit(["-C", repoMainPath, "clean", "-fd"], rollbackTimeoutMs); } catch {}
             return { ok: false, errorCode: isGitLockedFailure(try2) ? "BASE_WORKTREE_LOCKED" : undefined, stderr: String(try2.stderr || ""), stdout: String(try2.stdout || ""), error: try2.error || "git apply failed" };
@@ -1351,7 +1361,7 @@ async function recycleWorktreeCoreAsync(args: {
         // C) 若无改动则不提交（避免 “nothing to commit” 报错）
         const st2 = await execGitAsync({ gitPath, argv: ["-C", repoMainPath, "status", "--porcelain"], timeoutMs: 8000 });
         if (st2.ok && String(st2.stdout || "").trim().length === 0) {
-          log("无可回收变更：补丁应用后主 worktree 仍无改动。\n");
+          log("无可回收变更：补丁应用后目标 worktree 仍无改动。\n");
           return { ok: true };
         }
 
@@ -1388,7 +1398,7 @@ async function recycleWorktreeCoreAsync(args: {
     return { ok: true };
   }
 
-  // rebase 模式：在 worktree 上 rebase，然后在主 worktree fast-forward
+  // rebase 模式：在 worktree 上 rebase，然后在目标 worktree fast-forward
   const wtDirty = await execGitAsync({ gitPath, argv: ["-C", wt, "status", "--porcelain"], timeoutMs: 8000 });
   if (wtDirty.ok && String(wtDirty.stdout || "").trim().length > 0) {
     return { ok: false, errorCode: "WORKTREE_DIRTY", stderr: "", stdout: "" };
@@ -1438,9 +1448,13 @@ export async function recycleWorktreeAsync(req: RecycleWorktreeRequest): Promise
   // 1) 解析 repoMainPath：优先使用创建记录；缺失则尝试从 git worktree 信息推断
   let meta: WorktreeMeta | null = getWorktreeMeta(wt);
   let repoMainPath = toFsPathAbs(String(meta?.repoMainPath || ""));
+  const preferredRepoMain = await resolveRepoMainPathForBranchAsync({ dir: wt, branch: baseBranch, fallbackPath: repoMainPath, gitPath, timeoutMs: 12_000 });
+  if (preferredRepoMain.ok) repoMainPath = preferredRepoMain.repoMainPath;
   if (!repoMainPath) {
     const inferred = await resolveRepoMainPathFromWorktreeAsync({ worktreePath: wt, gitPath, timeoutMs: 12_000 });
-    if (!inferred.ok) return { ok: false, errorCode: "META_MISSING", details: { repoMainPath: undefined, error: inferred.error } };
+    if (!inferred.ok) {
+      return { ok: false, errorCode: "META_MISSING", details: { repoMainPath: undefined, error: preferredRepoMain.ok ? inferred.error : preferredRepoMain.error } };
+    }
     repoMainPath = inferred.repoMainPath;
   }
 
@@ -1466,17 +1480,17 @@ export async function recycleWorktreeAsync(req: RecycleWorktreeRequest): Promise
       const repairedText = (inProg.repairedStaleMarkers || [])
         .map((item) => `${item.name} -> ${item.backupPath}`)
         .join("\n");
-      log(`检测到主 worktree 存在过期 Git 标记，已自动归档并继续：\n${repairedText}\n`);
+      log(`检测到目标 worktree 存在过期 Git 标记，已自动归档并继续：\n${repairedText}\n`);
     }
     if (inProg.inProgress) {
       const markerText = formatProgressMarkers(inProg.activeMarkers || []);
       const extraError = String(inProg.repairError || "").trim();
-      if (markerText) log(`主 worktree 仍存在进行中的 Git 状态：${markerText}\n`);
+      if (markerText) log(`目标 worktree 仍存在进行中的 Git 状态：${markerText}\n`);
       if (extraError) log(`${extraError}\n`);
       return { ok: false, errorCode: "BASE_WORKTREE_IN_PROGRESS", details: { repoMainPath, baseBranch, wtBranch, error: extraError || undefined } };
     }
 
-    // 主 worktree 是否干净
+    // 目标 worktree 是否干净
     const mainStatus = await execGitAsync({ gitPath, argv: ["-C", repoMainPath, "status", "--porcelain"], timeoutMs: 8000 });
     if (!mainStatus.ok) {
       const code: RecycleWorktreeErrorCode = isGitLockedFailure(mainStatus) ? "BASE_WORKTREE_LOCKED" : "UNKNOWN";
@@ -1485,20 +1499,20 @@ export async function recycleWorktreeAsync(req: RecycleWorktreeRequest): Promise
     const isMainDirty = String(mainStatus.stdout || "").trim().length > 0;
     const mainAnalyze = analyzePorcelainStatus(String(mainStatus.stdout || ""));
 
-    // 默认：主 worktree 脏则提示 UI 弹窗，不直接失败结束
+    // 默认：目标 worktree 脏则提示 UI 弹窗，不直接失败结束
     if (isMainDirty && req.autoStashBaseWorktree !== true) {
-      log("检测到主 worktree 不干净：等待用户确认是否自动 stash/恢复。\n");
+      log("检测到目标 worktree 不干净：等待用户确认是否自动 stash/恢复。\n");
       return { ok: false, errorCode: "BASE_WORKTREE_DIRTY", details: { repoMainPath, baseBranch, wtBranch } };
     }
 
-    // B/C) 自动 stash（仅当主 worktree 脏且用户确认继续）
+    // B/C) 自动 stash（仅当目标 worktree 脏且用户确认继续）
     const willAutoStash = isMainDirty && req.autoStashBaseWorktree === true;
     let originalRef: RecycleWorktreeDetails["originalRef"] | undefined = undefined;
     let stashes: RecycleBaseWorktreeStash[] = [];
     let baseSnapshot: WorktreeStateSnapshot | null = null;
 
     if (willAutoStash) {
-      log("开始自动 stash 主 worktree（用于回收期间保持主 worktree 干净）。\n");
+      log("开始自动 stash 目标 worktree（用于回收期间保持回收落点干净）。\n");
       const orig = await readBaseOriginalRefAsync({ repoMainPath, gitPath });
       if (!orig.ok) {
         const code: RecycleWorktreeErrorCode = orig.locked ? "BASE_WORKTREE_LOCKED" : "UNKNOWN";
@@ -1519,7 +1533,7 @@ export async function recycleWorktreeAsync(req: RecycleWorktreeRequest): Promise
       const kind: RecycleBaseWorktreeStashKind = mainAnalyze.hasStaged && !mainAnalyze.hasUnstagedOrUntracked ? "staged" : "unstaged";
       stashes = [{ kind, sha: baseSnapshot.stashSha, message: baseSnapshot.stashMessage }];
 
-      // 复验：stash 完毕后主 worktree 必须干净，否则中止并提示外部处理（stash 已创建，避免用户担心丢改动）
+      // 复验：stash 完毕后目标 worktree 必须干净，否则中止并提示外部处理（stash 已创建，避免用户担心丢改动）
       const st2 = await execGitAsync({ gitPath, argv: ["-C", repoMainPath, "status", "--porcelain"], timeoutMs: 8000 });
       if (!st2.ok) {
         const code: RecycleWorktreeErrorCode = isGitLockedFailure(st2) ? "BASE_WORKTREE_LOCKED" : "UNKNOWN";
@@ -1613,7 +1627,7 @@ export async function recycleWorktreeAsync(req: RecycleWorktreeRequest): Promise
 
     // E) 回收成功后自动恢复（强恢复 + drop）
     if (originalRef) {
-      log("回收完成：正在切回主 worktree 原始位置。\n");
+      log("回收完成：正在切回目标 worktree 原始位置。\n");
       const back = await switchBaseToOriginalRefAsync({ repoMainPath, gitPath, ref: originalRef });
       if (!back.ok) {
         return {
@@ -1639,7 +1653,7 @@ export async function recycleWorktreeAsync(req: RecycleWorktreeRequest): Promise
 
     // 新策略：强恢复（工作区快照 + index 字节快照）——只覆盖，不做 apply/merge
     if (baseSnapshot) {
-      log(`正在强恢复主 worktree（stash: ${baseSnapshot.stashSha}）。\n`);
+      log(`正在强恢复目标 worktree（stash: ${baseSnapshot.stashSha}）。\n`);
       const restore = await restoreWorktreeStateSnapshotAsync({ repoMainPath, gitPath, snapshot: baseSnapshot, onLog: req.onLog });
       if (!restore.ok) {
         const unmerged = await hasUnmergedFilesAsync({ repoMainPath, gitPath });
@@ -1707,9 +1721,24 @@ export async function removeWorktreeAsync(req: RemoveWorktreeRequest): Promise<R
     const gitPath = req.gitPath;
     const meta = getWorktreeMeta(wt);
     let repoMainPath = toFsPathAbs(String(meta?.repoMainPath || ""));
+    const preferredRepoMain = await resolveRepoMainPathForBranchAsync({
+      dir: wt,
+      branch: String(meta?.baseBranch || "").trim(),
+      fallbackPath: repoMainPath,
+      gitPath,
+      timeoutMs: 12_000,
+    });
+    if (preferredRepoMain.ok) repoMainPath = preferredRepoMain.repoMainPath;
     if (!repoMainPath) {
       const inferred = await resolveRepoMainPathFromWorktreeAsync({ worktreePath: wt, gitPath, timeoutMs: 12_000 });
-      if (!inferred.ok) return { ok: false, removedWorktree: false, removedBranch: false, error: inferred.error || "missing repoMainPath" };
+      if (!inferred.ok) {
+        return {
+          ok: false,
+          removedWorktree: false,
+          removedBranch: false,
+          error: inferred.error || (!preferredRepoMain.ok ? preferredRepoMain.error : "missing repoMainPath"),
+        };
+      }
       repoMainPath = inferred.repoMainPath;
     }
 

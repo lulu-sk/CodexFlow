@@ -3,7 +3,7 @@
 
 import { execGitAsync } from "./exec";
 import { toFsPathAbs } from "./pathKey";
-import { resolveRepoMainPathFromWorktreeAsync } from "./worktreeMetaResolve";
+import { resolveRepoMainPathForBranchAsync, resolveRepoMainPathFromWorktreeAsync } from "./worktreeMetaResolve";
 import { getWorktreeMeta, type WorktreeMeta } from "../stores/worktreeMetaStore";
 
 export type WorktreeForkPointSource = "recorded" | "merge-base";
@@ -20,7 +20,7 @@ export type GitCommitSummary = {
 };
 
 export type WorktreeForkPointSnapshot = {
-  /** 主 worktree 路径（用于 UI 打开外部工具/终端时定位仓库）。 */
+  /** 默认操作落点 worktree 路径（用于 UI 打开外部工具/终端时定位仓库）。 */
   repoMainPath: string;
   /** 创建记录中的分叉点（可选）。 */
   recordedSha?: string;
@@ -61,6 +61,8 @@ export async function resolveWorktreeForkPointAsync(req: {
 
   const meta = getWorktreeMeta(wt);
   let repoMainPath = toFsPathAbs(String(meta?.repoMainPath || ""));
+  const preferredRepoMain = await resolveRepoMainPathForBranchAsync({ dir: wt, branch: baseBranch, fallbackPath: repoMainPath, gitPath, timeoutMs: 12_000 });
+  if (preferredRepoMain.ok) repoMainPath = preferredRepoMain.repoMainPath;
   if (!repoMainPath) {
     const inferred = await resolveRepoMainPathFromWorktreeAsync({ worktreePath: wt, gitPath, timeoutMs: 12_000 });
     if (!inferred.ok) return { ok: false, error: inferred.error };
@@ -133,6 +135,14 @@ export async function searchForkPointCommitsAsync(args: {
 
   const meta = getWorktreeMeta(wt);
   let repoMainPath = toFsPathAbs(String(meta?.repoMainPath || ""));
+  const preferredRepoMain = await resolveRepoMainPathForBranchAsync({
+    dir: wt,
+    branch: String(meta?.baseBranch || "").trim(),
+    fallbackPath: repoMainPath,
+    gitPath,
+    timeoutMs: 12_000,
+  });
+  if (preferredRepoMain.ok) repoMainPath = preferredRepoMain.repoMainPath;
   if (!repoMainPath) {
     const inferred = await resolveRepoMainPathFromWorktreeAsync({ worktreePath: wt, gitPath, timeoutMs: 12_000 });
     if (!inferred.ok) return { ok: false, error: inferred.error };
@@ -175,6 +185,14 @@ export async function validateForkPointRefAsync(args: {
 
   const meta = getWorktreeMeta(wt);
   let repoMainPath = toFsPathAbs(String(meta?.repoMainPath || ""));
+  const preferredRepoMain = await resolveRepoMainPathForBranchAsync({
+    dir: wt,
+    branch: String(meta?.baseBranch || "").trim(),
+    fallbackPath: repoMainPath,
+    gitPath,
+    timeoutMs: 12_000,
+  });
+  if (preferredRepoMain.ok) repoMainPath = preferredRepoMain.repoMainPath;
   if (!repoMainPath) {
     const inferred = await resolveRepoMainPathFromWorktreeAsync({ worktreePath: wt, gitPath, timeoutMs: 12_000 });
     if (!inferred.ok) return { ok: false, error: inferred.error };

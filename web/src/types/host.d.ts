@@ -231,6 +231,7 @@ export type GitWorktreeListEntry = {
 };
 
 export type WorktreeMeta = {
+  /** 默认操作落点 worktree 路径（通常为主 worktree；若基分支由其他 worktree 持有，则可能为该基 worktree）。 */
   repoMainPath: string;
   baseBranch: string;
   /** 创建时基分支的提交号（用于“按分叉点之后回收”的默认边界）。 */
@@ -270,6 +271,7 @@ export type RecycleBaseWorktreeStash = {
 };
 
 export type RecycleWorktreeDetails = {
+  /** 回收实际执行所在的目标 worktree 路径（字段名为兼容历史沿用）。 */
   repoMainPath?: string;
   baseBranch?: string;
   wtBranch?: string;
@@ -295,6 +297,7 @@ export type IsWorktreeAlignedToMainResult =
 
 export type CreatedWorktree = {
   providerId: "codex" | "claude" | "gemini";
+  /** 默认操作落点 worktree 路径（通常为主 worktree；若基分支由其他 worktree 持有，则可能为该基 worktree）。 */
   repoMainPath: string;
   worktreePath: string;
   baseBranch: string;
