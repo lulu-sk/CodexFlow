@@ -8,6 +8,7 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import i18n from "@/i18n/setup";
 import { copyTextCrossPlatform, readTextCrossPlatform } from "@/lib/clipboard";
 import {
+  DEFAULT_TERMINAL_FONT_SIZE,
   DEFAULT_TERMINAL_FONT_FAMILY,
   getTerminalTheme,
   normalizeTerminalAppearance,
@@ -37,6 +38,15 @@ export type TerminalScrollSnapshot = {
   baseY: number;
   isAtBottom: boolean;
 };
+function isWindowsRendererPlatform(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /win/i.test(navigator.platform || "");
+}
+
+function resolveCursorStyle(themeId?: TerminalAppearance["theme"]): "bar" | "block" {
+  return themeId === "macos-system" ? "block" : "bar";
+}
+
 
 export type TerminalAdapterOptions = {
   appearance?: Partial<TerminalAppearance>;
@@ -244,6 +254,8 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
   const applyAppearanceToTerminal = (next: TerminalAppearance) => {
     appearance = next;
     if (!term) return;
+    const resolvedFontSize = appearance.fontSize ?? DEFAULT_TERMINAL_FONT_SIZE;
+    const resolvedCursorStyle = resolveCursorStyle(next.theme);
     const palette = getTerminalTheme(next.theme).palette;
     let fontApplied = false;
     try {
@@ -260,6 +272,22 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
           opts.fontFamily = appearance.fontFamily;
         }
       } catch {}
+    let fontSizeApplied = false;
+    try {
+      const setOption = (term as any).setOption;
+      if (typeof setOption === "function") {
+        setOption.call(term, "fontSize", resolvedFontSize);
+        fontSizeApplied = true;
+      }
+    } catch {}
+    if (!fontSizeApplied) {
+      try {
+        const opts: any = (term as any).options;
+        if (opts && typeof opts === "object") {
+          opts.fontSize = resolvedFontSize;
+        }
+      } catch {}
+    }
     }
     let themeApplied = false;
     try {
@@ -276,6 +304,17 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
           opts.theme = palette;
         }
       } catch {}
+    try {
+      const setOption = (term as any).setOption;
+      if (typeof setOption === "function") {
+        setOption.call(term, "cursorStyle", resolvedCursorStyle);
+      } else {
+        const opts: any = (term as any).options;
+        if (opts && typeof opts === "object") {
+          opts.cursorStyle = resolvedCursorStyle;
+        }
+      }
+    } catch {}
     }
     try { fitAndPin(true); } catch {}
     try { term.refresh(0, term.rows - 1); } catch {}
@@ -422,19 +461,20 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
         // 光标闪烁提升输入感知
         cursorBlink: true,
         // 光标样式：使用竖线（更接近编辑器/Windows Terminal 的“插入位”感受）
-        cursorStyle: "bar",
+        // macOS 系统主题优先复刻 Terminal.app，其它场景维持现有 IDE 风格。
+        cursorStyle: resolveCursorStyle(appearance.theme),
         // 透明背景在某些机器上会影响清屏性能，若遇到问题可改为 false
         allowTransparency: true,
         // Windows/ConPTY 自行处理 CR/LF，前端不应把 "\n" 强行当作 CRLF
         // 否则会与后端的换行判定叠加，放大错位风险
         convertEol: false,
         // 关键：启用 Windows 模式，禁用前端 reflow，由 ConPTY 负责软换行/重排
-        windowsMode: true,
+        windowsMode: isWindowsRendererPlatform(),
         // 根据用户选择应用终端主题
         theme: themePalette,
         // 与容器 UI 的等宽字体保持一致
         fontFamily: appearance.fontFamily || DEFAULT_TERMINAL_FONT_FAMILY,
-        fontSize: 13,
+        fontSize: appearance.fontSize ?? DEFAULT_TERMINAL_FONT_SIZE,
         // 严格网格：行高与字距保持 1，减少测量误差
         lineHeight: 1,
         letterSpacing: 0,
@@ -1031,7 +1071,11 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
     setAppearance: (partial) => {
       const next = normalizeTerminalAppearance(partial, appearance);
       // 仅当字体与主题都未变化时才跳过，保证主题切换能即时落地
-      if (next.fontFamily === appearance.fontFamily && next.theme === appearance.theme) return;
+      if (
+        next.fontFamily === appearance.fontFamily &&
+        next.theme === appearance.theme &&
+        next.fontSize === appearance.fontSize
+      ) return;
       applyAppearanceToTerminal(next);
     },
     dispose: () => {

@@ -212,9 +212,11 @@
     "options": {
       "campbell": "Campbell (Dark, default)",
       "dracula": "Dracula (Dark)",
-      "catppuccin-latte": "Catppuccin · Latte (Light)"
+      "catppuccin-latte": "Catppuccin · Latte (Light)",
+      "macos-system": "System Native (macOS)"
     },
-    "previewNote": "Preview uses {theme} colors."
+    "previewNote": "Preview uses {theme} colors.",
+    "systemUnavailable": "Terminal.app settings are unavailable right now. Falling back to Campbell."
   },
   "terminalFont": {
     "label": "Terminal font",

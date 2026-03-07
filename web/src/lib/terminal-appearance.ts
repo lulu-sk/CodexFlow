@@ -7,6 +7,8 @@ import type { TerminalThemeId, TerminalThemeTone } from "@/types/terminal-theme"
 
 export const DEFAULT_TERMINAL_FONT_FAMILY =
   'Cascadia Code, Cascadia Mono, Consolas, ui-monospace, SFMono-Regular, Menlo, Monaco, "Liberation Mono", monospace, "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji", "Apple Color Emoji", "Twemoji Mozilla", "Microsoft YaHei UI", "Microsoft YaHei", SimSun, SimHei, "Noto Sans CJK SC", "Source Han Sans SC"';
+export const DEFAULT_TERMINAL_FONT_SIZE = 13;
+
 
 export const DEFAULT_TERMINAL_THEME_ID: TerminalThemeId = "campbell";
 
@@ -33,12 +35,38 @@ export type TerminalThemePalette = {
   brightCyan: string;
   brightWhite: string;
 };
+export type TerminalThemeFont = {
+  family: string;
+  size: number;
+};
+
 
 export type TerminalThemeDefinition = {
   id: TerminalThemeId;
   tone: TerminalThemeTone;
+  /** 可选字体配置（用于 macos-system 动态主题） */
+  font?: TerminalThemeFont;
   palette: TerminalThemePalette;
 };
+export type MacOSSystemThemeByTone<T extends Pick<TerminalThemeDefinition, "tone"> = TerminalThemeDefinition> =
+  Partial<Record<TerminalThemeTone, T>>;
+
+export function buildMacOSSystemThemeByTone<T extends Pick<TerminalThemeDefinition, "tone">>(
+  theme?: T | null
+): MacOSSystemThemeByTone<T> {
+  if (!theme) return {};
+  return { [theme.tone]: theme };
+}
+
+export function resolveMacOSSystemThemeByTone<T extends Pick<TerminalThemeDefinition, "tone">>(
+  themesByTone: MacOSSystemThemeByTone<T>,
+  tone: TerminalThemeTone,
+  fallback?: T | null
+): T | null {
+  return themesByTone[tone] || fallback || null;
+}
+
+
 
 const TERMINAL_THEME_LIST: TerminalThemeDefinition[] = [
   {
@@ -133,8 +161,57 @@ const TERMINAL_THEME_MAP: Record<TerminalThemeId, TerminalThemeDefinition> = TER
 );
 
 export const TERMINAL_THEME_OPTIONS = TERMINAL_THEME_LIST;
+// macOS 系统主题缓存（用于同步函数 getTerminalTheme）
+let cachedMacOSTheme: TerminalThemeDefinition | null = null;
+
+/**
+ * 设置 macOS 系统主题缓存
+ * 在获取到 macOS 系统主题后调用此函数缓存主题数据
+ */
+export function setCachedMacOSTheme(theme: TerminalThemeDefinition | null): void {
+  cachedMacOSTheme = theme;
+  // 同时保存到 localStorage 以便应用重启后恢复
+  if (theme) {
+    try {
+      localStorage.setItem("macos-terminal-theme-cache", JSON.stringify(theme));
+    } catch {
+      // 忽略存储错误
+    }
+  } else {
+    try {
+      localStorage.removeItem("macos-terminal-theme-cache");
+    } catch {
+      // 忽略存储错误
+    }
+  }
+}
+
+/**
+ * 获取 macOS 系统主题缓存
+ */
+export function getCachedMacOSTheme(): TerminalThemeDefinition | null {
+  if (cachedMacOSTheme) {
+    return cachedMacOSTheme;
+  }
+  // 尝试从 localStorage 恢复
+  try {
+    const cached = localStorage.getItem("macos-terminal-theme-cache");
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      if (parsed && parsed.id && parsed.palette) {
+        cachedMacOSTheme = parsed as TerminalThemeDefinition;
+        return cachedMacOSTheme;
+      }
+    }
+  } catch {
+    // 忽略解析错误
+  }
+  return null;
+}
+
 
 export type TerminalAppearance = {
+  fontSize?: number;
   fontFamily: string;
   theme: TerminalThemeId;
 };
@@ -157,21 +234,59 @@ export function normalizeTerminalTheme(raw?: string | null): TerminalThemeId {
   ) {
     return "catppuccin-latte";
   }
+  if (trimmed === "macos-system") {
+    return "macos-system";
+  }
   return DEFAULT_TERMINAL_THEME_ID;
 }
 
+function isMacRendererPlatform(isMacPlatform?: boolean): boolean {
+  if (typeof isMacPlatform === "boolean") return isMacPlatform;
+  if (typeof navigator === "undefined") return false;
+  const platform = navigator.platform || "";
+  return /mac/i.test(platform);
+}
+
+function resolveTerminalThemeId(
+  raw?: string | null,
+  options?: { isMacPlatform?: boolean }
+): TerminalThemeId {
+  const normalized = normalizeTerminalTheme(raw);
+  if (normalized === "macos-system" && !isMacRendererPlatform(options?.isMacPlatform)) {
+    return DEFAULT_TERMINAL_THEME_ID;
+  }
+  return normalized;
+}
+
+
 export function getTerminalTheme(themeId?: TerminalThemeId | null): TerminalThemeDefinition {
-  const resolved = themeId ? normalizeTerminalTheme(themeId) : DEFAULT_TERMINAL_THEME_ID;
+  const resolved = resolveTerminalThemeId(themeId);
+
+  // 处理 macos-system 动态主题
+  if (resolved === "macos-system") {
+    const cachedTheme = getCachedMacOSTheme();
+    if (cachedTheme) {
+      return cachedTheme;
+    }
+    // 如果没有缓存，回退到默认主题
+    // 注意：调用方应该先通过 setCachedMacOSTheme 设置缓存
+    return TERMINAL_THEME_MAP[DEFAULT_TERMINAL_THEME_ID];
+  }
+
   return TERMINAL_THEME_MAP[resolved] || TERMINAL_THEME_MAP[DEFAULT_TERMINAL_THEME_ID];
 }
+
 
 export function normalizeTerminalAppearance(
   partial?: Partial<TerminalAppearance>,
   base?: TerminalAppearance
 ): TerminalAppearance {
   const fontInput = partial?.fontFamily ?? base?.fontFamily;
+  const hasFontSizeInput = !!partial && Object.prototype.hasOwnProperty.call(partial, "fontSize");
+  const fontSizeInput = hasFontSizeInput ? partial?.fontSize : base?.fontSize;
   const themeInput = partial?.theme ?? base?.theme;
   return {
+    fontSize: fontSizeInput,
     fontFamily: normalizeTerminalFontFamily(fontInput),
     theme: normalizeTerminalTheme(themeInput),
   };
@@ -188,6 +303,21 @@ export type TerminalChromeColors = {
 };
 
 const TERMINAL_BG_FALLBACK = TERMINAL_THEME_MAP[DEFAULT_TERMINAL_THEME_ID].palette.background;
+function normalizeThemeColorForMath(input?: string | null): string | null {
+  if (typeof input !== "string") return null;
+  const trimmed = input.trim();
+  const hexMatch = trimmed.match(/^#([0-9a-f]{6}|[0-9a-f]{8})$/i);
+  if (hexMatch) {
+    return `#${hexMatch[1].slice(0, 6)}`;
+  }
+  const rgbaMatch = trimmed.match(/^rgba?\(([^)]+)\)$/i);
+  if (!rgbaMatch) return null;
+  const parts = rgbaMatch[1].split(",").map((part) => Number(part.trim()));
+  if (parts.length < 3 || parts.slice(0, 3).some((value) => !Number.isFinite(value))) return null;
+  const toHex = (value: number) => Math.max(0, Math.min(255, Math.round(value))).toString(16).padStart(2, "0");
+  return `#${toHex(parts[0])}${toHex(parts[1])}${toHex(parts[2])}`;
+}
+
 
 /**
  * 依据终端主题推导容器装饰色，保证不同组合下的边框与滚动条对比度。
@@ -196,7 +326,8 @@ export function buildTerminalChromeColors(theme?: TerminalThemeDefinition | null
   const resolved = theme || TERMINAL_THEME_MAP[DEFAULT_TERMINAL_THEME_ID];
   const tone: TerminalThemeTone = resolved?.tone || "dark";
   const baseBg = resolved?.palette?.background || TERMINAL_BG_FALLBACK;
-  const normalizedBg = shiftHexLuminance(baseBg, 0) || TERMINAL_BG_FALLBACK;
+  const mathBg = normalizeThemeColorForMath(baseBg) || TERMINAL_BG_FALLBACK;
+  const normalizedBg = shiftHexLuminance(mathBg, 0) || TERMINAL_BG_FALLBACK;
   const frameBorder =
     tone === "dark"
       ? mixHexColors(normalizedBg, "#FFFFFF", 0.22)

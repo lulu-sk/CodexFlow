@@ -55,12 +55,17 @@ import { resolveProvider } from "@/lib/providers/resolve";
 import { getYoloPresetStartupCmd, isYoloPresetEnabled, isYoloSupportedProviderId } from "@/lib/providers/yolo";
 import {
   DEFAULT_TERMINAL_FONT_FAMILY,
+  DEFAULT_TERMINAL_FONT_SIZE,
+  DEFAULT_TERMINAL_THEME_ID,
+  type TerminalThemePalette,
+  type TerminalThemeFont,
   normalizeTerminalFontFamily,
   buildTerminalFontStack,
   getTerminalTheme,
   normalizeTerminalTheme,
   TERMINAL_THEME_OPTIONS,
 } from "@/lib/terminal-appearance";
+import { useMacOSSystemTerminalTheme } from "@/lib/use-macos-system-terminal-theme";
 import { resolveFirstAvailableFont, parseFontFamilyList } from "@/lib/font-utils";
 import { resolveSystemTheme, subscribeSystemTheme, type ThemeMode, type ThemeSetting } from "@/lib/theme";
 import type { TerminalThemeId } from "@/types/terminal-theme";
@@ -702,9 +707,48 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   const [monospaceFonts, setMonospaceFonts] = useState<string[]>([]);
   const [showAllFonts, setShowAllFonts] = useState<boolean>(false);
   const fontsLoadedRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    if (platformCapabilities?.isMac === false && terminalTheme === "macos-system") {
+      setTerminalTheme(DEFAULT_TERMINAL_THEME_ID);
+    }
+  }, [platformCapabilities?.isMac, terminalTheme]);
+
+  const {
+    theme: activeMacTheme,
+    loading: macThemeLoading,
+    error: macThemeError,
+  } = useMacOSSystemTerminalTheme({
+    enabled: open && platformCapabilities?.isMac === true,
+    tone: systemTheme,
+  });
+  const macTheme = useMemo(() => ({
+    supported: platformCapabilities?.isMac === true,
+    loading: open && platformCapabilities?.isMac === true ? macThemeLoading : false,
+    theme: activeMacTheme,
+    error: platformCapabilities?.isMac === true ? macThemeError : null,
+  }), [activeMacTheme, macThemeError, macThemeLoading, open, platformCapabilities?.isMac]);
+  const previewFontFamily = useMemo(() => {
+    if (terminalTheme === "macos-system" && activeMacTheme?.font?.family) {
+      return buildTerminalFontStack(activeMacTheme.font.family);
+    }
+    return terminalFontFamily || DEFAULT_TERMINAL_FONT_FAMILY;
+  }, [activeMacTheme, terminalFontFamily, terminalTheme]);
+  const previewFontSize = useMemo(() => {
+    if (terminalTheme === "macos-system" && activeMacTheme?.font?.size) {
+      return activeMacTheme.font.size;
+    }
+    return DEFAULT_TERMINAL_FONT_SIZE;
+  }, [activeMacTheme, terminalTheme]);
   const resolvedPreviewFont = useMemo(() => {
+    if (terminalTheme === "macos-system" && activeMacTheme?.font?.family) {
+      return {
+        name: activeMacTheme.font.family,
+        isFallback: false,
+      };
+    }
     return resolveFirstAvailableFont(terminalFontFamily || DEFAULT_TERMINAL_FONT_FAMILY);
-  }, [terminalFontFamily]);
+  }, [activeMacTheme, terminalFontFamily, terminalTheme]);
   const currentPrimaryFont = useMemo(() => {
     const list = parseFontFamilyList(terminalFontFamily);
     return list[0] || "";
@@ -723,7 +767,15 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     const current = (currentPrimaryFont || "").toLowerCase();
     return visibleFontList.findIndex((name) => name.toLowerCase() === current);
   }, [visibleFontList, currentPrimaryFont]);
-  const previewTheme = useMemo(() => getTerminalTheme(terminalTheme), [terminalTheme]);
+
+  // 主题预览， 支持 macos-system 动态主题
+  const previewTheme = useMemo(() => {
+    if (terminalTheme === "macos-system") {
+      return activeMacTheme || getTerminalTheme(DEFAULT_TERMINAL_THEME_ID);
+    }
+    return getTerminalTheme(terminalTheme);
+  }, [terminalTheme, activeMacTheme]);
+
   const themeLabel = useCallback((mode: ThemeSetting) => {
     if (mode === "dark") return t("settings:appearance.theme.dark") as string;
     if (mode === "light") return t("settings:appearance.theme.light") as string;
@@ -2357,7 +2409,13 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                 <CardContent className="space-y-4">
                   <p className="text-sm text-slate-500">{t("settings:terminalTheme.help")}</p>
                   <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                    {TERMINAL_THEME_OPTIONS.map((option) => {
+                    {[...TERMINAL_THEME_OPTIONS, ...(platformCapabilities?.isMac && macTheme.supported ? [{
+                      id: "macos-system" as TerminalThemeId,
+                      tone: (activeMacTheme?.tone || "dark") as "dark" | "light",
+                      palette: activeMacTheme?.palette || TERMINAL_THEME_OPTIONS[0].palette,
+                    }] : [])].map((option) => {
+                      const isMacSystemTheme = option.id === "macos-system";
+                      const isUnavailable = isMacSystemTheme && !macTheme.loading && !activeMacTheme;
                       const isActive = option.id === terminalTheme;
                       const palette = option.palette;
                       return (
@@ -2365,11 +2423,13 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                           key={option.id}
                           type="button"
                           className={cn(
+                            isUnavailable && "cursor-not-allowed opacity-60",
                             "flex flex-col gap-2 rounded-lg border px-3 py-3 text-left transition-colors",
                             isActive
                               ? "border-slate-900 bg-slate-50 shadow-sm dark:border-[var(--cf-accent)] dark:bg-[var(--cf-surface)]"
                               : "border-slate-200 bg-white hover:border-slate-300 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:hover:border-[var(--cf-border)]"
                           )}
+                          disabled={isUnavailable}
                           onClick={() => setTerminalTheme(option.id)}
                         >
                           <div
@@ -2406,7 +2466,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                     <div
                       className="rounded-lg border border-slate-200 px-4 py-3 font-mono text-xs overflow-x-auto dark:border-[var(--cf-border)]"
                       style={{
-                        fontFamily: terminalFontFamily || DEFAULT_TERMINAL_FONT_FAMILY,
+                        fontFamily: previewFontFamily,
+                        fontSize: `${previewFontSize}px`,
                         backgroundColor: previewTheme.palette.background,
                         color: previewTheme.palette.foreground,
                       }}
@@ -2421,6 +2482,11 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                     <div className="text-[11px] text-slate-500">
                       {t("settings:terminalTheme.previewNote", { theme: t(`settings:terminalTheme.options.${terminalTheme}`) })}
                     </div>
+                    {terminalTheme === "macos-system" && !macTheme.loading && !activeMacTheme && (
+                      <div className="text-[11px] text-amber-600 dark:text-amber-400">
+                        {t("settings:terminalTheme.systemUnavailable")}
+                      </div>
+                    )}
                   </div>
 
                   {/* 单一选择器：仅显示“已安装”字体；推荐项置顶并标注“推荐” */}

@@ -703,6 +703,43 @@ export interface UtilsAPI {
     defaultShell?: string;
     error?: string;
   }>;
+  /** 获取 macOS Terminal.app 主题（仅 macOS 可用） */
+  getMacTerminalTheme(args?: { tone?: "light" | "dark" }): Promise<{
+    ok: boolean;
+    supported?: boolean;
+    theme?: {
+      id: "macos-system";
+      tone: "dark" | "light";
+      palette: {
+        background: string;
+        foreground: string;
+        cursor: string;
+        cursorAccent: string;
+        selectionBackground: string;
+        black: string;
+        red: string;
+        green: string;
+        yellow: string;
+        blue: string;
+        magenta: string;
+        cyan: string;
+        white: string;
+        brightBlack: string;
+        brightRed: string;
+        brightGreen: string;
+        brightYellow: string;
+        brightBlue: string;
+        brightMagenta: string;
+        brightCyan: string;
+        brightWhite: string;
+      };
+      font?: {
+        family: string;
+        size: number;
+      };
+    };
+    error?: string;
+  }>;
 }
 
 // 仅声明渲染层使用到的最小 API（与 preload.ts 暴露保持一致）

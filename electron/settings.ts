@@ -293,6 +293,7 @@ function normalizeTerminalTheme(raw: unknown): TerminalThemeId {
   if (value === 'catppuccin-latte' || value === 'catppuccinlatte' || value === 'catppuccin latte' || value === 'catppuccin') {
     return 'catppuccin-latte';
   }
+  if (value === 'macos-system') return 'macos-system';
   return DEFAULT_TERMINAL_THEME;
 }
 

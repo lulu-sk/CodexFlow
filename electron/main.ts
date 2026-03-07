@@ -4709,6 +4709,19 @@ ipcMain.handle('utils.getPlatformCapabilities', async () => {
   };
 });
 
+ipcMain.handle("utils.getMacTerminalTheme", async (_event, args: { tone?: "light" | "dark" } | undefined) => {
+  try {
+    const { getMacTerminalTheme } = await import("./macTerminalTheme");
+    return await getMacTerminalTheme(args?.tone);
+  } catch (e: any) {
+    return {
+      ok: false,
+      supported: process.platform === "darwin",
+      error: String(e),
+    };
+  }
+});
+
 ipcMain.handle('utils.pathExists', async (_e, args: { path: string; dirOnly?: boolean }) => {
   try {
     const p = String(args?.path || '');

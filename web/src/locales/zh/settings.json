@@ -212,9 +212,11 @@
     "options": {
       "campbell": "Campbell（暗色，默认）",
       "dracula": "Dracula（暗色）",
-      "catppuccin-latte": "Catppuccin · Latte（亮色）"
+      "catppuccin-latte": "Catppuccin · Latte（亮色）",
+      "macos-system": "系统原生配色（仅 macOS）"
     },
-    "previewNote": "预览区已应用 {theme} 配色。"
+    "previewNote": "预览区已应用 {theme} 配色。",
+    "systemUnavailable": "当前无法读取 Terminal.app 配置，将回退到 Campbell。"
   },
   "terminalFont": {
     "label": "终端字体",

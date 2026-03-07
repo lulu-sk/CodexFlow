@@ -89,13 +89,17 @@ import { bashSingleQuote, buildPowerShellCall, powerShellArgToken, splitCommandL
 import SettingsDialog from "@/features/settings/settings-dialog";
 import {
   DEFAULT_TERMINAL_FONT_FAMILY,
+  DEFAULT_TERMINAL_FONT_SIZE,
+  buildTerminalFontStack,
   DEFAULT_TERMINAL_THEME_ID,
   getTerminalTheme,
   buildTerminalChromeColors,
+  setCachedMacOSTheme,
   normalizeTerminalFontFamily,
   normalizeTerminalTheme,
   type TerminalThemeDefinition,
 } from "@/lib/terminal-appearance";
+import { useMacOSSystemTerminalTheme } from "@/lib/use-macos-system-terminal-theme";
 import { getCachedThemeSetting, useThemeController, writeThemeSettingCache, type ThemeMode, type ThemeSetting } from "@/lib/theme";
 import { loadHiddenProjectIds, loadShowHiddenProjects, saveHiddenProjectIds, saveShowHiddenProjects } from "@/lib/projects-hidden";
 import { loadConsoleSession, saveConsoleSession, type PersistedConsoleTab } from "@/lib/console-session";
@@ -1121,6 +1125,21 @@ export default function CodexFlowManagerUI() {
     setTabCtxMenu({ show: true, x: event.clientX, y: event.clientY, tabId });
     notifyLog(`ctx.menu.open source=${source} tab=${id} x=${Math.round(event.clientX)} y=${Math.round(event.clientY)}`);
   }, [notifyLog, setTabCtxMenu, showNotifDebugMenu]);
+  const [themeSetting, setThemeSetting] = useState<ThemeSetting>(() => normalizeThemeSetting(getCachedThemeSetting() ?? "system"));
+  const themeMode = useThemeController(themeSetting);
+
+  useEffect(() => {
+    writeThemeSettingCache(themeSetting);
+  }, [themeSetting]);
+
+  // 平台能力检测：用于判断是否显示 Windows 选项或 macOS/Linux 选项
+  const [platformCapabilities, setPlatformCapabilities] = useState<{
+    isWindows: boolean;
+    isMac: boolean;
+    isLinux: boolean;
+    defaultTerminalMode: TerminalMode;
+  } | null>(null);
+
   const defaultRendererEnv = getDefaultRendererProviderEnv();
   const defaultRendererDistro = getDefaultRendererDistro(defaultRendererEnv.terminal);
 
@@ -1128,7 +1147,30 @@ export default function CodexFlowManagerUI() {
   const [terminalMode, setTerminalMode] = useState<TerminalMode>(defaultRendererEnv.terminal);
   const [terminalFontFamily, setTerminalFontFamily] = useState<string>(DEFAULT_TERMINAL_FONT_FAMILY);
   const [terminalTheme, setTerminalTheme] = useState<TerminalThemeId>(DEFAULT_TERMINAL_THEME_ID);
-  const terminalThemeDef = useMemo(() => getTerminalTheme(terminalTheme), [terminalTheme]);
+  const { theme: activeMacTerminalTheme } = useMacOSSystemTerminalTheme({
+    enabled: platformCapabilities?.isMac === true,
+    tone: themeMode,
+  });
+  const terminalAppearance = useMemo(() => {
+    if (terminalTheme === "macos-system" && activeMacTerminalTheme?.font) {
+      return {
+        fontFamily: buildTerminalFontStack(activeMacTerminalTheme.font.family),
+        fontSize: activeMacTerminalTheme.font.size,
+        theme: terminalTheme,
+      };
+    }
+    return {
+      fontFamily: terminalFontFamily,
+      fontSize: DEFAULT_TERMINAL_FONT_SIZE,
+      theme: terminalTheme,
+    };
+  }, [activeMacTerminalTheme, terminalFontFamily, terminalTheme]);
+  const terminalThemeDef = useMemo(() => {
+    if (terminalTheme === "macos-system") {
+      return activeMacTerminalTheme || getTerminalTheme(DEFAULT_TERMINAL_THEME_ID);
+    }
+    return getTerminalTheme(terminalTheme);
+  }, [terminalTheme, activeMacTerminalTheme]);
   const [codexTraceEnabled, setCodexTraceEnabled] = useState(false);
   const initialPtyByTab = useMemo<Record<string, string>>(() => restoredConsoleSession?.ptyByTab || {}, [restoredConsoleSession]);
   const initialPtyAlive = useMemo<Record<string, boolean>>(() => {
@@ -1145,7 +1187,7 @@ export default function CodexFlowManagerUI() {
     terminalManagerRef.current = new TerminalManager(
       (tabId: string) => ptyByTabRef.current[tabId],
       undefined,
-      { fontFamily: terminalFontFamily, theme: terminalTheme }
+      terminalAppearance
     );
   }
   const tm = terminalManagerRef.current;
@@ -1259,10 +1301,12 @@ export default function CodexFlowManagerUI() {
       }
     };
   }, [selectedProjectId, tabsByProject, activeTabByProject, ptyByTab, appBootId]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!terminalManagerRef.current) return;
-    try { terminalManagerRef.current.setAppearance({ fontFamily: terminalFontFamily, theme: terminalTheme }); } catch {}
-  }, [terminalFontFamily, terminalTheme]);
+    try {
+      terminalManagerRef.current.setAppearance(terminalAppearance);
+    } catch {}
+  }, [terminalAppearance]);
 
   const injectTraceEnv = React.useCallback((cmd: string | null | undefined) => {
     return injectCodexTraceEnv({ cmd, traceEnabled: codexTraceEnabled, terminalMode });
@@ -2944,16 +2988,9 @@ export default function CodexFlowManagerUI() {
   const [dragDropWarnOutsideProject, setDragDropWarnOutsideProject] = useState<boolean>(true);
   // 界面语言：用于设置面板展示与切换
   const [locale, setLocale] = useState<string>("en");
-  const [themeSetting, setThemeSetting] = useState<ThemeSetting>(() => normalizeThemeSetting(getCachedThemeSetting() ?? "system"));
   const [legacyResumePrompt, setLegacyResumePrompt] = useState<LegacyResumePrompt | null>(null);
   const [legacyResumeLoading, setLegacyResumeLoading] = useState(false);
   const [blockingNotice, setBlockingNotice] = useState<BlockingNotice | null>(null);
-
-  const themeMode = useThemeController(themeSetting);
-
-  useEffect(() => {
-    writeThemeSettingCache(themeSetting);
-  }, [themeSetting]);
 
   /**
    * 更新“目录外资源提醒”开关并持久化到主进程设置。
@@ -3057,13 +3094,11 @@ export default function CodexFlowManagerUI() {
     await persistProviders({ activeId: id, items: providerItems, env: providerEnvById });
   }, [activeProviderId, getProviderEnv, persistProviders, providerEnvById, providerItems]);
 
-  // 平台能力检测：用于判断是否显示 Windows 选项或 macOS/Linux 选项
-  const [platformCapabilities, setPlatformCapabilities] = useState<{
-    isWindows: boolean;
-    isMac: boolean;
-    isLinux: boolean;
-    defaultTerminalMode: TerminalMode;
-  } | null>(null);
+  useEffect(() => {
+    if (platformCapabilities?.isMac === false && terminalTheme === "macos-system") {
+      setTerminalTheme(DEFAULT_TERMINAL_THEME_ID);
+    }
+  }, [platformCapabilities?.isMac, terminalTheme]);
 
   // 初始化平台能力
   useEffect(() => {
@@ -3071,12 +3106,17 @@ export default function CodexFlowManagerUI() {
       try {
         const res = await window.host.utils.getPlatformCapabilities();
         if (res && res.ok) {
-          setPlatformCapabilities({
+          const caps = {
             isWindows: res.isWindows ?? false,
             isMac: res.isMac ?? false,
             isLinux: res.isLinux ?? false,
             defaultTerminalMode: (res.defaultTerminalMode as TerminalMode) || defaultRendererEnv.terminal,
-          });
+          };
+          setPlatformCapabilities(caps);
+
+          if (!caps.isMac) {
+            setCachedMacOSTheme(null);
+          }
         } else {
           setPlatformCapabilities({
             isWindows: defaultRendererEnv.terminal === 'wsl',
@@ -3092,9 +3132,10 @@ export default function CodexFlowManagerUI() {
           isLinux: defaultRendererEnv.terminal === 'native',
           defaultTerminalMode: defaultRendererEnv.terminal,
         });
+        setCachedMacOSTheme(null);
       }
     })();
-  }, []);
+  }, [defaultRendererEnv.terminal]);
 
   // WSL 发行版列表：供环境下拉与设置面板复用（缓存到内存，避免重复请求）
   const [availableDistros, setAvailableDistros] = useState<string[]>([]);
