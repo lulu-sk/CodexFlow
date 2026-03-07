@@ -3122,7 +3122,7 @@ ipcMain.handle('history.read', async (_e, args: { filePath: string; providerId?:
     return parsed as any;
   }
 
-  const parsed = await history.readHistoryFile(filePath);
+  const parsed = await history.readHistoryFile(filePath, { maxLines: 0 });
   const withMeta = { ...(parsed as any), providerId: "codex", filePath };
   try { cacheDetails(filePath, withMeta as any); } catch {}
   return withMeta;

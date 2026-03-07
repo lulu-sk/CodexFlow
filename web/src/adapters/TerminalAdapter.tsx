@@ -30,6 +30,8 @@ export type TerminalAdapterAPI = {
   focus?: () => void;
   blur?: () => void;
   setAppearance: (appearance: Partial<TerminalAppearance>) => void;
+  scrollToTop: () => void;
+  scrollToBottom: () => void;
   dispose: () => void;
 };
 
@@ -588,6 +590,43 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
           const key = String(e.key || '').toLowerCase();
           return ((e.ctrlKey || e.metaKey) && !e.shiftKey && key === 'v');
         };
+        /**
+         * 中文说明：解析终端滚动端点快捷键，仅响应 Ctrl + Home / Ctrl + End。
+         */
+        const getBoundaryScrollAction = (e: KeyboardEvent): "top" | "bottom" | null => {
+          const key = String(e.key || "").toLowerCase();
+          if (!e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || e.isComposing) return null;
+          if (key === "home") return "top";
+          if (key === "end") return "bottom";
+          return null;
+        };
+        /**
+         * 中文说明：判断当前终端是否适合处理端点滚动快捷键，避免影响全屏程序等 alternate buffer 场景。
+         */
+        const canHandleBoundaryScrollAction = (action: "top" | "bottom"): boolean => {
+          try {
+            const buffer = term?.buffer.active;
+            if (!buffer || buffer.type !== "normal") return false;
+            const viewportY = Number(buffer.viewportY || 0);
+            const baseY = Number(buffer.baseY || 0);
+            if (action === "top") return viewportY > 0;
+            return baseY > 0 && viewportY < baseY;
+          } catch {
+            return false;
+          }
+        };
+        /**
+         * 中文说明：执行终端滚动端点快捷操作；返回 true 表示事件已被当前终端消费。
+         */
+        const handleBoundaryScrollAction = (e: KeyboardEvent): boolean => {
+          const action = getBoundaryScrollAction(e);
+          if (!action || !canHandleBoundaryScrollAction(action)) return false;
+          try {
+            if (action === "top") term?.scrollToTop();
+            else term?.scrollToBottom();
+          } catch {}
+          return true;
+        };
         const getXtermSelection = (): string => {
           try { if (term && (term as any).hasSelection?.()) return (term as any).getSelection?.() || ''; } catch {}
           return '';
@@ -764,6 +803,7 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
         term!.attachCustomKeyEventHandler((e: KeyboardEvent) => {
           try {
             maybeMarkCtrlKeydown(e);
+            if (handleBoundaryScrollAction(e)) return false;
             if (isCopyCombo(e)) {
               const sel = getXtermSelection();
               if (sel && sel.length > 0) {
@@ -785,6 +825,11 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
         const onKeydownCapture = (e: KeyboardEvent) => {
           try {
             maybeMarkCtrlKeydown(e);
+            if (handleBoundaryScrollAction(e)) {
+              e.preventDefault();
+              e.stopPropagation();
+              return;
+            }
             if (isCopyCombo(e)) {
               const text = getXtermSelection();
               if (text && text.length > 0) {
@@ -814,12 +859,16 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
         const onDocKeydownCapture = (e: KeyboardEvent) => {
           try {
             maybeMarkCtrlKeydown(e);
-            if (!(isCopyCombo(e) || isPasteCombo(e) || isStdPasteCombo(e))) return;
+            if (!(getBoundaryScrollAction(e) || isCopyCombo(e) || isPasteCombo(e) || isStdPasteCombo(e))) return;
             const target = e.target as any as Node | null;
             const active = (document.activeElement as any) as Node | null;
             const within = !!container && (container.contains(target || (null as any)) || container.contains(active || (null as any)));
             if (!within) return;
-            if (isCopyCombo(e)) {
+            if (handleBoundaryScrollAction(e)) {
+              e.preventDefault();
+              e.stopPropagation();
+            }
+            else if (isCopyCombo(e)) {
               const text = getXtermSelection();
               if (text && text.length > 0) {
                 e.preventDefault(); e.stopPropagation();
@@ -1077,6 +1126,12 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
         next.fontSize === appearance.fontSize
       ) return;
       applyAppearanceToTerminal(next);
+    },
+    scrollToTop: () => {
+      try { term?.scrollToTop(); } catch {}
+    },
+    scrollToBottom: () => {
+      try { term?.scrollToBottom(); } catch {}
     },
     dispose: () => {
       try { dlog('[adapter] dispose'); if (container) container.style.height = ""; } catch {}

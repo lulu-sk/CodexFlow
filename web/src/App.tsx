@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -64,7 +64,13 @@ import { oscBufferDefaults, trimOscBuffer } from "@/lib/oscNotificationBuffer";
 import { resolveDirRowDropPosition } from "@/lib/dir-tree-dnd";
 import HistoryCopyButton from "@/components/history/history-copy-button";
 import HistoryPanelToggleButton from "@/components/history/history-panel-toggle-button";
+import {
+  resolveHistoryDetailSearchMode,
+  shouldEnableHistoryDetailDomHighlights,
+  shouldUseVirtualizedHistoryDetail,
+} from "@/features/history/detail-virtualization";
 import { HistoryMarkdown } from "@/features/history/renderers/history-markdown";
+import { VirtualizedList, type VirtualizedListHandle } from "@/features/history/virtualized-list";
 import { applyHistoryFindHighlights, clearHistoryFindHighlights, setActiveHistoryFindMatch } from "@/features/history/find/history-find";
 import { toWSLForInsert } from "@/lib/wsl";
 import { extractGeminiProjectHashFromPath, deriveGeminiProjectHashCandidatesFromPath } from "@/lib/gemini-hash";
@@ -7584,6 +7590,8 @@ export default function CodexFlowManagerUI() {
                         tabId={tab.id}
                         ptyId={ptyByTab[tab.id]}
                         attachTerminal={attachTerminal}
+                        onScrollToTop={(tid) => terminalManagerRef.current?.scrollToTop(tid)}
+                        onScrollToBottom={(tid) => terminalManagerRef.current?.scrollToBottom(tid)}
                         onContextMenuDebug={(event) => openTabContextMenu(event, tab.id, "terminal-body")}
                         theme={terminalThemeDef}
                       />
@@ -11212,45 +11220,9 @@ function EmptyState({ onCreate }: { onCreate: () => void }) {
   );
 }
 
-type FieldMatch = {
-  matchId: string;
-  start: number;
-  length: number;
-};
-
-type FieldMatchMap = Record<string, FieldMatch[]>;
-
-function highlightSearchMatches(text: string, matches?: FieldMatch[], activeMatchId?: string): React.ReactNode {
-  const value = String(text || "");
-  if (!matches || matches.length === 0) return value;
-  const sorted = [...matches].sort((a, b) => a.start - b.start);
-  const fragments: React.ReactNode[] = [];
-  let cursor = 0;
-  let counter = 0;
-  for (const span of sorted) {
-    const start = Math.max(0, Math.min(span.start, value.length));
-    const end = Math.max(start, Math.min(start + span.length, value.length));
-    if (start > cursor) {
-      fragments.push(<React.Fragment key={`text-${counter++}`}>{value.slice(cursor, start)}</React.Fragment>);
-    }
-    if (start === end) continue;
-    const isActive = span.matchId === activeMatchId;
-    fragments.push(
-      <span
-        key={`match-${span.matchId}`}
-        data-match-id={span.matchId}
-        className={`rounded-apple px-1 py-0.5 transition-all duration-200 ${isActive ? 'bg-[var(--cf-accent)] text-white font-apple-semibold ring-2 ring-[var(--cf-accent)]/50 ring-offset-1 shadow-lg' : 'bg-yellow-200/80 dark:bg-yellow-500/30 text-[var(--cf-text-primary)] font-apple-medium'}`}
-      >
-        {value.slice(start, end)}
-      </span>,
-    );
-    cursor = end;
-  }
-  if (cursor < value.length) {
-    fragments.push(<React.Fragment key={`text-${counter++}`}>{value.slice(cursor)}</React.Fragment>);
-  }
-  return fragments.length > 0 ? fragments : value;
-}
+const HISTORY_DETAIL_VIRTUAL_ESTIMATED_HEIGHT = 240;
+const HISTORY_DETAIL_VIRTUAL_OVERSCAN = 1600;
+const HISTORY_DETAIL_SEARCH_DEBOUNCE_MS = 120;
 
 function ContentRenderer({ items, kprefix, projectWinPath }: { items: MessageContent[]; kprefix?: string; projectWinPath?: string }) {
   if (!Array.isArray(items) || items.length === 0) return null;
@@ -11430,6 +11402,8 @@ type SearchMatch = {
   fieldKey?: string;
 };
 
+type HistorySearchMatchMode = "occurrence" | "message";
+
 type HistoryMessageView = {
   /** 稳定的 messageKey：用于 React key、DOM 查找与命中归属。 */
   messageKey: string;
@@ -11442,7 +11416,6 @@ type HistoryMessageView = {
 type HistoryFilterResult = {
   messages: HistoryMessageView[];
   matches: SearchMatch[];
-  fieldMatches: FieldMatchMap;
 };
 
 type HistoryRenderOptions = {
@@ -11460,35 +11433,96 @@ function buildHistoryMessageKey(sessionId: string, originalIndex: number): strin
 }
 
 /**
+ * 中文说明：对高频输入做轻量防抖，避免每次按键都立即触发重型搜索与高亮计算。
+ */
+function useDebouncedValue<TValue>(value: TValue, delayMs: number): TValue {
+  const [debouncedValue, setDebouncedValue] = useState<TValue>(value);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedValue(value);
+    }, Math.max(0, delayMs));
+
+    return () => {
+      try {
+        window.clearTimeout(timer);
+      } catch {}
+    };
+  }, [value, delayMs]);
+
+  return debouncedValue;
+}
+
+/**
+ * 中文说明：渲染历史详情头部时间信息。
+ */
+function renderHistoryHeader(session: HistorySession) {
+  if (!session) return null;
+  return (
+    <h3 className="mb-1.5 max-w-full truncate text-sm font-apple-medium text-[var(--cf-text-secondary)]" title={`${toLocalDisplayTime(session)} ${session.rawDate ? '• ' + session.rawDate : (session.date ? '• ' + session.date : '')}`}>
+      {toLocalDisplayTime(session)}
+    </h3>
+  );
+}
+
+/**
+ * 中文说明：渲染单条历史消息卡片。
+ * 关键点：必须使用稳定 messageKey 作为 DOM 标识，避免筛选/搜索后的节点复用错位。
+ */
+function HistoryMessageCard({ view, options }: { view: HistoryMessageView; options?: HistoryRenderOptions }) {
+  const message = view.message;
+  const messageKey = view.messageKey;
+  const isActive = options?.activeMessageKey === messageKey;
+  return (
+    <div
+      ref={(node) => options?.registerMessageRef?.(messageKey, node)}
+      data-history-message-key={messageKey}
+      className={`rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple p-2 shadow-apple-sm text-[var(--cf-text-primary)] transition-all duration-apple hover:shadow-apple dark:shadow-apple-dark-sm dark:hover:shadow-apple-dark ${isActive ? 'ring-1 ring-[var(--cf-accent)]/70 shadow-apple dark:ring-[var(--cf-accent)]/40' : ''}`}
+    >
+      <div data-history-search-scope className="mb-1 text-xs uppercase tracking-wider font-apple-semibold text-[var(--cf-text-secondary)]">{message.role}</div>
+      <ContentRenderer items={message.content} kprefix={messageKey} projectWinPath={options?.projectWinPath} />
+    </div>
+  );
+}
+
+/**
+ * 中文说明：渲染非虚拟化的历史消息列表。
+ * 用于需要完整 DOM 的场景，保留 DOM 高亮与逐条定位行为。
+ */
+function renderHistoryMessageList(messages: HistoryMessageView[], options?: HistoryRenderOptions) {
+  return (
+    <div className="space-y-2">
+      {messages.map((view) => (
+        <HistoryMessageCard key={view.messageKey} view={view} options={options} />
+      ))}
+    </div>
+  );
+}
+
+/**
+ * 中文说明：估算单条历史消息在详情面板中的初始高度。
+ * 目的：为虚拟列表提供稳定首帧布局，真实高度会在消息挂载后自动校正。
+ */
+function estimateHistoryMessageHeight(view: HistoryMessageView): number {
+  const items = Array.isArray(view?.message?.content) ? view.message.content : [];
+  let textLength = Math.max(24, String(view?.message?.role || "").length);
+  for (const item of items)
+    textLength += Math.min(12000, String((item as any)?.text || "").length);
+  const lineEstimate = Math.min(56, Math.ceil(textLength / 110));
+  const itemBonus = Math.max(0, items.length - 1) * 28;
+  return Math.min(2200, Math.max(148, 96 + lineEstimate * 18 + itemBonus));
+}
+
+/**
  * 中文说明：渲染历史详情的消息块列表。
- * 关键点：必须使用稳定 messageKey 作为 React key，避免“筛选/搜索导致索引漂移”触发错误节点复用。
+ * 关键点：精确搜索保留完整 DOM；常规浏览与大结果快速搜索可切换为虚拟列表。
  */
 function renderHistoryBlocks(session: HistorySession, messages: HistoryMessageView[], options?: HistoryRenderOptions) {
   if (!session) return null;
   return (
     <div>
-      {/* 详情标题：显示本地时间（优先 rawDate -> date -> 文件名推断），tooltip 同时展示本地与原始信息 */}
-      <h3 className="mb-1.5 max-w-full truncate text-sm font-apple-medium text-[var(--cf-text-secondary)]" title={`${toLocalDisplayTime(session)} ${session.rawDate ? '• ' + session.rawDate : (session.date ? '• ' + session.date : '')}`}>
-        {toLocalDisplayTime(session)}
-      </h3>
-      <div className="space-y-2">
-        {messages.map((view) => {
-          const m = view.message;
-          const messageKey = view.messageKey;
-          const isActive = options?.activeMessageKey === messageKey;
-          return (
-            <div
-              key={messageKey}
-              ref={(node) => options?.registerMessageRef?.(messageKey, node)}
-              data-history-message-key={messageKey}
-              className={`rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple p-2 shadow-apple-sm text-[var(--cf-text-primary)] transition-all duration-apple hover:shadow-apple dark:shadow-apple-dark-sm dark:hover:shadow-apple-dark ${isActive ? 'ring-1 ring-[var(--cf-accent)]/70 shadow-apple dark:ring-[var(--cf-accent)]/40' : ''}`}
-            >
-              <div data-history-search-scope className="mb-1 text-xs uppercase tracking-wider font-apple-semibold text-[var(--cf-text-secondary)]">{m.role}</div>
-              <ContentRenderer items={m.content} kprefix={messageKey} projectWinPath={options?.projectWinPath} />
-            </div>
-          );
-        })}
-      </div>
+      {renderHistoryHeader(session)}
+      {renderHistoryMessageList(messages, options)}
     </div>
   );
 }
@@ -11497,10 +11531,14 @@ function renderHistoryBlocks(session: HistorySession, messages: HistoryMessageVi
 /**
  * 中文说明：按类型筛选与关键字过滤历史消息，并生成“命中索引”。
  * - messages：返回带稳定 messageKey 的消息视图（基于原始序号），用于渲染与 DOM 查找；
- * - matches：用于“上一个/下一个”跳转的命中列表（文本命中会被后续 DOM 高亮替代，仅保留元信息命中）；
- * - fieldMatches：旧版文本字段命中（用于区分 meta/text 命中来源）。
+ * - matches：用于“上一个/下一个”跳转的命中列表；文本命中与 DOM 高亮共用稳定的 messageKey 顺序与 matchId。
  */
-function filterHistoryMessages(session: HistorySession, typeFilter: Record<string, boolean>, normalizedSearch: string): HistoryFilterResult {
+function filterHistoryMessages(
+  session: HistorySession,
+  typeFilter: Record<string, boolean>,
+  normalizedSearch: string,
+  matchMode: HistorySearchMatchMode = "occurrence",
+): HistoryFilterResult {
   const allowItem = (item: any) => {
     if (!typeFilter) return true;
     const keys = keysOfItemCanonical(item);
@@ -11518,32 +11556,29 @@ function filterHistoryMessages(session: HistorySession, typeFilter: Record<strin
   }));
 
   const matches: SearchMatch[] = [];
-  const fieldMatches: FieldMatchMap = {};
   let matchCounter = 0;
 
-  const addFieldMatch = (fieldKey: string, matchId: string, start: number, length: number) => {
-    const next = fieldMatches[fieldKey] || [];
-    next.push({ matchId, start, length });
-    fieldMatches[fieldKey] = next;
-  };
-
-  const captureTextMatches = (messageKey: string, fieldKey: string, value: string): boolean => {
+  /**
+   * 中文说明：按消息内的文本顺序分配稳定命中 ID，确保数据层导航与 DOM 高亮可对齐。
+   */
+  const captureTextMatches = (messageKey: string, value: string, state: { nextTextIndex: number }): boolean => {
     if (!normalizedSearch) return false;
     const lower = String(value).toLowerCase();
     if (!lower) return false;
     let idx = lower.indexOf(normalizedSearch);
     let found = false;
+    if (matchMode === "message") return idx !== -1;
     while (idx !== -1) {
       found = true;
-      const matchId = `${fieldKey}-${matchCounter++}`;
-      matches.push({ id: matchId, messageKey, fieldKey });
-      addFieldMatch(fieldKey, matchId, idx, normalizedSearch.length);
+      const matchId = `hfind-${messageKey}-t${state.nextTextIndex++}`;
+      matches.push({ id: matchId, messageKey });
       idx = lower.indexOf(normalizedSearch, idx + normalizedSearch.length);
     }
     return found;
   };
 
   const captureMetaMatch = (messageKey: string, descriptor: string): boolean => {
+    if (matchMode === "message") return true;
     const matchId = `${messageKey}-${descriptor}-${matchCounter++}`;
     matches.push({ id: matchId, messageKey });
     return true;
@@ -11558,19 +11593,19 @@ function filterHistoryMessages(session: HistorySession, typeFilter: Record<strin
     if (!hasContent) continue;
 
     const messageKey = buildHistoryMessageKey(session.id, originalIndex);
+    const messageMatchState = { nextTextIndex: 0 };
     if (!searchActive) {
       filteredMessages.push({ messageKey, originalIndex, message });
       continue;
     }
     let hit = false;
     if (message.role) {
-      if (captureTextMatches(messageKey, `${messageKey}-role`, message.role)) hit = true;
+      if (captureTextMatches(messageKey, message.role, messageMatchState)) hit = true;
     }
     for (let itemIndex = 0; itemIndex < (message.content || []).length; itemIndex += 1) {
       const item = message.content?.[itemIndex];
-      const fieldKey = `${messageKey}-item-${itemIndex}`;
       const text = String((item as any)?.text ?? "");
-      if (captureTextMatches(messageKey, fieldKey, text)) hit = true;
+      if (captureTextMatches(messageKey, text, messageMatchState)) hit = true;
       const type = String((item as any)?.type ?? "").toLowerCase();
       if (type && type.includes(normalizedSearch)) {
         hit = captureMetaMatch(messageKey, `type-${itemIndex}`) || hit;
@@ -11583,11 +11618,12 @@ function filterHistoryMessages(session: HistorySession, typeFilter: Record<strin
       }
     }
     if (hit) {
+      if (searchActive && matchMode === "message") matches.push({ id: `${messageKey}-message`, messageKey });
       filteredMessages.push({ messageKey, originalIndex, message });
     }
   }
 
-  return { messages: filteredMessages, matches, fieldMatches };
+  return { messages: filteredMessages, matches };
 }
 
 function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, onResume, onResumeExternal, getResumeShellLabel }: { sessions: HistorySession[]; selectedHistoryId: string | null; projectWinPath?: string; onBack?: () => void; onResume?: (filePath?: string) => void; onResumeExternal?: (filePath?: string) => void; getResumeShellLabel: (filePath?: string) => ShellLabel }) {
@@ -11611,7 +11647,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
     return messageCacheIdsRef.current;
   }, [MAX_HISTORY_MESSAGE_CACHE]);
   const [typeFilter, setTypeFilter] = useState<Record<string, boolean>>({});
-  const [detailSearch, setDetailSearch] = useState("");
+  const [detailSearchInput, setDetailSearchInput] = useState("");
   const reqSeq = useRef(0);
   const lastLoadedFingerprintRef = useRef<string>("");
   const selectedSession = useMemo(() => sessions.find((x) => x.id === selectedHistoryId) || null, [sessions, selectedHistoryId]);
@@ -11655,75 +11691,71 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
   }, [sessions, pruneMessages]);
 
   useEffect(() => {
-    setDetailSearch("");
+    setDetailSearchInput("");
   }, [selectedHistoryId]);
 
   const detailSession = selectedLocalSession || selectedSession;
-  const normalizedDetailSearch = useMemo(() => detailSearch.trim().toLowerCase(), [detailSearch]);
+  const debouncedDetailSearch = useDebouncedValue(detailSearchInput, HISTORY_DETAIL_SEARCH_DEBOUNCE_MS);
+  const deferredDetailSearch = useDeferredValue(debouncedDetailSearch);
+  const normalizedDetailSearch = useMemo(() => deferredDetailSearch.trim().toLowerCase(), [deferredDetailSearch]);
   const detailSearchActive = normalizedDetailSearch.length > 0;
+  const detailSessionTextSize = useMemo(() => {
+    if (!detailSession) return 0;
+    return (detailSession.messages || []).reduce((sessionTotal, message) => (
+      sessionTotal + (message.content || []).reduce((messageTotal, item) => messageTotal + String(item?.text ?? "").length, 0)
+    ), 0);
+  }, [detailSession]);
+  const detailSearchMode = useMemo(() => resolveHistoryDetailSearchMode({
+    queryLength: normalizedDetailSearch.length,
+    messageCount: detailSession?.messages?.length || 0,
+    totalTextSize: detailSessionTextSize,
+  }), [normalizedDetailSearch.length, detailSession?.messages?.length, detailSessionTextSize]);
+  const domHighlightEnabled = shouldEnableHistoryDetailDomHighlights({
+    searchActive: detailSearchActive,
+    searchMode: detailSearchMode,
+  });
 
   const filteredHistory = useMemo(() => {
-    if (!detailSession) return { messages: [], matches: [], fieldMatches: {} };
-    return filterHistoryMessages(detailSession, typeFilter, normalizedDetailSearch);
-  }, [selectedHistoryId, detailSession, typeFilter, normalizedDetailSearch]);
+    if (!detailSession) return { messages: [], matches: [] };
+    return filterHistoryMessages(
+      detailSession,
+      typeFilter,
+      normalizedDetailSearch,
+      detailSearchMode === "message" ? "message" : "occurrence",
+    );
+  }, [selectedHistoryId, detailSession, typeFilter, normalizedDetailSearch, detailSearchMode]);
 
   const filteredMessages = filteredHistory.messages;
-  const indexedMatches = filteredHistory.matches;
-  const indexedFieldMatches = filteredHistory.fieldMatches;
   const showNoMatch = detailSearchActive && filteredMessages.length === 0;
+  const detailScrollAreaRef = useRef<HTMLDivElement | null>(null);
+  const historyScrollToTopTitle = t("common:scrollToTopWithShortcut") as string;
+  const historyScrollToBottomTitle = t("common:scrollToBottomWithShortcut") as string;
+  const detailRenderSession = detailSession || selectedSession;
+  const filteredMessageTextSize = useMemo(() => filteredMessages.reduce((total, view) => (
+    total + view.message.content.reduce((messageTotal, item) => messageTotal + String(item?.text ?? "").length, 0)
+  ), 0), [filteredMessages]);
+  const useVirtualizedHistory = shouldUseVirtualizedHistoryDetail({
+    messageCount: filteredMessages.length,
+    totalTextSize: filteredMessageTextSize,
+    searchActive: detailSearchActive,
+    domHighlightEnabled,
+  });
 
   // DOM 级高亮（用于适配 Markdown 渲染后文本结构变化），并保持与现有“过滤/跳转”能力兼容
   const historyFindRootRef = useRef<HTMLDivElement | null>(null);
-  const [domTextMatches, setDomTextMatches] = useState<SearchMatch[]>([]);
-
-  // 仅保留“元信息命中”（type/tag），文本命中改由 DOM 高亮结果驱动
-  const metaMatches = useMemo(() => {
-    if (!detailSearchActive) return [];
-    const textIds = new Set<string>();
-    try {
-      for (const list of Object.values(indexedFieldMatches)) {
-        for (const m of list) textIds.add(m.matchId);
-      }
-    } catch {}
-    return indexedMatches.filter((m) => !textIds.has(m.id));
-  }, [detailSearchActive, indexedMatches, indexedFieldMatches]);
-
+  const historyVirtualListRef = useRef<VirtualizedListHandle | null>(null);
   const matches = useMemo(() => {
     if (!detailSearchActive || !detailSession) return [];
-    const byMessageText = new Map<string, SearchMatch[]>();
-    for (const m of domTextMatches) {
-      const k = String(m.messageKey || "");
-      if (!k) continue;
-      const list = byMessageText.get(k) || [];
-      list.push(m);
-      byMessageText.set(k, list);
+    return filteredHistory.matches;
+  }, [detailSearchActive, detailSession, filteredHistory.matches]);
+  const messageIndexByKey = useMemo(() => {
+    const out = new Map<string, number>();
+    for (let index = 0; index < filteredMessages.length; index += 1) {
+      const key = String(filteredMessages[index]?.messageKey || "");
+      if (key) out.set(key, index);
     }
-    const byMessageMeta = new Map<string, SearchMatch[]>();
-    for (const m of metaMatches) {
-      const k = String(m.messageKey || "");
-      if (!k) continue;
-      const list = byMessageMeta.get(k) || [];
-      list.push(m);
-      byMessageMeta.set(k, list);
-    }
-
-    // 说明：按消息顺序合并，先文本命中后元信息命中（保持跳转逻辑直观且稳定）
-    const out: SearchMatch[] = [];
-    for (const view of filteredMessages) {
-      const messageKey = String(view?.messageKey || "");
-      if (!messageKey) continue;
-      const textHits = byMessageText.get(messageKey);
-      if (textHits && textHits.length) out.push(...textHits);
-      const metaHits = byMessageMeta.get(messageKey);
-      if (metaHits && metaHits.length) out.push(...metaHits);
-    }
-
-    // 兜底：若存在异常 messageKey（理论不应发生），仍合并到末尾避免丢失匹配数
-    for (const [, list] of byMessageText) for (const m of list) if (!out.includes(m)) out.push(m);
-    for (const [, list] of byMessageMeta) for (const m of list) if (!out.includes(m)) out.push(m);
-
     return out;
-  }, [detailSearchActive, detailSession, filteredMessages.length, domTextMatches, metaMatches]);
+  }, [filteredMessages]);
 
   const [activeMatchIndex, setActiveMatchIndex] = useState(0);
   const messageRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -11744,11 +11776,10 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
     if (!root) return;
 
     // 搜索关闭：清理高亮与命中列表
-    if (!detailSearchActive) {
+    if (!domHighlightEnabled) {
       try {
         clearHistoryFindHighlights(root);
       } catch {}
-      setDomTextMatches([]);
       return;
     }
 
@@ -11765,12 +11796,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
     const apply = () => {
       if (disposed) return;
       try { observer.disconnect(); } catch {}
-      try {
-        const domMatches = applyHistoryFindHighlights({ root, query: normalizedDetailSearch });
-        setDomTextMatches(domMatches.map((m) => ({ id: m.id, messageKey: m.messageKey })));
-      } catch {
-        setDomTextMatches([]);
-      }
+      try { applyHistoryFindHighlights({ root, query: normalizedDetailSearch }); } catch {}
       try {
         if (!disposed) observer.observe(root, { subtree: true, childList: true, characterData: true });
       } catch {}
@@ -11788,11 +11814,11 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
         if (raf) cancelAnimationFrame(raf);
       } catch {}
     };
-  }, [detailSearchActive, normalizedDetailSearch, detailSession, filteredMessages.length]);
+  }, [domHighlightEnabled, normalizedDetailSearch, detailSession, filteredMessages.length]);
 
   useEffect(() => {
     setActiveMatchIndex(0);
-  }, [detailSearchActive]);
+  }, [detailSearchActive, normalizedDetailSearch, selectedHistoryId]);
 
   useEffect(() => {
     if (matches.length === 0) {
@@ -11810,37 +11836,62 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
   useEffect(() => {
     const root = historyFindRootRef.current;
     if (!root) return;
-    if (!detailSearchActive) {
+    if (!domHighlightEnabled) {
       try { setActiveHistoryFindMatch(root, null); } catch {}
       return;
     }
     try { setActiveHistoryFindMatch(root, activeMatch?.id); } catch {}
-  }, [detailSearchActive, activeMatch?.id]);
+  }, [domHighlightEnabled, activeMatch?.id]);
 
   useEffect(() => {
     if (!detailSearchActive || !activeMatch) return;
-    requestAnimationFrame(() => {
+    const matchIndex = messageIndexByKey.get(activeMatch.messageKey);
+    if (typeof matchIndex === "number") {
+      historyVirtualListRef.current?.scrollToIndex(matchIndex, { align: "center", behavior: "smooth" });
+    }
+
+    let cancelled = false;
+    let attempts = 0;
+
+    /**
+     * 中文说明：等待虚拟列表滚动并完成挂载后，多帧尝试定位当前命中，确保离屏结果也能稳定高亮。
+     */
+    const tryActivateMatch = () => {
+      if (cancelled) return;
       const root = historyFindRootRef.current;
       if (!root) return;
+      try { setActiveHistoryFindMatch(root, activeMatch.id); } catch {}
+
       let target: HTMLElement | null = null;
       try {
         const candidates = Array.from(root.querySelectorAll("[data-match-id]")) as HTMLElement[];
-        target = candidates.find((n) => String(n.getAttribute("data-match-id") || "") === activeMatch.id) || null;
+        target = candidates.find((node) => String(node.getAttribute("data-match-id") || "") === activeMatch.id) || null;
       } catch {}
       if (target) {
         try {
-          target.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+          target.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
         } catch {}
         return;
       }
-      const node = messageRefs.current[activeMatch.messageKey];
-      if (node) {
+
+      const messageNode = messageRefs.current[activeMatch.messageKey];
+      if (messageNode) {
         try {
-          node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          messageNode.scrollIntoView({ behavior: "smooth", block: "center" });
         } catch {}
+        return;
       }
-    });
-  }, [detailSearchActive, activeMatch?.id, activeMatch?.messageKey]);
+
+      attempts += 1;
+      if (attempts < 6) requestAnimationFrame(tryActivateMatch);
+    };
+
+    const rafId = requestAnimationFrame(tryActivateMatch);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(rafId);
+    };
+  }, [detailSearchActive, activeMatch, messageIndexByKey]);
 
   const goToNextMatch = useCallback(() => {
     if (!matches.length) return;
@@ -11851,6 +11902,72 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
     if (!matches.length) return;
     setActiveMatchIndex((prev) => (prev - 1 + matches.length) % matches.length);
   }, [matches.length]);
+
+  const detailRenderOptions = useMemo<HistoryRenderOptions>(() => ({
+    activeMessageKey: detailSearchActive ? activeMatch?.messageKey : undefined,
+    registerMessageRef,
+    projectWinPath,
+  }), [detailSearchActive, activeMatch?.messageKey, registerMessageRef, projectWinPath]);
+
+  /**
+   * 中文说明：将历史详情滚动区滚动到顶部。
+   */
+  const scrollHistoryDetailToTop = useCallback(() => {
+    const viewport = detailScrollAreaRef.current;
+    if (!viewport || viewport.scrollTop <= 0) return;
+    viewport.scrollTop = 0;
+  }, []);
+
+  /**
+   * 中文说明：将历史详情滚动区滚动到底部。
+   */
+  const scrollHistoryDetailToBottom = useCallback(() => {
+    const viewport = detailScrollAreaRef.current;
+    if (!viewport) return;
+    const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+    if (maxScrollTop <= 0 || viewport.scrollTop >= maxScrollTop - 1) return;
+    viewport.scrollTop = viewport.scrollHeight;
+  }, []);
+
+  /**
+   * 中文说明：点击历史详情正文时让滚动区获得焦点，以便接收快捷键。
+   */
+  const focusHistoryDetailViewport = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const viewport = detailScrollAreaRef.current;
+    if (!viewport) return;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest("button, a, input, textarea, select, [role='button'], [contenteditable='true']")) return;
+    try {
+      viewport.focus({ preventScroll: true });
+    } catch {
+      viewport.focus();
+    }
+  }, []);
+
+  /**
+   * 中文说明：在历史详情滚动区内处理 Ctrl + Home / Ctrl + End 快捷键。
+   */
+  const handleHistoryDetailBoundaryShortcut = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    const viewport = detailScrollAreaRef.current;
+    if (!viewport) return;
+    const nativeEvent = event.nativeEvent as KeyboardEvent | undefined;
+    if (!event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || nativeEvent?.isComposing) return;
+    const key = String(event.key || "").toLowerCase();
+    if (key === "home") {
+      if (viewport.scrollTop <= 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      scrollHistoryDetailToTop();
+      return;
+    }
+    if (key === "end") {
+      const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+      if (maxScrollTop <= 0 || viewport.scrollTop >= maxScrollTop - 1) return;
+      event.preventDefault();
+      event.stopPropagation();
+      scrollHistoryDetailToBottom();
+    }
+  }, [scrollHistoryDetailToBottom, scrollHistoryDetailToTop]);
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
@@ -12013,8 +12130,8 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
         <div className="flex items-center gap-2">
           <div className="relative flex-1 max-w-xs">
             <Input
-              value={detailSearch}
-              onChange={(e) => setDetailSearch((e.target as HTMLInputElement).value)}
+              value={detailSearchInput}
+              onChange={(e) => setDetailSearchInput((e.target as HTMLInputElement).value)}
               placeholder={t('history:detailSearchPlaceholder') as string}
               title={t('history:detailSearchHint') as string}
               aria-label={t('history:detailSearchHint') as string}
@@ -12182,33 +12299,70 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
         )}
       </div>
 
-      <ScrollArea key={selectedHistoryId || 'none'} className="h-full min-h-0 p-2">
-        {selectedHistoryId ? (
-          showNoMatch ? (
-            <div className="p-4 text-sm text-[var(--cf-text-secondary)] font-apple-regular">{t('history:noMatch')}</div>
+      <div className="relative group/history-detail flex-1 min-h-0">
+        <ScrollArea
+          ref={detailScrollAreaRef}
+          key={selectedHistoryId || 'none'}
+          className="h-full min-h-0 p-2 focus-visible:outline-none"
+          tabIndex={0}
+          onPointerDownCapture={focusHistoryDetailViewport}
+          onKeyDownCapture={handleHistoryDetailBoundaryShortcut}
+        >
+          {selectedHistoryId ? (
+            showNoMatch ? (
+              <div className="p-4 text-sm text-[var(--cf-text-secondary)] font-apple-regular">{t('history:noMatch')}</div>
+            ) : (
+              <div ref={historyFindRootRef} data-history-find-root className="space-y-2">
+                {detailRenderSession ? (
+                  useVirtualizedHistory ? (
+                    <div>
+                      {renderHistoryHeader(detailRenderSession)}
+                      <VirtualizedList
+                        ref={historyVirtualListRef}
+                        key={detailRenderSession.id}
+                        items={filteredMessages}
+                        scrollContainerRef={detailScrollAreaRef}
+                        estimateItemHeight={HISTORY_DETAIL_VIRTUAL_ESTIMATED_HEIGHT}
+                        overscan={HISTORY_DETAIL_VIRTUAL_OVERSCAN}
+                        getItemKey={(view) => view.messageKey}
+                        renderItem={(view) => <HistoryMessageCard view={view} options={detailRenderOptions} />}
+                      />
+                    </div>
+                  ) : renderHistoryBlocks(detailRenderSession, filteredMessages, detailRenderOptions)
+                ) : null}
+                {loaded && skipped > 0 && <div className="text-xs text-[var(--cf-text-secondary)] font-apple-regular">{t('history:skippedLines', { count: skipped })}</div>}
+              </div>
+            )
           ) : (
-            <div ref={historyFindRootRef} data-history-find-root className="space-y-2">
-              {detailSession
-                ? renderHistoryBlocks(detailSession, filteredMessages, {
-                    activeMessageKey: detailSearchActive ? activeMatch?.messageKey : undefined,
-                    registerMessageRef,
-                    projectWinPath,
-                  })
-                : (selectedSession
-                    ? renderHistoryBlocks(selectedSession, filteredMessages, {
-                        activeMessageKey: detailSearchActive ? activeMatch?.messageKey : undefined,
-                        registerMessageRef,
-                        projectWinPath,
-                      })
-                    : null)
-              }
-              {loaded && skipped > 0 && <div className="text-xs text-[var(--cf-text-secondary)] font-apple-regular">{t('history:skippedLines', { count: skipped })}</div>}
-            </div>
-          )
-        ) : (
-          <div className="p-4 text-sm text-[var(--cf-text-secondary)] font-apple-regular">{t('history:selectRightToView')}</div>
-        )}
-      </ScrollArea>
+            <div className="p-4 text-sm text-[var(--cf-text-secondary)] font-apple-regular">{t('history:selectRightToView')}</div>
+          )}
+        </ScrollArea>
+
+        <div className="absolute inset-y-0 right-0 z-30 flex flex-col justify-between py-2 px-1 opacity-0 transition-opacity duration-300 group-hover/history-detail:opacity-100 pointer-events-none">
+          <button
+            type="button"
+            className="pointer-events-auto flex h-7 w-7 items-center justify-center rounded-full text-slate-500/40 transition-all hover:bg-slate-500/10 hover:text-slate-600 dark:text-slate-400/30 dark:hover:bg-white/5 dark:hover:text-slate-300"
+            title={historyScrollToTopTitle}
+            onClick={(e) => {
+              e.stopPropagation();
+              scrollHistoryDetailToTop();
+            }}
+          >
+            <ChevronUp className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            className="pointer-events-auto flex h-7 w-7 items-center justify-center rounded-full text-slate-500/40 transition-all hover:bg-slate-500/10 hover:text-slate-600 dark:text-slate-400/30 dark:hover:bg-white/5 dark:hover:text-slate-300"
+            title={historyScrollToBottomTitle}
+            onClick={(e) => {
+              e.stopPropagation();
+              scrollHistoryDetailToBottom();
+            }}
+          >
+            <ChevronDown className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
       </div>
     </>
   );
