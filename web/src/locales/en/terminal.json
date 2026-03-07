@@ -18,6 +18,7 @@
   "readyPlaceholder": "# Terminal ready. Embedded console placeholder (UI prototype; no real PTY yet).",
   "openFailed": "Failed to start console: {error}",
   "childTerminalsActive": "Active items in sub-projects",
+  "childTerminalsPending": "Sub-projects have completed tasks awaiting review",
   "closeWorkingConfirm": {
     "title": "Close active tab?",
     "desc": "Terminal tab \"{name}\" is still working. Closing it will interrupt the current task/process. Continue?",
