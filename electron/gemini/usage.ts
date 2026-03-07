@@ -23,7 +23,7 @@ export type GeminiQuotaSnapshot = {
   buckets: GeminiQuotaBucket[];
 };
 
-type ProviderRuntimeEnv = { terminal: "wsl" | "windows" | "pwsh"; distro?: string };
+type ProviderRuntimeEnv = { terminal: "native" | "wsl" | "windows" | "pwsh"; distro?: string; shell?: string };
 
 type GeminiOauthCredsFile = {
   access_token?: string;
@@ -228,12 +228,30 @@ async function readGeminiOauthCredsWslAsync(distro?: string): Promise<GeminiOaut
 }
 
 /**
+ * 读取 native 模式下的 Gemini OAuth 凭据（macOS/Linux 本地路径）。
+ */
+async function readGeminiOauthCredsNativeAsync(): Promise<GeminiOauthCredsFile | null> {
+  const home = os.homedir();
+  const p = path.join(home, ".gemini", "oauth_creds.json");
+  try {
+    const raw = await fs.readFile(p, "utf8");
+    const obj = JSON.parse(String(raw || "")) as GeminiOauthCredsFile;
+    if (!obj || typeof obj !== "object") return null;
+    return obj;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * 按 Provider 运行环境解析 Gemini 的 OAuth 凭据（不做跨环境回退）。
  */
 async function resolveGeminiOauthCredsAsync(env: ProviderRuntimeEnv): Promise<GeminiOauthCredsFile | null> {
   // 说明：不做跨环境回退，严格按当前 Provider 运行环境读取对应路径。
+  // - terminal=native：读取 macOS/Linux 本地 ~/.gemini/oauth_creds.json
   // - terminal=wsl：读取 WSL 内 `~/.gemini/oauth_creds.json`
   // - terminal=windows/pwsh：读取 Windows 内 `%USERPROFILE%\\.gemini\\oauth_creds.json`
+  if (env.terminal === "native") return readGeminiOauthCredsNativeAsync();
   if (env.terminal === "wsl") return readGeminiOauthCredsWslAsync(env.distro);
   return readGeminiOauthCredsWindowsAsync();
 }
@@ -423,6 +441,15 @@ export async function getGeminiQuotaSnapshotAsync(env: ProviderRuntimeEnv): Prom
       const winPath = path.join(resolveGeminiHomeWindows(), "oauth_creds.json");
       const winExists = await fileExistsAsync(winPath);
       const winWslPath = tryConvertWindowsPathToWslMountPathForHint(winPath);
+      const nativePath = path.join(os.homedir(), ".gemini", "oauth_creds.json");
+
+      // native 模式错误提示
+      if (env.terminal === "native") {
+        throw new Error(
+          `未找到 Gemini 登录凭据（oauth_creds.json）。当前 Gemini 运行环境为 macOS/Linux 本地，因此只会读取：${nativePath}。请先运行 \`gemini\` 并完成登录。`
+        );
+      }
+
       const wslHint = `~/.gemini/oauth_creds.json（WSL：${env.distro || "default"}）`;
       if (env.terminal === "wsl") {
         throw new Error(

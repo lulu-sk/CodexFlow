@@ -23,7 +23,7 @@ import { hasNonEmptyIOFromMessages } from "./agentSessions/shared/empty";
 import { perfLogger } from "./log";
 import settings, { ensureSettingsAutodetect, ensureFirstRunTerminalSelection, type ThemeSetting as SettingsThemeSetting, type AppSettings, type IdeOpenSettings } from "./settings";
 import { normalizeTerminal, resolveWindowsShell, detectPwshExecutable } from "./shells";
-import { resolveActiveProviderId, resolveProviderRuntimeEnvFromSettings, resolveProviderStartupCmdFromSettings } from "./providers/runtime";
+import { resolveActiveProviderId, resolveProviderRuntimeEnvFromSettings, resolveProviderStartupCmdFromSettings, type ProviderRuntimeEnv } from "./providers/runtime";
 import i18n from "./i18n";
 import wsl from "./wsl";
 import fileIndex from "./fileIndex";
@@ -4687,6 +4687,41 @@ ipcMain.handle('utils.getHomeDir', async () => {
   }
 });
 
+/**
+ * 获取当前平台的能力与默认配置，用于 UI 条件渲染。
+ */
+ipcMain.handle('utils.getPlatformCapabilities', async () => {
+  const platform = process.platform;
+  const isWindows = platform === 'win32';
+  const isMac = platform === 'darwin';
+  return {
+    ok: true,
+    platform,
+    isWindows,
+    isMac,
+    isLinux: platform === 'linux',
+    supportsWsl: isWindows,
+    supportsGitBash: isWindows,
+    supportsWindowsTerminal: isWindows,
+    supportsNativeShell: !isWindows,
+    defaultTerminalMode: isWindows ? 'wsl' : 'native',
+    defaultShell: isWindows ? undefined : (process.env.SHELL || '/bin/zsh'),
+  };
+});
+
+ipcMain.handle("utils.getMacTerminalTheme", async (_event, args: { tone?: "light" | "dark" } | undefined) => {
+  try {
+    const { getMacTerminalTheme } = await import("./macTerminalTheme");
+    return await getMacTerminalTheme(args?.tone);
+  } catch (e: any) {
+    return {
+      ok: false,
+      supported: process.platform === "darwin",
+      error: String(e),
+    };
+  }
+});
+
 ipcMain.handle('utils.pathExists', async (_e, args: { path: string; dirOnly?: boolean }) => {
   try {
     const p = String(args?.path || '');
@@ -4835,7 +4870,7 @@ ipcMain.handle("codex.rateLimit", async () => {
 /**
  * 读取设置中的 Provider 环境（若缺失则回退到全局 terminal/distro）。
  */
-function resolveProviderRuntimeEnv(providerId: "claude" | "gemini"): { terminal: "wsl" | "windows" | "pwsh"; distro?: string } {
+function resolveProviderRuntimeEnv(providerId: "claude" | "gemini"): ProviderRuntimeEnv {
   const cfg = settings.getSettings();
   return resolveProviderRuntimeEnvFromSettings(cfg, providerId);
 }

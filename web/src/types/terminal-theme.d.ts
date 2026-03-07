@@ -4,7 +4,7 @@
 /**
  * 终端主题 ID：用于在主/渲染进程之间传递主题选择。
  */
-export type TerminalThemeId = "campbell" | "dracula" | "catppuccin-latte";
+export type TerminalThemeId = "campbell" | "dracula" | "catppuccin-latte" | "macos-system";
 
 /**
  * 终端主题明暗属性，便于 UI 展示。

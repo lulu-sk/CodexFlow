@@ -378,14 +378,15 @@ export default class TerminalManager {
 
   setAppearance(appearance: Partial<TerminalAppearance>): void {
     const next = normalizeTerminalAppearance(appearance, this.appearance);
+    const fontSizeChanged = next.fontSize !== this.appearance.fontSize;
     const fontChanged = next.fontFamily !== this.appearance.fontFamily;
     const themeChanged = next.theme !== this.appearance.theme;
-    if (!fontChanged && !themeChanged) return;
+    if (!fontChanged && !fontSizeChanged && !themeChanged) return;
     this.appearance = next;
     for (const [tabId, adapter] of Object.entries(this.adapters)) {
       if (!adapter) continue;
       try { adapter.setAppearance(next); } catch {}
-      if (fontChanged) {
+      if (fontChanged || fontSizeChanged) {
         try { this.scheduleResizeSync(tabId, true); } catch {}
       }
     }

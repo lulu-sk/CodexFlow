@@ -345,13 +345,35 @@ export class PTYManager {
     let proc: IPty;
     if (os.platform() !== 'win32') {
       // 在非 Windows 环境使用本地 shell 便于开发调试
-      const shell = process.env.SHELL || '/bin/bash';
-      const args: string[] = [];
+      const shell = process.env.SHELL || '/bin/zsh';
+      // 使用 -l 参数使 shell 以登录模式启动，确保加载用户配置文件（如 .zshrc/.bash_profile）
+      // 这样用户自定义的 PATH 设置会被正确加载
+      const args: string[] = ['-l'];
+      // macOS/Linux 下使用 wslPath (实际是 POSIX 路径) 作为 cwd
+      const cwd = wslPath && wslPath.startsWith('/') ? wslPath : undefined;
+
+      // macOS: 确保 PATH 包含 Homebrew 常见路径
+      // 当从 Finder 启动时，PATH 可能不包含 /opt/homebrew/bin
+      if (os.platform() === 'darwin') {
+        const homebrewPaths = [
+          '/opt/homebrew/bin',      // Apple Silicon
+          '/usr/local/bin',         // Intel Mac
+        ];
+        const currentPath = env.PATH || '';
+        const pathParts = currentPath.split(':');
+        for (const hp of homebrewPaths) {
+          if (!pathParts.includes(hp)) {
+            pathParts.unshift(hp);
+          }
+        }
+        env.PATH = pathParts.join(':');
+      }
+
       proc = pty.spawn(shell, args, {
         name: 'xterm-256color',
         cols,
         rows,
-        cwd: undefined,
+        cwd,
         env
       });
     } else if (termMode === 'windows' || termMode === 'pwsh') {
@@ -424,7 +446,7 @@ export class PTYManager {
     // 使用 setImmediate 让前端的 IPC 订阅先完成，避免早期输出（包括 OSC 通知）丢失
     if (startupCmd) {
       const isWin = os.platform() === 'win32';
-      const mode = isWin ? (termMode || 'wsl') : 'posix';
+      const mode = isWin ? (termMode || 'wsl') : 'native';
       const isWinShell = mode === 'windows' || mode === 'pwsh';
       setImmediate(() => {
         const p = this.sessions.get(id);
@@ -433,13 +455,14 @@ export class PTYManager {
           // PowerShell / PowerShell 7 中直接执行命令（cwd 已设置）
           p.write(`${startupCmd}\r`);
           dlog(`[pty] startupCmd executed (windows) id=${id} shell=${mode}`);
-        } else if (isWin) {
+        } else if (isWin && mode === 'wsl') {
           // WSL：通过 bash -lc 执行
           p.write(`bash -lc ${bashSingleQuote(startupCmd)}\r`);
           dlog(`[pty] startupCmd executed (wsl) id=${id}`);
         } else {
+          // native 模式 (macOS/Linux)：直接写入命令
           p.write(`${startupCmd}\r`);
-          dlog(`[pty] startupCmd executed (posix) id=${id}`);
+          dlog(`[pty] startupCmd executed (native) id=${id}`);
         }
       });
     }

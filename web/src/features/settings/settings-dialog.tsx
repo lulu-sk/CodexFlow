@@ -55,12 +55,17 @@ import { resolveProvider } from "@/lib/providers/resolve";
 import { getYoloPresetStartupCmd, isYoloPresetEnabled, isYoloSupportedProviderId } from "@/lib/providers/yolo";
 import {
   DEFAULT_TERMINAL_FONT_FAMILY,
+  DEFAULT_TERMINAL_FONT_SIZE,
+  DEFAULT_TERMINAL_THEME_ID,
+  type TerminalThemePalette,
+  type TerminalThemeFont,
   normalizeTerminalFontFamily,
   buildTerminalFontStack,
   getTerminalTheme,
   normalizeTerminalTheme,
   TERMINAL_THEME_OPTIONS,
 } from "@/lib/terminal-appearance";
+import { useMacOSSystemTerminalTheme } from "@/lib/use-macos-system-terminal-theme";
 import { resolveFirstAvailableFont, parseFontFamilyList } from "@/lib/font-utils";
 import { resolveSystemTheme, subscribeSystemTheme, type ThemeMode, type ThemeSetting } from "@/lib/theme";
 import type { TerminalThemeId } from "@/types/terminal-theme";
@@ -231,6 +236,47 @@ const DEFAULT_LANGS = ["zh", "en"];
 
 type ProviderEnvMap = Record<string, { terminal: TerminalMode; distro: string }>;
 
+function detectDefaultRendererTerminalMode(): TerminalMode {
+  try {
+    const nav = (globalThis as any)?.navigator;
+    const raw = String(nav?.userAgentData?.platform || nav?.platform || nav?.userAgent || "").toLowerCase();
+    if (raw.includes("win")) return "wsl";
+  } catch {}
+  return "native";
+}
+
+function getDefaultProviderEnv(): { terminal: TerminalMode; distro: string } {
+  const terminal = detectDefaultRendererTerminalMode();
+  return { terminal, distro: terminal === "wsl" ? "Ubuntu-24.04" : "" };
+}
+
+function detectRendererPlatformCapabilities(): {
+  isWindows: boolean;
+  isMac: boolean;
+  isLinux: boolean;
+  defaultTerminalMode: TerminalMode;
+} {
+  try {
+    const nav = (globalThis as any)?.navigator;
+    const raw = String(nav?.userAgentData?.platform || nav?.platform || nav?.userAgent || "").toLowerCase();
+    const isWindows = raw.includes("win");
+    const isMac = raw.includes("mac") || raw.includes("darwin");
+    const isLinux = !isWindows && !isMac && raw.includes("linux");
+    return {
+      isWindows,
+      isMac,
+      isLinux,
+      defaultTerminalMode: isWindows ? "wsl" : "native",
+    };
+  } catch {}
+  return {
+    isWindows: false,
+    isMac: true,
+    isLinux: false,
+    defaultTerminalMode: "native",
+  };
+}
+
 /**
  * 将 Provider 环境表归一化：补齐 terminal/distro，并确保内置 Provider 至少存在默认条目。
  */
@@ -240,20 +286,25 @@ function normalizeProviderEnvMap(
 ): ProviderEnvMap {
   const env: ProviderEnvMap = {};
   const src = input && typeof input === "object" ? input : {};
+  const validTerminals: TerminalMode[] = ["native", "wsl", "windows", "pwsh"];
+  const nativeOnlyPlatform = fallback.terminal === "native";
   for (const [id, v] of Object.entries(src)) {
     const key = String(id || "").trim();
     if (!key) continue;
-    const terminal: TerminalMode =
-      v?.terminal === "wsl" || v?.terminal === "windows" || v?.terminal === "pwsh"
-        ? v.terminal
+    const terminalCandidate: TerminalMode =
+      v?.terminal && validTerminals.includes(v.terminal as TerminalMode)
+        ? (v.terminal as TerminalMode)
         : fallback.terminal;
-    const distro = String(v?.distro || fallback.distro).trim() || fallback.distro;
+    const terminal = nativeOnlyPlatform ? "native" : terminalCandidate;
+    const distro = terminal === "wsl"
+      ? (String(v?.distro || fallback.distro).trim() || fallback.distro)
+      : "";
     env[key] = { terminal, distro };
   }
 
   for (const builtIn of getBuiltInProviders()) {
     if (env[builtIn.id]) continue;
-    env[builtIn.id] = { terminal: fallback.terminal, distro: fallback.distro };
+    env[builtIn.id] = { terminal: fallback.terminal, distro: fallback.terminal === "wsl" ? fallback.distro : "" };
   }
 
   return env;
@@ -312,6 +363,31 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   const [availableLangs, setAvailableLangs] = useState<string[]>(DEFAULT_LANGS);
   const [pwshAvailable, setPwshAvailable] = useState<boolean | null>(null);
   const [pwshPath, setPwshPath] = useState<string>("");
+  // 平台能力检测状态
+  const [platformCapabilities, setPlatformCapabilities] = useState<{
+    isWindows: boolean;
+    isMac: boolean;
+    isLinux: boolean;
+    defaultTerminalMode: TerminalMode;
+  } | null>(() => detectRendererPlatformCapabilities());
+
+  // 获取平台能力
+  useEffect(() => {
+    if (!open) return;
+    window.host.utils.getPlatformCapabilities().then((res) => {
+      if (res && res.ok) {
+        setPlatformCapabilities({
+          isWindows: res.isWindows ?? false,
+          isMac: res.isMac ?? false,
+          isLinux: res.isLinux ?? false,
+          defaultTerminalMode: (res.defaultTerminalMode as TerminalMode) || (res.isWindows ? "wsl" : "native"),
+        });
+      }
+    }).catch((e) => {
+      console.warn("getPlatformCapabilities failed", e);
+      setPlatformCapabilities(detectRendererPlatformCapabilities());
+    });
+  }, [open]);
 
   const [providersActiveId, setProvidersActiveId] = useState<string>(values.providers?.activeId || "codex");
   const [providerEditingId, setProviderEditingId] = useState<string>(values.providers?.activeId || "codex");
@@ -322,18 +398,29 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     Array.isArray(values.providers?.items) ? (values.providers.items as any) : [],
   );
   const [providerEnvMap, setProviderEnvMap] = useState<ProviderEnvMap>(() => {
-    const fallback = { terminal: "wsl" as TerminalMode, distro: "Ubuntu-24.04" };
+    // 使用平台感知的默认值
+    const fallback = getDefaultProviderEnv();
     return normalizeProviderEnvMap(values.providers?.env, fallback);
   });
 
   const editingEnv = useMemo(() => {
-    return providerEnvMap[providerEditingId] || providerEnvMap[providersActiveId] || { terminal: "wsl" as TerminalMode, distro: "Ubuntu-24.04" };
-  }, [providerEditingId, providerEnvMap, providersActiveId]);
+    const fallbackEnv = getDefaultProviderEnv();
+    const defaultEnv = {
+      terminal: (platformCapabilities?.defaultTerminalMode || fallbackEnv.terminal) as TerminalMode,
+      distro: (platformCapabilities?.defaultTerminalMode || fallbackEnv.terminal) === "wsl" ? "Ubuntu-24.04" : "",
+    };
+    return providerEnvMap[providerEditingId] || providerEnvMap[providersActiveId] || defaultEnv;
+  }, [providerEditingId, providerEnvMap, providersActiveId, platformCapabilities]);
   const editingTerminalLabel = useMemo(() => {
     if (editingEnv.terminal === "pwsh") return t("settings:terminalMode.pwsh");
     if (editingEnv.terminal === "windows") return t("settings:terminalMode.windows");
+    if (editingEnv.terminal === "native") {
+      if (platformCapabilities?.isMac) return t("settings:terminalMode.nativeMac");
+      if (platformCapabilities?.isLinux) return t("settings:terminalMode.nativeLinux");
+      return t("settings:terminalMode.native");
+    }
     return t("settings:terminalMode.wsl");
-  }, [editingEnv.terminal, t]);
+  }, [editingEnv.terminal, t, platformCapabilities]);
   const pwshDetectedText = useMemo(() => {
     const label = t("settings:terminalMode.pwshDetected");
     const path = pwshPath || "pwsh";
@@ -366,15 +453,22 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     const id = String(providerId || "").trim();
     if (!id) return;
     setProviderEnvMap((prev) => {
-      const cur = prev[id] || prev[providersActiveId] || { terminal: "wsl" as TerminalMode, distro: "Ubuntu-24.04" };
+      const fallback = getDefaultProviderEnv();
+      const nextTerminalDefault = (platformCapabilities?.defaultTerminalMode || fallback.terminal) as TerminalMode;
+      const defaultEnv = { terminal: nextTerminalDefault, distro: nextTerminalDefault === "wsl" ? "Ubuntu-24.04" : "" };
+      const cur = prev[id] || prev[providersActiveId] || defaultEnv;
       const next: ProviderEnvMap = { ...prev };
-      next[id] = {
-        terminal: (patch.terminal === "wsl" || patch.terminal === "windows" || patch.terminal === "pwsh") ? patch.terminal : cur.terminal,
-        distro: typeof patch.distro === "string" && patch.distro.trim().length > 0 ? patch.distro.trim() : cur.distro,
-      };
+      const validTerminals: TerminalMode[] = ["native", "wsl", "windows", "pwsh"];
+      const terminal = (patch.terminal && validTerminals.includes(patch.terminal)) ? patch.terminal : cur.terminal;
+      const distro = terminal === "wsl"
+        ? (typeof patch.distro === "string" && patch.distro.trim().length > 0
+            ? patch.distro.trim()
+            : (cur.terminal === "wsl" ? cur.distro : "Ubuntu-24.04"))
+        : "";
+      next[id] = { terminal, distro };
       return next;
     });
-  }, [providersActiveId]);
+  }, [providersActiveId, platformCapabilities]);
 
   /**
    * 更新指定 Provider 的 item 字段（启动命令、图标、展示名）。
@@ -478,9 +572,15 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     const id = createCustomProviderId("custom", existing);
     const defaultName = String(t("settings:providers.defaultName", "自定义引擎") || "").trim() || "自定义引擎";
     setProviderItems((prev) => [...prev, { id, displayName: defaultName, startupCmd: "" }]);
-    setProviderEnvMap((prev) => ({ ...prev, [id]: prev[providersActiveId] || { terminal: "wsl", distro: "Ubuntu-24.04" } }));
+    const fallbackEnv = getDefaultProviderEnv();
+    const defaultTerminal = (platformCapabilities?.defaultTerminalMode || fallbackEnv.terminal) as TerminalMode;
+    const defaultEnv = {
+      terminal: defaultTerminal,
+      distro: defaultTerminal === "wsl" ? "Ubuntu-24.04" : "",
+    };
+    setProviderEnvMap((prev) => ({ ...prev, [id]: prev[providersActiveId] || defaultEnv }));
     setProviderEditingId(id);
-  }, [providerItems, providersActiveId, t]);
+  }, [providerItems, providersActiveId, t, platformCapabilities]);
 
   /**
    * 触发亮色图标选择器（隐藏 input 的 click），用于统一按钮风格。
@@ -607,9 +707,48 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   const [monospaceFonts, setMonospaceFonts] = useState<string[]>([]);
   const [showAllFonts, setShowAllFonts] = useState<boolean>(false);
   const fontsLoadedRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    if (platformCapabilities?.isMac === false && terminalTheme === "macos-system") {
+      setTerminalTheme(DEFAULT_TERMINAL_THEME_ID);
+    }
+  }, [platformCapabilities?.isMac, terminalTheme]);
+
+  const {
+    theme: activeMacTheme,
+    loading: macThemeLoading,
+    error: macThemeError,
+  } = useMacOSSystemTerminalTheme({
+    enabled: open && platformCapabilities?.isMac === true,
+    tone: systemTheme,
+  });
+  const macTheme = useMemo(() => ({
+    supported: platformCapabilities?.isMac === true,
+    loading: open && platformCapabilities?.isMac === true ? macThemeLoading : false,
+    theme: activeMacTheme,
+    error: platformCapabilities?.isMac === true ? macThemeError : null,
+  }), [activeMacTheme, macThemeError, macThemeLoading, open, platformCapabilities?.isMac]);
+  const previewFontFamily = useMemo(() => {
+    if (terminalTheme === "macos-system" && activeMacTheme?.font?.family) {
+      return buildTerminalFontStack(activeMacTheme.font.family);
+    }
+    return terminalFontFamily || DEFAULT_TERMINAL_FONT_FAMILY;
+  }, [activeMacTheme, terminalFontFamily, terminalTheme]);
+  const previewFontSize = useMemo(() => {
+    if (terminalTheme === "macos-system" && activeMacTheme?.font?.size) {
+      return activeMacTheme.font.size;
+    }
+    return DEFAULT_TERMINAL_FONT_SIZE;
+  }, [activeMacTheme, terminalTheme]);
   const resolvedPreviewFont = useMemo(() => {
+    if (terminalTheme === "macos-system" && activeMacTheme?.font?.family) {
+      return {
+        name: activeMacTheme.font.family,
+        isFallback: false,
+      };
+    }
     return resolveFirstAvailableFont(terminalFontFamily || DEFAULT_TERMINAL_FONT_FAMILY);
-  }, [terminalFontFamily]);
+  }, [activeMacTheme, terminalFontFamily, terminalTheme]);
   const currentPrimaryFont = useMemo(() => {
     const list = parseFontFamilyList(terminalFontFamily);
     return list[0] || "";
@@ -628,7 +767,15 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     const current = (currentPrimaryFont || "").toLowerCase();
     return visibleFontList.findIndex((name) => name.toLowerCase() === current);
   }, [visibleFontList, currentPrimaryFont]);
-  const previewTheme = useMemo(() => getTerminalTheme(terminalTheme), [terminalTheme]);
+
+  // 主题预览， 支持 macos-system 动态主题
+  const previewTheme = useMemo(() => {
+    if (terminalTheme === "macos-system") {
+      return activeMacTheme || getTerminalTheme(DEFAULT_TERMINAL_THEME_ID);
+    }
+    return getTerminalTheme(terminalTheme);
+  }, [terminalTheme, activeMacTheme]);
+
   const themeLabel = useCallback((mode: ThemeSetting) => {
     if (mode === "dark") return t("settings:appearance.theme.dark") as string;
     if (mode === "light") return t("settings:appearance.theme.light") as string;
@@ -703,7 +850,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     setProvidersActiveId(activeId);
     setProviderEditingId(activeId);
     setProviderItems(Array.isArray(values.providers?.items) ? (values.providers.items as any) : []);
-    setProviderEnvMap(normalizeProviderEnvMap(values.providers?.env, { terminal: "wsl", distro: "Ubuntu-24.04" }));
+    setProviderEnvMap(normalizeProviderEnvMap(values.providers?.env, getDefaultProviderEnv()));
     // 默认不展开“暗色图标”设置，避免用户误解必须配置两张图标
     setShowDarkIconOverride(false);
 
@@ -1843,9 +1990,20 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="wsl">{t("settings:terminalMode.wsl")}</SelectItem>
-                              <SelectItem value="pwsh" disabled={pwshAvailable === false}>{t("settings:terminalMode.pwsh")}</SelectItem>
-                              <SelectItem value="windows">{t("settings:terminalMode.windows")}</SelectItem>
+                              {/* macOS/Linux 显示原生终端选项 */}
+                              {platformCapabilities && !platformCapabilities.isWindows && (
+                                <SelectItem value="native">
+                                  {platformCapabilities.isMac ? t("settings:terminalMode.nativeMac") : t("settings:terminalMode.nativeLinux")}
+                                </SelectItem>
+                              )}
+                              {/* Windows 选项 */}
+                              {platformCapabilities?.isWindows && (
+                                <>
+                                  <SelectItem value="wsl">{t("settings:terminalMode.wsl")}</SelectItem>
+                                  <SelectItem value="pwsh" disabled={pwshAvailable === false}>{t("settings:terminalMode.pwsh")}</SelectItem>
+                                  <SelectItem value="windows">{t("settings:terminalMode.windows")}</SelectItem>
+                                </>
+                              )}
                             </SelectContent>
                           </Select>
                         </div>
@@ -1868,10 +2026,19 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
 	                        </div>
                         )}
                       </div>
-                      <div className="flex items-center gap-2 p-2.5 rounded-xl bg-blue-50/50 dark:bg-blue-500/5 text-[10px] text-blue-600 dark:text-blue-400">
-                        <Info className="h-3 w-3 shrink-0" />
-                        <span className="truncate">{pwshAvailable === null ? t("settings:terminalMode.pwshDetecting") : (pwshAvailable ? pwshDetectedText : t("settings:terminalMode.pwshUnavailable"))}</span>
-                      </div>
+                      {/* 平台相关提示 */}
+                      {platformCapabilities?.isWindows && (
+                        <div className="flex items-center gap-2 p-2.5 rounded-xl bg-blue-50/50 dark:bg-blue-500/5 text-[10px] text-blue-600 dark:text-blue-400">
+                          <Info className="h-3 w-3 shrink-0" />
+                          <span className="truncate">{pwshAvailable === null ? t("settings:terminalMode.pwshDetecting") : (pwshAvailable ? pwshDetectedText : t("settings:terminalMode.pwshUnavailable"))}</span>
+                        </div>
+                      )}
+                      {platformCapabilities && !platformCapabilities.isWindows && (
+                        <div className="flex items-center gap-2 p-2.5 rounded-xl bg-blue-50/50 dark:bg-blue-500/5 text-[10px] text-blue-600 dark:text-blue-400">
+                          <Info className="h-3 w-3 shrink-0" />
+                          <span className="truncate">{t("settings:terminalMode.helpMulti")}</span>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -2242,7 +2409,13 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                 <CardContent className="space-y-4">
                   <p className="text-sm text-slate-500">{t("settings:terminalTheme.help")}</p>
                   <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                    {TERMINAL_THEME_OPTIONS.map((option) => {
+                    {[...TERMINAL_THEME_OPTIONS, ...(platformCapabilities?.isMac && macTheme.supported ? [{
+                      id: "macos-system" as TerminalThemeId,
+                      tone: (activeMacTheme?.tone || "dark") as "dark" | "light",
+                      palette: activeMacTheme?.palette || TERMINAL_THEME_OPTIONS[0].palette,
+                    }] : [])].map((option) => {
+                      const isMacSystemTheme = option.id === "macos-system";
+                      const isUnavailable = isMacSystemTheme && !macTheme.loading && !activeMacTheme;
                       const isActive = option.id === terminalTheme;
                       const palette = option.palette;
                       return (
@@ -2250,11 +2423,13 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                           key={option.id}
                           type="button"
                           className={cn(
+                            isUnavailable && "cursor-not-allowed opacity-60",
                             "flex flex-col gap-2 rounded-lg border px-3 py-3 text-left transition-colors",
                             isActive
                               ? "border-slate-900 bg-slate-50 shadow-sm dark:border-[var(--cf-accent)] dark:bg-[var(--cf-surface)]"
                               : "border-slate-200 bg-white hover:border-slate-300 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:hover:border-[var(--cf-border)]"
                           )}
+                          disabled={isUnavailable}
                           onClick={() => setTerminalTheme(option.id)}
                         >
                           <div
@@ -2291,7 +2466,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                     <div
                       className="rounded-lg border border-slate-200 px-4 py-3 font-mono text-xs overflow-x-auto dark:border-[var(--cf-border)]"
                       style={{
-                        fontFamily: terminalFontFamily || DEFAULT_TERMINAL_FONT_FAMILY,
+                        fontFamily: previewFontFamily,
+                        fontSize: `${previewFontSize}px`,
                         backgroundColor: previewTheme.palette.background,
                         color: previewTheme.palette.foreground,
                       }}
@@ -2306,6 +2482,11 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                     <div className="text-[11px] text-slate-500">
                       {t("settings:terminalTheme.previewNote", { theme: t(`settings:terminalTheme.options.${terminalTheme}`) })}
                     </div>
+                    {terminalTheme === "macos-system" && !macTheme.loading && !activeMacTheme && (
+                      <div className="text-[11px] text-amber-600 dark:text-amber-400">
+                        {t("settings:terminalTheme.systemUnavailable")}
+                      </div>
+                    )}
                   </div>
 
                   {/* 单一选择器：仅显示“已安装”字体；推荐项置顶并标注“推荐” */}
@@ -2478,8 +2659,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                   <CodexAccountInline
                     className="w-full"
                     auto={open}
-                    terminalMode={providerEnvMap["codex"]?.terminal || "wsl"}
-                    distro={(providerEnvMap["codex"]?.terminal || "wsl") === "wsl" ? (providerEnvMap["codex"]?.distro || "Ubuntu-24.04") : undefined}
+                    terminalMode={providerEnvMap["codex"]?.terminal || getDefaultProviderEnv().terminal}
+                    distro={(providerEnvMap["codex"]?.terminal || getDefaultProviderEnv().terminal) === "wsl" ? (providerEnvMap["codex"]?.distro || "Ubuntu-24.04") : undefined}
                     expanded
                   />
                   <Separator className="my-4" />

@@ -254,6 +254,23 @@ function findCodexInExtensions(mode: "native" | "wsl"): string | null {
   return null;
 }
 
+export function findNativeCodexInPath(pathEnv: string | undefined = process.env.PATH, platform: NodeJS.Platform = process.platform): string | null {
+  if (platform === "win32") return null;
+  const rawPath = String(pathEnv || "").trim();
+  if (!rawPath) return null;
+  const entries = rawPath.split(path.delimiter).map((entry) => entry.trim()).filter(Boolean);
+  for (const dir of entries) {
+    const candidate = path.join(dir, "codex");
+    try {
+      if (!fs.existsSync(candidate)) continue;
+      if (!pathExistsExecutable(candidate)) continue;
+      perfLogger.log(`[codex] Found in PATH: ${candidate}`);
+      return candidate;
+    } catch {}
+  }
+  return null;
+}
+
 function resolveBinaryPath(mode: "native" | "wsl"): string {
   // 1. 优先使用环境变量指定的路径
   const hint = process.env.CODEXFLOW_CODEX_BIN;
@@ -262,11 +279,17 @@ function resolveBinaryPath(mode: "native" | "wsl"): string {
     return hint;
   }
 
-  // 2. 尝试通过 where.exe 查找 npm 全局安装的版本（优先）
+  // 2. Windows 优先通过 where.exe 查找 npm 全局安装的版本
   const npmGlobal = findCodexViaWhereExe(mode);
   if (npmGlobal) return npmGlobal;
 
-  // 3. 降级到插件目录查找（后备方案）
+  // 3. macOS/Linux 原生模式下，支持直接从 PATH 定位全局安装的 codex
+  if (mode === "native") {
+    const pathBinary = findNativeCodexInPath();
+    if (pathBinary) return pathBinary;
+  }
+
+  // 4. 降级到插件目录查找（后备方案）
   const extensionPath = findCodexInExtensions(mode);
   if (extensionPath) return extensionPath;
 

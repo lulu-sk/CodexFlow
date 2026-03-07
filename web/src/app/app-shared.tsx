@@ -418,7 +418,7 @@ type HistorySession = {
   filePath?: string;
   resumeMode?: 'modern' | 'legacy' | 'unknown';
   resumeId?: string;
-  runtimeShell?: 'wsl' | 'windows' | 'unknown';
+  runtimeShell?: 'wsl' | 'windows' | 'native' | 'unknown';
 };
 
 type HistoryTimelineGroup = {
@@ -434,7 +434,7 @@ type HistoryTimelineGroup = {
 
 type ResumeExecutionMode = 'internal' | 'external';
 type LegacyResumePrompt = { filePath: string; mode: ResumeExecutionMode };
-type ShellLabel = 'PowerShell' | 'PowerShell 7' | 'WSL';
+type ShellLabel = 'PowerShell' | 'PowerShell 7' | 'WSL' | 'macOS 终端' | 'Linux 终端' | '未知';
 type BlockingNotice =
   | { type: 'shell-mismatch'; expected: ShellLabel; current: ShellLabel }
   | { type: 'external-console'; env: ShellLabel };
@@ -1247,10 +1247,24 @@ function buildAutoCommitMessage(source: "user" | "agent", text: string): string 
 
 	/**
 	 * 中文说明：将终端运行模式映射为 UI 展示标签。
+	 * native 模式根据平台返回对应的名称（macOS 终端 / Linux 终端）。
 	 */
 	const toShellLabel = (mode: TerminalMode): ShellLabel => {
 	  if (mode === "pwsh") return "PowerShell 7";
 	  if (mode === "windows") return "PowerShell";
+	  if (mode === "native") {
+	    // 检测平台以返回正确的 native 终端名称
+	    try {
+	      const nav = (globalThis as any)?.navigator;
+	      const platform = String(nav?.userAgentData?.platform || nav?.platform || nav?.userAgent || '').toLowerCase();
+	      if (platform.includes('mac') || platform.includes('darwin')) return "macOS 终端";
+	      if (platform.includes('linux')) return "Linux 终端";
+	      // 无法检测平台时返回"未知"
+	      return "未知";
+	    } catch {
+	      return "未知";
+	    }
+	  }
 	  return "WSL";
 	};
 
@@ -1261,13 +1275,21 @@ function buildAutoCommitMessage(source: "user" | "agent", text: string): string 
 	  const v = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
 	  if (v === 'pwsh') return 'pwsh';
 	  if (v === 'windows') return 'windows';
-	  return 'wsl';
+	  if (v === 'native') return 'native';
+	  if (v === 'wsl') return 'wsl';
+	  try {
+	    const nav = (globalThis as any)?.navigator;
+	    const platform = String(nav?.userAgentData?.platform || nav?.platform || nav?.userAgent || '').toLowerCase();
+	    if (platform.includes('win')) return 'wsl';
+	  } catch {}
+	  return 'native';
 	};
 
 	/**
 	 * 中文说明：判断当前终端是否属于 Windows 家族（PowerShell / PowerShell 7）。
+	 * 注意：native 模式不属于 Windows 家族。
 	 */
-	const isWindowsLike = (mode: TerminalMode): boolean => mode !== 'wsl';
+	const isWindowsLike = (mode: TerminalMode): boolean => mode !== 'wsl' && mode !== 'native';
 
 function normDir(p?: string): string { return canonicalizePath(getDir(p)); }
 

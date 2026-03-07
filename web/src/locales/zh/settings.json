@@ -189,7 +189,11 @@
     "wsl": "WSL 终端",
     "pwsh": "Windows（PowerShell 7）",
     "windows": "Windows（PowerShell）",
+    "native": "原生终端",
+    "nativeMac": "macOS 终端",
+    "nativeLinux": "Linux 终端",
     "help": "在 WSL、PowerShell 7 与传统 PowerShell 之间切换命令执行环境。",
+    "helpMulti": "选择命令执行环境。macOS/Linux 使用系统原生终端。",
     "pwshDetecting": "正在检测 PowerShell 7 可用性…",
     "pwshDetected": "已检测到 PowerShell 7：",
     "pwshUnavailable": "未检测到 PowerShell 7，已回退到传统 PowerShell。"
@@ -208,9 +212,11 @@
     "options": {
       "campbell": "Campbell（暗色，默认）",
       "dracula": "Dracula（暗色）",
-      "catppuccin-latte": "Catppuccin · Latte（亮色）"
+      "catppuccin-latte": "Catppuccin · Latte（亮色）",
+      "macos-system": "系统原生配色（仅 macOS）"
     },
-    "previewNote": "预览区已应用 {theme} 配色。"
+    "previewNote": "预览区已应用 {theme} 配色。",
+    "systemUnavailable": "当前无法读取 Terminal.app 配置，将回退到 Campbell。"
   },
   "terminalFont": {
     "label": "终端字体",
