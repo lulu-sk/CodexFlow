@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildPowerShellCall } from "./shell";
+import { buildPowerShellCall, isWindowsLikeTerminal } from "./shell";
+import { buildClaudeResumeStartupCmd } from "@/providers/claude/commands";
 
 describe("shell 工具：PowerShell 参数安全拼接", () => {
   it("包含换行的参数会被编码为单行表达式（避免 PTY 把多行拆坏）", () => {
@@ -29,3 +30,24 @@ describe("shell 工具：PowerShell 参数安全拼接", () => {
   });
 });
 
+describe("shell 工具：终端类型判定", () => {
+  it("仅 windows / pwsh 视为 Windows 系终端", () => {
+    expect(isWindowsLikeTerminal("windows")).toBe(true);
+    expect(isWindowsLikeTerminal("pwsh")).toBe(true);
+    expect(isWindowsLikeTerminal("wsl")).toBe(false);
+    expect(isWindowsLikeTerminal("native")).toBe(false);
+  });
+});
+
+describe("shell 工具：恢复命令拼装", () => {
+  it("macOS/Linux native 模式下 Claude 恢复命令使用 POSIX 语法", () => {
+    const cmd = buildClaudeResumeStartupCmd({
+      cmd: "claude",
+      terminalMode: "native",
+      sessionId: "eca1fa63-6e64-4554-b9bb-16bb082ede4e",
+    });
+    expect(cmd).toBe("claude --resume 'eca1fa63-6e64-4554-b9bb-16bb082ede4e' || claude --continue");
+    expect(cmd).not.toContain("$LASTEXITCODE");
+    expect(cmd).not.toContain("& '");
+  });
+});

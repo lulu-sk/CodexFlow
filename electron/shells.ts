@@ -4,7 +4,14 @@
 import fs from "node:fs";
 import { execFile } from "node:child_process";
 
-export type TerminalMode = "wsl" | "windows" | "pwsh";
+/**
+ * 终端运行模式枚举：
+ * - native: macOS/Linux 原生 shell (zsh/bash/fish 等)
+ * - wsl: Windows Subsystem for Linux
+ * - windows: Windows PowerShell 5
+ * - pwsh: PowerShell 7 (跨平台)
+ */
+export type TerminalMode = "native" | "wsl" | "windows" | "pwsh";
 
 export type WindowsShellKind = "powershell" | "pwsh";
 
@@ -13,11 +20,44 @@ export type WindowsShellResolution = {
   kind: WindowsShellKind;
 };
 
+/**
+ * 归一化终端模式，支持平台感知默认值：
+ * - 明确指定的模式直接返回
+ * - 未指定时根据平台返回默认值：Windows -> wsl，macOS/Linux -> native
+ */
 export function normalizeTerminal(raw: unknown): TerminalMode {
   const v = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  if (v === "native") return "native";
   if (v === "pwsh") return "pwsh";
   if (v === "windows") return "windows";
-  return "wsl";
+  if (v === "wsl") return "wsl";
+  // 平台感知默认值
+  if (process.platform === "win32") return "wsl";
+  return "native";
+}
+
+/**
+ * 按宿主平台裁剪终端模式，避免读取到其它平台保存的无效值。
+ * - Windows: `native` 自动回退到 `wsl`
+ * - macOS/Linux: 统一回退到 `native`
+ */
+export function coerceTerminalModeForPlatform(
+  raw: unknown,
+  platform: NodeJS.Platform = process.platform,
+): TerminalMode {
+  const normalized = normalizeTerminal(raw);
+  if (platform === "win32") {
+    if (normalized === "native") return "wsl";
+    return normalized;
+  }
+  return "native";
+}
+
+/**
+ * 获取当前平台的默认终端模式
+ */
+export function getDefaultTerminalForPlatform(): TerminalMode {
+  return normalizeTerminal(undefined);
 }
 
 const PWSH_CACHE_TTL_MS = 10_000;

@@ -51,7 +51,7 @@ export interface PathChipsInputProps extends Omit<React.InputHTMLAttributes<HTML
   /** 是否渲染为“多行区域”的外观与高度（保持原 UI 习惯） */
   multiline?: boolean;
   /** 运行环境：决定鼠标悬停时 title 显示路径风格（默认 windows） */
-  runEnv?: 'wsl' | 'windows' | 'pwsh';
+  runEnv?: 'native' | 'wsl' | 'windows' | 'pwsh';
   /** 自定义草稿输入区域（textarea/input）的附加类名 */
   draftInputClassName?: string;
   /** 是否为滚动条预留左右对称边距，仅在全屏输入时开启以保持视觉等宽 */

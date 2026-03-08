@@ -586,6 +586,81 @@ contextBridge.exposeInMainWorld('host', {
     , detectPwsh: async (): Promise<{ ok: boolean; available?: boolean; path?: string; error?: string }> => {
       try { return await ipcRenderer.invoke('utils.detectPwsh'); } catch (e: any) { return { ok: false, available: false, error: String(e) }; }
     }
+    , getPlatformCapabilities: async (): Promise<{
+      ok: boolean;
+      platform: string;
+      isWindows: boolean;
+      isMac: boolean;
+      isLinux: boolean;
+      supportsWsl: boolean;
+      supportsGitBash: boolean;
+      supportsWindowsTerminal: boolean;
+      supportsNativeShell: boolean;
+      defaultTerminalMode: string;
+      defaultShell?: string;
+      error?: string;
+    }> => {
+      try {
+        return await ipcRenderer.invoke('utils.getPlatformCapabilities');
+      } catch (e: any) {
+        return {
+          ok: false,
+          platform: 'unknown',
+          isWindows: false,
+          isMac: false,
+          isLinux: false,
+          supportsWsl: false,
+          supportsGitBash: false,
+          supportsWindowsTerminal: false,
+          supportsNativeShell: true,
+          defaultTerminalMode: 'native',
+          error: String(e),
+        };
+      }
+    }
+    /** 获取 macOS Terminal.app 主题（仅 macOS 可用） */
+    , getMacTerminalTheme: async (args?: { tone?: "light" | "dark" }): Promise<{
+      ok: boolean;
+      supported?: boolean;
+      theme?: {
+        id: "macos-system";
+        tone: "dark" | "light";
+        palette: {
+          background: string;
+          foreground: string;
+          cursor: string;
+          cursorAccent: string;
+          selectionBackground: string;
+          black: string;
+          red: string;
+          green: string;
+          yellow: string;
+          blue: string;
+          magenta: string;
+          cyan: string;
+          white: string;
+          brightBlack: string;
+          brightRed: string;
+          brightGreen: string;
+          brightYellow: string;
+          brightBlue: string;
+          brightMagenta: string;
+          brightCyan: string;
+          brightWhite: string;
+        };
+        font?: {
+          family: string;
+          size: number;
+        };
+      };
+      error?: string;
+    }> => {
+      try {
+        return await ipcRenderer.invoke('utils.getMacTerminalTheme', args);
+      } catch (e: any) {
+        return { ok: false, error: String(e) };
+      }
+    }
   }
   , images: {
     saveDataURL: async (args: { dataURL: string; projectWinRoot?: string; projectName?: string; ext?: string; prefix?: string }) => {
