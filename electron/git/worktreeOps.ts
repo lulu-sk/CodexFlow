@@ -208,6 +208,61 @@ async function removeWorktreeDirBestEffortAsync(worktreePath: string): Promise<v
 }
 
 /**
+ * 中文说明：在已完成合并安全检查后删除 worktree 对应分支。
+ * - 未合并且未强制时，返回 `needsForceDeleteBranch` 让上层二次确认；
+ * - 已合并时优先尝试 `git branch -d`，保持与 Git 常规删除语义一致；
+ * - 若 `-d` 因当前 `HEAD/上游` 与创建基分支不同而拒绝删除，则回退到 `-D`；
+ *   因为调用方已经通过显式祖先检查确认该分支已合并到目标基线，回退为安全兜底。
+ */
+async function deleteCheckedWorktreeBranchAsync(args: {
+  repoMainPath: string;
+  wtBranch: string;
+  isMerged: boolean;
+  forceDeleteBranch?: boolean;
+  gitPath?: string;
+}): Promise<
+  | { ok: true; removedBranch: boolean }
+  | { ok: false; removedBranch: false; needsForceDeleteBranch?: boolean; error: string }
+> {
+  const repoMainPath = toFsPathAbs(args.repoMainPath);
+  const wtBranch = String(args.wtBranch || "").trim();
+  if (!wtBranch) return { ok: true, removedBranch: false };
+  if (!repoMainPath) return { ok: false, removedBranch: false, error: "missing repoMainPath" };
+
+  if (!args.isMerged && args.forceDeleteBranch !== true) {
+    return { ok: false, removedBranch: false, needsForceDeleteBranch: true, error: "branch not merged" };
+  }
+
+  /**
+   * 中文说明：执行一次分支删除，并统一抽取可读错误文本。
+   */
+  const runDeleteAsync = async (mode: "-d" | "-D"): Promise<{ ok: true } | { ok: false; error: string }> => {
+    const del = await execGitAsync({
+      gitPath: args.gitPath,
+      argv: ["-C", repoMainPath, "branch", mode, wtBranch],
+      timeoutMs: 10_000,
+    });
+    if (del.ok) return { ok: true };
+    return {
+      ok: false,
+      error: String(del.error || del.stderr || del.stdout || "git branch delete failed").trim() || "git branch delete failed",
+    };
+  };
+
+  const primaryMode: "-d" | "-D" = args.isMerged ? "-d" : "-D";
+  const primary = await runDeleteAsync(primaryMode);
+  if (primary.ok) return { ok: true, removedBranch: true };
+
+  if (!args.isMerged) {
+    return { ok: false, removedBranch: false, error: primary.error };
+  }
+
+  const fallback = await runDeleteAsync("-D");
+  if (fallback.ok) return { ok: true, removedBranch: true };
+  return { ok: false, removedBranch: false, error: fallback.error || primary.error };
+}
+
+/**
  * 读取当前仓库的分支信息（用于 baseBranch 下拉）。
  */
 export async function listLocalBranchesAsync(args: { repoDir: string; gitPath?: string; timeoutMs?: number }): Promise<GitWorktreeBranchInfo> {
@@ -1791,15 +1846,23 @@ export async function removeWorktreeAsync(req: RemoveWorktreeRequest): Promise<R
           return { ok: false, removedWorktree, removedBranch: false, error: merged.error || merged.stderr.trim() || "git merge-base failed" };
         }
         const isMerged = merged.exitCode === 0;
-        if (!isMerged && !req.forceDeleteBranch) {
-          return { ok: false, removedWorktree, removedBranch: false, needsForceDeleteBranch: true, error: "branch not merged" };
+        const deleteRes = await deleteCheckedWorktreeBranchAsync({
+          repoMainPath,
+          wtBranch,
+          isMerged,
+          forceDeleteBranch: req.forceDeleteBranch,
+          gitPath,
+        });
+        if (!deleteRes.ok) {
+          return {
+            ok: false,
+            removedWorktree,
+            removedBranch: false,
+            needsForceDeleteBranch: deleteRes.needsForceDeleteBranch,
+            error: deleteRes.error,
+          };
         }
-        const delArgv = ["-C", repoMainPath, "branch", isMerged ? "-d" : "-D", wtBranch];
-        const del = await execGitAsync({ gitPath, argv: delArgv, timeoutMs: 10_000 });
-        if (!del.ok) {
-          return { ok: false, removedWorktree, removedBranch: false, error: del.error || del.stderr.trim() || "git branch delete failed" };
-        }
-        removedBranch = true;
+        removedBranch = deleteRes.removedBranch;
       }
     }
 
