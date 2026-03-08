@@ -7,10 +7,11 @@ import {
   type TerminalAppearance,
 } from '@/lib/terminal-appearance';
 import {
+  buildBracketedPastePayload,
+  getPasteEnterDelayMs,
   isGeminiProvider,
   stripTrailingNewlines,
   writeBracketedPaste,
-  writeBracketedPasteAndEnter,
 } from '@/lib/terminal-send';
 
 /**
@@ -88,6 +89,76 @@ export default class TerminalManager {
       adapter.restoreScrollSnapshot?.(snapshot);
       this.dlog(`scroll.restore tab=${tabId} source=${source} has=${snapshot ? '1' : '0'}`);
     } catch {}
+  }
+
+  /**
+   * 中文说明：Gemini 提交时，先发送 bracketed paste，再等待 PTY 回显稳定后补发真实 Enter。
+   *
+   * 设计背景：
+   * - Gemini CLI 在“不可信终端”中，会把“paste 完成后 40ms 内”的 Enter 当作换行而非提交。
+   * - 长文本通过 PTY 进入子进程时，真正被 Gemini CLI 完整接收并触发 paste 事件，可能晚于我们开始写入的时刻。
+   * - 因此这里不再以“开始写入”的时间为基准，而是监听该 PTY 的回显输出；当回显静默一个很短窗口后，再追加 provider 级延迟并发送 Enter。
+   *
+   * @param ptyId 当前标签页绑定的 PTY id
+   * @param text 已规范化的待发送文本（不含尾随换行）
+   * @param providerId providerId（用于复用 provider 级延迟策略）
+   */
+  private sendGeminiTextAndEnter(ptyId: string, text: string, providerId?: string | null): void {
+    const enterDelayMs = getPasteEnterDelayMs(providerId);
+    const echoQuietWindowMs = 32;
+    const hardTimeoutMs = Math.min(1800, Math.max(700, 500 + Math.ceil(text.length / 4096) * 120));
+    let idleTimer: number | undefined;
+    let hardTimer: number | undefined;
+    let done = false;
+
+    const sendEnter = () => {
+      try { this.hostPty.write(ptyId, "\r"); } catch {}
+    };
+    const clearTimers = () => {
+      if (idleTimer) {
+        try { window.clearTimeout(idleTimer); } catch {}
+        idleTimer = undefined;
+      }
+      if (hardTimer) {
+        try { window.clearTimeout(hardTimer); } catch {}
+        hardTimer = undefined;
+      }
+    };
+    const finish = () => {
+      if (done) return;
+      done = true;
+      try { unsub?.(); } catch {}
+      clearTimers();
+      if (enterDelayMs > 0) {
+        try { window.setTimeout(sendEnter, enterDelayMs); } catch { sendEnter(); }
+        return;
+      }
+      sendEnter();
+    };
+    const scheduleIdle = () => {
+      if (idleTimer) {
+        try { window.clearTimeout(idleTimer); } catch {}
+      }
+      idleTimer = window.setTimeout(() => {
+        finish();
+      }, echoQuietWindowMs);
+    };
+    const unsub = this.hostPty.onData(ptyId, (data) => {
+      if (!data) return;
+      scheduleIdle();
+    });
+
+    try {
+      this.hostPty.write(ptyId, buildBracketedPastePayload(text));
+    } catch {
+      try { unsub?.(); } catch {}
+      clearTimers();
+      return;
+    }
+
+    hardTimer = window.setTimeout(() => {
+      finish();
+    }, hardTimeoutMs);
   }
 
   /**
@@ -437,12 +508,13 @@ export default class TerminalManager {
      * - 优先通过 `adapter.paste()` 走终端粘贴通道,避免 bracketed paste 模式下内嵌的 `CR` 被应用层吞掉。
      * - 仅在**粘贴确已结束**时发送真正的 `'\r'`(Enter),保证应用正确解析。
      * - 全链路容错：任何阶段异常都会降级为直接 `write(text)` 并最终补发 `'\r'`。
-     * - Gemini（options.providerId === 'gemini'）：使用“显式 bracketed paste + 延迟回车”策略，避开 Gemini CLI 的 40ms paste 防误触窗口。
+     * - Gemini（options.providerId === 'gemini'）：使用“显式 bracketed paste + 等待 PTY 回显静默 + 延迟回车”策略，避开 Gemini CLI 的 40ms paste 防误触窗口。
      *
      * 行为说明
      * 1) 无 PTY：直接返回(避免空引用/无效写入)。
-     * 2) 无 adapter 或不支持 `paste`：直接 `write(text)`,随后发送 `'\r'`。
-     * 3) 支持 `paste`：
+     * 2) Gemini：直接写入 bracketed paste，并等待 PTY 回显静默后再补发 `'\r'`。
+     * 3) 非 Gemini 且无 adapter 或不支持 `paste`：直接 `write(text)`,随后发送 `'\r'`。
+     * 4) 非 Gemini 且支持 `paste`：
      *    - 订阅 `adapter.onData`,观察 xterm → PTY 的出站数据：
      *      · 若检测到 bracketed paste 结束标记 **ESC[201~** → 立即取消订阅并发送 `'\r'`；
      *      · 否则在**短暂静默**(默认 24ms,约 1 帧多一点)后视为非 bracketed paste 环境 → 发送 `'\r'`。
@@ -478,10 +550,9 @@ export default class TerminalManager {
         const text = stripTrailingNewlines(String(raw ?? ""));
         const BRACKET_END = '\x1b[201~';
 
-        // Gemini：显式 bracketed paste + 延迟回车，避开其 40ms 防误触提交窗口
         if (isGeminiProvider(options?.providerId)) {
-          writeBracketedPasteAndEnter((data) => this.hostPty.write(ptyId, data), text, { providerId: options?.providerId });
-          return;
+            this.sendGeminiTextAndEnter(ptyId, text, options?.providerId);
+            return;
         }
 
         const sendEnter = () => {
@@ -537,7 +608,15 @@ export default class TerminalManager {
         const unsub = adapter.onData(onOutbound);
 
         // 触发粘贴(若开启了 bracketed paste,xterm 会输出 200~ + 数据 + 201~)
-        try { (adapter as any).paste(text); } catch { try { this.hostPty.write(ptyId, text); } catch {} }
+        try {
+            (adapter as any).paste(text);
+        } catch {
+            try { unsub?.(); } catch {}
+            clearTimers();
+            try { this.hostPty.write(ptyId, text); } catch {}
+            sendEnter();
+            return;
+        }
 
         // 兜底超时：极端环境最多等 800ms
         hardTimer = window.setTimeout(() => {
