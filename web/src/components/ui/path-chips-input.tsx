@@ -4,7 +4,8 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { FolderOpenDot, FileText, ScrollText, Check } from "lucide-react";
+import { FolderOpenDot, FileText, ScrollText, Check, Copy } from "lucide-react";
+import { copyTextCrossPlatform } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
 import AtCommandPalette, { type PaletteLevel } from "@/components/at-mention-new/AtCommandPalette";
 import type { AtCategoryId, AtItem, SearchScope } from "@/types/at";
@@ -203,6 +204,7 @@ export default function PathChipsInput({
   ...rest
 }: PathChipsInputProps) {
   const { t } = useTranslation(['common', 'history']);
+  const copyFileNameLabel = String(t("common:files.copyFileNameWithExt") || "Copy");
   // 统一引用：支持 input 与 textarea（multiline 时渲染 textarea）
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
 
@@ -543,6 +545,15 @@ export default function PathChipsInput({
     } catch { return ""; }
   }, []);
 
+  /**
+   * 中文说明：复制 Chip 对应的文件名（含后缀），统一复用跨平台剪贴板封装。
+   */
+  const copyChipFileName = useCallback(async (chip?: PathChip): Promise<boolean> => {
+    const name = resolveChipFileName(chip);
+    if (!name) return false;
+    return copyTextCrossPlatform(name);
+  }, [resolveChipFileName]);
+
   // 解析草稿为多个 token 并生成 Chip
   const commitDraftToChips = useCallback(() => {
     const raw = String(draft || "");
@@ -845,7 +856,20 @@ export default function PathChipsInput({
                 >
                   {labelText}
                 </span>
-                <span className="ml-0.5 inline-block rounded-apple-sm bg-[var(--cf-surface-hover)] px-1 py-0.5 text-[10px] text-[var(--cf-text-secondary)] font-apple-medium">{idx + 1}</span>
+                {!isDir && (
+                  <button
+                    type="button"
+                    title={copyFileNameLabel}
+                    aria-label={copyFileNameLabel}
+                    className="ml-0.5 rounded-apple-sm p-0.5 text-[var(--cf-text-secondary)] hover:text-[var(--cf-text-primary)] hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast flex items-center justify-center"
+                    onClick={async (ev) => {
+                      ev.preventDefault(); ev.stopPropagation();
+                      await copyChipFileName(chipAny);
+                    }}
+                  >
+                    <Copy className="h-3 w-3" />
+                  </button>
+                )}
                 <button
                   type="button"
                   className="ml-0.5 rounded-apple-sm px-0.5 text-[var(--cf-text-secondary)] hover:text-[var(--cf-text-primary)] hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
@@ -982,17 +1006,7 @@ export default function PathChipsInput({
                 <button
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
                   onClick={async () => {
-                    try {
-                      const name = resolveChipFileName(ctxMenu.chip as any);
-                      if (name) {
-                        const res: any = await (window as any).host?.utils?.copyText?.(name);
-                        if (!(res && res.ok)) {
-                          try { await navigator.clipboard.writeText(name); } catch {}
-                        }
-                      }
-                    } catch {
-                      try { await navigator.clipboard.writeText(resolveChipFileName(ctxMenu.chip as any)); } catch {}
-                    }
+                    await copyChipFileName(ctxMenu.chip as PathChip);
                     setCtxMenu((m) => ({ ...m, show: false }));
                   }}
                 >
