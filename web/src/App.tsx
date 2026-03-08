@@ -2970,9 +2970,9 @@ export default function CodexFlowManagerUI() {
   ]);
   const providerItemById = useMemo(() => buildProviderItemIndex(providerItems), [providerItems]);
   const [providerEnvById, setProviderEnvById] = useState<Record<string, Required<ProviderEnv>>>(() => ({
-    codex: { terminal: "native", distro: "", shell: "" },
-    claude: { terminal: "native", distro: "", shell: "" },
-    gemini: { terminal: "native", distro: "", shell: "" },
+    codex: { ...defaultRendererEnv },
+    claude: { ...defaultRendererEnv },
+    gemini: { ...defaultRendererEnv },
   }));
   const [wslDistro, setWslDistro] = useState(defaultRendererDistro);
   // 基础命令（默认 'codex'），不做 tmux 包装，直接在 WSL 中执行。

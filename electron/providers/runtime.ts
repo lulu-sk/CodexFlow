@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
-import { normalizeTerminal, type TerminalMode } from "../shells";
+import { coerceTerminalModeForPlatform, type TerminalMode } from "../shells";
 import type { AppSettings } from "../settings";
 
 /**
@@ -33,12 +33,12 @@ export function resolveActiveProviderId(cfg: AppSettings): string {
 export function resolveProviderRuntimeEnvFromSettings(cfg: AppSettings, providerId: string): ProviderRuntimeEnv {
   const pid = String(providerId || "").trim();
   // 使用 undefined 而非硬编码 "wsl"，让 normalizeTerminal 根据平台选择默认值
-  const globalTerminal = normalizeTerminal((cfg as any)?.terminal);
+  const globalTerminal = coerceTerminalModeForPlatform((cfg as any)?.terminal);
   const globalDistro = typeof (cfg as any)?.distro === "string" ? String((cfg as any).distro) : "";
 
   const envMap = (cfg as any)?.providers?.env;
   const env = (envMap && typeof envMap === "object") ? envMap[pid] : undefined;
-  const terminal = normalizeTerminal((env as any)?.terminal ?? globalTerminal);
+  const terminal = coerceTerminalModeForPlatform((env as any)?.terminal ?? globalTerminal);
 
   // 只有 wsl 模式需要 distro
   const distroRaw = terminal === "wsl" && typeof (env as any)?.distro === "string"

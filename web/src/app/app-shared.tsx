@@ -67,7 +67,7 @@ import { HistoryMarkdown } from "@/features/history/renderers/history-markdown";
 import { applyHistoryFindHighlights, clearHistoryFindHighlights, setActiveHistoryFindMatch } from "@/features/history/find/history-find";
 import { toWSLForInsert } from "@/lib/wsl";
 import { extractGeminiProjectHashFromPath, deriveGeminiProjectHashCandidatesFromPath } from "@/lib/gemini-hash";
-import { normalizeProvidersSettings } from "@/lib/providers/normalize";
+import { coerceRendererTerminalMode, normalizeProvidersSettings } from "@/lib/providers/normalize";
 import { isBuiltInSessionProviderId, openaiIconUrl, openaiDarkIconUrl, claudeIconUrl, geminiIconUrl } from "@/lib/providers/builtins";
 import { resolveProvider } from "@/lib/providers/resolve";
 import { injectCodexTraceEnv } from "@/providers/codex/commands";
@@ -1272,17 +1272,7 @@ function buildAutoCommitMessage(source: "user" | "agent", text: string): string 
 	 * 中文说明：将用户设置/旧存储中的 terminal 字段归一化为内部 TerminalMode。
 	 */
 	const normalizeTerminalMode = (raw: any): TerminalMode => {
-	  const v = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
-	  if (v === 'pwsh') return 'pwsh';
-	  if (v === 'windows') return 'windows';
-	  if (v === 'native') return 'native';
-	  if (v === 'wsl') return 'wsl';
-	  try {
-	    const nav = (globalThis as any)?.navigator;
-	    const platform = String(nav?.userAgentData?.platform || nav?.platform || nav?.userAgent || '').toLowerCase();
-	    if (platform.includes('win')) return 'wsl';
-	  } catch {}
-	  return 'native';
+	  return coerceRendererTerminalMode(typeof raw === 'string' ? raw.trim().toLowerCase() as TerminalMode : undefined);
 	};
 
 	/**

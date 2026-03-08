@@ -51,6 +51,7 @@ import {
   GitMerge,
 } from "lucide-react";
 import { getBuiltInProviders, isBuiltInProviderId } from "@/lib/providers/builtins";
+import { coerceRendererTerminalMode } from "@/lib/providers/normalize";
 import { resolveProvider } from "@/lib/providers/resolve";
 import { getYoloPresetStartupCmd, isYoloPresetEnabled, isYoloSupportedProviderId } from "@/lib/providers/yolo";
 import {
@@ -286,16 +287,11 @@ function normalizeProviderEnvMap(
 ): ProviderEnvMap {
   const env: ProviderEnvMap = {};
   const src = input && typeof input === "object" ? input : {};
-  const validTerminals: TerminalMode[] = ["native", "wsl", "windows", "pwsh"];
-  const nativeOnlyPlatform = fallback.terminal === "native";
+  const fallbackTerminal = coerceRendererTerminalMode(fallback.terminal, fallback.terminal);
   for (const [id, v] of Object.entries(src)) {
     const key = String(id || "").trim();
     if (!key) continue;
-    const terminalCandidate: TerminalMode =
-      v?.terminal && validTerminals.includes(v.terminal as TerminalMode)
-        ? (v.terminal as TerminalMode)
-        : fallback.terminal;
-    const terminal = nativeOnlyPlatform ? "native" : terminalCandidate;
+    const terminal = coerceRendererTerminalMode(v?.terminal, fallbackTerminal);
     const distro = terminal === "wsl"
       ? (String(v?.distro || fallback.distro).trim() || fallback.distro)
       : "";
@@ -304,7 +300,10 @@ function normalizeProviderEnvMap(
 
   for (const builtIn of getBuiltInProviders()) {
     if (env[builtIn.id]) continue;
-    env[builtIn.id] = { terminal: fallback.terminal, distro: fallback.terminal === "wsl" ? fallback.distro : "" };
+    env[builtIn.id] = {
+      terminal: fallbackTerminal,
+      distro: fallbackTerminal === "wsl" ? fallback.distro : "",
+    };
   }
 
   return env;
@@ -458,8 +457,10 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
       const defaultEnv = { terminal: nextTerminalDefault, distro: nextTerminalDefault === "wsl" ? "Ubuntu-24.04" : "" };
       const cur = prev[id] || prev[providersActiveId] || defaultEnv;
       const next: ProviderEnvMap = { ...prev };
-      const validTerminals: TerminalMode[] = ["native", "wsl", "windows", "pwsh"];
-      const terminal = (patch.terminal && validTerminals.includes(patch.terminal)) ? patch.terminal : cur.terminal;
+      const terminal = coerceRendererTerminalMode(
+        patch.terminal ?? cur.terminal,
+        nextTerminalDefault,
+      );
       const distro = terminal === "wsl"
         ? (typeof patch.distro === "string" && patch.distro.trim().length > 0
             ? patch.distro.trim()

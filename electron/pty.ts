@@ -4,7 +4,7 @@
 import os from 'node:os';
 import wsl from './wsl.js';
 import settings from './settings.js';
-import { resolveWindowsShell, type TerminalMode } from './shells.js';
+import { coerceTerminalModeForPlatform, resolveWindowsShell, type TerminalMode } from './shells.js';
 import type { IPty } from '@lydell/node-pty';
 import * as pty from '@lydell/node-pty';
 import { BrowserWindow } from 'electron';
@@ -341,7 +341,7 @@ export class PTYManager {
     env = mergeExtraEnv(env, opts.env);
 
     // 根据设置选择 WSL 或 Windows 本地终端
-    const termMode = (opts.terminal || settings.getSettings().terminal || 'wsl');
+    const termMode = coerceTerminalModeForPlatform(opts.terminal || settings.getSettings().terminal || 'wsl');
     let proc: IPty;
     if (os.platform() !== 'win32') {
       // 在非 Windows 环境使用本地 shell 便于开发调试

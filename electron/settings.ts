@@ -7,7 +7,7 @@ import { app } from 'electron';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { getSessionsRootsFastAsync, listDistros, execInWslAsync } from './wsl.js';
-import { hasPwsh, normalizeTerminal, type TerminalMode } from './shells.js';
+import { coerceTerminalModeForPlatform, hasPwsh, type TerminalMode } from './shells.js';
 import type { TerminalThemeId } from '@/types/terminal-theme';
 import type { DistroInfo } from './wsl';
 
@@ -415,7 +415,7 @@ function defaultProviderItems(): ProviderItem[] {
  * 将 providers 字段归一化为稳定结构，并对旧版本的 terminal/distro/codexCmd 做迁移映射。
  */
 function normalizeProviders(raw: Partial<AppSettings>, distros: DistroInfo[]): ProvidersSettings {
-  const legacyTerminal = normalizeTerminal((raw as any)?.terminal);
+  const legacyTerminal = coerceTerminalModeForPlatform((raw as any)?.terminal);
   const legacyDistro = legacyTerminal === 'wsl' ? pickPreferredDistro((raw as any)?.distro, distros) : '';
   const legacyCodexCmd =
     typeof (raw as any)?.codexCmd === 'string' && String((raw as any).codexCmd).trim().length > 0
@@ -454,7 +454,7 @@ function normalizeProviders(raw: Partial<AppSettings>, distros: DistroInfo[]): P
   for (const [id, val] of Object.entries(envInput || {})) {
     const key = String(id || '').trim();
     if (!key) continue;
-    const t = normalizeTerminal((val as any)?.terminal ?? legacyTerminal);
+    const t = coerceTerminalModeForPlatform((val as any)?.terminal ?? legacyTerminal);
     const d = t === 'wsl' ? pickPreferredDistro((val as any)?.distro ?? legacyDistro, distros) : '';
     env[key] = { terminal: t, distro: d };
   }
@@ -478,7 +478,7 @@ function normalizeProviders(raw: Partial<AppSettings>, distros: DistroInfo[]): P
 function mergeWithDefaults(raw: Partial<AppSettings>, preloadedDistros?: DistroInfo[]): AppSettings {
   const distros = preloadedDistros ?? loadDistroList();
   // 使用平台感知的默认终端模式：Windows -> wsl, macOS/Linux -> native
-  const defaultTerminal = normalizeTerminal(undefined);
+  const defaultTerminal = coerceTerminalModeForPlatform(undefined);
   const defaults: AppSettings = {
     terminal: defaultTerminal,
     terminalTheme: DEFAULT_TERMINAL_THEME,
@@ -506,7 +506,7 @@ function mergeWithDefaults(raw: Partial<AppSettings>, preloadedDistros?: DistroI
   const merged = Object.assign({}, defaults, raw);
   // experimental 由主进程统一维护（全局共享），不写入/不读取 profile settings.json，避免各 profile 状态不一致。
   try { delete (merged as any).experimental; } catch {}
-  merged.terminal = normalizeTerminal((raw as any)?.terminal ?? merged.terminal);
+  merged.terminal = coerceTerminalModeForPlatform((raw as any)?.terminal ?? merged.terminal);
   merged.notifications = {
     ...DEFAULT_NOTIFICATIONS,
     ...(raw?.notifications ?? {}),
@@ -558,7 +558,7 @@ function mergeWithDefaults(raw: Partial<AppSettings>, preloadedDistros?: DistroI
   // 与旧字段保持双写兼容：codex provider 的 env/cmd 同步写回 legacy 字段
   try {
     const codexEnv = merged.providers?.env?.codex;
-    if (codexEnv?.terminal) merged.terminal = normalizeTerminal(codexEnv.terminal);
+    if (codexEnv?.terminal) merged.terminal = coerceTerminalModeForPlatform(codexEnv.terminal);
     merged.distro = merged.terminal === 'wsl'
       ? pickPreferredDistro(codexEnv?.distro, distros)
       : '';

@@ -23,8 +23,26 @@ export function getDefaultRendererDistro(terminal: ProviderEnv["terminal"] | und
   return terminal === "wsl" ? "Ubuntu-24.04" : "";
 }
 
+/**
+ * 按当前渲染层平台裁剪终端模式，避免读取到其它平台写入的无效值。
+ * - Windows：`native` 自动回退到平台默认值（通常为 `wsl`）
+ * - macOS/Linux：统一使用 `native`
+ */
+export function coerceRendererTerminalMode(
+  raw: ProviderEnv["terminal"] | undefined,
+  platformDefault: Required<ProviderEnv>["terminal"] = getDefaultRendererTerminalMode(),
+): Required<ProviderEnv>["terminal"] {
+  const validTerminals = ["native", "wsl", "windows", "pwsh"] as const;
+  type ValidTerminal = typeof validTerminals[number];
+  const terminalCandidate = (raw && validTerminals.includes(raw as ValidTerminal))
+    ? raw as ValidTerminal
+    : platformDefault;
+  if (platformDefault === "native") return "native";
+  return terminalCandidate === "native" ? platformDefault : terminalCandidate;
+}
+
 export function getDefaultRendererProviderEnv(overrides?: Partial<ProviderEnv>): Required<ProviderEnv> {
-  const terminal = overrides?.terminal || getDefaultRendererTerminalMode();
+  const terminal = coerceRendererTerminalMode(overrides?.terminal);
   const distro = typeof overrides?.distro === "string"
     ? overrides.distro.trim()
     : getDefaultRendererDistro(terminal);
@@ -46,6 +64,8 @@ export function normalizeProvidersSettings(
   input: ProvidersSettings | undefined,
   legacy: { terminal: Required<ProviderEnv>["terminal"]; distro: string; codexCmd: string },
 ): NormalizedProviders {
+  const platformDefaultTerminal = getDefaultRendererTerminalMode();
+  const legacyTerminal = coerceRendererTerminalMode(legacy.terminal, platformDefaultTerminal);
   const rawActiveId = String(input?.activeId || "codex").trim();
   const builtIns = getBuiltInProviders();
   const builtInOrder = builtIns.map((x) => x.id);
@@ -86,17 +106,10 @@ export function normalizeProvidersSettings(
 
   const env: Record<string, Required<ProviderEnv>> = {};
   const envInput = (input && typeof input.env === "object" && input.env) ? input.env : {};
-  const nativeOnlyPlatform = getDefaultRendererTerminalMode() === "native";
   for (const [id, v] of Object.entries(envInput || {})) {
     const key = String(id || "").trim();
     if (!key) continue;
-    const validTerminals = ["native", "wsl", "windows", "pwsh"] as const;
-    type ValidTerminal = typeof validTerminals[number];
-    const rawTerminal = v?.terminal;
-    const terminalCandidate = (rawTerminal && validTerminals.includes(rawTerminal as ValidTerminal))
-      ? rawTerminal as ValidTerminal
-      : legacy.terminal;
-    const terminal = nativeOnlyPlatform ? "native" : terminalCandidate;
+    const terminal = coerceRendererTerminalMode(v?.terminal, platformDefaultTerminal === "native" ? "native" : legacyTerminal);
     const distro = terminal === "wsl"
       ? (String(v?.distro || legacy.distro).trim() || legacy.distro)
       : "";
@@ -106,7 +119,7 @@ export function normalizeProvidersSettings(
 
   for (const builtIn of builtIns) {
     if (env[builtIn.id]) continue;
-    const terminal = nativeOnlyPlatform ? "native" : legacy.terminal;
+    const terminal = legacyTerminal;
     env[builtIn.id] = {
       terminal,
       distro: terminal === "wsl" ? legacy.distro : "",

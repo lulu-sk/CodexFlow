@@ -22,7 +22,7 @@ import { parseGeminiSessionFile, extractGeminiProjectHashFromPath, deriveGeminiP
 import { hasNonEmptyIOFromMessages } from "./agentSessions/shared/empty";
 import { perfLogger } from "./log";
 import settings, { ensureSettingsAutodetect, ensureFirstRunTerminalSelection, type ThemeSetting as SettingsThemeSetting, type AppSettings, type IdeOpenSettings } from "./settings";
-import { normalizeTerminal, resolveWindowsShell, detectPwshExecutable } from "./shells";
+import { coerceTerminalModeForPlatform, resolveWindowsShell, detectPwshExecutable } from "./shells";
 import { resolveActiveProviderId, resolveProviderRuntimeEnvFromSettings, resolveProviderStartupCmdFromSettings, type ProviderRuntimeEnv } from "./providers/runtime";
 import i18n from "./i18n";
 import wsl from "./wsl";
@@ -1939,7 +1939,7 @@ ipcMain.handle('utils.openExternalConsole', async (_e, args: { terminal?: 'wsl' 
     const activeEnv = resolveProviderRuntimeEnvFromSettings(cfg, activeProviderId);
     const defaultStartupCmd = resolveProviderStartupCmdFromSettings(cfg, activeProviderId);
 
-    const terminal = normalizeTerminal((args as any)?.terminal ?? activeEnv.terminal ?? cfg.terminal ?? "wsl");
+    const terminal = coerceTerminalModeForPlatform((args as any)?.terminal ?? activeEnv.terminal ?? cfg.terminal ?? "wsl");
     const startupCmd = String((typeof args?.startupCmd === "string" ? args.startupCmd : defaultStartupCmd) ?? "").trim();
     const requestedDistro = (() => {
       const raw = (typeof args?.distro === "string" && args.distro.trim().length > 0)

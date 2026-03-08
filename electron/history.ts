@@ -119,11 +119,14 @@ async function readPrefixChunk(fp: string, maxBytes = SUMMARY_PREFIX_BYTES): Pro
  * 用途：用于”继续对话”时的跨环境阻断提示，需要兼容 Windows 盘符路径与 UNC 路径的多种写法。
  *
  * 识别规则：
- * - WSL 路径（\\wsl.localhost\, /mnt/..., /home/..., /root/...）返回 'wsl'
+ * - WSL 路径（\\wsl.localhost\, /mnt/...）返回 'wsl'
  * - Windows 盘符路径返回 'windows'
- * - macOS/Linux 本地 POSIX 路径（/Users/..., /var/... 等）返回 'native'
+ * - 以 `/` 开头的 POSIX 绝对路径：Windows 下视为 WSL，其它平台视为 native
  */
-export function detectRuntimeShell(filePath?: string): RuntimeShell {
+export function detectRuntimeShell(
+  filePath?: string,
+  platform: NodeJS.Platform = process.platform,
+): RuntimeShell {
   try {
     if (!filePath) return 'unknown';
     let raw = String(filePath).trim();
@@ -144,16 +147,11 @@ export function detectRuntimeShell(filePath?: string): RuntimeShell {
     if (/^[a-z]:[\\/]/i.test(raw) || /^[a-z]:\//i.test(collapsed)) return 'windows';
     // 其他 UNC / 网络共享：归类为 Windows（例如 \\server\share\... 或 //server/share/...）
     if (raw.startsWith('\\\\') || replaced.startsWith('//')) return 'windows';
-    // macOS/Linux 本地 POSIX 路径（注意：/home/ 和 /root/ 在 WSL 场景已在前面的 /mnt/ 检查中被捕获）
-    // 当路径以 / 开头但不是 WSL 路径时，归类为 native
+    // 兜底的 POSIX 绝对路径：
+    // - Windows 上通常表示 WSL 内路径（例如 /home/user/.codex/...）
+    // - macOS/Linux 上表示原生文件系统路径
     if (collapsed.startsWith('/')) {
-      // 排除明确的 WSL 发行版路径（通过发行版名称识别）
-      const wslDistroHints = ['ubuntu', 'debian', 'arch', 'alpine', 'fedora', 'kali', 'opensuse'];
-      for (const hint of wslDistroHints) {
-        if (collapsed.includes('/' + hint + '/')) return 'wsl';
-      }
-      // 其他 POSIX 路径归类为 native（macOS /Users/..., /Applications/... 或 Linux /var/..., /opt/... 等）
-      return 'native';
+      return platform === 'win32' ? 'wsl' : 'native';
     }
     return 'unknown';
   } catch {

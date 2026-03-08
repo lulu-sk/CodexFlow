@@ -11,7 +11,7 @@ vi.mock("electron", () => ({
   },
 }));
 
-import { readHistoryFile } from "./history";
+import { detectRuntimeShell, readHistoryFile } from "./history";
 
 const tempDirs: string[] = [];
 
@@ -140,5 +140,17 @@ describe("electron/history.readHistoryFile", () => {
 
     const full = await readHistoryFile(filePath, { maxLines: 0 });
     expect(collectTexts(full.messages).some((text) => text.includes("尾部消息必须可见"))).toBe(true);
+  });
+});
+
+describe("electron/history.detectRuntimeShell", () => {
+  it("Windows 下会把 POSIX 绝对路径识别为 WSL", () => {
+    expect(detectRuntimeShell("/home/test/.codex/sessions/demo.jsonl", "win32")).toBe("wsl");
+    expect(detectRuntimeShell("/var/tmp/demo.jsonl", "win32")).toBe("wsl");
+  });
+
+  it("macOS/Linux 下会把 POSIX 绝对路径识别为 native", () => {
+    expect(detectRuntimeShell("/Users/test/.codex/sessions/demo.jsonl", "darwin")).toBe("native");
+    expect(detectRuntimeShell("/home/test/.codex/sessions/demo.jsonl", "linux")).toBe("native");
   });
 });
