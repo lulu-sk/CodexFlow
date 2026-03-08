@@ -11,7 +11,7 @@ vi.mock("electron", () => ({
   },
 }));
 
-import { createWorktreesAsync, recycleWorktreeAsync } from "./worktreeOps";
+import { createWorktreesAsync, recycleWorktreeAsync, removeWorktreeAsync } from "./worktreeOps";
 import { getWorktreeMeta, setWorktreeMeta } from "../stores/worktreeMetaStore";
 
 /**
@@ -21,6 +21,13 @@ async function git(repo: string, argv: string[], timeoutMs: number = 12_000): Pr
   const res = await execGitAsync({ argv: ["-C", repo, ...argv], timeoutMs });
   expect(res.ok, `git ${argv.join(" ")} failed: ${res.stderr || res.error || res.stdout}`).toBe(true);
   return String(res.stdout || "");
+}
+
+/**
+ * 中文说明：执行 git 命令但不强制断言成功，用于验证分支已删除等预期失败场景。
+ */
+async function gitTry(repo: string, argv: string[], timeoutMs: number = 12_000) {
+  return await execGitAsync({ argv: ["-C", repo, ...argv], timeoutMs });
 }
 
 /**
@@ -130,6 +137,57 @@ describe("worktree 基分支落点解析", () => {
 
         const meta = getWorktreeMeta(childWtDir);
         expect(meta?.repoMainPath).toBe(parentWtDir);
+      } finally {
+        try { await fsp.rm(sandbox, { recursive: true, force: true }); } catch {}
+      }
+    },
+    { timeout: 120_000 }
+  );
+
+  it(
+    "remove：当前主 worktree 未签出基分支时，仍应按基分支合并状态删除专用分支",
+    async () => {
+      const { sandbox, repo } = await setupRepoFixtureAsync("codexflow-wt-remove-base-owner-");
+
+      try {
+        await git(repo, ["checkout", "-b", "feature"]);
+        await git(repo, ["checkout", "main"]);
+
+        await fsp.writeFile(path.join(repo, "main-only.txt"), "main\n", "utf8");
+        await git(repo, ["add", "main-only.txt"]);
+        await git(repo, ["commit", "-m", "main: advance"]);
+
+        await git(repo, ["checkout", "feature"]);
+
+        const createRes = await createWorktreesAsync({
+          repoDir: repo,
+          baseBranch: "main",
+          instances: [{ providerId: "codex", count: 1 }],
+          copyRules: false,
+        });
+
+        expect(createRes.ok).toBe(true);
+        expect(createRes.items?.length).toBe(1);
+
+        const item = createRes.items?.[0];
+        expect(item).toBeTruthy();
+
+        const removeRes = await removeWorktreeAsync({
+          worktreePath: String(item?.worktreePath || ""),
+          deleteBranch: true,
+        });
+
+        expect(removeRes.ok).toBe(true);
+        if (removeRes.ok) {
+          expect(removeRes.removedWorktree).toBe(true);
+          expect(removeRes.removedBranch).toBe(true);
+        }
+
+        const wtBranch = String(item?.wtBranch || "").trim();
+        expect(wtBranch).not.toBe("");
+
+        const ref = await gitTry(repo, ["show-ref", "--verify", `refs/heads/${wtBranch}`]);
+        expect(ref.ok).toBe(false);
       } finally {
         try { await fsp.rm(sandbox, { recursive: true, force: true }); } catch {}
       }
