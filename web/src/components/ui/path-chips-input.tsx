@@ -184,6 +184,182 @@ function buildChipDedupeKey(chip: Partial<PathChip>): string {
   } catch { return ""; }
 }
 
+const MAX_INPUT_HISTORY_ENTRIES = 120;
+const TEXT_HISTORY_COALESCE_MS = 1000;
+
+type PathChipsInputSelection = {
+  start: number;
+  end: number;
+  direction: Exclude<HTMLInputElement["selectionDirection"], null>;
+};
+
+type PathChipsValueState = {
+  draft: string;
+  chips: PathChip[];
+};
+
+type PathChipsHistorySnapshot = PathChipsValueState & {
+  selection: PathChipsInputSelection;
+};
+
+type PathChipsInputHistoryMergeMode = "insert" | "delete" | null;
+
+/**
+ * 中文说明：为历史记录浅拷贝单个 Chip，保留 blob / 预览 URL 等引用值。
+ */
+function cloneChipForHistory(chip: PathChip): PathChip {
+  return { ...(chip as any) };
+}
+
+/**
+ * 中文说明：为历史记录浅拷贝 Chip 列表，避免后续修改污染已记录快照。
+ */
+function cloneChipsForHistory(chips: PathChip[]): PathChip[] {
+  return Array.isArray(chips) ? chips.map((chip) => cloneChipForHistory(chip)) : [];
+}
+
+/**
+ * 中文说明：标准化 selectionDirection，统一回退到 `none`。
+ */
+function normalizeSelectionDirection(direction?: string | null): PathChipsInputSelection["direction"] {
+  return direction === "forward" || direction === "backward" ? direction : "none";
+}
+
+/**
+ * 中文说明：创建一个折叠光标选区快照。
+ */
+function createCollapsedSelection(position: number): PathChipsInputSelection {
+  const safe = Math.max(0, Number.isFinite(position) ? Math.floor(position) : 0);
+  return { start: safe, end: safe, direction: "none" };
+}
+
+/**
+ * 中文说明：复制选区快照，避免对象在历史栈中被共享引用。
+ */
+function cloneSelectionSnapshot(selection: PathChipsInputSelection): PathChipsInputSelection {
+  return {
+    start: selection.start,
+    end: selection.end,
+    direction: normalizeSelectionDirection(selection.direction),
+  };
+}
+
+/**
+ * 中文说明：从输入元素读取当前选区；当元素不存在时回退到文本末尾。
+ */
+function captureSelectionSnapshot(
+  el: HTMLInputElement | HTMLTextAreaElement | null,
+  fallbackDraft: string,
+): PathChipsInputSelection {
+  const textLength = String(fallbackDraft || "").length;
+  if (!el) return createCollapsedSelection(textLength);
+  const rawStart = typeof el.selectionStart === "number" ? el.selectionStart : textLength;
+  const rawEnd = typeof el.selectionEnd === "number" ? el.selectionEnd : rawStart;
+  const start = Math.max(0, Math.min(rawStart, textLength));
+  const end = Math.max(0, Math.min(rawEnd, textLength));
+  return {
+    start,
+    end,
+    direction: normalizeSelectionDirection(el.selectionDirection),
+  };
+}
+
+/**
+ * 中文说明：生成 Chip 列表的稳定签名，用于判断历史状态是否真正变化。
+ */
+function buildChipsStateSignature(chips: PathChip[]): string {
+  return cloneChipsForHistory(chips)
+    .map((chip, index) => {
+      const chipAny = chip as any;
+      return [
+        buildChipStableKey(chip, String(index)),
+        String(chipAny?.winPath || ""),
+        String(chipAny?.wslPath || ""),
+        String(chipAny?.fileName || ""),
+        String(chipAny?.previewUrl || ""),
+        String(chipAny?.chipKind || ""),
+        String(chipAny?.rulePath || ""),
+        typeof chipAny?.isDir === "boolean" ? (chipAny.isDir ? "1" : "0") : "",
+        chipAny?.fromPaste ? "1" : "0",
+        String(chipAny?.fingerprint || ""),
+      ].join("\u241f");
+    })
+    .join("\u241e");
+}
+
+/**
+ * 中文说明：为 `draft + chips` 生成整体签名，用于历史状态同步。
+ */
+function buildValueStateSignature(state: PathChipsValueState): string {
+  return `${String(state.draft || "")}\u241d${buildChipsStateSignature(state.chips)}`;
+}
+
+/**
+ * 中文说明：构造一条完整历史快照，包含文本、Chip 与选区信息。
+ */
+function buildHistorySnapshot(args: PathChipsHistorySnapshot): PathChipsHistorySnapshot {
+  return {
+    draft: String(args.draft || ""),
+    chips: cloneChipsForHistory(args.chips),
+    selection: cloneSelectionSnapshot(args.selection),
+  };
+}
+
+/**
+ * 中文说明：复制历史快照，便于安全写入 past / future 栈。
+ */
+function cloneHistorySnapshot(snapshot: PathChipsHistorySnapshot): PathChipsHistorySnapshot {
+  return buildHistorySnapshot(snapshot);
+}
+
+/**
+ * 中文说明：根据浏览器 inputType 推导文本合并策略，让连续输入可合并成一次撤回。
+ */
+function deriveHistoryMergeMode(inputType?: string): PathChipsInputHistoryMergeMode {
+  const normalized = String(inputType || "");
+  if (!normalized) return null;
+  if (normalized.startsWith("insert")) return "insert";
+  if (normalized.startsWith("delete")) return "delete";
+  return null;
+}
+
+/**
+ * 中文说明：判断当前按键是否为常见撤回快捷键（Ctrl/Cmd + Z）。
+ */
+function isUndoShortcut(event: React.KeyboardEvent<any>): boolean {
+  if (event.altKey) return false;
+  return (event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === "z";
+}
+
+/**
+ * 中文说明：判断当前按键是否为常见重做快捷键（Ctrl + Y / Ctrl/Cmd + Shift + Z）。
+ */
+function isRedoShortcut(event: React.KeyboardEvent<any>): boolean {
+  if (event.altKey) return false;
+  const key = event.key.toLowerCase();
+  if (event.metaKey) return event.shiftKey && key === "z";
+  if (!event.ctrlKey) return false;
+  return key === "y" || (event.shiftKey && key === "z");
+}
+
+/**
+ * 中文说明：将 Windows 绝对路径转为 `file:///` 预览地址，供图片失效时回退显示。
+ */
+function toWindowsFilePreviewUrl(winPath?: string): string {
+  const raw = String(winPath || "").trim();
+  if (!raw) return "";
+  return `file:///${raw.replace(/\\/g, "/")}`;
+}
+
+/**
+ * 中文说明：解析图片 Chip 的稳定回退预览地址。
+ * - 优先使用 `winPath`，因为撤回/重做后 `blob:` URL 可能已被回收；
+ * - 若无 `winPath`，则返回空串，由调用方决定是否继续展示。
+ */
+function resolveChipImageFallbackUrl(chip?: Partial<PathChip>): string {
+  return toWindowsFilePreviewUrl(String((chip as any)?.winPath || ""));
+}
+
 export default function PathChipsInput({
   chips,
   onChipsChange,
@@ -207,6 +383,25 @@ export default function PathChipsInput({
   const copyFileNameLabel = String(t("common:files.copyFileNameWithExt") || "Copy");
   // 统一引用：支持 input 与 textarea（multiline 时渲染 textarea）
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
+  const valueStateRef = useRef<PathChipsValueState>({
+    draft: String(draft || ""),
+    chips: cloneChipsForHistory(chips),
+  });
+  const historyRef = useRef<{
+    past: PathChipsHistorySnapshot[];
+    current: PathChipsHistorySnapshot | null;
+    future: PathChipsHistorySnapshot[];
+    lastRecordedAt: number;
+    lastMergeMode: PathChipsInputHistoryMergeMode;
+    expectedSignature: string | null;
+  }>({
+    past: [],
+    current: null,
+    future: [],
+    lastRecordedAt: 0,
+    lastMergeMode: null,
+    expectedSignature: null,
+  });
 
   // @ 面板状态
   const [open, setOpen] = useState(false);
@@ -334,9 +529,23 @@ export default function PathChipsInput({
     if (!exists) hidePreview();
   }, [chips, hoverPreview, hidePreview]);
 
-  // 将 SavedImage 转成 PathChip 并追加
-  const appendChips = useCallback((items: SavedImage[]) => {
-    const merged = [...chips, ...items.map((it) => ({ ...it }))];
+  /**
+   * 中文说明：读取当前受控值的最新镜像，避免异步流程拿到过期的 draft / chips。
+   */
+  const readCurrentValueState = useCallback((): PathChipsValueState => {
+    const current = valueStateRef.current;
+    return {
+      draft: String(current?.draft || ""),
+      chips: cloneChipsForHistory(current?.chips || []),
+    };
+  }, []);
+
+  /**
+   * 中文说明：在当前 Chip 列表基础上合并新项，并用稳定键去重。
+   */
+  const buildMergedChips = useCallback((items: SavedImage[]): PathChip[] => {
+    const current = readCurrentValueState();
+    const merged = [...current.chips, ...items.map((it) => ({ ...it }))];
     const seen = new Set<string>();
     const unique: PathChip[] = [];
     for (const chip of merged) {
@@ -347,8 +556,230 @@ export default function PathChipsInput({
       seen.add(sig);
       unique.push(chip);
     }
-    onChipsChange(unique);
-  }, [chips, onChipsChange]);
+    return unique;
+  }, [readCurrentValueState]);
+
+  /**
+   * 中文说明：根据当前光标位置刷新 `@` 面板查询状态。
+   */
+  const syncQueryFromCaret = useCallback(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    const curValue = String((el as HTMLInputElement).value || "");
+    const caret = (el.selectionStart as number) ?? curValue.length;
+    if (!shouldTriggerAt(curValue, caret)) {
+      setOpen(false);
+      return;
+    }
+    const left = curValue.slice(0, caret);
+    const at = left.lastIndexOf("@");
+    const curQ = left.slice(at + 1);
+    if (dismissedAtIndexRef.current !== null && at === dismissedAtIndexRef.current && curQ.length > 0) {
+      return;
+    }
+    if (curQ.length === 0) dismissedAtIndexRef.current = null;
+    atIndexRef.current = at;
+    setQ(curQ);
+    setScope("all");
+    setLevel(curQ.length > 0 ? "results" : "categories");
+    try { setAnchor(getCaretViewportPosition(el, caret)); } catch {}
+    setOpen(true);
+  }, []);
+
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    const handler = () => requestAnimationFrame(syncQueryFromCaret);
+    el.addEventListener("input", handler);
+    return () => el.removeEventListener("input", handler);
+  }, [syncQueryFromCaret]);
+
+  /**
+   * 中文说明：在受控值刷新后恢复输入光标/选区，并同步更新 `@` 面板。
+   */
+  const restoreSelectionAfterRender = useCallback((selection: PathChipsInputSelection) => {
+    const nextSelection = cloneSelectionSnapshot(selection);
+    requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (!el) return;
+      const textLength = String((el as HTMLInputElement).value || "").length;
+      const start = Math.max(0, Math.min(nextSelection.start, textLength));
+      const end = Math.max(0, Math.min(nextSelection.end, textLength));
+      try { el.focus(); } catch {}
+      try {
+        el.setSelectionRange(start, end, nextSelection.direction);
+      } catch {
+        try { el.setSelectionRange(start, end); } catch {}
+      }
+      syncQueryFromCaret();
+    });
+  }, [syncQueryFromCaret]);
+
+  useEffect(() => {
+    const nextState: PathChipsValueState = {
+      draft: String(draft || ""),
+      chips: cloneChipsForHistory(chips),
+    };
+    valueStateRef.current = nextState;
+
+    const hist = historyRef.current;
+    const nextSignature = buildValueStateSignature(nextState);
+    const nextSnapshot = buildHistorySnapshot({
+      ...nextState,
+      selection: captureSelectionSnapshot(inputRef.current, nextState.draft),
+    });
+    if (!hist.current) {
+      hist.current = nextSnapshot;
+      hist.expectedSignature = nextSignature;
+      return;
+    }
+    if (hist.expectedSignature === nextSignature) {
+      hist.current = nextSnapshot;
+      return;
+    }
+    hist.past = [];
+    hist.future = [];
+    hist.current = nextSnapshot;
+    hist.expectedSignature = nextSignature;
+    hist.lastRecordedAt = 0;
+    hist.lastMergeMode = null;
+  }, [chips, draft]);
+
+  /**
+   * 中文说明：统一应用一次用户编辑，把文字与 Chip 变更写入同一条撤回历史。
+   */
+  const applyValueChange = useCallback((
+    args: { draft?: string; chips?: PathChip[]; selection?: PathChipsInputSelection },
+    options?: { mergeMode?: PathChipsInputHistoryMergeMode },
+  ): boolean => {
+    const current = readCurrentValueState();
+    const nextDraft = typeof args.draft === "string" ? args.draft : current.draft;
+    const nextChips = Array.isArray(args.chips) ? cloneChipsForHistory(args.chips) : cloneChipsForHistory(current.chips);
+    const nextState: PathChipsValueState = { draft: nextDraft, chips: nextChips };
+    const currentSignature = buildValueStateSignature(current);
+    const nextSignature = buildValueStateSignature(nextState);
+    if (currentSignature === nextSignature) {
+      if (args.selection) restoreSelectionAfterRender(args.selection);
+      return false;
+    }
+
+    const hist = historyRef.current;
+    const currentSnapshot = hist.current
+      ? cloneHistorySnapshot(hist.current)
+      : buildHistorySnapshot({
+          ...current,
+          selection: captureSelectionSnapshot(inputRef.current, current.draft),
+        });
+    const nextSelection = args.selection
+      ? cloneSelectionSnapshot(args.selection)
+      : captureSelectionSnapshot(inputRef.current, nextDraft);
+    const nextSnapshot = buildHistorySnapshot({ ...nextState, selection: nextSelection });
+    const mergeMode = options?.mergeMode ?? null;
+    const now = Date.now();
+    const canMerge = !!mergeMode
+      && hist.lastMergeMode === mergeMode
+      && now - hist.lastRecordedAt <= TEXT_HISTORY_COALESCE_MS
+      && buildChipsStateSignature(currentSnapshot.chips) === buildChipsStateSignature(nextSnapshot.chips)
+      && currentSnapshot.selection.start === currentSnapshot.selection.end
+      && nextSnapshot.selection.start === nextSnapshot.selection.end;
+    if (!canMerge) {
+      hist.past.push(cloneHistorySnapshot(currentSnapshot));
+      if (hist.past.length > MAX_INPUT_HISTORY_ENTRIES) hist.past.shift();
+    }
+
+    hist.current = cloneHistorySnapshot(nextSnapshot);
+    hist.future = [];
+    hist.lastRecordedAt = now;
+    hist.lastMergeMode = mergeMode;
+    hist.expectedSignature = nextSignature;
+
+    const publishedChips = cloneChipsForHistory(nextChips);
+    const chipsChanged = buildChipsStateSignature(current.chips) !== buildChipsStateSignature(nextChips);
+    valueStateRef.current = { draft: nextDraft, chips: publishedChips };
+    if (chipsChanged) onChipsChange(publishedChips);
+    if (current.draft !== nextDraft) onDraftChange(nextDraft);
+    restoreSelectionAfterRender(nextSelection);
+    return true;
+  }, [onChipsChange, onDraftChange, readCurrentValueState, restoreSelectionAfterRender]);
+
+  /**
+   * 中文说明：撤回最近一次输入框编辑，统一恢复文字、Chip 与光标位置。
+   */
+  const undoValueChange = useCallback((): boolean => {
+    const hist = historyRef.current;
+    if (!hist.current) {
+      const current = readCurrentValueState();
+      hist.current = buildHistorySnapshot({
+        ...current,
+        selection: captureSelectionSnapshot(inputRef.current, current.draft),
+      });
+    }
+    if (!hist.current || hist.past.length === 0) return false;
+
+    const current = readCurrentValueState();
+    const previousSnapshot = cloneHistorySnapshot(hist.past.pop() as PathChipsHistorySnapshot);
+    hist.future.push(cloneHistorySnapshot(hist.current));
+    hist.current = cloneHistorySnapshot(previousSnapshot);
+    hist.expectedSignature = buildValueStateSignature({
+      draft: previousSnapshot.draft,
+      chips: previousSnapshot.chips,
+    });
+    hist.lastRecordedAt = 0;
+    hist.lastMergeMode = null;
+
+    const publishedChips = cloneChipsForHistory(previousSnapshot.chips);
+    const chipsChanged = buildChipsStateSignature(current.chips) !== buildChipsStateSignature(previousSnapshot.chips);
+    valueStateRef.current = { draft: previousSnapshot.draft, chips: publishedChips };
+    if (chipsChanged) onChipsChange(publishedChips);
+    if (current.draft !== previousSnapshot.draft) onDraftChange(previousSnapshot.draft);
+    restoreSelectionAfterRender(previousSnapshot.selection);
+    return true;
+  }, [onChipsChange, onDraftChange, readCurrentValueState, restoreSelectionAfterRender]);
+
+  /**
+   * 中文说明：重做最近一次已撤回的输入框编辑。
+   */
+  const redoValueChange = useCallback((): boolean => {
+    const hist = historyRef.current;
+    if (!hist.current || hist.future.length === 0) return false;
+
+    const current = readCurrentValueState();
+    const nextSnapshot = cloneHistorySnapshot(hist.future.pop() as PathChipsHistorySnapshot);
+    hist.past.push(cloneHistorySnapshot(hist.current));
+    if (hist.past.length > MAX_INPUT_HISTORY_ENTRIES) hist.past.shift();
+    hist.current = cloneHistorySnapshot(nextSnapshot);
+    hist.expectedSignature = buildValueStateSignature({
+      draft: nextSnapshot.draft,
+      chips: nextSnapshot.chips,
+    });
+    hist.lastRecordedAt = 0;
+    hist.lastMergeMode = null;
+
+    const publishedChips = cloneChipsForHistory(nextSnapshot.chips);
+    const chipsChanged = buildChipsStateSignature(current.chips) !== buildChipsStateSignature(nextSnapshot.chips);
+    valueStateRef.current = { draft: nextSnapshot.draft, chips: publishedChips };
+    if (chipsChanged) onChipsChange(publishedChips);
+    if (current.draft !== nextSnapshot.draft) onDraftChange(nextSnapshot.draft);
+    restoreSelectionAfterRender(nextSnapshot.selection);
+    return true;
+  }, [onChipsChange, onDraftChange, readCurrentValueState, restoreSelectionAfterRender]);
+
+  /**
+   * 中文说明：接管浏览器原生 historyUndo / historyRedo 事件，统一走组件历史栈。
+   */
+  const onBeforeInput = useCallback((event: React.FormEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    const nativeEvent = event.nativeEvent as InputEvent | undefined;
+    const inputType = String(nativeEvent?.inputType || "");
+    if (inputType === "historyUndo") {
+      event.preventDefault();
+      undoValueChange();
+      return;
+    }
+    if (inputType === "historyRedo") {
+      event.preventDefault();
+      redoValueChange();
+    }
+  }, [redoValueChange, undoValueChange]);
 
   /**
    * 将拖拽到输入框的 Windows 路径转换为 Chip 并追加（包含目录判定、图片预览与去重）。
@@ -365,8 +796,9 @@ export default function PathChipsInput({
         }));
       } catch {}
 
+      const current = readCurrentValueState();
       const existingKeys = new Set<string>();
-      for (const chip of chips) {
+      for (const chip of current.chips) {
         const k = buildChipDedupeKey(chip);
         if (k) existingKeys.add(k);
       }
@@ -432,9 +864,10 @@ export default function PathChipsInput({
           chipKind: it.isImage ? "image" : "file",
         } as any;
       });
-      appendChips(items);
+      const nextChips = buildMergedChips(items);
+      applyValueChange({ chips: nextChips });
     } catch {}
-  }, [appendChips, chips, projectPathStyle, t, winRoot]);
+  }, [applyValueChange, buildMergedChips, projectPathStyle, readCurrentValueState, t, winRoot]);
 
   /**
    * 打开“目录外资源提醒”弹窗，并缓存待处理的拖拽数据。
@@ -517,9 +950,23 @@ export default function PathChipsInput({
   }, [projectWslRoot, winRoot]);
 
   const handleChipMouseEnter = useCallback((chip: PathChip, key: string, target: HTMLElement) => {
-    if (!chip?.previewUrl) return;
+    if (!chip?.previewUrl && !resolveChipImageFallbackUrl(chip)) return;
     showPreview(chip, key, target);
   }, [showPreview]);
+
+  /**
+   * 中文说明：当图片 Chip 的 `blob:` 预览失效时，自动回退到磁盘文件路径预览。
+   */
+  const handleChipImageError = useCallback((event: React.SyntheticEvent<HTMLImageElement>, chip: PathChip) => {
+    const target = event.currentTarget;
+    const fallbackUrl = resolveChipImageFallbackUrl(chip);
+    if (fallbackUrl && target.dataset.cfPreviewFallback !== "1") {
+      target.dataset.cfPreviewFallback = "1";
+      target.src = fallbackUrl;
+      return;
+    }
+    target.dataset.cfPreviewBroken = "1";
+  }, []);
 
   // 判定 Chip 是否目录：优先使用 isDir 标记；若无则根据路径尾部斜杠推断
   const isChipDir = useCallback((chip?: any): boolean => {
@@ -554,9 +1001,12 @@ export default function PathChipsInput({
     return copyTextCrossPlatform(name);
   }, [resolveChipFileName]);
 
-  // 解析草稿为多个 token 并生成 Chip
+  /**
+   * 中文说明：将当前草稿中的路径片段提交为 Chip，并清空草稿。
+   */
   const commitDraftToChips = useCallback(() => {
-    const raw = String(draft || "");
+    const current = readCurrentValueState();
+    const raw = current.draft;
     const tokens = raw
       .split(/[\n,;\s]+/)
       .map((s) => s.trim())
@@ -581,43 +1031,27 @@ export default function PathChipsInput({
         fromPaste: false,
       } as any;
     });
-    appendChips(items);
-    onDraftChange("");
-    return true;
-  }, [draft, appendChips, onDraftChange, projectPathStyle, winRoot, t]);
-
-  // 监听输入以触发/更新 @ 面板
-  const syncQueryFromCaret = useCallback(() => {
-    const el = inputRef.current;
-    if (!el) return;
-    const curValue = String((el as HTMLInputElement).value || "");
-    const caret = (el.selectionStart as number) ?? curValue.length;
-    if (!shouldTriggerAt(curValue, caret)) { setOpen(false); return; }
-    const left = curValue.slice(0, caret);
-    const at = left.lastIndexOf("@");
-    const curQ = left.slice(at + 1);
-    if (dismissedAtIndexRef.current !== null && at === dismissedAtIndexRef.current && curQ.length > 0) {
-      return;
-    }
-    if (curQ.length === 0) dismissedAtIndexRef.current = null;
-    atIndexRef.current = at;
-    setQ(curQ);
-    setScope("all");
-    setLevel(curQ.length > 0 ? "results" : "categories");
-    try { setAnchor(getCaretViewportPosition(el, caret)); } catch {}
-    setOpen(true);
-  }, []);
-
-  useEffect(() => {
-    const el = inputRef.current;
-    if (!el) return;
-    const handler = () => requestAnimationFrame(syncQueryFromCaret);
-    el.addEventListener("input", handler);
-    return () => el.removeEventListener("input", handler);
-  }, [syncQueryFromCaret]);
+    const nextChips = buildMergedChips(items);
+    return applyValueChange({
+      chips: nextChips,
+      draft: "",
+      selection: createCollapsedSelection(0),
+    });
+  }, [applyValueChange, buildMergedChips, projectPathStyle, readCurrentValueState, t, winRoot]);
 
   const onKeyDown = (e: React.KeyboardEvent<any>) => {
     try { externalOnKeyDown && externalOnKeyDown(e); } catch {}
+    if (e.defaultPrevented) return;
+    if (isUndoShortcut(e)) {
+      e.preventDefault();
+      undoValueChange();
+      return;
+    }
+    if (isRedoShortcut(e)) {
+      e.preventDefault();
+      redoValueChange();
+      return;
+    }
     if (e.key === "@") {
       requestAnimationFrame(() => {
         const el = inputRef.current;
@@ -638,11 +1072,15 @@ export default function PathChipsInput({
       return;
     }
 
-    if (e.key === "Backspace" && !draft) {
+    const current = readCurrentValueState();
+    if (e.key === "Backspace" && !current.draft) {
       // 删除最后一个 Chip
-      if (chips.length > 0) {
+      if (current.chips.length > 0) {
         e.preventDefault();
-        onChipsChange(chips.slice(0, -1));
+        applyValueChange({
+          chips: current.chips.slice(0, -1),
+          selection: captureSelectionSnapshot(inputRef.current, current.draft),
+        });
       }
       return;
     }
@@ -653,7 +1091,7 @@ export default function PathChipsInput({
     // 设计要求：Chip 确认仅允许回车，空格等按键不得触发提交
     // 仅在 @ 面板展开时拦截提交：刻意保持此约束以避免常规输入被误转换为路径 Chip，请勿调整
     if (open && shouldCommitByEnter) {
-      if (draft.trim().length === 0) return;
+      if (current.draft.trim().length === 0) return;
       const ok = commitDraftToChips();
       if (ok) e.preventDefault();
       return;
@@ -661,7 +1099,13 @@ export default function PathChipsInput({
   };
 
   const onChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-    onDraftChange(e.target.value);
+    const nativeEvent = e.nativeEvent as InputEvent | undefined;
+    applyValueChange({
+      draft: e.target.value,
+      selection: captureSelectionSnapshot(e.target, e.target.value),
+    }, {
+      mergeMode: deriveHistoryMergeMode(nativeEvent?.inputType),
+    });
   };
 
   const onPaste = async (e: React.ClipboardEvent<any>) => {
@@ -672,17 +1116,24 @@ export default function PathChipsInput({
       // 先与现有 chips 基于 fingerprint 做去重：
       // - 若剪贴板图片与已有图片完全相同，则不再重复生成/保存
       // - 这样连续多次粘贴同一张图片也只会保留一份
-      const unique = dedupePastedImagesByFingerprint<PastedImage>(imgs, chips as any);
+      const current = readCurrentValueState();
+      const unique = dedupePastedImagesByFingerprint<PastedImage>(imgs, current.chips as any);
       if (!unique || unique.length === 0) return;
       const saved = await persistImages(unique, winRoot, projectName);
-      appendChips(saved);
+      const latest = readCurrentValueState();
+      const nextChips = buildMergedChips(saved);
+      applyValueChange({
+        chips: nextChips,
+        selection: captureSelectionSnapshot(inputRef.current, latest.draft),
+      });
     } catch {}
   };
 
   const handlePick = (item: AtItem) => {
     const el = inputRef.current;
     if (!el) return;
-    const caret = (el.selectionStart as number) ?? String(draft || "").length;
+    const current = readCurrentValueState();
+    const caret = (el.selectionStart as number) ?? current.draft.length;
     let insertText = item.title;
     try {
       if (item.categoryId === "files") {
@@ -705,11 +1156,14 @@ export default function PathChipsInput({
           isDir: !!(item as any).isDir || /\/$/.test(wsl),
           chipKind: "file",
         } as any;
-        appendChips([it]);
         // 将 @ 段落替换为空
-        const { next, nextCaret } = replaceAtQuery(draft, caret, "");
-        onDraftChange(next);
-        requestAnimationFrame(() => { try { el.setSelectionRange(nextCaret, nextCaret); el.focus(); } catch {} });
+        const nextChips = buildMergedChips([it]);
+        const { next, nextCaret } = replaceAtQuery(current.draft, caret, "");
+        applyValueChange({
+          chips: nextChips,
+          draft: next,
+          selection: createCollapsedSelection(nextCaret),
+        });
         // 关闭面板
         dismissedAtIndexRef.current = atIndexRef.current;
         atIndexRef.current = null;
@@ -743,10 +1197,13 @@ export default function PathChipsInput({
           chipKind: "rule",
           rulePath: relOrPath,
         } as any;
-        appendChips([chip]);
-        const { next, nextCaret } = replaceAtQuery(draft, caret, "");
-        onDraftChange(next);
-        requestAnimationFrame(() => { try { el.setSelectionRange(nextCaret, nextCaret); el.focus(); } catch {} });
+        const nextChips = buildMergedChips([chip]);
+        const { next, nextCaret } = replaceAtQuery(current.draft, caret, "");
+        applyValueChange({
+          chips: nextChips,
+          draft: next,
+          selection: createCollapsedSelection(nextCaret),
+        });
         dismissedAtIndexRef.current = atIndexRef.current;
         atIndexRef.current = null;
         setQ("");
@@ -756,9 +1213,11 @@ export default function PathChipsInput({
     } catch {}
 
     // 非文件类：将选项文字插入草稿
-    const { next, nextCaret } = replaceAtQuery(draft, caret, insertText);
-    onDraftChange(next);
-    requestAnimationFrame(() => { try { el.setSelectionRange(nextCaret, nextCaret); el.focus(); } catch {} });
+    const { next, nextCaret } = replaceAtQuery(current.draft, caret, insertText);
+    applyValueChange({
+      draft: next,
+      selection: createCollapsedSelection(nextCaret),
+    });
     dismissedAtIndexRef.current = atIndexRef.current;
     atIndexRef.current = null;
     setQ("");
@@ -829,9 +1288,17 @@ export default function PathChipsInput({
               ? ruleLabel
               : chip.fileName || (chip as any)?.wslPath || t('common:files.image');
             const isDir = !!(chipAny as any).isDir || (/\/$/.test(String(chip.wslPath || '')));
+            const previewSrc = String(chip.previewUrl || resolveChipImageFallbackUrl(chip));
             const iconNode = (() => {
-              if (chip.previewUrl) {
-                return <img src={chip.previewUrl} className="h-3.5 w-3.5 object-cover rounded" alt={chip.fileName || t('common:files.image')} />;
+              if (previewSrc) {
+                return (
+                  <img
+                    src={previewSrc}
+                    className="h-3.5 w-3.5 object-cover rounded"
+                    alt={chip.fileName || t('common:files.image')}
+                    onError={(event) => handleChipImageError(event, chip)}
+                  />
+                );
               }
               if (isRule) return <ScrollText className="h-3.5 w-3.5 text-slate-600" />;
               if (isDir) return <FolderOpenDot className="h-3.5 w-3.5 text-slate-600" />;
@@ -873,10 +1340,21 @@ export default function PathChipsInput({
                 <button
                   type="button"
                   className="ml-0.5 rounded-apple-sm px-0.5 text-[var(--cf-text-secondary)] hover:text-[var(--cf-text-primary)] hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
+                  onMouseDown={(ev) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    try { inputRef.current?.focus(); } catch {}
+                  }}
                   onClick={(ev) => {
-                    ev.preventDefault(); ev.stopPropagation();
-                    const next = chips.filter((c) => c !== chip);
-                    onChipsChange(next);
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    const current = readCurrentValueState();
+                    if (idx < 0 || idx >= current.chips.length) return;
+                    const next = current.chips.filter((_, chipIndex) => chipIndex !== idx);
+                    applyValueChange({
+                      chips: next,
+                      selection: captureSelectionSnapshot(inputRef.current, current.draft),
+                    });
                   }}
                 >
                   <span className="text-xs">×</span>
@@ -886,10 +1364,11 @@ export default function PathChipsInput({
           })}
         </div>
 
-        {hoverPreview && hoverPreview.chip?.previewUrl && typeof document !== "undefined"
+        {hoverPreview && (hoverPreview.chip?.previewUrl || resolveChipImageFallbackUrl(hoverPreview.chip)) && typeof document !== "undefined"
           ? createPortal(
               (() => {
                 const { rect, chip } = hoverPreview;
+                const previewSrc = String(chip.previewUrl || resolveChipImageFallbackUrl(chip));
                 const centerX = rect.left + rect.width / 2;
                 const viewportHeight = typeof window !== "undefined" ? window.innerHeight : 0;
                 const anchorCenterY = rect.top + rect.height / 2;
@@ -909,7 +1388,12 @@ export default function PathChipsInput({
                     style={{ left: centerX, top }}
                   >
                     <div className={cn("rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple p-2 shadow-apple-lg transition-opacity dark:shadow-apple-dark-lg", "-translate-x-1/2", translateYClass)}>
-                      <img src={chip.previewUrl} className="block max-h-[28rem] max-w-[28rem] object-contain rounded-apple" alt={chip.fileName || t('common:files.image')} />
+                      <img
+                        src={previewSrc}
+                        className="block max-h-[28rem] max-w-[28rem] object-contain rounded-apple"
+                        alt={chip.fileName || t('common:files.image')}
+                        onError={(event) => handleChipImageError(event, chip)}
+                      />
                     </div>
                   </div>
                 );
@@ -925,6 +1409,7 @@ export default function PathChipsInput({
             ref={inputRef as any}
             value={draft}
             onChange={onChange}
+            onBeforeInput={onBeforeInput}
             onKeyDown={onKeyDown}
             onPaste={onPaste}
             rows={3}
@@ -944,6 +1429,7 @@ export default function PathChipsInput({
             ref={inputRef as any}
             value={draft}
             onChange={onChange}
+            onBeforeInput={onBeforeInput}
             onKeyDown={onKeyDown}
             onPaste={onPaste}
             onPointerDown={(e) => { try { (e.target as HTMLElement).setPointerCapture((e as any).pointerId); } catch {} }}
