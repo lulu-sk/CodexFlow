@@ -366,12 +366,40 @@ function toWindowsFilePreviewUrl(winPath?: string): string {
 }
 
 /**
+ * 中文说明：判断给定 Chip 是否应按图片附件语义处理。
+ */
+function isImageChip(chip?: Partial<PathChip>): boolean {
+  const chipAny = chip as any;
+  const fileName = String(chipAny?.fileName || "").trim();
+  const type = String(chipAny?.type || "").trim().toLowerCase();
+  return resolvePathChipKind({
+    fileName,
+    isImage: type.startsWith("image/"),
+    chipKind: chipAny?.chipKind,
+  }) === "image";
+}
+
+/**
  * 中文说明：解析图片 Chip 的稳定回退预览地址。
+ * - 仅图片 Chip 允许回退到磁盘 `file:///` 预览，避免普通文件误渲染为裂图；
  * - 优先使用 `winPath`，因为撤回/重做后 `blob:` URL 可能已被回收；
  * - 若无 `winPath`，则返回空串，由调用方决定是否继续展示。
  */
 function resolveChipImageFallbackUrl(chip?: Partial<PathChip>): string {
+  if (!isImageChip(chip)) return "";
   return toWindowsFilePreviewUrl(String((chip as any)?.winPath || ""));
+}
+
+/**
+ * 中文说明：解析 Chip 可用于渲染的预览地址。
+ * - 仅图片 Chip 允许返回预览地址，普通文件即便带有误写的 `previewUrl` 也不会渲染成图片；
+ * - 优先使用当前 `previewUrl`，再回退到稳定的磁盘 `file:///` 地址。
+ */
+function resolveChipPreviewSrc(chip?: Partial<PathChip>): string {
+  if (!isImageChip(chip)) return "";
+  const previewUrl = String((chip as any)?.previewUrl || "").trim();
+  if (previewUrl) return previewUrl;
+  return resolveChipImageFallbackUrl(chip);
 }
 
 export default function PathChipsInput({
@@ -967,7 +995,7 @@ export default function PathChipsInput({
   }, [projectWslRoot, winRoot]);
 
   const handleChipMouseEnter = useCallback((chip: PathChip, key: string, target: HTMLElement) => {
-    if (!chip?.previewUrl && !resolveChipImageFallbackUrl(chip)) return;
+    if (!resolveChipPreviewSrc(chip)) return;
     showPreview(chip, key, target);
   }, [showPreview]);
 
@@ -1315,7 +1343,7 @@ export default function PathChipsInput({
               ? ruleLabel
               : chip.fileName || (chip as any)?.wslPath || t('common:files.image');
             const isDir = !!(chipAny as any).isDir || (/\/$/.test(String(chip.wslPath || '')));
-            const previewSrc = String(chip.previewUrl || resolveChipImageFallbackUrl(chip));
+            const previewSrc = resolveChipPreviewSrc(chip);
             const iconNode = (() => {
               if (previewSrc) {
                 return (
@@ -1391,11 +1419,11 @@ export default function PathChipsInput({
           })}
         </div>
 
-        {hoverPreview && (hoverPreview.chip?.previewUrl || resolveChipImageFallbackUrl(hoverPreview.chip)) && typeof document !== "undefined"
+        {hoverPreview && resolveChipPreviewSrc(hoverPreview.chip) && typeof document !== "undefined"
           ? createPortal(
               (() => {
                 const { rect, chip } = hoverPreview;
-                const previewSrc = String(chip.previewUrl || resolveChipImageFallbackUrl(chip));
+                const previewSrc = resolveChipPreviewSrc(chip);
                 const centerX = rect.left + rect.width / 2;
                 const viewportHeight = typeof window !== "undefined" ? window.innerHeight : 0;
                 const anchorCenterY = rect.top + rect.height / 2;
