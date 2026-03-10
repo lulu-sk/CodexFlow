@@ -42,7 +42,7 @@ export function DropdownMenuTrigger({ children }: { children: React.ReactElement
   });
 }
 
-export function DropdownMenuContent({ align = 'start', children }: { align?: 'start' | 'end'; children: React.ReactNode }) {
+export function DropdownMenuContent({ align = 'start', className, children }: { align?: 'start' | 'end'; className?: string; children: React.ReactNode }) {
   const ctx = React.useContext(Ctx);
   const contentRef = React.useRef<HTMLDivElement | null>(null);
   const [style, setStyle] = React.useState<React.CSSProperties>({});
@@ -115,7 +115,10 @@ export function DropdownMenuContent({ align = 'start', children }: { align?: 'st
     <div
       ref={contentRef}
       style={style}
-      className="min-w-[180px] rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple p-1.5 shadow-apple-lg text-[var(--cf-text-primary)] dark:shadow-apple-dark-lg"
+      className={cn(
+        "min-w-[180px] rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple p-1.5 shadow-apple-lg text-[var(--cf-text-primary)] dark:shadow-apple-dark-lg",
+        className,
+      )}
     >
       {children}
     </div>

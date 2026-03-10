@@ -15,8 +15,8 @@ import projects, { IMPLEMENTATION_NAME as PROJECTS_IMPL } from "./projects/index
 import history, { purgeHistoryCacheIfOutdated } from "./history";
 import { startHistoryIndexer, getIndexedSummaries, getIndexedDetails, getLastIndexerRoots, getLastIndexerRootsByProvider, stopHistoryIndexer, cacheDetails, getCachedDetails } from "./indexer";
 import { getSessionsRootsFastAsync } from "./wsl";
-import { getClaudeRootCandidatesFastAsync } from "./agentSessions/claude/discovery";
-import { getGeminiRootCandidatesFastAsync } from "./agentSessions/gemini/discovery";
+import { getClaudeRootCandidatesFastAsync, discoverClaudeSessionFiles } from "./agentSessions/claude/discovery";
+import { getGeminiRootCandidatesFastAsync, discoverGeminiSessionFiles } from "./agentSessions/gemini/discovery";
 import { parseClaudeSessionFile } from "./agentSessions/claude/parser";
 import { parseGeminiSessionFile, extractGeminiProjectHashFromPath, deriveGeminiProjectHashCandidatesFromPath } from "./agentSessions/gemini/parser";
 import { hasNonEmptyIOFromMessages } from "./agentSessions/shared/empty";
@@ -2941,8 +2941,18 @@ ipcMain.handle("gitWorktree.openTerminal", async (_e, args: { dir: string }) => 
 });
 
 // History API
-ipcMain.handle('history.list', async (_e, args: { projectWslPath?: string; projectWinPath?: string; limit?: number; offset?: number; historyRoot?: string }) => {
+ipcMain.handle('history.list', async (_e, args: {
+  scope?: 'current_project' | 'project_group' | 'all_sessions';
+  projectWslPath?: string;
+  projectWinPath?: string;
+  groupProjectWslPaths?: string[];
+  groupProjectWinPaths?: string[];
+  limit?: number;
+  offset?: number;
+  historyRoot?: string;
+}) => {
   try {
+    const scope = args?.scope === 'project_group' || args?.scope === 'all_sessions' ? args.scope : 'current_project';
     // 尝试优先使用索引器（不阻塞 UI）
     const canon = (p?: string): string => {
       if (!p) return '';
@@ -2958,7 +2968,53 @@ ipcMain.handle('history.list', async (_e, args: { projectWslPath?: string; proje
         return s.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
       } catch { return String(p || '').toLowerCase(); }
     };
-    const needles = Array.from(new Set([canon(args.projectWslPath), canon(args.projectWinPath)].filter(Boolean)));
+    /**
+     * 中文说明：判断 child 是否处于 parent 路径边界内（包含完全相同的路径）。
+     */
+    const startsWithBoundary = (child: string, parent: string): boolean => {
+      try {
+        const c = String(child || '').replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/$/, '');
+        const p = String(parent || '').replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/$/, '');
+        if (!c || !p) return false;
+        if (c === p) return true;
+        return c.startsWith(p + '/');
+      } catch { return false; }
+    };
+    /**
+     * 中文说明：将当前项目 / 项目组请求参数归一化为一组唯一项目路径对。
+     */
+    const buildProjectPairs = (): Array<{ wslPath?: string; winPath?: string }> => {
+      if (scope === 'all_sessions') return [];
+      const fromGroupWsl = Array.isArray(args?.groupProjectWslPaths) ? args.groupProjectWslPaths : [];
+      const fromGroupWin = Array.isArray(args?.groupProjectWinPaths) ? args.groupProjectWinPaths : [];
+      const rawPairs: Array<{ wslPath?: string; winPath?: string }> = [];
+      if (scope === 'project_group' && (fromGroupWsl.length > 0 || fromGroupWin.length > 0)) {
+        const total = Math.max(fromGroupWsl.length, fromGroupWin.length);
+        for (let i = 0; i < total; i++) {
+          rawPairs.push({
+            wslPath: String(fromGroupWsl[i] || '').trim() || undefined,
+            winPath: String(fromGroupWin[i] || '').trim() || undefined,
+          });
+        }
+      } else {
+        rawPairs.push({
+          wslPath: String(args?.projectWslPath || '').trim() || undefined,
+          winPath: String(args?.projectWinPath || '').trim() || undefined,
+        });
+      }
+      const seen = new Set<string>();
+      const pairs: Array<{ wslPath?: string; winPath?: string }> = [];
+      for (const pair of rawPairs) {
+        const key = [canon(pair.wslPath), canon(pair.winPath)].filter(Boolean).join('|');
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        pairs.push(pair);
+      }
+      return pairs;
+    };
+    const projectPairs = buildProjectPairs();
+    const needles = Array.from(new Set(projectPairs.flatMap((pair) => [canon(pair.wslPath), canon(pair.winPath)].filter(Boolean))));
+    if (scope !== 'all_sessions' && projectPairs.length === 0) return { ok: true, sessions: [] };
 
     /**
      * 兼容 Gemini 的 projectHash：部分会话缺失 cwd 时，需用项目路径反推 hash 来做归属过滤。
@@ -3005,25 +3061,195 @@ ipcMain.handle('history.list', async (_e, args: { projectWslPath?: string; proje
         }
       } catch {}
     };
-    addGeminiHashCandidate(args.projectWslPath);
-    addGeminiHashCandidate(args.projectWinPath);
-    addGeminiHashCandidate(deriveWslFromWinPath(args.projectWinPath));
-    addGeminiHashCandidate(deriveWinFromWslMountPath(args.projectWslPath));
+    for (const pair of projectPairs) {
+      addGeminiHashCandidate(pair.wslPath);
+      addGeminiHashCandidate(pair.winPath);
+      addGeminiHashCandidate(deriveWslFromWinPath(pair.winPath));
+      addGeminiHashCandidate(deriveWinFromWslMountPath(pair.wslPath));
+    }
+    const prefRoot = typeof args.historyRoot === 'string' && args.historyRoot.trim().length > 0 ? args.historyRoot : settings.getSettings().historyRoot;
+    const includeClaudeAgentHistory = settings.getSettings().claudeCode?.readAgentHistory === true;
+    const fallbackPageLimit = Math.max(1, Number(args.limit || 0) || 300);
+    const fallbackTargetCount = Math.max(1, Math.max(0, Number(args.offset || 0)) + fallbackPageLimit + 32);
+    type FallbackHistorySummary = {
+      providerId: 'codex' | 'claude' | 'gemini';
+      id: string;
+      title: string;
+      date: number;
+      filePath: string;
+      rawDate?: string;
+      preview?: string;
+      dirKey?: string;
+      projectHash?: string;
+      resumeMode?: 'modern' | 'legacy' | 'unknown';
+      resumeId?: string;
+      runtimeShell?: 'wsl' | 'windows' | 'unknown';
+    };
+    type DiscoveredHistoryFile = {
+      filePath: string;
+      stat: fs.Stats;
+      date: number;
+    };
+    /**
+     * 中文说明：对回退路径的历史摘要统一分页，避免不同 scope 出现分页语义漂移。
+     */
+    const paginate = <T,>(items: T[]): T[] => {
+      const offset = Math.max(0, Number(args.offset || 0));
+      const end = args.limit ? offset + Number(args.limit) : undefined;
+      return items.slice(offset, end);
+    };
+    /**
+     * 中文说明：将不同来源的历史摘要规整为渲染端一致使用的结构。
+     */
+    const normalizeHistorySummary = (item: any): FallbackHistorySummary => ({
+      providerId: item?.providerId === 'claude' || item?.providerId === 'gemini' ? item.providerId : 'codex',
+      id: String(item?.id || ''),
+      title: String(item?.title || ''),
+      date: Number(item?.date || 0),
+      filePath: String(item?.filePath || ''),
+      rawDate: typeof item?.rawDate === 'string' ? item.rawDate : undefined,
+      preview: typeof item?.preview === 'string' ? item.preview : undefined,
+      dirKey: typeof item?.dirKey === 'string' ? item.dirKey : undefined,
+      projectHash: typeof item?.projectHash === 'string' ? item.projectHash : undefined,
+      resumeMode: item?.resumeMode === 'modern' || item?.resumeMode === 'legacy' || item?.resumeMode === 'unknown' ? item.resumeMode : undefined,
+      resumeId: typeof item?.resumeId === 'string' ? item.resumeId : undefined,
+      runtimeShell: item?.runtimeShell === 'windows' || item?.runtimeShell === 'wsl' || item?.runtimeShell === 'unknown' ? item.runtimeShell : undefined,
+    });
+    /**
+     * 中文说明：判断单条历史摘要是否属于当前请求范围。
+     */
+    const belongsToScope = (item: Pick<FallbackHistorySummary, 'providerId' | 'dirKey' | 'projectHash' | 'filePath'>): boolean => {
+      if (scope === 'all_sessions') return true;
+      const dirKey = canon(item.dirKey);
+      if (dirKey && needles.some((n) => startsWithBoundary(dirKey, n))) return true;
+      if (item.providerId === 'gemini' && geminiHashNeedles.size > 0) {
+        const hs = String(item.projectHash || '').trim().toLowerCase();
+        const hp = extractGeminiProjectHashFromPath(String(item.filePath || ''));
+        const h = hs || hp || '';
+        if (h && geminiHashNeedles.has(h)) return true;
+      }
+      return false;
+    };
+    /**
+     * 中文说明：按文件路径去重并保持时间倒序，避免多来源回退结果重复。
+     */
+    const dedupeSortHistorySummaries = (items: FallbackHistorySummary[]): FallbackHistorySummary[] => {
+      const merged = new Map<string, FallbackHistorySummary>();
+      for (const item of items) {
+        const key = String(item.filePath || item.id);
+        const prev = merged.get(key);
+        if (!prev || prev.date < item.date) merged.set(key, item);
+      }
+      return Array.from(merged.values()).sort((a, b) => b.date - a.date);
+    };
+    /**
+     * 中文说明：为 fallback 扫描按 mtime 预排序文件，便于命中足够条目后提前停止解析。
+     */
+    const sortDiscoveredFilesByMtimeDesc = async (files: string[]): Promise<DiscoveredHistoryFile[]> => {
+      const unique = Array.from(new Set(files.map((item) => String(item || "").trim()).filter(Boolean)));
+      if (unique.length === 0) return [];
+      const results: DiscoveredHistoryFile[] = [];
+      let cursor = 0;
+      const workerCount = Math.min(8, Math.max(1, unique.length));
+      const workers = Array.from({ length: workerCount }, async () => {
+        while (true) {
+          const index = cursor++;
+          if (index >= unique.length) return;
+          const filePath = unique[index];
+          try {
+            const stat = await fsp.stat(filePath);
+            if (!stat.isFile()) continue;
+            results.push({ filePath, stat, date: Number(stat.mtimeMs || 0) });
+          } catch {}
+        }
+      });
+      await Promise.all(workers);
+      return results.sort((a, b) => b.date - a.date);
+    };
+    /**
+     * 中文说明：采集 Codex 的回退历史；按 scope 选择单次扫描策略，避免项目组/全部会话重复全量遍历。
+     */
+    const collectCodexFallbackSummaries = async (): Promise<FallbackHistorySummary[]> => {
+      if (scope === 'all_sessions') {
+        const allCodex = await history.listHistory(
+          {},
+          { historyRoot: prefRoot, limit: fallbackTargetCount },
+        );
+        return allCodex.map(normalizeHistorySummary);
+      }
+      if (scope === 'project_group' && projectPairs.length > 0) {
+        const allCodex = await history.listHistory(
+          {},
+          { historyRoot: prefRoot },
+        );
+        return dedupeSortHistorySummaries(
+          allCodex.map(normalizeHistorySummary).filter((item) => belongsToScope(item)),
+        ).slice(0, fallbackTargetCount);
+      }
+      const current = await history.listHistory(
+        { wslPath: args.projectWslPath, winPath: args.projectWinPath },
+        { historyRoot: prefRoot, limit: fallbackTargetCount },
+      );
+      return current.map(normalizeHistorySummary);
+    };
+    /**
+     * 中文说明：采集 Claude/Gemini 的回退历史，并按分页预算提前截止，避免先解析完整个 Provider。
+     */
+    const collectNonCodexFallbackSummaries = async (providerId: 'claude' | 'gemini'): Promise<FallbackHistorySummary[]> => {
+      const roots = providerId === 'claude'
+        ? (await getClaudeRootCandidatesFastAsync()).filter((item) => item.exists).map((item) => item.path)
+        : (await getGeminiRootCandidatesFastAsync()).filter((item) => item.exists).map((item) => item.path);
+      const files: string[] = [];
+      for (const root of roots) {
+        try {
+          const discovered = providerId === 'claude'
+            ? await discoverClaudeSessionFiles(root, { includeAgentHistory: includeClaudeAgentHistory })
+            : await discoverGeminiSessionFiles(root);
+          files.push(...discovered);
+        } catch {}
+      }
+      const sortedFiles = await sortDiscoveredFilesByMtimeDesc(files);
+      if (sortedFiles.length === 0) return [];
+      const results: FallbackHistorySummary[] = [];
+      let cursor = 0;
+      const workerCount = Math.min(4, Math.max(1, sortedFiles.length));
+      const workers = Array.from({ length: workerCount }, async () => {
+        while (true) {
+          const index = cursor++;
+          if (index >= sortedFiles.length) return;
+          if (results.length >= fallbackTargetCount) return;
+          const currentFile = sortedFiles[index];
+          try {
+            const parsed = providerId === 'claude'
+              ? await parseClaudeSessionFile(currentFile.filePath, currentFile.stat, { summaryOnly: true })
+              : await parseGeminiSessionFile(currentFile.filePath, currentFile.stat, { summaryOnly: true });
+            const summary = normalizeHistorySummary(parsed);
+            if (!belongsToScope(summary)) continue;
+            results.push(summary);
+            if (results.length >= fallbackTargetCount) return;
+          } catch {}
+        }
+      });
+      await Promise.all(workers);
+      return dedupeSortHistorySummaries(results).slice(0, fallbackTargetCount);
+    };
+    /**
+     * 中文说明：统一回退到跨 Provider 扫描，并在合并后再做排序/分页。
+     */
+    const collectFallbackSummaries = async (): Promise<FallbackHistorySummary[]> => {
+      const [codexItems, claudeItems, geminiItems] = await Promise.all([
+        collectCodexFallbackSummaries(),
+        collectNonCodexFallbackSummaries('claude'),
+        collectNonCodexFallbackSummaries('gemini'),
+      ]);
+      return dedupeSortHistorySummaries([...codexItems, ...claudeItems, ...geminiItems]).slice(0, fallbackTargetCount);
+    };
     const all = getIndexedSummaries();
     // Minimal probe logging (opt-in): only when CODEX_HISTORY_DEBUG=1
     const dbg = () => { try { return !!getDebugConfig().history.debug; } catch { return false; } };
     const dbgFile = (() => { try { return String(getDebugConfig().history.filter || '').trim().toLowerCase(); } catch { return ''; } })();
     if (all && all.length > 0) {
-      const startsWithBoundary = (child: string, parent: string): boolean => {
-        try {
-          const c = String(child || '').replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/$/, '');
-          const p = String(parent || '').replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/$/, '');
-          if (!c || !p) return false;
-          if (c === p) return true;
-          return c.startsWith(p + '/');
-        } catch { return false; }
-      };
-      const filtered = needles.length === 0
+      const filtered = scope === 'all_sessions'
         ? all
         : all.filter((s) => {
             if (needles.some((n) => startsWithBoundary(s.dirKey, n))) return true;
@@ -3042,13 +3268,13 @@ ipcMain.handle('history.list', async (_e, args: { projectWslPath?: string; proje
           perfLogger.log(`[history:list:probe] needles=${JSON.stringify(needles)} all=${all.length} filtered=${filtered.length} foundIdx=${foundIdx} foundFiltered=${foundFiltered}`);
         }
       } catch {}
-      // 性能关键：当 dirKey 过滤结果为空时，不再回退到全量扫描（history.listHistory）。
-      // 旧逻辑会在“空目录/新会话尚未写入 cwd（dirKey 仍为 sessions 目录）”场景触发全盘扫描，
-      // 导致明显卡顿与控制台刷屏。此处直接返回空结果，依赖索引器后续重解析/事件更新来补齐。
+      if (scope !== 'all_sessions' && filtered.length === 0) {
+        // 中文说明：索引已就绪但当前范围无命中时，直接返回空结果；
+        // 避免范围切换把“空列表”退化成跨 Provider 的重型全量扫描。
+        return { ok: true, sessions: [] };
+      }
       const sorted = filtered.sort((a, b) => b.date - a.date);
-      const offset = Math.max(0, Number(args.offset || 0));
-      const end = args.limit ? offset + Number(args.limit) : undefined;
-      const sliced = sorted.slice(offset, end);
+      const sliced = paginate(sorted);
       const mapped = sliced.map((x) => ({
         providerId: (x as any).providerId || "codex",
         id: x.id,
@@ -3057,6 +3283,7 @@ ipcMain.handle('history.list', async (_e, args: { projectWslPath?: string; proje
         filePath: x.filePath,
         rawDate: x.rawDate,
         preview: (x as any).preview,
+        dirKey: (x as any).dirKey,
         projectHash: (x as any).projectHash,
         resumeMode: (x as any).resumeMode,
         resumeId: (x as any).resumeId,
@@ -3064,10 +3291,8 @@ ipcMain.handle('history.list', async (_e, args: { projectWslPath?: string; proje
       }));
       return { ok: true, sessions: mapped };
     }
-    // 索引器未就绪时，回退到旧逻辑
-    const prefRoot = typeof args.historyRoot === 'string' && args.historyRoot.trim().length > 0 ? args.historyRoot : settings.getSettings().historyRoot;
-    const res = await perfLogger.time('history.list.fallback', () => history.listHistory({ wslPath: args.projectWslPath, winPath: args.projectWinPath }, { limit: args.limit, offset: args.offset, historyRoot: prefRoot }));
-    return { ok: true, sessions: res };
+    const fallback = await perfLogger.time('history.list.fallback', async () => await collectFallbackSummaries());
+    return { ok: true, sessions: paginate(fallback) };
   } catch (e: any) {
     return { ok: false, error: String(e) };
   }

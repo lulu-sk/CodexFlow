@@ -46,6 +46,7 @@ import {
   ArrowDownAZ,
   Check,
   Search,
+  SlidersHorizontal,
   TriangleAlert,
   Hammer,
   Play,
@@ -106,6 +107,7 @@ import {
 import { getCachedThemeSetting, useThemeController, writeThemeSettingCache, type ThemeMode, type ThemeSetting } from "@/lib/theme";
 import { loadHiddenProjectIds, loadShowHiddenProjects, saveHiddenProjectIds, saveShowHiddenProjects } from "@/lib/projects-hidden";
 import { loadConsoleSession, saveConsoleSession, type PersistedConsoleTab } from "@/lib/console-session";
+import { cn } from "@/lib/utils";
 import {
   cloneBuildRunCommandConfig,
   createEmptyBuildRunCommandConfig,
@@ -252,6 +254,41 @@ import type {
   WorktreeRecycleDialogState,
   WorktreeRecycleProgressState,
 } from "@/app/app-shared";
+
+type HistorySearchScope = "current_project" | "project_group" | "all_sessions";
+
+type HistoryScopeOption = {
+  value: HistorySearchScope;
+  label: string;
+  Icon: React.ComponentType<{ className?: string }>;
+  disabled?: boolean;
+};
+
+type HistoryScopeDescriptor = {
+  requestedScope: HistorySearchScope;
+  effectiveScope: HistorySearchScope;
+  cacheKey: string;
+  projectIds: string[];
+  scopeProjects: Project[];
+  projectNeedles: string[];
+  primaryProject: Project | null;
+};
+
+type HistoryProjectMatch = {
+  projectId: string;
+  projectName: string;
+  hidden: boolean;
+};
+
+type HistoryActionTarget = {
+  session?: HistorySession;
+  project: Project | null;
+  projectMatch: HistoryProjectMatch | null;
+};
+
+type ResolveHistoryActionTargetOptions = {
+  allowSelectedProjectFallback?: boolean;
+};
 
 type AgentTurnTimerStatus = "working" | "done" | "interrupted";
 
@@ -2711,13 +2748,15 @@ export default function CodexFlowManagerUI() {
   const hoveredProjectShortcutRef = useRef<HoverProjectShortcutContext | null>(null);
   const hoveredHistoryShortcutRef = useRef<HoverHistoryShortcutContext | null>(null);
   type HistoryProjectCacheEntry = { sessions: HistorySession[]; hasMore: boolean; nextOffset: number };
-  // 项目历史缓存：仅保留最近使用的少量项目，避免切换大量项目导致内存持续增长
+  // 按设计要求：历史面板默认筛选保持为“当前项目”，待项目恢复后自动生效，不在初始化空档期改写为“全部会话”。
+  const [historySearchScope, setHistorySearchScope] = useState<HistorySearchScope>("current_project");
+  // 历史范围缓存：仅保留最近使用的少量视图，避免频繁切换范围导致内存持续增长
   const HISTORY_PROJECT_CACHE_MAX = 6;
   const HISTORY_PAGE_INITIAL_LIMIT = 300;
   const HISTORY_PAGE_SIZE = 200;
   const historyCacheRef = useRef<Map<string, HistoryProjectCacheEntry>>(new Map());
   /**
-   * 读取指定项目的历史缓存，并刷新 LRU 顺序。
+   * 读取指定历史范围的缓存，并刷新 LRU 顺序。
    */
   const getHistoryCache = useCallback((projectKey: string): HistoryProjectCacheEntry | undefined => {
     const key = String(projectKey || "").trim();
@@ -2730,7 +2769,7 @@ export default function CodexFlowManagerUI() {
     return cached;
   }, []);
   /**
-   * 写入指定项目的历史缓存，并控制缓存项目数量上限。
+   * 写入指定历史范围的缓存，并控制缓存项目数量上限。
    */
   const setHistoryCache = useCallback((projectKey: string, entry: HistoryProjectCacheEntry): void => {
     const key = String(projectKey || "").trim();
@@ -2745,15 +2784,119 @@ export default function CodexFlowManagerUI() {
     }
   }, []);
   /**
-   * 删除指定项目的历史缓存。
+   * 清空全部历史范围缓存。
    */
-  const deleteHistoryCache = useCallback((projectKey: string): void => {
-    const key = String(projectKey || "").trim();
-    if (!key) return;
-    historyCacheRef.current.delete(key);
+  const clearHistoryCache = useCallback((): void => {
+    historyCacheRef.current.clear();
   }, []);
-  // Gemini：基于项目路径计算 projectHash，用于在会话缺失 cwd 时仍能正确归属到项目。
+  // Gemini：为当前历史范围计算 projectHash 候选集合，用于范围过滤。
   const geminiProjectHashNeedlesRef = useRef<Set<string>>(new Set());
+  const [projectGeminiHashOwners, setProjectGeminiHashOwners] = useState<Record<string, string[]>>({});
+  const projectGeminiHashOwnersRef = useRef<Record<string, string[]>>({});
+  const historyOpenResolveSeqRef = useRef<number>(0);
+  const projectsById = useMemo(() => {
+    const next = new Map<string, Project>();
+    for (const item of projects) {
+      const id = String(item?.id || "").trim();
+      if (!id) continue;
+      next.set(id, item);
+    }
+    return next;
+  }, [projects]);
+  const historyProjectCandidates = useMemo(() => {
+    return projects.map((project) => {
+      const pathKeys = Array.from(new Set([
+        canonicalizePath(project.wslPath || ""),
+        canonicalizePath(project.winPath || ""),
+      ].filter(Boolean)));
+      return {
+        project,
+        pathKeys,
+        longestPathLength: pathKeys.reduce((max, item) => Math.max(max, item.length), 0),
+      };
+    });
+  }, [projects]);
+  /**
+   * 中文说明：判断 child 是否处于 parent 路径边界内（包含完全相同的路径）。
+   */
+  const pathStartsWithBoundary = useCallback((child: string, parent: string): boolean => {
+    try {
+      const c = String(child || "").replace(/\\/g, "/").replace(/\/+/g, "/").replace(/\/$/, "");
+      const p = String(parent || "").replace(/\\/g, "/").replace(/\/+/g, "/").replace(/\/$/, "");
+      if (!c || !p) return false;
+      if (c === p) return true;
+      return c.startsWith(p + "/");
+    } catch {
+      return false;
+    }
+  }, []);
+  /**
+   * 中文说明：根据当前选中项目与目录树关系，解析历史范围对应的项目集合。
+   */
+  const resolveHistoryScopeProjectIds = useCallback((projectId: string, scope: HistorySearchScope): string[] => {
+    const currentId = String(projectId || "").trim();
+    if (!currentId) return [];
+    if (scope === "all_sessions") return [];
+    if (scope === "current_project") return projectsById.has(currentId) ? [currentId] : [];
+
+    const parentId = String(dirTreeStore.parentById[currentId] || "").trim();
+    const rootId = parentId || currentId;
+    if (!projectsById.has(rootId)) return [];
+
+    const orderedChildren = Array.isArray(dirTreeStore.childOrderByParent[rootId])
+      ? dirTreeStore.childOrderByParent[rootId].map((item) => String(item || "").trim()).filter(Boolean)
+      : [];
+    const fallbackChildren = Object.entries(dirTreeStore.parentById)
+      .filter(([, pid]) => String(pid || "").trim() === rootId)
+      .map(([cid]) => String(cid || "").trim())
+      .filter(Boolean);
+    const dedup = new Set<string>();
+    const merged: string[] = [];
+    for (const item of [rootId, ...orderedChildren, ...fallbackChildren]) {
+      if (!item || dedup.has(item) || !projectsById.has(item)) continue;
+      dedup.add(item);
+      merged.push(item);
+    }
+    return merged;
+  }, [dirTreeStore.childOrderByParent, dirTreeStore.parentById, projectsById]);
+  const historyScopeDescriptor = useMemo<HistoryScopeDescriptor>(() => {
+    const requestedScope = historySearchScope;
+    // 按设计要求：无当前项目时也保持“请求的筛选项”不被偷偷改写，让默认态继续停留在“当前项目”。
+    const effectiveScope: HistorySearchScope = requestedScope;
+    const projectIds = selectedProject ? resolveHistoryScopeProjectIds(selectedProject.id, effectiveScope) : [];
+    const scopeProjects = projectIds
+      .map((id) => projectsById.get(id) || null)
+      .filter((item): item is Project => !!item);
+    const projectNeedles = Array.from(new Set(scopeProjects.flatMap((project) => [
+      canonicalizePath(project.wslPath || ""),
+      canonicalizePath(project.winPath || ""),
+    ].filter(Boolean))));
+    const baseCacheKey = effectiveScope === "all_sessions" ? "all_sessions" : projectIds.join("|");
+    return {
+      requestedScope,
+      effectiveScope,
+      cacheKey: `${effectiveScope}::${baseCacheKey}`,
+      projectIds,
+      scopeProjects,
+      projectNeedles,
+      primaryProject: selectedProject || null,
+    };
+  }, [historySearchScope, projectsById, resolveHistoryScopeProjectIds, selectedProject]);
+  const historyScopeDescriptorRef = useRef<HistoryScopeDescriptor>(historyScopeDescriptor);
+  const selectedHistoryCacheKeyRef = useRef<string>(historyScopeDescriptor.cacheKey);
+  const historyScopeProjectIdSet = useMemo(() => new Set(historyScopeDescriptor.projectIds), [historyScopeDescriptor.projectIds]);
+  const historyScopeControlValue: HistorySearchScope = historySearchScope;
+  useEffect(() => {
+    historyScopeDescriptorRef.current = historyScopeDescriptor;
+    selectedHistoryCacheKeyRef.current = historyScopeDescriptor.cacheKey;
+  }, [historyScopeDescriptor]);
+  useEffect(() => {
+    projectGeminiHashOwnersRef.current = projectGeminiHashOwners;
+  }, [projectGeminiHashOwners]);
+  useEffect(() => {
+    if (selectedProject || historySearchScope !== "project_group") return;
+    setHistorySearchScope("current_project");
+  }, [historySearchScope, selectedProject]);
 
   const monthFormatter = useMemo(() => {
     try {
@@ -2791,14 +2934,81 @@ export default function CodexFlowManagerUI() {
     },
     []
   );
-  const selectedProjectHistoryKeyRef = useRef<string>("");
   useEffect(() => {
-    if (!selectedProject) {
-      selectedProjectHistoryKeyRef.current = "";
-      return;
-    }
-    selectedProjectHistoryKeyRef.current = canonicalizePath(selectedProject.wslPath || selectedProject.winPath || selectedProject.id);
-  }, [selectedProject]);
+    let cancelled = false;
+
+    (async () => {
+      const next: Record<string, string[]> = {};
+      /**
+       * 中文说明：将单个 Gemini projectHash 归属到指定项目。
+       */
+      const addOwner = (hash: string, projectId: string) => {
+        const key = String(hash || "").trim().toLowerCase();
+        const ownerId = String(projectId || "").trim();
+        if (!key || !ownerId) return;
+        const prev = Array.isArray(next[key]) ? next[key] : [];
+        if (prev.includes(ownerId)) return;
+        next[key] = [...prev, ownerId];
+      };
+      /**
+       * 中文说明：为单个项目路径补齐 Gemini projectHash 候选。
+       */
+      const addProjectPathHashes = async (projectId: string, rawPath?: string) => {
+        const text = String(rawPath || "").trim();
+        if (!text) return;
+        try {
+          const hashes = await deriveGeminiProjectHashCandidatesFromPath(text);
+          for (const hash of hashes) addOwner(hash, projectId);
+        } catch {}
+      };
+
+      await Promise.all(projects.map(async (project) => {
+        const projectId = String(project.id || "").trim();
+        if (!projectId) return;
+        await Promise.all([
+          addProjectPathHashes(projectId, project.wslPath),
+          addProjectPathHashes(projectId, project.winPath),
+        ]);
+      }));
+
+      if (!cancelled) setProjectGeminiHashOwners(next);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [projects]);
+  useEffect(() => {
+    let cancelled = false;
+    const next = new Set<string>();
+    geminiProjectHashNeedlesRef.current = next;
+    if (historyScopeDescriptor.effectiveScope === "all_sessions") return;
+
+    (async () => {
+      /**
+       * 中文说明：将项目路径加入当前历史范围对应的 Gemini hash 候选集合。
+       */
+      const addCandidate = async (rawPath?: string) => {
+        const text = typeof rawPath === "string" ? rawPath.trim() : "";
+        if (!text) return;
+        try {
+          const hashes = await deriveGeminiProjectHashCandidatesFromPath(text);
+          for (const hash of hashes) {
+            if (hash) next.add(hash);
+          }
+        } catch {}
+      };
+      await Promise.all(historyScopeDescriptor.scopeProjects.flatMap((project) => [
+        addCandidate(project.wslPath),
+        addCandidate(project.winPath),
+      ]));
+      if (!cancelled) geminiProjectHashNeedlesRef.current = next;
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [historyScopeDescriptor.cacheKey, historyScopeDescriptor.effectiveScope, historyScopeDescriptor.scopeProjects]);
 
   /**
    * 更新历史分页状态，并同步 ref（供异步加载逻辑读取最新值）。
@@ -2822,6 +3032,8 @@ export default function CodexFlowManagerUI() {
       date: normalizeMsToIso(it?.date),
       rawDate: (typeof it?.rawDate === "string" ? it.rawDate : undefined),
       preview: (typeof it?.preview === "string" ? String(it.preview) : undefined),
+      dirKey: (typeof it?.dirKey === "string" ? String(it.dirKey) : undefined),
+      projectHash: (typeof it?.projectHash === "string" ? String(it.projectHash) : undefined),
       messages: [],
       filePath: String(it?.filePath || ""),
       resumeMode: normalizeResumeMode(it?.resumeMode),
@@ -2839,14 +3051,219 @@ export default function CodexFlowManagerUI() {
     return Array.from(mp.values()).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, []);
   /**
-   * 拉取指定项目的一页历史记录。
+   * 中文说明：将项目实体转换为历史归属标签，供列表展示与动作路由复用。
    */
-  const fetchHistoryPage = useCallback(async (project: Project, offset: number, limit: number): Promise<HistorySession[]> => {
+  const createHistoryProjectMatch = useCallback((project: Project): HistoryProjectMatch => {
+    return {
+      projectId: project.id,
+      projectName: project.name,
+      hidden: hiddenProjectIdSet.has(project.id),
+    };
+  }, [hiddenProjectIdSet]);
+  /**
+   * 中文说明：缓存单个 Gemini projectHash 的项目归属，避免同一会话重复做异步推断。
+   */
+  const upsertProjectGeminiHashOwner = useCallback((hash: string, projectId: string): void => {
+    const key = String(hash || "").trim().toLowerCase();
+    const ownerId = String(projectId || "").trim();
+    if (!key || !ownerId) return;
+    setProjectGeminiHashOwners((prev) => {
+      const current = Array.isArray(prev[key]) ? prev[key] : [];
+      if (current.includes(ownerId)) {
+        projectGeminiHashOwnersRef.current = prev;
+        return prev;
+      }
+      const next = { ...prev, [key]: [...current, ownerId] };
+      projectGeminiHashOwnersRef.current = next;
+      return next;
+    });
+  }, []);
+  /**
+   * 中文说明：基于给定的 Gemini 归属缓存推断单条历史记录所属项目，用于同步渲染与快速动作判断。
+   */
+  const resolveHistorySessionProjectMatchWithOwners = useCallback((session: HistorySession, owners: Record<string, string[]>): HistoryProjectMatch | null => {
+    const pathNeedles = Array.from(new Set([
+      canonicalizePath(session.dirKey || ""),
+      normDir(session.filePath || ""),
+    ].filter(Boolean)));
+    const matchedByPath = historyProjectCandidates
+      .map((entry) => {
+        const score = entry.pathKeys.reduce((max, pathKey) => {
+          if (pathNeedles.some((needle) => pathStartsWithBoundary(needle, pathKey))) return Math.max(max, pathKey.length);
+          return max;
+        }, 0);
+        return { entry, score };
+      })
+      .filter((item) => item.score > 0)
+      .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        const bCurrent = b.entry.project.id === selectedProjectId ? 1 : 0;
+        const aCurrent = a.entry.project.id === selectedProjectId ? 1 : 0;
+        if (bCurrent !== aCurrent) return bCurrent - aCurrent;
+        const bScoped = historyScopeProjectIdSet.has(b.entry.project.id) ? 1 : 0;
+        const aScoped = historyScopeProjectIdSet.has(a.entry.project.id) ? 1 : 0;
+        if (bScoped !== aScoped) return bScoped - aScoped;
+        return b.entry.longestPathLength - a.entry.longestPathLength;
+      });
+    const bestPathMatch = matchedByPath[0]?.entry?.project || null;
+    if (bestPathMatch) {
+      return createHistoryProjectMatch(bestPathMatch);
+    }
+
+    const hash = String(session.projectHash || extractGeminiProjectHashFromPath(String(session.filePath || "")) || "").trim().toLowerCase();
+    if (!hash) return null;
+    const ownerIds = Array.isArray(owners[hash]) ? owners[hash] : [];
+    const target = ownerIds
+      .map((projectId) => projectsById.get(projectId) || null)
+      .filter((item): item is Project => !!item)
+      .sort((a, b) => {
+        const bCurrent = b.id === selectedProjectId ? 1 : 0;
+        const aCurrent = a.id === selectedProjectId ? 1 : 0;
+        if (bCurrent !== aCurrent) return bCurrent - aCurrent;
+        const bScoped = historyScopeProjectIdSet.has(b.id) ? 1 : 0;
+        const aScoped = historyScopeProjectIdSet.has(a.id) ? 1 : 0;
+        if (bScoped !== aScoped) return bScoped - aScoped;
+        return a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true });
+      })[0];
+    if (!target) return null;
+    return createHistoryProjectMatch(target);
+  }, [createHistoryProjectMatch, historyProjectCandidates, historyScopeProjectIdSet, pathStartsWithBoundary, projectsById, selectedProjectId]);
+  /**
+   * 中文说明：为单条历史记录推断其所属项目，用于跨项目搜索结果跳转与标签展示。
+   */
+  const resolveHistorySessionProjectMatch = useCallback((session: HistorySession): HistoryProjectMatch | null => {
+    return resolveHistorySessionProjectMatchWithOwners(session, projectGeminiHashOwners);
+  }, [projectGeminiHashOwners, resolveHistorySessionProjectMatchWithOwners]);
+  /**
+   * 中文说明：按需计算 Gemini 会话的项目归属，修复首次点击时 projectHash 映射尚未就绪的竞态。
+   */
+  const resolveHistorySessionProjectMatchAsync = useCallback(async (session: HistorySession): Promise<HistoryProjectMatch | null> => {
+    const immediate = resolveHistorySessionProjectMatchWithOwners(session, projectGeminiHashOwnersRef.current);
+    if (immediate) return immediate;
+
+    const hash = String(session.projectHash || extractGeminiProjectHashFromPath(String(session.filePath || "")) || "").trim().toLowerCase();
+    if (!hash) return null;
+
+    const orderedProjects = Array.from(projectsById.values()).sort((a, b) => {
+      const bCurrent = b.id === selectedProjectId ? 1 : 0;
+      const aCurrent = a.id === selectedProjectId ? 1 : 0;
+      if (bCurrent !== aCurrent) return bCurrent - aCurrent;
+      const bScoped = historyScopeProjectIdSet.has(b.id) ? 1 : 0;
+      const aScoped = historyScopeProjectIdSet.has(a.id) ? 1 : 0;
+      if (bScoped !== aScoped) return bScoped - aScoped;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true });
+    });
+
+    for (const project of orderedProjects) {
+      const [wslHashes, winHashes] = await Promise.all([
+        project.wslPath ? deriveGeminiProjectHashCandidatesFromPath(project.wslPath) : Promise.resolve([] as string[]),
+        project.winPath ? deriveGeminiProjectHashCandidatesFromPath(project.winPath) : Promise.resolve([] as string[]),
+      ]);
+      const hashes = new Set([...wslHashes, ...winHashes].map((item) => String(item || "").trim().toLowerCase()).filter(Boolean));
+      if (!hashes.has(hash)) continue;
+      upsertProjectGeminiHashOwner(hash, project.id);
+      return createHistoryProjectMatch(project);
+    }
+    return null;
+  }, [createHistoryProjectMatch, historyScopeProjectIdSet, projectsById, resolveHistorySessionProjectMatchWithOwners, selectedProjectId, upsertProjectGeminiHashOwner]);
+  const historySessionProjectMetaMap = useMemo(() => {
+    const next = new Map<string, HistoryProjectMatch | null>();
+    for (const session of historySessions) {
+      next.set(String(session.filePath || session.id), resolveHistorySessionProjectMatch(session));
+    }
+    return next;
+  }, [historySessions, resolveHistorySessionProjectMatch]);
+  /**
+   * 中文说明：按 filePath 或 id 在当前历史列表中定位单条会话，供同步/异步动作解析复用。
+   */
+  const findHistorySessionEntry = useCallback((filePath?: string, preferredSession?: HistorySession | null): HistorySession | undefined => {
+    if (preferredSession) return preferredSession;
+    const key = String(filePath || "").trim();
+    if (!key) return undefined;
+    return historySessionsRef.current.find((item) => item.filePath === key)
+      || historySessionsRef.current.find((item) => item.id === key);
+  }, []);
+  /**
+   * 中文说明：为历史详情/恢复动作解析目标会话与目标项目；若无法确认归属，则返回空项目，避免误落到错误仓库。
+   */
+  const resolveHistoryActionTarget = useCallback((
+    filePath?: string,
+    preferredSession?: HistorySession | null,
+    options?: ResolveHistoryActionTargetOptions,
+  ): HistoryActionTarget => {
+    const session = findHistorySessionEntry(filePath, preferredSession);
+    const key = String(session?.filePath || session?.id || filePath || "");
+    const projectMatch = session ? (historySessionProjectMetaMap.get(key) ?? resolveHistorySessionProjectMatch(session)) : null;
+    const fallbackProject = options?.allowSelectedProjectFallback
+      ? ((selectedProjectId ? (projectsById.get(selectedProjectId) || null) : null) || selectedProject || null)
+      : null;
+    const project = projectMatch ? (projectsById.get(projectMatch.projectId) || null) : fallbackProject;
+    return {
+      session: session || undefined,
+      project,
+      projectMatch,
+    };
+  }, [findHistorySessionEntry, historySessionProjectMetaMap, projectsById, resolveHistorySessionProjectMatch, selectedProject, selectedProjectId]);
+  /**
+   * 中文说明：为用户动作异步解析历史目标项目；同步命中失败时再按需补算 Gemini projectHash 归属。
+   */
+  const resolveHistoryActionTargetAsync = useCallback(async (
+    filePath?: string,
+    preferredSession?: HistorySession | null,
+    options?: ResolveHistoryActionTargetOptions,
+  ): Promise<HistoryActionTarget> => {
+    const session = findHistorySessionEntry(filePath, preferredSession);
+    const key = String(session?.filePath || session?.id || filePath || "");
+    let projectMatch = session ? (historySessionProjectMetaMap.get(key) ?? resolveHistorySessionProjectMatch(session)) : null;
+    if (!projectMatch && session) {
+      projectMatch = await resolveHistorySessionProjectMatchAsync(session);
+    }
+    const fallbackProject = options?.allowSelectedProjectFallback
+      ? ((selectedProjectId ? (projectsById.get(selectedProjectId) || null) : null) || selectedProject || null)
+      : null;
+    const project = projectMatch ? (projectsById.get(projectMatch.projectId) || null) : fallbackProject;
+    return {
+      session: session || undefined,
+      project,
+      projectMatch,
+    };
+  }, [findHistorySessionEntry, historySessionProjectMetaMap, projectsById, resolveHistorySessionProjectMatch, resolveHistorySessionProjectMatchAsync, selectedProject, selectedProjectId]);
+  /**
+   * 中文说明：将侧栏项目选中态同步到历史会话的真实归属，供跨项目跳转与继续会话复用。
+   */
+  const syncHistoryTargetProjectSelection = useCallback((project: Project | null, projectMatch?: HistoryProjectMatch | null): void => {
+    if (!project) return;
+    const hidden = !!projectMatch?.hidden;
+    if (hidden && !showHiddenProjects) setShowHiddenProjects(true);
+    if (project.id !== selectedProjectId) setSelectedProjectId(project.id);
+    revealProjectRowInSidebar(project.id);
+  }, [revealProjectRowInSidebar, selectedProjectId, showHiddenProjects]);
+  /**
+   * 中文说明：打开指定历史记录，并在需要时切换左侧项目到其真实归属。
+   */
+  const openHistorySession = useCallback(async (session: HistorySession, groupKey?: string | null): Promise<void> => {
+    try { suppressAutoSelectRef.current = false; } catch {}
+    const nextSeq = historyOpenResolveSeqRef.current + 1;
+    historyOpenResolveSeqRef.current = nextSeq;
+    setSelectedHistoryDir(groupKey || historyTimelineGroupKey(session, new Date()));
+    setSelectedHistoryId(session.id);
+    setCenterMode("history");
+    const { project, projectMatch } = await resolveHistoryActionTargetAsync(session.filePath || session.id, session);
+    if (historyOpenResolveSeqRef.current !== nextSeq) return;
+    if (project && projectMatch) syncHistoryTargetProjectSelection(project, projectMatch);
+  }, [resolveHistoryActionTargetAsync, syncHistoryTargetProjectSelection]);
+  /**
+   * 拉取指定历史范围的一页记录。
+   */
+  const fetchHistoryPage = useCallback(async (descriptor: HistoryScopeDescriptor, offset: number, limit: number): Promise<HistorySession[]> => {
     const safeOffset = Math.max(0, Number(offset || 0));
     const safeLimit = Math.max(1, Number(limit || 1));
     const res: any = await window.host.history.list({
-      projectWslPath: project.wslPath,
-      projectWinPath: project.winPath,
+      scope: descriptor.effectiveScope,
+      projectWslPath: descriptor.primaryProject?.wslPath,
+      projectWinPath: descriptor.primaryProject?.winPath,
+      groupProjectWslPaths: descriptor.scopeProjects.map((project) => String(project.wslPath || "").trim()),
+      groupProjectWinPaths: descriptor.scopeProjects.map((project) => String(project.winPath || "").trim()),
       limit: safeLimit,
       offset: safeOffset,
     });
@@ -2854,20 +3271,20 @@ export default function CodexFlowManagerUI() {
     return res.sessions.map((h: any) => mapHistoryListItemToSession(h));
   }, [mapHistoryListItemToSession]);
   /**
-   * 加载当前项目的下一页历史记录，并同步缓存与分页状态。
+   * 加载当前历史范围的下一页记录，并同步缓存与分页状态。
    */
   const loadMoreHistorySessions = useCallback(async (): Promise<number> => {
-    if (!selectedProject) return 0;
     if (!historyHasMoreRef.current) return 0;
     if (historyLoadingMoreRef.current) return 0;
-    const targetProjectKey = selectedProjectHistoryKeyRef.current;
-    if (!targetProjectKey) return 0;
+    const descriptor = historyScopeDescriptorRef.current;
+    const targetProjectKey = selectedHistoryCacheKeyRef.current;
+    if (!descriptor || !targetProjectKey) return 0;
     const offset = Math.max(0, Number(historyNextOffsetRef.current || 0));
     historyLoadingMoreRef.current = true;
     setHistoryLoadingMore(true);
     try {
-      const page = await fetchHistoryPage(selectedProject, offset, HISTORY_PAGE_SIZE);
-      if (targetProjectKey !== selectedProjectHistoryKeyRef.current) return 0;
+      const page = await fetchHistoryPage(descriptor, offset, HISTORY_PAGE_SIZE);
+      if (targetProjectKey !== selectedHistoryCacheKeyRef.current) return 0;
       const loadedCount = page.length;
       const nextOffset = offset + loadedCount;
       const hasMore = loadedCount >= HISTORY_PAGE_SIZE;
@@ -2885,7 +3302,7 @@ export default function CodexFlowManagerUI() {
       historyLoadingMoreRef.current = false;
       setHistoryLoadingMore(false);
     }
-  }, [selectedProject, fetchHistoryPage, HISTORY_PAGE_SIZE, applyHistoryPagination, mergeHistorySessions, setHistoryCache]);
+  }, [fetchHistoryPage, HISTORY_PAGE_SIZE, applyHistoryPagination, mergeHistorySessions, setHistoryCache]);
   /**
    * 为查询补齐分页范围：当前无命中时继续加载，直到出现命中或无更多数据。
    */
@@ -2913,10 +3330,8 @@ export default function CodexFlowManagerUI() {
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
     if (!first) return;
     const key = historyTimelineGroupKey(first, new Date());
-    setSelectedHistoryDir(key);
-    setSelectedHistoryId(first.id);
-    setCenterMode("history");
-  }, [historyQuery, ensureHistoryMatchLoaded, sessionMatchesQuery]);
+    await openHistorySession(first, key);
+  }, [ensureHistoryMatchLoaded, historyQuery, openHistorySession, sessionMatchesQuery]);
 
   // Auto-adjust history context menu position to stay within viewport (pre-paint to avoid visible jump)
   useLayoutEffect(() => {
@@ -3724,16 +4139,13 @@ export default function CodexFlowManagerUI() {
     if (tabIds.includes(activeTabId || "")) {
       setActiveTab(null, { projectId: project.id, focusMode: 'immediate', allowDuringRename: true });
     }
-    try {
-      const projectKey = canonicalizePath(project.wslPath || project.winPath || project.id);
-      if (projectKey) deleteHistoryCache(projectKey);
-    } catch {}
+    try { clearHistoryCache(); } catch {}
     setSelectedProjectId((prev) => (prev === project.id ? "" : prev));
     try { suppressAutoSelectRef.current = true; } catch {}
     setSelectedHistoryDir(null);
     setSelectedHistoryId(null);
     setCenterMode('console');
-  }, [activeTabId, deleteHistoryCache, setActiveTab, tabsByProject, tm]);
+  }, [activeTabId, clearHistoryCache, setActiveTab, tabsByProject, tm]);
 
   /**
    * 隐藏项目：关闭该项目下的所有控制台/PTY，并将其加入隐藏列表（会持久化）。
@@ -3994,45 +4406,13 @@ export default function CodexFlowManagerUI() {
     markProjectUsed(selectedProject.id);
   }
 
-  // 计算当前项目的 Gemini projectHash 候选（用于索引事件归属判断）
-  useEffect(() => {
-    let cancelled = false;
-    const next = new Set<string>();
-    geminiProjectHashNeedlesRef.current = next;
-    if (!selectedProject) return;
-
-    (async () => {
-      /**
-       * 将项目路径加入 hash 候选集合（兼容 WSL/Windows 的路径字符串差异）。
-       */
-      const addCandidate = async (p?: string) => {
-        const raw = typeof p === "string" ? p.trim() : "";
-        if (!raw) return;
-        try {
-          const hashes = await deriveGeminiProjectHashCandidatesFromPath(raw);
-          for (const h of hashes) {
-            if (h) next.add(h);
-          }
-        } catch {}
-      };
-      await Promise.all([
-        addCandidate(selectedProject.wslPath),
-        addCandidate(selectedProject.winPath),
-      ]);
-      if (!cancelled) geminiProjectHashNeedlesRef.current = next;
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedProject]);
-
-  // 当项目变更时，加载历史（项目范围）
+  // 当历史范围或项目上下文变更时，加载对应范围的历史记录
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
-      if (!selectedProject) {
+      const descriptor = historyScopeDescriptor;
+      if (!descriptor.primaryProject && descriptor.effectiveScope !== "all_sessions") {
         setHistorySessions([]);
         applyHistoryPagination({ hasMore: false, nextOffset: 0 });
         historyLoadingMoreRef.current = false;
@@ -4044,7 +4424,7 @@ export default function CodexFlowManagerUI() {
       }
       // 如果是用户刚刚通过点击项目触发的切换，则抑制自动选中历史（保持控制台视图）
       const skipAuto = suppressAutoSelectRef.current;
-      const projectKey = canonicalizePath(selectedProject.wslPath || selectedProject.winPath || selectedProject.id);
+      const projectKey = descriptor.cacheKey;
       // 先显示缓存
       const cached = getHistoryCache(projectKey);
       const cachedSessions = cached?.sessions || [];
@@ -4078,8 +4458,7 @@ export default function CodexFlowManagerUI() {
         setSelectedHistoryId(null);
       }
       try {
-        // 固定为项目范围历史（分页首屏）
-        const mapped = await fetchHistoryPage(selectedProject, 0, HISTORY_PAGE_INITIAL_LIMIT);
+        const mapped = await fetchHistoryPage(descriptor, 0, HISTORY_PAGE_INITIAL_LIMIT);
         if (cancelled) return;
         const hasMore = mapped.length >= HISTORY_PAGE_INITIAL_LIMIT;
         const nextOffset = mapped.length;
@@ -4114,28 +4493,17 @@ export default function CodexFlowManagerUI() {
     return () => {
       cancelled = true;
     };
-  }, [selectedProject, historyInvalidateNonce, getHistoryCache, fetchHistoryPage, HISTORY_PAGE_INITIAL_LIMIT, applyHistoryPagination, setHistoryCache]);
+  }, [historyScopeDescriptor, historyInvalidateNonce, getHistoryCache, fetchHistoryPage, HISTORY_PAGE_INITIAL_LIMIT, applyHistoryPagination, setHistoryCache]);
 
-  // 订阅索引器事件：新增/更新/删除时，若属于当前选中项目则立即更新 UI
+  // 订阅索引器事件：新增/更新/删除时，若属于当前历史范围则立即更新 UI
   useEffect(() => {
-    if (!selectedProject) return;
-    const projectNeedles: string[] = Array.from(new Set([
-      canonicalizePath(selectedProject.wslPath || ''),
-      canonicalizePath(selectedProject.winPath || ''),
-    ].filter(Boolean)));
-    const startsWithBoundary = (child: string, parent: string): boolean => {
-      try {
-        const c = String(child || '').replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/$/, '');
-        const p = String(parent || '').replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/$/, '');
-        if (!c || !p) return false;
-        if (c === p) return true;
-        return c.startsWith(p + '/');
-      } catch { return false; }
-    };
+    const projectNeedles = historyScopeDescriptor.projectNeedles;
+    const cacheKey = historyScopeDescriptor.cacheKey;
     const belongsToSelected = (item: any): boolean => {
+      if (historyScopeDescriptor.effectiveScope === "all_sessions") return true;
       try {
         const dirKey: string = String((item && (item.dirKey || '')) || '').toLowerCase();
-        if (dirKey) return projectNeedles.some((n) => startsWithBoundary(dirKey, n));
+        if (dirKey) return projectNeedles.some((n) => pathStartsWithBoundary(dirKey, n));
       } catch {}
       try {
         const pid = String(item?.providerId || '').toLowerCase();
@@ -4150,7 +4518,7 @@ export default function CodexFlowManagerUI() {
         const fp = String(item?.filePath || '');
         if (!fp) return false;
         const dir = normDir(fp);
-        return projectNeedles.some((n) => startsWithBoundary(dir, n));
+        return projectNeedles.some((n) => pathStartsWithBoundary(dir, n));
       } catch {}
       return false;
     };
@@ -4172,6 +4540,8 @@ export default function CodexFlowManagerUI() {
             prev.title !== s.title ||
             prev.rawDate !== s.rawDate ||
             prev.preview !== s.preview ||
+            prev.dirKey !== s.dirKey ||
+            prev.projectHash !== s.projectHash ||
             prev.resumeMode !== s.resumeMode ||
             prev.resumeId !== s.resumeId ||
             prev.runtimeShell !== s.runtimeShell
@@ -4183,8 +4553,7 @@ export default function CodexFlowManagerUI() {
         if (!changed) return cur;
         const next = Array.from(mp.values()).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
         try {
-          const projectKey = canonicalizePath(selectedProject.wslPath || selectedProject.winPath || selectedProject.id);
-          setHistoryCache(projectKey, {
+          setHistoryCache(cacheKey, {
             sessions: next,
             hasMore: historyHasMoreRef.current,
             nextOffset: historyNextOffsetRef.current,
@@ -4200,8 +4569,7 @@ export default function CodexFlowManagerUI() {
         const next = cur.filter((x) => (x.filePath || x.id) !== filePath);
         if (next.length === cur.length) return cur;
         try {
-          const projectKey = canonicalizePath(selectedProject.wslPath || selectedProject.winPath || selectedProject.id);
-          setHistoryCache(projectKey, {
+          setHistoryCache(cacheKey, {
             sessions: next,
             hasMore: historyHasMoreRef.current,
             nextOffset: historyNextOffsetRef.current,
@@ -4246,13 +4614,12 @@ export default function CodexFlowManagerUI() {
     }) || (() => {});
     const unsubInvalidate = window.host.history.onIndexInvalidate?.((_payload: { reason?: string }) => {
       try {
-        const projectKey = canonicalizePath(selectedProject.wslPath || selectedProject.winPath || selectedProject.id);
-        deleteHistoryCache(projectKey);
+        clearHistoryCache();
       } catch {}
       try { setHistoryInvalidateNonce((x) => x + 1); } catch {}
     }) || (() => {});
     return () => { try { unsubAdd(); } catch {}; try { unsubUpd(); } catch {}; try { unsubRem(); } catch {}; try { unsubInvalidate(); } catch {}; };
-  }, [selectedProject, selectedHistoryId, selectedHistoryDir, setHistoryCache, deleteHistoryCache, mapHistoryListItemToSession]);
+  }, [clearHistoryCache, historyScopeDescriptor.cacheKey, historyScopeDescriptor.effectiveScope, historyScopeDescriptor.projectNeedles, mapHistoryListItemToSession, pathStartsWithBoundary, selectedHistoryId, setHistoryCache]);
 
   // Subscribe to PTY exit/error events：标记退出并更新计数（不修改标签名）
   useEffect(() => {
@@ -7937,9 +8304,9 @@ export default function CodexFlowManagerUI() {
 	  /**
 	   * 执行“继续对话”。注意：执行环境必须由调用方显式传入（通常来自会话所属 Provider 的记忆环境）。
 	   */
-	  const executeResume = async (filePath: string, mode: ResumeExecutionMode, execEnv: Required<ProviderEnv>, forceLegacyCli: boolean): Promise<boolean> => {
+	  const executeResume = async (filePath: string, mode: ResumeExecutionMode, execEnv: Required<ProviderEnv>, forceLegacyCli: boolean, targetProject: Project): Promise<boolean> => {
 	    try {
-	      if (!filePath || !selectedProject) return false;
+	      if (!filePath || !targetProject) return false;
 	      const { providerId, startupCmd, session, sessionId, resumeLabel, strategy, resumeHint, forceLegacyCli: finalForceLegacy } = buildResumeStartup(filePath, execEnv.terminal as any, { forceLegacyCli });
 	      try {
 	        const base = `[ui] history.resume ${mode} provider=${providerId} terminal=${execEnv.terminal} target=${resumeLabel}`;
@@ -7951,7 +8318,7 @@ export default function CodexFlowManagerUI() {
 	      if (mode === 'internal') {
 	        const tabName = isWindowsLike(execEnv.terminal as any)
 	          ? toShellLabel(execEnv.terminal as any)
-	          : (execEnv.distro || `Console ${((tabsByProject[selectedProject.id] || []).length + 1).toString()}`);
+	          : (execEnv.distro || `Console ${((tabsByProject[targetProject.id] || []).length + 1).toString()}`);
         const tab: ConsoleTab = {
           id: uid(),
           name: String(tabName),
@@ -7968,8 +8335,8 @@ export default function CodexFlowManagerUI() {
           const { id } = await window.host.pty.openWSLConsole({
             terminal: execEnv.terminal as any,
             distro: execEnv.distro,
-            wslPath: selectedProject.wslPath,
-            winPath: selectedProject.winPath,
+            wslPath: targetProject.wslPath,
+            winPath: targetProject.winPath,
             cols: 80,
             rows: 24,
             startupCmd,
@@ -7984,9 +8351,9 @@ export default function CodexFlowManagerUI() {
           alert(String(t('history:resumeFailed', { error: String((err as any)?.message || err) })));
           return false;
         }
-        registerTabProject(tab.id, selectedProject.id);
-        setTabsByProject((m) => ({ ...m, [selectedProject.id]: [...(m[selectedProject.id] || []), tab] }));
-        setActiveTab(tab.id, { focusMode: 'immediate', allowDuringRename: true, delay: 0 });
+        registerTabProject(tab.id, targetProject.id);
+        setTabsByProject((m) => ({ ...m, [targetProject.id]: [...(m[targetProject.id] || []), tab] }));
+        setActiveTab(tab.id, { projectId: targetProject.id, focusMode: 'immediate', allowDuringRename: true, delay: 0 });
         try {
           setCenterMode('console');
           requestAnimationFrame(() => {
@@ -8005,15 +8372,15 @@ export default function CodexFlowManagerUI() {
           } catch {}
           try { tm.setPty(tab.id, ptyId); } catch (err) { console.warn('tm.setPty failed', err); }
         }
-        try { window.host.projects.touch(selectedProject.id); } catch {}
+        try { window.host.projects.touch(targetProject.id); } catch {}
         // 内存也更新最近使用时间，并抑制历史面板自动切换
-        markProjectUsed(selectedProject.id);
+        markProjectUsed(targetProject.id);
         return true;
 	      }
 	      const res: any = await (window.host.utils as any).openExternalConsole({
 	        terminal: execEnv.terminal,
-	        wslPath: selectedProject.wslPath,
-	        winPath: selectedProject.winPath,
+	        wslPath: targetProject.wslPath,
+	        winPath: targetProject.winPath,
 	        distro: execEnv.distro,
 	        startupCmd,
 	        title: getProviderLabel(providerId),
@@ -8034,6 +8401,7 @@ export default function CodexFlowManagerUI() {
 	    if (!filePath) return 'error';
 	    const { session, env } = resolveResumeEnv(filePath);
 	    const sessionMode = session?.resumeMode || 'unknown';
+	    const allowSelectedProjectFallback = historyScopeDescriptor.effectiveScope === 'current_project';
 	    const enforceShell = sessionMode !== 'legacy' && !options?.forceLegacyCli;
 	    if (enforceShell) {
 	      const sessionShell = session?.runtimeShell === 'windows' ? 'windows' : (session?.runtimeShell === 'wsl' ? 'wsl' : null);
@@ -8047,13 +8415,25 @@ export default function CodexFlowManagerUI() {
 	        }
 	      }
 	    }
-    const needPrompt = !options?.forceLegacyCli && !options?.skipPrompt && isLegacyHistory(filePath);
-    if (needPrompt) {
-      setLegacyResumePrompt({ filePath, mode });
-      return 'prompt';
-	    }
+	    const needPrompt = !options?.forceLegacyCli && !options?.skipPrompt && isLegacyHistory(filePath);
+	    if (needPrompt) {
+	      setLegacyResumePrompt({ filePath, mode });
+	      return 'prompt';
+		    }
+	      const { project, projectMatch } = await resolveHistoryActionTargetAsync(filePath, session ?? null, {
+	        allowSelectedProjectFallback,
+	      });
+	      if (!project) {
+	        alert(String(t('history:resumeFailed', { error: t('history:resumeTargetProjectMissing', '无法定位该会话所属项目') })));
+	        return 'error';
+	      }
+	      if (!projectMatch && !allowSelectedProjectFallback) {
+	        alert(String(t('history:resumeFailed', { error: t('history:resumeTargetProjectMissing', '无法定位该会话所属项目') })));
+	        return 'error';
+	      }
+	      if (projectMatch) syncHistoryTargetProjectSelection(project, projectMatch);
 	    const useLegacy = !!options?.forceLegacyCli || isLegacyHistory(filePath);
-	    const ok = await executeResume(filePath, mode, env, useLegacy);
+	    const ok = await executeResume(filePath, mode, env, useLegacy, project);
 	    return ok ? 'ok' : 'error';
 	  };
 
@@ -8082,6 +8462,24 @@ export default function CodexFlowManagerUI() {
       setLegacyResumePrompt(null);
     }
   };
+  /**
+   * 中文说明：解析当前详情面板所选历史记录，便于在无当前项目时仍提供正确的项目上下文。
+   */
+  const selectedHistorySessionForDetail = useMemo(() => {
+    if (!selectedHistoryId) return null;
+    return historySessions.find((item) => item.id === selectedHistoryId) || null;
+  }, [historySessions, selectedHistoryId]);
+  /**
+   * 中文说明：为历史详情计算项目根路径；当前项目范围下允许回退到已选项目，避免旧会话因归属推断不完整而丢失上下文。
+   */
+  const selectedHistoryDetailProject = useMemo(() => {
+    if (!selectedHistorySessionForDetail) return selectedProject;
+    return resolveHistoryActionTarget(
+      selectedHistorySessionForDetail.filePath || selectedHistorySessionForDetail.id,
+      selectedHistorySessionForDetail,
+      { allowSelectedProjectFallback: historyScopeDescriptor.effectiveScope === "current_project" },
+    ).project;
+  }, [historyScopeDescriptor.effectiveScope, resolveHistoryActionTarget, selectedHistorySessionForDetail, selectedProject]);
 
   const timelineGroups = useMemo<HistoryTimelineGroup[]>(() => {
     const baseNow = historyNow;
@@ -8142,6 +8540,26 @@ export default function CodexFlowManagerUI() {
       return g.sessions.some((s) => sessionMatchesQuery(s, q));
     });
   }, [timelineGroups, historyQuery, sessionMatchesQuery]);
+  const shouldShowHistoryProjectLabel = historyScopeDescriptor.effectiveScope !== "current_project";
+  const historyScopeOptions = useMemo<HistoryScopeOption[]>(() => ([
+    {
+      value: "current_project",
+      label: t("history:scopeCurrentProject", "当前项目"),
+      Icon: FolderOpen,
+    },
+    {
+      value: "project_group",
+      label: t("history:scopeProjectGroup", "项目组"),
+      Icon: GitMerge,
+      disabled: !selectedProject,
+    },
+    {
+      value: "all_sessions",
+      label: t("history:scopeAllSessions", "全部会话"),
+      Icon: HistoryIcon,
+    },
+  ]), [selectedProject, t]);
+  const activeHistoryScopeOption = historyScopeOptions.find((item) => item.value === historyScopeControlValue) || historyScopeOptions[historyScopeOptions.length - 1];
 
   const HistorySidebar = (
     <div className="grid h-full min-h-0 min-w-0 grid-rows-[auto_auto_auto_1fr] overflow-hidden border-l bg-white/70 backdrop-blur-sm dark:border-slate-800 dark:bg-slate-900/60">
@@ -8153,21 +8571,68 @@ export default function CodexFlowManagerUI() {
         </div>
       </div>
 
-      {/* Enhanced search with original design */}
+      {/* 历史搜索工具栏：搜索框与范围切换共用同一条工具栏 */}
       <div className="min-w-0 px-3 py-2">
-        <Input
-          value={historyQuery}
-          onChange={(e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setHistoryQuery((e.target as any).value)}
-          placeholder={t('history:searchPlaceholder') as string}
-          title={t('history:searchPlaceholderHint') as string}
-          className="h-9 min-w-0"
-          data-cf-hover-shortcuts-ignore="true"
-          onKeyDown={(e: React.KeyboardEvent<any>) => {
-            if (e.key === 'Enter') {
-              void handleHistorySearchEnter();
-            }
-          }}
-        />
+        <div className="relative flex min-w-0 items-center">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--cf-text-muted)]" />
+          <Input
+            value={historyQuery}
+            onChange={(e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setHistoryQuery((e.target as any).value)}
+            placeholder={t('history:searchPlaceholder') as string}
+            title={t('history:searchPlaceholderHint') as string}
+            className="h-9 min-w-0 rounded-apple border-[var(--cf-border)] bg-[var(--cf-surface-solid)] pl-9 pr-9 text-[13px] transition-all hover:border-[var(--cf-border-strong)] focus:border-[var(--cf-accent)]/40 focus:ring-4 focus:ring-[var(--cf-accent)]/10 dark:bg-slate-800/40"
+            data-cf-hover-shortcuts-ignore="true"
+            onKeyDown={(e: React.KeyboardEvent<any>) => {
+              if (e.key === 'Enter') {
+                void handleHistorySearchEnter();
+              }
+            }}
+          />
+          <div className="absolute right-1 top-1/2 -translate-y-1/2">
+            <DropdownMenu>
+              <DropdownMenuTrigger>
+                <button
+                  type="button"
+                  className="flex h-7 w-7 items-center justify-center rounded-apple-sm text-[var(--cf-text-muted)] transition-all hover:bg-[var(--cf-surface-hover)] hover:text-[var(--cf-text-primary)] focus-visible:outline-none active:scale-95"
+                  title={`${t("history:scopeHint", "选择历史搜索范围") as string}：${activeHistoryScopeOption.label}`}
+                  aria-label={t("history:scopeHint", "选择历史搜索范围") as string}
+                >
+                  <SlidersHorizontal className="h-4 w-4" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="!w-40 p-1 shadow-apple-lg border-[var(--cf-border)] backdrop-blur-apple">
+                {historyScopeOptions.map((option) => (
+                  <DropdownMenuItem
+                    key={option.value}
+                    className={cn(
+                      "flex items-center gap-2 rounded-apple-sm px-2 py-1.5 text-[12px] leading-tight transition-colors",
+                      option.disabled && "pointer-events-none opacity-50",
+                      historyScopeControlValue === option.value ? "bg-[var(--cf-accent-light)]" : "hover:bg-[var(--cf-surface-hover)]",
+                    )}
+                    onClick={() => {
+                      if (option.disabled) return;
+                      setHistorySearchScope(option.value);
+                    }}
+                  >
+                    <div className="flex h-4 w-4 shrink-0 items-center justify-center">
+                      {historyScopeControlValue === option.value ? (
+                        <Check className="h-3.5 w-3.5 text-[var(--cf-accent)]" />
+                      ) : null}
+                    </div>
+                    <div
+                      className={cn(
+                        "flex-1 truncate",
+                        historyScopeControlValue === option.value ? "font-apple-medium text-[var(--cf-text-primary)]" : "text-[var(--cf-text-secondary)]",
+                      )}
+                    >
+                      {option.label}
+                    </div>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
       </div>
       <ScrollArea className="history-scroll-area h-full min-h-0 min-w-0 px-2 pb-2">
         <div className="min-w-0 space-y-1 pt-2">
@@ -8229,13 +8694,15 @@ export default function CodexFlowManagerUI() {
                 {expanded && displayList.length > 0 && (
                   <div className="mt-0.5 min-w-0 space-y-0.5 pb-1 pl-2 pr-2">
                     {displayList.map((s) => {
+                      const sessionKey = String(s.filePath || s.id);
+                      const projectMatch = historySessionProjectMetaMap.get(sessionKey) || null;
                       const anchor = historySessionDate(s);
                       const absoluteLabel = anchor ? formatAsLocal(anchor) : timeFromFilename(s.filePath);
                       const active = selectedHistoryId === s.id;
                       const previewSource = s.preview || s.title || s.filePath || '';
                       const providerIconSrc = getProviderIconSrc(s.providerId, providerItemById, themeMode);
                       const relativeLabel = describeRelativeAge(anchor, historyNow) || '--';
-                      const tooltip = [absoluteLabel, previewSource].filter(Boolean).join('  ');
+                      const tooltip = [absoluteLabel, projectMatch?.projectName, previewSource].filter(Boolean).join('  ');
                       const itemClass = `block w-full min-w-0 overflow-hidden rounded px-2 py-0.5 text-left text-xs border outline-none focus:outline-none ${
                         active
                           ? 'bg-slate-200 border-slate-300 dark:bg-slate-700 dark:border-slate-600 dark:text-slate-100'
@@ -8247,7 +8714,7 @@ export default function CodexFlowManagerUI() {
                           key={s.filePath || s.id}
                           data-cf-history-row-id={s.id}
                           data-cf-history-group-key={g.key}
-                          onClick={() => { setSelectedHistoryDir(g.key); setSelectedHistoryId(s.id); setCenterMode('history'); }}
+                          onClick={() => { void openHistorySession(s, g.key); }}
                           onContextMenu={(e) => { e.preventDefault(); setHistoryCtxMenu({ show: true, x: e.clientX, y: e.clientY, item: s, groupKey: g.key }); }}
                           onMouseEnter={() => { hoveredHistoryShortcutRef.current = { item: s, groupKey: g.key }; }}
                           onMouseLeave={() => {
@@ -8260,12 +8727,22 @@ export default function CodexFlowManagerUI() {
                           <div className="flex min-w-0 items-center justify-between gap-2 overflow-hidden">
                             <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
                               {providerIconSrc ? <img src={providerIconSrc} className="h-3.5 w-3.5 shrink-0 opacity-90" alt={s.providerId} /> : null}
-                              <span
-                                className={`block min-w-0 flex-1 truncate text-sm leading-5 ${active ? 'text-slate-900 dark:text-slate-50 font-medium' : 'text-slate-800 dark:text-slate-200'}`}
-                                title={previewSource || absoluteLabel || '--'}
-                              >
-                                {previewSource || absoluteLabel || '--'}
-                              </span>
+                              <div className="min-w-0 flex-1">
+                                <span
+                                  className={`block min-w-0 truncate text-sm leading-5 ${active ? 'text-slate-900 dark:text-slate-50 font-medium' : 'text-slate-800 dark:text-slate-200'}`}
+                                  title={previewSource || absoluteLabel || '--'}
+                                >
+                                  {previewSource || absoluteLabel || '--'}
+                                </span>
+                                {shouldShowHistoryProjectLabel && projectMatch?.projectName ? (
+                                  <span
+                                    className={`block min-w-0 truncate text-[10px] leading-4 ${active ? 'text-slate-600 dark:text-slate-400' : 'text-slate-500 dark:text-slate-400'}`}
+                                    title={projectMatch.projectName}
+                                  >
+                                    {projectMatch.projectName}
+                                  </span>
+                                ) : null}
+                              </div>
                             </div>
                             <span
                               className={`max-w-[4.75rem] shrink-0 truncate text-right text-[11px] ${active ? 'text-slate-600 dark:text-slate-400' : 'text-slate-500 dark:text-slate-400'}`}
@@ -8304,6 +8781,7 @@ export default function CodexFlowManagerUI() {
                   <FileClock className="h-6 w-6 text-[var(--cf-text-muted)]" />
                 </div>
               </div>
+              {/* 按设计要求：当前筛选范围无历史时，统一展示固定提示文案。 */}
               <div className="text-sm text-[var(--cf-text-muted)] font-apple-medium">{t('history:empty')}</div>
             </div>
           )}
@@ -8410,7 +8888,7 @@ export default function CodexFlowManagerUI() {
                 if (!(res && res.ok)) { alert(String(t('history:cannotDelete', { error: res && res.error ? res.error : 'unknown' }))); setConfirmDelete((m) => ({ ...m, open: false })); return; }
                 setHistorySessions((cur) => {
                   const list = cur.filter((x) => (x.filePath || x.id) !== (it.filePath || it.id));
-                  const projectKey = canonicalizePath((selectedProject?.wslPath || selectedProject?.winPath || selectedProject?.id || '') as string);
+                  const projectKey = historyScopeDescriptor.cacheKey;
                   if (projectKey) {
                     setHistoryCache(projectKey, {
                       sessions: list,
@@ -8467,12 +8945,12 @@ export default function CodexFlowManagerUI() {
         {Sidebar}
         <div className="grid h-full min-w-0 grid-rows-[auto_1fr] bg-white/60 min-h-0 overflow-hidden dark:bg-slate-900/40 dark:text-slate-100">
           {TopBar}
-          {selectedProject ? (
+          {selectedProject || centerMode === 'history' ? (
             <div className="min-h-0 h-full">
               {centerMode === 'console' ? (
                 ConsoleArea
               ) : (
-                <HistoryDetail sessions={historySessions} selectedHistoryId={selectedHistoryId} projectWinPath={selectedProject?.winPath} onBack={() => {
+                <HistoryDetail sessions={historySessions} selectedHistoryId={selectedHistoryId} projectWinPath={selectedHistoryDetailProject?.winPath} onBack={() => {
                   dumpOverlayDiagnostics('onBack.enter');
                   // 返回控制台：先关闭任意可能遗留的全屏遮罩，避免拦截点击/键盘事件
                   try { setHistoryCtxMenu((m) => ({ ...m, show: false })); } catch {}
@@ -8494,7 +8972,7 @@ export default function CodexFlowManagerUI() {
                   } catch {}
 	                }} onResume={(fp) => requestResume(fp, 'internal')} getResumeShellLabel={resolveResumeShellLabel} onResumeExternal={async (filePath?: string) => {
 	                  try {
-	                    if (!filePath || !selectedProject) return;
+	                    if (!filePath) return;
 	                    const status = await requestResume(filePath, 'external');
 	                    if (status === 'error') {
 	                      const env = resolveResumeShellLabel(filePath);
@@ -8540,7 +9018,7 @@ export default function CodexFlowManagerUI() {
                   onClick={async () => {
                     try {
                       const it = historyCtxMenu.item;
-                      if (!it || !it.filePath || !selectedProject) { setHistoryCtxMenu((m) => ({ ...m, show: false })); return; }
+                      if (!it || !it.filePath) { setHistoryCtxMenu((m) => ({ ...m, show: false })); return; }
                       await requestResume(it.filePath, 'internal');
                     } catch (err) {
                       console.warn('resume session failed', err);
@@ -8555,7 +9033,7 @@ export default function CodexFlowManagerUI() {
                   onClick={async () => {
                     try {
 	                      const it = historyCtxMenu.item;
-	                      if (!it || !it.filePath || !selectedProject) { setHistoryCtxMenu((m) => ({ ...m, show: false })); return; }
+	                      if (!it || !it.filePath) { setHistoryCtxMenu((m) => ({ ...m, show: false })); return; }
 	                      const status = await requestResume(it.filePath, 'external');
 	                      if (status === 'error') {
 	                        const env = resolveResumeShellLabel(it.filePath, it);

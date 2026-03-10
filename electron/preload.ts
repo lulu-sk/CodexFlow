@@ -365,7 +365,16 @@ contextBridge.exposeInMainWorld('host', {
     },
   },
   history: {
-    list: async (args: { projectWslPath?: string; projectWinPath?: string; limit?: number; offset?: number; historyRoot?: string }) => {
+    list: async (args: {
+      scope?: "current_project" | "project_group" | "all_sessions";
+      projectWslPath?: string;
+      projectWinPath?: string;
+      groupProjectWslPaths?: string[];
+      groupProjectWinPaths?: string[];
+      limit?: number;
+      offset?: number;
+      historyRoot?: string;
+    }) => {
       return await ipcRenderer.invoke('history.list', args);
     },
     read: async (args: { filePath: string; providerId?: "codex" | "claude" | "gemini" }) => {
