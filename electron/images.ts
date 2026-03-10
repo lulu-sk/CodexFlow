@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { nativeImage, clipboard, app } from "electron";
 import wsl from "./wsl";
+import { resolveGeminiImageDirWinPath, type GeminiRuntimeEnv } from "./gemini/projectTemp";
 
 // 图片工具：负责保存渲染层传入的数据（DataURL/Buffer）到稳定目录，并返回 Windows 与 WSL 双路径
 
@@ -19,6 +20,14 @@ type SaveOpts = {
   ext?: string;
   // 文件名前缀，默认 image
   prefix?: string;
+  // 目标项目的 WSL 根路径（Gemini+WSL 时用于解析 Gemini shortId）
+  projectWslRoot?: string;
+  // Provider 标识，仅在 Gemini 时启用专用目录策略
+  providerId?: string;
+  // 当前 Provider 的运行环境
+  runtimeEnv?: GeminiRuntimeEnv;
+  // WSL 发行版名称（仅 runtimeEnv=wsl 且 provider=gemini 时需要）
+  distro?: string;
 };
 
 function ensureDirSync(dir: string) {
@@ -32,6 +41,25 @@ function safeProjectKey(name?: string): string {
   return raw.replace(/[\\/:*?"<>|]/g, "_").replace(/\s+/g, "-");
 }
 
+/**
+ * 中文说明：判断当前保存请求是否需要走 Gemini 专用图片临时目录。
+ */
+function shouldUseGeminiImageDir(opts: SaveOpts): boolean {
+  return String(opts.providerId || "").trim().toLowerCase() === "gemini";
+}
+
+/**
+ * 中文说明：读取当前设置中的默认 WSL 发行版名称。
+ */
+function resolveDefaultDistro(): string {
+  try {
+    const settingsMod = require("./settings") as any;
+    return String(settingsMod?.default?.getSettings?.().distro || "Ubuntu-24.04").trim() || "Ubuntu-24.04";
+  } catch {
+    return "Ubuntu-24.04";
+  }
+}
+
 function getAssetsRoot(projectWinRoot?: string, projectName?: string): { winRoot: string; subDir: string } {
   // 新默认：存放在应用固定目录下（按项目名分组），而非项目目录；取消日期分层
   // 使用 Electron userData 路径，确保随应用隔离且可清理
@@ -41,6 +69,26 @@ function getAssetsRoot(projectWinRoot?: string, projectName?: string): { winRoot
   const projKey = safeProjectKey(projectName || (projectWinRoot ? path.basename(projectWinRoot) : ""));
   const base = path.join(userData, "assets", projKey);
   return { winRoot: base, subDir: base };
+}
+
+/**
+ * 中文说明：解析当前图片保存根目录；仅 Gemini 使用 `~/.gemini/tmp/<projectId>/images`。
+ */
+async function resolveImageSaveRoot(opts: SaveOpts): Promise<{ winRoot: string; subDir: string }> {
+  if (shouldUseGeminiImageDir(opts)) {
+    const runtimeEnv = opts.runtimeEnv || "windows";
+    const distro = String(opts.distro || "").trim() || resolveDefaultDistro();
+    const geminiDir = await resolveGeminiImageDirWinPath({
+      projectWinRoot: opts.projectWinRoot,
+      projectWslRoot: opts.projectWslRoot,
+      runtimeEnv,
+      distro,
+    });
+    if (geminiDir) {
+      return { winRoot: geminiDir, subDir: geminiDir };
+    }
+  }
+  return getAssetsRoot(opts.projectWinRoot, opts.projectName);
 }
 
 function sanitizeExt(ext?: string): string {
@@ -82,14 +130,14 @@ async function writeFileAtomic(p: string, buf: Buffer): Promise<void> {
 
 export async function saveFromBuffer(buf: Buffer, opts: SaveOpts = {}): Promise<{ ok: true; winPath: string; wslPath: string; fileName: string } | { ok: false; error: string }> {
   try {
-    const { projectWinRoot, projectName, ext, prefix } = opts;
-    const { subDir } = getAssetsRoot(projectWinRoot, projectName);
+    const { ext, prefix } = opts;
+    const { subDir } = await resolveImageSaveRoot(opts);
     ensureDirSync(subDir);
     const fileName = genFileName(prefix, ext);
     const winPath = path.join(subDir, fileName);
     await writeFileAtomic(winPath, buf);
     // 返回 WSL 路径（用于插入文本）
-    const wslPath = wsl.winToWsl(winPath, (require("./settings") as any).default?.getSettings?.().distro || "Ubuntu-24.04");
+    const wslPath = wsl.winToWsl(winPath, String(opts.distro || "").trim() || resolveDefaultDistro());
     return { ok: true, winPath, wslPath, fileName };
   } catch (e: any) {
     return { ok: false, error: String(e) };
@@ -105,7 +153,16 @@ export async function saveFromDataURL(dataURL: string, opts: SaveOpts & { mimeHi
     const b64 = m[2];
     const buf = Buffer.from(b64, "base64");
     const ext = sanitizeExt(opts.ext || pickExtFromMime(mime));
-    return await saveFromBuffer(buf, { projectWinRoot: opts.projectWinRoot, projectName: opts.projectName, ext, prefix: opts.prefix });
+    return await saveFromBuffer(buf, {
+      projectWinRoot: opts.projectWinRoot,
+      projectName: opts.projectName,
+      projectWslRoot: opts.projectWslRoot,
+      providerId: opts.providerId,
+      runtimeEnv: opts.runtimeEnv,
+      distro: opts.distro,
+      ext,
+      prefix: opts.prefix,
+    });
   } catch (e: any) {
     return { ok: false, error: String(e) } as any;
   }

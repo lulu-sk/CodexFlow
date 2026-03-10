@@ -31,6 +31,16 @@ export type SavedImage = PastedImage & {
   fromPaste?: boolean;
 };
 
+export type PersistImagesOptions = {
+  projectWinRoot?: string;
+  projectWslRoot?: string;
+  projectName?: string;
+  prefix?: string;
+  providerId?: string;
+  runtimeEnv?: "wsl" | "windows" | "pwsh";
+  distro?: string;
+};
+
 const uid = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
 const IMAGE_EXTS = new Set([
@@ -222,7 +232,10 @@ export async function blobToDataURL(blob: Blob): Promise<string> {
   });
 }
 
-export async function persistImages(images: PastedImage[], projectWinRoot?: string, projectName?: string, prefix?: string): Promise<SavedImage[]> {
+/**
+ * 中文说明：将图片列表持久化到磁盘；仅当 provider 为 Gemini 时才透传其专用保存上下文。
+ */
+export async function persistImages(images: PastedImage[], options: PersistImagesOptions = {}): Promise<SavedImage[]> {
   const list = dedupePastedImagesByFingerprint(images);
   const slots: Array<SavedImage | null> = [];
   const pending: PastedImage[] = [];
@@ -241,7 +254,16 @@ export async function persistImages(images: PastedImage[], projectWinRoot?: stri
   for (const it of pending) {
     try {
       const dataURL = await blobToDataURL(it.blob);
-      const res: any = await (window as any).host?.images?.saveDataURL?.({ dataURL, projectWinRoot, projectName, prefix });
+      const res: any = await (window as any).host?.images?.saveDataURL?.({
+        dataURL,
+        projectWinRoot: options.projectWinRoot,
+        projectWslRoot: options.projectWslRoot,
+        projectName: options.projectName,
+        prefix: options.prefix,
+        providerId: options.providerId,
+        runtimeEnv: options.runtimeEnv,
+        distro: options.distro,
+      });
       if (res && res.ok) {
         newlySaved.push({ ...it, saved: true, winPath: res.winPath, wslPath: res.wslPath, fileName: res.fileName, fromPaste: true });
       } else {

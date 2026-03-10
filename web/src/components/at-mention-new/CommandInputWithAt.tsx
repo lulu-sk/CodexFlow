@@ -289,7 +289,10 @@ export function AtInput({ value, onValueChange, winRoot, projectName, projectPat
       }
       // 有图片：阻止默认，开始保存
       e.preventDefault();
-      const saved = await persistImages(imgs, (rest as any)?.winRoot || winRoot, (rest as any)?.projectName || projectName);
+      const saved = await persistImages(imgs, {
+        projectWinRoot: (rest as any)?.winRoot || winRoot,
+        projectName: (rest as any)?.projectName || projectName,
+      });
       // 预览排序：新粘贴靠右（追加到末尾，保留最近 6 张）
       setPastedImages((arr) => [...arr, ...saved]);
       // 将每张图片以“WSL 绝对路径”形式插入文本框（逐张换行）

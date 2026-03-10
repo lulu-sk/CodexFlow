@@ -718,9 +718,9 @@ export interface FileIndexAPI {
 }
 
 export interface ImagesAPI {
-  saveDataURL(args: { dataURL: string; projectWinRoot?: string; projectName?: string; ext?: string; prefix?: string }): Promise<{ ok: boolean; winPath?: string; wslPath?: string; fileName?: string; error?: string }>;
+  saveDataURL(args: { dataURL: string; projectWinRoot?: string; projectWslRoot?: string; projectName?: string; ext?: string; prefix?: string; providerId?: string; runtimeEnv?: "wsl" | "windows" | "pwsh"; distro?: string }): Promise<{ ok: boolean; winPath?: string; wslPath?: string; fileName?: string; error?: string }>;
   clipboardHasImage(): Promise<{ ok: boolean; has?: boolean; error?: string }>;
-  saveFromClipboard(args: { projectWinRoot?: string; projectName?: string; prefix?: string }): Promise<{ ok: boolean; winPath?: string; wslPath?: string; fileName?: string; error?: string }>;
+  saveFromClipboard(args: { projectWinRoot?: string; projectWslRoot?: string; projectName?: string; prefix?: string; providerId?: string; runtimeEnv?: "wsl" | "windows" | "pwsh"; distro?: string }): Promise<{ ok: boolean; winPath?: string; wslPath?: string; fileName?: string; error?: string }>;
   trash(args: { winPath: string }): Promise<{ ok: boolean; error?: string }>;
 }
 

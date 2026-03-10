@@ -74,6 +74,7 @@ import { VirtualizedList, type VirtualizedListHandle } from "@/features/history/
 import { applyHistoryFindHighlights, clearHistoryFindHighlights, setActiveHistoryFindMatch } from "@/features/history/find/history-find";
 import { toWSLForInsert } from "@/lib/wsl";
 import { extractGeminiProjectHashFromPath, deriveGeminiProjectHashCandidatesFromPath } from "@/lib/gemini-hash";
+import { buildGeminiImageAttachmentToken, isGeminiImageChip } from "@/lib/gemini-attachments";
 import {
   listManagedWorktreeChildIds as listManagedWorktreeChildIdsFromStore,
   resolveWorktreeManagementParentProjectId as resolveWorktreeManagementParentProjectIdFromStore,
@@ -4268,6 +4269,8 @@ export default function CodexFlowManagerUI() {
   }, [selectedProjectId]);
 
   function compileTextFromChipsAndDraft(tabId: string): string {
+    const targetTab = tabs.find((tab) => tab.id === tabId) || null;
+    const isGeminiTab = targetTab?.providerId === "gemini";
     const chips = chipsByTab[tabId] || [];
     const draft = draftByTab[tabId] || "";
     const parts: string[] = [];
@@ -4275,6 +4278,13 @@ export default function CodexFlowManagerUI() {
       parts.push(
         chips
           .map((c) => {
+            if (isGeminiTab && isGeminiImageChip(c)) {
+              const geminiPath = isWindowsLike(terminalMode)
+                ? String(c.winPath || "").trim()
+                : String(c.wslPath || "").trim();
+              const token = buildGeminiImageAttachmentToken(geminiPath, terminalMode);
+              if (token) return token;
+            }
             if (isWindowsLike(terminalMode)) {
               // 优先 Windows 路径；若不存在，则从 WSL 路径推导
               let wp = String(c.winPath || '').trim();
@@ -7624,6 +7634,8 @@ export default function CodexFlowManagerUI() {
                               projectWslRoot={selectedProject?.wslPath}
                               projectName={selectedProject?.name}
                               projectPathStyle={projectPathStyle}
+                              providerId={tab.providerId}
+                              distro={terminalMode === "wsl" ? wslDistro : undefined}
                               warnOutsideProjectDrop={dragDropWarnOutsideProject}
                               onWarnOutsideProjectDropChange={updateWarnOutsideProjectDrop}
                               runEnv={terminalMode}
@@ -7672,6 +7684,8 @@ export default function CodexFlowManagerUI() {
                             projectWslRoot={selectedProject?.wslPath}
                             projectName={selectedProject?.name}
                             projectPathStyle={projectPathStyle}
+                            providerId={tab.providerId}
+                            distro={terminalMode === "wsl" ? wslDistro : undefined}
                             warnOutsideProjectDrop={dragDropWarnOutsideProject}
                             onWarnOutsideProjectDropChange={updateWarnOutsideProjectDrop}
                             runEnv={terminalMode}
