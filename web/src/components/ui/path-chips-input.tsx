@@ -53,6 +53,10 @@ export interface PathChipsInputProps extends Omit<React.InputHTMLAttributes<HTML
   multiline?: boolean;
   /** 运行环境：决定鼠标悬停时 title 显示路径风格（默认 windows） */
   runEnv?: 'wsl' | 'windows' | 'pwsh';
+  /** 当前输入框所属 Provider；仅 Gemini 会启用专用图片保存策略 */
+  providerId?: string;
+  /** 当前 WSL 发行版名称；仅 Gemini + WSL 时需要 */
+  distro?: string;
   /** 自定义草稿输入区域（textarea/input）的附加类名 */
   draftInputClassName?: string;
   /** 是否为滚动条预留左右对称边距，仅在全屏输入时开启以保持视觉等宽 */
@@ -97,6 +101,16 @@ function isLikelyRelativePath(s: string): boolean {
   if (!name || !ext) return false;
   if (!/^[A-Za-z0-9_-]{1,16}$/.test(ext)) return false;
   return /^[A-Za-z0-9._-]+$/.test(name);
+}
+
+/**
+ * 中文说明：按路径候选推断 Chip 类型，统一保证图片文件在 Gemini 场景下能走图片附件语义。
+ */
+function resolvePathChipKind(args: { fileName?: string; isImage?: boolean; chipKind?: PathChip["chipKind"] }): PathChip["chipKind"] {
+  if (args.chipKind === "rule") return "rule";
+  if (args.isImage) return "image";
+  if (isImageFileName(args.fileName)) return "image";
+  return "file";
 }
 
 // 从草稿中“@查询”替换为指定文本（不保留 @）
@@ -372,6 +386,8 @@ export default function PathChipsInput({
   projectPathStyle = 'absolute',
   multiline,
   runEnv = 'windows',
+  providerId,
+  distro,
   onKeyDown: externalOnKeyDown,
   draftInputClassName,
   balancedScrollbarGutter = false,
@@ -849,6 +865,7 @@ export default function PathChipsInput({
 
       const items: SavedImage[] = candidates.map((it) => {
         const previewUrl = it.isImage ? (previewByWinPathKey.get(normalizeWindowsPathForDedupe(it.wp)) || "") : "";
+        const chipKind = resolvePathChipKind({ fileName: it.labelBase, isImage: it.isImage });
         return {
           id: uid(),
           blob: new Blob(),
@@ -861,7 +878,7 @@ export default function PathChipsInput({
           fileName: it.labelBase || (it.isImage ? t('common:files.image') : t('common:files.path')),
           fromPaste: false,
           isDir: it.isDir,
-          chipKind: it.isImage ? "image" : "file",
+          chipKind,
         } as any;
       });
       const nextChips = buildMergedChips(items);
@@ -1018,6 +1035,8 @@ export default function PathChipsInput({
       const wsl = (projectPathStyle === 'absolute' && isRel && winRoot)
         ? toWSLForInsert(joinWinAbs(String(winRoot), p))
         : toWSLForInsert(p);
+      const fileName = (wsl || p).split(/[/\\]/).pop() || t('common:files.path');
+      const chipKind = resolvePathChipKind({ fileName });
       return {
         id: uid(),
         blob: new Blob(),
@@ -1027,8 +1046,9 @@ export default function PathChipsInput({
         saved: true,
         winPath: /^(?:[a-zA-Z]:\\|\\\\)/.test(p) ? p : undefined,
         wslPath: wsl,
-        fileName: (wsl || p).split(/[/\\]/).pop() || t('common:files.path'),
+        fileName,
         fromPaste: false,
+        chipKind,
       } as any;
     });
     const nextChips = buildMergedChips(items);
@@ -1119,7 +1139,14 @@ export default function PathChipsInput({
       const current = readCurrentValueState();
       const unique = dedupePastedImagesByFingerprint<PastedImage>(imgs, current.chips as any);
       if (!unique || unique.length === 0) return;
-      const saved = await persistImages(unique, winRoot, projectName);
+      const saved = await persistImages(unique, {
+        projectWinRoot: winRoot,
+        projectWslRoot,
+        projectName,
+        providerId,
+        runtimeEnv: runEnv,
+        distro,
+      });
       const latest = readCurrentValueState();
       const nextChips = buildMergedChips(saved);
       applyValueChange({
@@ -1154,7 +1181,7 @@ export default function PathChipsInput({
           fileName: wsl.split("/").pop() || t('common:files.path'),
           // 保留 item 提供的 isDir；否则根据路径尾部是否含 / 判断
           isDir: !!(item as any).isDir || /\/$/.test(wsl),
-          chipKind: "file",
+          chipKind: resolvePathChipKind({ fileName: wsl.split("/").pop() || "", chipKind: "file" }),
         } as any;
         // 将 @ 段落替换为空
         const nextChips = buildMergedChips([it]);

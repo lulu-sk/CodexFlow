@@ -588,13 +588,13 @@ contextBridge.exposeInMainWorld('host', {
     }
   }
   , images: {
-    saveDataURL: async (args: { dataURL: string; projectWinRoot?: string; projectName?: string; ext?: string; prefix?: string }) => {
+    saveDataURL: async (args: { dataURL: string; projectWinRoot?: string; projectWslRoot?: string; projectName?: string; ext?: string; prefix?: string; providerId?: string; runtimeEnv?: 'wsl' | 'windows' | 'pwsh'; distro?: string }) => {
       return await ipcRenderer.invoke('images.saveDataURL', args);
     },
     clipboardHasImage: async () => {
       return await ipcRenderer.invoke('images.clipboardHasImage');
     },
-    saveFromClipboard: async (args: { projectWinRoot?: string; projectName?: string; prefix?: string }) => {
+    saveFromClipboard: async (args: { projectWinRoot?: string; projectWslRoot?: string; projectName?: string; prefix?: string; providerId?: string; runtimeEnv?: 'wsl' | 'windows' | 'pwsh'; distro?: string }) => {
       return await ipcRenderer.invoke('images.saveFromClipboard', args);
     },
     trash: async (args: { winPath: string }) => {

@@ -3529,9 +3529,38 @@ ipcMain.handle('utils.showInFolder', async (_e, { path: p }: { path: string }) =
 });
 
 // Images API：粘贴图片保存 & 剪贴板读取
-ipcMain.handle('images.saveDataURL', async (_e, { dataURL, projectWinRoot, projectName, ext, prefix }: { dataURL: string; projectWinRoot?: string; projectName?: string; ext?: string; prefix?: string }) => {
+ipcMain.handle('images.saveDataURL', async (_e, {
+  dataURL,
+  projectWinRoot,
+  projectWslRoot,
+  projectName,
+  ext,
+  prefix,
+  providerId,
+  runtimeEnv,
+  distro,
+}: {
+  dataURL: string;
+  projectWinRoot?: string;
+  projectWslRoot?: string;
+  projectName?: string;
+  ext?: string;
+  prefix?: string;
+  providerId?: string;
+  runtimeEnv?: "wsl" | "windows" | "pwsh";
+  distro?: string;
+}) => {
   try {
-    const res: any = await images.saveFromDataURL(dataURL, { projectWinRoot, projectName, ext, prefix });
+    const res: any = await images.saveFromDataURL(dataURL, {
+      projectWinRoot,
+      projectWslRoot,
+      projectName,
+      ext,
+      prefix,
+      providerId,
+      runtimeEnv,
+      distro,
+    });
     try { if (res && res.ok && typeof res.winPath === 'string') sessionPastedImages.add(res.winPath); } catch {}
     return res;
   } catch (e: any) {
@@ -3543,9 +3572,34 @@ ipcMain.handle('images.clipboardHasImage', async () => {
   try { return { ok: true, has: images.clipboardHasImage() }; } catch (e: any) { return { ok: false, error: String(e) }; }
 });
 
-ipcMain.handle('images.saveFromClipboard', async (_e, { projectWinRoot, projectName, prefix }: { projectWinRoot?: string; projectName?: string; prefix?: string }) => {
+ipcMain.handle('images.saveFromClipboard', async (_e, {
+  projectWinRoot,
+  projectWslRoot,
+  projectName,
+  prefix,
+  providerId,
+  runtimeEnv,
+  distro,
+}: {
+  projectWinRoot?: string;
+  projectWslRoot?: string;
+  projectName?: string;
+  prefix?: string;
+  providerId?: string;
+  runtimeEnv?: "wsl" | "windows" | "pwsh";
+  distro?: string;
+}) => {
   try {
-    const res: any = await images.readClipboardAsPNGAndSave({ projectWinRoot, projectName, ext: 'png', prefix });
+    const res: any = await images.readClipboardAsPNGAndSave({
+      projectWinRoot,
+      projectWslRoot,
+      projectName,
+      ext: 'png',
+      prefix,
+      providerId,
+      runtimeEnv,
+      distro,
+    });
     try { if (res && res.ok && typeof res.winPath === 'string') sessionPastedImages.add(res.winPath); } catch {}
     return res;
   } catch (e: any) {
