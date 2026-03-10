@@ -284,7 +284,41 @@ function resolveGeminiHomeWindows(): string {
 }
 
 /**
+ * 中文说明：将 Windows 主进程中读取到的 `GEMINI_CLI_HOME` 转换为 WSL 运行时可直接访问的路径。
+ * - Windows/UNC 路径直接复用
+ * - WSL 绝对路径转成 `\\\\wsl.localhost\\<distro>\\...`
+ * - `~/...` 与相对路径按 `$HOME/<subPath>` 解析为 UNC
+ */
+async function resolveConfiguredGeminiHomeForWindowsWsl(
+  configuredHome: string,
+  distro: string,
+): Promise<string | null> {
+  const value = tidyPathCandidate(configuredHome);
+  if (!value) return null;
+  if (isWindowsStylePath(value)) return value;
+
+  const normalized = value.replace(/\\/g, "/");
+  if (normalized.startsWith("/")) {
+    const tail = normalized.replace(/^\/+/, "").split("/").filter(Boolean).join("\\");
+    return tail
+      ? `\\\\wsl.localhost\\${distro}\\${tail}`
+      : `\\\\wsl.localhost\\${distro}`;
+  }
+
+  const homeRelative = normalized === "~"
+    ? "."
+    : normalized.startsWith("~/")
+      ? normalized.slice(2)
+      : normalized.replace(/^\.\//, "");
+  const unc = await getDistroHomeSubPathUNCAsync(distro, homeRelative || ".");
+  const cleaned = tidyPathCandidate(unc || "");
+  return cleaned || null;
+}
+
+/**
  * 中文说明：解析当前运行环境下、主进程可访问的 Gemini 根目录。
+ * - 非 WSL 场景优先直接使用 `GEMINI_CLI_HOME`
+ * - Windows 主进程 + WSL 运行时仅在路径可访问时复用 `GEMINI_CLI_HOME`；POSIX 路径会转成 UNC
  * - WSL on Windows 返回 UNC 路径
  * - WSL 单元测试/非 Windows 环境优先使用 `GEMINI_CLI_HOME`，否则返回 POSIX `~/.gemini`
  * - Windows/Pwsh 返回本机 `%USERPROFILE%\\.gemini`
@@ -292,12 +326,17 @@ function resolveGeminiHomeWindows(): string {
 async function resolveGeminiHomePath(
   options: ResolveGeminiProjectTempOptions,
 ): Promise<string | null> {
+  const configuredHome = String(process.env.GEMINI_CLI_HOME || "").trim();
   const runtimeEnv = options.runtimeEnv || "windows";
   if (runtimeEnv !== "wsl") return resolveGeminiHomeWindows();
   if (os.platform() !== "win32")
-    return String(process.env.GEMINI_CLI_HOME || "").trim() || path.posix.join(os.homedir(), ".gemini");
+    return configuredHome || path.posix.join(os.homedir(), ".gemini");
   const distro = String(options.distro || "").trim();
   if (!distro) return null;
+  if (configuredHome) {
+    const converted = await resolveConfiguredGeminiHomeForWindowsWsl(configuredHome, distro);
+    if (converted) return converted;
+  }
   const uncBase = await getDistroHomeSubPathUNCAsync(distro, ".gemini");
   return uncBase || null;
 }

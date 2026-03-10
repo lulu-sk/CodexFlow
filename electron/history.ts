@@ -13,6 +13,7 @@ import { isUNCPath, uncToWsl, getSessionsRootsFastAsync } from './wsl';
 import { perfLogger } from './log';
 import settings from './settings';
 import { extractTaggedPrefix } from './agentSessions/shared/taggedPrefix';
+import { deriveGeminiProjectHashCandidatesFromPath, extractGeminiProjectHashFromPath } from './agentSessions/gemini/parser';
 
 /**
  * History 读取模块: 支持逐行解析 JSONL, list/read 接口
@@ -30,6 +31,7 @@ export type HistorySummary = {
   filePath: string;
   rawDate?: string;
   preview?: string;
+  dirKey?: string;
   projectHash?: string;
   resumeMode?: 'modern' | 'legacy' | 'unknown';
   resumeId?: string;
@@ -78,6 +80,34 @@ function toWslLikePathKey(input?: string): string {
     return out.toLowerCase();
   } catch {
     return String(input || "").trim().toLowerCase();
+  }
+}
+
+/**
+ * 中文说明：将历史中的路径候选统一规范化为可做项目归属匹配的 key。
+ */
+function canonicalizeHistoryPathForMatch(input?: string): string {
+  try {
+    let s = String(input || '').replace(/\\n/g, '').replace(/\\\\+/g, '\\').replace(/^"|"$/g, '');
+    if (isUNCPath(s)) {
+      const info = uncToWsl(s);
+      if (info) {
+        let x = info.wslPath.split('\\').join('/');
+        while (x.includes('//')) x = x.replace('//', '/');
+        return x.toLowerCase();
+      }
+    }
+    if (/^[a-zA-Z]:\\/.test(s)) {
+      const x = toWslLikePathKey(s);
+      if (x) return x;
+    }
+    let out = s.split('\\').join('/');
+    while (out.includes('//')) out = out.replace('//', '/');
+    return out.toLowerCase();
+  } catch {
+    let out = String(input || '').split('\\').join('/');
+    while (out.includes('//')) out = out.replace('//', '/');
+    return out.toLowerCase();
   }
 }
 
@@ -357,8 +387,126 @@ type HistoryListCacheEntry = {
   savedAt: number;
 };
 
-const PARSER_VERSION = 'v8';
+const PARSER_VERSION = 'v9';
 const CACHE_SCHEMA_VERSION = '2';
+
+/**
+ * 中文说明：按路径特征推断历史文件所属 Provider，供回退扫描阶段补齐基础元数据。
+ */
+function inferHistoryProviderIdFromPath(filePath: string): ProviderId {
+  try {
+    const fp = String(filePath || '').replace(/\\/g, '/').toLowerCase();
+    const base = fp.split('/').pop() || '';
+    if (fp.includes('/.claude/')) return 'claude';
+    if (fp.includes('/.gemini/')) return 'gemini';
+    if (base.endsWith('.ndjson')) return 'claude';
+    if (base.startsWith('session-') && base.endsWith('.json')) return 'gemini';
+  } catch {}
+  return 'codex';
+}
+
+/**
+ * 中文说明：规范化 Gemini projectHash，仅接受 32~64 位十六进制。
+ */
+function normalizeHistoryProjectHash(value: unknown): string | undefined {
+  const text = String(value || '').trim().toLowerCase();
+  if (/^[a-f0-9]{32,64}$/.test(text)) return text;
+  return undefined;
+}
+
+/**
+ * 中文说明：从已解析的头部对象或文件路径中提取 Gemini projectHash。
+ */
+function extractHistoryProjectHash(parsed: any, filePath: string): string | undefined {
+  const direct = [
+    parsed?.projectHash,
+    parsed?.project_hash,
+    parsed?.payload?.projectHash,
+    parsed?.payload?.project_hash,
+  ];
+  for (const item of direct) {
+    const normalized = normalizeHistoryProjectHash(item);
+    if (normalized) return normalized;
+  }
+  return normalizeHistoryProjectHash(extractGeminiProjectHashFromPath(filePath));
+}
+
+/**
+ * 中文说明：从解析头或文本前缀中收集可能的工作目录候选，供项目归属判断与回退展示复用。
+ */
+function collectHistoryCwdCandidates(parsed: any, prefix: string): string[] {
+  const candidates: string[] = [];
+  /**
+   * 中文说明：清理单条 cwd 候选，统一去噪并去除尾部分隔符。
+   */
+  const tidy = (value?: string): string => {
+    try {
+      if (typeof value !== 'string') return '';
+      let s = value.replace(/\\n/g, '')
+        .replace(/^"|"$/g, '')
+        .replace(/\\\\/g, '\\')
+        .trim()
+        .replace(/[\\/]+$/g, '');
+      return s;
+    } catch {
+      return String(value || '').trim();
+    }
+  };
+  /**
+   * 中文说明：向候选列表追加有效 cwd。
+   */
+  const tryPush = (value?: string): void => {
+    const text = tidy(value);
+    if (text) candidates.push(text);
+  };
+  try {
+    if (parsed) {
+      tryPush(parsed.cwd);
+      tryPush(parsed.working_dir);
+      tryPush(parsed.projectDir);
+      tryPush(parsed.winPath);
+      tryPush(parsed.wslPath);
+      try {
+        if (parsed.type === 'session_meta' && parsed.payload) {
+          tryPush(parsed.payload.cwd);
+          tryPush(parsed.payload.working_dir);
+          tryPush(parsed.payload.projectDir);
+          tryPush(parsed.payload.winPath);
+          tryPush(parsed.payload.wslPath);
+        }
+      } catch {}
+    }
+    const m1 = String(prefix || '').match(/Current\s+working\s+directory:\s*([^\r\n]+)/i);
+    if (m1 && m1[1]) tryPush(m1[1]);
+    const m2 = String(prefix || '').match(/<cwd>\s*([^<]+?)\s*<\/cwd>/i);
+    if (m2 && m2[1]) tryPush(m2[1]);
+  } catch {}
+  return candidates;
+}
+
+/**
+ * 中文说明：根据项目路径收集 Gemini projectHash 候选，供 fallback 归属过滤复用。
+ */
+function collectHistoryProjectHashNeedles(project: { wslPath?: string; winPath?: string }): Set<string> {
+  const needles = new Set<string>();
+  /**
+   * 中文说明：向候选集合追加单条路径对应的 Gemini projectHash。
+   */
+  const addPath = (value?: string): void => {
+    const text = String(value || '').trim();
+    if (!text) return;
+    try {
+      const hashes = deriveGeminiProjectHashCandidatesFromPath(text);
+      for (const hash of hashes) {
+        const normalized = normalizeHistoryProjectHash(hash);
+        if (normalized) needles.add(normalized);
+      }
+    } catch {}
+  };
+  addPath(project.wslPath);
+  addPath(project.winPath);
+  return needles;
+}
 
 type HistoryCachePersisted = {
   schemaVersion: string;
@@ -499,11 +647,14 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
   type SumCache = {
     mtimeMs: number;
     size: number;
+    providerId: ProviderId;
     id: string;
     title: string;
     date: number;
     prefix: string;
     rawDate?: string;
+    dirKey?: string;
+    projectHash?: string;
     resumeMode?: 'modern' | 'legacy' | 'unknown';
     resumeId?: string;
     runtimeShell?: RuntimeShell;
@@ -520,37 +671,10 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
   // 将 needles 规范化为统一可对比的 WSL 风格（/mnt/c 或 /home/...），用于前缀对比
   function canon(p?: string): string {
     if (!p) return '';
-    try {
-      // Normalize common JSON-escaped artifacts first:
-      // 1) collapse literal "\\n" sequences
-      // 2) collapse doubled backslashes from JSON strings (e.g., C:\\code -> C:\code)
-      // 3) trim stray quotes
-      let s = String(p).replace(/\\n/g, '').replace(/\\\\+/g, '\\').replace(/^"|"$/g, '');
-      if (isUNCPath(s)) {
-        const info = uncToWsl(s);
-        if (info) {
-          let x = info.wslPath.split('\\').join('/');
-          while (x.includes('//')) x = x.replace('//', '/');
-          return x.toLowerCase();
-        }
-      }
-      if (/^[a-zA-Z]:\\/.test(s)) {
-        const x = toWslLikePathKey(s);
-        if (x) return x;
-      }
-      {
-        let x = s.split('\\').join('/');
-        while (x.includes('//')) x = x.replace('//', '/');
-        return x.toLowerCase();
-      }
-    } catch {}
-    {
-      let x = String(p).split('\\').join('/');
-      while (x.includes('//')) x = x.replace('//', '/');
-      return x.toLowerCase();
-    }
+    return canonicalizeHistoryPathForMatch(p);
   }
   const needlesCanon = Array.from(new Set(needles.map(canon).filter(Boolean)));
+  const geminiProjectHashNeedles = collectHistoryProjectHashNeedles(project);
   // Debug aid: write one log file when enabled by flag file
   function debugEnabled(): boolean {
     if (__envFlag().trim() === '1') return true;
@@ -774,6 +898,9 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
             let timestamp = 0;
             let rawDate: string | undefined = undefined;
             let title = titleFromFilename(fp);
+            let providerId: ProviderId = inferHistoryProviderIdFromPath(fp);
+            let dirKey: string | undefined = undefined;
+            let projectHash: string | undefined = undefined;
             let resumeMode: 'modern' | 'legacy' | 'unknown' = 'unknown';
             let resumeId: string | undefined = undefined;
             let runtimeShell: RuntimeShell = 'unknown';
@@ -784,10 +911,13 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
                 summaryCache.set(fp, cached);
                 shrinkSummaryCache(summaryCache);
               }
+              providerId = cached.providerId || providerId;
               id = cached.id;
               timestamp = cached.date;
               prefix = trimmed;
               rawDate = cached.rawDate;
+              dirKey = cached.dirKey;
+              projectHash = cached.projectHash;
               resumeMode = cached.resumeMode ?? 'unknown';
               resumeId = cached.resumeId;
               if (cached.runtimeShell && cached.runtimeShell !== 'unknown') runtimeShell = cached.runtimeShell;
@@ -813,6 +943,12 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
                   changed = true;
                 }
               }
+              const nextProjectHash = extractHistoryProjectHash(parsed, fp) || projectHash;
+              if (nextProjectHash !== projectHash) changed = true;
+              projectHash = nextProjectHash;
+              const nextDirKey = Array.from(new Set(collectHistoryCwdCandidates(parsed, prefix).map(canon).filter(Boolean)))[0] || dirKey;
+              if (nextDirKey !== dirKey) changed = true;
+              dirKey = nextDirKey;
               const hint = detectRuntimeShellFromContent(parsed, prefix);
               if (runtimeShell === 'unknown') {
                 if (hint !== 'unknown') {
@@ -835,7 +971,17 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
                 }
               }
               if (stat && changed) {
-                const entry: SumCache = { ...cached, prefix, rawDate, resumeMode, resumeId: resumeId || cached.resumeId || cached.id, runtimeShell };
+                const entry: SumCache = {
+                  ...cached,
+                  providerId,
+                  prefix,
+                  rawDate,
+                  dirKey,
+                  projectHash,
+                  resumeMode,
+                  resumeId: resumeId || cached.resumeId || cached.id,
+                  runtimeShell,
+                };
                 summaryCache.set(fp, entry);
               }
             } else {
@@ -851,6 +997,7 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
               const info = detectResumeInfo(parsed);
               resumeMode = info.mode;
               if (info.id) resumeId = info.id;
+              projectHash = extractHistoryProjectHash(parsed, fp);
               const hint = detectRuntimeShellFromContent(parsed, prefix);
               if (hint !== 'unknown') {
                 runtimeShell = hint;
@@ -869,47 +1016,35 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
               // Title: prefer filename timestamp (simple and stable)
               title = titleFromFilename(fp);
               if (runtimeShell === 'unknown') runtimeShell = detectRuntimeShell(fp);
+              dirKey = Array.from(new Set(collectHistoryCwdCandidates(parsed, prefix).map(canon).filter(Boolean)))[0];
               // 写入缓存
               if (stat) {
-                const entry: SumCache = { mtimeMs: stat.mtimeMs, size: stat.size, id, title, date: timestamp, prefix, rawDate, resumeMode, resumeId: resumeId || id, runtimeShell };
+                const entry: SumCache = {
+                  mtimeMs: stat.mtimeMs,
+                  size: stat.size,
+                  providerId,
+                  id,
+                  title,
+                  date: timestamp,
+                  prefix,
+                  rawDate,
+                  dirKey,
+                  projectHash,
+                  resumeMode,
+                  resumeId: resumeId || id,
+                  runtimeShell,
+                };
                 summaryCache.set(fp, entry);
                 shrinkSummaryCache(summaryCache);
               }
             }
             if (runtimeShell === 'unknown') runtimeShell = detectRuntimeShell(fp);
+            let cCanon = dirKey ? [dirKey] : Array.from(new Set(collectHistoryCwdCandidates(parsed, prefix).map(canon).filter(Boolean)));
+            if (!dirKey && cCanon.length > 0) dirKey = cCanon[0];
+            if (!projectHash) projectHash = extractHistoryProjectHash(parsed, fp);
             // 严格按项目归属过滤：优先从元信息/前缀中提取 cwd，再与 needles 前缀匹配；否则回退到全文前缀搜索
             let belongs = true;
             if (needlesCanon.length > 0) {
-              // 收集可能的工作目录线索
-              const candidates: string[] = [];
-              try {
-                const tidy = (v?: string) => {
-                  try {
-                    if (typeof v !== 'string') return '';
-                    let s = v.replace(/\\n/g, '')
-                      .replace(/^"|"$/g, '')
-                      .replace(/\\\\/g, '\\')
-                      .trim()
-                      .replace(/[\\/]+$/g, '');
-                    return s;
-                  } catch { return String(v || '').trim(); }
-                };
-                const tryPush = (v?: string) => { const t = tidy(v); if (t) candidates.push(t); };
-                if (parsed) {
-                  tryPush(parsed.cwd);
-                  tryPush(parsed.working_dir);
-                  tryPush(parsed.projectDir);
-                  if (parsed.winPath) tryPush(parsed.winPath);
-                  if (parsed.wslPath) tryPush(parsed.wslPath);
-                  // 嵌套 session_meta.payload
-                  try { if (parsed.type === 'session_meta' && parsed.payload) { tryPush(parsed.payload.cwd); } } catch {}
-                }
-                const m1 = (prefix || '').match(/Current\s+working\s+directory:\s*([^\r\n]+)/i);
-                if (m1 && m1[1]) tryPush(m1[1]);
-                const mCwdTag = (prefix || '').match(/<cwd>\s*([^<]+?)\s*<\/cwd>/i);
-                if (mCwdTag && mCwdTag[1]) tryPush(mCwdTag[1]);
-              } catch {}
-              let cCanon = Array.from(new Set(candidates.map(canon).filter(Boolean)));
               // 路径边界匹配：仅当候选 cwd 在项目路径之内（含相等）时命中
               const startsWithBoundary = (child: string, parent: string): boolean => {
                 try {
@@ -932,7 +1067,11 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
                     const cwdFromFile = await extractCwdFromFile(fp, { maxScanBytes: 2 * 1024 * 1024 });
                     if (cwdFromFile) {
                       const cc = canon(cwdFromFile);
-                      if (cc) hit = needlesCanon.some((n) => startsWithBoundary(cc, n));
+                      if (cc) {
+                        dirKey = dirKey || cc;
+                        cCanon = cCanon.includes(cc) ? cCanon : [...cCanon, cc];
+                        hit = needlesCanon.some((n) => startsWithBoundary(cc, n));
+                      }
                       logDebug(`fallback-cwd file=${fp} cwd=${cwdFromFile} cc=${cc} match=${hit}`);
                     } else {
                       logDebug(`fallback-cwd-empty file=${fp}`);
@@ -942,10 +1081,29 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
                 belongs = !!hit;
                 logDebug(`belongs[prefix/fallback] file=${fp} match=${belongs}`);
               }
+              if (!belongs && providerId === 'gemini' && geminiProjectHashNeedles.size > 0) {
+                const historyHash = normalizeHistoryProjectHash(projectHash || extractGeminiProjectHashFromPath(fp));
+                if (historyHash && geminiProjectHashNeedles.has(historyHash)) {
+                  belongs = true;
+                  logDebug(`belongs[hash] file=${fp} projectHash=${historyHash} match=true`);
+                }
+              }
             }
             // 构造基础条目（用于回退展示）
             if (!resumeId) resumeId = id;
-            const basic: HistorySummary = { providerId: 'codex', id, title, date: (stat?.mtimeMs || 0), filePath: fp, rawDate, resumeMode, resumeId, runtimeShell };
+            const basic: HistorySummary = {
+              providerId,
+              id,
+              title,
+              date: (stat?.mtimeMs || 0),
+              filePath: fp,
+              rawDate,
+              dirKey,
+              projectHash,
+              resumeMode,
+              resumeId,
+              runtimeShell,
+            };
             if (!seenAll.has(key)) { summariesAll.push(basic); seenAll.add(key); }
             if (belongs && !seenBelongs.has(key)) { summaries.push(basic); seenBelongs.add(key); }
           } catch (e) {
@@ -979,14 +1137,21 @@ export async function listHistorySplit(project: { wslPath?: string; winPath?: st
   const belongs = await listHistory(project, opts);
   const rootOriginal = opts?.historyRoot || defaultHistoryRoot();
   const rootsToScan: string[] = await computeHistoryRoots(rootOriginal);
+  const canon = (value?: string): string => {
+    if (!value) return '';
+    return canonicalizeHistoryPathForMatch(value);
+  };
   type SumCache = {
     mtimeMs: number;
     size: number;
+    providerId: ProviderId;
     id: string;
     title: string;
     date: number;
     prefix: string;
     rawDate?: string;
+    dirKey?: string;
+    projectHash?: string;
     resumeMode?: 'modern' | 'legacy' | 'unknown';
     resumeId?: string;
     runtimeShell?: RuntimeShell;
@@ -1020,6 +1185,9 @@ export async function listHistorySplit(project: { wslPath?: string; winPath?: st
               let timestamp = 0;
               let rawDate: string | undefined = undefined;
               let title = titleFromFilename(fp);
+              let providerId: ProviderId = inferHistoryProviderIdFromPath(fp);
+              let dirKey: string | undefined = undefined;
+              let projectHash: string | undefined = undefined;
               let resumeMode: 'modern' | 'legacy' | 'unknown' = 'unknown';
               let resumeId: string | undefined = undefined;
               let runtimeShell: RuntimeShell = 'unknown';
@@ -1030,10 +1198,13 @@ export async function listHistorySplit(project: { wslPath?: string; winPath?: st
                   summaryCache.set(fp, cached);
                   shrinkSummaryCache(summaryCache);
                 }
+                providerId = cached.providerId || providerId;
                 id = cached.id;
                 timestamp = cached.date;
                 prefix = trimmed;
                 rawDate = cached.rawDate;
+                dirKey = cached.dirKey;
+                projectHash = cached.projectHash;
                 resumeMode = cached.resumeMode ?? 'unknown';
                 resumeId = cached.resumeId;
                 if (cached.runtimeShell && cached.runtimeShell !== 'unknown') runtimeShell = cached.runtimeShell;
@@ -1061,6 +1232,12 @@ export async function listHistorySplit(project: { wslPath?: string; winPath?: st
                     changed = true;
                   }
                 }
+                const nextProjectHash = extractHistoryProjectHash(parsed, fp) || projectHash;
+                if (nextProjectHash !== projectHash) changed = true;
+                projectHash = nextProjectHash;
+                const nextDirKey = Array.from(new Set(collectHistoryCwdCandidates(parsed, prefix).map(canon).filter(Boolean)))[0] || dirKey;
+                if (nextDirKey !== dirKey) changed = true;
+                dirKey = nextDirKey;
                 const hint = detectRuntimeShellFromContent(parsed, prefix);
                 if (runtimeShell === 'unknown') {
                   if (hint !== 'unknown') {
@@ -1083,7 +1260,17 @@ export async function listHistorySplit(project: { wslPath?: string; winPath?: st
                   }
                 }
                 if (stat && changed) {
-                  const entry: SumCache = { ...cached, prefix, rawDate, resumeMode, resumeId: resumeId || cached.resumeId || cached.id, runtimeShell };
+                  const entry: SumCache = {
+                    ...cached,
+                    providerId,
+                    prefix,
+                    rawDate,
+                    dirKey,
+                    projectHash,
+                    resumeMode,
+                    resumeId: resumeId || cached.resumeId || cached.id,
+                    runtimeShell,
+                  };
                   summaryCache.set(fp, entry);
                 }
               } else {
@@ -1095,6 +1282,7 @@ export async function listHistorySplit(project: { wslPath?: string; winPath?: st
                 const info = detectResumeInfo(parsed);
                 resumeMode = info.mode;
                 if (info.id) resumeId = info.id;
+                projectHash = extractHistoryProjectHash(parsed, fp);
                 const hint = detectRuntimeShellFromContent(parsed, prefix);
                 if (hint !== 'unknown') runtimeShell = hint;
                 if (parsed) {
@@ -1109,15 +1297,44 @@ export async function listHistorySplit(project: { wslPath?: string; winPath?: st
                 timestamp = stat?.mtimeMs || 0;
                 title = titleFromFilename(fp);
                 if (runtimeShell === 'unknown') runtimeShell = detectRuntimeShell(fp);
+                dirKey = Array.from(new Set(collectHistoryCwdCandidates(parsed, prefix).map(canon).filter(Boolean)))[0];
                 if (stat) {
-                  const entry: SumCache = { mtimeMs: stat.mtimeMs, size: stat.size, id, title, date: timestamp, prefix, rawDate, resumeMode, resumeId: resumeId || id, runtimeShell };
+                  const entry: SumCache = {
+                    mtimeMs: stat.mtimeMs,
+                    size: stat.size,
+                    providerId,
+                    id,
+                    title,
+                    date: timestamp,
+                    prefix,
+                    rawDate,
+                    dirKey,
+                    projectHash,
+                    resumeMode,
+                    resumeId: resumeId || id,
+                    runtimeShell,
+                  };
                   summaryCache.set(fp, entry);
                   shrinkSummaryCache(summaryCache);
                 }
               }
               if (runtimeShell === 'unknown') runtimeShell = detectRuntimeShell(fp);
+              if (!dirKey) dirKey = Array.from(new Set(collectHistoryCwdCandidates(parsed, prefix).map(canon).filter(Boolean)))[0];
+              if (!projectHash) projectHash = extractHistoryProjectHash(parsed, fp);
               if (!resumeId) resumeId = id;
-              all.push({ providerId: 'codex', id, title, date: (stat?.mtimeMs || 0), filePath: fp, rawDate, resumeMode, resumeId, runtimeShell });
+              all.push({
+                providerId,
+                id,
+                title,
+                date: (stat?.mtimeMs || 0),
+                filePath: fp,
+                rawDate,
+                dirKey,
+                projectHash,
+                resumeMode,
+                resumeId,
+                runtimeShell,
+              });
             } catch {}
           }
         }
@@ -1523,4 +1740,4 @@ export async function removePathFromCache(filePath: string) {
   } catch {}
 }
 
-export default { listHistory, readHistoryFile, computeHistoryRoots, debugInfo, removePathFromCache, purgeHistoryCacheIfOutdated };
+export default { listHistory, listHistorySplit, readHistoryFile, computeHistoryRoots, debugInfo, removePathFromCache, purgeHistoryCacheIfOutdated };

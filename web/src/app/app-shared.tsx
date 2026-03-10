@@ -414,6 +414,8 @@ type HistorySession = {
   date: string; // ISO
   rawDate?: string; // original string from log, if any
   preview?: string; // optional preview text extracted by indexer
+  dirKey?: string;
+  projectHash?: string;
   messages: HistoryMessage[];
   filePath?: string;
   resumeMode?: 'modern' | 'legacy' | 'unknown';

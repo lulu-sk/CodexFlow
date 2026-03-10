@@ -112,4 +112,24 @@ describe("Gemini 项目临时目录解析", () => {
     expect(tempRoot).toBe("\\\\wsl.localhost\\Ubuntu-24.04\\home\\lulu\\.gemini\\tmp\\demo");
     expect(imageRoot).toBe("\\\\wsl.localhost\\Ubuntu-24.04\\home\\lulu\\.gemini\\tmp\\demo\\images");
   });
+
+  it("Windows 主进程在 WSL 模式下会把 POSIX 版 GEMINI_CLI_HOME 转成 UNC", async () => {
+    vi.spyOn(os, "platform").mockReturnValue("win32" as any);
+    process.env.GEMINI_CLI_HOME = "/home/lulu/.gemini-custom";
+    const originalReadFile = fsp.readFile.bind(fsp);
+    vi.spyOn(fsp, "readFile").mockImplementation(async (targetPath: any, ...args: any[]) => {
+      const normalizedPath = String(targetPath || "");
+      if (normalizedPath === "\\\\wsl.localhost\\Ubuntu-24.04\\home\\lulu\\.gemini-custom\\projects.json")
+        return JSON.stringify({ projects: { "/home/lulu/demo": "demo" } }) as any;
+      return await (originalReadFile as any)(targetPath, ...args);
+    });
+
+    const tempRoot = await resolveGeminiProjectTempRootWinPath({
+      projectWslRoot: "/home/lulu/demo",
+      runtimeEnv: "wsl",
+      distro: "Ubuntu-24.04",
+    });
+
+    expect(tempRoot).toBe("\\\\wsl.localhost\\Ubuntu-24.04\\home\\lulu\\.gemini-custom\\tmp\\demo");
+  });
 });

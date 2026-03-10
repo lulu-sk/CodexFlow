@@ -142,6 +142,7 @@ export type HistorySummary = {
   filePath: string;
   rawDate?: string;
   preview?: string;
+  dirKey?: string;
   projectHash?: string;
   resumeMode?: 'modern' | 'legacy' | 'unknown';
   resumeId?: string;
@@ -440,7 +441,16 @@ export interface GitWorktreeAPI {
 }
 
 export interface HistoryAPI {
-  list(args: { projectWslPath?: string; projectWinPath?: string; limit?: number; offset?: number; historyRoot?: string }): Promise<{ ok: boolean; sessions?: HistorySummary[]; error?: string }>;
+  list(args: {
+    scope?: "current_project" | "project_group" | "all_sessions";
+    projectWslPath?: string;
+    projectWinPath?: string;
+    groupProjectWslPaths?: string[];
+    groupProjectWinPaths?: string[];
+    limit?: number;
+    offset?: number;
+    historyRoot?: string;
+  }): Promise<{ ok: boolean; sessions?: HistorySummary[]; error?: string }>;
   read(args: { filePath: string; providerId?: "codex" | "claude" | "gemini" }): Promise<{ id: string; title: string; date: number; messages: HistoryMessage[]; skippedLines: number; providerId?: "codex" | "claude" | "gemini" }>;
   findEmptySessions(): Promise<{ ok: boolean; candidates?: Array<{ id: string; title: string; rawDate?: string; date: number; filePath: string; sizeKB?: number }>; error?: string }>;
   trash(args: { filePath: string }): Promise<{ ok: true; notFound?: boolean } | { ok: false; error: string }>;
