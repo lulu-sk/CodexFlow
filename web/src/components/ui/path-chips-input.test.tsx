@@ -250,6 +250,22 @@ describe("PathChipsInput（复制文件名按钮）", () => {
     const copyButton = document.querySelector('button[aria-label="common:files.copyFileNameWithExt"]');
     expect(copyButton).toBeNull();
   });
+
+  it("普通文件 Chip 即便带有预览字段也不应渲染图片缩略图", async () => {
+    cleanup = await renderPathChipsInput([
+      createPathChip({
+        id: "plain-file-chip",
+        chipKind: "file",
+        fileName: "notes.md",
+        winPath: "C:\\repo\\notes.md",
+        wslPath: "/mnt/c/repo/notes.md",
+        previewUrl: "blob:unexpected-file-preview",
+        type: "text/markdown",
+      }),
+    ]);
+
+    expect(document.querySelector("img")).toBeNull();
+  });
 });
 
 describe("PathChipsInput 撤回历史", () => {
