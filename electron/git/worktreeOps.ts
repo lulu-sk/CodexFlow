@@ -1797,11 +1797,16 @@ export async function removeWorktreeAsync(req: RemoveWorktreeRequest): Promise<R
       repoMainPath = inferred.repoMainPath;
     }
 
-    // 中文说明：deleteBranch=true 时需要的关键信息尽量在 remove 之前解析（避免目录被移除后无法读取）
+    // 中文说明：deleteBranch=true 时需要的关键信息尽量在 remove 之前解析（避免目录被移除后无法读取）。
+    // - 优先读取 worktree 当前真实分支，兼容用户在创建后手动改名导致元数据过期的场景；
+    // - 若当前为 detached HEAD 或解析失败，再回退到创建记录中的 wtBranch。
     let resolvedWtBranch = String(meta?.wtBranch || "").trim();
-    if (req.deleteBranch && !resolvedWtBranch) {
+    if (req.deleteBranch) {
       const inferred = await resolveWorktreeBranchNameAsync({ repoDir: repoMainPath, worktreePath: wt, gitPath, timeoutMs: 12_000 });
-      if (inferred.ok && !inferred.detached) resolvedWtBranch = String(inferred.branch || "").trim();
+      if (inferred.ok && !inferred.detached) {
+        const inferredBranch = String(inferred.branch || "").trim();
+        if (inferredBranch) resolvedWtBranch = inferredBranch;
+      }
     }
 
     let baseRefForMergedCheck = String(meta?.baseBranch || "").trim();
