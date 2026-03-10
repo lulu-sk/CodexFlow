@@ -268,5 +268,47 @@ describe("worktree meta 缺失回退（recycle/reset/remove）", () => {
     },
     { timeout: 120_000 }
   );
+
+  it(
+    "remove：当 worktree 分支已被手动改名时，应按当前真实分支完成删除",
+    async () => {
+      const repo = await fsp.mkdtemp(path.join(os.tmpdir(), "codexflow-wt-remove-renamed-main-"));
+      const wtParent = await fsp.mkdtemp(path.join(os.tmpdir(), "codexflow-wt-remove-renamed-child-parent-"));
+      const wtDir = path.join(wtParent, "wt");
+      const userData = await fsp.mkdtemp(path.join(os.tmpdir(), "codexflow-userdata-"));
+      userDataDir = userData;
+
+      try {
+        await git(repo, ["init"]);
+        await git(repo, ["config", "user.name", "CodexFlow"]);
+        await git(repo, ["config", "user.email", "codexflow@example.com"]);
+        await git(repo, ["config", "core.autocrlf", "false"]);
+        await git(repo, ["config", "core.eol", "lf"]);
+
+        await git(repo, ["checkout", "-b", "main"]);
+        await fsp.writeFile(path.join(repo, "a.txt"), "A\n", "utf8");
+        await git(repo, ["add", "a.txt"]);
+        await git(repo, ["commit", "-m", "main: init"]);
+
+        await git(repo, ["worktree", "add", "-b", "wt", wtDir, "main"]);
+        await git(wtDir, ["branch", "-m", "wt-renamed"]);
+
+        const res = await removeWorktreeAsync({ worktreePath: wtDir, deleteBranch: true });
+        expect(res.ok).toBe(true);
+        if (res.ok) {
+          expect(res.removedWorktree).toBe(true);
+          expect(res.removedBranch).toBe(true);
+        }
+
+        const renamedRef = await gitTry(repo, ["show-ref", "--verify", "refs/heads/wt-renamed"]);
+        expect(renamedRef.ok).toBe(false);
+      } finally {
+        try { await fsp.rm(wtParent, { recursive: true, force: true }); } catch {}
+        try { await fsp.rm(repo, { recursive: true, force: true }); } catch {}
+        try { await fsp.rm(userData, { recursive: true, force: true }); } catch {}
+      }
+    },
+    { timeout: 120_000 }
+  );
 });
 
