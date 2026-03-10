@@ -106,6 +106,14 @@ import { getCachedThemeSetting, useThemeController, writeThemeSettingCache, type
 import { loadHiddenProjectIds, loadShowHiddenProjects, saveHiddenProjectIds, saveShowHiddenProjects } from "@/lib/projects-hidden";
 import { loadConsoleSession, saveConsoleSession, type PersistedConsoleTab } from "@/lib/console-session";
 import {
+  cloneBuildRunCommandConfig,
+  createEmptyBuildRunCommandConfig,
+  hasBuildRunCommand,
+  normalizeBuildRunCommandDraft,
+  removeBuildRunCommandConfig,
+  upsertBuildRunCommandConfig,
+} from "@/lib/build-run-config";
+import {
   clearWorktreeCreateTransientPrefs,
   loadWorktreeCreatePrefs,
   saveWorktreeCreatePrefs,
@@ -564,7 +572,7 @@ export default function CodexFlowManagerUI() {
     projectId: "",
     saveScope: "self",
     parentProjectId: undefined,
-    draft: { mode: "simple", commandText: "", cwd: "", env: [], backend: { kind: "system" } } as any,
+    draft: createEmptyBuildRunCommandConfig(),
     advanced: false,
   }));
   const [dirLabelDialog, setDirLabelDialog] = useState<DirLabelDialogState>(() => ({ open: false, projectId: "", draft: "" }));
@@ -4760,7 +4768,7 @@ export default function CodexFlowManagerUI() {
   }> => {
     const selfCfg = await ensureBuildRunConfigLoaded(project.winPath);
     const selfCmd = (selfCfg as any)?.[action] as BuildRunCommandConfig | undefined;
-    if (selfCmd) return { effective: selfCmd, inherited: false, defaultSaveScope: "self" };
+    if (hasBuildRunCommand(selfCmd)) return { effective: selfCmd, inherited: false, defaultSaveScope: "self" };
 
     const parentId = String(dirTreeStore.parentById[project.id] || "").trim();
     if (parentId) {
@@ -4768,12 +4776,79 @@ export default function CodexFlowManagerUI() {
       if (parent) {
         const parentCfg = await ensureBuildRunConfigLoaded(parent.winPath);
         const parentCmd = (parentCfg as any)?.[action] as BuildRunCommandConfig | undefined;
-        if (parentCmd) return { effective: parentCmd, inherited: true, parentProjectId: parentId, defaultSaveScope: "parent" };
+        if (hasBuildRunCommand(parentCmd)) return { effective: parentCmd, inherited: true, parentProjectId: parentId, defaultSaveScope: "parent" };
         return { effective: null, inherited: false, parentProjectId: parentId, defaultSaveScope: "parent" };
       }
     }
     return { effective: null, inherited: false, defaultSaveScope: "self" };
   }, [dirTreeStore.parentById, ensureBuildRunConfigLoaded]);
+
+  /**
+   * 中文说明：统一使用应用内提示弹窗展示 Build/Run 相关错误，避免原生 alert 破坏弹窗交互与焦点状态。
+   */
+  const showBuildRunNotice = useCallback((action: BuildRunAction, message: string) => {
+    const text = String(message || "").trim();
+    if (!text) return;
+    setNoticeDialog({
+      open: true,
+      title: action === "build"
+        ? (t("projects:buildCommandTitle", "配置 Build 命令") as string)
+        : (t("projects:runCommandTitle", "配置 Run 命令") as string),
+      message: text,
+    });
+  }, [t]);
+
+  /**
+   * 中文说明：切换 Build/Run 配置保存范围，并在切回“继承父项目”时同步对齐草稿内容。
+   */
+  const switchBuildRunDialogSaveScope = useCallback(async (nextScope: "self" | "parent") => {
+    const snapshot = buildRunDialog;
+    if (!snapshot.open) return;
+    if (snapshot.saveScope === nextScope) return;
+
+    const target = projectsRef.current.find((item) => item.id === snapshot.projectId) || null;
+    if (!target) return;
+
+    const parentIdFromTree = String(dirTreeStore.parentById[target.id] || "").trim();
+    const parentId = String(snapshot.parentProjectId || parentIdFromTree || "").trim();
+    const parent = parentId ? (projectsRef.current.find((item) => item.id === parentId) || null) : null;
+
+    if (nextScope === "parent") {
+      if (!parentId || !parent) return;
+      const parentCfg = await ensureBuildRunConfigLoaded(parent.winPath);
+      const parentCmd = (parentCfg as any)?.[snapshot.action] as BuildRunCommandConfig | undefined;
+      const nextDraft = hasBuildRunCommand(parentCmd)
+        ? cloneBuildRunCommandConfig(parentCmd)
+        : createEmptyBuildRunCommandConfig();
+      setBuildRunDialog((prev) => {
+        if (!prev.open || prev.projectId !== snapshot.projectId || prev.action !== snapshot.action)
+          return prev;
+        return {
+          ...prev,
+          saveScope: "parent",
+          parentProjectId: parentId,
+          draft: nextDraft,
+          advanced: nextDraft.mode === "advanced",
+        };
+      });
+      return;
+    }
+
+    const selfCfg = await ensureBuildRunConfigLoaded(target.winPath);
+    const selfCmd = (selfCfg as any)?.[snapshot.action] as BuildRunCommandConfig | undefined;
+    setBuildRunDialog((prev) => {
+      if (!prev.open || prev.projectId !== snapshot.projectId || prev.action !== snapshot.action)
+        return prev;
+      const nextDraft = hasBuildRunCommand(selfCmd) ? cloneBuildRunCommandConfig(selfCmd) : prev.draft;
+      return {
+        ...prev,
+        saveScope: "self",
+        parentProjectId: parentId || prev.parentProjectId,
+        draft: nextDraft,
+        advanced: hasBuildRunCommand(selfCmd) ? nextDraft.mode === "advanced" : prev.advanced,
+      };
+    });
+  }, [buildRunDialog, dirTreeStore.parentById, ensureBuildRunConfigLoaded]);
 
   /**
    * 触发 Build/Run：
@@ -4787,9 +4862,7 @@ export default function CodexFlowManagerUI() {
     const resolved = await resolveEffectiveBuildRunCommand(p, action);
     const effective = resolved.effective;
     if (edit || !effective) {
-      const draft = effective
-        ? ({ ...effective, env: Array.isArray(effective.env) ? effective.env : [] } as BuildRunCommandConfig)
-        : ({ mode: "simple", commandText: "", cwd: "", env: [], backend: { kind: "system" } } as BuildRunCommandConfig);
+      const draft = effective ? cloneBuildRunCommandConfig(effective) : createEmptyBuildRunCommandConfig();
       const advanced = draft.mode === "advanced";
       setBuildRunDialog({
         open: true,
@@ -4809,9 +4882,12 @@ export default function CodexFlowManagerUI() {
       const res: any = await (window as any).host?.buildRun?.exec?.({ dir: p.winPath, cwd, title, command: effective });
       if (!(res && res.ok)) throw new Error(res?.error || "failed");
     } catch (e: any) {
-      alert(String((t("projects:buildRunFailed", "执行失败：{{error}}") as any) || "").replace("{{error}}", String(e?.message || e)));
+      showBuildRunNotice(
+        action,
+        String((t("projects:buildRunFailed", "执行失败：{{error}}") as any) || "").replace("{{error}}", String(e?.message || e)),
+      );
     }
-  }, [getDirNodeLabel, resolveEffectiveBuildRunCommand, t]);
+  }, [createEmptyBuildRunCommandConfig, getDirNodeLabel, resolveEffectiveBuildRunCommand, showBuildRunNotice]);
 
   /**
    * 保存 Build/Run 配置对话框的草稿到本地持久化存储。
@@ -4832,44 +4908,50 @@ export default function CodexFlowManagerUI() {
       return projectsRef.current.find((x) => x.id === parentId) || target;
     })();
 
-    const draft = dlg.draft || ({} as any);
-    const nextCmd: BuildRunCommandConfig = { ...draft } as any;
-    nextCmd.cwd = String(draft.cwd || "").trim();
-    nextCmd.backend = (draft.backend && typeof draft.backend === "object") ? draft.backend : { kind: "system" };
-    nextCmd.env = Array.isArray(draft.env)
-      ? draft.env.map((r: any) => ({ key: String(r?.key || ""), value: String(r?.value ?? "") }))
-      : [];
+    const nextCmd = normalizeBuildRunCommandDraft(dlg.draft, dlg.advanced);
+    const hasCommand = hasBuildRunCommand(nextCmd);
+    const selfExisting = (await ensureBuildRunConfigLoaded(target.winPath)) || {};
+    const parentExisting = saveProject.id === target.id
+      ? selfExisting
+      : ((await ensureBuildRunConfigLoaded(saveProject.winPath)) || {});
+    const parentCurrentCmd = (parentExisting as any)?.[dlg.action] as BuildRunCommandConfig | undefined;
 
-    if (dlg.advanced) {
-      nextCmd.mode = "advanced";
-      nextCmd.commandText = undefined;
-      nextCmd.cmd = String(draft.cmd || "").trim();
-      nextCmd.args = Array.isArray(draft.args) ? draft.args.map((x: any) => String(x ?? "")).filter((x: string) => x.trim().length > 0) : [];
-      if (!nextCmd.cmd) {
-        alert(t("projects:buildRunMissingCmd", "请输入命令") as string);
-        return;
-      }
-    } else {
-      nextCmd.mode = "simple";
-      nextCmd.cmd = undefined;
-      nextCmd.args = undefined;
-      nextCmd.commandText = String(draft.commandText || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
-      if (!nextCmd.commandText) {
-        alert(t("projects:buildRunMissingCmd", "请输入命令") as string);
-        return;
-      }
-    }
-
-    const existing = (await ensureBuildRunConfigLoaded(saveProject.winPath)) || {};
-    const nextCfg: DirBuildRunConfig = { ...(existing as any), [dlg.action]: nextCmd } as any;
-    const ok = await persistBuildRunConfig(saveProject.winPath, nextCfg);
-    if (!ok) {
-      alert(t("projects:buildRunSaveFailed", "保存失败") as string);
+    if (dlg.saveScope === "self" && !hasCommand) {
+      showBuildRunNotice(dlg.action, t("projects:buildRunMissingCmd", "请输入命令") as string);
       return;
     }
 
+    if (dlg.saveScope === "parent" && saveProject.id !== target.id && !hasCommand && hasBuildRunCommand(parentCurrentCmd)) {
+      showBuildRunNotice(dlg.action, t("projects:buildRunMissingCmd", "请输入命令") as string);
+      return;
+    }
+
+    if (dlg.saveScope === "self") {
+      const nextCfg = upsertBuildRunCommandConfig(selfExisting, dlg.action, nextCmd);
+      const ok = await persistBuildRunConfig(target.winPath, nextCfg);
+      if (!ok) {
+        showBuildRunNotice(dlg.action, t("projects:buildRunSaveFailed", "保存失败") as string);
+        return;
+      }
+    } else {
+      let parentOk = true;
+      let selfOk = true;
+      if (saveProject.id !== target.id && hasCommand) {
+        const nextParentCfg = upsertBuildRunCommandConfig(parentExisting, dlg.action, nextCmd);
+        parentOk = await persistBuildRunConfig(saveProject.winPath, nextParentCfg);
+      }
+      if (saveProject.id !== target.id && parentOk) {
+        const nextSelfCfg = removeBuildRunCommandConfig(selfExisting, dlg.action);
+        selfOk = await persistBuildRunConfig(target.winPath, nextSelfCfg);
+      }
+      if (!(parentOk && selfOk)) {
+        showBuildRunNotice(dlg.action, t("projects:buildRunSaveFailed", "保存失败") as string);
+        return;
+      }
+    }
+
     setBuildRunDialog((prev) => ({ ...prev, open: false }));
-  }, [buildRunDialog, dirTreeStore.parentById, ensureBuildRunConfigLoaded, persistBuildRunConfig, t]);
+  }, [buildRunDialog, dirTreeStore.parentById, ensureBuildRunConfigLoaded, persistBuildRunConfig, showBuildRunNotice, t]);
 
   /**
    * 关闭 Build/Run 配置对话框（不保存）。
@@ -8813,11 +8895,7 @@ export default function CodexFlowManagerUI() {
                             : "border-slate-200/70 bg-white/60 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)]"
                         }`}
                         onClick={() => {
-                            setBuildRunDialog((prev) => ({
-                              ...prev,
-                              saveScope: override ? "parent" : "self",
-                              parentProjectId: parentId || prev.parentProjectId,
-                            }));
+                            void switchBuildRunDialogSaveScope(override ? "parent" : "self");
                         }}
                       >
                         <div className="pt-0.5 shrink-0">
