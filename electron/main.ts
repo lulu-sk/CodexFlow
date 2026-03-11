@@ -47,6 +47,7 @@ import { getBaseUserDataDir, getFeatureFlags, updateFeatureFlags } from "./featu
 import { readDebugConfig, getDebugConfig, onDebugChanged, watchDebugConfig, updateDebugConfig, resetDebugConfig, unwatchDebugConfig } from "./debugConfig";
 import { getGitDirInfoBatchAsync, invalidateGitDirInfoCache } from "./git/status";
 import { initGitRepositoryAsync } from "./git/repoInit";
+import { activateWindowPreservingState } from "./windowActivation";
 import { autoCommitWorktreeIfDirtyAsync, createWorktreesAsync, listLocalBranchesAsync, recycleWorktreeAsync, removeWorktreeAsync } from "./git/worktreeOps";
 import { isWorktreeAlignedToMainAsync, resetWorktreeAsync } from "./git/worktreeReset";
 import { resolveWorktreeForkPointAsync, searchForkPointCommitsAsync, validateForkPointRefAsync } from "./git/worktreeForkPoint";
@@ -884,14 +885,8 @@ function ensureWindowInView(win: BrowserWindow): void {
  */
 function forceShowWindow(win: BrowserWindow, reason: string): void {
   try {
-    const minimized = (() => { try { return win.isMinimized(); } catch { return false; } })();
-    const visible = (() => { try { return win.isVisible(); } catch { return false; } })();
-    try { perfLogger.log(`[WIN] forceShow reason=${reason} minimized=${minimized ? 1 : 0} visible=${visible ? 1 : 0}`); } catch {}
-    try { if (minimized) win.restore(); } catch {}
-    try { win.show(); } catch {}
-    try { win.focus(); } catch {}
-    try { (win as any).moveTop?.(); } catch {}
-    try { app.focus({ steal: true } as any); } catch { try { app.focus(); } catch {} }
+    const activation = activateWindowPreservingState(win);
+    try { perfLogger.log(`[WIN] forceShow reason=${reason} minimized=${activation.wasMinimized ? 1 : 0} visible=${activation.wasVisible ? 1 : 0} fullscreen=${activation.wasFullScreen ? 1 : 0}`); } catch {}
   } catch {}
 }
 
@@ -1268,13 +1263,10 @@ function focusTabFromProtocol(rawUrl?: string | null) {
     const tabId = parsed.searchParams.get('tabId') ?? parsed.searchParams.get('tab') ?? parsed.searchParams.get('id');
     if (!tabId) return;
     const handleWindow = (target: BrowserWindow) => {
-      if (target.isMinimized()) {
-        try { target.restore(); } catch {}
-      }
-      try { target.show(); target.focus(); } catch {}
+      const activation = activateWindowPreservingState(target);
       const wc = target.webContents;
       const dispatch = () => {
-        try { perfLogger.log(`[notifications] protocol focus tabId=${tabId}`); } catch {}
+        try { perfLogger.log(`[notifications] protocol focus tabId=${tabId} minimized=${activation.wasMinimized ? 1 : 0} visible=${activation.wasVisible ? 1 : 0} fullscreen=${activation.wasFullScreen ? 1 : 0}`); } catch {}
         try { wc.send('notifications:focus-tab', { tabId }); } catch {}
       };
       if (wc.isDestroyed()) return;
@@ -1651,8 +1643,7 @@ if (!gotLock) {
       }
     } catch {}
     if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.focus();
+      activateWindowPreservingState(mainWindow);
     }
   }
 
