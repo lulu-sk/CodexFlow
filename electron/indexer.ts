@@ -7,7 +7,7 @@ import path from "node:path";
 import { BrowserWindow } from "electron";
 import { perfLogger } from "./log";
 import { getDebugConfig } from "./debugConfig";
-import { getSessionsRootCandidatesFastAsync, isUNCPath, uncToWsl } from "./wsl";
+import { getSessionsRootCandidatesFastAsync, isUNCPath, uncToWsl, wslToUNC } from "./wsl";
 import { safeWindowSend } from "./ipcSafe";
 import { detectResumeInfo, detectRuntimeShell, detectRuntimeShellFromContent } from "./history";
 import type { HistorySummary, Message, RuntimeShell } from "./history";
@@ -67,6 +67,8 @@ if (!g.__indexer.retries) g.__indexer.retries = new Map<string, { count: number;
 const RESCAN_INTERVAL_MS = 60_000;
 const RESCAN_COOLDOWN_MS = 30_000;
 const RESCAN_COOLDOWN_MAX = 512;
+const FAST_REFRESH_DEBOUNCE_MS = 140;
+const FAST_REFRESH_RECENT_FILE_LIMIT = 6;
 
 // Watch 去抖/批处理：避免 Claude 等 CLI 启动阶段频繁写入触发重复解析，导致主进程 CPU/内存瞬时飙升
 const WATCH_DEBOUNCE_MS = 800;
@@ -75,6 +77,20 @@ const WATCH_CONCURRENCY = 2;
 
 type WatchQueueEntry = { filePath: string; dueAt: number };
 type WatchQueueState = { timer: NodeJS.Timeout | null; flushing: boolean; queue: Map<string, WatchQueueEntry> };
+type FastRefreshFileEntry = { providerId: ProviderId; filePath: string };
+type FastRefreshRootEntry = { providerId: ProviderId; root: string };
+type FastRefreshState = {
+  timer: NodeJS.Timeout | null;
+  running: boolean;
+  rerun: boolean;
+  pendingFiles: Map<string, FastRefreshFileEntry>;
+  pendingRoots: Map<string, FastRefreshRootEntry>;
+};
+type HistoryFastRefreshRequest = {
+  providerId?: ProviderId | string;
+  filePath?: string;
+  sourcePath?: string;
+};
 
 /**
  * 获取文件变更监听的队列状态（挂到 global.__indexer，便于 stopHistoryIndexer 统一清理）。
@@ -101,6 +117,68 @@ function clearWatchQueueState(): void {
     if (!g.__indexer) g.__indexer = {};
     g.__indexer.watchQueueState = { timer: null, flushing: false, queue: new Map<string, WatchQueueEntry>() } as WatchQueueState;
   } catch {}
+}
+
+/**
+ * 获取历史“快速刷新”队列状态（用于完成通知触发的轻量增量刷新）。
+ */
+function getFastRefreshState(): FastRefreshState {
+  if (!g.__indexer) g.__indexer = {};
+  if (!g.__indexer.fastRefreshState) {
+    g.__indexer.fastRefreshState = {
+      timer: null,
+      running: false,
+      rerun: false,
+      pendingFiles: new Map<string, FastRefreshFileEntry>(),
+      pendingRoots: new Map<string, FastRefreshRootEntry>(),
+    } as FastRefreshState;
+  }
+  return g.__indexer.fastRefreshState as FastRefreshState;
+}
+
+/**
+ * 清理历史“快速刷新”队列，避免索引器重启后残留定时器与闭包。
+ */
+function clearFastRefreshState(): void {
+  try {
+    const st = (g.__indexer && g.__indexer.fastRefreshState) ? (g.__indexer.fastRefreshState as FastRefreshState) : null;
+    if (st?.timer) {
+      try { clearTimeout(st.timer); } catch {}
+    }
+  } catch {}
+  try {
+    if (!g.__indexer) g.__indexer = {};
+    g.__indexer.fastRefreshState = {
+      timer: null,
+      running: false,
+      rerun: false,
+      pendingFiles: new Map<string, FastRefreshFileEntry>(),
+      pendingRoots: new Map<string, FastRefreshRootEntry>(),
+    } as FastRefreshState;
+  } catch {}
+}
+
+/**
+ * 保存索引器使用的窗口 getter，供增量刷新路径复用。
+ */
+function setIndexerWindowGetter(getWindow: (() => BrowserWindow | null) | null): void {
+  try {
+    if (!g.__indexer) g.__indexer = {};
+    (g.__indexer as any).windowGetter = getWindow || null;
+  } catch {}
+}
+
+/**
+ * 读取索引器当前绑定的主窗口。
+ */
+function getIndexerWindow(): BrowserWindow | null {
+  try {
+    const getter = (g.__indexer as any)?.windowGetter;
+    if (typeof getter !== "function") return null;
+    return getter();
+  } catch {
+    return null;
+  }
 }
 
 function getRescanCooldownMap(): Map<string, number> {
@@ -285,6 +363,303 @@ function pLimit(max: number) {
 
 function canonicalKey(filePath: string): string {
   try { return path.normalize(filePath).replace(/\\/g, "/").toLowerCase(); } catch { return String(filePath || "").toLowerCase(); }
+}
+
+/**
+ * 读取当前索引器已探测到的 Provider 根目录。
+ */
+function getExistingRootsByProvider(): Record<ProviderId, string[]> {
+  try {
+    const raw = (g.__indexer && (g.__indexer.existingRootsByProvider || g.__indexer.rootsByProvider)) ? (g.__indexer.existingRootsByProvider || g.__indexer.rootsByProvider) : {};
+    return {
+      codex: Array.isArray(raw?.codex) ? raw.codex : [],
+      claude: Array.isArray(raw?.claude) ? raw.claude : [],
+      gemini: Array.isArray(raw?.gemini) ? raw.gemini : [],
+    };
+  } catch {
+    return { codex: [], claude: [], gemini: [] };
+  }
+}
+
+/**
+ * 判断当前是否允许读取 Claude Agent History。
+ */
+function getIndexedClaudeAgentHistorySetting(): boolean {
+  try {
+    const cached = (g.__indexer as any)?.claudeCodeReadAgentHistory;
+    if (typeof cached === "boolean") return cached;
+  } catch {}
+  return getClaudeCodeReadAgentHistorySetting();
+}
+
+/**
+ * 基于已探测 roots 或路径特征推断指定历史文件所属 Provider。
+ */
+function resolveProviderIdFromRoots(filePath: string, providerHint?: ProviderId): ProviderId {
+  if (providerHint === "codex" || providerHint === "claude" || providerHint === "gemini") return providerHint;
+  try {
+    const f = canonicalKey(filePath);
+    const rootsByProvider = getExistingRootsByProvider();
+    let best: { providerId: ProviderId; len: number } | null = null;
+    const entries: Array<{ providerId: ProviderId; root: string }> = [
+      ...rootsByProvider.codex.map((root) => ({ providerId: "codex" as const, root })),
+      ...rootsByProvider.claude.map((root) => ({ providerId: "claude" as const, root })),
+      ...rootsByProvider.gemini.map((root) => ({ providerId: "gemini" as const, root })),
+    ];
+    for (const entry of entries) {
+      const rootKey = canonicalKey(entry.root);
+      if (!rootKey) continue;
+      if (f === rootKey || f.startsWith(rootKey + "/")) {
+        if (!best || rootKey.length > best.len) best = { providerId: entry.providerId, len: rootKey.length };
+      }
+    }
+    if (best) return best.providerId;
+    if (f.includes("/.claude/")) return "claude";
+    if (f.includes("/.gemini/")) return "gemini";
+  } catch {}
+  return "codex";
+}
+
+/**
+ * 判断指定 Provider 是否支持索引该历史文件。
+ */
+function shouldIndexProviderFile(providerId: ProviderId, filePath: string): boolean {
+  try {
+    const base = path.basename(String(filePath || "")).toLowerCase();
+    if (providerId === "codex") return base.endsWith(".jsonl");
+    if (providerId === "claude") {
+      if (!getIndexedClaudeAgentHistorySetting() && base.startsWith("agent-") && base.endsWith(".jsonl")) return false;
+      return base.endsWith(".jsonl") || base.endsWith(".ndjson");
+    }
+    if (providerId === "gemini") return base.endsWith(".json") && base.startsWith("session-");
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 将通知里携带的 transcriptPath 规范化为主进程可直接访问的路径。
+ */
+function resolveAccessibleHistoryFilePath(filePath: string, sourcePath?: string): string {
+  try {
+    const raw = String(filePath || "").trim();
+    if (!raw) return "";
+    if (fs.existsSync(raw)) return raw;
+    if (raw.startsWith("/") && sourcePath && isUNCPath(sourcePath)) {
+      const info = uncToWsl(sourcePath);
+      if (info?.distro) {
+        const mapped = wslToUNC(raw, info.distro);
+        if (mapped) return mapped;
+      }
+    }
+    return raw;
+  } catch {
+    return String(filePath || "").trim();
+  }
+}
+
+/**
+ * 解析指定 Provider 的历史详情（快速刷新场景统一走摘要模式）。
+ */
+async function parseDetailsForProvider(providerId: ProviderId, filePath: string, stat: fs.Stats): Promise<Details> {
+  if (providerId === "claude") return await parseClaudeSessionFile(filePath, stat, { summaryOnly: true, maxLines: getIndexedClaudeAgentHistorySetting() ? 400 : 200 } as any);
+  if (providerId === "gemini") return await parseGeminiSessionFile(filePath, stat, { summaryOnly: true } as any);
+  return await parseCodexDetails(filePath, stat, { summaryOnly: true });
+}
+
+/**
+ * 根据详情对象构造索引摘要，统一各条增量路径的写入结果。
+ */
+function buildIndexSummary(providerId: ProviderId, filePath: string, details: Details): IndexSummary {
+  return {
+    providerId,
+    id: details.id,
+    title: details.title,
+    date: details.date,
+    filePath,
+    rawDate: details.rawDate,
+    dirKey: details.dirKey || dirKeyOf(filePath),
+    preview: details.preview,
+    projectHash: (details as any).projectHash,
+    resumeMode: details.resumeMode,
+    resumeId: details.resumeId,
+    runtimeShell: details.runtimeShell && details.runtimeShell !== "unknown" ? details.runtimeShell : detectRuntimeShell(filePath),
+  } as any;
+}
+
+/**
+ * 对单个历史文件执行一次增量 upsert，并在必要时推送前端更新。
+ */
+async function upsertIndexedFile(filePath: string, providerHint?: ProviderId): Promise<boolean> {
+  const ix: PersistIndex | undefined = g.__indexer?.index;
+  const det: PersistDetails | undefined = g.__indexer?.details;
+  if (!ix || !det) return false;
+  const rawPath = String(filePath || "").trim();
+  if (!rawPath) return false;
+  const providerId = resolveProviderIdFromRoots(rawPath, providerHint);
+  if (!shouldIndexProviderFile(providerId, rawPath)) return false;
+  const stat = await fsp.stat(rawPath).catch(() => null as any);
+  if (!stat || !stat.isFile || !stat.isFile()) return false;
+  const k = canonicalKey(rawPath);
+  const sig: FileSig = { mtimeMs: stat.mtimeMs, size: stat.size };
+  const prev = ix.files[k]?.sig;
+  const same = prev && prev.mtimeMs === sig.mtimeMs && prev.size === sig.size;
+  if (same) return false;
+
+  const details = await parseDetailsForProvider(providerId, rawPath, stat);
+  if (providerId === "claude" && shouldIgnoreClaudeSession(details as any, getIndexedClaudeAgentHistorySetting())) {
+    const existed = !!ix.files[k] || !!det.files[k];
+    try { getDetailsCache().delete(k); } catch {}
+    if (ix.files[k]) delete ix.files[k];
+    if (det.files[k]) delete det.files[k];
+    if (existed) {
+      ix.savedAt = Date.now();
+      det.savedAt = Date.now();
+      saveIndex(ix);
+      saveDetails(det);
+      safeWindowSend(getIndexerWindow(), "history:index:remove", { filePath: rawPath }, { tag: "indexer", suppressMs: 1000 });
+    }
+    return existed;
+  }
+
+  const slimDetails = stripDetailsForPersist(details);
+  try { getDetailsCache().delete(k); } catch {}
+  det.files[k] = { sig, details: slimDetails };
+  ix.files[k] = { sig, summary: buildIndexSummary(providerId, rawPath, details) };
+  ix.savedAt = Date.now();
+  det.savedAt = Date.now();
+  saveIndex(ix);
+  saveDetails(det);
+  safeWindowSend(getIndexerWindow(), "history:index:update", { item: ix.files[k].summary }, { tag: "indexer", suppressMs: 1000 });
+  return true;
+}
+
+/**
+ * 根据 notify 文件位置推导对应的会话根目录，尽量缩小快速扫描范围。
+ */
+function deriveRefreshRootFromSource(providerId: ProviderId, sourcePath?: string): string {
+  try {
+    const p = String(sourcePath || "").trim();
+    if (!p) return "";
+    const dir = path.dirname(p);
+    if (providerId === "codex") return path.join(dir, "sessions");
+    if ((providerId === "claude" || providerId === "gemini") && path.basename(dir).toLowerCase() === "hooks") return path.dirname(dir);
+    return "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * 枚举 Codex 最近两天目录下最可能变化的少量会话文件。
+ */
+async function listRecentCodexSessionFiles(root: string, limit = FAST_REFRESH_RECENT_FILE_LIMIT): Promise<string[]> {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const now = new Date();
+  const dates = [now, new Date(Date.now() - 24 * 60 * 60 * 1000)];
+  for (const dt of dates) {
+    try {
+      const year = String(dt.getFullYear());
+      const month = String(dt.getMonth() + 1).padStart(2, "0");
+      const day = String(dt.getDate()).padStart(2, "0");
+      const dir = path.join(root, year, month, day);
+      const files = await fsp.readdir(dir)
+        .then((items) => items.filter((name) => name.endsWith(".jsonl")).sort((a, b) => b.localeCompare(a)).slice(0, limit))
+        .catch(() => [] as string[]);
+      for (const name of files) {
+        const full = path.join(dir, name);
+        const key = canonicalKey(full);
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        out.push(full);
+      }
+    } catch {}
+  }
+  return out;
+}
+
+/**
+ * 调度一次快速刷新 flush（始终最多挂一个 timer）。
+ */
+function scheduleFastRefreshFlush(): void {
+  const st = getFastRefreshState();
+  if (st.timer) return;
+  st.timer = setTimeout(() => {
+    try { getFastRefreshState().timer = null; } catch {}
+    void flushFastRefreshQueue();
+  }, FAST_REFRESH_DEBOUNCE_MS);
+}
+
+/**
+ * 执行快速刷新队列：显式文件优先，其次扫描极少量近期 Codex 会话文件。
+ */
+async function flushFastRefreshQueue(): Promise<void> {
+  const st = getFastRefreshState();
+  if (st.running) {
+    st.rerun = true;
+    return;
+  }
+  st.running = true;
+  try {
+    while (true) {
+      st.rerun = false;
+      const files = Array.from(st.pendingFiles.values());
+      const roots = Array.from(st.pendingRoots.values());
+      st.pendingFiles.clear();
+      st.pendingRoots.clear();
+
+      for (const entry of files) {
+        try { await upsertIndexedFile(entry.filePath, entry.providerId); } catch {}
+      }
+
+      for (const entry of roots) {
+        if (entry.providerId !== "codex") continue;
+        try {
+          const recent = await listRecentCodexSessionFiles(entry.root);
+          for (const fp of recent) {
+            try { await upsertIndexedFile(fp, "codex"); } catch {}
+          }
+        } catch {}
+      }
+
+      if (!st.rerun && st.pendingFiles.size === 0 && st.pendingRoots.size === 0) break;
+    }
+  } finally {
+    st.running = false;
+    if (st.rerun || st.pendingFiles.size > 0 || st.pendingRoots.size > 0) scheduleFastRefreshFlush();
+  }
+}
+
+/**
+ * 根据“本轮对话完成”信号请求一次轻量快速刷新，加速历史侧栏感知新记录。
+ */
+export function requestHistoryFastRefresh(req: HistoryFastRefreshRequest): void {
+  try {
+    const rawProvider = String(req?.providerId || "codex").trim().toLowerCase();
+    const providerId: ProviderId = rawProvider === "claude" || rawProvider === "gemini" ? rawProvider : "codex";
+    const st = getFastRefreshState();
+
+    const explicitFile = resolveAccessibleHistoryFilePath(String(req?.filePath || "").trim(), req?.sourcePath);
+    if (explicitFile) {
+      const key = canonicalKey(explicitFile);
+      st.pendingFiles.set(key, { providerId, filePath: explicitFile });
+    }
+
+    if (!explicitFile) {
+      const hintedRoot = deriveRefreshRootFromSource(providerId, req?.sourcePath);
+      const roots = hintedRoot ? [hintedRoot] : getLastIndexerRootsByProvider(providerId);
+      for (const root of roots) {
+        const cleanRoot = String(root || "").trim();
+        if (!cleanRoot) continue;
+        st.pendingRoots.set(canonicalKey(cleanRoot), { providerId, root: cleanRoot });
+      }
+    }
+
+    if (st.pendingFiles.size === 0 && st.pendingRoots.size === 0) return;
+    scheduleFastRefreshFlush();
+  } catch {}
 }
 
 function getDetailsCache(): Map<string, Details> {
@@ -985,12 +1360,14 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
   try {
     await stopHistoryIndexer();
   } catch {}
+  try { setIndexerWindowGetter(getWindow); } catch {}
   await perfLogger.time("indexer.start", async () => {
     // 1) 读取持久化缓存
     purgeLegacyPersistFiles();
     g.__indexer.index = loadIndex();
     g.__indexer.details = loadDetails();
     try { getDetailsCache().clear(); } catch {}
+    try { clearFastRefreshState(); } catch {}
 
     // 1.5) 读取 Claude Code 过滤开关，并在启动阶段快速清理“默认应忽略”的历史项
     const claudeCodeReadAgentHistory = getClaudeCodeReadAgentHistorySetting();
@@ -1785,4 +2162,6 @@ export async function stopHistoryIndexer(): Promise<void> {
   } catch {}
   try { clearRescanCooldown(); } catch {}
   try { clearWatchQueueState(); } catch {}
+  try { clearFastRefreshState(); } catch {}
+  try { setIndexerWindowGetter(null); } catch {}
 }
