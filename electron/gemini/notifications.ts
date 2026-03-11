@@ -7,6 +7,7 @@ import { BrowserWindow } from "electron";
 import { perfLogger } from "../log";
 import { uncToWsl, type SessionsRootCandidate } from "../wsl";
 import { getGeminiRootCandidatesFastAsync } from "../agentSessions/gemini/discovery";
+import { requestHistoryFastRefresh } from "../indexer";
 
 const GEMINI_HOOK_FILENAME = "codexflow_after_agent_notify.js";
 const GEMINI_NOTIFY_FILENAME = "codexflow_after_agent_notify.jsonl";
@@ -796,10 +797,17 @@ function readGeminiNotifyEntries(source: GeminiNotifySource): GeminiNotifyEntry[
 }
 
 /**
- * 中文说明：将 Gemini 通知事件转发给渲染进程。
+ * 中文说明：将 Gemini 通知事件转发给渲染进程，并用 transcriptPath 触发精确历史刷新。
  */
-function emitGeminiNotify(entry: GeminiNotifyEntry): void {
+function emitGeminiNotify(entry: GeminiNotifyEntry, sourcePath?: string): void {
   const win = geminiNotifyWindowGetter ? geminiNotifyWindowGetter() : null;
+  try {
+    requestHistoryFastRefresh({
+      providerId: "gemini",
+      filePath: entry.transcriptPath,
+      sourcePath,
+    });
+  } catch {}
   if (!win) return;
   const providerId = String(entry.providerId || "gemini").toLowerCase();
   if (providerId && providerId !== "gemini") return;
@@ -829,7 +837,7 @@ async function pollGeminiNotifyFiles(): Promise<void> {
     for (const source of Array.from(geminiNotifySources.values())) {
       const entries = readGeminiNotifyEntries(source);
       if (!entries.length) continue;
-      for (const entry of entries) emitGeminiNotify(entry);
+      for (const entry of entries) emitGeminiNotify(entry, source.filePath);
     }
   } finally {
     geminiNotifyPolling = false;

@@ -7,6 +7,7 @@ import { BrowserWindow } from "electron";
 import { perfLogger } from "../log";
 import { uncToWsl, type SessionsRootCandidate } from "../wsl";
 import { getClaudeRootCandidatesFastAsync } from "../agentSessions/claude/discovery";
+import { requestHistoryFastRefresh } from "../indexer";
 
 const CLAUDE_HOOK_FILENAME = "codexflow_stop_notify.js";
 const CLAUDE_HOOK_TIMEOUT_MS = 5000;
@@ -635,10 +636,17 @@ function readClaudeNotifyEntries(source: ClaudeNotifySource): ClaudeNotifyEntry[
 }
 
 /**
- * 中文说明：将 Claude 通知事件转发给渲染进程。
+ * 中文说明：将 Claude 通知事件转发给渲染进程，并用 transcriptPath 触发精确历史刷新。
  */
-function emitClaudeNotify(entry: ClaudeNotifyEntry): void {
+function emitClaudeNotify(entry: ClaudeNotifyEntry, sourcePath?: string): void {
   const win = claudeNotifyWindowGetter ? claudeNotifyWindowGetter() : null;
+  try {
+    requestHistoryFastRefresh({
+      providerId: "claude",
+      filePath: entry.transcriptPath,
+      sourcePath,
+    });
+  } catch {}
   if (!win) return;
   const providerId = String(entry.providerId || "claude").toLowerCase();
   if (providerId && providerId !== "claude") return;
@@ -668,7 +676,7 @@ async function pollClaudeNotifyFiles(): Promise<void> {
     for (const source of Array.from(claudeNotifySources.values())) {
       const entries = readClaudeNotifyEntries(source);
       if (!entries.length) continue;
-      for (const entry of entries) emitClaudeNotify(entry);
+      for (const entry of entries) emitClaudeNotify(entry, source.filePath);
     }
   } finally {
     claudeNotifyPolling = false;

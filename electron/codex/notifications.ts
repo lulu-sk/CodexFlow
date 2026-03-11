@@ -6,6 +6,7 @@ import path from "node:path";
 import { BrowserWindow } from "electron";
 import { perfLogger } from "../log";
 import { getCodexRootsFastAsync } from "../wsl";
+import { requestHistoryFastRefresh } from "../indexer";
 
 const CODEX_NOTIFY_FILENAME = "codexflow_after_agent_notify.jsonl";
 const CODEX_NOTIFY_POLL_INTERVAL_MS = 1200;
@@ -165,10 +166,16 @@ function readCodexNotifyEntries(source: CodexNotifySource): CodexNotifyEntry[] {
 }
 
 /**
- * 中文说明：将 Codex 通知事件转发给渲染进程。
+ * 中文说明：将 Codex 通知事件转发给渲染进程，并提示索引器抢先刷新最近历史。
  */
-function emitCodexNotify(entry: CodexNotifyEntry): void {
+function emitCodexNotify(entry: CodexNotifyEntry, sourcePath?: string): void {
   const win = codexNotifyWindowGetter ? codexNotifyWindowGetter() : null;
+  try {
+    requestHistoryFastRefresh({
+      providerId: "codex",
+      sourcePath,
+    });
+  } catch {}
   if (!win) return;
   const providerId = String(entry.providerId || "codex").toLowerCase();
   if (providerId && providerId !== "codex") return;
@@ -198,7 +205,7 @@ async function pollCodexNotifyFiles(): Promise<void> {
     for (const source of Array.from(codexNotifySources.values())) {
       const entries = readCodexNotifyEntries(source);
       if (!entries.length) continue;
-      for (const entry of entries) emitCodexNotify(entry);
+      for (const entry of entries) emitCodexNotify(entry, source.filePath);
     }
   } finally {
     codexNotifyPolling = false;
