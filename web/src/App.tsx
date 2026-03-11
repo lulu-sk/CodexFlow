@@ -339,6 +339,8 @@ type CloseWorkingTabConfirmState = {
   tabName: string;
 };
 
+const STARTUP_GIT_STATUS_BATCH_SIZE = 8;
+
 /**
  * 中文说明：将耗时（毫秒）格式化为带单位文本（如 `2s`、`1m 05s`、`1h 02m 05s`）。
  */
@@ -433,6 +435,43 @@ function resolveNextWorktreeRemarkIndex(args: {
     if (index && index > maxIndex) maxIndex = index;
   }
   return maxIndex + 1;
+}
+
+/**
+ * 中文说明：提取项目的“最近活跃时间戳”，用于启动阶段优先刷新更可能被立刻操作的项目。
+ */
+function resolveProjectGitStatusPriorityTimestamp(project: Project | null | undefined): number {
+  const lastOpenedAt = Number(project?.lastOpenedAt);
+  if (Number.isFinite(lastOpenedAt) && lastOpenedAt > 0) return lastOpenedAt;
+  const createdAt = Number(project?.createdAt);
+  if (Number.isFinite(createdAt) && createdAt > 0) return createdAt;
+  return 0;
+}
+
+/**
+ * 中文说明：构建启动阶段的 Git 状态探测队列。
+ * - 仅保留有效项目 id 与目录路径；
+ * - 按最近活跃时间优先，尽快回填用户更可能先点开的项目；
+ * - 同优先级下按路径稳定排序，避免刷新顺序抖动。
+ */
+function buildStartupGitStatusQueue(projects: Project[]): Array<{ id: string; dir: string }> {
+  const seen = new Set<string>();
+  return [...projects]
+    .sort((left, right) => {
+      const diff = resolveProjectGitStatusPriorityTimestamp(right) - resolveProjectGitStatusPriorityTimestamp(left);
+      if (diff !== 0) return diff;
+      return String(left?.winPath || "").localeCompare(String(right?.winPath || ""), undefined, {
+        sensitivity: "base",
+        numeric: true,
+      });
+    })
+    .flatMap((project) => {
+      const id = String(project?.id || "").trim();
+      const dir = String(project?.winPath || "").trim();
+      if (!id || !dir || seen.has(id)) return [];
+      seen.add(id);
+      return [{ id, dir }];
+    });
 }
 
 type IdeOpenPrefs = {
@@ -1101,28 +1140,62 @@ export default function CodexFlowManagerUI() {
     return () => { try { window.clearTimeout(timer); } catch {} };
   }, [dirTreeStore, projectsHydrated]);
 
-  // Git 状态：批量刷新（用于分支/工作树识别与“目录缺失”判定）
+  // Git 状态：项目列表一到位就开始分批刷新，优先回填最近项目，避免启动时长时间看不到 worktree 入口
   useEffect(() => {
-    if (!projectsHydrated) return;
     let cancelled = false;
+    const orderedPairs = buildStartupGitStatusQueue(projects);
+    const activeIds = new Set(orderedPairs.map((item) => item.id));
+
+    setGitInfoByProjectId((prev) => {
+      const next: Record<string, GitDirInfo> = {};
+      let changed = false;
+      for (const [projectId, info] of Object.entries(prev || {})) {
+        if (!activeIds.has(projectId)) {
+          changed = true;
+          continue;
+        }
+        next[projectId] = info;
+      }
+      return changed ? next : prev;
+    });
+
+    if (orderedPairs.length === 0) {
+      return () => { cancelled = true; };
+    }
+
+    /**
+     * 中文说明：按批次读取 Git 状态，并将结果增量合并到当前缓存。
+     */
+    const loadGitInfoBatch = async (batch: Array<{ id: string; dir: string }>): Promise<void> => {
+      if (batch.length === 0) return;
+      const res: any = await (window as any).host?.gitWorktree?.statusBatch?.(batch.map((item) => item.dir));
+      if (cancelled) return;
+      if (!(res && res.ok && Array.isArray(res.items))) return;
+      const items = res.items as GitDirInfo[];
+      setGitInfoByProjectId((prev) => {
+        const next = { ...prev };
+        let changed = false;
+        for (let i = 0; i < batch.length; i++) {
+          const projectId = batch[i]?.id;
+          const info = items[i];
+          if (!projectId || !info) continue;
+          next[projectId] = info;
+          changed = true;
+        }
+        return changed ? next : prev;
+      });
+    };
+
     (async () => {
       try {
-        const dirs = projects.map((p) => p.winPath).filter(Boolean);
-        const res: any = await (window as any).host?.gitWorktree?.statusBatch?.(dirs);
-        if (cancelled) return;
-        if (res && res.ok && Array.isArray(res.items)) {
-          const next: Record<string, GitDirInfo> = {};
-          for (let i = 0; i < projects.length; i++) {
-            const p = projects[i];
-            const info = (res.items[i] || null) as GitDirInfo | null;
-            if (p?.id && info) next[p.id] = info;
-          }
-          setGitInfoByProjectId(next);
+        for (let start = 0; start < orderedPairs.length; start += STARTUP_GIT_STATUS_BATCH_SIZE) {
+          await loadGitInfoBatch(orderedPairs.slice(start, start + STARTUP_GIT_STATUS_BATCH_SIZE));
+          if (cancelled) return;
         }
       } catch {}
     })();
     return () => { cancelled = true; };
-  }, [projectsHydrated, projects]);
+  }, [projects]);
 
   /**
    * 中文说明：解析当前节点所属 worktree 组的“管理父节点”。

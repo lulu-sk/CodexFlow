@@ -99,32 +99,32 @@ export async function getGitDirInfoAsync(args: {
   const timeoutMs = Math.max(200, Math.min(30_000, Number(args.timeoutMs ?? 2500)));
   const gitPath = args.gitPath;
 
-  // 1) 是否位于 work tree 内
-  const inside = await execGitAsync({
+  // 1) 一次性读取“是否在 work tree 内”与仓库顶层，减少启动阶段的 git 进程次数
+  const top = await execGitAsync({
     gitPath,
-    argv: ["-C", abs, "rev-parse", "--is-inside-work-tree"],
+    argv: ["-C", abs, "rev-parse", "--is-inside-work-tree", "--show-toplevel"],
     timeoutMs,
   });
-  if (!inside.ok || inside.stdout.trim() !== "true") {
+  const topLines = String(top.stdout || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n");
+  const insideLine = String(topLines[0] || "").trim();
+  if (!top.ok || insideLine !== "true") {
     base.isInsideWorkTree = false;
-    base.error = inside.error || inside.stderr.trim() || base.error;
+    base.error = top.error || top.stderr.trim() || base.error;
     cache.set(key, { at: now, value: base });
     return base;
   }
   base.isInsideWorkTree = true;
 
   // 2) 仓库顶层
-  const top = await execGitAsync({
-    gitPath,
-    argv: ["-C", abs, "rev-parse", "--show-toplevel"],
-    timeoutMs,
-  });
-  if (!top.ok) {
-    base.error = top.error || top.stderr.trim();
+  const repoRoot = topLines.slice(1).map((line) => String(line || "").trim()).find(Boolean) || "";
+  if (!repoRoot) {
+    base.error = top.error || top.stderr.trim() || "missing repo root";
     cache.set(key, { at: now, value: base });
     return base;
   }
-  const repoRoot = String(top.stdout || "").trim();
   base.repoRoot = repoRoot;
   base.isRepoRoot = toFsPathKey(repoRoot) === toFsPathKey(abs);
 
