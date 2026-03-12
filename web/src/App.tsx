@@ -2944,7 +2944,9 @@ export default function CodexFlowManagerUI() {
       canonicalizePath(project.wslPath || ""),
       canonicalizePath(project.winPath || ""),
     ].filter(Boolean))));
-    const baseCacheKey = effectiveScope === "all_sessions" ? "all_sessions" : projectIds.join("|");
+    const baseCacheKey = effectiveScope === "all_sessions"
+      ? "all_sessions"
+      : `${projectIds.join("|")}::${projectNeedles.join("|")}`;
     return {
       requestedScope,
       effectiveScope,
@@ -4484,7 +4486,8 @@ export default function CodexFlowManagerUI() {
     let cancelled = false;
 
     (async () => {
-      const descriptor = historyScopeDescriptor;
+      // 中文说明：通过 ref 读取最新范围描述，避免“全部会话”下仅同步左侧项目时误触发整页历史重载。
+      const descriptor = historyScopeDescriptorRef.current;
       if (!descriptor.primaryProject && descriptor.effectiveScope !== "all_sessions") {
         setHistorySessions([]);
         applyHistoryPagination({ hasMore: false, nextOffset: 0 });
@@ -4533,21 +4536,34 @@ export default function CodexFlowManagerUI() {
       try {
         const mapped = await fetchHistoryPage(descriptor, 0, HISTORY_PAGE_INITIAL_LIMIT);
         if (cancelled) return;
-        const hasMore = mapped.length >= HISTORY_PAGE_INITIAL_LIMIT;
-        const nextOffset = mapped.length;
-        applyHistoryPagination({ hasMore, nextOffset });
-        setHistorySessions(mapped as any);
-        setHistoryCache(projectKey, { sessions: mapped, hasMore, nextOffset });
+        const fetchedHasMore = mapped.length >= HISTORY_PAGE_INITIAL_LIMIT;
+        const fetchedNextOffset = mapped.length;
+        const shouldPreservePagedCache = hasCache && cachedSessions.length > mapped.length;
+        const nextSessions = shouldPreservePagedCache
+          ? mergeHistorySessions(cachedSessions, mapped)
+          : mapped;
+        const nextHasMore = shouldPreservePagedCache
+          ? (!!cached?.hasMore || fetchedHasMore)
+          : fetchedHasMore;
+        const nextOffset = shouldPreservePagedCache
+          ? Math.max(
+              Math.max(0, Number(cached?.nextOffset || cachedSessions.length)),
+              fetchedNextOffset,
+            )
+          : fetchedNextOffset;
+        applyHistoryPagination({ hasMore: nextHasMore, nextOffset });
+        setHistorySessions(nextSessions as any);
+        setHistoryCache(projectKey, { sessions: nextSessions, hasMore: nextHasMore, nextOffset });
         // 校验并修正当前选择，避免缓存残留导致的空白详情
         if (!skipAuto) {
-          const ids = new Set(mapped.map((x) => x.id));
+          const ids = new Set(nextSessions.map((x) => x.id));
           const nowRef = new Date();
           const keyOf = (item?: HistorySession) => historyTimelineGroupKey(item, nowRef);
-          const dirs = new Set(mapped.map((x) => keyOf(x)));
+          const dirs = new Set(nextSessions.map((x) => keyOf(x)));
           const needResetId = !selectedHistoryId || !ids.has(selectedHistoryId);
           const needResetDir = !selectedHistoryDir || !dirs.has(selectedHistoryDir);
-          if ((needResetId || needResetDir) && mapped.length > 0) {
-            const firstKey = keyOf(mapped[0]);
+          if ((needResetId || needResetDir) && nextSessions.length > 0) {
+            const firstKey = keyOf(nextSessions[0]);
             // 仅优化默认 UI：展开最新分组，不自动选择会话，也不切换到详情
             setSelectedHistoryDir(null);
             setSelectedHistoryId(null);
@@ -4566,7 +4582,7 @@ export default function CodexFlowManagerUI() {
     return () => {
       cancelled = true;
     };
-  }, [historyScopeDescriptor, historyInvalidateNonce, getHistoryCache, fetchHistoryPage, HISTORY_PAGE_INITIAL_LIMIT, applyHistoryPagination, setHistoryCache]);
+  }, [historyScopeDescriptor.cacheKey, historyScopeDescriptor.effectiveScope, historyInvalidateNonce, getHistoryCache, fetchHistoryPage, HISTORY_PAGE_INITIAL_LIMIT, applyHistoryPagination, mergeHistorySessions, setHistoryCache]);
 
   // 订阅索引器事件：新增/更新/删除时，若属于当前历史范围则立即更新 UI
   useEffect(() => {
