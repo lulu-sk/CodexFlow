@@ -507,8 +507,21 @@ contextBridge.exposeInMainWorld('host', {
     }
   }
   , utils: {
+    /**
+     * 中文说明：普通调试日志。
+     * - 受 `global.diagLog` 控制；
+     * - 适用于临时排障与低优先级诊断。
+     */
     perfLog: async (text: string) => {
       try { return await ipcRenderer.invoke('utils.perfLog', { text }); } catch (e) { return { ok: false, error: String(e) }; }
+    },
+    /**
+     * 中文说明：白屏/强制刷新关键日志。
+     * - 不受 `global.diagLog` 影响；
+     * - 仅受 `global.whiteScreenLog` 统一控制。
+     */
+    perfLogCritical: async (text: string) => {
+      try { return await ipcRenderer.invoke('utils.perfLogCritical', { text }); } catch (e) { return { ok: false, error: String(e) }; }
     },
     getWindowsInfo: async (): Promise<{ ok: boolean; platform?: string; buildNumber?: number; backend?: string; conptyAvailable?: boolean; error?: string }> => {
       try { return await ipcRenderer.invoke('utils.getWindowsInfo'); } catch (e) { return { ok: false, error: String(e) } as any; }
@@ -624,6 +637,7 @@ function __applyDebugGlobals(cfg: any) {
     (globalThis as any).__cf_term_debug__ = !!(cfg?.terminal?.frontend?.debug);
     (globalThis as any).__cf_disable_pin__ = !!(cfg?.terminal?.frontend?.disablePin);
     (globalThis as any).__cf_at_debug__ = !!(cfg?.renderer?.atSearchDebug);
+    (globalThis as any).__cf_history_debug__ = !!(cfg?.history?.debug);
     (globalThis as any).__cf_updates_skip__ = String(cfg?.updates?.skipVersion || '');
   } catch {}
 }
@@ -635,22 +649,29 @@ async function __refreshDebugGlobals() {
 try { __refreshDebugGlobals(); } catch {}
 ipcRenderer.on('debug:changed', () => { try { __refreshDebugGlobals(); } catch {} });
 
-// ---- 渲染进程诊断日志（根据统一配置 global.diagLog 控制）----
+// ---- 渲染进程诊断日志 ----
 try {
   (async () => {
     let DIAG = false;
-    try { const cfg = await ipcRenderer.invoke('debug.get'); DIAG = !!(cfg && cfg.global && cfg.global.diagLog); } catch {}
-    if (DIAG) {
+    let WHITE_SCREEN_DIAG = true;
+    try {
+      const cfg = await ipcRenderer.invoke('debug.get');
+      DIAG = !!(cfg && cfg.global && cfg.global.diagLog);
+      WHITE_SCREEN_DIAG = !cfg || !cfg.global || cfg.global.whiteScreenLog !== false;
+    } catch {}
+    if (WHITE_SCREEN_DIAG) {
       window.addEventListener('error', (e) => {
-        try { ipcRenderer.invoke('utils.perfLog', { text: `[renderer:error] ${e?.message} at ${e?.filename}:${e?.lineno}:${e?.colno}` }); } catch {}
+        try { ipcRenderer.invoke('utils.perfLogCritical', { text: `[renderer:error] ${e?.message} at ${e?.filename}:${e?.lineno}:${e?.colno}` }); } catch {}
       });
       window.addEventListener('unhandledrejection', (e) => {
         try {
           const reason = (e as any)?.reason;
           const msg = typeof reason === 'string' ? reason : (reason && (reason.stack || reason.message)) || String(reason);
-          ipcRenderer.invoke('utils.perfLog', { text: `[renderer:unhandledrejection] ${msg}` });
+          ipcRenderer.invoke('utils.perfLogCritical', { text: `[renderer:unhandledrejection] ${msg}` });
         } catch {}
       });
+    }
+    if (DIAG) {
       const _err = console.error.bind(console);
       console.error = (...args: any[]) => {
         try { ipcRenderer.invoke('utils.perfLog', { text: `[console.error] ${args.map((x) => (typeof x === 'string' ? x : (x && (x.stack || x.message)) || JSON.stringify(x))).join(' ')}` }); } catch {}

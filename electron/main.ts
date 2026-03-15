@@ -20,6 +20,7 @@ import { getGeminiRootCandidatesFastAsync, discoverGeminiSessionFiles } from "./
 import { parseClaudeSessionFile } from "./agentSessions/claude/parser";
 import { parseGeminiSessionFile, extractGeminiProjectHashFromPath, deriveGeminiProjectHashCandidatesFromPath } from "./agentSessions/gemini/parser";
 import { hasNonEmptyIOFromMessages } from "./agentSessions/shared/empty";
+import { historyItemBelongsToScope } from "./historyScope";
 import { perfLogger } from "./log";
 import settings, { ensureSettingsAutodetect, ensureFirstRunTerminalSelection, type ThemeSetting as SettingsThemeSetting, type AppSettings, type IdeOpenSettings } from "./settings";
 import { normalizeTerminal, resolveWindowsShell, detectPwshExecutable } from "./shells";
@@ -133,6 +134,24 @@ function clampLogValue(value: unknown, maxLen = 260): string {
   const text = String(value ?? "");
   if (text.length <= maxLen) return text;
   return `${text.slice(0, Math.max(0, maxLen - 3))}...`;
+}
+
+/**
+ * 中文说明：判断是否启用“白屏/强制刷新/渲染恢复”诊断日志。
+ * 该开关默认开启，避免用户遇到白屏时无日志可查。
+ */
+function isWhiteScreenLogEnabled(): boolean {
+  try { return getDebugConfig()?.global?.whiteScreenLog !== false; } catch { return true; }
+}
+
+/**
+ * 中文说明：写入白屏相关关键诊断日志。
+ * - 不受 `global.diagLog` 影响；
+ * - 仅在 `global.whiteScreenLog !== false` 时记录。
+ */
+function logWhiteScreenDiagnostic(message: string): void {
+  if (!isWhiteScreenLogEnabled()) return;
+  try { perfLogger.logAlways(message); } catch {}
 }
 
 /**
@@ -966,7 +985,7 @@ function recoverMainWindowRenderer(win: BrowserWindow, reason: RendererRecoveryR
     const attempt = recordRendererRecoveryAttempt(state, now);
     const action: RendererRecoveryAction = attempt <= RENDERER_RECOVERY_MAX_RELOADS ? "reload" : "recreate";
     const detailText = detail ? ` detail=${clampLogValue(detail, 320)}` : "";
-    try { perfLogger.log(`[RECOVERY] trigger=${reason} action=${action} attempt=${attempt}${detailText}`); } catch {}
+    logWhiteScreenDiagnostic(`[RECOVERY] trigger=${reason} action=${action} attempt=${attempt}${detailText}`);
 
     state.recoverInFlight = true;
     if (action === "recreate") {
@@ -1006,7 +1025,7 @@ function recreateMainWindowForRecovery(win: BrowserWindow, reason: string): void
     const restoreBounds = (() => { try { return win.getBounds(); } catch { return undefined; } })();
     const startMaximized = (() => { try { return win.isMaximized(); } catch { return false; } })();
     const startFullScreen = (() => { try { return win.isFullScreen(); } catch { return false; } })();
-    try { perfLogger.log(`[RECOVERY] recreate reason=${reason}`); } catch {}
+    logWhiteScreenDiagnostic(`[RECOVERY] recreate reason=${reason}`);
     clearRendererRecoveryState(win);
     try { win.removeAllListeners("close"); } catch {}
     try { win.removeAllListeners("closed"); } catch {}
@@ -1014,7 +1033,7 @@ function recreateMainWindowForRecovery(win: BrowserWindow, reason: string): void
     if (mainWindow === win) mainWindow = null;
     createWindow({ restoreBounds, startMaximized, startFullScreen, recoveryReason: reason });
   } catch (e) {
-    try { perfLogger.log(`[RECOVERY] recreate failed reason=${reason} err=${String(e)}`); } catch {}
+    logWhiteScreenDiagnostic(`[RECOVERY] recreate failed reason=${reason} err=${String(e)}`);
   }
 }
 
@@ -1029,13 +1048,13 @@ function installMainWindowSelfHealHooks(win: BrowserWindow): void {
       const d: any = details as any;
       const crashReason = String(d?.reason || "");
       const exitCode = Number(d?.exitCode ?? 0);
-      try { perfLogger.log(`[WC] render-process-gone reason=${crashReason} exitCode=${exitCode}`); } catch {}
+      logWhiteScreenDiagnostic(`[WC] render-process-gone reason=${crashReason} exitCode=${exitCode}`);
       if (crashReason === "clean-exit") return;
       recoverMainWindowRenderer(win, "render-process-gone", `reason=${crashReason} exit=${exitCode}`);
     });
     wc.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
       const mainFrame = typeof isMainFrame === "boolean" ? isMainFrame : true;
-      try { perfLogger.log(`[WC] did-fail-load code=${errorCode} desc=${errorDescription} url=${validatedURL} main=${mainFrame ? 1 : 0}`); } catch {}
+      logWhiteScreenDiagnostic(`[WC] did-fail-load code=${errorCode} desc=${errorDescription} url=${validatedURL} main=${mainFrame ? 1 : 0}`);
       if (!mainFrame) return;
       if (errorCode === -3) return;
       if (isDevServerMode) return;
@@ -1044,7 +1063,7 @@ function installMainWindowSelfHealHooks(win: BrowserWindow): void {
       recoverMainWindowRenderer(win, "did-fail-load", `code=${errorCode} desc=${errorDescription}`);
     });
     wc.on("unresponsive", () => {
-      try { perfLogger.log("[WC] unresponsive"); } catch {}
+      logWhiteScreenDiagnostic("[WC] unresponsive");
       const state = getRendererRecoveryState(win);
       if (state.unresponsiveTimer) return;
       state.unresponsiveTimer = setTimeout(() => {
@@ -1054,7 +1073,7 @@ function installMainWindowSelfHealHooks(win: BrowserWindow): void {
       try { (state.unresponsiveTimer as any).unref?.(); } catch {}
     });
     wc.on("responsive", () => {
-      try { perfLogger.log("[WC] responsive"); } catch {}
+      logWhiteScreenDiagnostic("[WC] responsive");
       clearWindowUnresponsiveTimer(win);
     });
     win.on("closed", () => {
@@ -1374,17 +1393,29 @@ function createWindow(options?: CreateWindowOptions): void {
     } catch {}
   }
 
-  // 渲染进程诊断钩子
-  if (DIAG) try {
+  // 渲染进程白屏/刷新诊断钩子：默认开启，保证问题发生后 perf.log 可查
+  try {
     const wc = win.webContents;
-    wc.on('did-start-loading', () => { try { perfLogger.log('[WC] did-start-loading'); } catch {} });
-    wc.on('dom-ready', () => { try { perfLogger.log('[WC] dom-ready'); } catch {} });
-    wc.on('did-finish-load', () => { try { perfLogger.log('[WC] did-finish-load'); } catch {} });
-    wc.on('did-frame-finish-load', (_e, isMain) => { try { perfLogger.log(`[WC] did-frame-finish-load main=${isMain}`); } catch {} });
-    wc.on('did-navigate', (_e, url) => { try { perfLogger.log(`[WC] did-navigate url=${url}`); } catch {} });
-    wc.on('did-navigate-in-page', (_e, url) => { try { perfLogger.log(`[WC] did-navigate-in-page url=${url}`); } catch {} });
-    wc.on('console-message', (_e, level, message, line, sourceId) => {
-      try { perfLogger.log(`[WC.console] level=${level} ${sourceId}:${line} ${message}`); } catch {}
+    wc.on('did-start-loading', () => { logWhiteScreenDiagnostic('[WC] did-start-loading'); });
+    wc.on('dom-ready', () => { logWhiteScreenDiagnostic('[WC] dom-ready'); });
+    wc.on('did-finish-load', () => { logWhiteScreenDiagnostic('[WC] did-finish-load'); });
+    wc.on('did-frame-finish-load', (_e, isMain) => { logWhiteScreenDiagnostic(`[WC] did-frame-finish-load main=${isMain}`); });
+    wc.on('did-navigate', (_e, url) => { logWhiteScreenDiagnostic(`[WC] did-navigate url=${url}`); });
+    wc.on('did-navigate-in-page', (_e, url) => { logWhiteScreenDiagnostic(`[WC] did-navigate-in-page url=${url}`); });
+    if (DIAG) {
+      wc.on('console-message', (_e, level, message, line, sourceId) => {
+        try { perfLogger.log(`[WC.console] level=${level} ${sourceId}:${line} ${message}`); } catch {}
+      });
+    }
+  } catch {}
+  try {
+    const wc = win.webContents;
+    wc.on("did-start-navigation", (_event, url, isInPlace, isMainFrame) => {
+      if (!isMainFrame) return;
+      logWhiteScreenDiagnostic(`[WC] did-start-navigation url=${url} inPlace=${isInPlace ? 1 : 0}`);
+    });
+    wc.on("will-navigate", (_event, url) => {
+      logWhiteScreenDiagnostic(`[WC] will-navigate url=${url}`);
     });
   } catch {}
 
@@ -2960,18 +2991,6 @@ ipcMain.handle('history.list', async (_e, args: {
       } catch { return String(p || '').toLowerCase(); }
     };
     /**
-     * 中文说明：判断 child 是否处于 parent 路径边界内（包含完全相同的路径）。
-     */
-    const startsWithBoundary = (child: string, parent: string): boolean => {
-      try {
-        const c = String(child || '').replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/$/, '');
-        const p = String(parent || '').replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/$/, '');
-        if (!c || !p) return false;
-        if (c === p) return true;
-        return c.startsWith(p + '/');
-      } catch { return false; }
-    };
-    /**
      * 中文说明：将当前项目 / 项目组请求参数归一化为一组唯一项目路径对。
      */
     const buildProjectPairs = (): Array<{ wslPath?: string; winPath?: string }> => {
@@ -3005,6 +3024,10 @@ ipcMain.handle('history.list', async (_e, args: {
     };
     const projectPairs = buildProjectPairs();
     const needles = Array.from(new Set(projectPairs.flatMap((pair) => [canon(pair.wslPath), canon(pair.winPath)].filter(Boolean))));
+    const allProjectNeedles = Array.from(new Set([
+      ...needles,
+      ...projects.listProjectsFromStore().flatMap((project) => [canon(project?.wslPath), canon(project?.winPath)].filter(Boolean)),
+    ]));
     if (scope !== 'all_sessions' && projectPairs.length === 0) return { ok: true, sessions: [] };
 
     /**
@@ -3110,16 +3133,21 @@ ipcMain.handle('history.list', async (_e, args: {
      * 中文说明：判断单条历史摘要是否属于当前请求范围。
      */
     const belongsToScope = (item: Pick<FallbackHistorySummary, 'providerId' | 'dirKey' | 'projectHash' | 'filePath'>): boolean => {
-      if (scope === 'all_sessions') return true;
-      const dirKey = canon(item.dirKey);
-      if (dirKey && needles.some((n) => startsWithBoundary(dirKey, n))) return true;
-      if (item.providerId === 'gemini' && geminiHashNeedles.size > 0) {
-        const hs = String(item.projectHash || '').trim().toLowerCase();
-        const hp = extractGeminiProjectHashFromPath(String(item.filePath || ''));
-        const h = hs || hp || '';
-        if (h && geminiHashNeedles.has(h)) return true;
-      }
-      return false;
+      return historyItemBelongsToScope(
+        {
+          providerId: item.providerId,
+          dirKey: canon(item.dirKey),
+          projectHash: item.projectHash,
+          filePath: item.filePath,
+        },
+        {
+          scope,
+          currentProjectNeedles: needles,
+          allProjectNeedles,
+          geminiHashNeedles,
+          extractGeminiProjectHashFromPath,
+        },
+      );
     };
     /**
      * 中文说明：按文件路径去重并保持时间倒序，避免多来源回退结果重复。
@@ -3181,7 +3209,7 @@ ipcMain.handle('history.list', async (_e, args: {
         { wslPath: args.projectWslPath, winPath: args.projectWinPath },
         { historyRoot: prefRoot, limit: fallbackTargetCount },
       );
-      return current.map(normalizeHistorySummary);
+      return current.map(normalizeHistorySummary).filter((item) => belongsToScope(item));
     };
     /**
      * 中文说明：采集 Claude/Gemini 的回退历史，并按分页预算提前截止，避免先解析完整个 Provider。
@@ -3242,16 +3270,7 @@ ipcMain.handle('history.list', async (_e, args: {
     if (all && all.length > 0) {
       const filtered = scope === 'all_sessions'
         ? all
-        : all.filter((s) => {
-            if (needles.some((n) => startsWithBoundary(s.dirKey, n))) return true;
-            if (s.providerId === 'gemini' && geminiHashNeedles.size > 0) {
-              const hs = String((s as any)?.projectHash || '').trim().toLowerCase();
-              const hp = extractGeminiProjectHashFromPath(String(s.filePath || ''));
-              const h = hs || hp || '';
-              if (h && geminiHashNeedles.has(h)) return true;
-            }
-            return false;
-          });
+        : all.filter((s) => belongsToScope(s));
       try {
         if (dbg()) {
           const foundIdx = dbgFile ? all.some((x: any) => String(x.filePath || '').toLowerCase().includes(dbgFile)) : false;
@@ -3665,6 +3684,15 @@ ipcMain.handle('utils.readText', async () => {
 
 ipcMain.handle('utils.perfLog', async (_e, { text }: { text: string }) => {
   try { perfLogger.log(`[renderer] ${String(text ?? '')}`); return { ok: true }; } catch (e: any) { return { ok: false, error: String(e) }; }
+});
+
+/**
+ * 中文说明：白屏/强制刷新关键日志通道。
+ * - 不受 `global.diagLog` 影响；
+ * - 仍受 `global.whiteScreenLog` 统一控制。
+ */
+ipcMain.handle('utils.perfLogCritical', async (_e, { text }: { text: string }) => {
+  try { logWhiteScreenDiagnostic(`[renderer] ${String(text ?? '')}`); return { ok: true }; } catch (e: any) { return { ok: false, error: String(e) }; }
 });
 
 ipcMain.handle('utils.fetchJson', async (_e, { url, timeoutMs, headers }: { url: string; timeoutMs?: number; headers?: Record<string, string> }) => {

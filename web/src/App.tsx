@@ -107,6 +107,7 @@ import {
 import { getCachedThemeSetting, useThemeController, writeThemeSettingCache, type ThemeMode, type ThemeSetting } from "@/lib/theme";
 import { loadHiddenProjectIds, loadShowHiddenProjects, saveHiddenProjectIds, saveShowHiddenProjects } from "@/lib/projects-hidden";
 import { loadConsoleSession, saveConsoleSession, type PersistedConsoleTab } from "@/lib/console-session";
+import { findBestMatchingProjectScopeKey, pathMatchesProjectScope } from "@/lib/path-scope";
 import { cn } from "@/lib/utils";
 import {
   cloneBuildRunCommandConfig,
@@ -531,6 +532,13 @@ export default function CodexFlowManagerUI() {
     if (!uiDebugEnabled()) return;
     try { (window as any).host?.utils?.perfLog?.(`[ui] ${msg}`); } catch { try { console.log(`[ui] ${msg}`); } catch {} }
   }, [uiDebugEnabled]);
+  /**
+   * 中文说明：写入历史项目归属诊断日志，便于定位“点击历史后落到错误项目”的问题。
+   */
+  const logHistoryProjectResolution = React.useCallback((message: string) => {
+    try { if (!(globalThis as any).__cf_history_debug__) return; } catch {}
+    try { (window as any).host?.utils?.perfLog?.(`[history.project] ${message}`); } catch {}
+  }, []);
   const notificationsDebugEnabled = React.useCallback(() => {
     try { return !!(window as any).__cf_notif_debug_cache__; } catch { return true; }
   }, []);
@@ -2893,16 +2901,31 @@ export default function CodexFlowManagerUI() {
    * 中文说明：判断 child 是否处于 parent 路径边界内（包含完全相同的路径）。
    */
   const pathStartsWithBoundary = useCallback((child: string, parent: string): boolean => {
-    try {
-      const c = String(child || "").replace(/\\/g, "/").replace(/\/+/g, "/").replace(/\/$/, "");
-      const p = String(parent || "").replace(/\\/g, "/").replace(/\/+/g, "/").replace(/\/$/, "");
-      if (!c || !p) return false;
-      if (c === p) return true;
-      return c.startsWith(p + "/");
-    } catch {
-      return false;
-    }
+    return pathMatchesProjectScope(child, parent);
   }, []);
+  /**
+   * 中文说明：基于历史 dirKey 解析“最具体”的项目归属。
+   * - 若同一会话同时命中父项目与子项目，优先归属到更具体的子项目；
+   * - 无命中时返回空，交给后续 hash 与兜底逻辑处理。
+   */
+  const resolveHistoryProjectByDirKey = useCallback((dirKey?: string): Project | null => {
+    const normalizedDirKey = canonicalizePath(dirKey || "");
+    if (!normalizedDirKey) return null;
+    const bestScopeKey = findBestMatchingProjectScopeKey(
+      normalizedDirKey,
+      historyProjectCandidates.flatMap((entry) => entry.pathKeys),
+    );
+    if (!bestScopeKey) return null;
+    const target = historyProjectCandidates
+      .filter((entry) => entry.pathKeys.includes(bestScopeKey))
+      .sort((a, b) => {
+        const bCurrent = b.project.id === selectedProjectId ? 1 : 0;
+        const aCurrent = a.project.id === selectedProjectId ? 1 : 0;
+        if (bCurrent !== aCurrent) return bCurrent - aCurrent;
+        return b.longestPathLength - a.longestPathLength;
+      })[0];
+    return target?.project || null;
+  }, [historyProjectCandidates, selectedProjectId]);
   /**
    * 中文说明：根据当前选中项目与目录树关系，解析历史范围对应的项目集合。
    */
@@ -3157,30 +3180,7 @@ export default function CodexFlowManagerUI() {
    * 中文说明：基于给定的 Gemini 归属缓存推断单条历史记录所属项目，用于同步渲染与快速动作判断。
    */
   const resolveHistorySessionProjectMatchWithOwners = useCallback((session: HistorySession, owners: Record<string, string[]>): HistoryProjectMatch | null => {
-    const pathNeedles = Array.from(new Set([
-      canonicalizePath(session.dirKey || ""),
-      normDir(session.filePath || ""),
-    ].filter(Boolean)));
-    const matchedByPath = historyProjectCandidates
-      .map((entry) => {
-        const score = entry.pathKeys.reduce((max, pathKey) => {
-          if (pathNeedles.some((needle) => pathStartsWithBoundary(needle, pathKey))) return Math.max(max, pathKey.length);
-          return max;
-        }, 0);
-        return { entry, score };
-      })
-      .filter((item) => item.score > 0)
-      .sort((a, b) => {
-        if (b.score !== a.score) return b.score - a.score;
-        const bCurrent = b.entry.project.id === selectedProjectId ? 1 : 0;
-        const aCurrent = a.entry.project.id === selectedProjectId ? 1 : 0;
-        if (bCurrent !== aCurrent) return bCurrent - aCurrent;
-        const bScoped = historyScopeProjectIdSet.has(b.entry.project.id) ? 1 : 0;
-        const aScoped = historyScopeProjectIdSet.has(a.entry.project.id) ? 1 : 0;
-        if (bScoped !== aScoped) return bScoped - aScoped;
-        return b.entry.longestPathLength - a.entry.longestPathLength;
-      });
-    const bestPathMatch = matchedByPath[0]?.entry?.project || null;
+    const bestPathMatch = resolveHistoryProjectByDirKey(session.dirKey || "");
     if (bestPathMatch) {
       return createHistoryProjectMatch(bestPathMatch);
     }
@@ -3202,7 +3202,7 @@ export default function CodexFlowManagerUI() {
       })[0];
     if (!target) return null;
     return createHistoryProjectMatch(target);
-  }, [createHistoryProjectMatch, historyProjectCandidates, historyScopeProjectIdSet, pathStartsWithBoundary, projectsById, selectedProjectId]);
+  }, [createHistoryProjectMatch, historyScopeProjectIdSet, projectsById, resolveHistoryProjectByDirKey, selectedProjectId]);
   /**
    * 中文说明：为单条历史记录推断其所属项目，用于跨项目搜索结果跳转与标签展示。
    */
@@ -3323,10 +3323,15 @@ export default function CodexFlowManagerUI() {
     setSelectedHistoryDir(groupKey || historyTimelineGroupKey(session, new Date()));
     setSelectedHistoryId(session.id);
     setCenterMode("history");
+    logHistoryProjectResolution(`open id=${session.id} file=${String(session.filePath || "")} dirKey=${String(session.dirKey || "")} selectedProjectId=${String(selectedProjectId || "")}`);
     const { project, projectMatch } = await resolveHistoryActionTargetAsync(session.filePath || session.id, session);
     if (historyOpenResolveSeqRef.current !== nextSeq) return;
+    logHistoryProjectResolution(
+      `resolved id=${session.id} dirKey=${String(session.dirKey || "")} matchedProjectId=${String(projectMatch?.projectId || "")} matchedProjectName=${String(projectMatch?.projectName || "")} resolvedProjectPath=${String(project?.winPath || "")} selectedProjectId=${String(selectedProjectId || "")}`,
+    );
     if (project && projectMatch) syncHistoryTargetProjectSelection(project, projectMatch);
-  }, [resolveHistoryActionTargetAsync, syncHistoryTargetProjectSelection]);
+    else logHistoryProjectResolution(`no-match id=${session.id} dirKey=${String(session.dirKey || "")} file=${String(session.filePath || "")}`);
+  }, [logHistoryProjectResolution, resolveHistoryActionTargetAsync, selectedProjectId, syncHistoryTargetProjectSelection]);
   /**
    * 拉取指定历史范围的一页记录。
    */
@@ -4591,8 +4596,11 @@ export default function CodexFlowManagerUI() {
     const belongsToSelected = (item: any): boolean => {
       if (historyScopeDescriptor.effectiveScope === "all_sessions") return true;
       try {
-        const dirKey: string = String((item && (item.dirKey || '')) || '').toLowerCase();
-        if (dirKey) return projectNeedles.some((n) => pathStartsWithBoundary(dirKey, n));
+        const dirKey = String((item && (item.dirKey || '')) || '');
+        const ownerProject = resolveHistoryProjectByDirKey(dirKey);
+        if (ownerProject) return historyScopeProjectIdSet.has(ownerProject.id);
+        const normalizedDirKey = canonicalizePath(dirKey);
+        if (normalizedDirKey) return projectNeedles.some((n) => pathStartsWithBoundary(normalizedDirKey, n));
       } catch {}
       try {
         const pid = String(item?.providerId || '').toLowerCase();
@@ -4602,12 +4610,6 @@ export default function CodexFlowManagerUI() {
           const h = hs || hp || '';
           if (h && geminiProjectHashNeedlesRef.current.has(h)) return true;
         }
-      } catch {}
-      try {
-        const fp = String(item?.filePath || '');
-        if (!fp) return false;
-        const dir = normDir(fp);
-        return projectNeedles.some((n) => pathStartsWithBoundary(dir, n));
       } catch {}
       return false;
     };
@@ -4708,7 +4710,7 @@ export default function CodexFlowManagerUI() {
       try { setHistoryInvalidateNonce((x) => x + 1); } catch {}
     }) || (() => {});
     return () => { try { unsubAdd(); } catch {}; try { unsubUpd(); } catch {}; try { unsubRem(); } catch {}; try { unsubInvalidate(); } catch {}; };
-  }, [clearHistoryCache, historyScopeDescriptor.cacheKey, historyScopeDescriptor.effectiveScope, historyScopeDescriptor.projectNeedles, mapHistoryListItemToSession, pathStartsWithBoundary, selectedHistoryId, setHistoryCache]);
+  }, [clearHistoryCache, historyScopeDescriptor.cacheKey, historyScopeDescriptor.effectiveScope, historyScopeDescriptor.projectNeedles, historyScopeProjectIdSet, mapHistoryListItemToSession, pathStartsWithBoundary, resolveHistoryProjectByDirKey, selectedHistoryId, setHistoryCache]);
 
   // Subscribe to PTY exit/error events：标记退出并更新计数（不修改标签名）
   useEffect(() => {

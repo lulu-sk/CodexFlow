@@ -318,7 +318,8 @@ async function resolveConfiguredGeminiHomeForWindowsWsl(
 /**
  * 中文说明：解析当前运行环境下、主进程可访问的 Gemini 根目录。
  * - 非 WSL 场景优先直接使用 `GEMINI_CLI_HOME`
- * - Windows 主进程 + WSL 运行时仅在路径可访问时复用 `GEMINI_CLI_HOME`；POSIX 路径会转成 UNC
+ * - Windows 主进程 + WSL 运行时若 `GEMINI_CLI_HOME` 已是 Windows/UNC 路径，则无需 distro 也可直接复用
+ * - Windows 主进程 + WSL 运行时若 `GEMINI_CLI_HOME` 为 POSIX 路径，则转成 UNC
  * - WSL on Windows 返回 UNC 路径
  * - WSL 单元测试/非 Windows 环境优先使用 `GEMINI_CLI_HOME`，否则返回 POSIX `~/.gemini`
  * - Windows/Pwsh 返回本机 `%USERPROFILE%\\.gemini`
@@ -331,6 +332,8 @@ async function resolveGeminiHomePath(
   if (runtimeEnv !== "wsl") return resolveGeminiHomeWindows();
   if (os.platform() !== "win32")
     return configuredHome || path.posix.join(os.homedir(), ".gemini");
+  if (configuredHome && isWindowsStylePath(configuredHome))
+    return tidyPathCandidate(configuredHome);
   const distro = String(options.distro || "").trim();
   if (!distro) return null;
   if (configuredHome) {

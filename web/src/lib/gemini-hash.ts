@@ -5,7 +5,7 @@
  * 清理从日志/设置中得到的路径候选：
  * - 去除首尾空白与包裹引号
  * - 折叠 JSON 转义反斜杠（例如 C:\\code -> C:\code）
- * - 去除尾部分隔符
+ * - 去除尾部分隔符，但保留根目录语义
  */
 export function tidyPathCandidate(value: string): string {
   try {
@@ -15,8 +15,31 @@ export function tidyPathCandidate(value: string): string {
       .replace(/^'|'$/g, "")
       .trim();
     s = s.replace(/\\\\/g, "\\").trim();
-    s = s.replace(/[\\/]+$/g, "");
+    s = trimTrailingSeparatorsPreserveRoot(s);
     return s;
+  } catch {
+    return String(value || "").trim();
+  }
+}
+
+/**
+ * 中文说明：去掉路径尾部分隔符，但保留根目录语义。
+ * - `C:` / `C:\` / `C:/` 统一保留为 `C:\`
+ * - `/mnt/c/` 保留为 `/mnt/c`
+ * - `/` 保留为 `/`
+ */
+function trimTrailingSeparatorsPreserveRoot(value: string): string {
+  try {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const normalized = raw.replace(/\//g, "\\");
+    const driveRootMatch = normalized.match(/^([a-zA-Z]):(?:\\+)?$/);
+    if (driveRootMatch) return `${driveRootMatch[1].toUpperCase()}:\\`;
+    const posixLike = raw.replace(/\\/g, "/");
+    const mountRootMatch = posixLike.match(/^\/mnt\/([a-zA-Z])\/?$/);
+    if (mountRootMatch) return `/mnt/${mountRootMatch[1].toLowerCase()}`;
+    if (/^\/+$/.test(posixLike)) return "/";
+    return raw.replace(/[\\/]+$/g, "");
   } catch {
     return String(value || "").trim();
   }
@@ -83,8 +106,11 @@ export function deriveGeminiProjectHashInputCandidatesFromPath(pathCandidate: st
 
     if (isPosix) {
       add(normalizeGeminiPathForHash(base));
-      const m = base.match(/^\/mnt\/([a-zA-Z])\/(.*)$/);
-      if (m) add(`${m[1].toUpperCase()}:\\${m[2].replace(/\//g, "\\")}`);
+      const m = base.match(/^\/mnt\/([a-zA-Z])(?:\/(.*))?$/);
+      if (m) {
+        const rest = String(m[2] || "").replace(/\//g, "\\");
+        add(rest ? `${m[1].toUpperCase()}:\\${rest}` : `${m[1].toUpperCase()}:\\`);
+      }
     } else if (isDrive || isUNC) {
       add(normalizeGeminiPathForHash(base));
       add(normalizeGeminiWinPathForHash(base));

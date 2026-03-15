@@ -10,6 +10,13 @@ import {
 } from "./projectTemp";
 import { getDistroHomeSubPathUNCAsync } from "../wsl";
 
+const TEST_WSL_HOME = "/home/example-user";
+const TEST_WSL_PROJECT_ROOT = `${TEST_WSL_HOME}/demo`;
+const TEST_WSL_GEMINI_HOME = `${TEST_WSL_HOME}/.gemini`;
+const TEST_WSL_CUSTOM_GEMINI_HOME = `${TEST_WSL_HOME}/.gemini-custom`;
+const TEST_UNC_GEMINI_HOME = "\\\\wsl.localhost\\Ubuntu-24.04\\home\\example-user\\.gemini";
+const TEST_UNC_CUSTOM_GEMINI_HOME = "\\\\wsl.localhost\\Ubuntu-24.04\\home\\example-user\\.gemini-custom";
+
 vi.mock("../wsl", () => ({
   getDistroHomeSubPathUNCAsync: vi.fn(),
 }));
@@ -63,10 +70,10 @@ describe("Gemini 项目临时目录解析", () => {
 
     const markerDir = path.join(geminiHome, "tmp", "demo-worktree");
     await fsp.mkdir(markerDir, { recursive: true });
-    await fsp.writeFile(path.join(markerDir, ".project_root"), "/home/lulu/demo", "utf8");
+    await fsp.writeFile(path.join(markerDir, ".project_root"), TEST_WSL_PROJECT_ROOT, "utf8");
 
     const projectId = await resolveGeminiProjectIdentifier({
-      projectWslRoot: "/home/lulu/demo",
+      projectWslRoot: TEST_WSL_PROJECT_ROOT,
       runtimeEnv: "wsl",
     });
 
@@ -89,47 +96,47 @@ describe("Gemini 项目临时目录解析", () => {
 
   it("WSL 运行时将 Gemini temp 目录解析为 UNC 路径", async () => {
     vi.spyOn(os, "platform").mockReturnValue("win32" as any);
-    vi.mocked(getDistroHomeSubPathUNCAsync).mockResolvedValue("\\\\wsl.localhost\\Ubuntu-24.04\\home\\lulu\\.gemini");
+    vi.mocked(getDistroHomeSubPathUNCAsync).mockResolvedValue(TEST_UNC_GEMINI_HOME);
     const originalReadFile = fsp.readFile.bind(fsp);
     vi.spyOn(fsp, "readFile").mockImplementation(async (targetPath: any, ...args: any[]) => {
       const normalizedPath = String(targetPath || "");
-      if (normalizedPath === "\\\\wsl.localhost\\Ubuntu-24.04\\home\\lulu\\.gemini\\projects.json")
-        return JSON.stringify({ projects: { "/home/lulu/demo": "demo" } }) as any;
+      if (normalizedPath === `${TEST_UNC_GEMINI_HOME}\\projects.json`)
+        return JSON.stringify({ projects: { [TEST_WSL_PROJECT_ROOT]: "demo" } }) as any;
       return await (originalReadFile as any)(targetPath, ...args);
     });
 
     const tempRoot = await resolveGeminiProjectTempRootWinPath({
-      projectWslRoot: "/home/lulu/demo",
+      projectWslRoot: TEST_WSL_PROJECT_ROOT,
       runtimeEnv: "wsl",
       distro: "Ubuntu-24.04",
     });
     const imageRoot = await resolveGeminiImageDirWinPath({
-      projectWslRoot: "/home/lulu/demo",
+      projectWslRoot: TEST_WSL_PROJECT_ROOT,
       runtimeEnv: "wsl",
       distro: "Ubuntu-24.04",
     });
 
-    expect(tempRoot).toBe("\\\\wsl.localhost\\Ubuntu-24.04\\home\\lulu\\.gemini\\tmp\\demo");
-    expect(imageRoot).toBe("\\\\wsl.localhost\\Ubuntu-24.04\\home\\lulu\\.gemini\\tmp\\demo\\images");
+    expect(tempRoot).toBe(`${TEST_UNC_GEMINI_HOME}\\tmp\\demo`);
+    expect(imageRoot).toBe(`${TEST_UNC_GEMINI_HOME}\\tmp\\demo\\images`);
   });
 
   it("Windows 主进程在 WSL 模式下会把 POSIX 版 GEMINI_CLI_HOME 转成 UNC", async () => {
     vi.spyOn(os, "platform").mockReturnValue("win32" as any);
-    process.env.GEMINI_CLI_HOME = "/home/lulu/.gemini-custom";
+    process.env.GEMINI_CLI_HOME = TEST_WSL_CUSTOM_GEMINI_HOME;
     const originalReadFile = fsp.readFile.bind(fsp);
     vi.spyOn(fsp, "readFile").mockImplementation(async (targetPath: any, ...args: any[]) => {
       const normalizedPath = String(targetPath || "");
-      if (normalizedPath === "\\\\wsl.localhost\\Ubuntu-24.04\\home\\lulu\\.gemini-custom\\projects.json")
-        return JSON.stringify({ projects: { "/home/lulu/demo": "demo" } }) as any;
+      if (normalizedPath === `${TEST_UNC_CUSTOM_GEMINI_HOME}\\projects.json`)
+        return JSON.stringify({ projects: { [TEST_WSL_PROJECT_ROOT]: "demo" } }) as any;
       return await (originalReadFile as any)(targetPath, ...args);
     });
 
     const tempRoot = await resolveGeminiProjectTempRootWinPath({
-      projectWslRoot: "/home/lulu/demo",
+      projectWslRoot: TEST_WSL_PROJECT_ROOT,
       runtimeEnv: "wsl",
       distro: "Ubuntu-24.04",
     });
 
-    expect(tempRoot).toBe("\\\\wsl.localhost\\Ubuntu-24.04\\home\\lulu\\.gemini-custom\\tmp\\demo");
+    expect(tempRoot).toBe(`${TEST_UNC_CUSTOM_GEMINI_HOME}\\tmp\\demo`);
   });
 });

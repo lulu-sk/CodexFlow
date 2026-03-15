@@ -6,6 +6,7 @@ import {
   formatHistoryLocalPathPositionSuffix,
   resolveHistoryLocalPathLink,
   shouldAppendHistoryLocalPathPositionSuffix,
+  transformHistoryMarkdownUrl,
 } from "./history-markdown";
 
 describe("resolveHistoryLocalPathLink", () => {
@@ -61,6 +62,22 @@ describe("resolveHistoryLocalPathLink", () => {
 
   it("非本地路径链接返回 null", () => {
     expect(resolveHistoryLocalPathLink("https://example.com/docs")).toBeNull();
+  });
+});
+
+describe("transformHistoryMarkdownUrl", () => {
+  it("保留 Windows 本地绝对路径链接，避免被清空为危险协议", () => {
+    expect(transformHistoryMarkdownUrl("C:\\ProgramData\\NVIDIA Corporation\\NVIDIA app\\UpdateFramework"))
+      .toBe("C:\\ProgramData\\NVIDIA Corporation\\NVIDIA app\\UpdateFramework");
+  });
+
+  it("保留 file URI 本地链接", () => {
+    expect(transformHistoryMarkdownUrl("file:///C:/work/demo/main.cs#L42"))
+      .toBe("file:///C:/work/demo/main.cs#L42");
+  });
+
+  it("继续拦截不安全协议", () => {
+    expect(transformHistoryMarkdownUrl("javascript:alert(1)")).toBe("");
   });
 });
 

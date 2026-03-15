@@ -12,6 +12,7 @@ export type DebugConfig = {
   version: number;
   global: {
     diagLog: boolean;          // 主/渲染进程诊断日志（写入 perf.log）
+    whiteScreenLog: boolean;   // 白屏/强制刷新/渲染恢复诊断（默认开启）
     openDevtools: boolean;     // 启动时强制打开 DevTools
   };
   renderer: {
@@ -125,7 +126,7 @@ function stripJsonComments(input: string): string {
 export function getDefaultDebugConfig(): DebugConfig {
   return {
     version: 1,
-    global: { diagLog: false, openDevtools: false },
+    global: { diagLog: false, whiteScreenLog: true, openDevtools: false },
     renderer: { uiDebug: false, notifications: { debug: false, menu: "auto" }, atSearchDebug: false },
     terminal: { frontend: { debug: false, disablePin: false }, pty: { debug: false } },
     fileIndex: {
@@ -150,6 +151,7 @@ function renderJsonc(cfg: DebugConfig): string {
   lines.push("  // 全局与日志");
   lines.push("  \"global\": {");
   lines.push("    \"diagLog\": " + (cfg.global.diagLog ? "true" : "false") + ", // 主/渲染进程诊断写 perf.log");
+  lines.push("    \"whiteScreenLog\": " + (cfg.global.whiteScreenLog ? "true" : "false") + ", // 白屏/强制刷新/恢复链路日志，默认建议保持开启");
   lines.push("    \"openDevtools\": " + (cfg.global.openDevtools ? "true" : "false") + " // 启动强制打开 DevTools（需重启）");
   lines.push("  },");
   lines.push("  // 渲染层");
@@ -195,6 +197,7 @@ function merge(a: DebugConfig, b: Partial<DebugConfig> | null | undefined): Debu
   try { x.version = Number((b as any).version ?? a.version ?? 1); } catch { x.version = a.version; }
   x.global = {
     diagLog: pick((b as any)?.global?.diagLog, a.global.diagLog),
+    whiteScreenLog: pick((b as any)?.global?.whiteScreenLog, a.global.whiteScreenLog),
     openDevtools: pick((b as any)?.global?.openDevtools, a.global.openDevtools),
   } as any;
   x.renderer = {

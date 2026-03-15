@@ -49,7 +49,7 @@ describe("parseGeminiSessionFile（超大文件 summaryOnly 预览兜底）", ()
           id: "m1",
           timestamp: startTime,
           type: "user",
-          content: "`/mnt/c/Users/52628/AppData/Roaming/codexflow/assets/CodexFlow/image-20260131-003734-k8xy.png`\n\n真实首条：你好",
+          content: "`/mnt/c/Users/example-user/AppData/Roaming/codexflow/assets/CodexFlow/image-20260131-003734-k8xy.png`\n\n真实首条：你好",
         },
         {
           id: "m2",
