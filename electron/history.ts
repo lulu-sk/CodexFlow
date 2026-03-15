@@ -14,6 +14,7 @@ import { perfLogger } from './log';
 import settings from './settings';
 import { extractTaggedPrefix } from './agentSessions/shared/taggedPrefix';
 import { deriveGeminiProjectHashCandidatesFromPath, extractGeminiProjectHashFromPath } from './agentSessions/gemini/parser';
+import { pathMatchesDirKeyScope, tidyPathCandidate } from "./agentSessions/shared/path";
 
 /**
  * History 读取模块: 支持逐行解析 JSONL, list/read 接口
@@ -66,11 +67,11 @@ function toWslLikePathKey(input?: string): string {
     } else {
       // 仅对盘符绝对路径做规则转换（避免误把 C:relative 之类的字符串当作绝对路径）
       const winLike = s.replace(/\//g, "\\");
-      const m = winLike.match(/^([a-zA-Z]):\\(.*)$/);
+      const m = winLike.match(/^([a-zA-Z]):(?:\\(.*))?$/);
       if (m) {
         const drive = m[1].toLowerCase();
         const rest = String(m[2] || "").replace(/\\/g, "/");
-        s = `/mnt/${drive}/${rest}`;
+        s = rest ? `/mnt/${drive}/${rest}` : `/mnt/${drive}`;
       }
     }
 
@@ -97,7 +98,7 @@ function canonicalizeHistoryPathForMatch(input?: string): string {
         return x.toLowerCase();
       }
     }
-    if (/^[a-zA-Z]:\\/.test(s)) {
+    if (/^[a-zA-Z]:(?:\\|$)/.test(s)) {
       const x = toWslLikePathKey(s);
       if (x) return x;
     }
@@ -387,7 +388,8 @@ type HistoryListCacheEntry = {
   savedAt: number;
 };
 
-const PARSER_VERSION = 'v9';
+// 中文说明：历史归属语义变更后提升版本，强制失效旧的列表缓存，避免继续复用错误归属结果。
+const PARSER_VERSION = 'v10';
 const CACHE_SCHEMA_VERSION = '2';
 
 /**
@@ -441,13 +443,8 @@ function collectHistoryCwdCandidates(parsed: any, prefix: string): string[] {
    */
   const tidy = (value?: string): string => {
     try {
-      if (typeof value !== 'string') return '';
-      let s = value.replace(/\\n/g, '')
-        .replace(/^"|"$/g, '')
-        .replace(/\\\\/g, '\\')
-        .trim()
-        .replace(/[\\/]+$/g, '');
-      return s;
+      if (typeof value !== "string") return "";
+      return tidyPathCandidate(value);
     } catch {
       return String(value || '').trim();
     }
@@ -726,22 +723,12 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
     const norm = (s?: string): string => {
       try {
         if (!s) return '';
-        let v = String(s);
-        // remove literal "\\n" sequences and surrounding quotes
-        v = v.replace(/\\n/g, '');
-        v = v.replace(/^"|"$/g, '');
-        // collapse doubled backslashes in JSON strings (G:\\code -> G:\code)
-        v = v.replace(/\\\\/g, '\\');
-        // trim whitespace
-        v = v.trim();
-        // drop trailing slashes/backslashes noise
-        v = v.replace(/[\\/]+$/g, '');
-        return v;
+        return tidyPathCandidate(String(s));
       } catch { return String(s || '').trim(); }
     };
     const push = (v?: string) => { const t = norm(v); if (t) out.push(t); };
-    const pw = (projectWslPath || '').split('\\').join('/').replace(/\/$/, '');
-    const pm = (projectWinPath || '').replace(/[\\/]+$/, '');
+    const pw = tidyPathCandidate(projectWslPath || "").split("\\").join("/");
+    const pm = tidyPathCandidate(projectWinPath || "");
     if (pw) push(pw);
     if (pm) {
       push(pm);
@@ -826,13 +813,8 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
       const reCwdLine = /Current\s+working\s+directory:\s*([^\r\n]+)/i;
       const tidy = (v?: string) => {
         try {
-          if (typeof v !== 'string') return '';
-          let s = v.replace(/\\n/g, '')
-            .replace(/^"|"$/g, '')
-            .replace(/\\\\/g, '\\')
-            .trim()
-            .replace(/[\\/]+$/g, '');
-          return s;
+          if (typeof v !== "string") return "";
+          return tidyPathCandidate(v);
         } catch { return String(v || '').trim(); }
       };
       return await new Promise<string>((resolve) => {
@@ -1046,17 +1028,8 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
             let belongs = true;
             if (needlesCanon.length > 0) {
               // 路径边界匹配：仅当候选 cwd 在项目路径之内（含相等）时命中
-              const startsWithBoundary = (child: string, parent: string): boolean => {
-                try {
-                  if (!child || !parent) return false;
-                  const c = child.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/$/, '');
-                  const p = parent.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/$/, '');
-                  if (c === p) return true;
-                  return c.startsWith(p + '/');
-                } catch { return false; }
-              };
               if (cCanon.length > 0) {
-                belongs = cCanon.some((c) => needlesCanon.some((n) => startsWithBoundary(c, n)));
+                belongs = cCanon.some((c) => needlesCanon.some((n) => pathMatchesDirKeyScope(c, n)));
                 logDebug(`belongs[meta] file=${fp} cCanon=${JSON.stringify(cCanon)} match=${belongs}`);
               } else {
                 // 先查找前缀中是否包含项目路径子串
@@ -1070,7 +1043,7 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
                       if (cc) {
                         dirKey = dirKey || cc;
                         cCanon = cCanon.includes(cc) ? cCanon : [...cCanon, cc];
-                        hit = needlesCanon.some((n) => startsWithBoundary(cc, n));
+                        hit = needlesCanon.some((n) => pathMatchesDirKeyScope(cc, n));
                       }
                       logDebug(`fallback-cwd file=${fp} cwd=${cwdFromFile} cc=${cc} match=${hit}`);
                     } else {

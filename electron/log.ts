@@ -43,6 +43,21 @@ export class PerfLogger {
    */
   log(msg: string) {
     if (!this.enabled) return;
+    this.writeLine(msg);
+  }
+
+  /**
+   * 写入一条强制日志（不受 `global.diagLog` 影响）。
+   * 说明：仅用于白屏/强制刷新等需要默认保留排障线索的关键诊断。
+   */
+  logAlways(msg: string): void {
+    this.writeLine(msg);
+  }
+
+  /**
+   * 实际执行日志落盘。
+   */
+  private writeLine(msg: string): void {
     const line = `${new Date().toISOString()} ${msg}`;
     try { fs.appendFileSync(this.resolveLogPath(), line + "\n", "utf8"); } catch {}
   }

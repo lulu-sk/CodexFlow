@@ -17,6 +17,11 @@ import { getGeminiRootCandidatesFastAsync, discoverGeminiSessionFiles } from "./
 import { parseClaudeSessionFile } from "./agentSessions/claude/parser";
 import { parseGeminiSessionFile, deriveGeminiProjectHashCandidatesFromPath } from "./agentSessions/gemini/parser";
 import { filterHistoryPreviewText } from "./agentSessions/shared/preview";
+import {
+  dirKeyFromCwd as dirKeyFromCwdShared,
+  dirKeyOfFilePath as dirKeyOfFilePathShared,
+  tidyPathCandidate as tidyPathCandidateShared,
+} from "./agentSessions/shared/path";
 
 // 仅在存在时使用 chokidar；否则跳过监听
 let chokidar: any = null;
@@ -53,6 +58,14 @@ type PersistDetails = {
   version: string;
   files: Record<string, { sig: FileSig; details: Details }>;
   savedAt: number;
+};
+
+type DirKeyResolutionState = {
+  normalizedCwd: string;
+  resolvedDirKey: string;
+  fallbackDirKey: string;
+  hasCwd: boolean;
+  usesFallbackDir: boolean;
 };
 
 // 单次偏好的详情缓存大小：保留最近查看的几条，防止无限增长
@@ -217,7 +230,8 @@ function stripDetailsForPersist(details: Details): Details {
   return { ...rest, messages: [] };
 }
 
-const VERSION = "v9";
+// 中文说明：历史索引语义调整后提升版本，强制丢弃旧的 index/details 缓存，避免继续沿用错误 dirKey。
+const VERSION = "v11";
 
 /**
  * 读取 Claude Code 的 Agent 历史开关（默认 false）。
@@ -267,16 +281,25 @@ function getUserDataDir(): string {
 
 function indexPath(): string { return path.join(getUserDataDir(), `history.index.${VERSION}.json`); }
 function detailsPath(): string { return path.join(getUserDataDir(), `history.details.${VERSION}.json`); }
-function purgeLegacyPersistFiles(): void {
+/**
+ * 中文说明：删除当前索引版本以外的旧缓存文件，并返回本次清理掉的文件名。
+ */
+function purgeLegacyPersistFiles(): string[] {
+  const removed: string[] = [];
   try {
     const dir = getUserDataDir();
     const files = fs.readdirSync(dir);
+    const currentSuffix = `.${VERSION}.json`;
     for (const fileName of files) {
       if (!/^history\.(?:index|details)\.v\d+\.json$/i.test(fileName)) continue;
-      if (fileName.endsWith(`.v${VERSION}.json`)) continue;
-      try { fs.rmSync(path.join(dir, fileName), { force: true }); } catch {}
+      if (fileName.endsWith(currentSuffix)) continue;
+      try {
+        fs.rmSync(path.join(dir, fileName), { force: true });
+        removed.push(fileName);
+      } catch {}
     }
   } catch {}
+  return removed;
 }
 
 // ---- Minimal debug (opt-in) ----
@@ -704,18 +727,7 @@ export function getCachedDetails(filePath: string): Details | null {
 function tidyPathCandidate(v?: string): string {
   try {
     if (typeof v !== 'string') return '';
-    let s = v
-      // 去除日志中可能残留的字面量 \n
-      .replace(/\\n/g, '')
-      // 去除意外包裹的引号
-      .replace(/^"|"$/g, '')
-      // 折叠 JSON 转义带来的双反斜杠
-      .replace(/\\\\/g, '\\')
-      // 去除首尾空白
-      .trim()
-      // 去除尾部多余分隔符
-      .replace(/[\\/]+$/g, '');
-    return s;
+    return tidyPathCandidateShared(v);
   } catch {
     return String(v || '').trim();
   }
@@ -727,46 +739,41 @@ function isLikelyPath(p?: string): boolean {
     const s = String(p || '').trim();
     if (s.length < 2 || s.length > 512) return false;
     if (/[<>\{\};]/.test(s)) return false;
-    if (/^[a-zA-Z]:\\[^\r\n\t"'<>{}|?*]+/.test(s)) return true; // 盘符
+    if (/^[a-zA-Z]:\\(?:[^\r\n\t"'<>{}|?*]+)?$/.test(s)) return true; // 盘符（含根目录 C:\）
     if (/^\\\\[^\s"'\\]+\\[^\s"'\\]+/.test(s)) return true; // UNC
-    if(/^\/mnt\/[a-zA-Z]\//.test(s)) return true; // /mnt/<drive>
-    if(/^\/[\w._-]+\//.test(s)) return true; // 其他 POSIX 根
+    if (/^\/mnt\/[a-zA-Z](?:\/.*)?$/.test(s)) return true; // /mnt/<drive>（含盘根目录）
+    if (/^\/[\w._-]+\//.test(s)) return true; // 其他 POSIX 根
+    if (s === "/") return true;
     return false;
   } catch { return false; }
 }
 
 function dirKeyOf(filePath: string): string {
   try {
-    const d = path.dirname(filePath);
-    // 归一：UNC -> WSL 风格；Windows 盘 -> /mnt/<drive>
-    // 先统一斜杠，再折叠重复斜杠，避免 /mnt/c//project 之类的不一致
-    const s = d.replace(/\\/g, "/");
-    const s1 = s.replace(/\/+/g, "/");
-    const m = s1.match(/^([a-zA-Z]):\/(.*)$/);
-    if (m) return (`/mnt/${m[1].toLowerCase()}/${m[2]}`).replace(/\/+/g, "/").replace(/\/+$/, "").toLowerCase();
-    if (isUNCPath(d)) {
-      const info = uncToWsl(d);
-      if (info) return info.wslPath.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/\/+$/, "").toLowerCase();
-    }
-    return s1.replace(/\/+$/, "").toLowerCase();
+    return dirKeyOfFilePathShared(filePath);
   } catch { return filePath; }
 }
 
 // 从 CWD 直接计算 dirKey（不降一级）
 function dirKeyFromCwd(dirPath: string): string {
   try {
-    let d = tidyPathCandidate(dirPath);
-    // UNC -> WSL；盘符 -> /mnt/<drive>
-    if (isUNCPath(d)) {
-      const info = uncToWsl(d);
-      if (info) d = info.wslPath;
-    } else {
-      const m = d.match(/^([a-zA-Z]):\\(.*)$/);
-      if (m) d = `/mnt/${m[1].toLowerCase()}/${m[2].replace(/\\/g, '/')}`;
-    }
-    const s = d.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '').toLowerCase();
-    return s;
+    return dirKeyFromCwdShared(dirPath);
   } catch { return dirPath; }
+}
+
+/**
+ * 中文说明：统一判断某条历史记录是否仍在使用“文件所在目录”作为项目归属兜底。
+ * 这用于：
+ * - 决定是否继续重试解析 cwd；
+ * - 让诊断日志与实际归属判定保持一致。
+ */
+function analyzeDirKeyResolution(filePath: string, cwd?: string, dirKey?: string): DirKeyResolutionState {
+  const normalizedCwd = tidyPathCandidate(typeof cwd === "string" ? cwd : "");
+  const fallbackDirKey = dirKeyOf(filePath);
+  const resolvedDirKey = String(dirKey || "").trim() || fallbackDirKey;
+  const hasCwd = !!normalizedCwd;
+  const usesFallbackDir = !resolvedDirKey || resolvedDirKey === fallbackDirKey;
+  return { normalizedCwd, resolvedDirKey, fallbackDirKey, hasCwd, usesFallbackDir };
 }
 
 async function readPrefix(fp: string, maxBytes = 128 * 1024): Promise<string> {
@@ -926,6 +933,15 @@ async function parseSummary(fp: string, stat: fs.Stats): Promise<IndexSummary> {
     // 回退：使用文件所在目录，但这可能与项目无关，仅用于兜底展示
     dirKey = dirKeyOf(fp);
     if (!dbgSrc) dbgSrc = 'fallback.filedir';
+  }
+  const dirResolution = analyzeDirKeyResolution(fp, cwd, dirKey);
+  dirKey = dirResolution.resolvedDirKey;
+  if (dirResolution.hasCwd && dirResolution.usesFallbackDir) {
+    if (idxDbgEnabled()) {
+      perfLogger.log(
+        `[history.indexer.cwd-fallback] file=${JSON.stringify(fp)} src=${JSON.stringify(dbgSrc || "unknown")} cwd=${JSON.stringify(dirResolution.normalizedCwd)} dirKey=${JSON.stringify(dirResolution.resolvedDirKey)} fallbackDir=${JSON.stringify(dirResolution.fallbackDirKey)}`,
+      );
+    }
   }
   try { if (idxDbgEnabled() && idxDbgMatch(fp)) idxLog(`summary file='${fp}' id='${id}' src=${dbgSrc} cwd='${cwd}' dirKey='${dirKey}'`); } catch {}
   // 预览字段由详情解析阶段统一生成（避免与详情筛选逻辑重复/偏差）
@@ -1363,7 +1379,11 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
   try { setIndexerWindowGetter(getWindow); } catch {}
   await perfLogger.time("indexer.start", async () => {
     // 1) 读取持久化缓存
-    purgeLegacyPersistFiles();
+    const removedLegacyPersistFiles = purgeLegacyPersistFiles();
+    if (idxDbgEnabled()) {
+      perfLogger.log(`[indexer] cacheVersion=${VERSION} userData=${JSON.stringify(getUserDataDir())}`);
+      if (removedLegacyPersistFiles.length > 0) perfLogger.log(`[indexer] purgedLegacyCaches=${JSON.stringify(removedLegacyPersistFiles)}`);
+    }
     g.__indexer.index = loadIndex();
     g.__indexer.details = loadDetails();
     try { getDetailsCache().clear(); } catch {}
@@ -1675,9 +1695,8 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
               retries.delete(key);
               return;
             }
-            const fallbackDir = dirKeyOf(fp);
-            const hasCwd = !!(details.cwd && String(details.cwd).trim());
-            const gotProjectDir = hasCwd && (details.dirKey && details.dirKey !== fallbackDir);
+            const dirResolution = analyzeDirKeyResolution(fp, details.cwd, details.dirKey);
+            const gotProjectDir = dirResolution.hasCwd && !dirResolution.usesFallbackDir;
             const slimDetails = stripDetailsForPersist(details);
             const summary: IndexSummary = {
               providerId,
@@ -1686,7 +1705,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
               date: details.date,
               filePath: fp,
               rawDate: details.rawDate,
-              dirKey: details.dirKey || dirKeyOf(fp),
+              dirKey: dirResolution.resolvedDirKey,
               preview: details.preview,
               projectHash: (details as any).projectHash,
               resumeMode: details.resumeMode,
@@ -1702,6 +1721,13 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
               safeWindowSend(win, "history:index:update", { item: summary }, { tag: "indexer", suppressMs: 1000 });
               retries.delete(key);
             } else {
+              if (dirResolution.hasCwd) {
+                if (idxDbgEnabled()) {
+                  perfLogger.log(
+                    `[history.indexer.retry-fallback] file=${JSON.stringify(fp)} reason=${JSON.stringify(reason)} cwd=${JSON.stringify(dirResolution.normalizedCwd)} dirKey=${JSON.stringify(summary.dirKey)} fallbackDir=${JSON.stringify(dirResolution.fallbackDirKey)}`,
+                  );
+                }
+              }
               // 若仍未提取到 cwd，继续按指数回退重试
               const nextDelay = st.count === 1 ? 2500 : (st.count === 2 ? 6000 : 12000);
               idxLog(`[retry] reparse scheduled count=${st.count} next=${nextDelay}ms reason=${reason} file='${fp}'`);
@@ -1734,6 +1760,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
             return;
           }
           const slimDetails = stripDetailsForPersist(details);
+          const dirResolution = analyzeDirKeyResolution(fp, details.cwd, details.dirKey);
           try { getDetailsCache().delete(k); } catch {}
           det.files[k] = { sig, details: slimDetails };
           updatedDetails++;
@@ -1744,7 +1771,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
             date: details.date,
             filePath: fp,
             rawDate: details.rawDate,
-            dirKey: details.dirKey || dirKeyOf(fp),
+            dirKey: dirResolution.resolvedDirKey,
             preview: details.preview,
             projectHash: (details as any).projectHash,
             resumeMode: details.resumeMode,
@@ -1756,10 +1783,15 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
           batch.push(summary);
           // 若暂未提取到 cwd（dirKey 仍为文件所在目录），延迟重试解析
           try {
-            const fallbackDir = dirKeyOf(fp);
-            const hasCwd = !!(details.cwd && String(details.cwd).trim());
-            if (!hasCwd || (summary.dirKey === fallbackDir)) {
-              await scheduleReparse(fp, 2000, hasCwd ? 'dirKey=fallback' : 'no-cwd');
+            if (!dirResolution.hasCwd || dirResolution.usesFallbackDir) {
+              if (dirResolution.hasCwd) {
+                if (idxDbgEnabled()) {
+                  perfLogger.log(
+                    `[history.indexer.schedule-fallback] file=${JSON.stringify(fp)} phase="initial" cwd=${JSON.stringify(dirResolution.normalizedCwd)} dirKey=${JSON.stringify(summary.dirKey)} fallbackDir=${JSON.stringify(dirResolution.fallbackDirKey)}`,
+                  );
+                }
+              }
+              await scheduleReparse(fp, 2000, dirResolution.hasCwd ? 'dirKey=fallback' : 'no-cwd');
             }
           } catch {}
           if (batch.length >= 50) flush();
@@ -1801,6 +1833,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
             return;
           }
           const slimDetails = stripDetailsForPersist(details);
+          const dirResolution = analyzeDirKeyResolution(fp, details.cwd, details.dirKey);
           try { getDetailsCache().delete(k); } catch {}
           det.files[k] = { sig, details: slimDetails };
           const summary: IndexSummary = {
@@ -1810,7 +1843,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
             date: details.date,
             filePath: fp,
             rawDate: details.rawDate,
-            dirKey: details.dirKey || dirKeyOf(fp),
+            dirKey: dirResolution.resolvedDirKey,
             preview: details.preview,
             projectHash: (details as any).projectHash,
             resumeMode: details.resumeMode,
@@ -1821,10 +1854,15 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
           ix.savedAt = Date.now(); det.savedAt = Date.now(); saveIndex(ix); saveDetails(det);
           safeWindowSend(win, "history:index:update", { item: summary }, { tag: "indexer", suppressMs: 1000 });
           try {
-            const fallbackDir = dirKeyOf(fp);
-            const hasCwd = !!(details.cwd && String(details.cwd).trim());
-            if (!hasCwd || (summary.dirKey === fallbackDir)) {
-              await scheduleReparse(fp, 2000, hasCwd ? 'dirKey=fallback(change)' : 'no-cwd(change)');
+            if (!dirResolution.hasCwd || dirResolution.usesFallbackDir) {
+              if (dirResolution.hasCwd) {
+                if (idxDbgEnabled()) {
+                  perfLogger.log(
+                    `[history.indexer.schedule-fallback] file=${JSON.stringify(fp)} phase="watch" cwd=${JSON.stringify(dirResolution.normalizedCwd)} dirKey=${JSON.stringify(summary.dirKey)} fallbackDir=${JSON.stringify(dirResolution.fallbackDirKey)}`,
+                  );
+                }
+              }
+              await scheduleReparse(fp, 2000, dirResolution.hasCwd ? 'dirKey=fallback(change)' : 'no-cwd(change)');
             }
           } catch {}
         } catch {}
@@ -2042,10 +2080,16 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
               idxLog(`[rescan] updated index for file='${fp}' dirKey='${summary.dirKey}'`);
               // If dirKey still falls back, schedule reparse
               try {
-                const fallbackDir = dirKeyOf(fp);
-                const hasCwd = !!(details.cwd && String(details.cwd).trim());
-                if (!hasCwd || (summary.dirKey === fallbackDir)) {
-                  await scheduleReparse(fp, 2500, hasCwd ? 'dirKey=fallback(rescan)' : 'no-cwd(rescan)');
+                const dirResolution = analyzeDirKeyResolution(fp, details.cwd, summary.dirKey);
+                if (!dirResolution.hasCwd || dirResolution.usesFallbackDir) {
+                  if (dirResolution.hasCwd) {
+                    if (idxDbgEnabled()) {
+                      perfLogger.log(
+                        `[history.indexer.schedule-fallback] file=${JSON.stringify(fp)} phase="rescan" cwd=${JSON.stringify(dirResolution.normalizedCwd)} dirKey=${JSON.stringify(summary.dirKey)} fallbackDir=${JSON.stringify(dirResolution.fallbackDirKey)}`,
+                      );
+                    }
+                  }
+                  await scheduleReparse(fp, 2500, dirResolution.hasCwd ? 'dirKey=fallback(rescan)' : 'no-cwd(rescan)');
                 }
               } catch {}
             } catch (e) { idxLog(`[rescan:error] file='${fp}' err=${String(e)}`); }

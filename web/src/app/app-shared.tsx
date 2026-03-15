@@ -9,6 +9,7 @@ import { Combobox } from "@/components/ui/combobox";
 import PathChipsInput, { type PathChip } from "@/components/ui/path-chips-input";
 import { retainPreviewUrl, releasePreviewUrl } from "@/lib/previewUrlRegistry";
 import { retainPastedImage, releasePastedImage, requestTrashWinPath } from "@/lib/imageResourceRegistry";
+import { normalizePathScopeKey } from "@/lib/path-scope";
 import { setActiveFileIndexRoot } from "@/lib/atSearch";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -567,25 +568,7 @@ function toLocalDisplayTime(s: HistorySession): string {
 
 // Canonicalize path to unify UNC/Windows to WSL-like for grouping
 function canonicalizePath(p: string): string {
-  if (!p) return '';
-  const s = String(p);
-  const lower = s.toLowerCase();
-  // UNC: \\wsl.localhost\Distro\... -> /...
-  const uncPrefix = '\\\\wsl.localhost\\';
-  if (lower.startsWith(uncPrefix)) {
-    // strip the prefix, leaving: Distro\path... => /path...
-    const rest = s.slice(uncPrefix.length).replace(/^([^\\]+)\\/, '');
-    return ('/' + rest).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-  }
-  // Windows drive: C:\... -> /mnt/c/...
-  const m = s.match(/^([a-zA-Z]):\\(.*)$/);
-  if (m) {
-    const drive = m[1].toLowerCase();
-    const rest = m[2].replace(/\\/g, '/');
-    return (`/mnt/${drive}/${rest}`).replace(/\/+$/, '').toLowerCase();
-  }
-  // Already POSIX-like or other
-  return s.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  return normalizePathScopeKey(p);
 }
 
 /**

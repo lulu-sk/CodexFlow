@@ -658,7 +658,10 @@ export interface NotificationsAPI {
 }
 
 export interface UtilsAPI {
+  /** 普通调试日志：受 `global.diagLog` 控制。 */
   perfLog(text: string): Promise<{ ok: boolean; error?: string }>;
+  /** 白屏/强制刷新关键日志：受 `global.whiteScreenLog` 控制，默认开启。 */
+  perfLogCritical(text: string): Promise<{ ok: boolean; error?: string }>;
   getWindowsInfo(): Promise<{ ok: boolean; platform?: string; buildNumber?: number; backend?: string; conptyAvailable?: boolean; error?: string }>;
   copyText(text: string): Promise<{ ok: boolean; error?: string }>;
   /** 将路径转换为当前系统可直接使用的剪贴板格式。 */

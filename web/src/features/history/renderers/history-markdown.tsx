@@ -3,7 +3,7 @@
 
 import React, { useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { MarkdownHooks, type ExtraProps, type Components } from "react-markdown";
+import { MarkdownHooks, defaultUrlTransform, type ExtraProps, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import { rehypePrettyCode } from "rehype-pretty-code";
@@ -344,6 +344,18 @@ export function resolveHistoryLocalPathLink(href: string | null | undefined): Re
 }
 
 /**
+ * 中文说明：为历史 Markdown 链接保留本地绝对路径，避免 `react-markdown` 将 `C:\...` 误判为不安全协议。
+ * - 本地绝对路径与 `file://` 链接原样保留，交由点击处理器统一接管；
+ * - 其他链接继续沿用 `react-markdown` 的默认安全策略。
+ */
+export function transformHistoryMarkdownUrl(url: string): string {
+  const rawUrl = String(url || "").trim();
+  if (!rawUrl) return "";
+  if (resolveHistoryLocalPathLink(rawUrl)) return rawUrl;
+  return defaultUrlTransform(rawUrl);
+}
+
+/**
  * 中文说明：将“行/列”信息格式化为 `:line[:column]` 文本后缀。
  */
 export function formatHistoryLocalPathPositionSuffix(link: Pick<ResolvedHistoryLocalLink, "line" | "column"> | null | undefined): string {
@@ -514,6 +526,7 @@ function MarkdownLink(props: MarkdownAnchorProps) {
   const { href, onClick, onContextMenu, children, className, ...rest } = props;
   const { t } = useTranslation(["history"]);
   const localLink = useMemo(() => resolveHistoryLocalPathLink(String(href || "")), [href]);
+  const safeHref = localLink ? "#" : href;
   const labelText = useMemo(() => extractPlainTextFromReactNode(children), [children]);
   const positionSuffix = useMemo(() => formatHistoryLocalPathPositionSuffix(localLink), [localLink]);
   const shouldAppendPositionSuffix = useMemo(
@@ -525,7 +538,7 @@ function MarkdownLink(props: MarkdownAnchorProps) {
     <a
       {...rest}
       className={cn("break-words [overflow-wrap:anywhere]", className)}
-      href={href}
+      href={safeHref}
       onContextMenu={async (e) => {
         try {
           if (onContextMenu) onContextMenu(e);
@@ -540,11 +553,20 @@ function MarkdownLink(props: MarkdownAnchorProps) {
           if (onClick) onClick(e);
           if (e.defaultPrevented) return;
           const url = String(href || "");
-          if (!url) return;
+          if (!url) {
+            e.preventDefault();
+            try {
+              await (window as any)?.host?.utils?.perfLog?.("[history.link] empty href prevented");
+            } catch {}
+            return;
+          }
           // 允许页面内锚点默认行为
           if (url.startsWith("#")) return;
           if (localLink) {
             e.preventDefault();
+            try {
+              await (window as any)?.host?.utils?.perfLog?.(`[history.link] local click href=${url}`);
+            } catch {}
             const opened = await openHistoryLocalPath(localLink, menuCtx?.projectRootPath);
             if (!opened) {
               try { alert(String(t("history:cannotOpenDefault"))); } catch {}
@@ -552,6 +574,9 @@ function MarkdownLink(props: MarkdownAnchorProps) {
             return;
           }
           e.preventDefault();
+          try {
+            await (window as any)?.host?.utils?.perfLog?.(`[history.link] external click href=${url}`);
+          } catch {}
           try {
             await window.host.utils.openExternalUrl(url);
           } catch {
@@ -829,6 +854,7 @@ export function HistoryMarkdown(props: HistoryMarkdownProps) {
               ],
             ]}
             components={MARKDOWN_COMPONENTS}
+            urlTransform={transformHistoryMarkdownUrl}
             fallback={
               // 说明：异步高亮尚未完成时的兜底展示，尽量维持旧版“按换行展示”的直观效果。
               <div className="min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-[var(--cf-text-primary)]">{text}</div>

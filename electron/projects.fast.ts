@@ -11,6 +11,7 @@ import { getClaudeRootCandidatesFastAsync, discoverClaudeSessionFiles } from "./
 import { getGeminiRootCandidatesFastAsync, discoverGeminiSessionFiles } from "./agentSessions/gemini/discovery";
 import { parseClaudeSessionFile } from "./agentSessions/claude/parser";
 import { parseGeminiSessionFile, extractGeminiProjectHashFromPath } from "./agentSessions/gemini/parser";
+import { tidyPathCandidate } from "./agentSessions/shared/path";
 import { perfLogger } from "./log";
 import { getDebugConfig } from "./debugConfig";
 import settings from "./settings";
@@ -103,6 +104,21 @@ function toDrivePathFromMnt(input: string): string {
   } catch {
     return "";
   }
+}
+
+/**
+ * 中文说明：为项目推导展示名称。
+ * - 常规目录使用末级目录名；
+ * - 盘符根目录回退为小写盘符（如 `C:\` -> `c`），保持侧栏展示稳定。
+ */
+function deriveProjectDisplayName(winPath: string, wslPath: string): string {
+  const winName = path.basename(String(winPath || ""));
+  if (winName) return winName;
+  const driveRootMatch = String(winPath || "").match(/^([a-zA-Z]):\\?$/);
+  if (driveRootMatch) return driveRootMatch[1].toLowerCase();
+  const wslName = String(wslPath || "").split("/").filter(Boolean).pop() || "";
+  if (wslName) return wslName;
+  return "project";
 }
 
 /**
@@ -285,8 +301,7 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
       if (!raw) return;
       raw = raw.replace(/^\"|\"$/g, '').trim();
       raw = raw.split(/\\n|\r?\n|<\/?[a-zA-Z_:-]+>/)[0].trim();
-      raw = raw.replace(/\\\\/g, '\\');
-      raw = raw.replace(/[\\/]+$/g, '');
+      raw = tidyPathCandidate(raw);
       if (!raw) return;
       if (/\(\?:/.test(raw) || /\\r\?/.test(raw)) return;
       // 兼容 PowerShell Provider 前缀（如 Microsoft.PowerShell.Core\\FileSystem::C:\\...）
@@ -305,8 +320,8 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
           const distroName = info?.distro || ctx.distro || 'Ubuntu-24.04';
           winPathGuess = wslToUNC(wslPathGuess, distroName);
         }
-      } else if (/^[A-Za-z]:\\/.test(raw) || /^\\\\[^\s"'\\]+\\[^\s"'\\]+/.test(raw)) {
-        winPathGuess = raw;
+      } else if (/^[A-Za-z]:(?:\\.*)?$/.test(raw) || /^\\\\[^\s"'\\]+\\[^\s"'\\]+/.test(raw)) {
+        winPathGuess = /^[A-Za-z]:$/.test(raw) ? `${raw}\\` : raw;
         wslPathGuess = normWsl(ruleWinToWsl(raw));
       } else {
         return;
@@ -323,7 +338,7 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
       // 优先接受真实存在的目录；若不存在，也依据会话记录纳入（"会话即真相"）
       await ensureDirExists(cleanWin);
 
-      const name = (cleanWin ? path.basename(cleanWin) : (cleanWsl ? cleanWsl.split('/').pop() : '')) || 'project';
+      const name = deriveProjectDisplayName(cleanWin, cleanWsl);
       const hasDot = (await pathExists(path.join(cleanWin, '.codex'))) || (await pathExists(path.join(cleanWin, 'codex.json')));
       projects.push({
         id: uid(),
@@ -375,9 +390,7 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
                     s = s.replace(/^\"|\"$/g, '').trim();
                     // 截断到首个 JSON 转义换行或标签边界，避免把后续说明拼进路径
                     s = s.split(/\\n|\r?\n|<\/?[a-zA-Z_:-]+>/)[0].trim();
-                    // 折叠 JSON 转义双反斜杠，避免盘符路径误判
-                    s = s.replace(/\\\\/g, '\\');
-                    s = s.replace(/[\\/]+$/g, '');
+                    s = tidyPathCandidate(s);
                     raw = s;
                   }
                   if (!raw) continue;
@@ -395,8 +408,8 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
                       const distroName = info?.distro || distro || 'Ubuntu-24.04';
                       winPathGuess = wslToUNC(wslPathGuess, distroName);
                     }
-                  } else if (/^[A-Za-z]:\\/.test(raw) || /^\\\\[^\s"'\\]+\\[^\s"'\\]+/.test(raw)) {
-                    winPathGuess = raw;
+                  } else if (/^[A-Za-z]:(?:\\.*)?$/.test(raw) || /^\\\\[^\s"'\\]+\\[^\s"'\\]+/.test(raw)) {
+                    winPathGuess = /^[A-Za-z]:$/.test(raw) ? `${raw}\\` : raw;
                     wslPathGuess = normWsl(ruleWinToWsl(raw));
                   } else {
                     // 降噪：仅计数并采样
@@ -422,7 +435,7 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
                   const key = canonKey(cleanWin, cleanWsl);
                   if (seen.has(key)) continue;
                   seen.add(key);
-                  const name = (cleanWin ? path.basename(cleanWin) : (cleanWsl ? cleanWsl.split('/').pop() : '')) || 'project';
+                  const name = deriveProjectDisplayName(cleanWin, cleanWsl);
                   const hasDot = (await pathExists(path.join(cleanWin, '.codex'))) || (await pathExists(path.join(cleanWin, 'codex.json')));
                   projects.push({ id: uid(), name, winPath: cleanWin, wslPath: cleanWsl, hasDotCodex: hasDot, createdAt: Date.now() });
                   agg.added++;
@@ -518,7 +531,7 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
       const k = canonKey(p.winPath, p.wslPath);
       if (!k || uniqueMap.has(k)) continue;
       // 规范名称：优先 Windows/UNC 末级，保留大小写
-      const fixedName = p.winPath ? path.basename(p.winPath) : (p.wslPath ? p.wslPath.split('/').pop() || p.name : p.name);
+      const fixedName = deriveProjectDisplayName(p.winPath, p.wslPath);
       const prev = storeMap.get(k);
       if (prev) {
         const preservedCreatedAt = typeof prev.createdAt === "number" && !Number.isNaN(prev.createdAt) ? prev.createdAt : p.createdAt;
@@ -557,7 +570,7 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
         const cleanWsl = s.wslPath ? normWsl(s.wslPath) : "";
         const k = canonKey(cleanWin, cleanWsl);
         if (!k || uniqueMap.has(k)) continue;
-        const fixedName = cleanWin ? path.basename(cleanWin) : (cleanWsl ? cleanWsl.split('/').pop() || s.name : s.name);
+        const fixedName = deriveProjectDisplayName(cleanWin, cleanWsl || s.wslPath);
         uniqueMap.set(k, {
           ...s,
           winPath: pickPreferredWinPath(s.winPath, cleanWin, cleanWsl),
@@ -578,7 +591,7 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
     try {
       const cleanWin = normalizeWinPath(s.winPath);
       if (await ensureDirExists(cleanWin)) {
-        const fixedName = cleanWin ? path.basename(cleanWin) : (s.wslPath ? s.wslPath.split('/').pop() || s.name : s.name);
+        const fixedName = deriveProjectDisplayName(cleanWin, s.wslPath);
         cleaned.push({ ...s, winPath: pickPreferredWinPath(s.winPath, cleanWin, s.wslPath), name: fixedName || s.name });
       }
     } catch {}
@@ -649,7 +662,7 @@ export function addProjectByWinPath(winPath: string, options?: AddProjectOptions
     }
     const proj: Project = {
       id: uid(),
-      name: path.basename(normalized),
+      name: deriveProjectDisplayName(normalized, wslPath),
       winPath: normalized,
       wslPath,
       hasDotCodex: fs.existsSync(path.join(normalized, '.codex')) || fs.existsSync(path.join(normalized, 'codex.json')),

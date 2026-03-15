@@ -13,7 +13,7 @@ describe("gemini-attachments", () => {
   });
 
   it("WSL 模式会按 Gemini CLI 规则转义空格与特殊字符", () => {
-    expect(escapeGeminiAttachmentPath("/home/lulu/a b(c).png", "wsl")).toBe("/home/lulu/a\\ b\\(c\\).png");
+    expect(escapeGeminiAttachmentPath("/home/example-user/a b(c).png", "wsl")).toBe("/home/example-user/a\\ b\\(c\\).png");
   });
 
   it("Windows 模式会在需要时用双引号包裹路径", () => {
