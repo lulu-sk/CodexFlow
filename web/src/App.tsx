@@ -196,7 +196,7 @@ import {
   normDir,
   normalizeCompletionPrefs,
   normalizeCompletionPreview,
-  normalizeCompletionPreviewForDedupe,
+  normalizeDisplayedCompletionPreviewForDedupe,
   normalizeDirTreeStore,
   normalizeMsToIso,
   normalizeResumeMode,
@@ -207,6 +207,7 @@ import {
   parseRecycleStashes,
   pickUuidFromString,
   resolveHistoryTimelineMeta,
+  shouldDelayOscCompletionForExternalFallback,
   startOfLocalDay,
   summarizeForCommitMessage,
   sumWorktreeProviderCounts,
@@ -301,6 +302,9 @@ type AgentTurnTimerState = {
 };
 
 type CompletionEventSource = "osc" | "external" | "manual" | "unknown";
+type CompletionPreviewNormalizeOptions = {
+  previewEscapedWhitespace?: boolean;
+};
 
 type CompletionSnapshot = {
   preview: string;
@@ -1378,6 +1382,8 @@ export default function CodexFlowManagerUI() {
   });
   const agentTurnCtxMenuRef = useRef<HTMLDivElement | null>(null);
   const completionSnapshotRef = useRef<Record<string, CompletionSnapshot>>({});
+  const pendingOscCompletionTimersRef = useRef<Record<string, number>>({});
+  const pendingOscCompletionPreviewRef = useRef<Record<string, string>>({});
   const resumeCompletionGuardByTabRef = useRef<Record<string, number>>({});
   const ptyNotificationBuffersRef = useRef<Record<string, string>>({});
   const ptyListenersRef = useRef<Record<string, () => void>>({});
@@ -1389,6 +1395,7 @@ export default function CodexFlowManagerUI() {
   const userInputCountByTabIdRef = useRef<Record<string, number>>({});
   const autoCommitQueueByProjectIdRef = useRef<Record<string, Promise<void>>>({});
   const RESUME_COMPLETION_GUARD_MS = 8_000;
+  const CODEX_OSC_EXTERNAL_WAIT_MS = 1_500;
   const COMPLETION_DEDUPE_WINDOW_MS = 1_600;
   const COMPLETION_CROSS_SOURCE_WINDOW_MS = 5_000;
 
@@ -1400,6 +1407,15 @@ export default function CodexFlowManagerUI() {
   useEffect(() => { projectsRef.current = projects; }, [projects]);
   useEffect(() => { dirTreeStoreRef.current = dirTreeStore; }, [dirTreeStore]);
   useEffect(() => { buildRunCfgByDirKeyRef.current = buildRunCfgByDirKey; }, [buildRunCfgByDirKey]);
+  useEffect(() => {
+    return () => {
+      for (const timerId of Object.values(pendingOscCompletionTimersRef.current)) {
+        try { window.clearTimeout(timerId); } catch {}
+      }
+      pendingOscCompletionTimersRef.current = {};
+      pendingOscCompletionPreviewRef.current = {};
+    };
+  }, []);
 
   // 关键修复：渲染进程意外 reload/HMR 后，基于本地快照恢复 tab 与 PTY 绑定，避免“标签页/控制台丢失”。
   const restoredConsoleSessionAppliedRef = useRef(false);
@@ -2154,13 +2170,49 @@ export default function CodexFlowManagerUI() {
   }
 
   /**
+   * 中文说明：清理指定标签页待发送的 OSC 完成通知，避免 external 预览到达后仍回放旧的单行版本。
+   */
+  function clearPendingOscCompletion(tabId: string, reason: string): void {
+    const safeId = String(tabId || "").trim();
+    if (!safeId) return;
+    const timerId = pendingOscCompletionTimersRef.current[safeId];
+    const hadPreview = typeof pendingOscCompletionPreviewRef.current[safeId] === "string";
+    if (typeof timerId !== "number" && !hadPreview) return;
+    if (typeof timerId === "number") {
+      try { window.clearTimeout(timerId); } catch {}
+      delete pendingOscCompletionTimersRef.current[safeId];
+    }
+    delete pendingOscCompletionPreviewRef.current[safeId];
+    notifyLog(`pendingOsc.clear tab=${safeId} reason=${reason}`);
+  }
+
+  /**
+   * 中文说明：为 Codex 的 OSC 完成事件设置短时缓冲，优先等待更完整的 external 预览。
+   */
+  function armPendingOscCompletion(tabId: string, preview: string): void {
+    const safeId = String(tabId || "").trim();
+    if (!safeId) return;
+    clearPendingOscCompletion(safeId, "replace");
+    pendingOscCompletionPreviewRef.current[safeId] = String(preview || "");
+    pendingOscCompletionTimersRef.current[safeId] = window.setTimeout(() => {
+      const pendingPreview = pendingOscCompletionPreviewRef.current[safeId];
+      delete pendingOscCompletionTimersRef.current[safeId];
+      delete pendingOscCompletionPreviewRef.current[safeId];
+      if (typeof pendingPreview !== "string") return;
+      notifyLog(`pendingOsc.flush tab=${safeId} waitMs=${CODEX_OSC_EXTERNAL_WAIT_MS}`);
+      handleAgentCompletion(safeId, pendingPreview, "osc");
+    }, CODEX_OSC_EXTERNAL_WAIT_MS);
+    notifyLog(`pendingOsc.arm tab=${safeId} waitMs=${CODEX_OSC_EXTERNAL_WAIT_MS}`);
+  }
+
+  /**
    * 中文说明：判断两条完成预览是否可视为“同一条完成事件”。
    * - 优先严格相等；
    * - 兼容“一个是另一个前缀”的截断差异（例如 OSC 截断 vs hook 完整预览）。
    */
   function isEquivalentCompletionPreview(leftRaw: string, rightRaw: string): boolean {
-    const left = normalizeCompletionPreviewForDedupe(leftRaw);
-    const right = normalizeCompletionPreviewForDedupe(rightRaw);
+    const left = normalizeDisplayedCompletionPreviewForDedupe(leftRaw);
+    const right = normalizeDisplayedCompletionPreviewForDedupe(rightRaw);
     if (!left && !right) return true;
     if (!left || !right) return false;
     if (left === right) return true;
@@ -2376,10 +2428,17 @@ export default function CodexFlowManagerUI() {
   /**
    * 中文说明：处理代理完成事件，统一刷新通知、铃声、用量与本轮输入计时状态。
    */
-  function handleAgentCompletion(tabId: string, preview: string, source: CompletionEventSource = "unknown") {
+  function handleAgentCompletion(
+    tabId: string,
+    preview: string,
+    source: CompletionEventSource = "unknown",
+    normalizeOptions?: CompletionPreviewNormalizeOptions,
+  ) {
     if (!tabId) return;
+    if (source !== "osc")
+      clearPendingOscCompletion(tabId, `${source}-handled`);
     const hasWorkingTimer = agentTurnTimerByTabRef.current[String(tabId || "")]?.status === "working";
-    const cleanedPreview = normalizeCompletionPreview(preview);
+    const cleanedPreview = normalizeCompletionPreview(preview, normalizeOptions);
     if (isDuplicateCompletion(tabId, cleanedPreview, COMPLETION_DEDUPE_WINDOW_MS, source, hasWorkingTimer)) {
       notifyLog(`handleAgentCompletion dedupe tab=${tabId} source=${source} previewLength=${cleanedPreview.length}`);
       return;
@@ -2486,8 +2545,12 @@ export default function CodexFlowManagerUI() {
       const isCompletion = isAgentCompletionMessage(message);
       if (tabId && isCompletion) {
         const activeMatch = activeTabIdRef.current === tabId;
-        notifyLog(`processPtyNotificationChunk hit tab=${tabId} active=${activeMatch ? '1' : '0'} message="${message.slice(0, 80)}"`);
-        handleAgentCompletion(tabId, message, "osc");
+        const providerId = resolveTabProviderId(tabId);
+        notifyLog(`processPtyNotificationChunk hit tab=${tabId} provider=${providerId || "unknown"} active=${activeMatch ? '1' : '0'} message="${message.slice(0, 80)}"`);
+        if (shouldDelayOscCompletionForExternalFallback(providerId))
+          armPendingOscCompletion(tabId, message);
+        else
+          handleAgentCompletion(tabId, message, "osc");
       } else if (tabId) {
         notifyLog(`processPtyNotificationChunk ignore tab=${tabId} isCompletion=${isCompletion} message="${message.slice(0, 80)}"`);
       } else {
@@ -4049,10 +4112,13 @@ export default function CodexFlowManagerUI() {
   useEffect(() => {
     let off: (() => void) | undefined;
     try {
-      off = window.host.notifications?.onExternalAgentComplete?.((payload: { providerId?: string; tabId?: string; envLabel?: string; preview?: string; timestamp?: string; eventId?: string }) => {
+      off = window.host.notifications?.onExternalAgentComplete?.((payload: { providerId?: string; tabId?: string; envLabel?: string; preview?: string; previewEscapedWhitespace?: boolean; timestamp?: string; eventId?: string }) => {
         const providerId = String(payload?.providerId || "").trim().toLowerCase();
         if (providerId && providerId !== "codex" && providerId !== "gemini" && providerId !== "claude") return;
         const preview = String(payload?.preview || "");
+        const normalizeOptions: CompletionPreviewNormalizeOptions = {};
+        if (typeof payload?.previewEscapedWhitespace === "boolean")
+          normalizeOptions.previewEscapedWhitespace = payload.previewEscapedWhitespace;
         const resolvedTabId = resolveExternalTabId({
           tabId: payload?.tabId,
           providerId: providerId || "codex",
@@ -4062,9 +4128,10 @@ export default function CodexFlowManagerUI() {
           notifyLog(`externalCompletion skip: no tab match provider=${providerId} tab=${String(payload?.tabId || "")} env=${payload?.envLabel || ""}`);
           return;
         }
-        const cleanedPreview = normalizeCompletionPreview(preview);
+        const cleanedPreview = normalizeCompletionPreview(preview, normalizeOptions);
+        clearPendingOscCompletion(resolvedTabId, "external-arrived");
         notifyLog(`externalCompletion ok tab=${resolvedTabId} previewLen=${cleanedPreview.length}`);
-        handleAgentCompletion(resolvedTabId, preview, "external");
+        handleAgentCompletion(resolvedTabId, preview, "external", normalizeOptions);
       });
     } catch {}
     return () => { try { off && off(); } catch {} };

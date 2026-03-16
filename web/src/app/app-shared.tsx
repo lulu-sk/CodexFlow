@@ -1479,29 +1479,212 @@ function isAgentCompletionMessage(message: string): boolean {
 }
 
 /**
- * 中文说明：清理完成通知前缀，避免正文出现 agent-turn-complete。
+ * 中文说明：清理完成通知前缀，并按需要恢复展示态空白。
+ * - `previewEscapedWhitespace=true`：按“上游明确标记为包含字面量空白转义”处理；
+ * - `previewEscapedWhitespace=false`：保持原样，不解码 `\n` / `\r` / `\t`；
+ * - 未传时走兼容模式：仍尝试按启发式恢复旧数据中的字面量空白转义。
  */
-function normalizeCompletionPreview(raw: string): string {
+function normalizeCompletionPreview(raw: string, options?: { previewEscapedWhitespace?: boolean }): string {
   const text = String(raw || "").trim();
   if (!text) return "";
-  return text.replace(/^agent-turn-complete\s*[:：]?\s*/i, "").trim();
+  const withoutPrefix = text.replace(/^agent-turn-complete\s*[:：]?\s*/i, "").trim();
+  if (!withoutPrefix) return "";
+  const normalizedLineEndings = withoutPrefix.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  if (options?.previewEscapedWhitespace === true)
+    return decodeEscapedWhitespaceForPreview(normalizedLineEndings).trim();
+  if (options?.previewEscapedWhitespace === false) return normalizedLineEndings.trim();
+  return decodeLiteralWhitespaceForPreview(normalizedLineEndings).trim();
+}
+
+/**
+ * 中文说明：按“JSON 字符串片段”恢复通知预览展示文本。
+ * - 用于已显式声明 `previewEscapedWhitespace=true` 的 payload；
+ * - `\n` / `\r` / `\t` 会被恢复为空白；
+ * - 其它常见 JSON 转义（如 `\"` / `\\` / `\uXXXX`）也会同步还原；
+ * - `\\n` 会保留为字面量 `\n`，避免误伤“反斜杠 + n”文本。
+ */
+function decodeEscapedWhitespaceForPreview(input: string): string {
+  const text = String(input || "");
+  if (!text) return "";
+  let out = "";
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch !== "\\") {
+      out += ch;
+      i += 1;
+      continue;
+    }
+
+    const next = text[i + 1] || "";
+    if (!next) {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    if (next === "\"" || next === "\\" || next === "/") {
+      out += next;
+      i += 2;
+      continue;
+    }
+    if (next === "t") {
+      out += "  ";
+      i += 2;
+      continue;
+    }
+    if (next === "n") {
+      out += "\n";
+      i += 2;
+      continue;
+    }
+    if (next === "r") {
+      out += "\n";
+      i += 2;
+      if (text[i] === "\\" && text[i + 1] === "n")
+        i += 2;
+      continue;
+    }
+    if (next === "b") {
+      out += "\b";
+      i += 2;
+      continue;
+    }
+    if (next === "f") {
+      out += "\f";
+      i += 2;
+      continue;
+    }
+    if (next === "u") {
+      const hex = text.slice(i + 2, i + 6);
+      if (/^[0-9A-Fa-f]{4}$/.test(hex)) {
+        out += String.fromCharCode(Number.parseInt(hex, 16));
+        i += 6;
+        continue;
+      }
+    }
+
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
+/**
+ * 中文说明：判断字面量空白转义是否处于“应保留原样”的路径上下文。
+ * - 保留 Windows 盘符路径、UNC 路径，以及同一 token 内已经出现过 `/` 或 `\` 的片段；
+ * - 避免把 `C:\new\temp`、`\\server\share` 一类路径误解码成换行/制表；
+ * - 普通文案（例如 `Summary\n- item`）不命中此规则，应继续走展示态解码。
+ */
+function isLiteralWhitespacePathContext(input: string, slashIndex: number): boolean {
+  const text = String(input || "");
+  if (!text) return false;
+  let tokenStart = slashIndex - 1;
+  while (tokenStart >= 0) {
+    const ch = text[tokenStart];
+    if (/[\s"'`()\[\]{}<>|,;]/.test(ch)) break;
+    tokenStart -= 1;
+  }
+  const token = text.slice(tokenStart + 1, slashIndex);
+  if (!token) return false;
+  if (/^[A-Za-z]:$/.test(token)) return true;
+  if (token.startsWith("\\\\")) return true;
+  return token.includes("\\") || token.includes("/");
+}
+
+/**
+ * 中文说明：将通知预览中的字面量空白转义恢复为展示态空白。
+ * - 仅在“非路径/非单词延续”场景下解码 `\n` / `\r` / `\t`；
+ * - 连续的字面量换行会按原顺序恢复，避免通知正文出现 `\n\n`；
+ * - 避免误伤 `C:\new\temp` 这类 Windows 路径片段。
+ */
+function decodeLiteralWhitespaceForPreview(input: string): string {
+  const text = String(input || "");
+  if (!text) return "";
+  let out = "";
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    const next = text[i + 1] || "";
+    if (ch !== "\\" || (next !== "n" && next !== "r" && next !== "t")) {
+      out += ch;
+      i += 1;
+      continue;
+    }
+
+    const prev = i > 0 ? text[i - 1] : "";
+    const prevPrev = i > 1 ? text[i - 2] : "";
+    const prevPrevPrev = i > 2 ? text[i - 3] : "";
+    const hasWindowsDrivePrefix =
+      prev === ":" &&
+      /[A-Za-z]/.test(prevPrev) &&
+      (!prevPrevPrev || /[^A-Za-z0-9_]/.test(prevPrevPrev));
+    const shouldKeepLiteral =
+      hasWindowsDrivePrefix ||
+      prev === "/" ||
+      prev === "\\" ||
+      isLiteralWhitespacePathContext(text, i);
+    if (shouldKeepLiteral) {
+      out += ch;
+      i += 1;
+      continue;
+    }
+
+    while (i < text.length && text[i] === "\\") {
+      const code = text[i + 1] || "";
+      if (code === "r" && text[i + 2] === "\\" && text[i + 3] === "n") {
+        out += "\n";
+        i += 4;
+        continue;
+      }
+      if (code === "n" || code === "r") {
+        out += "\n";
+        i += 2;
+        continue;
+      }
+      if (code === "t") {
+        out += "  ";
+        i += 2;
+        continue;
+      }
+      break;
+    }
+    continue;
+  }
+  return out;
 }
 
 /**
  * 中文说明：生成用于“完成事件去重”的预览指纹。
- * - 先复用 `normalizeCompletionPreview` 去掉统一前缀；
- * - 将“分隔符语义”的字面量转义空白（如 `\n`/`\t`/`\r`）归一为空格，兼容 JSONL 与 OSC 之间的编码差异；
- *   同时避免误伤 Windows 路径中的 `\n` / `\t` 片段（例如 `C:\new\temp`）；
- * - 再将连续空白折叠为单空格，减少格式差异造成的误判。
+ * - 先复用 `normalizeCompletionPreview` 去掉统一前缀，并按通知协议恢复展示态空白；
+ * - 再将连续空白折叠为单空格，兼容 JSONL 与 OSC 之间的编码差异；
+ * - 同时保持 Windows 路径中的 `\n` / `\t` 片段（例如 `C:\new\temp`）不被误处理。
  */
-function normalizeCompletionPreviewForDedupe(raw: string): string {
-  const normalized = normalizeCompletionPreview(raw);
+function normalizeCompletionPreviewForDedupe(raw: string, options?: { previewEscapedWhitespace?: boolean }): string {
+  const normalized = normalizeCompletionPreview(raw, options);
   if (!normalized) return "";
-  const normalizedLiteralWhitespace = normalized.replace(
-    /(^|[^A-Za-z0-9_])\\[rnt](?=$|[^A-Za-z0-9_])/g,
-    (_match, prefix: string) => `${prefix} `,
-  );
-  return normalizedLiteralWhitespace.replace(/\s+/g, " ").trim();
+  return normalizeDisplayedCompletionPreviewForDedupe(normalized);
+}
+
+/**
+ * 中文说明：为“已完成协议归一”的展示文案生成去重指纹。
+ * - 输入应为最终展示给用户的预览文案；
+ * - 仅折叠真实空白，不再二次猜测或解码字面量 `\n` / `\r` / `\t`；
+ * - 用于避免显式声明“保留字面量空白”的预览在去重阶段被误伤。
+ */
+function normalizeDisplayedCompletionPreviewForDedupe(raw: string): string {
+  const text = String(raw || "");
+  if (!text) return "";
+  return text.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * 中文说明：判断当前 provider 的 OSC 完成事件是否应短暂等待 external 桥接结果。
+ * - Codex 会同时产出 OSC 与 JSONL external 完成事件；
+ * - external 预览通常保留了更完整的多行结构，因此优先等待它再决定是否回退到 OSC；
+ * - 其它 provider 当前不走这条“双通道抢占”路径，保持原有即时消费。
+ */
+function shouldDelayOscCompletionForExternalFallback(providerId: string): boolean {
+  return String(providerId || "").trim().toLowerCase() === "codex";
 }
 
 // 筛选键规范化：将等价的 tags 与 type 统一到一个"规范键"，用于去重显示与匹配
@@ -1798,6 +1981,8 @@ export {
   isAgentCompletionMessage,
   normalizeCompletionPreview,
   normalizeCompletionPreviewForDedupe,
+  normalizeDisplayedCompletionPreviewForDedupe,
+  shouldDelayOscCompletionForExternalFallback,
   canonicalFilterKey,
   keysOfItemCanonical,
   StatusDot,

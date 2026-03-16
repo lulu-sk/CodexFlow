@@ -43,18 +43,18 @@ const ENV_ENV_LABEL = "GEMINI_CLI_CODEXFLOW_ENV_LABEL";
 const ENV_PROVIDER_ID = "GEMINI_CLI_CODEXFLOW_PROVIDER_ID";
 
 /**
- * 中文说明：将多行压缩成单行，便于通知展示。
+ * 中文说明：仅为 OSC 兜底通道压平成单行，避免换行打断终端通知载荷。
  */
-function collapseWs(input) {
+function collapsePreviewForOsc(input) {
   const s = String(input || "");
-  return s.replace(/\r/g, " ").replace(/\n/g, " ").replace(/\s+/g, " ").trim();
+  return s.replace(/\r/g, " ").replace(/\n/g, " ").replace(/\t/g, "  ").replace(/[ ][ ]+/g, " ").trim();
 }
 
 /**
- * 中文说明：按 Unicode code point 截断，避免截断 surrogate pair 造成末尾乱码。
+ * 中文说明：按 Unicode code point 截断，保留正文中的真实换行与制表。
  */
 function clip(input, limit) {
-  const s = collapseWs(input);
+  const s = String(input || "");
   if (!s) return "";
   let out = "";
   let count = 0;
@@ -122,6 +122,7 @@ function buildNotifyPayload(input) {
     tabId: tabId || "",
     envLabel: envLabel || "",
     preview: String(input?.preview || ""),
+    previewEscapedWhitespace: !!input?.previewEscapedWhitespace,
     timestamp: new Date().toISOString(),
     sessionId: typeof input?.sessionId === "string" ? input.sessionId : "",
     cwd: typeof input?.cwd === "string" ? input.cwd : "",
@@ -159,11 +160,11 @@ function safeParseJson(text) {
 }
 
 /**
- * 中文说明：移除可能破坏终端状态的控制字符。
+ * 中文说明：移除可能破坏终端状态的控制字符，但保留换行/回车/制表供 JSONL 预览展示。
  */
 function stripControlChars(input) {
   const s = String(input || "");
-  return s.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
+  return s.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, " ");
 }
 
 /**
@@ -333,7 +334,7 @@ const preview = clip(stripControlChars(previewSource), 240);
 
 const ESC = "\u001b";
 const BEL = "\u0007";
-const payload = preview ? preview : "agent-turn-complete";
+const payload = collapsePreviewForOsc(preview) || "agent-turn-complete";
 const osc = ESC + "]9;" + payload + BEL;
 
 const notifyPayload = buildNotifyPayload({
@@ -675,6 +676,7 @@ type GeminiNotifyEntry = {
   tabId?: string;
   envLabel?: string;
   preview?: string;
+  previewEscapedWhitespace?: boolean;
   timestamp?: string;
   sessionId?: string;
   cwd?: string;
@@ -811,7 +813,15 @@ function emitGeminiNotify(entry: GeminiNotifyEntry, sourcePath?: string): void {
   if (!win) return;
   const providerId = String(entry.providerId || "gemini").toLowerCase();
   if (providerId && providerId !== "gemini") return;
-  const payload = {
+  const payload: {
+    providerId: "gemini";
+    tabId: string;
+    envLabel: string;
+    preview: string;
+    previewEscapedWhitespace?: boolean;
+    timestamp: string;
+    eventId: string;
+  } = {
     providerId: "gemini" as const,
     tabId: entry.tabId ? String(entry.tabId) : "",
     envLabel: entry.envLabel ? String(entry.envLabel) : "",
@@ -819,6 +829,8 @@ function emitGeminiNotify(entry: GeminiNotifyEntry, sourcePath?: string): void {
     timestamp: entry.timestamp ? String(entry.timestamp) : "",
     eventId: entry.eventId ? String(entry.eventId) : "",
   };
+  if (typeof entry.previewEscapedWhitespace === "boolean")
+    payload.previewEscapedWhitespace = entry.previewEscapedWhitespace;
   try {
     win.webContents.send("notifications:externalAgentComplete", payload);
     logGeminiNotification(`notify event tab=${payload.tabId || "n/a"} previewLen=${payload.preview.length}`);

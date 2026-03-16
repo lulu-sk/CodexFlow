@@ -9,7 +9,7 @@ import { getCodexRootsFastAsync } from "../wsl";
 import { requestHistoryFastRefresh } from "../indexer";
 
 const CODEX_NOTIFY_FILENAME = "codexflow_after_agent_notify.jsonl";
-const CODEX_NOTIFY_POLL_INTERVAL_MS = 1200;
+const CODEX_NOTIFY_POLL_INTERVAL_MS = 250;
 const CODEX_NOTIFY_READ_LIMIT_BYTES = 128 * 1024;
 
 type CodexNotifyEntry = {
@@ -19,6 +19,7 @@ type CodexNotifyEntry = {
   tabId?: string;
   envLabel?: string;
   preview?: string;
+  previewEscapedWhitespace?: boolean;
   timestamp?: string;
 };
 
@@ -179,7 +180,15 @@ function emitCodexNotify(entry: CodexNotifyEntry, sourcePath?: string): void {
   if (!win) return;
   const providerId = String(entry.providerId || "codex").toLowerCase();
   if (providerId && providerId !== "codex") return;
-  const payload = {
+  const payload: {
+    providerId: "codex";
+    tabId: string;
+    envLabel: string;
+    preview: string;
+    previewEscapedWhitespace?: boolean;
+    timestamp: string;
+    eventId: string;
+  } = {
     providerId: "codex" as const,
     tabId: entry.tabId ? String(entry.tabId) : "",
     envLabel: entry.envLabel ? String(entry.envLabel) : "",
@@ -187,6 +196,8 @@ function emitCodexNotify(entry: CodexNotifyEntry, sourcePath?: string): void {
     timestamp: entry.timestamp ? String(entry.timestamp) : "",
     eventId: entry.eventId ? String(entry.eventId) : "",
   };
+  if (typeof entry.previewEscapedWhitespace === "boolean")
+    payload.previewEscapedWhitespace = entry.previewEscapedWhitespace;
   try {
     win.webContents.send("notifications:externalAgentComplete", payload);
     logCodexNotification(`notify event tab=${payload.tabId || "n/a"} previewLen=${payload.preview.length}`);
