@@ -57,9 +57,18 @@ function readCodexNotifyScript(home: string): string {
     ? ["codexflow_after_agent_notify.ps1", "codexflow_after_agent_notify.sh"]
     : ["codexflow_after_agent_notify.sh", "codexflow_after_agent_notify.ps1"];
   for (const file of candidates) {
-    try { return fs.readFileSync(path.join(dir, file), "utf8"); } catch {}
+    const body = readCodexNotifyScriptByName(home, file);
+    if (body) return body;
   }
   return "";
+}
+
+/**
+ * 中文说明：按文件名读取当前 HOME 下生成的指定 Codex notify 脚本内容。
+ */
+function readCodexNotifyScriptByName(home: string, fileName: string): string {
+  const dir = path.join(home, ".codex");
+  try { return fs.readFileSync(path.join(dir, fileName), "utf8"); } catch { return ""; }
 }
 
 /**
@@ -96,6 +105,22 @@ async function loadConfigModule(): Promise<{ ensureAllCodexNotifications: () => 
   return await import("./config");
 }
 
+/**
+ * 中文说明：临时覆盖 `process.platform`，用于验证不同平台分支的脚本生成逻辑。
+ */
+async function withMockedPlatform<T>(platform: NodeJS.Platform, action: () => Promise<T>): Promise<T> {
+  const descriptor = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", {
+    configurable: true,
+    value: platform,
+  });
+  try {
+    return await action();
+  } finally {
+    if (descriptor) Object.defineProperty(process, "platform", descriptor);
+  }
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -115,6 +140,7 @@ describe("electron/codex/config（tui 通知配置修复）", () => {
       const script = readCodexNotifyScript(home);
       expect(script).toContain("CODEXFLOW_NOTIFY_TAB_ID");
       expect(script).toContain("agent-turn-complete");
+      expect(script).toContain("previewEscapedWhitespace");
     } finally {
       cleanup();
     }
@@ -213,5 +239,43 @@ describe("electron/codex/config（tui 通知配置修复）", () => {
     } finally {
       cleanup();
     }
+  });
+
+  it("Windows notify 脚本：保留 last-assistant-message 原始转义并显式标记 escaped whitespace", async () => {
+    await withMockedPlatform("win32", async () => {
+      const { home, cleanup } = createTempHome();
+      try {
+        const mod = await loadConfigModule();
+        await mod.ensureAllCodexNotifications();
+        const body = readCodexConfigToml(home);
+        expectRootNotifyCommand(body);
+        expectNotifyScriptFileName(body);
+        const script = readCodexNotifyScriptByName(home, "codexflow_after_agent_notify.ps1");
+        expect(script).toContain("$PreviewEscapedWhitespace = $true");
+        expect(script).toContain("$RawPayload -match");
+        expect(script).toContain("last-assistant-message");
+        expect(script).toContain("$Preview = $Preview.Trim()");
+        expect(script).not.toContain('-replace "\\s+"');
+      } finally {
+        cleanup();
+      }
+    });
+  });
+
+  it("Shell notify 脚本：使用转义安全的提取逻辑保留带引号的 JSON 字符串片段", async () => {
+    await withMockedPlatform("linux", async () => {
+      const { home, cleanup } = createTempHome();
+      try {
+        const mod = await loadConfigModule();
+        await mod.ensureAllCodexNotifications();
+        const script = readCodexNotifyScriptByName(home, "codexflow_after_agent_notify.sh");
+        expect(script).toContain('match($0, /"last-assistant-message"[[:space:]]*:[[:space:]]*"/)');
+        expect(script).toContain('out = out "\\\\" ch');
+        expect(script).toContain("sed -e '1s/^[[:space:]]*//' -e '$s/[[:space:]]*$//'");
+        expect(script).not.toContain("tr '\\r\\n\\t' '   '");
+      } finally {
+        cleanup();
+      }
+    });
   });
 });
