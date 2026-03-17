@@ -379,6 +379,7 @@ function cleanClaudeUserPrompt(text?: string): string {
     if (!raw) return "";
     const lines = raw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
     if (lines.length === 0) return "";
+    const pathFallback = extractClaudePathPreviewFallback(lines);
     const hasCaveat = lines.some((l) => l.toLowerCase().startsWith("caveat:"));
     if (!hasCaveat) {
       for (const l of lines) {
@@ -388,7 +389,7 @@ function cleanClaudeUserPrompt(text?: string): string {
         if (!stripped) continue;
         return collapseSpaces(stripped);
       }
-      return "";
+      return pathFallback;
     }
 
     // 取最后一个“看起来像自然语言”的行，跳过 <local-command-*> 片段
@@ -410,9 +411,49 @@ function cleanClaudeUserPrompt(text?: string): string {
       if (stripped.toLowerCase().includes("local-command-stdout")) continue;
       return collapseSpaces(stripped);
     }
-    return "";
+    return pathFallback;
   } catch {
     return String(text || "").trim();
+  }
+}
+
+/**
+ * 当用户输入只有路径/附件引用时，提取一个简短可读的历史预览，避免该会话被误判为“仅助手输出”。
+ */
+function extractClaudePathPreviewFallback(lines: string[]): string {
+  try {
+    for (const rawLine of lines) {
+      const line = unwrapClaudePreviewLine(rawLine);
+      if (!line) continue;
+      if (!isWinOrWslPathLineForPreview(line)) continue;
+      const normalized = line.replace(/\\/g, "/");
+      const base = normalized.split("/").filter(Boolean).pop() || line;
+      const name = collapseSpaces(base);
+      if (!name) continue;
+      if (/\.(png|jpe?g|gif|webp|bmp|svg|ico)$/i.test(name)) return `图片：${name}`;
+      return `文件：${name}`;
+    }
+    return "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * 去掉预览候选行首尾的成对包裹符，兼容 ``path`` / "path" / 'path' 这类纯路径输入。
+ */
+function unwrapClaudePreviewLine(value: string): string {
+  try {
+    let text = String(value || "").trim();
+    const stripPairs = (ch: string) => {
+      if (text.startsWith(ch) && text.endsWith(ch) && text.length >= 2) text = text.slice(1, -1).trim();
+    };
+    stripPairs("`");
+    stripPairs("\"");
+    stripPairs("'");
+    return text;
+  } catch {
+    return String(value || "").trim();
   }
 }
 
