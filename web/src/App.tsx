@@ -62,6 +62,7 @@ import { checkForUpdate, type UpdateCheckErrorType } from "@/lib/about";
 import TerminalManager from "@/lib/TerminalManager";
 import { isGeminiProvider, writeBracketedPaste, writeBracketedPasteAndEnter } from "@/lib/terminal-send";
 import { oscBufferDefaults, trimOscBuffer } from "@/lib/oscNotificationBuffer";
+import { collectRetainedAgentTurnTabIds, pruneAgentTurnHistory, pruneAgentTurnTimers } from "@/lib/agent-turn-timer";
 import { resolveDirRowDropPosition } from "@/lib/dir-tree-dnd";
 import HistoryCopyButton from "@/components/history/history-copy-button";
 import HistoryPanelToggleButton from "@/components/history/history-panel-toggle-button";
@@ -1947,56 +1948,48 @@ export default function CodexFlowManagerUI() {
    * 中文说明：当标签集合变化时，清理已不存在标签页的计时状态，防止状态泄漏。
    */
   useEffect(() => {
-    const activeTabSet = new Set<string>();
-    const tabProviderById: Record<string, string> = {};
+    const retainedTabIds = collectRetainedAgentTurnTabIds({
+      tabsByProject,
+      registeredTabIds: Object.keys(tabProjectRef.current),
+      hasLiveUnsyncedTab: (tabId) => !!ptyByTabRef.current[String(tabId || "").trim()],
+    });
+    const trackedTabIdSet = new Set<string>(retainedTabIds);
     for (const list of Object.values(tabsByProject)) {
       for (const tab of list || []) {
-        const id = String(tab.id || "").trim();
-        if (!id) continue;
-        activeTabSet.add(id);
-        tabProviderById[id] = String(tab.providerId || "").trim();
+        const tabId = String(tab?.id || "").trim();
+        if (!tabId) continue;
+        trackedTabIdSet.add(tabId);
       }
     }
     setAgentTurnTimerByTab((prev) => {
-      let changed = false;
-      const next: Record<string, AgentTurnTimerState> = {};
-      for (const [tabId, state] of Object.entries(prev)) {
-        if (!activeTabSet.has(tabId)) {
-          changed = true;
-          continue;
-        }
-        if (!shouldEnableAgentTimerForProvider(tabProviderById[tabId] || "")) {
-          changed = true;
-          continue;
-        }
-        next[tabId] = state;
-      }
+      const { nextTimerByTab, changed } = pruneAgentTurnTimers({
+        timerByTab: prev,
+        tabsByProject,
+        retainedTabIds,
+        shouldEnableTimerForProvider: shouldEnableAgentTimerForProvider,
+      });
       if (!changed) return prev;
-      agentTurnTimerByTabRef.current = next;
-      return next;
+      agentTurnTimerByTabRef.current = nextTimerByTab;
+      return nextTimerByTab;
     });
     setAgentTurnHistoryByTab((prev) => {
-      let changed = false;
-      const next: Record<string, AgentTurnTimerState[]> = {};
-      for (const [tabId, history] of Object.entries(prev)) {
-        if (!activeTabSet.has(tabId)) {
-          changed = true;
-          continue;
-        }
-        next[tabId] = history;
-      }
+      const { nextHistoryByTab, changed } = pruneAgentTurnHistory({
+        historyByTab: prev,
+        tabsByProject,
+        retainedTabIds,
+      });
       if (!changed) return prev;
-      agentTurnHistoryByTabRef.current = next;
-      return next;
+      agentTurnHistoryByTabRef.current = nextHistoryByTab;
+      return nextHistoryByTab;
     });
     // 清理已不存在标签页的恢复期完成通知守卫，防止状态泄漏。
     for (const tabId of Object.keys(resumeCompletionGuardByTabRef.current)) {
-      if (activeTabSet.has(tabId)) continue;
+      if (trackedTabIdSet.has(tabId)) continue;
       delete resumeCompletionGuardByTabRef.current[tabId];
     }
     setAgentTurnCtxMenu((prev) => {
       if (!prev.show || !prev.tabId) return prev;
-      if (activeTabSet.has(prev.tabId)) return prev;
+      if (trackedTabIdSet.has(prev.tabId)) return prev;
       return { show: false, x: 0, y: 0, tabId: null };
     });
   }, [shouldEnableAgentTimerForProvider, tabsByProject]);
