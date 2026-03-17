@@ -99,5 +99,37 @@ describe("parseClaudeSessionFile（本地命令 transcript 分类）", () => {
     expect(details.preview).toBe("真实首条：OK");
     expect(details.messages.length).toBe(0);
   });
+
+  it("纯路径输入也应回退为文件名预览，避免会话被误判为仅助手输出", async () => {
+    const cwd = "G:\\\\Projects\\\\CodexFlow";
+    const sessionId = "61d0bdd2-f31f-4c77-a148-bf0470f4fffa";
+    const lines = [
+      {
+        cwd,
+        sessionId,
+        type: "user",
+        message: {
+          role: "user",
+          content: "`C:\\\\Users\\\\52628\\\\AppData\\\\Roaming\\\\codexflow\\\\assets\\\\CodexFlow\\\\image-20260317-115705-67p2.png`",
+        },
+      },
+      {
+        cwd,
+        sessionId,
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "你好！我已经看到了这张图片。" }],
+        },
+      },
+    ];
+
+    const fp = await writeTempJsonl(lines, `${sessionId}.jsonl`);
+    const stat = await fs.promises.stat(fp);
+    const details = await parseClaudeSessionFile(fp, stat, { summaryOnly: true, maxLines: 2000 });
+
+    expect(details.preview).toBe("图片：image-20260317-115705-67p2.png");
+    expect(details.title).toBe("图片：image-20260317-115705-67p2.png");
+  });
 });
 
