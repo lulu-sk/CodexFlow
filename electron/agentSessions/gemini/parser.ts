@@ -7,6 +7,7 @@ import type { Stats } from "node:fs";
 import { detectRuntimeShell } from "../../history";
 import type { Message, RuntimeShell } from "../../history";
 import { sha256Hex } from "../shared/crypto";
+import { createHistoryImageContent, extractImagePathCandidatesFromText } from "../shared/historyImage";
 import { dirKeyFromCwd, dirKeyOfFilePath, tidyPathCandidate } from "../shared/path";
 import { filterHistoryPreviewText } from "../shared/preview";
 
@@ -246,20 +247,36 @@ export async function parseGeminiSessionFile(filePath: string, stat: Stats, opts
     for (const it of items) {
       const role = normalizeGeminiRole(String(it?.role ?? it?.type ?? it?.actor ?? ""));
       const text = extractGeminiText(it);
+      const imageItems = extractGeminiImageContents(it);
       if (role === "user") {
         if (!preview && text) {
           const filtered = filterHistoryPreviewText(text);
           if (filtered) preview = clampPreview(filtered);
         }
-        if (text) pushMessage({ role: "user", content: [{ type: "input_text", text }] });
+        const content: Message["content"] = [];
+        if (text) content.push({ type: "input_text", text });
+        if (imageItems.length > 0) content.push(...imageItems);
+        if (content.length > 0) pushMessage({ role: "user", content });
       } else if (role === "assistant") {
-        if (text) pushMessage({ role: "assistant", content: [{ type: "output_text", text }] });
+        const content: Message["content"] = [];
+        if (text) content.push({ type: "output_text", text });
+        if (imageItems.length > 0) content.push(...imageItems);
+        if (content.length > 0) pushMessage({ role: "assistant", content });
       } else if (role === "system") {
-        if (text) pushMessage({ role: "system", content: [{ type: "meta", text }] });
+        const content: Message["content"] = [];
+        if (text) content.push({ type: "meta", text });
+        if (imageItems.length > 0) content.push(...imageItems);
+        if (content.length > 0) pushMessage({ role: "system", content });
       } else if (role === "tool") {
-        if (text) pushMessage({ role: "tool", content: [{ type: "tool_result", text }] });
+        const content: Message["content"] = [];
+        if (text) content.push({ type: "tool_result", text });
+        if (imageItems.length > 0) content.push(...imageItems);
+        if (content.length > 0) pushMessage({ role: "tool", content });
       } else {
-        if (text) pushMessage({ role: role || "assistant", content: [{ type: "text", text }] });
+        const content: Message["content"] = [];
+        if (text) content.push({ type: "text", text });
+        if (imageItems.length > 0) content.push(...imageItems);
+        if (content.length > 0) pushMessage({ role: role || "assistant", content });
       }
       if (summaryOnly && preview && cwd) break;
     }
@@ -580,6 +597,41 @@ function extractGeminiText(item: any): string {
     return "";
   } catch {
     return "";
+  }
+}
+
+/**
+ * 从 Gemini 单条消息中提取图片内容项。
+ * - 优先使用 `inlineData` 作为主预览源，避免 `.gemini/tmp` 下的临时文件在部分环境中裂图；
+ * - 同时保留消息文本里携带的本地路径，供元信息展示、路径复制与主进程原生复制图片复用。
+ */
+function extractGeminiImageContents(item: any): Message["content"] {
+  try {
+    const content = Array.isArray(item?.content) ? item.content : [];
+    if (content.length === 0) return [];
+
+    const pathCandidates = extractImagePathCandidatesFromText(extractGeminiText(item));
+    const out: Message["content"] = [];
+    let imageIndex = 0;
+
+    for (const part of content) {
+      const inlineData = part && typeof part === "object" ? (part as any).inlineData : null;
+      if (!inlineData || typeof inlineData !== "object") continue;
+      const imageItem = createHistoryImageContent({
+        localPath: pathCandidates[imageIndex] || pathCandidates[pathCandidates.length - 1] || undefined,
+        mimeType: typeof inlineData.mimeType === "string" ? inlineData.mimeType : undefined,
+        base64Data: typeof inlineData.data === "string" ? inlineData.data : undefined,
+        preferDataUrl: true,
+      });
+      if (imageItem) {
+        out.push(imageItem);
+        imageIndex += 1;
+      }
+    }
+
+    return out;
+  } catch {
+    return [];
   }
 }
 

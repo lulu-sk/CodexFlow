@@ -15,6 +15,7 @@
   "showing": "… 共 {total} 条，展示前 {count} 条",
   "empty": "选择项目以查看记录，或筛选全部会话",
   "noMatch": "无匹配历史",
+  "copyImage": "复制图片",
   "copyPath": "复制路径",
   "linkMenuSetProjectIde": "设置当前项目 IDE",
   "linkMenuUseVsCode": "使用 VS Code",

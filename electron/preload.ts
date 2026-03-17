@@ -619,6 +619,9 @@ contextBridge.exposeInMainWorld('host', {
     saveFromClipboard: async (args: { projectWinRoot?: string; projectWslRoot?: string; projectName?: string; prefix?: string; providerId?: string; runtimeEnv?: 'wsl' | 'windows' | 'pwsh'; distro?: string }) => {
       return await ipcRenderer.invoke('images.saveFromClipboard', args);
     },
+    copyToClipboard: async (args: { localPath?: string; src?: string; fallbackSrc?: string }) => {
+      return await ipcRenderer.invoke('images.copyToClipboard', args);
+    },
     trash: async (args: { winPath: string }) => {
       return await ipcRenderer.invoke('images.trash', args);
     }

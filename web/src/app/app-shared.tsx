@@ -406,7 +406,15 @@ function getProviderIconSrc(providerId: string, providerItemById: Record<string,
 }
 
 // 渲染端消息内容，支持可选 tags（用于嵌套类型筛选，如 message.input_text）
-type MessageContent = { type: string; text: string; tags?: string[] };
+type MessageContent = {
+  type: string;
+  text: string;
+  tags?: string[];
+  src?: string;
+  fallbackSrc?: string;
+  localPath?: string;
+  mimeType?: string;
+};
 type HistoryMessage = { role: string; content: MessageContent[] };
 type HistorySession = {
   providerId: "codex" | "claude" | "gemini";

@@ -4,6 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import { parseClaudeSessionFile } from "./parser";
 
+const CLAUDE_TEST_CWD = "D:\\workspace\\sample-project";
+const CLAUDE_TEST_PROJECT_ROOT = "D:\\workspace\\codexflow-fixture";
+
 /**
  * 写入临时 Claude JSONL 文件并返回其路径。
  */
@@ -17,7 +20,7 @@ async function writeTempJsonl(lines: unknown[], filename = `claude-${Date.now()}
 
 describe("parseClaudeSessionFile（本地命令 transcript 分类）", () => {
   it("将 Caveat/<command-*>/<local-command-*> 归为 local_command，且不影响 preview 捕获真实首条用户输入", async () => {
-    const cwd = "G:\\\\Unity\\\\UnityProject\\\\ALP_Dev";
+    const cwd = CLAUDE_TEST_CWD;
     const sessionId = "d9b2555d-bf6e-4a26-b78c-a30174e454c1";
     const lines = [
       { type: "file-history-snapshot", snapshot: { timestamp: "2025-12-22T03:22:48.185Z" } },
@@ -72,7 +75,7 @@ describe("parseClaudeSessionFile（本地命令 transcript 分类）", () => {
   });
 
   it("summaryOnly 模式下同样应跳过 transcript，并提取后续真实 prompt 作为 preview", async () => {
-    const cwd = "G:\\\\Unity\\\\UnityProject\\\\ALP_Dev";
+    const cwd = CLAUDE_TEST_CWD;
     const sessionId = "d9b2555d-bf6e-4a26-b78c-a30174e454c1";
     const lines = [
       { type: "file-history-snapshot", snapshot: { timestamp: "2025-12-22T03:22:48.185Z" } },
@@ -101,8 +104,9 @@ describe("parseClaudeSessionFile（本地命令 transcript 分类）", () => {
   });
 
   it("纯路径输入也应回退为文件名预览，避免会话被误判为仅助手输出", async () => {
-    const cwd = "G:\\\\Projects\\\\CodexFlow";
+    const cwd = CLAUDE_TEST_PROJECT_ROOT;
     const sessionId = "61d0bdd2-f31f-4c77-a148-bf0470f4fffa";
+    const imagePath = path.win32.join(CLAUDE_TEST_PROJECT_ROOT, "assets", "image-20260317-115705-67p2.png");
     const lines = [
       {
         cwd,
@@ -110,7 +114,7 @@ describe("parseClaudeSessionFile（本地命令 transcript 分类）", () => {
         type: "user",
         message: {
           role: "user",
-          content: "`C:\\\\Users\\\\52628\\\\AppData\\\\Roaming\\\\codexflow\\\\assets\\\\CodexFlow\\\\image-20260317-115705-67p2.png`",
+          content: `\`${imagePath}\``,
         },
       },
       {
@@ -130,6 +134,54 @@ describe("parseClaudeSessionFile（本地命令 transcript 分类）", () => {
 
     expect(details.preview).toBe("图片：image-20260317-115705-67p2.png");
     expect(details.title).toBe("图片：image-20260317-115705-67p2.png");
+  });
+
+  it("会将 Claude Read 工具返回的图片恢复为 image 内容，并在本地路径失效时回退到 base64", async () => {
+    const sessionId = "734c12d2-f31f-4c77-a148-bf0470f4ffaa";
+    const missingImagePath = path.join(os.tmpdir(), `missing-${Date.now()}.png`);
+    const lines = [
+      {
+        cwd: CLAUDE_TEST_PROJECT_ROOT,
+        sessionId,
+        type: "user",
+        message: { role: "user", content: `\`${missingImagePath}\`` },
+      },
+      {
+        cwd: CLAUDE_TEST_PROJECT_ROOT,
+        sessionId,
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "toolu_read", name: "Read", input: { file_path: missingImagePath } }],
+        },
+      },
+      {
+        cwd: CLAUDE_TEST_PROJECT_ROOT,
+        sessionId,
+        type: "user",
+        message: {
+          role: "user",
+          content: [{
+            type: "tool_result",
+            tool_use_id: "toolu_read",
+            content: [{
+              type: "image",
+              source: { type: "base64", data: "aGVsbG8=", media_type: "image/png" },
+            }],
+          }],
+        },
+      },
+    ];
+
+    const fp = await writeTempJsonl(lines, `${sessionId}.jsonl`);
+    const stat = await fs.promises.stat(fp);
+    const details = await parseClaudeSessionFile(fp, stat, { summaryOnly: false, maxLines: 2000 });
+
+    const imageItem = details.messages.flatMap((message) => message.content || []).find((item) => item.type === "image");
+    expect(imageItem).toBeTruthy();
+    expect(imageItem?.localPath).toBe(missingImagePath);
+    expect(String(imageItem?.src || "")).toBe("data:image/png;base64,aGVsbG8=");
+    expect(imageItem?.fallbackSrc).toBeUndefined();
   });
 });
 

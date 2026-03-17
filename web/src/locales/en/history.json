@@ -15,6 +15,7 @@
   "showing": "… {total} total, showing first {count}",
   "empty": "Choose a project to view history, or switch to all sessions.",
   "noMatch": "No matching history",
+  "copyImage": "Copy Image",
   "copyPath": "Copy Path",
   "linkMenuSetProjectIde": "Set IDE for This Project",
   "linkMenuUseVsCode": "Use VS Code",

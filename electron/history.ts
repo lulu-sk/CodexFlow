@@ -13,6 +13,7 @@ import { isUNCPath, uncToWsl, getSessionsRootsFastAsync } from './wsl';
 import { perfLogger } from './log';
 import settings from './settings';
 import { extractTaggedPrefix } from './agentSessions/shared/taggedPrefix';
+import { createHistoryImageContent, extractImagePathCandidatesFromText } from './agentSessions/shared/historyImage';
 import { deriveGeminiProjectHashCandidatesFromPath, extractGeminiProjectHashFromPath } from './agentSessions/gemini/parser';
 import { pathMatchesDirKeyScope, tidyPathCandidate } from "./agentSessions/shared/path";
 
@@ -39,7 +40,15 @@ export type HistorySummary = {
   runtimeShell?: RuntimeShell;
 };
 // 消息内容：支持可选 tags（用于嵌套类型筛选，例如 message.input_text）
-export type MessageContent = { type: string; text: string; tags?: string[] };
+export type MessageContent = {
+  type: string;
+  text: string;
+  tags?: string[];
+  src?: string;
+  fallbackSrc?: string;
+  localPath?: string;
+  mimeType?: string;
+};
 export type Message = { role: string; content: MessageContent[] };
 
 // 历史摘要前缀与缓存上限（控制内存占用）
@@ -1352,6 +1361,8 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
   // 说明类去重：会话头 instructions 与用户 <user_instructions> 可能内容相同
   const __seenInstructions = new Set<string>();
   const __normInstr = (s: string) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const recentImagePathCandidates: string[] = [];
+  const imagePathCandidatesByCallId = new Map<string, string[]>();
 
   // 读取 stat 并检查缓存
   let stat: fs.Stats | null = null;
@@ -1367,6 +1378,219 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
   // 统一的行解析函数，便于 UNC/WSL 与本地读取共享逻辑
   function pretty(v: any): string {
     try { return JSON.stringify(v, null, 2); } catch { return String(v); }
+  }
+
+  /**
+   * 中文说明：记录最近在历史文本中出现的图片路径，供后续图片结果块做就近关联。
+   */
+  function rememberImagePathsFromText(text?: string): string[] {
+    const extracted = extractImagePathCandidatesFromText(text);
+    try {
+      for (const candidate of extracted) {
+        if (!candidate || recentImagePathCandidates.includes(candidate)) continue;
+        recentImagePathCandidates.push(candidate);
+        while (recentImagePathCandidates.length > 8) recentImagePathCandidates.shift();
+      }
+    } catch {}
+    return extracted;
+  }
+
+  /**
+   * 中文说明：返回最近一次出现的图片路径候选。
+   */
+  function latestImagePathCandidate(): string {
+    return recentImagePathCandidates.length > 0 ? String(recentImagePathCandidates[recentImagePathCandidates.length - 1] || '') : '';
+  }
+
+  /**
+   * 中文说明：把函数调用中的图片路径候选按 `call_id` 绑定，供对应输出块精确回填本地路径。
+   * - 优先使用函数参数里直接出现的路径，避免多个 `view_image` 连续调用时都误绑到“最近一张图”；
+   * - 同一 `call_id` 仅保留去重后的顺序列表，兼容单次调用携带多张图片的情况。
+   */
+  function rememberImagePathsForCallId(callId?: string, candidates?: string[]): void {
+    const normalizedCallId = String(callId || '').trim();
+    if (!normalizedCallId) return;
+    const next = Array.isArray(candidates)
+      ? candidates.filter((candidate) => String(candidate || '').trim().length > 0)
+      : [];
+    if (next.length === 0) return;
+
+    const uniqueCandidates = Array.from(new Set(next));
+    imagePathCandidatesByCallId.set(normalizedCallId, uniqueCandidates);
+  }
+
+  /**
+   * 中文说明：为函数输出里的第 N 个图片块选择最合适的本地路径提示。
+   * - 先按 `call_id` 命中对应函数调用时记录的路径；
+   * - 若该调用只记录到一张路径，则复用于该输出里的所有图片块；
+   * - 最后再回退到全局最近图片路径，兼容旧日志或缺失 `call_id` 的场景。
+   */
+  function resolveImagePathHintForCallOutput(callId: string, imageIndex: number): string {
+    const normalizedCallId = String(callId || '').trim();
+    const candidates = normalizedCallId ? (imagePathCandidatesByCallId.get(normalizedCallId) || []) : [];
+    if (candidates[imageIndex]) return String(candidates[imageIndex] || '');
+    if (candidates.length > 0) return String(candidates[candidates.length - 1] || '');
+    return latestImagePathCandidate();
+  }
+
+  /**
+   * 中文说明：从函数调用参数中提取图片路径候选，并兼容 JSON 字符串里的转义反斜杠。
+   * - 优先遍历反序列化后的参数对象，拿到真实路径值；
+   * - 反序列化失败时退回原始字符串/格式化文本，兼容历史日志里的自由文本参数。
+   */
+  function extractImagePathCandidatesFromFunctionCallArguments(args: unknown, fallbackText?: string): string[] {
+    const out = new Set<string>();
+
+    /**
+     * 中文说明：把一段文本里的图片路径候选加入结果集，保持原始顺序并自动去重。
+     */
+    function rememberCandidatesFromText(text?: string): void {
+      for (const candidate of extractImagePathCandidatesFromText(text)) {
+        if (!candidate) continue;
+        out.add(candidate);
+      }
+    }
+
+    /**
+     * 中文说明：深度遍历函数参数值，收集其中所有字符串型图片路径。
+     */
+    function visitArgumentValue(value: unknown): void {
+      if (typeof value === 'string') {
+        rememberCandidatesFromText(value);
+        return;
+      }
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          visitArgumentValue(item);
+        }
+        return;
+      }
+      if (!value || typeof value !== 'object') return;
+      for (const item of Object.values(value as Record<string, unknown>)) {
+        visitArgumentValue(item);
+      }
+    }
+
+    if (typeof args === 'string') {
+      let parsed = false;
+      try {
+        visitArgumentValue(JSON.parse(args));
+        parsed = true;
+      } catch {}
+      if (!parsed || out.size === 0) rememberCandidatesFromText(args);
+    } else {
+      visitArgumentValue(args);
+    }
+
+    if (out.size === 0) rememberCandidatesFromText(fallbackText);
+    return Array.from(out);
+  }
+
+  /**
+   * 中文说明：按既有标签前缀规则拆分文本，并写入统一消息内容数组。
+   * - 复用 `extractTaggedPrefix`，保持 `instructions/environment_context` 的展示与筛选语义一致；
+   * - 仅在需要补造旧格式 `event_msg.user_message` 时使用，避免扩大既有分支改动面。
+   */
+  function appendTaggedTextContent(
+    contentArr: MessageContent[],
+    text: string,
+    options?: { itemType?: string; containerTag?: string },
+  ): void {
+    const source = String(text || '');
+    if (!source.trim()) return;
+
+    const itemType = String(options?.itemType || 'text');
+    const containerTag = String(options?.containerTag || `message.${itemType.toLowerCase()}`);
+    const { rest, picked } = extractTaggedPrefix(source);
+    if (picked.length > 0) {
+      for (const item of picked) {
+        if (String(item.type).toLowerCase() === 'instructions') {
+          const key = __normInstr(String(item.text || ''));
+          if (key && __seenInstructions.has(key)) continue;
+          if (key) __seenInstructions.add(key);
+        }
+        const innerTag = 'message.' + String(item.type).toLowerCase();
+        contentArr.push({ ...item, tags: Array.from(new Set([...(item.tags || []), innerTag, containerTag])) });
+      }
+      if (rest.trim().length > 0) contentArr.push({ type: itemType, text: rest, tags: [containerTag] });
+      return;
+    }
+
+    contentArr.push({ type: itemType, text: source, tags: [containerTag] });
+  }
+
+  /**
+   * 中文说明：把仅包含图片绝对路径的 `event_msg.user_message` 恢复为“文本 + 多张图片”内容。
+   * - 仅当 `images/local_images/text_elements` 都为空时才介入，避免与现代 `input_image` 记录重复；
+   * - 保留原始输入文本，便于搜索与上下文回看；
+   * - 为每个路径生成独立图片内容项，解决一条消息多图只挂上一张的问题。
+   */
+  function buildPathOnlyCodexUserMessageEventContent(payload: any): MessageContent[] | null {
+    try {
+      if (!payload || typeof payload !== 'object') return null;
+      const hasInlineImages = Array.isArray(payload.images)
+        && payload.images.some((item: any) => String(item || '').trim().length > 0);
+      const hasLocalImages = Array.isArray(payload.local_images)
+        && payload.local_images.some((item: any) => typeof item === 'string' && String(item).trim().length > 0);
+      const hasTextElements = Array.isArray(payload.text_elements) && payload.text_elements.length > 0;
+      if (hasInlineImages || hasLocalImages || hasTextElements) return null;
+
+      const messageText = typeof payload.message === 'string' ? payload.message : '';
+      const pathCandidates = extractImagePathCandidatesFromText(messageText);
+      if (pathCandidates.length === 0) return null;
+
+      const contentArr: MessageContent[] = [];
+      appendTaggedTextContent(contentArr, messageText, { itemType: 'input_text', containerTag: 'message.input_text' });
+      for (const localPath of pathCandidates) {
+        const imageItem = createHistoryImageContent({
+          localPath,
+          tags: ['message.image', 'event_msg.user_message.image'],
+        });
+        if (imageItem) contentArr.push(imageItem);
+      }
+      return contentArr.length > 0 ? contentArr : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 中文说明：将 Codex 历史中的图片块转换为统一图片内容项。
+   */
+  function createCodexImageContent(block: any, localPathHint?: string): MessageContent | null {
+    try {
+      if (!block || typeof block !== 'object') return null;
+      const type = String(block.type || '').toLowerCase();
+      const imageUrl = typeof block.image_url === 'string' ? block.image_url : (typeof block.url === 'string' ? block.url : '');
+      if (type !== 'input_image' && !/^data:image\//i.test(imageUrl)) return null;
+      const localPath = typeof block.local_path === 'string'
+        ? block.local_path
+        : (typeof block.file_path === 'string'
+          ? block.file_path
+          : (typeof block.path === 'string' ? block.path : localPathHint));
+      return createHistoryImageContent({
+        localPath,
+        dataUrl: imageUrl,
+        mimeType: typeof block.mime_type === 'string' ? block.mime_type : (typeof block.mimeType === 'string' ? block.mimeType : undefined),
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 中文说明：剥离 `function_call_output` 中已单独抽取的图片块，避免把大段 Base64 再写入文本。
+   */
+  function stripCodexImageBlocks(output: any): any {
+    try {
+      if (Array.isArray(output)) {
+        const rest = output.filter((item) => !createCodexImageContent(item));
+        return rest.length > 0 ? rest : '';
+      }
+      return output;
+    } catch {
+      return output;
+    }
   }
 
   function parseLine(line: string, lineIndex: number) {
@@ -1423,18 +1647,36 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
         Object.prototype.hasOwnProperty.call(obj, 'id') &&
         Object.prototype.hasOwnProperty.call(obj, 'timestamp')
       );
+      const pathOnlyUserMessageContent = obj.type === 'event_msg' && obj.payload && obj.payload.type === 'user_message'
+        ? buildPathOnlyCodexUserMessageEventContent(obj.payload)
+        : null;
+
       if (obj.type === 'message' || obj.record_type === 'message' || (obj.type === 'response_item' && obj.payload && (obj.payload.type === 'message' || obj.payload.record_type === 'message'))) {
 	        const src: any = (obj.type === 'response_item' && obj.payload) ? obj.payload : obj;
 	        const role = src.role || src.actor || src.from || 'user';
 	        const contentArr: MessageContent[] = [];
+          const localImages = Array.isArray((src as any).local_images)
+            ? (src as any).local_images.filter((item: any) => typeof item === 'string' && String(item).trim().length > 0)
+            : [];
+          let localImageCursor = 0;
 	        // 仅“前缀”匹配提取 <user_instructions>/<permissions instructions>/<environment_context> 等，不做全文搜索（性能考虑）
 	        if (Array.isArray(src.content)) {
 	          for (const c of src.content) {
 	            if (!c) continue;
+              if (typeof c === 'object') {
+                const localPathHint = String(localImages[localImageCursor] || latestImagePathCandidate() || '');
+                const imageItem = createCodexImageContent(c, localPathHint);
+                if (imageItem) {
+                  if (localImages[localImageCursor]) localImageCursor += 1;
+                  contentArr.push(imageItem);
+                  continue;
+                }
+              }
 	            if (c.type && (c.text || c.code || c.payload)) {
               const text = c.text ?? c.code ?? pretty(c.payload ?? '');
               const s = String(text ?? '');
               if (s.trim().length === 0) continue;
+              rememberImagePathsFromText(s);
               // 将 input_text/text 中的标签内容单独分离分类
               if (String(c.type).toLowerCase() === 'input_text' || String(c.type).toLowerCase() === 'text') {
                 const { rest, picked } = extractTaggedPrefix(s);
@@ -1459,6 +1701,7 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
             } else if (typeof c === 'string') {
               const s = String(c);
               if (s.trim().length === 0) continue;
+              rememberImagePathsFromText(s);
               const { rest, picked } = extractTaggedPrefix(s);
               if (picked.length > 0) {
                 for (const it of picked) {
@@ -1478,6 +1721,7 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
         } else if (typeof src.content === 'string') {
           const s = String(src.content);
           if (s.trim().length > 0) {
+            rememberImagePathsFromText(s);
             const { rest, picked } = extractTaggedPrefix(s);
           if (picked.length > 0) {
             for (const it of picked) {
@@ -1503,6 +1747,7 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
             const it = String(hasInput ? (src as any).input_text : (hasOutput ? (src as any).output_text : ''));
             const containerTag = hasInput ? 'message.input_text' : (hasOutput ? 'message.output_text' : 'message.text');
             if (it.trim().length > 0) {
+              rememberImagePathsFromText(it);
               const { rest, picked } = extractTaggedPrefix(it);
               if (picked.length > 0) {
                 for (const it2 of picked) {
@@ -1532,6 +1777,11 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
           }
         } catch {}
         if (contentArr.length > 0) messages.push({ role, content: contentArr });
+      } else if (pathOnlyUserMessageContent) {
+        try {
+          rememberImagePathsFromText(typeof obj.payload?.message === 'string' ? obj.payload.message : '');
+        } catch {}
+        messages.push({ role: 'user', content: pathOnlyUserMessageContent });
       } else if (obj.type === 'function_call' || (obj.type === 'response_item' && obj.payload && obj.payload.type === 'function_call')) {
         // 工具/函数调用
         const src: any = (obj.type === 'response_item' && obj.payload) ? obj.payload : obj;
@@ -1546,23 +1796,41 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
           }
         } catch {}
         const text = `name: ${name}\n${argsPretty ? 'arguments:\n' + argsPretty : ''}${(src as any).call_id ? `\ncall_id: ${(src as any).call_id}` : ''}`.trim();
+        rememberImagePathsFromText(text);
+        const imagePathCandidates = extractImagePathCandidatesFromFunctionCallArguments((src as any).arguments, text);
+        rememberImagePathsForCallId((src as any).call_id, imagePathCandidates);
         messages.push({ role: 'tool', content: [{ type: 'function_call', text, tags: ['function_call'] }] });
       } else if (obj.type === 'function_call_output' || (obj.type === 'response_item' && obj.payload && obj.payload.type === 'function_call_output')) {
         // 工具输出
         const src: any = (obj.type === 'response_item' && obj.payload) ? obj.payload : obj;
+        const contentArr: MessageContent[] = [];
+        try {
+          const outputItems = Array.isArray(src.output) ? src.output : [];
+          const callId = String((src as any).call_id || '');
+          for (let index = 0; index < outputItems.length; index += 1) {
+            const item = outputItems[index];
+            const imageItem = createCodexImageContent(item, resolveImagePathHintForCallOutput(callId, index));
+            if (imageItem) contentArr.push(imageItem);
+          }
+        } catch {}
         let out = '';
         try {
-          if (typeof src.output === 'string') {
+          const sanitizedOutput = stripCodexImageBlocks(src.output);
+          if (typeof sanitizedOutput === 'string') {
             // 某些日志将整个对象 JSON 作为字符串包裹
-            try { out = JSON.stringify(JSON.parse(src.output), null, 2); }
-            catch { out = src.output; }
-          } else if (src.output) {
-            out = JSON.stringify(src.output, null, 2);
+            try { out = JSON.stringify(JSON.parse(sanitizedOutput), null, 2); }
+            catch { out = sanitizedOutput; }
+          } else if (sanitizedOutput) {
+            out = JSON.stringify(sanitizedOutput, null, 2);
           }
         } catch {}
         const meta = (src as any).metadata ? `\nmetadata:\n${pretty((src as any).metadata)}` : '';
         const text = `${out}${meta}`.trim();
-        messages.push({ role: 'tool', content: [{ type: 'function_output', text, tags: ['function_output'] }] });
+        if (text) {
+          rememberImagePathsFromText(text);
+          contentArr.unshift({ type: 'function_output', text, tags: ['function_output'] });
+        }
+        if (contentArr.length > 0) messages.push({ role: 'tool', content: contentArr });
       } else if (obj.type === 'reasoning' || (obj.type === 'response_item' && obj.payload && obj.payload.type === 'reasoning')) {
         // 仅展示公开的 summary，忽略/标注加密内容
         const src: any = (obj.type === 'response_item' && obj.payload) ? obj.payload : obj;

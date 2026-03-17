@@ -5,6 +5,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { URL } from "node:url";
 import { nativeImage, clipboard, app } from "electron";
 import wsl from "./wsl";
 import { resolveGeminiImageDirWinPath, type GeminiRuntimeEnv } from "./gemini/projectTemp";
@@ -172,6 +173,87 @@ export function clipboardHasImage(): boolean {
   try { return !clipboard.readImage().isEmpty(); } catch { return false; }
 }
 
+/**
+ * 中文说明：把图片来源字符串规范化为主进程可读取的本地文件路径。
+ * - 兼容 `file:///`、Windows 盘符、UNC、`/mnt/<drive>/...` 与 WSL 绝对路径；
+ * - 返回空串表示该来源不是本地文件路径或无法可靠映射。
+ */
+function normalizeClipboardImageFilePath(value?: string): string {
+  try {
+    let raw = String(value || "").trim();
+    if (!raw || /^data:image\//i.test(raw)) return "";
+
+    if (/^file:\/\//i.test(raw)) {
+      try {
+        const parsed = new URL(raw);
+        const decodedPath = decodeURIComponent(parsed.pathname || "");
+        if (parsed.host) {
+          raw = `\\\\${parsed.host}${decodedPath.replace(/\//g, "\\")}`;
+        } else if (/^\/[A-Za-z]:\//.test(decodedPath)) {
+          raw = decodedPath.slice(1).replace(/\//g, "\\");
+        } else {
+          raw = decodedPath;
+        }
+      } catch {
+        raw = raw.replace(/^file:\/\//i, "");
+      }
+    }
+
+    const mntMatch = raw.match(/^\/mnt\/([A-Za-z])\/(.*)$/);
+    if (mntMatch?.[1]) {
+      const drive = mntMatch[1].toUpperCase();
+      const rest = String(mntMatch[2] || "").replace(/\//g, "\\");
+      return `${drive}:\\${rest}`;
+    }
+
+    if (raw.startsWith("/")) {
+      try { return wsl.wslToUNC(raw, resolveDefaultDistro()); } catch {}
+      return "";
+    }
+
+    return wsl.normalizeWinPath(raw);
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * 中文说明：从多种图片来源中构造 Electron `nativeImage`，供剪贴板复制等原生能力复用。
+ */
+function createNativeImageFromSources(args: { localPath?: string; src?: string; fallbackSrc?: string }): Electron.NativeImage | null {
+  const sources = [args.localPath, args.src, args.fallbackSrc];
+  for (const source of sources) {
+    const raw = String(source || "").trim();
+    if (!raw) continue;
+    try {
+      if (/^data:image\//i.test(raw)) {
+        const image = nativeImage.createFromDataURL(raw);
+        if (image && !image.isEmpty()) return image;
+        continue;
+      }
+      const filePath = normalizeClipboardImageFilePath(raw);
+      if (!filePath) continue;
+      const image = nativeImage.createFromPath(filePath);
+      if (image && !image.isEmpty()) return image;
+    } catch {}
+  }
+  return null;
+}
+
+/**
+ * 中文说明：将指定图片写入系统剪贴板，兼容本地路径与 data URL。
+ */
+export async function copyImageToClipboard(args: { localPath?: string; src?: string; fallbackSrc?: string }): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const image = createNativeImageFromSources(args);
+    if (!image || image.isEmpty()) return { ok: false, error: "image source unavailable" };
+    clipboard.writeImage(image);
+    return { ok: true };
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
+  }
+}
+
 export async function readClipboardAsPNGAndSave(opts: SaveOpts = {}) {
   try {
     const img = clipboard.readImage();
@@ -188,5 +270,6 @@ export default {
   saveFromBuffer,
   saveFromDataURL,
   clipboardHasImage,
+  copyImageToClipboard,
   readClipboardAsPNGAndSave,
 };
