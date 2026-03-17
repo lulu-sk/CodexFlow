@@ -14,6 +14,7 @@ import { toWSLForInsert, joinWinAbs, toWslRelOrAbsForProject, isWinPathUnderRoot
 import { extractWinPathsFromDataTransfer, probeWinPathKind, preferExistingWinPathCandidate, type WinPathProbeResult } from "@/lib/dragDrop";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import InteractiveImagePreview from "@/components/ui/interactive-image-preview";
 import {
   extractImagesFromPasteEvent,
   isImageFileName,
@@ -528,51 +529,6 @@ export default function PathChipsInput({
     return () => cancelAnimationFrame(raf);
   }, [ctxMenu.show, ctxMenu.x, ctxMenu.y]);
 
-  const [hoverPreview, setHoverPreview] = useState<{ chip: PathChip; rect: DOMRect; key: string } | null>(null);
-  const previewAnchorRef = useRef<HTMLElement | null>(null);
-  const hidePreview = useCallback(() => {
-    previewAnchorRef.current = null;
-    setHoverPreview(null);
-  }, []);
-  const showPreview = useCallback((chip: PathChip, key: string, target: HTMLElement | null) => {
-    if (!target) return;
-    previewAnchorRef.current = target;
-    setHoverPreview({ chip, rect: target.getBoundingClientRect(), key });
-  }, []);
-  useEffect(() => {
-    if (!hoverPreview) return;
-    const refresh = () => {
-      const anchor = previewAnchorRef.current;
-      if (!anchor || !anchor.isConnected) {
-        hidePreview();
-        return;
-      }
-      setHoverPreview((prev) => {
-        if (!prev) return prev;
-        const rect = anchor.getBoundingClientRect();
-        const same =
-          prev.rect.left === rect.left &&
-          prev.rect.top === rect.top &&
-          prev.rect.width === rect.width &&
-          prev.rect.height === rect.height;
-        if (same) return prev;
-        return { ...prev, rect };
-      });
-    };
-    refresh();
-    window.addEventListener('scroll', refresh, true);
-    window.addEventListener('resize', refresh);
-    return () => {
-      window.removeEventListener('scroll', refresh, true);
-      window.removeEventListener('resize', refresh);
-    };
-  }, [hoverPreview, hidePreview]);
-  useEffect(() => {
-    if (!hoverPreview) return;
-    const exists = chips.some((chip, idx) => buildChipStableKey(chip, String(idx)) === hoverPreview.key);
-    if (!exists) hidePreview();
-  }, [chips, hoverPreview, hidePreview]);
-
   /**
    * 中文说明：读取当前受控值的最新镜像，避免异步流程拿到过期的 draft / chips。
    */
@@ -994,25 +950,6 @@ export default function PathChipsInput({
     } catch { return ""; }
   }, [projectWslRoot, winRoot]);
 
-  const handleChipMouseEnter = useCallback((chip: PathChip, key: string, target: HTMLElement) => {
-    if (!resolveChipPreviewSrc(chip)) return;
-    showPreview(chip, key, target);
-  }, [showPreview]);
-
-  /**
-   * 中文说明：当图片 Chip 的 `blob:` 预览失效时，自动回退到磁盘文件路径预览。
-   */
-  const handleChipImageError = useCallback((event: React.SyntheticEvent<HTMLImageElement>, chip: PathChip) => {
-    const target = event.currentTarget;
-    const fallbackUrl = resolveChipImageFallbackUrl(chip);
-    if (fallbackUrl && target.dataset.cfPreviewFallback !== "1") {
-      target.dataset.cfPreviewFallback = "1";
-      target.src = fallbackUrl;
-      return;
-    }
-    target.dataset.cfPreviewBroken = "1";
-  }, []);
-
   // 判定 Chip 是否目录：优先使用 isDir 标记；若无则根据路径尾部斜杠推断
   const isChipDir = useCallback((chip?: any): boolean => {
     try {
@@ -1333,45 +1270,69 @@ export default function PathChipsInput({
             const chipKey = buildChipStableKey(chip, `${idx}`);
             const chipAny = chip as PathChip;
             const isRule = chipAny.chipKind === "rule";
-            const tooltip = isRule
+            const preferredPathText = isRule
               ? chipAny.rulePath || chipAny.winPath || chipAny.wslPath || ""
-              : (runEnv === 'wsl'
-                ? String((chipAny as any)?.wslPath || (chipAny as any)?.winPath || "")
-                : (resolveChipWindowsFullPath(chipAny) || String((chipAny as any)?.winPath || (chipAny as any)?.wslPath || "")));
+              : (resolveChipWindowsFullPath(chipAny) || String((chipAny as any)?.winPath || (chipAny as any)?.wslPath || ""));
+            const tooltip = preferredPathText;
             const ruleLabel = chipAny.rulePath?.split(/[/\\]/).pop() || chipAny.rulePath || chipAny.fileName || t('common:files.rule');
             const labelText = isRule
               ? ruleLabel
               : chip.fileName || (chip as any)?.wslPath || t('common:files.image');
             const isDir = !!(chipAny as any).isDir || (/\/$/.test(String(chip.wslPath || '')));
             const previewSrc = resolveChipPreviewSrc(chip);
-            const iconNode = (() => {
-              if (previewSrc) {
-                return (
-                  <img
-                    src={previewSrc}
-                    className="h-3.5 w-3.5 object-cover rounded"
-                    alt={chip.fileName || t('common:files.image')}
-                    onError={(event) => handleChipImageError(event, chip)}
-                  />
-                );
-              }
-              if (isRule) return <ScrollText className="h-3.5 w-3.5 text-slate-600" />;
-              if (isDir) return <FolderOpenDot className="h-3.5 w-3.5 text-slate-600" />;
-              return <FileText className="h-3.5 w-3.5 text-slate-600" />;
-            })();
-            return (
+            /**
+             * 中文说明：统一渲染单个 Chip；若存在图片预览能力，则由共享组件注入悬停预览与点击弹窗交互。
+             */
+            const chipContent = (hoverTriggerProps?: { onMouseEnter: (event: React.MouseEvent<HTMLElement>) => void; onMouseLeave: () => void }, openDialog?: () => void, imageProps?: React.ImgHTMLAttributes<HTMLImageElement>) => {
+              /**
+               * 中文说明：图片 Chip 支持整块左键打开大图；复制/删除等操作按钮通过 data 标记排除。
+               */
+              const handleChipPrimaryClick = (ev: React.MouseEvent<HTMLDivElement>) => {
+                if (!previewSrc || !openDialog) return;
+                const target = ev.target as HTMLElement | null;
+                if (target?.closest("[data-chip-action='true']")) return;
+                ev.preventDefault();
+                ev.stopPropagation();
+                openDialog();
+              };
+
+              return (
               <div
                 key={chipKey}
-                className="group relative inline-flex items-center gap-1.5 rounded-apple-sm border border-[var(--cf-border)] bg-[var(--cf-surface-solid)] px-1.5 py-0.5 text-xs leading-[0.875rem] shadow-apple-xs transition-all duration-apple hover:shadow-apple hover:border-[var(--cf-border-strong)]"
+                className={cn(
+                  "group relative inline-flex items-center gap-1.5 rounded-apple-sm border border-[var(--cf-border)] bg-[var(--cf-surface-solid)] px-1.5 py-0.5 text-xs leading-[0.875rem] shadow-apple-xs transition-all duration-apple hover:shadow-apple hover:border-[var(--cf-border-strong)]",
+                  previewSrc ? "cursor-zoom-in" : "",
+                )}
                 title={tooltip || undefined}
-                onMouseEnter={(ev) => handleChipMouseEnter(chip, chipKey, ev.currentTarget)}
-                onMouseLeave={hidePreview}
+                onMouseEnter={hoverTriggerProps?.onMouseEnter}
+                onMouseLeave={hoverTriggerProps?.onMouseLeave}
+                onClick={handleChipPrimaryClick}
                 onContextMenu={(ev) => {
                   ev.preventDefault(); ev.stopPropagation();
                   setCtxMenu({ show: true, x: ev.clientX, y: ev.clientY, chip });
                 }}
               >
-                {iconNode}
+                {previewSrc && imageProps ? (
+                  <button
+                    type="button"
+                    data-chip-action="true"
+                    className="shrink-0 rounded-[4px] transition-transform duration-apple-fast hover:scale-[1.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cf-accent)]/35"
+                    aria-label={t('common:files.image') as string}
+                    onClick={(ev) => {
+                      ev.preventDefault();
+                      ev.stopPropagation();
+                      openDialog?.();
+                    }}
+                  >
+                    <img {...imageProps} className="h-3.5 w-3.5 rounded object-cover" />
+                  </button>
+                ) : (
+                  <>
+                    {isRule ? <ScrollText className="h-3.5 w-3.5 text-slate-600" /> : null}
+                    {!isRule && isDir ? <FolderOpenDot className="h-3.5 w-3.5 text-slate-600" /> : null}
+                    {!isRule && !isDir ? <FileText className="h-3.5 w-3.5 text-slate-600" /> : null}
+                  </>
+                )}
                 <span
                   className="text-[var(--cf-text-primary)] max-w-[160px] truncate font-apple-medium"
                   title={tooltip || undefined}
@@ -1381,6 +1342,7 @@ export default function PathChipsInput({
                 {!isDir && (
                   <button
                     type="button"
+                    data-chip-action="true"
                     title={copyFileNameLabel}
                     aria-label={copyFileNameLabel}
                     className="ml-0.5 rounded-apple-sm p-0.5 text-[var(--cf-text-secondary)] hover:text-[var(--cf-text-primary)] hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast flex items-center justify-center"
@@ -1394,6 +1356,7 @@ export default function PathChipsInput({
                 )}
                 <button
                   type="button"
+                  data-chip-action="true"
                   className="ml-0.5 rounded-apple-sm px-0.5 text-[var(--cf-text-secondary)] hover:text-[var(--cf-text-primary)] hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
                   onMouseDown={(ev) => {
                     ev.preventDefault();
@@ -1415,47 +1378,26 @@ export default function PathChipsInput({
                   <span className="text-xs">×</span>
                 </button>
               </div>
-            );
+              );
+            };
+            if (previewSrc) {
+              return (
+                <InteractiveImagePreview
+                  key={chipKey}
+                  src={previewSrc}
+                  fallbackSrc={resolveChipImageFallbackUrl(chip)}
+                  alt={chip.fileName || t('common:files.image')}
+                  dialogTitle={labelText}
+                  dialogDescription={undefined}
+                  dialogMeta={preferredPathText ? <div className="break-all whitespace-pre-wrap">{preferredPathText}</div> : null}
+                >
+                  {({ hoverTriggerProps, openDialog, imageProps }) => chipContent(hoverTriggerProps, openDialog, imageProps)}
+                </InteractiveImagePreview>
+              );
+            }
+            return chipContent();
           })}
         </div>
-
-        {hoverPreview && resolveChipPreviewSrc(hoverPreview.chip) && typeof document !== "undefined"
-          ? createPortal(
-              (() => {
-                const { rect, chip } = hoverPreview;
-                const previewSrc = resolveChipPreviewSrc(chip);
-                const centerX = rect.left + rect.width / 2;
-                const viewportHeight = typeof window !== "undefined" ? window.innerHeight : 0;
-                const anchorCenterY = rect.top + rect.height / 2;
-                // 规则：
-                // - 输入区在视口上半部分：优先向下弹出，避免被顶部吃掉（全屏模式下尤为明显）
-                // - 输入区在视口下半部分：优先向上弹出，减少被底部遮挡的概率
-                const preferBelow = !viewportHeight || anchorCenterY < viewportHeight * 0.5;
-                const baseTop = preferBelow ? rect.bottom + 8 : rect.top - 8;
-                const clampedTop = viewportHeight
-                  ? Math.min(Math.max(baseTop, 24), viewportHeight - 24)
-                  : baseTop;
-                const top = clampedTop;
-                const translateYClass = preferBelow ? "translate-y-0" : "-translate-y-full";
-                return (
-                  <div
-                    className="fixed z-[1200] pointer-events-none"
-                    style={{ left: centerX, top }}
-                  >
-                    <div className={cn("rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple p-2 shadow-apple-lg transition-opacity dark:shadow-apple-dark-lg", "-translate-x-1/2", translateYClass)}>
-                      <img
-                        src={previewSrc}
-                        className="block max-h-[28rem] max-w-[28rem] object-contain rounded-apple"
-                        alt={chip.fileName || t('common:files.image')}
-                        onError={(event) => handleChipImageError(event, chip)}
-                      />
-                    </div>
-                  </div>
-                );
-              })(),
-              document.body
-            )
-          : null}
 
         {/* 内部输入：multiline 时使用 textarea 以获得自动换行；避免长文本被截断
             同时增加 pb-10 给右下角发送按钮让位，避免遮挡最后一行。 */}

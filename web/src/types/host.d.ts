@@ -149,7 +149,15 @@ export type HistorySummary = {
   runtimeShell?: 'wsl' | 'windows' | 'unknown';
 };
 
-export type MessageContent = { type: string; text: string };
+export type MessageContent = {
+  type: string;
+  text: string;
+  tags?: string[];
+  src?: string;
+  fallbackSrc?: string;
+  localPath?: string;
+  mimeType?: string;
+};
 export type HistoryMessage = { role: string; content: MessageContent[] };
 
 // ---- Host API 声明 ----
@@ -734,6 +742,7 @@ export interface ImagesAPI {
   saveDataURL(args: { dataURL: string; projectWinRoot?: string; projectWslRoot?: string; projectName?: string; ext?: string; prefix?: string; providerId?: string; runtimeEnv?: "wsl" | "windows" | "pwsh"; distro?: string }): Promise<{ ok: boolean; winPath?: string; wslPath?: string; fileName?: string; error?: string }>;
   clipboardHasImage(): Promise<{ ok: boolean; has?: boolean; error?: string }>;
   saveFromClipboard(args: { projectWinRoot?: string; projectWslRoot?: string; projectName?: string; prefix?: string; providerId?: string; runtimeEnv?: "wsl" | "windows" | "pwsh"; distro?: string }): Promise<{ ok: boolean; winPath?: string; wslPath?: string; fileName?: string; error?: string }>;
+  copyToClipboard(args: { localPath?: string; src?: string; fallbackSrc?: string }): Promise<{ ok: boolean; error?: string }>;
   trash(args: { winPath: string }): Promise<{ ok: boolean; error?: string }>;
 }
 

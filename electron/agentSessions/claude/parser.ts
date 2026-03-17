@@ -7,6 +7,7 @@ import type { Stats } from "node:fs";
 import { detectRuntimeShell } from "../../history";
 import type { Message, RuntimeShell } from "../../history";
 import { sha256Hex } from "../shared/crypto";
+import { createHistoryImageContent } from "../shared/historyImage";
 import { dirKeyFromCwd, dirKeyOfFilePath, tidyPathCandidate } from "../shared/path";
 import { isWinOrWslPathLineForPreview } from "../shared/preview";
 
@@ -52,6 +53,7 @@ export async function parseClaudeSessionFile(filePath: string, stat: Stats, opts
   let resumeId: string | undefined = undefined;
   let runtimeShell: RuntimeShell = "unknown";
   const messages: Message[] = [];
+  const readToolPathById = new Map<string, string>();
 
   const pushMessage = (msg: Message) => {
     if (summaryOnly) return;
@@ -143,6 +145,7 @@ export async function parseClaudeSessionFile(filePath: string, stat: Stats, opts
         const role = normalizeClaudeRole(roleRaw);
 
         const { primaryText, toolBlocks, thinkingText } = extractClaudeContent(messageObj ?? obj);
+        const structuredToolMessages = extractClaudeStructuredToolMessages(messageObj ?? obj, readToolPathById);
 
         if (role === "user" && primaryText) {
           const { promptText, transcriptText } = splitClaudeUserTextForLocalCommandTranscript(primaryText);
@@ -158,9 +161,13 @@ export async function parseClaudeSessionFile(filePath: string, stat: Stats, opts
         if (thinkingText) {
           pushMessage({ role: "assistant", content: [{ type: "meta", text: thinkingText }] });
         }
-        for (const tb of toolBlocks) {
-          if (tb.kind === "tool_call") pushMessage({ role: "assistant", content: [{ type: "tool_call", text: tb.text }] });
-          else if (tb.kind === "tool_result") pushMessage({ role: "tool", content: [{ type: "tool_result", text: tb.text }] });
+        if (structuredToolMessages.length > 0) {
+          for (const toolMessage of structuredToolMessages) pushMessage(toolMessage);
+        } else {
+          for (const tb of toolBlocks) {
+            if (tb.kind === "tool_call") pushMessage({ role: "assistant", content: [{ type: "tool_call", text: tb.text }] });
+            else if (tb.kind === "tool_result") pushMessage({ role: "tool", content: [{ type: "tool_result", text: tb.text }] });
+          }
         }
 
         if (summaryOnly && preview && cwd) {
@@ -246,6 +253,148 @@ export async function parseClaudeSessionFile(filePath: string, stat: Stats, opts
 }
 
 type ClaudeToolBlock = { kind: "tool_call" | "tool_result"; text: string };
+type ClaudeStructuredToolMessage = { role: "assistant" | "tool"; content: Message["content"] };
+
+/**
+ * 中文说明：从 Claude 内容块中提取结构化的工具消息，并为 `Read -> tool_result.image` 建立路径关联。
+ */
+function extractClaudeStructuredToolMessages(source: any, readToolPathById: Map<string, string>): ClaudeStructuredToolMessage[] {
+  try {
+    const content = source?.content;
+    if (!Array.isArray(content)) return [];
+
+    const out: ClaudeStructuredToolMessage[] = [];
+    for (const block of content) {
+      const type = String(block?.type || "").toLowerCase();
+      if (type === "tool_use" || type === "tool-use" || type === "tool_call" || type === "tool-call") {
+        const toolCallText = buildClaudeToolUseText(block);
+        const toolUseId = typeof block?.id === "string" ? block.id.trim() : "";
+        const filePath = typeof block?.input?.file_path === "string" ? tidyPathCandidate(block.input.file_path) : "";
+        if (toolUseId && filePath) readToolPathById.set(toolUseId, filePath);
+        if (toolCallText) out.push({ role: "assistant", content: [{ type: "tool_call", text: toolCallText }] });
+        continue;
+      }
+      if (type === "tool_result" || type === "tool-result") {
+        const toolResultContent = buildClaudeToolResultContents(block, readToolPathById);
+        if (toolResultContent.length > 0) out.push({ role: "tool", content: toolResultContent });
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 中文说明：格式化 Claude 的工具调用文本，并保留 `Read.input.file_path` 等关键信息。
+ */
+function buildClaudeToolUseText(block: any): string {
+  try {
+    const name = typeof block?.name === "string" ? block.name : (typeof block?.tool === "string" ? block.tool : "");
+    const input = block && Object.prototype.hasOwnProperty.call(block, "input") ? safeJsonStringify(block.input) : "";
+    return name ? `${name}${input ? `\n${input}` : ""}`.trim() : input.trim();
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * 中文说明：构造 Claude `tool_result` 的统一内容项。
+ * - 文本结果仍保留为 `tool_result`；
+ * - 图片结果优先尝试本地路径，不存在时回退到会话内 Base64。
+ */
+function buildClaudeToolResultContents(block: any, readToolPathById: Map<string, string>): Message["content"] {
+  try {
+    const rawContent = Array.isArray(block?.content)
+      ? block.content
+      : (typeof block?.content === "string"
+        ? [block.content]
+        : (Object.prototype.hasOwnProperty.call(block ?? {}, "output") ? [block.output] : []));
+    if (!Array.isArray(rawContent) || rawContent.length === 0) return [];
+
+    const localPath = resolveClaudeToolResultPath(block, readToolPathById);
+    const textParts: string[] = [];
+    const out: Message["content"] = [];
+
+    for (const part of rawContent) {
+      if (typeof part === "string") {
+        const text = part.trim();
+        if (text) textParts.push(text);
+        continue;
+      }
+      if (!part || typeof part !== "object") continue;
+
+      const type = String(part?.type || "").toLowerCase();
+      if (type === "text") {
+        const text = typeof part?.text === "string" ? part.text.trim() : "";
+        if (text) textParts.push(text);
+        continue;
+      }
+      if (type === "image") {
+        const source = part?.source;
+        const imageItem = createHistoryImageContent({
+          localPath,
+          mimeType: resolveClaudeImageMimeType(part),
+          dataUrl: typeof source?.data === "string" && /^data:image\//i.test(source.data) ? source.data : undefined,
+          base64Data: typeof source?.data === "string" && !/^data:image\//i.test(source.data) ? source.data : undefined,
+        });
+        if (imageItem) out.push(imageItem);
+        continue;
+      }
+
+      const text = safeJsonStringify(part).trim();
+      if (text) textParts.push(text);
+    }
+
+    if (textParts.length > 0) out.unshift({ type: "tool_result", text: textParts.join("\n\n") });
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 中文说明：按 `tool_use_id -> file_path` 映射解析 Claude 图片对应的原始路径。
+ */
+function resolveClaudeToolResultPath(block: any, readToolPathById: Map<string, string>): string | undefined {
+  try {
+    const toolUseId = typeof block?.tool_use_id === "string"
+      ? block.tool_use_id.trim()
+      : (typeof block?.toolUseId === "string" ? block.toolUseId.trim() : "");
+    if (toolUseId && readToolPathById.has(toolUseId)) return readToolPathById.get(toolUseId);
+    const direct = typeof block?.file_path === "string" ? block.file_path : (typeof block?.path === "string" ? block.path : "");
+    const normalized = tidyPathCandidate(direct);
+    return normalized || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 中文说明：从 Claude 图片块中尽力提取 MIME。
+ */
+function resolveClaudeImageMimeType(part: any): string | undefined {
+  try {
+    const candidates = [
+      part?.mimeType,
+      part?.mime_type,
+      part?.mediaType,
+      part?.media_type,
+      part?.source?.mimeType,
+      part?.source?.mime_type,
+      part?.source?.mediaType,
+      part?.source?.media_type,
+    ];
+    for (const candidate of candidates) {
+      if (typeof candidate === "string" && candidate.trim().toLowerCase().startsWith("image/")) {
+        return candidate.trim();
+      }
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * 判断一行文本是否属于 Claude Code 的“本地命令 transcript”噪声片段。

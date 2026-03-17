@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Combobox } from "@/components/ui/combobox";
 import PathChipsInput, { type PathChip } from "@/components/ui/path-chips-input";
+import InteractiveImagePreview from "@/components/ui/interactive-image-preview";
 import { retainPreviewUrl, releasePreviewUrl } from "@/lib/previewUrlRegistry";
 import { retainPastedImage, releasePastedImage, requestTrashWinPath } from "@/lib/imageResourceRegistry";
 import { setActiveFileIndexRoot } from "@/lib/atSearch";
@@ -64,13 +65,20 @@ import { isGeminiProvider, writeBracketedPaste, writeBracketedPasteAndEnter } fr
 import { oscBufferDefaults, trimOscBuffer } from "@/lib/oscNotificationBuffer";
 import { resolveDirRowDropPosition } from "@/lib/dir-tree-dnd";
 import HistoryCopyButton from "@/components/history/history-copy-button";
+import { useHistoryImageContextMenu } from "@/components/history/history-image-context-menu";
 import HistoryPanelToggleButton from "@/components/history/history-panel-toggle-button";
 import {
   resolveHistoryDetailSearchMode,
   shouldEnableHistoryDetailDomHighlights,
   shouldUseVirtualizedHistoryDetail,
 } from "@/features/history/detail-virtualization";
-import { HistoryMarkdown } from "@/features/history/renderers/history-markdown";
+import {
+  buildHistoryContentItemKey,
+  hasVisibleHistoryMessageContent,
+  HistoryTextWithInlineImages,
+  resolveHistoryInlineImageRenderState,
+  type HistoryInlineImageRenderState,
+} from "@/features/history/history-inline-images";
 import { VirtualizedList, type VirtualizedListHandle } from "@/features/history/virtualized-list";
 import { applyHistoryFindHighlights, clearHistoryFindHighlights, setActiveHistoryFindMatch } from "@/features/history/find/history-find";
 import { toWSLForInsert } from "@/lib/wsl";
@@ -11966,13 +11974,129 @@ const HISTORY_DETAIL_VIRTUAL_OVERSCAN = 1600;
 const HISTORY_DETAIL_SEARCH_DEBOUNCE_MS = 120;
 const HISTORY_DETAIL_PRE_CLASS_NAME = "mt-2 max-w-full overflow-x-auto whitespace-pre-wrap font-apple-regular";
 
-function ContentRenderer({ items, kprefix, projectWinPath }: { items: MessageContent[]; kprefix?: string; projectWinPath?: string }) {
+/**
+ * 中文说明：渲染历史详情中的图片块。
+ * - 主视图改为“路径 + 小图”紧凑排布，避免历史详情被大图撑开；
+ * - 悬停与点击交互统一复用输入框 chips 的图片预览行为。
+ */
+function HistoryImageContent({ item, itemKey }: { item: MessageContent; itemKey: string }) {
+  const primarySrc = String(item?.src || "").trim();
+  const fallbackSrc = String(item?.fallbackSrc || "").trim();
+  const localPath = String(item?.localPath || "").trim();
+  const metaLines = [
+    localPath ? `路径: ${localPath}` : "",
+    item.mimeType ? `类型: ${item.mimeType}` : "",
+  ].filter((line) => String(line || "").trim().length > 0);
+  const fallbackText = String(item?.text || "").trim();
+  const labelText = localPath || fallbackText.split(/\r?\n/)[0] || "图片";
+  const { openContextMenu: openImageCtxMenu, contextMenuNode } = useHistoryImageContextMenu({
+    src: primarySrc,
+    fallbackSrc,
+    localPath,
+  });
+  const dialogMeta = metaLines.length > 0 || fallbackSrc
+    ? (
+        <div className="space-y-1">
+          {metaLines.map((line, index) => (
+            <div key={`${itemKey}-dialog-meta-${index}`} className="break-all whitespace-pre-wrap">{line}</div>
+          ))}
+          {fallbackSrc ? <div className="break-all whitespace-pre-wrap">回退: 会话内图片数据</div> : null}
+        </div>
+      )
+    : undefined;
+
+  return (
+    <>
+      <div key={itemKey} className="min-w-0 overflow-hidden rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-solid)] p-2.5 shadow-apple-xs" onContextMenu={openImageCtxMenu}>
+        <div className="mb-2 flex min-w-0 items-center justify-between gap-2 text-xs uppercase tracking-wider text-[var(--cf-text-secondary)] font-apple-semibold">
+          <span>image</span>
+          <HistoryCopyButton text={fallbackText} />
+        </div>
+        <InteractiveImagePreview
+          src={primarySrc}
+          fallbackSrc={fallbackSrc}
+          alt={localPath || fallbackText || "history image"}
+          dialogTitle={labelText}
+          dialogDescription={item.mimeType || undefined}
+          dialogMeta={dialogMeta}
+        >
+          {({ hasPreview, hoverTriggerProps, openDialog, imageProps, isUsingFallback }) => (
+            <div
+              data-history-search-scope
+              className="flex min-w-0 items-start gap-3 rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-muted)] px-2.5 py-2"
+              onMouseEnter={hoverTriggerProps.onMouseEnter}
+              onMouseLeave={hoverTriggerProps.onMouseLeave}
+              onContextMenu={openImageCtxMenu}
+            >
+              {hasPreview ? (
+                <button
+                  type="button"
+                  className="shrink-0 overflow-hidden rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-solid)] transition-transform duration-apple-fast hover:scale-[1.02] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cf-accent)]/35"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    openDialog();
+                  }}
+                  onContextMenu={openImageCtxMenu}
+                  title="预览图片"
+                >
+                  <img {...imageProps} className="block h-12 w-12 object-cover" />
+                </button>
+              ) : (
+                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-apple border border-dashed border-[var(--cf-border)] bg-[var(--cf-surface-solid)] text-[10px] text-[var(--cf-text-muted)]">
+                  N/A
+                </div>
+              )}
+              <div className="min-w-0 flex-1">
+                <div className="break-all text-xs leading-5 text-[var(--cf-text-primary)] font-apple-medium">
+                  {labelText}
+                </div>
+                {metaLines.length > 0 ? (
+                  <div className="mt-1 space-y-0.5 text-[11px] leading-5 text-[var(--cf-text-secondary)]">
+                    {metaLines.map((line, index) => (
+                      <div key={`${itemKey}-meta-${index}`} className="break-all whitespace-pre-wrap">{line}</div>
+                    ))}
+                  </div>
+                ) : null}
+                {isUsingFallback ? (
+                  <div className="mt-1 text-[11px] leading-5 text-[var(--cf-text-secondary)]">当前显示: 会话内图片数据</div>
+                ) : null}
+                {!hasPreview && fallbackText ? (
+                  <div className="mt-1 break-words whitespace-pre-wrap text-[11px] leading-5 text-[var(--cf-text-primary)]">{fallbackText}</div>
+                ) : null}
+              </div>
+            </div>
+          )}
+        </InteractiveImagePreview>
+      </div>
+      {contextMenuNode}
+    </>
+  );
+}
+
+function ContentRenderer({
+  items,
+  kprefix,
+  projectWinPath,
+  inlineImageState,
+}: {
+  items: MessageContent[];
+  kprefix?: string;
+  projectWinPath?: string;
+  inlineImageState?: HistoryInlineImageRenderState;
+}) {
   if (!Array.isArray(items) || items.length === 0) return null;
   return (
     <div className="min-w-0 space-y-2">
       {items.map((c, i) => {
         const ty = (c?.type || '').toLowerCase();
         const text = String(c?.text ?? '');
+        const contentItemKey = buildHistoryContentItemKey(kprefix || "itm", i);
+        if (ty === 'image') {
+          if (inlineImageState?.hiddenImageItemKeys?.has(contentItemKey)) return null;
+          return <HistoryImageContent key={contentItemKey} item={c} itemKey={contentItemKey} />;
+        }
+        if (inlineImageState?.hiddenTextItemKeys?.has(contentItemKey)) return null;
         if (ty === 'user_instructions') {
           // 展开显示 user_instructions（移除折叠）
           return (
@@ -12058,7 +12182,12 @@ function ContentRenderer({ items, kprefix, projectWinPath }: { items: MessageCon
           return (
             <div key={`${kprefix || 'itm'}-sum-${i}`} className="relative min-w-0 rounded-apple border border-[var(--cf-border)] bg-[var(--cf-purple-light)] p-2 text-xs text-[var(--cf-text-primary)] font-apple-regular">
               <HistoryCopyButton text={text} className="absolute right-2 top-2" />
-              <HistoryMarkdown text={text} projectRootPath={projectWinPath} />
+              <HistoryTextWithInlineImages
+                text={text}
+                textItemKey={contentItemKey}
+                projectRootPath={projectWinPath}
+                inlineImageState={inlineImageState}
+              />
             </div>
           );
         }
@@ -12083,7 +12212,12 @@ function ContentRenderer({ items, kprefix, projectWinPath }: { items: MessageCon
                 <span>input</span>
                 <HistoryCopyButton text={text} />
               </div>
-              <HistoryMarkdown text={text} projectRootPath={projectWinPath} />
+              <HistoryTextWithInlineImages
+                text={text}
+                textItemKey={contentItemKey}
+                projectRootPath={projectWinPath}
+                inlineImageState={inlineImageState}
+              />
             </div>
           );
         }
@@ -12094,7 +12228,12 @@ function ContentRenderer({ items, kprefix, projectWinPath }: { items: MessageCon
                 <span>output</span>
                 <HistoryCopyButton text={text} />
               </div>
-              <HistoryMarkdown text={text} projectRootPath={projectWinPath} />
+              <HistoryTextWithInlineImages
+                text={text}
+                textItemKey={contentItemKey}
+                projectRootPath={projectWinPath}
+                inlineImageState={inlineImageState}
+              />
             </div>
           );
         }
@@ -12130,7 +12269,12 @@ function ContentRenderer({ items, kprefix, projectWinPath }: { items: MessageCon
         return (
           <div key={`${kprefix || 'itm'}-txt-${i}`} className="relative min-w-0">
             <HistoryCopyButton text={text} className="absolute right-0 -top-1" />
-            <HistoryMarkdown text={text} projectRootPath={projectWinPath} />
+            <HistoryTextWithInlineImages
+              text={text}
+              textItemKey={contentItemKey}
+              projectRootPath={projectWinPath}
+              inlineImageState={inlineImageState}
+            />
           </div>
         );
       })}
@@ -12164,6 +12308,7 @@ type HistoryRenderOptions = {
   activeMessageKey?: string;
   registerMessageRef?: (key: string, node: HTMLDivElement | null) => void;
   projectWinPath?: string;
+  inlineImageState?: HistoryInlineImageRenderState;
 };
 
 /**
@@ -12214,6 +12359,7 @@ function renderHistoryHeader(session: HistorySession) {
 function HistoryMessageCard({ view, options }: { view: HistoryMessageView; options?: HistoryRenderOptions }) {
   const message = view.message;
   const messageKey = view.messageKey;
+  if (!hasVisibleHistoryMessageContent(message, messageKey, options?.inlineImageState)) return null;
   const isActive = options?.activeMessageKey === messageKey;
   return (
     <div
@@ -12222,7 +12368,12 @@ function HistoryMessageCard({ view, options }: { view: HistoryMessageView; optio
       className={`min-w-0 overflow-hidden rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple p-2 shadow-apple-sm text-[var(--cf-text-primary)] transition-all duration-apple hover:shadow-apple dark:shadow-apple-dark-sm dark:hover:shadow-apple-dark ${isActive ? 'ring-1 ring-[var(--cf-accent)]/70 shadow-apple dark:ring-[var(--cf-accent)]/40' : ''}`}
     >
       <div data-history-search-scope className="mb-1 truncate text-xs uppercase tracking-wider font-apple-semibold text-[var(--cf-text-secondary)]">{message.role}</div>
-      <ContentRenderer items={message.content} kprefix={messageKey} projectWinPath={options?.projectWinPath} />
+      <ContentRenderer
+        items={message.content}
+        kprefix={messageKey}
+        projectWinPath={options?.projectWinPath}
+        inlineImageState={options?.inlineImageState}
+      />
     </div>
   );
 }
@@ -12248,11 +12399,15 @@ function renderHistoryMessageList(messages: HistoryMessageView[], options?: Hist
 function estimateHistoryMessageHeight(view: HistoryMessageView): number {
   const items = Array.isArray(view?.message?.content) ? view.message.content : [];
   let textLength = Math.max(24, String(view?.message?.role || "").length);
+  let imageBonus = 0;
   for (const item of items)
     textLength += Math.min(12000, String((item as any)?.text || "").length);
+  for (const item of items) {
+    if (String((item as any)?.type || "").toLowerCase() === "image") imageBonus += 260;
+  }
   const lineEstimate = Math.min(56, Math.ceil(textLength / 110));
   const itemBonus = Math.max(0, items.length - 1) * 28;
-  return Math.min(2200, Math.max(148, 96 + lineEstimate * 18 + itemBonus));
+  return Math.min(2800, Math.max(148, 96 + lineEstimate * 18 + itemBonus + imageBonus));
 }
 
 /**
@@ -12467,7 +12622,26 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
     );
   }, [selectedHistoryId, detailSession, typeFilter, normalizedDetailSearch, detailSearchMode]);
 
-  const filteredMessages = filteredHistory.messages;
+  const inlineImageState = useMemo(() => resolveHistoryInlineImageRenderState(
+    filteredHistory.messages.map((view) => ({
+      messageKey: view.messageKey,
+      message: view.message,
+    })),
+  ), [filteredHistory.messages]);
+  const visibleFilteredHistory = useMemo(() => {
+    const messages = filteredHistory.messages.filter((view) => hasVisibleHistoryMessageContent(
+      view.message,
+      view.messageKey,
+      inlineImageState,
+    ));
+    const visibleMessageKeys = new Set(messages.map((view) => view.messageKey));
+    return {
+      messages,
+      matches: filteredHistory.matches.filter((match) => visibleMessageKeys.has(match.messageKey)),
+    };
+  }, [filteredHistory.matches, filteredHistory.messages, inlineImageState]);
+
+  const filteredMessages = visibleFilteredHistory.messages;
   const showNoMatch = detailSearchActive && filteredMessages.length === 0;
   const detailScrollAreaRef = useRef<HTMLDivElement | null>(null);
   const historyScrollToTopTitle = t("common:scrollToTopWithShortcut") as string;
@@ -12488,8 +12662,8 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
   const historyVirtualListRef = useRef<VirtualizedListHandle | null>(null);
   const matches = useMemo(() => {
     if (!detailSearchActive || !detailSession) return [];
-    return filteredHistory.matches;
-  }, [detailSearchActive, detailSession, filteredHistory.matches]);
+    return visibleFilteredHistory.matches;
+  }, [detailSearchActive, detailSession, visibleFilteredHistory.matches]);
   const messageIndexByKey = useMemo(() => {
     const out = new Map<string, number>();
     for (let index = 0; index < filteredMessages.length; index += 1) {
@@ -12649,7 +12823,8 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
     activeMessageKey: detailSearchActive ? activeMatch?.messageKey : undefined,
     registerMessageRef,
     projectWinPath,
-  }), [detailSearchActive, activeMatch?.messageKey, registerMessageRef, projectWinPath]);
+    inlineImageState,
+  }), [detailSearchActive, activeMatch?.messageKey, registerMessageRef, projectWinPath, inlineImageState]);
 
   /**
    * 中文说明：将历史详情滚动区滚动到顶部。
@@ -12781,7 +12956,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
           filtered.sort();
           // 默认仅勾选 input_text 与 output_text，以突出用户与助手的主要对话内容
           const next: Record<string, boolean> = {};
-          for (const k of filtered) next[k] = (k === 'input_text' || k === 'output_text');
+          for (const k of filtered) next[k] = (k === 'input_text' || k === 'output_text' || k === 'image');
           if (seq === reqSeq.current) setTypeFilter(next);
         } catch {}
       } catch (e) {

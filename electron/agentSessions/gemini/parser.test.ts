@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { parseGeminiSessionFile } from "./parser";
 
+const GEMINI_PREVIEW_TEST_PATH = "/mnt/c/codexflow-fixture/assets/CodexFlow/image-20260131-003734-k8xy.png";
+
 /**
  * 写入临时 Gemini session JSON 文件并返回其路径。
  *
@@ -33,6 +35,19 @@ async function writeTempJsonAtRelPath(obj: unknown, relPath: string): Promise<st
   return fp;
 }
 
+/**
+ * 创建临时图片文件占位，供 Gemini 图片路径优先逻辑测试使用。
+ *
+ * @param fileName 文件名
+ * @returns 临时图片文件路径
+ */
+async function writeTempImageFile(fileName = "gemini-inline-image.png"): Promise<string> {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "codexflow-gemini-image-"));
+  const fp = path.join(dir, fileName);
+  await fs.promises.writeFile(fp, "fake-image", "utf8");
+  return fp;
+}
+
 describe("parseGeminiSessionFile（超大文件 summaryOnly 预览兜底）", () => {
   it("当文件超过 maxBytes 时仍能从前缀提取 preview/sessionId/rawDate", async () => {
     const sessionId = "d3862d4d-7d74-46c4-9858-45cf754919ca";
@@ -49,7 +64,7 @@ describe("parseGeminiSessionFile（超大文件 summaryOnly 预览兜底）", ()
           id: "m1",
           timestamp: startTime,
           type: "user",
-          content: "`/mnt/c/Users/example-user/AppData/Roaming/codexflow/assets/CodexFlow/image-20260131-003734-k8xy.png`\n\n真实首条：你好",
+          content: `\`${GEMINI_PREVIEW_TEST_PATH}\`\n\n真实首条：你好`,
         },
         {
           id: "m2",
@@ -99,6 +114,35 @@ describe("parseGeminiSessionFile（超大文件 summaryOnly 预览兜底）", ()
     expect(details.projectHash).toBe(projectHash);
     expect(details.preview).toBe("hello gemini");
     expect(details.resumeId).toBe("cc28c19a-73b0-470a-b8cf-738ec6a547a8");
+  });
+
+  it("会优先使用 Gemini 会话中的 inlineData 预览，并保留本地图片路径回退", async () => {
+    const localImagePath = await writeTempImageFile();
+    const fp = await writeTempJson(
+      {
+        sessionId: "gemini-image-session",
+        startTime: "2026-03-10T13:15:53.072Z",
+        lastUpdated: "2026-03-10T13:22:34.015Z",
+        messages: [
+          {
+            type: "user",
+            content: [
+              { text: `@${localImagePath} 请优化这个界面` },
+              { inlineData: { data: "aGVsbG8=", mimeType: "image/png" } },
+            ],
+          },
+        ],
+      },
+      `session-${Date.now()}-${Math.random().toString(16).slice(2)}.json`,
+    );
+    const stat = await fs.promises.stat(fp);
+    const details = await parseGeminiSessionFile(fp, stat, { summaryOnly: false, maxBytes: 128 * 1024 });
+
+    const imageItem = details.messages.flatMap((message) => message.content || []).find((item) => item.type === "image");
+    expect(imageItem).toBeTruthy();
+    expect(imageItem?.localPath).toBe(localImagePath);
+    expect(String(imageItem?.src || "")).toBe("data:image/png;base64,aGVsbG8=");
+    expect(String(imageItem?.fallbackSrc || "")).toMatch(/^file:\/\//);
   });
 });
 

@@ -28,6 +28,17 @@ async function createHistoryJsonlFile(lines: unknown[]): Promise<string> {
 }
 
 /**
+ * 中文说明：在临时目录中创建一个图片文件占位，用于验证本地路径优先策略。
+ */
+async function createTempImageFile(fileName = "history-image.png"): Promise<string> {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "codexflow-history-image-"));
+  tempDirs.push(dir);
+  const filePath = path.join(dir, fileName);
+  await fsp.writeFile(filePath, "fake-image", "utf8");
+  return filePath;
+}
+
+/**
  * 中文说明：提取解析结果中的全部文本片段，便于断言尾部消息是否被完整保留。
  */
 function collectTexts(messages: Array<{ content?: Array<{ text?: string }> }>): string[] {
@@ -140,5 +151,143 @@ describe("electron/history.readHistoryFile", () => {
 
     const full = await readHistoryFile(filePath, { maxLines: 0 });
     expect(collectTexts(full.messages).some((text) => text.includes("尾部消息必须可见"))).toBe(true);
+  });
+
+  it("会优先恢复 Codex 历史中的本地图片路径，并保留 data URL 回退", async () => {
+    const localImagePath = await createTempImageFile();
+    const dataUrl = "data:image/png;base64,aGVsbG8=";
+    const filePath = await createHistoryJsonlFile([
+      {
+        timestamp: "2026-03-17T03:57:01.021Z",
+        type: "session_meta",
+        payload: {
+          id: "session-image",
+          cwd: "/tmp/demo",
+        },
+      },
+      {
+        timestamp: "2026-03-17T03:57:02.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: `请查看这张图片：${localImagePath}` }],
+        },
+      },
+      {
+        timestamp: "2026-03-17T03:57:03.000Z",
+        type: "response_item",
+        payload: {
+          type: "function_call_output",
+          call_id: "call-image",
+          output: [{ type: "input_image", image_url: dataUrl }],
+        },
+      },
+    ]);
+
+    const parsed = await readHistoryFile(filePath, { maxLines: 0 });
+    const imageItem = parsed.messages
+      .flatMap((message) => message.content || [])
+      .find((item) => item.type === "image");
+
+    expect(imageItem).toBeTruthy();
+    expect(imageItem?.localPath).toBe(localImagePath);
+    expect(String(imageItem?.src || "")).toMatch(/^file:\/\//);
+    expect(imageItem?.fallbackSrc).toBe(dataUrl);
+    expect(String(imageItem?.text || "")).toContain(localImagePath);
+  });
+
+  it("连续多个 view_image 输出会按各自 call_id 恢复对应的本地图片路径", async () => {
+    const localImagePathA = await createTempImageFile("history-image-a.png");
+    const localImagePathB = await createTempImageFile("history-image-b.png");
+    const localImagePathC = await createTempImageFile("history-image-c.png");
+    const dataUrlA = "data:image/png;base64,QUFB";
+    const dataUrlB = "data:image/png;base64,QkJC";
+    const dataUrlC = "data:image/png;base64,Q0ND";
+    const filePath = await createHistoryJsonlFile([
+      {
+        timestamp: "2026-03-17T04:10:00.000Z",
+        type: "session_meta",
+        payload: {
+          id: "session-image-multi",
+          cwd: "/tmp/demo",
+        },
+      },
+      {
+        timestamp: "2026-03-17T04:10:01.000Z",
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "view_image",
+          arguments: JSON.stringify({ path: localImagePathA }),
+          call_id: "call-image-a",
+        },
+      },
+      {
+        timestamp: "2026-03-17T04:10:02.000Z",
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "view_image",
+          arguments: JSON.stringify({ path: localImagePathB }),
+          call_id: "call-image-b",
+        },
+      },
+      {
+        timestamp: "2026-03-17T04:10:03.000Z",
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "view_image",
+          arguments: JSON.stringify({ path: localImagePathC }),
+          call_id: "call-image-c",
+        },
+      },
+      {
+        timestamp: "2026-03-17T04:10:04.000Z",
+        type: "response_item",
+        payload: {
+          type: "function_call_output",
+          call_id: "call-image-a",
+          output: [{ type: "input_image", image_url: dataUrlA }],
+        },
+      },
+      {
+        timestamp: "2026-03-17T04:10:05.000Z",
+        type: "response_item",
+        payload: {
+          type: "function_call_output",
+          call_id: "call-image-b",
+          output: [{ type: "input_image", image_url: dataUrlB }],
+        },
+      },
+      {
+        timestamp: "2026-03-17T04:10:06.000Z",
+        type: "response_item",
+        payload: {
+          type: "function_call_output",
+          call_id: "call-image-c",
+          output: [{ type: "input_image", image_url: dataUrlC }],
+        },
+      },
+    ]);
+
+    const parsed = await readHistoryFile(filePath, { maxLines: 0 });
+    const recoveredImageItems = parsed.messages
+      .filter((message) => message.role === "tool")
+      .flatMap((message) => message.content || [])
+      .filter((item) => item.type === "image" && String(item.fallbackSrc || "").startsWith("data:image/"));
+
+    expect(recoveredImageItems).toHaveLength(3);
+    expect(recoveredImageItems.map((item) => item.localPath)).toEqual([
+      localImagePathA,
+      localImagePathB,
+      localImagePathC,
+    ]);
+    expect(recoveredImageItems.map((item) => item.fallbackSrc)).toEqual([
+      dataUrlA,
+      dataUrlB,
+      dataUrlC,
+    ]);
   });
 });

@@ -24,6 +24,44 @@ vi.mock("@/components/ui/dialog", () => ({
   DialogTitle: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
 }));
 
+vi.mock("@/components/ui/interactive-image-preview", () => ({
+  __esModule: true,
+  default: ({ src, fallbackSrc, alt, dialogTitle, dialogDescription, dialogMeta, children }: any) => {
+    const primarySrc = String(src || "");
+    const stableFallbackSrc = String(fallbackSrc || "");
+    const [resolvedSrc, setResolvedSrc] = React.useState<string>(primarySrc || stableFallbackSrc);
+    React.useEffect(() => {
+      setResolvedSrc(primarySrc || stableFallbackSrc);
+    }, [primarySrc, stableFallbackSrc]);
+    return (
+      <div
+        data-testid="interactive-image-preview"
+        data-dialog-title={String(dialogTitle || "")}
+        data-dialog-description={String(dialogDescription || "")}
+      >
+        <div data-testid="interactive-image-preview-meta">{dialogMeta}</div>
+        {children({
+          hasPreview: !!resolvedSrc,
+          resolvedSrc,
+          isUsingFallback: !!stableFallbackSrc && resolvedSrc === stableFallbackSrc && resolvedSrc !== primarySrc,
+          hoverTriggerProps: {
+            onMouseEnter: () => {},
+            onMouseLeave: () => {},
+          },
+          openDialog: () => {},
+          imageProps: {
+            src: resolvedSrc,
+            alt: String(alt || ""),
+            onError: () => {
+              if (stableFallbackSrc && resolvedSrc !== stableFallbackSrc) setResolvedSrc(stableFallbackSrc);
+            },
+          },
+        })}
+      </div>
+    );
+  },
+}));
+
 /**
  * 中文说明：启用 React 18 的 act 环境标记，避免测试输出告警。
  */
@@ -81,7 +119,7 @@ function createMountedRoot(): { host: HTMLDivElement; root: Root; unmount: () =>
 /**
  * 中文说明：渲染最小化的 `PathChipsInput` 场景，只保留复制文件名验证所需的受控属性。
  */
-async function renderPathChipsInput(chips: PathChip[]): Promise<() => void> {
+async function renderPathChipsInput(chips: PathChip[], props?: Partial<React.ComponentProps<typeof PathChipsInput>>): Promise<() => void> {
   const mounted = createMountedRoot();
   await act(async () => {
     mounted.root.render(
@@ -90,6 +128,7 @@ async function renderPathChipsInput(chips: PathChip[]): Promise<() => void> {
         onChipsChange={() => {}}
         draft=""
         onDraftChange={() => {}}
+        {...props}
       />
     );
   });
@@ -265,6 +304,28 @@ describe("PathChipsInput（复制文件名按钮）", () => {
     ]);
 
     expect(document.querySelector("img")).toBeNull();
+  });
+
+  it("图片 Chip 弹窗元信息只显示一次 Windows 路径", async () => {
+    cleanup = await renderPathChipsInput([
+      createPathChip({
+        id: "image-chip",
+        chipKind: "image",
+        fileName: "image.png",
+        previewUrl: "blob:test-image",
+        type: "image/png",
+        winPath: "C:\\repo\\image.png",
+        wslPath: "/mnt/c/repo/image.png",
+      }),
+    ], {
+      runEnv: "wsl",
+    });
+
+    const previewHost = document.querySelector('[data-testid="interactive-image-preview"]') as HTMLElement | null;
+    const previewMeta = document.querySelector('[data-testid="interactive-image-preview-meta"]') as HTMLElement | null;
+    expect(previewHost?.dataset.dialogDescription || "").toBe("");
+    expect(previewMeta?.textContent || "").toContain("C:\\repo\\image.png");
+    expect(previewMeta?.textContent || "").not.toContain("/mnt/c/repo/image.png");
   });
 });
 
