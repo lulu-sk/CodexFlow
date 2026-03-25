@@ -666,6 +666,63 @@ export interface NotificationsAPI {
 }
 
 export interface UtilsAPI {
+  /**
+   * 中文说明：为当前 tab 预创建 Gemini Windows 外部编辑器所需 env 与会话文件。
+   * - 仅影响 CodexFlow 打开的当前 PTY；
+   * - 不修改系统全局 `EDITOR/VISUAL`。
+   */
+  prepareGeminiWindowsEditorEnv(args: {
+    tabId: string;
+  }): Promise<{ ok: boolean; env?: Record<string, string>; sourcePath?: string; statusPath?: string; error?: string }>;
+  /** 写入本次 Gemini Windows 外部编辑器发送使用的 source/status 文件。 */
+  writeGeminiWindowsEditorSource(args: {
+    tabId: string;
+    content: string;
+  }): Promise<{ ok: boolean; requestId?: string; sourcePath?: string; statusPath?: string; error?: string }>;
+  /** 读取指定 tab 的 Gemini Windows 外部编辑器执行状态。 */
+  readGeminiWindowsEditorStatus(args: {
+    tabId: string;
+  }): Promise<{
+    ok: boolean;
+    status?: {
+      state?: "idle" | "pending" | "done" | "error";
+      requestId?: string;
+      bufferPath?: string;
+      message?: string;
+      updatedAt?: string;
+    } | null;
+    error?: string;
+  }>;
+  /**
+   * 中文说明：为当前 tab 预创建 Gemini WSL 外部编辑器所需 env 与会话文件。
+   * - 仅影响 CodexFlow 打开的当前 PTY；
+   * - 仅在超长文本命中阈值时由渲染层启用。
+   */
+  prepareGeminiWslEditorEnv(args: {
+    tabId: string;
+    distro: string;
+  }): Promise<{ ok: boolean; env?: Record<string, string>; sourcePath?: string; statusPath?: string; error?: string }>;
+  /** 写入本次 Gemini WSL 外部编辑器发送使用的 source/status 文件。 */
+  writeGeminiWslEditorSource(args: {
+    tabId: string;
+    distro: string;
+    content: string;
+  }): Promise<{ ok: boolean; requestId?: string; sourcePath?: string; statusPath?: string; error?: string }>;
+  /** 读取指定 tab 的 Gemini WSL 外部编辑器执行状态。 */
+  readGeminiWslEditorStatus(args: {
+    tabId: string;
+    distro: string;
+  }): Promise<{
+    ok: boolean;
+    status?: {
+      state?: "idle" | "pending" | "done" | "error";
+      requestId?: string;
+      bufferPath?: string;
+      message?: string;
+      updatedAt?: string;
+    } | null;
+    error?: string;
+  }>;
   /** 普通调试日志：受 `global.diagLog` 控制。 */
   perfLog(text: string): Promise<{ ok: boolean; error?: string }>;
   /** 白屏/强制刷新关键日志：受 `global.whiteScreenLog` 控制，默认开启。 */

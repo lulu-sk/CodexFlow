@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
+import type { TerminalMode } from "./shell";
+
 /**
  * 终端输入发送工具：
  * - 负责构造 Bracketed Paste 序列（ESC[200~ ... ESC[201~）
@@ -42,6 +44,24 @@ export function isGeminiProvider(providerId?: string | null): boolean {
 }
 
 /**
+ * 判断当前 provider 是否为 Codex。
+ * @param providerId providerId
+ * @returns 是否 Codex
+ */
+export function isCodexProvider(providerId?: string | null): boolean {
+  return normalizeProviderId(providerId) === "codex";
+}
+
+/**
+ * 判断当前 provider 是否为 Claude。
+ * @param providerId providerId
+ * @returns 是否 Claude
+ */
+export function isClaudeProvider(providerId?: string | null): boolean {
+  return normalizeProviderId(providerId) === "claude";
+}
+
+/**
  * 去除末尾连续的 CR/LF，避免“文本末尾自带换行”导致双回车或时序误判。
  * @param text 原始文本
  * @returns 去除末尾换行后的文本
@@ -66,6 +86,40 @@ export function buildBracketedPastePayload(text: string): string {
  */
 export function getPasteEnterDelayMs(providerId?: string | null): number {
   return isGeminiProvider(providerId) ? GEMINI_PASTE_ENTER_DELAY_MS : 0;
+}
+
+/**
+ * 计算“粘贴正文后，允许自动提交前”的最短等待时间（ms）。
+ *
+ * 中文说明：
+ * - 这个时间不代表“最终提交延迟”，而是“哪怕终端已经出现回显，也至少要再等这么久”；
+ * - 目的是避免超长文本在 PowerShell / ConPTY / 非可信终端链路中，出现“paste 已显示，但 CLI 尚未真正进入可提交状态”的抢跑问题；
+ * - 目前仅对 Gemini，以及 Windows/PowerShell 下的 Codex / Claude 启用更保守的动态等待。
+ *
+ * @param args.providerId providerId
+ * @param args.terminalMode 当前终端类型
+ * @param args.textLength 本次发送文本长度
+ * @returns 最短等待时间（毫秒）
+ */
+export function getPasteSubmitMinWaitMs(args: {
+  providerId?: string | null;
+  terminalMode?: TerminalMode | null;
+  textLength?: number;
+}): number {
+  const providerId = normalizeProviderId(args.providerId);
+  const length = Math.max(0, Math.floor(Number(args.textLength) || 0));
+  const chunks = Math.max(1, Math.ceil(length / 2048));
+
+  if (providerId === "gemini")
+    return Math.min(2400, 140 + chunks * 110);
+
+  if (providerId === "claude" && args.terminalMode && args.terminalMode !== "wsl")
+    return Math.min(2600, 160 + chunks * 120);
+
+  if (providerId === "codex" && args.terminalMode && args.terminalMode !== "wsl")
+    return Math.min(2200, 120 + chunks * 100);
+
+  return 0;
 }
 
 /**

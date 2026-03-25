@@ -26,6 +26,8 @@ export type TerminalAdapterAPI = {
   getScrollSnapshot: () => TerminalScrollSnapshot | null;
   /** 中文说明：同步滚动条指示与缓冲区视图；传空则以当前视图执行一次“对齐修复”（不强制滚动内容）。 */
   restoreScrollSnapshot: (snapshot?: TerminalScrollSnapshot | null) => void;
+  /** 中文说明：读取光标附近的逻辑文本快照，用于发送后判断输入区是否已真正接住粘贴内容。 */
+  readCursorTextSnapshot?: (options?: TerminalCursorTextSnapshotOptions) => TerminalCursorTextSnapshot | null;
   focus?: () => void;
   blur?: () => void;
   setAppearance: (appearance: Partial<TerminalAppearance>) => void;
@@ -38,6 +40,21 @@ export type TerminalScrollSnapshot = {
   viewportY: number;
   baseY: number;
   isAtBottom: boolean;
+};
+
+export type TerminalCursorTextSnapshotOptions = {
+  linesBefore?: number;
+  linesAfter?: number;
+  maxChars?: number;
+};
+
+export type TerminalCursorTextSnapshot = {
+  bufferType: string;
+  cursorAbsY: number;
+  startAbsY: number;
+  endAbsY: number;
+  lines: string[];
+  text: string;
 };
 
 export type TerminalAdapterOptions = {
@@ -188,6 +205,103 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
       if (!isFinite(viewportY) || !isFinite(baseY)) return null;
       const isAtBottom = baseY - viewportY <= 1;
       return { viewportY: Math.max(0, viewportY), baseY: Math.max(0, baseY), isAtBottom };
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * 中文说明：读取指定绝对行所在的逻辑行，并自动合并 wrap 后续行。
+   * @param buf xterm 当前活动缓冲区
+   * @param anchorAbsY 逻辑行中的任意绝对行号
+   * @returns 逻辑行范围与文本；不可读时返回 null
+   */
+  const readLogicalLineAt = (
+    buf: any,
+    anchorAbsY: number,
+  ): { startAbsY: number; endAbsY: number; text: string } | null => {
+    try {
+      const len = Number(buf?.length || 0);
+      if (!(len > 0)) return null;
+      let startAbsY = Math.max(0, Math.min(Math.floor(anchorAbsY), len - 1));
+      while (startAbsY > 0) {
+        const line = buf.getLine?.(startAbsY);
+        if (!line?.isWrapped) break;
+        startAbsY -= 1;
+      }
+      let endAbsY = startAbsY;
+      while (endAbsY + 1 < len) {
+        const next = buf.getLine?.(endAbsY + 1);
+        if (!next?.isWrapped) break;
+        endAbsY += 1;
+      }
+      let out = "";
+      for (let y = startAbsY; y <= endAbsY; y++) {
+        const current = buf.getLine?.(y);
+        if (!current) continue;
+        const next = buf.getLine?.(y + 1);
+        const isWrappedNext = !!(next && next.isWrapped);
+        out += current.translateToString(!isWrappedNext);
+      }
+      return { startAbsY, endAbsY, text: out };
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * 中文说明：读取光标附近若干逻辑行的文本快照。
+   * @param options.linesBefore 光标所在逻辑行之前额外读取的逻辑行数
+   * @param options.linesAfter 光标所在逻辑行之后额外读取的逻辑行数
+   * @param options.maxChars 返回文本允许的最大字符数（超出时仅保留尾部）
+   * @returns 光标附近的逻辑文本快照；不可读时返回 null
+   */
+  const readCursorTextSnapshot = (
+    options?: TerminalCursorTextSnapshotOptions,
+  ): TerminalCursorTextSnapshot | null => {
+    if (!term) return null;
+    try {
+      const buf: any = (term as any)?.buffer?.active;
+      if (!buf) return null;
+      const len = Number(buf.length || 0);
+      if (!(len > 0)) return null;
+      const linesBefore = Math.max(0, Math.floor(Number(options?.linesBefore) || 0));
+      const linesAfter = Math.max(0, Math.floor(Number(options?.linesAfter) || 0));
+      const maxChars = Math.max(64, Math.floor(Number(options?.maxChars) || 4096));
+      const cursorAbsY = Math.max(
+        0,
+        Math.min(Number(buf.baseY || 0) + Number(buf.cursorY || 0), len - 1),
+      );
+      const current = readLogicalLineAt(buf, cursorAbsY);
+      if (!current) return null;
+
+      const entries: Array<{ startAbsY: number; endAbsY: number; text: string }> = [current];
+      let probeAbsY = current.startAbsY - 1;
+      for (let i = 0; i < linesBefore && probeAbsY >= 0; i++) {
+        const previous = readLogicalLineAt(buf, probeAbsY);
+        if (!previous) break;
+        entries.unshift(previous);
+        probeAbsY = previous.startAbsY - 1;
+      }
+      probeAbsY = current.endAbsY + 1;
+      for (let i = 0; i < linesAfter && probeAbsY < len; i++) {
+        const next = readLogicalLineAt(buf, probeAbsY);
+        if (!next) break;
+        entries.push(next);
+        probeAbsY = next.endAbsY + 1;
+      }
+
+      const lines = entries.map((entry) => entry.text);
+      let text = lines.join("\n");
+      if (text.length > maxChars) text = text.slice(-maxChars);
+      return {
+        bufferType: String(buf.type || ""),
+        cursorAbsY,
+        startAbsY: entries[0]?.startAbsY ?? current.startAbsY,
+        endAbsY: entries[entries.length - 1]?.endAbsY ?? current.endAbsY,
+        lines,
+        text,
+      };
     } catch {
       return null;
     }
@@ -1063,6 +1177,10 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
       try { syncScrollbarToSnapshot(snapshot ?? null, "restore"); } catch {}
       // 二次对齐：用于处理标签刚切回时 DOM 尚未稳定的场景
       try { requestAnimationFrame(() => { try { syncScrollbarToSnapshot(snapshot ?? null, "restore.raf"); } catch {} }); } catch {}
+    },
+    readCursorTextSnapshot: (options?: TerminalCursorTextSnapshotOptions) => {
+      if (!term) ensure();
+      return readCursorTextSnapshot(options);
     },
     // 主动聚焦隐藏 textarea，避免切换后输入法合成态残留导致的键位/光标错位
     focus: () => {
