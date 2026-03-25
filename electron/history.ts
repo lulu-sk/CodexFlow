@@ -1555,6 +1555,52 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
   }
 
   /**
+   * 中文说明：提取消息内容中的可比较正文，用于识别同一轮输入的重复 user 记录。
+   * - 仅拼接文本型内容，避免图片项或标签差异干扰判断；
+   * - 统一换行与首尾空白，兼容 `response_item.message(user)` 与 `event_msg.user_message` 的并行落盘。
+   */
+  function buildComparableUserMessageText(content?: MessageContent[] | null): string {
+    const parts: string[] = [];
+    for (const item of content || []) {
+      if (String(item?.type || '').trim().toLowerCase() === 'image') continue;
+      const text = String(item?.text || '').replace(/\r\n/g, '\n').trim();
+      if (text) parts.push(text);
+    }
+    return parts.join('\n').trim();
+  }
+
+  /**
+   * 中文说明：将 `event_msg.user_message` 恢复出的图片并入上一条等价 user 消息，避免详情页重复显示同一块输入。
+   * - 仅匹配“最后一条消息就是同文本 user”的近邻场景，保持判定简单且不误伤真实重复提问；
+   * - 若上一条已存在同签名图片，则仅抑制重复块，不重复附加图片项。
+   */
+  function mergePathOnlyUserMessageIntoPreviousUserMessage(content?: MessageContent[] | null): boolean {
+    const previousMessage = messages.length > 0 ? messages[messages.length - 1] : null;
+    if (!previousMessage || String(previousMessage.role || '').trim().toLowerCase() !== 'user') return false;
+
+    const incomingText = buildComparableUserMessageText(content);
+    const previousText = buildComparableUserMessageText(previousMessage.content || []);
+    if (!incomingText || incomingText !== previousText) return false;
+
+    const existingImageKeys = new Set(
+      (previousMessage.content || [])
+        .filter((item) => String(item?.type || '').trim().toLowerCase() === 'image')
+        .map((item) => [String(item?.localPath || ''), String(item?.src || ''), String(item?.fallbackSrc || ''), String(item?.text || '')].join('\u0000')),
+    );
+    const nextImages = (content || [])
+      .filter((item) => String(item?.type || '').trim().toLowerCase() === 'image')
+      .filter((item) => {
+        const key = [String(item?.localPath || ''), String(item?.src || ''), String(item?.fallbackSrc || ''), String(item?.text || '')].join('\u0000');
+        if (!key || existingImageKeys.has(key)) return false;
+        existingImageKeys.add(key);
+        return true;
+      });
+    if (nextImages.length > 0)
+      previousMessage.content = [...(previousMessage.content || []), ...nextImages];
+    return true;
+  }
+
+  /**
    * 中文说明：将 Codex 历史中的图片块转换为统一图片内容项。
    */
   function createCodexImageContent(block: any, localPathHint?: string): MessageContent | null {
@@ -1781,7 +1827,8 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
         try {
           rememberImagePathsFromText(typeof obj.payload?.message === 'string' ? obj.payload.message : '');
         } catch {}
-        messages.push({ role: 'user', content: pathOnlyUserMessageContent });
+        if (!mergePathOnlyUserMessageIntoPreviousUserMessage(pathOnlyUserMessageContent))
+          messages.push({ role: 'user', content: pathOnlyUserMessageContent });
       } else if (obj.type === 'function_call' || (obj.type === 'response_item' && obj.payload && obj.payload.type === 'function_call')) {
         // 工具/函数调用
         const src: any = (obj.type === 'response_item' && obj.payload) ? obj.payload : obj;

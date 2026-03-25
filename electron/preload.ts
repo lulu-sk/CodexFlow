@@ -622,6 +622,9 @@ contextBridge.exposeInMainWorld('host', {
     copyToClipboard: async (args: { localPath?: string; src?: string; fallbackSrc?: string }) => {
       return await ipcRenderer.invoke('images.copyToClipboard', args);
     },
+    materializePreviewURL: async (args: { src?: string }) => {
+      return await ipcRenderer.invoke('images.materializePreviewURL', args);
+    },
     trash: async (args: { winPath: string }) => {
       return await ipcRenderer.invoke('images.trash', args);
     }

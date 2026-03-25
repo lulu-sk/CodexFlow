@@ -7,7 +7,7 @@ import { useHistoryImageContextMenu } from "@/components/history/history-image-c
 import InteractiveImagePreview from "@/components/ui/interactive-image-preview";
 import { HistoryMarkdown } from "@/features/history/renderers/history-markdown";
 
-const IMAGE_PATH_PATTERN = /@?((?:[A-Za-z]:\\|\/mnt\/[A-Za-z]\/|\/(?:home|root|Users)\/|\\\\[^\\\/\r\n]+\\[^\\\/\r\n]+\\)[^\r\n]*?\.(?:png|jpe?g|webp|gif|bmp|svg))/gi;
+const IMAGE_PATH_PATTERN = /@?((?:[A-Za-z]:[\\/]|\/mnt\/[A-Za-z]\/|\/(?:home|root|Users)\/|\\\\[^\\\/\r\n]+\\[^\\\/\r\n]+\\)[^\r\n]*?\.(?:png|jpe?g|webp|gif|bmp|svg))/gi;
 const IMAGE_OPEN_TAG_PATTERN = /<image\s+name=\[([^\]]+)\]>/gi;
 const IMAGE_CLOSE_TAG_PATTERN = /<\/image>/gi;
 const IMAGE_PLACEHOLDER_PATTERN = /\[(image\s+\d+[^\]]*)\]/gi;
@@ -1022,7 +1022,7 @@ function encodeHistoryInlineImageFileUrlPath(value?: string): string {
  * - `/mnt/<drive>/...` 优先映射为 Windows 盘符地址，兼容 Windows 侧 Electron；
  * - 其他 POSIX 绝对路径保持原样，兼容 WSL/Linux 侧运行。
  */
-function toHistoryInlineImagePreviewSrc(value?: string): string {
+export function toHistoryInlineImagePreviewSrc(value?: string): string {
   const raw = normalizeHistoryImagePathCandidate(value);
   if (!raw) return "";
   if (/^(?:data:image\/|blob:|file:\/\/)/i.test(raw)) return raw;
@@ -1042,7 +1042,7 @@ function toHistoryInlineImagePreviewSrc(value?: string): string {
 /**
  * 中文说明：为 `/mnt/<drive>/...` 这类路径提供备用预览地址，兼容不同运行环境。
  */
-function toHistoryInlineImageFallbackSrc(value?: string): string {
+export function toHistoryInlineImageFallbackSrc(value?: string): string {
   const raw = normalizeHistoryImagePathCandidate(value);
   if (!raw) return "";
   const mntMatch = raw.match(/^\/mnt\/([A-Za-z])\/(.*)$/);
