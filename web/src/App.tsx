@@ -116,6 +116,14 @@ import {
 import { getCachedThemeSetting, useThemeController, writeThemeSettingCache, type ThemeMode, type ThemeSetting } from "@/lib/theme";
 import { loadHiddenProjectIds, loadShowHiddenProjects, saveHiddenProjectIds, saveShowHiddenProjects } from "@/lib/projects-hidden";
 import { loadConsoleSession, saveConsoleSession, type PersistedConsoleTab } from "@/lib/console-session";
+import {
+  clearRendererDraftRecovery,
+  loadRendererDraftRecovery,
+  restoreRecoveryPathChips,
+  saveRendererDraftRecovery,
+  serializeRecoveryPathChips,
+  type PersistedRecoveryWorktreeCreateDraft,
+} from "@/lib/renderer-draft-recovery";
 import { findBestMatchingProjectScopeKey, pathMatchesProjectScope } from "@/lib/path-scope";
 import { cn } from "@/lib/utils";
 import {
@@ -344,6 +352,18 @@ type GitRepoInitProgressSnapshot = {
   log: string;
   updatedAt: number;
   error?: string;
+};
+
+type WorktreeCreateDialogDraftRecord = {
+  baseBranch: string;
+  remarkBaseName: string;
+  selectedChildWorktreeIds: string[];
+  promptChips: PathChip[];
+  promptDraft: string;
+  useYolo: boolean;
+  useMultipleModels: boolean;
+  singleProviderId: GitWorktreeProviderId;
+  multiCounts: WorktreeProviderCounts;
 };
 
 type CloseWorkingTabConfirmState = {
@@ -649,6 +669,65 @@ export default function CodexFlowManagerUI() {
     if (!appBootId) return null;
     return loadConsoleSession({ currentBootId: appBootId });
   }, [appBootId]);
+  /**
+   * 中文说明：恢复仅在“同一 bootId”内有效的运行态草稿快照，用于补回渲染进程刷新造成的输入丢失。
+   */
+  const restoredRendererDraftRecovery = useMemo(() => {
+    if (!appBootId) return null;
+    return loadRendererDraftRecovery({ currentBootId: appBootId });
+  }, [appBootId]);
+  /**
+   * 中文说明：将恢复快照中的 tab 输入草稿还原为运行态 state 初始值。
+   */
+  const restoredTabDraftState = useMemo(() => {
+    const nextChipsByTab: Record<string, PathChip[]> = {};
+    const nextDraftByTab: Record<string, string> = {};
+    const source = restoredRendererDraftRecovery?.tabInputsByTab || {};
+    for (const [tabIdRaw, item] of Object.entries(source)) {
+      const tabId = String(tabIdRaw || "").trim();
+      if (!tabId || !item) continue;
+      const draft = String(item.draft ?? "");
+      const chips = restoreRecoveryPathChips(item.chips) as unknown as PathChip[];
+      if (draft) nextDraftByTab[tabId] = draft;
+      if (chips.length > 0) nextChipsByTab[tabId] = chips;
+    }
+    return {
+      chipsByTab: nextChipsByTab,
+      draftByTab: nextDraftByTab,
+    };
+  }, [restoredRendererDraftRecovery]);
+  /**
+   * 中文说明：将恢复快照中的 worktree 创建草稿还原为内存缓存，保证刷新后仍可找回 fromPaste 图片。
+   */
+  const restoredWorktreeCreateDraftByRepoId = useMemo<Record<string, WorktreeCreateDialogDraftRecord>>(() => {
+    const out: Record<string, WorktreeCreateDialogDraftRecord> = {};
+    const source = restoredRendererDraftRecovery?.worktreeCreateDraftByRepoId || {};
+    for (const [repoIdRaw, item] of Object.entries(source)) {
+      const repoId = String(repoIdRaw || "").trim();
+      if (!repoId || !item) continue;
+      const multiCounts = {
+        codex: Math.max(0, Math.min(8, Math.floor(Number((item.multiCounts as any)?.codex) || 0))),
+        claude: Math.max(0, Math.min(8, Math.floor(Number((item.multiCounts as any)?.claude) || 0))),
+        gemini: Math.max(0, Math.min(8, Math.floor(Number((item.multiCounts as any)?.gemini) || 0))),
+      } as WorktreeProviderCounts;
+      const singleProviderId: GitWorktreeProviderId =
+        item.singleProviderId === "codex" || item.singleProviderId === "claude" || item.singleProviderId === "gemini"
+          ? item.singleProviderId
+          : "codex";
+      out[repoId] = {
+        baseBranch: String(item.baseBranch || "").trim(),
+        remarkBaseName: normalizeWorktreeRemarkBaseName(item.remarkBaseName),
+        selectedChildWorktreeIds: Array.isArray(item.selectedChildWorktreeIds) ? item.selectedChildWorktreeIds.map((id) => String(id || "").trim()).filter(Boolean) : [],
+        promptChips: restoreRecoveryPathChips(item.promptChips) as unknown as PathChip[],
+        promptDraft: String(item.promptDraft ?? ""),
+        useYolo: typeof item.useYolo === "boolean" ? item.useYolo : true,
+        useMultipleModels: typeof item.useMultipleModels === "boolean" ? item.useMultipleModels : false,
+        singleProviderId,
+        multiCounts,
+      };
+    }
+    return out;
+  }, [restoredRendererDraftRecovery]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectsHydrated, setProjectsHydrated] = useState<boolean>(false);
   const [dirTreeStore, setDirTreeStore] = useState<DirTreeStore>(() => ({
@@ -701,17 +780,7 @@ export default function CodexFlowManagerUI() {
 	  /** worktree 创建任务中的 taskId（按同一主工作区的管理作用域复用，避免主/子级并发创建）。 */
 	  const worktreeCreateRunningTaskIdByScopeIdRef = useRef<Record<string, string>>({});
 	  /** worktree 创建面板的“上次设置”缓存：按 repoProjectId 隔离，避免不同项目互相覆盖。 */
-	  const worktreeCreateDraftByRepoIdRef = useRef<Record<string, {
-	    baseBranch: string;
-	    remarkBaseName: string;
-	    selectedChildWorktreeIds: string[];
-	    promptChips: PathChip[];
-	    promptDraft: string;
-	    useYolo: boolean;
-	    useMultipleModels: boolean;
-	    singleProviderId: GitWorktreeProviderId;
-	    multiCounts: WorktreeProviderCounts;
-	  }>>({});
+	  const worktreeCreateDraftByRepoIdRef = useRef<Record<string, WorktreeCreateDialogDraftRecord>>(restoredWorktreeCreateDraftByRepoId);
 	  /** worktree 创建面板偏好落盘防抖计时器（localStorage，按 repo 隔离）。 */
 	  const worktreeCreatePrefsPersistTimersRef = useRef<Record<string, number>>({});
 	  /** 回收任务运行中的 taskId（用于“可关闭/可重开”的进度面板）。 */
@@ -3792,8 +3861,8 @@ export default function CodexFlowManagerUI() {
       (window as any).host?.app?.setTitleBarTheme?.({ mode: themeMode, source: themeSetting });
     } catch {}
   }, [themeMode, themeSetting]);
-  const [chipsByTab, setChipsByTab] = useState<Record<string, PathChip[]>>({});
-  const [draftByTab, setDraftByTab] = useState<Record<string, string>>({});
+  const [chipsByTab, setChipsByTab] = useState<Record<string, PathChip[]>>(() => restoredTabDraftState.chipsByTab);
+  const [draftByTab, setDraftByTab] = useState<Record<string, string>>(() => restoredTabDraftState.draftByTab);
   const [inputFullscreenByTab, setInputFullscreenByTab] = useState<Record<string, boolean>>({});
   const [inputFullscreenClosingTabs, setInputFullscreenClosingTabs] = useState<Record<string, boolean>>({});
   const fullscreenCloseTimersRef = useRef<Record<string, number>>({});
@@ -3882,6 +3951,96 @@ export default function CodexFlowManagerUI() {
       }
     }
   }, []);
+
+  /**
+   * 中文说明：将“同一 bootId 内有效”的输入草稿与 worktree 创建草稿写入本地，供渲染刷新后恢复。
+   */
+  const rendererDraftRecoverySaveTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!appBootId) return;
+    if (rendererDraftRecoverySaveTimerRef.current) {
+      window.clearTimeout(rendererDraftRecoverySaveTimerRef.current);
+      rendererDraftRecoverySaveTimerRef.current = null;
+    }
+    rendererDraftRecoverySaveTimerRef.current = window.setTimeout(() => {
+      try {
+        const knownTabIds = new Set<string>();
+        for (const list of Object.values(tabsByProject || {})) {
+          for (const tab of list || []) {
+            if (tab?.id) knownTabIds.add(tab.id);
+          }
+        }
+
+        const tabInputsByTab: Record<string, { draft: string; chips: ReturnType<typeof serializeRecoveryPathChips> }> = {};
+        for (const tabId of knownTabIds) {
+          const draft = String(draftByTab[tabId] ?? "");
+          const chips = serializeRecoveryPathChips(chipsByTab[tabId] || []);
+          if (!draft && chips.length === 0) continue;
+          tabInputsByTab[tabId] = { draft, chips };
+        }
+
+        const worktreeCreateDraftByRepoId: Record<string, PersistedRecoveryWorktreeCreateDraft> = {};
+        for (const [repoIdRaw, draftState] of Object.entries(worktreeCreateDraftByRepoIdRef.current || {})) {
+          const repoId = String(repoIdRaw || "").trim();
+          if (!repoId || !draftState) continue;
+          const singleProviderId: GitWorktreeProviderId =
+            draftState.singleProviderId === "codex" || draftState.singleProviderId === "claude" || draftState.singleProviderId === "gemini"
+              ? draftState.singleProviderId
+              : "codex";
+          worktreeCreateDraftByRepoId[repoId] = {
+            baseBranch: String(draftState.baseBranch || "").trim(),
+            remarkBaseName: normalizeWorktreeRemarkBaseName(draftState.remarkBaseName),
+            selectedChildWorktreeIds: Array.isArray(draftState.selectedChildWorktreeIds) ? draftState.selectedChildWorktreeIds.map((id) => String(id || "").trim()).filter(Boolean) : [],
+            promptChips: serializeRecoveryPathChips(draftState.promptChips || []),
+            promptDraft: String(draftState.promptDraft ?? ""),
+            useYolo: !!draftState.useYolo,
+            useMultipleModels: !!draftState.useMultipleModels,
+            singleProviderId,
+            multiCounts: {
+              codex: Math.max(0, Math.min(8, Math.floor(Number((draftState.multiCounts as any)?.codex) || 0))),
+              claude: Math.max(0, Math.min(8, Math.floor(Number((draftState.multiCounts as any)?.claude) || 0))),
+              gemini: Math.max(0, Math.min(8, Math.floor(Number((draftState.multiCounts as any)?.gemini) || 0))),
+            },
+          };
+        }
+
+        if (Object.keys(tabInputsByTab).length === 0 && Object.keys(worktreeCreateDraftByRepoId).length === 0) {
+          clearRendererDraftRecovery();
+          return;
+        }
+
+        saveRendererDraftRecovery({
+          version: 1,
+          savedAt: Date.now(),
+          bootId: appBootId,
+          tabInputsByTab,
+          worktreeCreateDraftByRepoId,
+        });
+      } catch {}
+    }, 220);
+    return () => {
+      if (rendererDraftRecoverySaveTimerRef.current) {
+        window.clearTimeout(rendererDraftRecoverySaveTimerRef.current);
+        rendererDraftRecoverySaveTimerRef.current = null;
+      }
+    };
+  }, [
+    appBootId,
+    chipsByTab,
+    draftByTab,
+    tabsByProject,
+    worktreeCreateDialog.baseBranch,
+    worktreeCreateDialog.multiCounts,
+    worktreeCreateDialog.promptChips,
+    worktreeCreateDialog.promptDraft,
+    worktreeCreateDialog.remarkBaseName,
+    worktreeCreateDialog.repoProjectId,
+    worktreeCreateDialog.selectedChildWorktreeIds,
+    worktreeCreateDialog.singleProviderId,
+    worktreeCreateDialog.useMultipleModels,
+    worktreeCreateDialog.useYolo,
+  ]);
 
 
   // 防御性清理：当视图中心从历史切回控制台、或窗口可见性发生变化时，强制关闭所有全屏遮罩
