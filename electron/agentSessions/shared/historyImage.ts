@@ -16,7 +16,7 @@ export type HistoryImageContentOptions = {
   preferDataUrl?: boolean;
 };
 
-const IMAGE_PATH_PATTERN = /@?((?:[A-Za-z]:\\|\/mnt\/[A-Za-z]\/|\/(?:home|root|Users)\/|\\\\[^\\\/\r\n]+\\[^\\\/\r\n]+\\)[^\r\n]*?\.(?:png|jpe?g|webp|gif|bmp|svg))/gi;
+const IMAGE_PATH_PATTERN = /@?((?:[A-Za-z]:(?:\\|\/)|\/mnt\/[A-Za-z]\/|\/(?:home|root|Users)\/|\\\\[^\\\/\r\n]+\\[^\\\/\r\n]+\\)[^\r\n]*?\.(?:png|jpe?g|webp|gif|bmp|svg))/gi;
 
 /**
  * 中文说明：从文本中提取图片绝对路径候选。
@@ -85,6 +85,8 @@ export function toHistoryImagePreviewUrl(localPath?: string): string {
   const raw = normalizeImagePathCandidate(localPath);
   if (!raw) return "";
   if (/^file:\/\//i.test(raw)) return raw;
+  const mntWinPath = process.platform === "win32" ? mntPathToWindowsPath(raw) : "";
+  if (mntWinPath) return `file:///${encodeFileUrlSegment(mntWinPath.replace(/\\/g, "/"))}`;
   const winPath = normalizeWinPath(raw);
   if (isUNCPath(winPath)) {
     const normalized = encodeFileUrlSegment(winPath.replace(/\\/g, "/"));
@@ -147,6 +149,7 @@ function buildFsPathCandidates(localPath?: string): string[] {
   push(raw);
   const winPath = normalizeWinPath(raw);
   push(winPath);
+  push(mntPathToWindowsPath(raw));
 
   if (isUNCPath(winPath)) {
     const unc = uncToWsl(winPath);
@@ -161,6 +164,21 @@ function buildFsPathCandidates(localPath?: string): string[] {
   }
 
   return Array.from(out);
+}
+
+/**
+ * 中文说明：将 `/mnt/<drive>/...` 转为 Windows 盘符路径，便于 Windows 进程访问真实文件。
+ */
+function mntPathToWindowsPath(localPath?: string): string {
+  const raw = normalizeImagePathCandidate(localPath);
+  if (!raw) return "";
+
+  const match = raw.match(/^\/mnt\/([A-Za-z])(?:\/(.*))?$/);
+  if (!match?.[1]) return "";
+
+  const drive = match[1].toUpperCase();
+  const rest = String(match[2] || "").replace(/\//g, "\\");
+  return rest ? `${drive}:\\${rest}` : `${drive}:\\`;
 }
 
 /**

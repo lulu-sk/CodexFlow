@@ -98,6 +98,20 @@ function sanitizeExt(ext?: string): string {
   return "png";
 }
 
+/**
+ * 中文说明：根据文件路径扩展名推断图片 MIME，用于生成 `data:` 预览地址。
+ */
+function inferImageMimeTypeFromFilePath(filePath?: string): string {
+  const ext = path.extname(String(filePath || "")).toLowerCase();
+  if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
+  if (ext === ".webp") return "image/webp";
+  if (ext === ".gif") return "image/gif";
+  if (ext === ".bmp") return "image/bmp";
+  if (ext === ".svg") return "image/svg+xml";
+  if (ext === ".png") return "image/png";
+  return "image/png";
+}
+
 function pickExtFromMime(mime?: string): string {
   const m = String(mime || "");
   if (/png/i.test(m)) return "png";
@@ -178,7 +192,7 @@ export function clipboardHasImage(): boolean {
  * - 兼容 `file:///`、Windows 盘符、UNC、`/mnt/<drive>/...` 与 WSL 绝对路径；
  * - 返回空串表示该来源不是本地文件路径或无法可靠映射。
  */
-function normalizeClipboardImageFilePath(value?: string): string {
+export function normalizeImageSourceToFilePath(value?: string): string {
   try {
     let raw = String(value || "").trim();
     if (!raw || /^data:image\//i.test(raw)) return "";
@@ -218,6 +232,32 @@ function normalizeClipboardImageFilePath(value?: string): string {
 }
 
 /**
+ * 中文说明：将本地图片来源物化为 `data:` URL，供开发态 `http://` 渲染进程安全预览。
+ * - 非本地图片来源直接原样返回；
+ * - 本地图片会先解析为文件路径，再读取字节并编码为 `data:` URL。
+ */
+export async function materializeImagePreviewURL(value?: string): Promise<{ ok: true; src: string; mimeType?: string } | { ok: false; error: string }> {
+  try {
+    const raw = String(value || "").trim();
+    if (!raw) return { ok: true, src: "" };
+    if (/^(?:data:image\/|blob:|https?:)/i.test(raw)) return { ok: true, src: raw };
+
+    const filePath = normalizeImageSourceToFilePath(raw);
+    if (!filePath) return { ok: true, src: raw };
+
+    const buffer = await fsp.readFile(filePath);
+    const mimeType = inferImageMimeTypeFromFilePath(filePath);
+    return {
+      ok: true,
+      src: `data:${mimeType};base64,${buffer.toString("base64")}`,
+      mimeType,
+    };
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
+  }
+}
+
+/**
  * 中文说明：从多种图片来源中构造 Electron `nativeImage`，供剪贴板复制等原生能力复用。
  */
 function createNativeImageFromSources(args: { localPath?: string; src?: string; fallbackSrc?: string }): Electron.NativeImage | null {
@@ -231,7 +271,7 @@ function createNativeImageFromSources(args: { localPath?: string; src?: string; 
         if (image && !image.isEmpty()) return image;
         continue;
       }
-      const filePath = normalizeClipboardImageFilePath(raw);
+      const filePath = normalizeImageSourceToFilePath(raw);
       if (!filePath) continue;
       const image = nativeImage.createFromPath(filePath);
       if (image && !image.isEmpty()) return image;
@@ -271,5 +311,7 @@ export default {
   saveFromDataURL,
   clipboardHasImage,
   copyImageToClipboard,
+  materializeImagePreviewURL,
+  normalizeImageSourceToFilePath,
   readClipboardAsPNGAndSave,
 };

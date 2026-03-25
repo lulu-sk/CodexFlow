@@ -3867,6 +3867,14 @@ ipcMain.handle('images.copyToClipboard', async (_e, {
   }
 });
 
+ipcMain.handle('images.materializePreviewURL', async (_e, { src }: { src?: string }) => {
+  try {
+    return await images.materializeImagePreviewURL(src);
+  } catch (e: any) {
+    return { ok: false, error: String(e) } as any;
+  }
+});
+
 ipcMain.handle('images.trash', async (_e, { winPath }: { winPath: string }) => {
   try {
     if (!winPath || typeof winPath !== 'string') throw new Error('invalid path');

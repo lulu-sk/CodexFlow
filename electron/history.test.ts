@@ -39,6 +39,23 @@ async function createTempImageFile(fileName = "history-image.png"): Promise<stri
 }
 
 /**
+ * 中文说明：将 Windows 临时图片路径转换为 `/mnt/<drive>/...` 形式，模拟真实 WSL 文本输入。
+ */
+function toWslImagePath(winPath: string): string {
+  const normalized = String(winPath || "").replace(/\//g, "\\");
+  const match = normalized.match(/^([A-Za-z]):\\(.*)$/);
+  if (!match?.[1]) return normalized.replace(/\\/g, "/");
+  return `/mnt/${match[1].toLowerCase()}/${String(match[2] || "").replace(/\\/g, "/")}`;
+}
+
+/**
+ * 中文说明：将 Windows 路径规整为使用正斜杠的绝对路径，模拟 `view_image` 新日志参数。
+ */
+function toForwardSlashWindowsPath(winPath: string): string {
+  return String(winPath || "").replace(/\\/g, "/");
+}
+
+/**
  * 中文说明：提取解析结果中的全部文本片段，便于断言尾部消息是否被完整保留。
  */
 function collectTexts(messages: Array<{ content?: Array<{ text?: string }> }>): string[] {
@@ -289,5 +306,92 @@ describe("electron/history.readHistoryFile", () => {
       dataUrlB,
       dataUrlC,
     ]);
+  });
+
+  it("会把重复的 event_msg.user_message 合并到上一条等价 user 消息，避免详情块重复", async () => {
+    const localImagePath = await createTempImageFile("history-image-merged.png");
+    const wslImagePath = toWslImagePath(localImagePath);
+    const messageText = `请查看图片：${wslImagePath}\n然后继续分析`;
+    const filePath = await createHistoryJsonlFile([
+      {
+        timestamp: "2026-03-25T01:00:00.000Z",
+        type: "session_meta",
+        payload: {
+          id: "session-user-merge",
+          cwd: "/tmp/demo",
+        },
+      },
+      {
+        timestamp: "2026-03-25T01:00:01.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: messageText }],
+        },
+      },
+      {
+        timestamp: "2026-03-25T01:00:01.100Z",
+        type: "event_msg",
+        payload: {
+          type: "user_message",
+          message: messageText,
+          images: [],
+          local_images: [],
+          text_elements: [],
+        },
+      },
+    ]);
+
+    const parsed = await readHistoryFile(filePath, { maxLines: 0 });
+    const userMessages = parsed.messages.filter((message) => message.role === "user");
+
+    expect(userMessages).toHaveLength(1);
+    expect(userMessages[0]?.content?.map((item) => item.type)).toEqual(["input_text", "image"]);
+    expect(userMessages[0]?.content?.[1]?.localPath).toBe(wslImagePath);
+    expect(String(userMessages[0]?.content?.[1]?.src || "")).toMatch(/^file:\/\//);
+  });
+
+  it("view_image 参数使用正斜杠 Windows 路径时会保留完整盘符路径", async () => {
+    const localImagePath = await createTempImageFile("history-image-forward-slash.png");
+    const forwardSlashPath = toForwardSlashWindowsPath(localImagePath);
+    const dataUrl = "data:image/png;base64,Zm9yd2FyZA==";
+    const filePath = await createHistoryJsonlFile([
+      {
+        timestamp: "2026-03-25T01:10:00.000Z",
+        type: "session_meta",
+        payload: {
+          id: "session-image-forward-slash",
+          cwd: "/tmp/demo",
+        },
+      },
+      {
+        timestamp: "2026-03-25T01:10:01.000Z",
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "view_image",
+          arguments: JSON.stringify({ path: forwardSlashPath }),
+          call_id: "call-forward-slash-image",
+        },
+      },
+      {
+        timestamp: "2026-03-25T01:10:02.000Z",
+        type: "response_item",
+        payload: {
+          type: "function_call_output",
+          call_id: "call-forward-slash-image",
+          output: [{ type: "input_image", image_url: dataUrl }],
+        },
+      },
+    ]);
+
+    const parsed = await readHistoryFile(filePath, { maxLines: 0 });
+    const imageItem = parsed.messages
+      .flatMap((message) => message.content || [])
+      .find((item) => item.type === "image" && String(item.fallbackSrc || "").startsWith("data:image/"));
+
+    expect(imageItem).toBeTruthy();
+    expect(imageItem?.localPath).toBe(forwardSlashPath);
   });
 });

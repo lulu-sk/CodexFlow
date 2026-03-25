@@ -743,6 +743,7 @@ export interface ImagesAPI {
   clipboardHasImage(): Promise<{ ok: boolean; has?: boolean; error?: string }>;
   saveFromClipboard(args: { projectWinRoot?: string; projectWslRoot?: string; projectName?: string; prefix?: string; providerId?: string; runtimeEnv?: "wsl" | "windows" | "pwsh"; distro?: string }): Promise<{ ok: boolean; winPath?: string; wslPath?: string; fileName?: string; error?: string }>;
   copyToClipboard(args: { localPath?: string; src?: string; fallbackSrc?: string }): Promise<{ ok: boolean; error?: string }>;
+  materializePreviewURL(args: { src?: string }): Promise<{ ok: boolean; src?: string; mimeType?: string; error?: string }>;
   trash(args: { winPath: string }): Promise<{ ok: boolean; error?: string }>;
 }
 
