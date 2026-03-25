@@ -1364,6 +1364,9 @@ export default function CodexFlowManagerUI() {
   const [ptyByTab, setPtyByTab] = useState<Record<string, string>>(() => initialPtyByTab);
   const ptyAliveRef = useRef<Record<string, boolean>>(initialPtyAlive);
   const [ptyAlive, setPtyAlive] = useState<Record<string, boolean>>(() => initialPtyAlive);
+  const tabExecEnvByTabRef = useRef<Record<string, Required<ProviderEnv>>>({});
+  const geminiWindowsEditorReadyByTabRef = useRef<Record<string, boolean>>({});
+  const geminiWslEditorReadyByTabRef = useRef<Record<string, boolean>>({});
   const terminalManagerRef = useRef<TerminalManager | null>(null);
   if (!terminalManagerRef.current) {
     terminalManagerRef.current = new TerminalManager(
@@ -3648,6 +3651,62 @@ export default function CodexFlowManagerUI() {
   }, [providerEnvById, terminalMode, wslDistro]);
 
   /**
+   * 中文说明：构造某个标签页真正打开 PTY 时使用的环境变量。
+   * - 默认始终保留 provider 完成通知链路需要的 env；
+   * - `Gemini + Windows/Pwsh` 始终注入 Windows 外部编辑器桥接；
+   * - `Gemini + WSL` 预先注入 WSL 外部编辑器桥接，但仅在超长文本命中阈值时才真正启用；
+   * - 若准备失败，则保守回退到普通 env，并显式标记当前 tab 不启用对应策略。
+   *
+   * @param tabId 标签页 id
+   * @param providerId providerId
+   * @param envLabel 标签展示名
+   * @param tabEnv 当前标签页实际执行环境
+   * @returns 打开 PTY 时要注入的 env，以及 Gemini Windows/WSL editor 的准备状态
+   */
+  const buildProviderLaunchEnv = useCallback(async (
+    tabId: string,
+    providerId: string,
+    envLabel: string,
+    tabEnv: Required<ProviderEnv>,
+  ): Promise<{ env: Record<string, string>; geminiWindowsEditorReady: boolean; geminiWslEditorReady: boolean }> => {
+    const baseEnv = buildProviderNotifyEnv(tabId, providerId, envLabel);
+    if (!isGeminiProvider(providerId))
+      return { env: baseEnv, geminiWindowsEditorReady: false, geminiWslEditorReady: false };
+    try {
+      if (tabEnv.terminal === "wsl") {
+        const distro = String(tabEnv.distro || "").trim();
+        if (!distro)
+          return { env: baseEnv, geminiWindowsEditorReady: false, geminiWslEditorReady: false };
+        const res = await window.host.utils.prepareGeminiWslEditorEnv({ tabId, distro });
+        if (res && res.ok && res.env && typeof res.env === "object")
+          return { env: { ...baseEnv, ...res.env }, geminiWindowsEditorReady: false, geminiWslEditorReady: true };
+        try {
+          await (window as any).host?.utils?.perfLog?.(
+            `[ui] geminiWslEditor.prepareEnv skipped tab=${tabId} distro=${distro} error=${String(res?.error || "unknown")}`,
+          );
+        } catch {}
+        return { env: baseEnv, geminiWindowsEditorReady: false, geminiWslEditorReady: false };
+      }
+      const res = await window.host.utils.prepareGeminiWindowsEditorEnv({ tabId });
+      if (res && res.ok && res.env && typeof res.env === "object")
+        return { env: { ...baseEnv, ...res.env }, geminiWindowsEditorReady: true, geminiWslEditorReady: false };
+      try {
+        await (window as any).host?.utils?.perfLog?.(
+          `[ui] geminiWindowsEditor.prepareEnv skipped tab=${tabId} error=${String(res?.error || "unknown")}`,
+        );
+      } catch {}
+    } catch (error: any) {
+      try {
+        const prefix = tabEnv.terminal === "wsl" ? "geminiWslEditor" : "geminiWindowsEditor";
+        await (window as any).host?.utils?.perfLog?.(
+          `[ui] ${prefix}.prepareEnv exception tab=${tabId} error=${String(error?.message || error)}`,
+        );
+      } catch {}
+    }
+    return { env: baseEnv, geminiWindowsEditorReady: false, geminiWslEditorReady: false };
+  }, []);
+
+  /**
    * 构造某个 Provider 的启动命令（Codex 会按调试开关注入 trace 环境变量）。
    */
   const buildProviderStartupCmd = useCallback((providerId: string, env: Required<ProviderEnv>): string => {
@@ -4246,6 +4305,9 @@ export default function CodexFlowManagerUI() {
         delete ptyByTabRef.current[tabId];
       }
       delete ptyAliveRef.current[tabId];
+      delete tabExecEnvByTabRef.current[tabId];
+      delete geminiWindowsEditorReadyByTabRef.current[tabId];
+      delete geminiWslEditorReadyByTabRef.current[tabId];
       clearPendingForTab(tabId);
       unregisterTabProject(tabId);
       try { tm.disposeTab(tabId, true); } catch (err) { console.warn('tm.disposeTab failed', err); }
@@ -4404,10 +4466,10 @@ export default function CodexFlowManagerUI() {
       logs: [],
       createdAt: Date.now(),
     };
-    const notifyEnv = buildProviderNotifyEnv(tab.id, tab.providerId, tab.name);
     let ptyId: string | undefined;
     try {
       const env = getProviderEnv(activeProviderId);
+      const launchEnv = await buildProviderLaunchEnv(tab.id, tab.providerId, tab.name, env);
       const startupCmd = buildProviderStartupCmd(activeProviderId, env);
       const { id } = await window.host.pty.openWSLConsole({
         terminal: env.terminal,
@@ -4417,8 +4479,11 @@ export default function CodexFlowManagerUI() {
         cols: 80,
         rows: 24,
         startupCmd,
-        env: notifyEnv,
+        env: launchEnv.env,
       });
+      tabExecEnvByTabRef.current[tab.id] = env;
+      geminiWindowsEditorReadyByTabRef.current[tab.id] = launchEnv.geminiWindowsEditorReady;
+      geminiWslEditorReadyByTabRef.current[tab.id] = launchEnv.geminiWslEditorReady;
       ptyId = id;
     } catch (e) {
       console.error('Failed to open PTY for project', e);
@@ -4503,12 +4568,12 @@ export default function CodexFlowManagerUI() {
       logs: [],
       createdAt: Date.now(),
     };
-    const notifyEnv = buildProviderNotifyEnv(tab.id, tab.providerId, tab.name);
     let ptyId: string | undefined;
     // Open PTY in main (WSL)
     try {
       try { await (window as any).host?.utils?.perfLog?.(`[ui] openNewConsole start project=${selectedProject?.name}`); } catch {}
       const env = getProviderEnv(activeProviderId);
+      const launchEnv = await buildProviderLaunchEnv(tab.id, tab.providerId, tab.name, env);
       const startupCmd = buildProviderStartupCmd(activeProviderId, env);
       const { id } = await window.host.pty.openWSLConsole({
         terminal: env.terminal,
@@ -4518,9 +4583,12 @@ export default function CodexFlowManagerUI() {
         cols: 80,
         rows: 24,
         startupCmd,
-        env: notifyEnv,
+        env: launchEnv.env,
       });
       try { await (window as any).host?.utils?.perfLog?.(`[ui] openNewConsole pty=${id}`); } catch {}
+      tabExecEnvByTabRef.current[tab.id] = env;
+      geminiWindowsEditorReadyByTabRef.current[tab.id] = launchEnv.geminiWindowsEditorReady;
+      geminiWslEditorReadyByTabRef.current[tab.id] = launchEnv.geminiWslEditorReady;
       ptyId = id;
     } catch (e) {
       console.error('Failed to open PTY', e);
@@ -4937,20 +5005,31 @@ export default function CodexFlowManagerUI() {
   /**
    * 中文说明：将输入区内容发送到当前标签页终端，并在首条发送时启动“Working 计时”。
    */
-  function sendCommand() {
+  async function sendCommand() {
     if (!activeTab) return;
     const text = compileTextFromChipsAndDraft(activeTab.id);
     if (!text.trim()) return;
     const pid = ptyByTabRef.current[activeTab.id];
     if (!pid) return;
+    const activeEnv = tabExecEnvByTabRef.current[activeTab.id] || getProviderEnv(activeTab.providerId);
     // 用户开始新一轮输入后，立即取消恢复期守卫，避免影响真实完成通知。
     delete resumeCompletionGuardByTabRef.current[activeTab.id];
     if (shouldEnableAgentTimerForProvider(activeTab.providerId)) startAgentTurnTimer(activeTab.id);
     else cancelAgentTurnTimer(activeTab.id, "provider-not-supported");
     // 统一改用 TerminalManager 的封装，保证行为一致且便于复用
     try {
-      if (sendMode === 'write_and_enter') tm.sendTextAndEnter(activeTab.id, text, { providerId: activeTab.providerId });
-      else tm.sendText(activeTab.id, text, { providerId: activeTab.providerId });
+      const sendOptions = {
+        providerId: activeTab.providerId,
+        terminalMode: activeEnv.terminal as any,
+        projectWinRoot: selectedProject?.winPath,
+        projectWslRoot: selectedProject?.wslPath,
+        projectName: selectedProject?.name,
+        distro: activeEnv.terminal === "wsl" ? activeEnv.distro : undefined,
+        geminiWindowsEditorReady: !!geminiWindowsEditorReadyByTabRef.current[activeTab.id],
+        geminiWslEditorReady: !!geminiWslEditorReadyByTabRef.current[activeTab.id],
+      };
+      if (sendMode === 'write_and_enter') await tm.sendTextAndEnter(activeTab.id, text, sendOptions);
+      else await tm.sendText(activeTab.id, text, sendOptions);
     } catch {
       // 兜底：避免 Gemini 直接写入 `\n` 被吞，统一使用 bracketed paste +（可选）延迟回车
       try {
@@ -5002,6 +5081,9 @@ export default function CodexFlowManagerUI() {
       delete ptyByTabRef.current[tabId];
       unregisterPtyListener(pid);
     }
+    delete tabExecEnvByTabRef.current[tabId];
+    delete geminiWindowsEditorReadyByTabRef.current[tabId];
+    delete geminiWslEditorReadyByTabRef.current[tabId];
     try { delete ptyAliveRef.current[tabId]; setPtyAlive((m) => { const n = { ...m }; delete n[tabId]; return n; }); } catch {}
     // let manager dispose the tab (adapter/container and optionally close PTY)
     try { tm.disposeTab(tabId, true); } catch (err) { console.warn('tm.disposeTab failed', err); }
@@ -5698,10 +5780,9 @@ export default function CodexFlowManagerUI() {
       createdAt: Date.now(),
     };
 
-    const notifyEnv = buildProviderNotifyEnv(tab.id, tab.providerId, tab.name);
-
     let ptyId: string | undefined;
     try {
+      const launchEnv = await buildProviderLaunchEnv(tab.id, tab.providerId, tab.name, env);
       const { id } = await window.host.pty.openWSLConsole({
         terminal: env.terminal,
         distro: env.distro,
@@ -5710,8 +5791,11 @@ export default function CodexFlowManagerUI() {
         cols: 80,
         rows: 24,
         startupCmd: args.startupCmd,
-        env: notifyEnv,
+        env: launchEnv.env,
       });
+      tabExecEnvByTabRef.current[tab.id] = env;
+      geminiWindowsEditorReadyByTabRef.current[tab.id] = launchEnv.geminiWindowsEditorReady;
+      geminiWslEditorReadyByTabRef.current[tab.id] = launchEnv.geminiWslEditorReady;
       ptyId = id;
     } catch (e: any) {
       return { ok: false, error: String(e?.message || e) };
@@ -5739,7 +5823,7 @@ export default function CodexFlowManagerUI() {
     try { window.host.projects.touch(project.id); } catch {}
     markProjectUsed(project.id);
     return { ok: true, tabId: tab.id };
-  }, [getProviderEnv, markProjectHasBuiltInSessions, recordCustomProviderDirIfNeeded, tm, markProjectUsed]);
+  }, [buildProviderLaunchEnv, getProviderEnv, markProjectHasBuiltInSessions, recordCustomProviderDirIfNeeded, tm, markProjectUsed]);
 
   /**
    * 在指定项目中启动某个引擎实例，并注入初始提示词（worktree 新建/复用共用）。
@@ -8248,7 +8332,7 @@ export default function CodexFlowManagerUI() {
                               onWarnOutsideProjectDropChange={updateWarnOutsideProjectDrop}
                               runEnv={terminalMode}
                               multiline
-                              onKeyDown={(e: any) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { sendCommand(); e.preventDefault(); } }}
+                              onKeyDown={(e: any) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { void sendCommand(); e.preventDefault(); } }}
                               className="flex flex-1 flex-col min-h-[24rem] overflow-auto h-full"
                               balancedScrollbarGutter
                               draftInputClassName="flex-1 min-h-[18rem]"
@@ -8258,7 +8342,7 @@ export default function CodexFlowManagerUI() {
                                 size="icon"
                                 aria-label={sendLabel}
                                 title={sendLabel}
-                                onClick={sendCommand}
+                                onClick={() => { void sendCommand(); }}
                                 className="h-8 w-8 rounded-full shadow-sm"
                               >
                                 <Send className="h-4 w-4" />
@@ -8298,7 +8382,7 @@ export default function CodexFlowManagerUI() {
                             onWarnOutsideProjectDropChange={updateWarnOutsideProjectDrop}
                             runEnv={terminalMode}
                             multiline
-                            onKeyDown={(e: any) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { sendCommand(); e.preventDefault(); } }}
+                            onKeyDown={(e: any) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { void sendCommand(); e.preventDefault(); } }}
                             className=""
                           />
 
@@ -8307,7 +8391,7 @@ export default function CodexFlowManagerUI() {
                               size="icon"
                               aria-label={sendLabel}
                               title={sendLabel}
-                              onClick={sendCommand}
+                              onClick={() => { void sendCommand(); }}
                               className="h-8 w-8 rounded-full shadow-sm"
                             >
                               <Send className="h-4 w-4" />
@@ -8485,12 +8569,12 @@ export default function CodexFlowManagerUI() {
           logs: [],
           createdAt: Date.now(),
         };
-        const notifyEnv = buildProviderNotifyEnv(tab.id, tab.providerId, tab.name);
         let ptyId: string | undefined;
         try {
           await (window as any).host?.utils?.perfLog?.(`[ui] history.resume openWSLConsole start tab=${tab.id}`);
         } catch {}
 	        try {
+          const launchEnv = await buildProviderLaunchEnv(tab.id, tab.providerId, tab.name, execEnv);
           const { id } = await window.host.pty.openWSLConsole({
             terminal: execEnv.terminal as any,
             distro: execEnv.distro,
@@ -8499,11 +8583,14 @@ export default function CodexFlowManagerUI() {
             cols: 80,
             rows: 24,
             startupCmd,
-            env: notifyEnv,
+            env: launchEnv.env,
           });
           try {
             await (window as any).host?.utils?.perfLog?.(`[ui] history.resume pty=${id} tab=${tab.id} - registering listener`);
           } catch {}
+          tabExecEnvByTabRef.current[tab.id] = execEnv;
+          geminiWindowsEditorReadyByTabRef.current[tab.id] = launchEnv.geminiWindowsEditorReady;
+          geminiWslEditorReadyByTabRef.current[tab.id] = launchEnv.geminiWslEditorReady;
           ptyId = id;
         } catch (err) {
           console.warn('executeResume failed', err);

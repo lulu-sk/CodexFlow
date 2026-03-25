@@ -5,6 +5,7 @@ import {
   GEMINI_PASTE_ENTER_DELAY_MS,
   buildBracketedPastePayload,
   getPasteEnterDelayMs,
+  getPasteSubmitMinWaitMs,
   stripTrailingNewlines,
   writeBracketedPaste,
   writeBracketedPasteAndEnter,
@@ -32,6 +33,17 @@ describe("terminal-send（Bracketed Paste / Gemini 发送策略）", () => {
     expect(getPasteEnterDelayMs("codex")).toBe(0);
     expect(getPasteEnterDelayMs("claude")).toBe(0);
     expect(getPasteEnterDelayMs("unknown")).toBe(0);
+  });
+
+  it("getPasteSubmitMinWaitMs：Gemini 与 Windows/Pwsh 下的 Codex / Claude 会按长度返回保守等待时间", () => {
+    expect(getPasteSubmitMinWaitMs({ providerId: "claude", terminalMode: "wsl", textLength: 12000 })).toBe(0);
+    expect(getPasteSubmitMinWaitMs({ providerId: "codex", terminalMode: "wsl", textLength: 12000 })).toBe(0);
+    expect(getPasteSubmitMinWaitMs({ providerId: "gemini", terminalMode: "pwsh", textLength: 512 })).toBeGreaterThan(0);
+    expect(getPasteSubmitMinWaitMs({ providerId: "claude", terminalMode: "pwsh", textLength: 512 })).toBeGreaterThan(0);
+    expect(getPasteSubmitMinWaitMs({ providerId: "claude", terminalMode: "pwsh", textLength: 12000 }))
+      .toBeGreaterThan(getPasteSubmitMinWaitMs({ providerId: "claude", terminalMode: "pwsh", textLength: 512 }));
+    expect(getPasteSubmitMinWaitMs({ providerId: "codex", terminalMode: "pwsh", textLength: 12000 }))
+      .toBeGreaterThan(getPasteSubmitMinWaitMs({ providerId: "codex", terminalMode: "pwsh", textLength: 512 }));
   });
 
   it("writeBracketedPaste 会写入一次 bracketed paste 序列", () => {

@@ -57,6 +57,7 @@ Thumbs.db
 # Caches / Temp
 #############################
 .cache/
+.serena/
 .eslintcache
 *.swp
 *.swo

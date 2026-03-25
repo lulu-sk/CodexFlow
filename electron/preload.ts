@@ -548,6 +548,63 @@ contextBridge.exposeInMainWorld('host', {
     saveText: async (content: string, defaultPath?: string) => {
       return await ipcRenderer.invoke('utils.saveText', { content, defaultPath });
     },
+    /**
+     * 中文说明：为 Windows/Pwsh 下的 Gemini 会话准备专用外部编辑器 env。
+     * - 仅影响 CodexFlow 打开的当前 PTY；
+     * - 不修改系统全局 `EDITOR/VISUAL`。
+     */
+    prepareGeminiWindowsEditorEnv: async (args: {
+      tabId: string;
+    }) => {
+      return await ipcRenderer.invoke('utils.geminiWindowsEditor.prepareEnv', args);
+    },
+    /**
+     * 中文说明：写入本次 Gemini Windows 外部编辑器发送使用的 source/status 文件。
+     */
+    writeGeminiWindowsEditorSource: async (args: {
+      tabId: string;
+      content: string;
+    }) => {
+      return await ipcRenderer.invoke('utils.geminiWindowsEditor.writeSource', args);
+    },
+    /**
+     * 中文说明：读取指定 tab 的 Gemini Windows 外部编辑器执行状态。
+     */
+    readGeminiWindowsEditorStatus: async (args: {
+      tabId: string;
+    }) => {
+      return await ipcRenderer.invoke('utils.geminiWindowsEditor.readStatus', args);
+    },
+    /**
+     * 中文说明：为 WSL 下的 Gemini 会话准备专用外部编辑器 env。
+     * - 仅影响 CodexFlow 打开的当前 PTY；
+     * - 仅在超长文本命中阈值时由渲染层启用。
+     */
+    prepareGeminiWslEditorEnv: async (args: {
+      tabId: string;
+      distro: string;
+    }) => {
+      return await ipcRenderer.invoke('utils.geminiWslEditor.prepareEnv', args);
+    },
+    /**
+     * 中文说明：写入本次 Gemini WSL 外部编辑器发送使用的 source/status 文件。
+     */
+    writeGeminiWslEditorSource: async (args: {
+      tabId: string;
+      distro: string;
+      content: string;
+    }) => {
+      return await ipcRenderer.invoke('utils.geminiWslEditor.writeSource', args);
+    },
+    /**
+     * 中文说明：读取指定 tab 的 Gemini WSL 外部编辑器执行状态。
+     */
+    readGeminiWslEditorStatus: async (args: {
+      tabId: string;
+      distro: string;
+    }) => {
+      return await ipcRenderer.invoke('utils.geminiWslEditor.readStatus', args);
+    },
     fetchJson: async (args: { url: string; timeoutMs?: number; headers?: Record<string, string> }) => {
       try { return await ipcRenderer.invoke('utils.fetchJson', args); } catch (e) { return { ok: false, error: String(e) }; }
     },

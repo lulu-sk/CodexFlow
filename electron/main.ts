@@ -40,6 +40,8 @@ import { startCodexNotificationBridge, stopCodexNotificationBridge } from "./cod
 import { ensureAllClaudeNotifications, startClaudeNotificationBridge, stopClaudeNotificationBridge } from "./claude/notifications";
 import { getClaudeUsageSnapshotAsync } from "./claude/usage";
 import { ensureAllGeminiNotifications, startGeminiNotificationBridge, stopGeminiNotificationBridge } from "./gemini/notifications";
+import geminiWindowsEditor from "./gemini/windowsEditor";
+import geminiWslEditor from "./gemini/wslEditor";
 import { getGeminiQuotaSnapshotAsync } from "./gemini/usage";
 import storage from "./storage";
 import { registerNotificationIPC, unregisterNotificationIPC } from "./notifications";
@@ -1333,6 +1335,7 @@ function createWindow(options?: CreateWindowOptions): void {
       nodeIntegration: false,
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.js'),
+      backgroundThrottling: false,
       // 显式允许开发者工具（默认即为 true，此处明确写出以避免歧义）
       devTools: true
     },
@@ -3743,6 +3746,110 @@ ipcMain.handle('utils.saveText', async (_e, { content, defaultPath }: { content:
     const fs = await import('node:fs/promises');
     await fs.writeFile(ret.filePath, String(content ?? ''), 'utf8');
     return { ok: true, path: ret.filePath };
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+/**
+ * 中文说明：为 CodexFlow 启动的 Windows Gemini PTY 预创建外部编辑器桥接环境。
+ * - 仅返回当前 PTY 需要注入的 env，不修改系统全局 `EDITOR/VISUAL`；
+ * - 供渲染层在打开 Windows/Pwsh 的 Gemini 会话前调用。
+ */
+ipcMain.handle('utils.geminiWindowsEditor.prepareEnv', async (_e, args: {
+  tabId: string;
+}) => {
+  try {
+    return await geminiWindowsEditor.prepareGeminiWindowsEditorEnv({
+      tabId: String(args?.tabId || ""),
+    });
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+/**
+ * 中文说明：写入本次 Gemini Windows 外部编辑器发送所需的 source/status 文件。
+ */
+ipcMain.handle('utils.geminiWindowsEditor.writeSource', async (_e, args: {
+  tabId: string;
+  content: string;
+}) => {
+  try {
+    return await geminiWindowsEditor.writeGeminiWindowsEditorSource({
+      tabId: String(args?.tabId || ""),
+      content: String(args?.content ?? ""),
+    });
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+/**
+ * 中文说明：读取指定 tab 的 Gemini Windows 外部编辑器执行状态。
+ */
+ipcMain.handle('utils.geminiWindowsEditor.readStatus', async (_e, args: {
+  tabId: string;
+}) => {
+  try {
+    return await geminiWindowsEditor.readGeminiWindowsEditorStatus({
+      tabId: String(args?.tabId || ""),
+    });
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+/**
+ * 中文说明：为 CodexFlow 启动的 WSL Gemini PTY 预创建外部编辑器桥接环境。
+ * - 仅返回当前 PTY 需要注入的 env，不修改系统全局 `EDITOR/VISUAL`；
+ * - 仅供 `Gemini + WSL + 超长文本` 的实验性发送优化使用。
+ */
+ipcMain.handle('utils.geminiWslEditor.prepareEnv', async (_e, args: {
+  tabId: string;
+  distro: string;
+}) => {
+  try {
+    return await geminiWslEditor.prepareGeminiWslEditorEnv({
+      tabId: String(args?.tabId || ""),
+      distro: String(args?.distro || ""),
+    });
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+/**
+ * 中文说明：写入本次 Gemini WSL 外部编辑器发送所需的 source/status 文件。
+ */
+ipcMain.handle('utils.geminiWslEditor.writeSource', async (_e, args: {
+  tabId: string;
+  distro: string;
+  content: string;
+}) => {
+  try {
+    return await geminiWslEditor.writeGeminiWslEditorSource({
+      tabId: String(args?.tabId || ""),
+      distro: String(args?.distro || ""),
+      content: String(args?.content ?? ""),
+    });
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+/**
+ * 中文说明：读取指定 tab 的 Gemini WSL 外部编辑器执行状态。
+ */
+ipcMain.handle('utils.geminiWslEditor.readStatus', async (_e, args: {
+  tabId: string;
+  distro: string;
+}) => {
+  try {
+    return await geminiWslEditor.readGeminiWslEditorStatus({
+      tabId: String(args?.tabId || ""),
+      distro: String(args?.distro || ""),
+    });
   } catch (e: any) {
     return { ok: false, error: String(e) };
   }
