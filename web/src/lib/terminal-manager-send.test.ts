@@ -366,39 +366,161 @@ describe("TerminalManager（长文本发送策略）", () => {
     expect(hostPty.write).toHaveBeenCalledWith("pty-screen-ack-gated", "\r");
   });
 
-  it("Codex 在 PowerShell 长文本场景下，会等待 PTY 回显静默后再发送 Enter", async () => {
+  it("Codex 在 PowerShell 多行文本场景下，会通过单次 bracketed paste 发送正文并在最小等待后提交", async () => {
     vi.useFakeTimers();
     const adapter: any = createAdapterStub();
     const hostPty = createHostPtyStub();
     createTerminalAdapterMock.mockReturnValue(adapter);
+
+    let snapshotText = "";
+    adapter.readCursorTextSnapshot.mockImplementation(() => {
+      if (!snapshotText) return null;
+      return {
+        bufferType: "alternate",
+        cursorAbsY: 22,
+        startAbsY: 21,
+        endAbsY: 22,
+        lines: [snapshotText],
+        text: snapshotText,
+      };
+    });
 
     const ptyByTab: Record<string, string> = { "tab-codex": "pty-codex" };
     const tm = new TerminalManager((tabId) => ptyByTab[tabId], hostPty as any, {});
     tm.ensurePersistentContainer("tab-codex");
     tm.setPty("tab-codex", "pty-codex");
 
-    await tm.sendTextAndEnter("tab-codex", "第一行\n第二行\n第三行", { providerId: "codex", terminalMode: "pwsh" as any });
-    const minWaitMs = getPasteSubmitMinWaitMs({ providerId: "codex", terminalMode: "pwsh" as any, textLength: "第一行\n第二行\n第三行".length });
+    const text = [
+      "请完成：",
+      "1. 检查 Serena、GitNexus、ast-grep 在当前会话是否可用；任一不可用，直接报告并停止。",
+      "2. Serena分别检查源仓、当前仓的准备状态；若未完成 onboarding，则完成。若一次只能激活一个项目，请明确说明后续需在两仓间切换。",
+      "3. GitNexus检查两仓索引；若缺失或过期，且当前环境可执行 analyze，则先处理；若当前环境不能直接处理，报告“需预处理”并停止。",
+      "4. ast-grep确认可直接使用；若仅缺规则配置但不影响基本搜索，标明即可，无需额外初始化。",
+      "",
+      "最后只输出：三者可用性、源仓准备状态、当前仓准备状态、需预处理项、是否可进入正式任务。",
+    ].join("\n");
+    await tm.sendTextAndEnter("tab-codex", text, { providerId: "codex", terminalMode: "pwsh" as any });
+    const minWaitMs = getPasteSubmitMinWaitMs({ providerId: "codex", terminalMode: "pwsh" as any, textLength: text.length });
 
-    expect(adapter.paste).toHaveBeenCalledWith("第一行\n第二行\n第三行");
+    expect(adapter.paste).not.toHaveBeenCalled();
+    expect(hostPty.write).toHaveBeenCalledWith(
+      "pty-codex",
+      `${BRACKETED_PASTE_START}${text}${BRACKETED_PASTE_END}`,
+    );
     expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex", "\r");
 
-    hostPty.emitData("pty-codex", "[Pasted Content 3 chars]");
-    vi.advanceTimersByTime(31);
+    snapshotText = "最后只输出：三者可用性、源仓准备状态、当前仓准备状态、需预处理项、是否可进入正式任务。";
+    vi.advanceTimersByTime(40);
     expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex", "\r");
 
-    hostPty.emitData("pty-codex", "继续处理");
-    vi.advanceTimersByTime(31);
-    expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex", "\r");
-
-    vi.advanceTimersByTime(1);
-    if (minWaitMs > 63) {
+    vi.advanceTimersByTime(40);
+    const remainMinWaitMs = Math.max(0, minWaitMs - 80);
+    if (remainMinWaitMs > 0) {
       expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex", "\r");
-      vi.advanceTimersByTime(minWaitMs - 64);
+      vi.advanceTimersByTime(remainMinWaitMs - 1);
       expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex", "\r");
       vi.advanceTimersByTime(1);
     }
     expect(hostPty.write).toHaveBeenCalledWith("pty-codex", "\r");
+
+    tm.disposeAll(false);
+  });
+
+  it("Codex 在 PowerShell 单行文本场景下，仍优先走 adapter.paste", async () => {
+    vi.useFakeTimers();
+    const adapter: any = createAdapterStub();
+    const hostPty = createHostPtyStub();
+    createTerminalAdapterMock.mockReturnValue(adapter);
+
+    let snapshotText = "";
+    adapter.readCursorTextSnapshot.mockImplementation(() => {
+      if (!snapshotText) return null;
+      return {
+        bufferType: "alternate",
+        cursorAbsY: 22,
+        startAbsY: 21,
+        endAbsY: 22,
+        lines: [snapshotText],
+        text: snapshotText,
+      };
+    });
+
+    const ptyByTab: Record<string, string> = { "tab-codex-single": "pty-codex-single" };
+    const tm = new TerminalManager((tabId) => ptyByTab[tabId], hostPty as any, {});
+    tm.ensurePersistentContainer("tab-codex-single");
+    tm.setPty("tab-codex-single", "pty-codex-single");
+
+    const text = "单行正文不会拆分";
+    await tm.sendTextAndEnter("tab-codex-single", text, { providerId: "codex", terminalMode: "pwsh" as any });
+    const minWaitMs = getPasteSubmitMinWaitMs({ providerId: "codex", terminalMode: "pwsh" as any, textLength: text.length });
+
+    expect(adapter.paste).toHaveBeenCalledWith(text);
+    expect(hostPty.write).not.toHaveBeenCalledWith(
+      "pty-codex-single",
+      `${BRACKETED_PASTE_START}${text}${BRACKETED_PASTE_END}`,
+    );
+    expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex-single", "\r");
+
+    snapshotText = text;
+    vi.advanceTimersByTime(40);
+    expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex-single", "\r");
+
+    vi.advanceTimersByTime(40);
+    const remainMinWaitMs = Math.max(0, minWaitMs - 80);
+    if (remainMinWaitMs > 0) {
+      expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex-single", "\r");
+      vi.advanceTimersByTime(remainMinWaitMs - 1);
+      expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex-single", "\r");
+      vi.advanceTimersByTime(1);
+    }
+
+    expect(hostPty.write).toHaveBeenCalledWith("pty-codex-single", "\r");
+
+    tm.disposeAll(false);
+  });
+
+  it("Codex 在 PowerShell 多行文本的 write_only 场景下，会通过单次 bracketed paste 写入正文", async () => {
+    const adapter: any = createAdapterStub();
+    const hostPty = createHostPtyStub();
+    createTerminalAdapterMock.mockReturnValue(adapter);
+
+    const ptyByTab: Record<string, string> = { "tab-codex-write": "pty-codex-write" };
+    const tm = new TerminalManager((tabId) => ptyByTab[tabId], hostPty as any, {});
+    tm.ensurePersistentContainer("tab-codex-write");
+    tm.setPty("tab-codex-write", "pty-codex-write");
+
+    const text = "第一行\n第二行\n第三行";
+    await tm.sendText("tab-codex-write", text, { providerId: "codex", terminalMode: "pwsh" as any });
+
+    expect(adapter.paste).not.toHaveBeenCalled();
+    expect(hostPty.write).toHaveBeenCalledWith(
+      "pty-codex-write",
+      `${BRACKETED_PASTE_START}${text}${BRACKETED_PASTE_END}`,
+    );
+    expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex-write", "\r");
+
+    tm.disposeAll(false);
+  });
+
+  it("Codex 在 PowerShell 单行文本的 write_only 场景下，仍优先走 adapter.paste", async () => {
+    const adapter: any = createAdapterStub();
+    const hostPty = createHostPtyStub();
+    createTerminalAdapterMock.mockReturnValue(adapter);
+
+    const ptyByTab: Record<string, string> = { "tab-codex-write-single": "pty-codex-write-single" };
+    const tm = new TerminalManager((tabId) => ptyByTab[tabId], hostPty as any, {});
+    tm.ensurePersistentContainer("tab-codex-write-single");
+    tm.setPty("tab-codex-write-single", "pty-codex-write-single");
+
+    const text = "单行正文";
+    await tm.sendText("tab-codex-write-single", text, { providerId: "codex", terminalMode: "pwsh" as any });
+
+    expect(adapter.paste).toHaveBeenCalledWith(text);
+    expect(hostPty.write).not.toHaveBeenCalledWith(
+      "pty-codex-write-single",
+      `${BRACKETED_PASTE_START}${text}${BRACKETED_PASTE_END}`,
+    );
+    expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex-write-single", "\r");
 
     tm.disposeAll(false);
   });

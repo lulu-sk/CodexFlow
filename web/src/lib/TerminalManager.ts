@@ -785,6 +785,7 @@ export default class TerminalManager {
    * 设计背景：
    * - 仅监听 xterm 的 outbound 数据，只能说明“前端已把 paste 发出”，不能说明 Codex CLI 已真正消化完成；
    * - 长文本下，PowerShell / ConPTY 链路里常出现“paste 已发出但 CLI 尚未可提交”的时间差；
+   * - 多行正文若退化为普通输入，内嵌换行可能被 CLI 提前当成独立提交，因此这里对多行正文强制发送显式 bracketed paste；
    * - 因此这里优先等待输入区出现 `[Pasted Content ...]` 等局部屏幕 ACK，再补 Enter；屏幕 ACK 缺失时再走超时兜底。
    *
    * @param ptyId 当前标签页绑定的 PTY id
@@ -807,6 +808,11 @@ export default class TerminalManager {
       strategy: 'codex-paste-quiet',
       terminalMode,
       triggerSend: (normalizedText) => {
+        if (this.shouldForceCodexWindowsBracketedPaste('codex', terminalMode, normalizedText)) {
+          this.logSendDiagnostic(traceId, `trigger.mode=host.bracketed chars=${normalizedText.length}`);
+          this.hostPty.write(ptyId, buildBracketedPastePayload(normalizedText));
+          return;
+        }
         if (adapter && typeof (adapter as any).paste === 'function') {
           try {
             (adapter as any).paste(normalizedText);
@@ -1109,6 +1115,23 @@ export default class TerminalManager {
     return String(providerId || '').trim().toLowerCase() === 'codex'
       && !!terminalMode
       && isWindowsLikeTerminal(terminalMode);
+  }
+
+  /**
+   * 中文说明：判断 Codex 在 Windows 终端下是否需要强制走显式 bracketed paste。
+   * 设计目标：统一覆盖“发送并回车”与“仅写入正文”两条链路，避免多行正文退化成普通输入后被拆成多条消息。
+   * @param providerId providerId
+   * @param terminalMode 当前标签页运行终端类型
+   * @param text 待发送正文
+   * @returns 是否强制走显式 bracketed paste
+   */
+  private shouldForceCodexWindowsBracketedPaste(
+    providerId?: string | null,
+    terminalMode?: TerminalMode | null,
+    text?: string,
+  ): boolean {
+    return this.shouldUseCodexWindowsSubmitStrategy(providerId, terminalMode)
+      && /[\r\n]/.test(String(text ?? ""));
   }
 
   /**
@@ -1497,6 +1520,7 @@ export default class TerminalManager {
   /**
    * 发送一段文本到指定 tab 对应的终端：
    * - 优先走 xterm 的 paste 通道（若可用，可触发 bracketed paste，避免应用层对逐字输入做清洗）。
+   * - Codex 在 Windows/PowerShell 下发送多行正文时，会强制改走显式 bracketed paste，避免退化为普通输入后被拆成多条消息。
    * - 若 adapter 不存在或 paste 不可用，则回退为直接写入 PTY。
    * - `sendText()` 仅负责“写入正文”，不会走 Gemini 外部编辑器提交链路；该链路只在 `sendTextAndEnter()` 中启用。
    */
@@ -1528,6 +1552,12 @@ export default class TerminalManager {
       }, traceId);
       return;
     }
+    if (ptyId && this.shouldForceCodexWindowsBracketedPaste(options?.providerId, options?.terminalMode, text)) {
+      const normalizedText = String(text ?? "");
+      this.logSendDiagnostic(traceId, `trigger.mode=host.bracketed chars=${normalizedText.length}`);
+      this.hostPty.write(ptyId, buildBracketedPastePayload(normalizedText));
+      return;
+    }
     if (adapter && typeof (adapter as any).paste === 'function') {
       try { (adapter as any).paste(String(text ?? "")); return; } catch { /* 回退 */ }
     }
@@ -1544,7 +1574,7 @@ export default class TerminalManager {
    * - 仅在“文本已被目标 CLI 正常接收”的合适时机发送真正的 `'\r'`(Enter)，保证应用正确解析。
    * - 全链路容错：任何阶段异常都会降级为直接 `write(text)` 并最终补发 `'\r'`。
    * - Gemini：使用“xterm paste + 局部屏幕 ACK/超时兜底 + 延迟回车”策略，避开 40ms paste 防误触窗口。
-   * - Codex / Claude + Windows/PowerShell：使用“xterm paste + 等待 PTY 回显静默 + 再回车”策略，避免长文本在 PowerShell/ConPTY 下回车抢跑。
+   * - Codex / Claude + Windows/PowerShell：使用“等待 PTY 回显静默 + 再回车”策略；其中 Codex 的多行正文会改走显式 bracketed paste，避免 PowerShell/ConPTY 下被拆成多条消息。
    *
    * @param tabId 目标标签页标识，用于定位对应 PTY 与终端适配器
    * @param raw 待发送的原始文本；方法内部会规范化并去除尾随换行
