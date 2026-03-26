@@ -145,6 +145,7 @@
     "taskCompleted": "{tab} completed",
     "taskCompletedWithProject": "{tab} · {project}",
     "openTabHint": "Click to return to the agent tab.",
+    "workingTabHint": "Agent is working in this tab.",
     "untitledTab": "Agent"
   }
 }
