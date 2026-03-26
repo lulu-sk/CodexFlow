@@ -145,6 +145,7 @@
     "taskCompleted": "{tab} 已完成",
     "taskCompletedWithProject": "{tab} · {project} 已完成",
     "openTabHint": "点击查看对应的终端标签页。",
+    "workingTabHint": "该标签页代理正在工作中。",
     "untitledTab": "代理"
   }
 }

@@ -8328,6 +8328,7 @@ export default function CodexFlowManagerUI() {
             {tabs.map((tab) => {
               const pendingCount = pendingCompletions[tab.id] ?? 0;
               const hasPending = pendingCount > 0;
+              const isWorking = agentTurnTimerByTab[tab.id]?.status === "working";
               const isActiveTab = activeTabId === tab.id;
               const providerIconSrc = getProviderIconSrc(tab.providerId, providerItemById, themeMode);
               return (
@@ -8396,6 +8397,12 @@ export default function CodexFlowManagerUI() {
                     ) : (
                       <span className="flex min-w-0 flex-1 items-center gap-1">
                         <span id={`tab-label-${tab.id}`} className="truncate max-w-[8rem]">{tab.name}</span>
+                        {isWorking ? (
+                          <span
+                            className="cf-project-child-indicator-working ml-0.5 inline-flex h-1.5 w-1.5 rounded-full bg-[var(--cf-accent)] ring-1 ring-white/10 dark:ring-slate-900 shadow-sm"
+                            title={t('common:notifications.workingTabHint', '该标签页代理正在工作中。') as string}
+                          ></span>
+                        ) : null}
                         {hasPending ? (
                           <span
                             className="ml-0.5 inline-flex h-2 w-2 rounded-full bg-[var(--cf-red)] ring-2 ring-white dark:ring-slate-950 shadow-sm"
