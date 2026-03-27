@@ -205,6 +205,7 @@ import {
   getProviderIconSrc,
   historySessionDate,
   historyTimelineGroupKey,
+  hasMeaningfulCompletionPreview,
   inferSessionUuid,
   isAgentCompletionMessage,
   isWindowsLike,
@@ -224,6 +225,7 @@ import {
   parseRecycleStashes,
   pickUuidFromString,
   resolveHistoryTimelineMeta,
+  shouldDedupeCrossSourceCompletion,
   shouldDelayOscCompletionForExternalFallback,
   startOfLocalDay,
   summarizeForCommitMessage,
@@ -1477,6 +1479,7 @@ export default function CodexFlowManagerUI() {
   const autoCommitQueueByProjectIdRef = useRef<Record<string, Promise<void>>>({});
   const RESUME_COMPLETION_GUARD_MS = 8_000;
   const CODEX_OSC_EXTERNAL_WAIT_MS = 1_500;
+  const CODEX_OSC_EXTERNAL_WAIT_NO_DETAIL_MS = 3_000;
   const COMPLETION_DEDUPE_WINDOW_MS = 1_600;
   const COMPLETION_CROSS_SOURCE_WINDOW_MS = 5_000;
 
@@ -2265,17 +2268,22 @@ export default function CodexFlowManagerUI() {
   function armPendingOscCompletion(tabId: string, preview: string): void {
     const safeId = String(tabId || "").trim();
     if (!safeId) return;
+    const pendingPreview = String(preview || "");
+    const normalizedPreview = normalizeCompletionPreview(pendingPreview);
+    const waitMs = hasMeaningfulCompletionPreview(normalizedPreview)
+      ? CODEX_OSC_EXTERNAL_WAIT_MS
+      : CODEX_OSC_EXTERNAL_WAIT_NO_DETAIL_MS;
     clearPendingOscCompletion(safeId, "replace");
-    pendingOscCompletionPreviewRef.current[safeId] = String(preview || "");
+    pendingOscCompletionPreviewRef.current[safeId] = pendingPreview;
     pendingOscCompletionTimersRef.current[safeId] = window.setTimeout(() => {
-      const pendingPreview = pendingOscCompletionPreviewRef.current[safeId];
+      const bufferedPreview = pendingOscCompletionPreviewRef.current[safeId];
       delete pendingOscCompletionTimersRef.current[safeId];
       delete pendingOscCompletionPreviewRef.current[safeId];
-      if (typeof pendingPreview !== "string") return;
-      notifyLog(`pendingOsc.flush tab=${safeId} waitMs=${CODEX_OSC_EXTERNAL_WAIT_MS}`);
-      handleAgentCompletion(safeId, pendingPreview, "osc");
-    }, CODEX_OSC_EXTERNAL_WAIT_MS);
-    notifyLog(`pendingOsc.arm tab=${safeId} waitMs=${CODEX_OSC_EXTERNAL_WAIT_MS}`);
+      if (typeof bufferedPreview !== "string") return;
+      notifyLog(`pendingOsc.flush tab=${safeId} waitMs=${waitMs}`);
+      handleAgentCompletion(safeId, bufferedPreview, "osc");
+    }, waitMs);
+    notifyLog(`pendingOsc.arm tab=${safeId} waitMs=${waitMs} hasDetail=${hasMeaningfulCompletionPreview(normalizedPreview) ? "1" : "0"}`);
   }
 
   /**
@@ -2320,8 +2328,13 @@ export default function CodexFlowManagerUI() {
       (last.source === "osc" && currentSource === "external") ||
       (last.source === "external" && currentSource === "osc");
     if (!crossSource) return false;
-    if (hasWorkingTimer) return false;
-    return delta <= COMPLETION_CROSS_SOURCE_WINDOW_MS;
+    return shouldDedupeCrossSourceCompletion(
+      String(last.preview || ""),
+      String(preview || ""),
+      delta,
+      COMPLETION_CROSS_SOURCE_WINDOW_MS,
+      hasWorkingTimer,
+    );
   }
 
   /**
