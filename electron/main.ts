@@ -29,6 +29,7 @@ import i18n from "./i18n";
 import wsl from "./wsl";
 import fileIndex from "./fileIndex";
 import images from "./images";
+import { normalizePathOpenCandidate } from "./pathOpen";
 import { installInputContextMenu } from "./contextMenu";
 import { installRendererResponseSecurityHeaders } from "./security/rendererHeaders";
 import { getQuitConfirmDialogTextForLocale } from "./locales/quitConfirm";
@@ -3997,7 +3998,7 @@ ipcMain.handle('images.trash', async (_e, { winPath }: { winPath: string }) => {
 });
 
 /**
- * 中文说明：构造“系统可打开路径”候选列表（兼容 Windows + WSL + /mnt）。
+ * 中文说明：构造“系统可打开路径”候选列表（兼容 Windows 盘符、slash-prefixed 盘符、WSL 与 /mnt）。
  */
 function buildPathOpenCandidates(rawPath: string): string[] {
   const candidates: string[] = [];
@@ -4008,8 +4009,7 @@ function buildPathOpenCandidates(rawPath: string): string[] {
   };
 
   const raw = String(rawPath || "");
-  const normSlashes = (s: string) => (process.platform === "win32" ? s.replace(/\//g, "\\") : s);
-  push(normSlashes(raw));
+  push(normalizePathOpenCandidate(raw, process.platform));
 
   if (process.platform === "win32") {
     const m = raw.match(/^\/mnt\/([a-zA-Z])\/(.*)$/);
