@@ -1491,11 +1491,12 @@ function isAgentCompletionMessage(message: string): boolean {
  * - `previewEscapedWhitespace=true`：按“上游明确标记为包含字面量空白转义”处理；
  * - `previewEscapedWhitespace=false`：保持原样，不解码 `\n` / `\r` / `\t`；
  * - 未传时走兼容模式：仍尝试按启发式恢复旧数据中的字面量空白转义。
+ * - 同时兼容 Codex 0.116+ 可能出现的 title case 通用完成文案 `Agent turn complete`。
  */
 function normalizeCompletionPreview(raw: string, options?: { previewEscapedWhitespace?: boolean }): string {
   const text = String(raw || "").trim();
   if (!text) return "";
-  const withoutPrefix = text.replace(/^agent-turn-complete\s*[:：]?\s*/i, "").trim();
+  const withoutPrefix = text.replace(/^(?:agent[- ]turn[- ]complete)\s*[:：]?\s*/i, "").trim();
   if (!withoutPrefix) return "";
   const normalizedLineEndings = withoutPrefix.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   if (options?.previewEscapedWhitespace === true)
@@ -1683,6 +1684,37 @@ function normalizeDisplayedCompletionPreviewForDedupe(raw: string): string {
   const text = String(raw || "");
   if (!text) return "";
   return text.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * 中文说明：判断归一化后的完成预览是否包含真实细节。
+ * - 空串或纯空白视为“仅完成信号”，不应压制后续更完整的 external 预览；
+ * - 供完成事件跨来源去重逻辑复用，避免新版 Codex 的通用完成文案吞掉真实摘要。
+ */
+function hasMeaningfulCompletionPreview(preview: string): boolean {
+  return String(preview || "").trim().length > 0;
+}
+
+/**
+ * 中文说明：判断 OSC / external 跨来源完成事件是否应继续去重。
+ * - 真实摘要 -> 通用占位：继续去重，避免后来的“空完成信号”覆盖详情；
+ * - 通用占位 -> 真实摘要：放行，允许 external 详情覆盖新版 Codex 的通用 OSC；
+ * - 双方都为空或双方都有详情：保持原有时间窗去重；
+ * - 一旦标签页重新进入 working，仍按旧逻辑放行，避免误吞新一轮完成事件。
+ */
+function shouldDedupeCrossSourceCompletion(
+  lastPreview: string,
+  nextPreview: string,
+  deltaMs: number,
+  windowMs: number,
+  hasWorkingTimer: boolean,
+): boolean {
+  if (hasWorkingTimer) return false;
+  if (deltaMs > windowMs) return false;
+  const lastHasDetail = hasMeaningfulCompletionPreview(lastPreview);
+  const nextHasDetail = hasMeaningfulCompletionPreview(nextPreview);
+  if (!lastHasDetail && nextHasDetail) return false;
+  return true;
 }
 
 /**
@@ -1990,6 +2022,8 @@ export {
   normalizeCompletionPreview,
   normalizeCompletionPreviewForDedupe,
   normalizeDisplayedCompletionPreviewForDedupe,
+  hasMeaningfulCompletionPreview,
+  shouldDedupeCrossSourceCompletion,
   shouldDelayOscCompletionForExternalFallback,
   canonicalFilterKey,
   keysOfItemCanonical,

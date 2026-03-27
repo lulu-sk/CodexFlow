@@ -4,10 +4,12 @@ import {
   CLAUDE_NOTIFY_ENV_KEYS,
   GEMINI_NOTIFY_ENV_KEYS,
   buildProviderNotifyEnv,
+  hasMeaningfulCompletionPreview,
   isAgentCompletionMessage,
   normalizeCompletionPreview,
   normalizeDisplayedCompletionPreviewForDedupe,
   normalizeCompletionPreviewForDedupe,
+  shouldDedupeCrossSourceCompletion,
   shouldDelayOscCompletionForExternalFallback,
 } from "./app-shared";
 
@@ -28,6 +30,11 @@ describe("app-shared（完成通知：识别与环境变量注入）", () => {
 
   it("normalizeCompletionPreview：将字面量换行恢复为展示态换行", () => {
     expect(normalizeCompletionPreview("agent-turn-complete: 已处理。\\n\\n我把测试里的真实本机路径替换掉了。")).toBe("已处理。\n\n我把测试里的真实本机路径替换掉了。");
+  });
+
+  it("normalizeCompletionPreview：兼容新版 Codex 的 title case 通用完成文案", () => {
+    expect(normalizeCompletionPreview("Agent turn complete")).toBe("");
+    expect(normalizeCompletionPreview("Agent turn complete: 已处理 README")).toBe("已处理 README");
   });
 
   it("normalizeCompletionPreview：协议显式声明不解码时保留字面量换行", () => {
@@ -72,6 +79,24 @@ describe("app-shared（完成通知：识别与环境变量注入）", () => {
 
   it("normalizeDisplayedCompletionPreviewForDedupe：仅折叠真实空白并保留字面量换行", () => {
     expect(normalizeDisplayedCompletionPreviewForDedupe("第一行\n  第二行  \\n 第三段")).toBe("第一行 第二行 \\n 第三段");
+  });
+
+  it("hasMeaningfulCompletionPreview：区分通用完成信号与真实摘要", () => {
+    expect(hasMeaningfulCompletionPreview("")).toBe(false);
+    expect(hasMeaningfulCompletionPreview("   ")).toBe(false);
+    expect(hasMeaningfulCompletionPreview("已处理 README")).toBe(true);
+  });
+
+  it("shouldDedupeCrossSourceCompletion：先收到通用 OSC、后收到 external 详情时放行详情", () => {
+    expect(shouldDedupeCrossSourceCompletion("", "已处理 README", 1200, 5000, false)).toBe(false);
+  });
+
+  it("shouldDedupeCrossSourceCompletion：先收到详情、后收到通用完成信号时继续去重", () => {
+    expect(shouldDedupeCrossSourceCompletion("已处理 README", "", 1200, 5000, false)).toBe(true);
+  });
+
+  it("shouldDedupeCrossSourceCompletion：重新进入 working 后不吞掉新一轮完成事件", () => {
+    expect(shouldDedupeCrossSourceCompletion("", "已处理 README", 1200, 5000, true)).toBe(false);
   });
 
   it("shouldDelayOscCompletionForExternalFallback：仅 Codex 需要优先等待 external 预览", () => {
