@@ -30,6 +30,16 @@ describe("resolveHistoryLocalPathLink", () => {
     });
   });
 
+  it("支持解析 slash-prefixed Windows 盘符路径并保留定位信息", () => {
+    const link = resolveHistoryLocalPathLink("/G:/Unity/Project/Client/Assets/file.cs#L2629");
+    expect(link).toEqual({
+      rawPath: "/G:/Unity/Project/Client/Assets/file.cs#L2629",
+      openPath: "/G:/Unity/Project/Client/Assets/file.cs",
+      line: 2629,
+      column: undefined,
+    });
+  });
+
   it("支持解析 file URI 并移除 #L 行号锚点", () => {
     const link = resolveHistoryLocalPathLink("file:///C:/work/demo/main.cs#L42");
     expect(link).toEqual({
