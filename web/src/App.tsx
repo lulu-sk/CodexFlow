@@ -7517,9 +7517,9 @@ export default function CodexFlowManagerUI() {
             const exists: any = await (window as any).host?.utils?.pathExists?.(project.winPath, true);
             if (exists && exists.ok && exists.exists) {
               showGitActionErrorDialog({
-                title: t("projects:worktreeDeleteManualCleanupTitle", "目录未完全删除") as string,
-                hint: t("projects:worktreeDeleteManualCleanupHint", "目录可能因文件占用未能删除。") as string,
-                message: (t("projects:worktreeDeleteManualCleanupDesc", "已解除 worktree 关联并删除分支，但目录仍存在：\n{path}\n请打开文件夹手动删除（可能有文件占用）。", { path: project.winPath }) as string),
+                title: t("projects:worktreeDeleteManualCleanupTitle", "目录未能自动清理") as string,
+                hint: t("projects:worktreeDeleteManualCleanupHint", "通常是文件被其他进程占用；worktree 解绑已完成，请关闭占用后手动删除。") as string,
+                message: (t("projects:worktreeDeleteManualCleanupDesc", "已完成 worktree 解绑并删除分支，但目录仍存在：\n{path}\n通常是文件被占用导致无法自动清理。请关闭占用后手动删除。", { path: project.winPath }) as string),
                 dir: project.winPath,
               });
             }
@@ -7527,11 +7527,27 @@ export default function CodexFlowManagerUI() {
           return;
         }
         if (res?.needsForceRemoveWorktree) {
-          setWorktreeDeleteDialog((prev) => (prev.open && prev.projectId === pid ? { ...prev, running: false, needsForceRemoveWorktree: true, error: String(res?.error || "") } : prev));
+          setWorktreeDeleteDialog((prev) => (prev.open && prev.projectId === pid
+            ? {
+              ...prev,
+              running: false,
+              needsForceRemoveWorktree: true,
+              needsForceDeleteBranch: res?.needsForceDeleteBranch === true || prev.needsForceDeleteBranch === true,
+              error: undefined,
+            }
+            : prev));
           return;
         }
         if (res?.needsForceDeleteBranch) {
-          setWorktreeDeleteDialog((prev) => (prev.open && prev.projectId === pid ? { ...prev, running: false, needsForceDeleteBranch: true, error: String(res?.error || "") } : prev));
+          setWorktreeDeleteDialog((prev) => (prev.open && prev.projectId === pid
+            ? {
+              ...prev,
+              running: false,
+              needsForceRemoveWorktree: res?.needsForceRemoveWorktree === true || prev.needsForceRemoveWorktree === true,
+              needsForceDeleteBranch: true,
+              error: undefined,
+            }
+            : prev));
           return;
         }
         throw new Error(res?.error || "delete failed");
@@ -11453,13 +11469,12 @@ export default function CodexFlowManagerUI() {
 		            const needForceReset = isReset && worktreeDeleteDialog.needsForceResetWorktree === true;
             const needForceRemove = !isReset && worktreeDeleteDialog.needsForceRemoveWorktree === true;
             const needForceBranch = !isReset && worktreeDeleteDialog.needsForceDeleteBranch === true;
-	            const forceHint = needForceReset
-	              ? (t("projects:worktreeResetForceHint", "检测到未提交修改：强制重置将丢弃这些修改。") as string)
-	              : needForceRemove
-	                ? (t("projects:worktreeDeleteForceRemoveHint", "检测到未提交修改：强制移除将丢弃这些修改。") as string)
-                : needForceBranch
-                  ? (t("projects:worktreeDeleteForceBranchHint", "分支未合并：强制删除将丢失该分支上的提交。") as string)
-                  : "";
+            const forceHints = needForceReset
+              ? [t("projects:worktreeResetForceHint", "检测到未提交修改：强制重置将丢弃这些修改。") as string]
+              : [
+                needForceRemove ? (t("projects:worktreeDeleteForceRemoveHint", "检测到未提交修改：强制移除将丢弃这些修改。") as string) : "",
+                needForceBranch ? (t("projects:worktreeDeleteForceBranchHint", "分支未合并：强制删除会丢弃该分支提交。") as string) : "",
+              ].filter(Boolean);
 	            const primaryLabel = isReset
 	              ? (needForceReset ? (t("projects:worktreeResetForceAction", "强制重置") as string) : (t("projects:worktreeResetAction", "重置") as string))
 	              : needForceRemove || needForceBranch
@@ -11525,11 +11540,11 @@ export default function CodexFlowManagerUI() {
 	                    {worktreeDeleteDialog.afterRecycleHint}
 	                  </div>
 	                ) : null}
-	                {forceHint ? (
+	                {forceHints.length > 0 ? (
 	                  <div className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 flex gap-2 items-start">
                     <TriangleAlert className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
-                    <div className="text-[10px] text-amber-800 leading-normal font-medium">
-	                    {forceHint}
+                    <div className="text-[10px] text-amber-800 leading-normal font-medium whitespace-pre-line">
+	                    {forceHints.join("\n")}
 	                  </div>
 	</div>
                 ) : null}

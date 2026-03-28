@@ -9,7 +9,7 @@ import path from "node:path";
 import { execGitAsync, isGitExecutableUnavailable, spawnGitAsync } from "./exec";
 import { toFsPathAbs, toFsPathKey } from "./pathKey";
 import { parseWorktreeListPorcelain } from "./worktreeList";
-import { pickRepoMainPathFromSnapshot, resolveRepoMainPathForBranchAsync, resolveRepoMainPathFromWorktreeAsync, resolveWorktreeBranchNameAsync } from "./worktreeMetaResolve";
+import { pickRepoMainPathFromSnapshot, readWorktreeListSnapshotAsync, resolveRepoMainPathForBranchAsync, resolveRepoMainPathFromWorktreeAsync, resolveWorktreeBranchNameAsync } from "./worktreeMetaResolve";
 import { buildRestoreCommandsForWorktreeStateSnapshot, cleanupWorktreeStateSnapshotAsync, createWorktreeStateSnapshotAsync, restoreWorktreeStateSnapshotAsync, type WorktreeStateSnapshot } from "./worktreeStateSnapshot";
 import { buildNextWorktreeMeta, deleteWorktreeMeta, getWorktreeMeta, setWorktreeMeta, type WorktreeMeta } from "../stores/worktreeMetaStore";
 
@@ -205,6 +205,59 @@ async function removeWorktreeDirBestEffortAsync(worktreePath: string): Promise<v
   try {
     await fsp.rm(wt, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 } as any);
   } catch {}
+}
+
+/**
+ * 中文说明：删除前检查 worktree 是否存在未提交修改或未跟踪文件。
+ * - 用途：在真正执行 `git worktree remove` 之前，将“需要强制删除”的风险一次性返回给前端；
+ * - 判定：只要 `git status --porcelain` 有输出，就视为需要 `--force`。
+ */
+async function hasDirtyWorktreeForRemoveAsync(args: {
+  worktreePath: string;
+  gitPath?: string;
+}): Promise<{ ok: true; dirty: boolean } | { ok: false; error: string }> {
+  const worktreePath = toFsPathAbs(args.worktreePath);
+  if (!worktreePath) return { ok: false, error: "missing worktreePath" };
+
+  const status = await execGitAsync({
+    gitPath: args.gitPath,
+    argv: ["-C", worktreePath, "status", "--porcelain=v1", "--untracked-files=all"],
+    timeoutMs: 10_000,
+  });
+  if (!status.ok) {
+    return {
+      ok: false,
+      error: String(status.error || status.stderr || status.stdout || "git status failed").trim() || "git status failed",
+    };
+  }
+  return { ok: true, dirty: String(status.stdout || "").trim().length > 0 };
+}
+
+/**
+ * 中文说明：检查指定路径是否仍登记在 `git worktree list` 中。
+ * - 用途：兼容 `git worktree remove` 已完成解绑，但目录清理因“Directory not empty”失败的场景；
+ * - 返回 `registered=false` 时，可继续执行分支删除与兜底目录清理，而不再把该错误视为整体失败。
+ */
+async function isWorktreeRegisteredAsync(args: {
+  repoDir: string;
+  worktreePath: string;
+  gitPath?: string;
+}): Promise<{ ok: true; registered: boolean } | { ok: false; error: string }> {
+  const repoDir = toFsPathAbs(args.repoDir);
+  const worktreePath = toFsPathAbs(args.worktreePath);
+  if (!repoDir || !worktreePath) return { ok: false, error: "missing args" };
+
+  const snapshot = await readWorktreeListSnapshotAsync({ dir: repoDir, gitPath: args.gitPath, timeoutMs: 10_000 });
+  if (!snapshot.ok) return { ok: false, error: snapshot.error };
+
+  const targetKey = toFsPathKey(worktreePath);
+  const registered = snapshot.snapshot.worktrees.some((item) => {
+    const raw = String(item?.worktree || "").trim();
+    if (!raw) return false;
+    const abs = path.isAbsolute(raw) ? toFsPathAbs(raw) : toFsPathAbs(path.resolve(snapshot.snapshot.repoRoot, raw));
+    return !!abs && toFsPathKey(abs) === targetKey;
+  });
+  return { ok: true, registered };
 }
 
 /**
@@ -1814,6 +1867,36 @@ export async function removeWorktreeAsync(req: RemoveWorktreeRequest): Promise<R
       const cur = await execGitAsync({ gitPath, argv: ["-C", repoMainPath, "symbolic-ref", "--short", "-q", "HEAD"], timeoutMs: 8000 });
       baseRefForMergedCheck = String(cur.stdout || "").trim() || "HEAD";
     }
+
+    let isMergedWithBaseRef: boolean | null = null;
+    const wtBranchForDelete = String(resolvedWtBranch || "").trim();
+    const baseRef = String(baseRefForMergedCheck || "").trim() || "HEAD";
+    if (req.deleteBranch && wtBranchForDelete) {
+      const merged = await execGitAsync({ gitPath, argv: ["-C", repoMainPath, "merge-base", "--is-ancestor", wtBranchForDelete, baseRef], timeoutMs: 10_000 });
+      // merge-base --is-ancestor：0=是祖先（已合并），1=否，其它=错误
+      if (merged.exitCode !== 0 && merged.exitCode !== 1) {
+        return { ok: false, removedWorktree: false, removedBranch: false, error: merged.error || merged.stderr.trim() || "git merge-base failed" };
+      }
+      isMergedWithBaseRef = merged.exitCode === 0;
+    }
+
+    let needsForceRemoveWorktree = false;
+    if (!req.forceRemoveWorktree) {
+      const dirtyRes = await hasDirtyWorktreeForRemoveAsync({ worktreePath: wt, gitPath });
+      if (!dirtyRes.ok) return { ok: false, removedWorktree: false, removedBranch: false, error: dirtyRes.error };
+      needsForceRemoveWorktree = dirtyRes.dirty;
+    }
+
+    const needsForceDeleteBranch = req.deleteBranch && wtBranchForDelete ? (isMergedWithBaseRef === false && req.forceDeleteBranch !== true) : false;
+    if (needsForceRemoveWorktree || needsForceDeleteBranch) {
+      return {
+        ok: false,
+        removedWorktree: false,
+        removedBranch: false,
+        needsForceRemoveWorktree,
+        needsForceDeleteBranch,
+      };
+    }
     // 中文说明：大仓库/大工作区删除可能很慢（主要耗时在目录移除），需要更长超时避免误判失败。
     const removeTimeoutMs = 15 * 60_000;
 
@@ -1829,10 +1912,17 @@ export async function removeWorktreeAsync(req: RemoveWorktreeRequest): Promise<R
       if (!req.forceRemoveWorktree && /not clean|contains modified|modified files/i.test(msg)) {
         return { ok: false, removedWorktree: false, removedBranch: false, needsForceRemoveWorktree: true, error: msg };
       }
-      // 若 worktree 已被移除/不再登记，但用户仍希望删除分支，则继续执行分支删除逻辑
+      // 若 worktree 已被移除/不再登记（包括目录未完全清理），则继续执行分支删除与兜底清理逻辑。
       const alreadyGone = /not a working tree|is not a working tree|unknown worktree|not registered|does not exist|already removed|No such file|no such file/i.test(msg);
-      if (req.deleteBranch && alreadyGone) {
-        removedWorktree = true;
+      const maybeCleanupOnlyFailure = /Directory not empty|failed to delete/i.test(msg);
+      if (alreadyGone || maybeCleanupOnlyFailure) {
+        const registeredRes = await isWorktreeRegisteredAsync({ repoDir: repoMainPath, worktreePath: wt, gitPath });
+        if (!registeredRes.ok) return { ok: false, removedWorktree: false, removedBranch: false, error: registeredRes.error || msg };
+        if (!registeredRes.registered) {
+          removedWorktree = true;
+        } else {
+          return { ok: false, removedWorktree: false, removedBranch: false, error: msg };
+        }
       } else {
         return { ok: false, removedWorktree: false, removedBranch: false, error: msg };
       }
@@ -1842,15 +1932,9 @@ export async function removeWorktreeAsync(req: RemoveWorktreeRequest): Promise<R
 
     let removedBranch = false;
     if (req.deleteBranch) {
-      const wtBranch = String(resolvedWtBranch || "").trim();
-      const baseRef = String(baseRefForMergedCheck || "").trim() || "HEAD";
+      const wtBranch = wtBranchForDelete;
       if (wtBranch) {
-        const merged = await execGitAsync({ gitPath, argv: ["-C", repoMainPath, "merge-base", "--is-ancestor", wtBranch, baseRef], timeoutMs: 10_000 });
-        // merge-base --is-ancestor：0=是祖先（已合并），1=否，其它=错误
-        if (merged.exitCode !== 0 && merged.exitCode !== 1) {
-          return { ok: false, removedWorktree, removedBranch: false, error: merged.error || merged.stderr.trim() || "git merge-base failed" };
-        }
-        const isMerged = merged.exitCode === 0;
+        const isMerged = isMergedWithBaseRef === true;
         const deleteRes = await deleteCheckedWorktreeBranchAsync({
           repoMainPath,
           wtBranch,
