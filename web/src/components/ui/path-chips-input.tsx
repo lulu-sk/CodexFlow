@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils";
 import AtCommandPalette, { type PaletteLevel } from "@/components/at-mention-new/AtCommandPalette";
 import type { AtCategoryId, AtItem, SearchScope } from "@/types/at";
 import { getCaretViewportPosition } from "@/components/at-mention-new/caret";
-import { toWSLForInsert, joinWinAbs, toWslRelOrAbsForProject, isWinPathUnderRoot } from "@/lib/wsl";
+import { toWSLForInsert, joinWinAbs, toWslRelOrAbsForProject, toWindowsRelOrAbsForProject, isWinPathUnderRoot } from "@/lib/wsl";
 import { extractWinPathsFromDataTransfer, probeWinPathKind, preferExistingWinPathCandidate, type WinPathProbeResult } from "@/lib/dragDrop";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -102,6 +102,101 @@ function isLikelyRelativePath(s: string): boolean {
   if (!name || !ext) return false;
   if (!/^[A-Za-z0-9_-]{1,16}$/.test(ext)) return false;
   return /^[A-Za-z0-9._-]+$/.test(name);
+}
+
+/**
+ * 中文说明：判断当前运行环境是否属于 Windows 原生终端。
+ */
+function isWindowsLikeRunEnv(runEnv?: PathChipsInputProps["runEnv"]): boolean {
+  return runEnv === "windows" || runEnv === "pwsh";
+}
+
+/**
+ * 中文说明：判断路径是否为 Windows 绝对路径或 UNC 路径。
+ */
+function isAbsoluteWindowsPath(pathText: string): boolean {
+  return /^([a-zA-Z]):[\\/]/.test(pathText) || /^\\\\/.test(pathText);
+}
+
+/**
+ * 中文说明：将路径文本规范化为 Windows 风格，仅做字符串层面的分隔符修正与 `/mnt` 映射。
+ */
+function toWindowsPathText(pathText: string): string {
+  const raw = String(pathText || "").trim();
+  if (!raw) return "";
+  const mntMatch = raw.match(/^\/mnt\/([a-zA-Z])\/(.*)$/);
+  if (mntMatch?.[1]) {
+    const drive = mntMatch[1].toUpperCase();
+    const rest = String(mntMatch[2] || "").replace(/\//g, "\\");
+    return `${drive}:\\${rest}`;
+  }
+  return raw.replace(/\//g, "\\");
+}
+
+/**
+ * 中文说明：根据当前终端环境与路径风格，生成应写入 Chip 的路径字段。
+ * - `wsl`：保留 WSL 路径用于发送，同时尽量补充 Windows 路径便于预览与系统操作。
+ * - `windows/pwsh`：优先保留 Windows 路径，避免把 Chip 文本转换成 WSL 风格。
+ */
+function buildChipPaths(args: {
+  rawPath: string;
+  runEnv?: PathChipsInputProps["runEnv"];
+  winRoot?: string;
+  projectPathStyle?: "absolute" | "relative";
+}): { winPath?: string; wslPath?: string; pathText: string } {
+  const raw = String(args.rawPath || "").trim();
+  if (!raw) return { pathText: "" };
+
+  const style = args.projectPathStyle === "absolute" ? "absolute" : "relative";
+  const winRoot = String(args.winRoot || "").trim();
+  const windowsLike = isWindowsLikeRunEnv(args.runEnv);
+  const windowsAbs = isAbsoluteWindowsPath(raw);
+  const posixAbs = raw.startsWith("/");
+  const relativePath = !windowsAbs && !posixAbs;
+
+  if (windowsLike) {
+    if (windowsAbs || /^\/mnt\/[a-zA-Z]\//.test(raw)) {
+      const winAbs = toWindowsPathText(raw);
+      const winPath = toWindowsRelOrAbsForProject(winAbs, winRoot, style);
+      const wslPath = toWslRelOrAbsForProject(winAbs, winRoot, style);
+      return { winPath, wslPath, pathText: winPath };
+    }
+    if (posixAbs) {
+      const wslPath = toWSLForInsert(raw);
+      if (/^\/mnt\/[a-zA-Z]\//.test(wslPath)) {
+        const mappedWinAbs = toWindowsPathText(wslPath);
+        const winPath = toWindowsRelOrAbsForProject(mappedWinAbs, winRoot, style);
+        return { winPath, wslPath, pathText: winPath };
+      }
+      return { wslPath, pathText: wslPath };
+    }
+    const normalizedRel = toWindowsPathText(raw);
+    if (style === "absolute" && winRoot) {
+      const winAbs = joinWinAbs(winRoot, normalizedRel);
+      const wslPath = toWSLForInsert(winAbs);
+      return { winPath: winAbs, wslPath, pathText: winAbs };
+    }
+    return { winPath: normalizedRel, wslPath: normalizedRel.replace(/\\/g, "/"), pathText: normalizedRel };
+  }
+
+  if (relativePath) {
+    if (style === "absolute" && winRoot) {
+      const winAbs = joinWinAbs(winRoot, toWindowsPathText(raw));
+      const wslPath = toWSLForInsert(winAbs);
+      return { winPath: winAbs, wslPath, pathText: wslPath };
+    }
+    const wslPath = raw.replace(/\\/g, "/");
+    return { wslPath, pathText: wslPath };
+  }
+
+  const normalizedWin = windowsAbs ? toWindowsPathText(raw) : "";
+  const wslPath = windowsAbs
+    ? toWslRelOrAbsForProject(normalizedWin, winRoot, style)
+    : toWSLForInsert(raw);
+  const winPath = windowsAbs
+    ? toWindowsRelOrAbsForProject(normalizedWin, winRoot, style)
+    : (/^\/mnt\/[a-zA-Z]\//.test(wslPath) ? toWindowsPathText(wslPath) : undefined);
+  return { winPath, wslPath, pathText: wslPath };
 }
 
 /**
@@ -378,29 +473,6 @@ function isImageChip(chip?: Partial<PathChip>): boolean {
     isImage: type.startsWith("image/"),
     chipKind: chipAny?.chipKind,
   }) === "image";
-}
-
-/**
- * 中文说明：解析图片 Chip 的稳定回退预览地址。
- * - 仅图片 Chip 允许回退到磁盘 `file:///` 预览，避免普通文件误渲染为裂图；
- * - 优先使用 `winPath`，因为撤回/重做后 `blob:` URL 可能已被回收；
- * - 若无 `winPath`，则返回空串，由调用方决定是否继续展示。
- */
-function resolveChipImageFallbackUrl(chip?: Partial<PathChip>): string {
-  if (!isImageChip(chip)) return "";
-  return toWindowsFilePreviewUrl(String((chip as any)?.winPath || ""));
-}
-
-/**
- * 中文说明：解析 Chip 可用于渲染的预览地址。
- * - 仅图片 Chip 允许返回预览地址，普通文件即便带有误写的 `previewUrl` 也不会渲染成图片；
- * - 优先使用当前 `previewUrl`，再回退到稳定的磁盘 `file:///` 地址。
- */
-function resolveChipPreviewSrc(chip?: Partial<PathChip>): string {
-  if (!isImageChip(chip)) return "";
-  const previewUrl = String((chip as any)?.previewUrl || "").trim();
-  if (previewUrl) return previewUrl;
-  return resolveChipImageFallbackUrl(chip);
 }
 
 export default function PathChipsInput({
@@ -804,16 +876,25 @@ export default function PathChipsInput({
       }
       const localKeys = new Set<string>();
       const candidates = list.map((wp, i) => {
-        const wsl = toWslRelOrAbsForProject(wp, winRoot, projectPathStyle === 'absolute' ? 'absolute' : 'relative');
+        const paths = buildChipPaths({
+          rawPath: wp,
+          runEnv,
+          winRoot,
+          projectPathStyle,
+        });
         const probe = probes[i];
         const isDir = probe?.kind === "directory";
         const isImage = !isDir && isImageFileName(wp);
-        // 当 wsl 为 "."（项目根）时，展示友好的标签：回退到 Windows 路径的最后一段，而不是 "."
-        const labelBase = (wsl === ".")
+        // 当 pathText 为 "."（项目根）时，展示友好的标签：回退到 Windows 路径的最后一段，而不是 "."
+        const labelBase = (paths.pathText === ".")
           ? (String(wp).split(/[/\\]/).pop() || ".")
-          : ((wsl || wp).split(/[/\\]/).pop() || "");
-        const key = buildChipDedupeKey({ winPath: wp, wslPath: wsl, fileName: labelBase } as any);
-        return { wp, wsl, isDir, isImage, labelBase, key };
+          : ((paths.pathText || wp).split(/[/\\]/).pop() || "");
+        const key = buildChipDedupeKey({
+          winPath: paths.winPath,
+          wslPath: paths.wslPath,
+          fileName: labelBase,
+        } as any);
+        return { wp, ...paths, isDir, isImage, labelBase, key };
       }).filter((it) => {
         if (!it.key) return true;
         if (existingKeys.has(it.key)) return false;
@@ -857,8 +938,8 @@ export default function PathChipsInput({
           type: "text/path",
           size: 0,
           saved: true,
-          winPath: it.wp,
-          wslPath: it.wsl,
+          winPath: it.winPath,
+          wslPath: it.wslPath,
           fileName: it.labelBase || (it.isImage ? t('common:files.image') : t('common:files.path')),
           fromPaste: false,
           isDir: it.isDir,
@@ -868,7 +949,7 @@ export default function PathChipsInput({
       const nextChips = buildMergedChips(items);
       applyValueChange({ chips: nextChips });
     } catch {}
-  }, [applyValueChange, buildMergedChips, projectPathStyle, readCurrentValueState, t, winRoot]);
+  }, [applyValueChange, buildMergedChips, projectPathStyle, readCurrentValueState, runEnv, t, winRoot]);
 
   /**
    * 打开“目录外资源提醒”弹窗，并缓存待处理的拖拽数据。
@@ -910,7 +991,15 @@ export default function PathChipsInput({
         }
         return w;
       }
-      if (chip.winPath) return String(chip.winPath || '');
+      if (chip.winPath) {
+        const direct = String(chip.winPath || '').trim();
+        if (!direct) return "";
+        if (isAbsoluteWindowsPath(direct)) return toWSLForInsert(direct);
+        if (typeof winRoot === 'string' && winRoot.trim().length > 0) {
+          try { return toWSLForInsert(joinWinAbs(winRoot, direct)); } catch { /* ignore */ }
+        }
+        return direct.replace(/\\/g, "/");
+      }
       return '';
     } catch { return String(chip?.wslPath || chip?.winPath || ''); }
   }, [projectWslRoot, winRoot]);
@@ -924,7 +1013,13 @@ export default function PathChipsInput({
     try {
       if (!chip) return "";
       const direct = String(chip.winPath || "").trim();
-      if (direct) return direct;
+      if (direct) {
+        if (isAbsoluteWindowsPath(direct)) return toWindowsPathText(direct);
+        if (typeof winRoot === 'string' && winRoot) {
+          try { return joinWinAbs(winRoot, direct); } catch { /* ignore */ }
+        }
+        return toWindowsPathText(direct);
+      }
       const wsl = String(chip.wslPath || "").trim();
       if (!wsl) return "";
       const m = wsl.match(/^\/mnt\/([a-zA-Z])\/(.*)$/);
@@ -949,6 +1044,44 @@ export default function PathChipsInput({
       return "";
     } catch { return ""; }
   }, [projectWslRoot, winRoot]);
+
+  /**
+   * 中文说明：按当前终端环境返回 Chip 的首选路径文本。
+   */
+  const resolveChipPreferredPath = useCallback((chip: any): string => {
+    try {
+      if (runEnv === "wsl") {
+        return resolveChipFullPath(chip) || String(chip?.wslPath || chip?.winPath || "");
+      }
+      return resolveChipWindowsFullPath(chip) || String(chip?.winPath || chip?.wslPath || "");
+    } catch {
+      return String(chip?.winPath || chip?.wslPath || "");
+    }
+  }, [resolveChipFullPath, resolveChipWindowsFullPath, runEnv]);
+
+  /**
+   * 中文说明：解析图片 Chip 的稳定回退预览地址。
+   * - 优先将相对路径补全为 Windows 绝对路径，避免 `projectPathStyle=relative` 时生成无效 `file:///`；
+   * - 若无法可靠补全，则回退到原始 `winPath`。
+   */
+  const resolveChipImageFallbackUrl = useCallback((chip?: Partial<PathChip>): string => {
+    if (!isImageChip(chip)) return "";
+    const fullWinPath = resolveChipWindowsFullPath(chip as any);
+    if (fullWinPath) return toWindowsFilePreviewUrl(fullWinPath);
+    return toWindowsFilePreviewUrl(String((chip as any)?.winPath || ""));
+  }, [resolveChipWindowsFullPath]);
+
+  /**
+   * 中文说明：解析 Chip 可用于渲染的预览地址。
+   * - 仅图片 Chip 允许返回预览地址，普通文件即便带有误写的 `previewUrl` 也不会渲染成图片；
+   * - 优先使用当前 `previewUrl`，再回退到稳定的磁盘 `file:///` 地址。
+   */
+  const resolveChipPreviewSrc = useCallback((chip?: Partial<PathChip>): string => {
+    if (!isImageChip(chip)) return "";
+    const previewUrl = String((chip as any)?.previewUrl || "").trim();
+    if (previewUrl) return previewUrl;
+    return resolveChipImageFallbackUrl(chip);
+  }, [resolveChipImageFallbackUrl]);
 
   // 判定 Chip 是否目录：优先使用 isDir 标记；若无则根据路径尾部斜杠推断
   const isChipDir = useCallback((chip?: any): boolean => {
@@ -996,11 +1129,13 @@ export default function PathChipsInput({
     const pathTokens = tokens.filter((token) => isLikelyPath(token) || isLikelyRelativePath(token));
     if (pathTokens.length === 0) return false;
     const items: SavedImage[] = pathTokens.map((p) => {
-      const isRel = !/^\//.test(p) && !/^([a-zA-Z]):\\/.test(p) && !/^\\\\/.test(p);
-      const wsl = (projectPathStyle === 'absolute' && isRel && winRoot)
-        ? toWSLForInsert(joinWinAbs(String(winRoot), p))
-        : toWSLForInsert(p);
-      const fileName = (wsl || p).split(/[/\\]/).pop() || t('common:files.path');
+      const paths = buildChipPaths({
+        rawPath: p,
+        runEnv,
+        winRoot,
+        projectPathStyle,
+      });
+      const fileName = (paths.pathText || p).split(/[/\\]/).pop() || t('common:files.path');
       const chipKind = resolvePathChipKind({ fileName });
       return {
         id: uid(),
@@ -1009,8 +1144,8 @@ export default function PathChipsInput({
         type: "text/path",
         size: 0,
         saved: true,
-        winPath: /^(?:[a-zA-Z]:\\|\\\\)/.test(p) ? p : undefined,
-        wslPath: wsl,
+        winPath: paths.winPath,
+        wslPath: paths.wslPath,
         fileName,
         fromPaste: false,
         chipKind,
@@ -1022,7 +1157,7 @@ export default function PathChipsInput({
       draft: "",
       selection: createCollapsedSelection(0),
     });
-  }, [applyValueChange, buildMergedChips, projectPathStyle, readCurrentValueState, t, winRoot]);
+  }, [applyValueChange, buildMergedChips, projectPathStyle, readCurrentValueState, runEnv, t, winRoot]);
 
   const onKeyDown = (e: React.KeyboardEvent<any>) => {
     try { externalOnKeyDown && externalOnKeyDown(e); } catch {}
@@ -1130,10 +1265,13 @@ export default function PathChipsInput({
     try {
       if (item.categoryId === "files") {
         const relOrPath = String((item as any).path || (item as any).subtitle || item.title || "");
-        const isRel = !/^\//.test(relOrPath) && !/^([a-zA-Z]):\\/.test(relOrPath) && !/^\\\\/.test(relOrPath);
-        const wsl = (projectPathStyle === 'absolute' && isRel && winRoot)
-          ? toWSLForInsert(joinWinAbs(String(winRoot), relOrPath))
-          : toWSLForInsert(relOrPath);
+        const paths = buildChipPaths({
+          rawPath: relOrPath,
+          runEnv,
+          winRoot,
+          projectPathStyle,
+        });
+        const fileName = (paths.pathText || relOrPath).split(/[/\\]/).pop() || t('common:files.path');
         // 直接生成 Chip，携带 isDir 标记，便于 Chip 渲染不同图标
         const it: SavedImage = {
           id: uid(),
@@ -1142,11 +1280,12 @@ export default function PathChipsInput({
           type: "text/path",
           size: 0,
           saved: true,
-          wslPath: wsl,
-          fileName: wsl.split("/").pop() || t('common:files.path'),
+          winPath: paths.winPath,
+          wslPath: paths.wslPath,
+          fileName,
           // 保留 item 提供的 isDir；否则根据路径尾部是否含 / 判断
-          isDir: !!(item as any).isDir || /\/$/.test(wsl),
-          chipKind: resolvePathChipKind({ fileName: wsl.split("/").pop() || "", chipKind: "file" }),
+          isDir: !!(item as any).isDir || /[\/\\]$/.test(paths.pathText),
+          chipKind: resolvePathChipKind({ fileName, chipKind: "file" }),
         } as any;
         // 将 @ 段落替换为空
         const nextChips = buildMergedChips([it]);
@@ -1271,8 +1410,8 @@ export default function PathChipsInput({
             const chipAny = chip as PathChip;
             const isRule = chipAny.chipKind === "rule";
             const preferredPathText = isRule
-              ? chipAny.rulePath || chipAny.winPath || chipAny.wslPath || ""
-              : (resolveChipWindowsFullPath(chipAny) || String((chipAny as any)?.winPath || (chipAny as any)?.wslPath || ""));
+              ? (resolveChipPreferredPath(chipAny) || chipAny.rulePath || "")
+              : resolveChipPreferredPath(chipAny);
             const tooltip = preferredPathText;
             const ruleLabel = chipAny.rulePath?.split(/[/\\]/).pop() || chipAny.rulePath || chipAny.fileName || t('common:files.rule');
             const labelText = isRule
@@ -1448,22 +1587,7 @@ export default function PathChipsInput({
                 onClick={async () => {
                   try {
                     const chip = ctxMenu.chip as any;
-                    let p = "";
-                    // 优先处理 wslPath：若为绝对 WSL 路径（以 / 开头），直接使用；若为相对路径且提供了 winRoot，则拼接为 Windows 绝对路径后使用
-                    if (chip?.wslPath) {
-                      const w = String(chip.wslPath || "");
-                      if (w.startsWith("/")) {
-                        p = w;
-                      } else if (typeof winRoot === 'string' && winRoot.trim().length > 0) {
-                        try { p = joinWinAbs(winRoot, w); } catch { p = w; }
-                      } else {
-                        p = w;
-                      }
-                    } else if (chip?.winPath) {
-                      p = String(chip.winPath || "");
-                    } else {
-                      p = "";
-                    }
+                    const p = resolveChipPreferredPath(chip);
                     if (p) {
                       const isDir = !!chip?.isDir || (/\/$/.test(String(chip?.wslPath || "")) || /\\$/.test(String(p || "")));
                       if (isDir) {
@@ -1500,14 +1624,13 @@ export default function PathChipsInput({
                 className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
                 onClick={async () => {
                   try {
-                    const fullWin = resolveChipWindowsFullPath(ctxMenu.chip as any) || String(ctxMenu.chip?.winPath || "");
-                    const text = fullWin || String(ctxMenu.chip?.wslPath || ctxMenu.chip?.fileName || "");
+                    const text = resolveChipPreferredPath(ctxMenu.chip as any) || String(ctxMenu.chip?.fileName || "");
                     const res: any = await (window as any).host?.utils?.copyText?.(text);
                     if (!(res && res.ok)) {
                       try { await navigator.clipboard.writeText(text); } catch {}
                     }
                   } catch {
-                    try { await navigator.clipboard.writeText(String(ctxMenu.chip?.winPath || ctxMenu.chip?.wslPath || ctxMenu.chip?.fileName || "")); } catch {}
+                    try { await navigator.clipboard.writeText(resolveChipPreferredPath(ctxMenu.chip as any) || String(ctxMenu.chip?.fileName || "")); } catch {}
                   }
                   setCtxMenu((m) => ({ ...m, show: false }));
                 }}

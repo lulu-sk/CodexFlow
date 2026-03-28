@@ -3733,6 +3733,15 @@ export default function CodexFlowManagerUI() {
   }, [providerEnvById, terminalMode, wslDistro]);
 
   /**
+   * 中文说明：获取标签页真实执行环境。
+   * - 若标签页已实际打开 PTY，则优先使用该 PTY 绑定的环境；
+   * - 否则回退到该 Provider 当前配置。
+   */
+  const getTabExecEnv = useCallback((tabId: string, providerId: string): Required<ProviderEnv> => {
+    return tabExecEnvByTabRef.current[tabId] || getProviderEnv(providerId);
+  }, [getProviderEnv]);
+
+  /**
    * 中文说明：构造某个标签页真正打开 PTY 时使用的环境变量。
    * - 默认始终保留 provider 完成通知链路需要的 env；
    * - `Gemini + Windows/Pwsh` 始终注入 Windows 外部编辑器桥接；
@@ -5045,6 +5054,8 @@ export default function CodexFlowManagerUI() {
   function compileTextFromChipsAndDraft(tabId: string): string {
     const targetTab = tabs.find((tab) => tab.id === tabId) || null;
     const isGeminiTab = targetTab?.providerId === "gemini";
+    const execEnv = targetTab ? getTabExecEnv(tabId, targetTab.providerId) : { terminal: terminalMode, distro: wslDistro };
+    const execTerminal = execEnv.terminal as any;
     const chips = chipsByTab[tabId] || [];
     const draft = draftByTab[tabId] || "";
     const parts: string[] = [];
@@ -5053,13 +5064,13 @@ export default function CodexFlowManagerUI() {
         chips
           .map((c) => {
             if (isGeminiTab && isGeminiImageChip(c)) {
-              const geminiPath = isWindowsLike(terminalMode)
+              const geminiPath = isWindowsLike(execTerminal)
                 ? String(c.winPath || "").trim()
                 : String(c.wslPath || "").trim();
-              const token = buildGeminiImageAttachmentToken(geminiPath, terminalMode);
+              const token = buildGeminiImageAttachmentToken(geminiPath, execTerminal);
               if (token) return token;
             }
-            if (isWindowsLike(terminalMode)) {
+            if (isWindowsLike(execTerminal)) {
               // 优先 Windows 路径；若不存在，则从 WSL 路径推导
               let wp = String(c.winPath || '').trim();
               if (!wp) {
@@ -8457,6 +8468,7 @@ export default function CodexFlowManagerUI() {
             const inputPlaceholder = t('terminal:inputPlaceholder') as string;
             const sendLabel = t('terminal:send') as string;
             const expandLabel = isInputFullscreen ? (t('terminal:collapseInput') as string) : (t('terminal:expandInput') as string);
+            const tabExecEnv = getTabExecEnv(tab.id, tab.providerId);
 
             return (
               <TabsContent
@@ -8506,10 +8518,10 @@ export default function CodexFlowManagerUI() {
                               projectName={selectedProject?.name}
                               projectPathStyle={projectPathStyle}
                               providerId={tab.providerId}
-                              distro={terminalMode === "wsl" ? wslDistro : undefined}
+                              distro={tabExecEnv.terminal === "wsl" ? tabExecEnv.distro : undefined}
                               warnOutsideProjectDrop={dragDropWarnOutsideProject}
                               onWarnOutsideProjectDropChange={updateWarnOutsideProjectDrop}
-                              runEnv={terminalMode}
+                              runEnv={tabExecEnv.terminal}
                               multiline
                               onKeyDown={(e: any) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { void sendCommand(); e.preventDefault(); } }}
                               className="flex flex-1 flex-col min-h-[24rem] overflow-auto h-full"
@@ -8556,10 +8568,10 @@ export default function CodexFlowManagerUI() {
                             projectName={selectedProject?.name}
                             projectPathStyle={projectPathStyle}
                             providerId={tab.providerId}
-                            distro={terminalMode === "wsl" ? wslDistro : undefined}
+                            distro={tabExecEnv.terminal === "wsl" ? tabExecEnv.distro : undefined}
                             warnOutsideProjectDrop={dragDropWarnOutsideProject}
                             onWarnOutsideProjectDropChange={updateWarnOutsideProjectDrop}
-                            runEnv={terminalMode}
+                            runEnv={tabExecEnv.terminal}
                             multiline
                             onKeyDown={(e: any) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { void sendCommand(); e.preventDefault(); } }}
                             className=""

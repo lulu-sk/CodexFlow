@@ -96,6 +96,45 @@ export function toWslRelOrAbsForProject(winPath: string, projectWinRoot?: string
 }
 
 /**
+ * 将 Windows 绝对路径转换为“项目内相对 Windows 路径或 Windows 绝对路径”。
+ * - 若 winPath 在 projectWinRoot 内：style=relative 返回相对 Windows 路径（使用 `\` 分隔）
+ * - 若命中项目根本身：relative 返回 `.`
+ * - 其他情况：返回规范化后的 Windows 绝对路径
+ */
+export function toWindowsRelOrAbsForProject(winPath: string, projectWinRoot?: string, style: 'absolute' | 'relative' = 'relative'): string {
+  /**
+   * 中文说明：统一规范化 Windows 路径，便于后续稳定比较和切片。
+   */
+  const normalize = (value: string): string => {
+    const raw = String(value || "").trim().replace(/\//g, "\\");
+    if (!raw) return "";
+    if (raw.startsWith("\\\\")) return raw.replace(/[\\\/]+$/, "");
+    const m = raw.match(/^([a-zA-Z]):(.*)$/);
+    if (!m) return raw.replace(/[\\\/]+$/, "");
+    const drive = m[1].toUpperCase();
+    let rest = m[2] || "";
+    if (!rest || rest === "\\" || rest === "/") return `${drive}:\\`;
+    rest = rest.replace(/[\\\/]+$/, "");
+    return `${drive}:${rest}`;
+  };
+
+  try {
+    const wp = normalize(winPath);
+    const root = normalize(projectWinRoot || "");
+    if (!wp) return "";
+    if (style !== "relative" || !root) return wp;
+    const wpLower = wp.toLowerCase();
+    const rootLower = root.toLowerCase();
+    if (wpLower === rootLower) return ".";
+    if (!wpLower.startsWith(rootLower + "\\")) return wp;
+    const rel = wp.slice(root.length).replace(/^\\+/, "");
+    return rel || ".";
+  } catch {
+    return normalize(String(winPath || ""));
+  }
+}
+
+/**
  * 判断一个 Windows 路径是否位于指定根目录下（不区分大小写，分隔符统一为 \\）。
  * 说明：用于“拖拽目录外资源提醒”等 UI 逻辑；不访问文件系统，仅做字符串判定。
  */
