@@ -306,7 +306,7 @@ describe("PathChipsInput（复制文件名按钮）", () => {
     expect(document.querySelector("img")).toBeNull();
   });
 
-  it("图片 Chip 弹窗元信息只显示一次 Windows 路径", async () => {
+  it("WSL 模式下图片 Chip 弹窗元信息显示 WSL 路径", async () => {
     cleanup = await renderPathChipsInput([
       createPathChip({
         id: "image-chip",
@@ -324,8 +324,50 @@ describe("PathChipsInput（复制文件名按钮）", () => {
     const previewHost = document.querySelector('[data-testid="interactive-image-preview"]') as HTMLElement | null;
     const previewMeta = document.querySelector('[data-testid="interactive-image-preview-meta"]') as HTMLElement | null;
     expect(previewHost?.dataset.dialogDescription || "").toBe("");
+    expect(previewMeta?.textContent || "").toContain("/mnt/c/repo/image.png");
+    expect(previewMeta?.textContent || "").not.toContain("C:\\repo\\image.png");
+  });
+
+  it("PowerShell 模式下图片 Chip 弹窗元信息显示 Windows 路径", async () => {
+    cleanup = await renderPathChipsInput([
+      createPathChip({
+        id: "image-chip-pwsh",
+        chipKind: "image",
+        fileName: "image.png",
+        previewUrl: "blob:test-image-pwsh",
+        type: "image/png",
+        winPath: "C:\\repo\\image.png",
+        wslPath: "/mnt/c/repo/image.png",
+      }),
+    ], {
+      runEnv: "pwsh",
+    });
+
+    const previewMeta = document.querySelector('[data-testid="interactive-image-preview-meta"]') as HTMLElement | null;
     expect(previewMeta?.textContent || "").toContain("C:\\repo\\image.png");
     expect(previewMeta?.textContent || "").not.toContain("/mnt/c/repo/image.png");
+  });
+
+  it("PowerShell 相对路径图片在无 blob 时仍回退到绝对 Windows 预览地址", async () => {
+    cleanup = await renderPathChipsInput([
+      createPathChip({
+        id: "image-chip-pwsh-relative",
+        chipKind: "image",
+        fileName: "image.png",
+        previewUrl: "",
+        type: "image/png",
+        winPath: "assets\\image.png",
+        wslPath: "assets/image.png",
+      }),
+    ], {
+      runEnv: "pwsh",
+      winRoot: "C:\\repo",
+      projectWslRoot: "/mnt/c/repo",
+      projectPathStyle: "relative",
+    });
+
+    const previewImage = getChipPreviewImage(document.body);
+    expect(previewImage.getAttribute("src") || "").toBe("file:///C:/repo/assets/image.png");
   });
 });
 
