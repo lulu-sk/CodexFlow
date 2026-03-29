@@ -1039,9 +1039,28 @@ function areStringArraysEqual(a: string[] | null | undefined, b: string[] | null
 }
 
 /**
+ * 中文说明：按目标终端环境挑选 worktree 提示词中应使用的路径文本。
+ * - Windows / PowerShell：优先使用 Windows 路径；
+ * - WSL：优先使用 WSL 路径；
+ * - 任一路径缺失时自动回退到另一种路径或文件名。
+ */
+function resolveWorktreePromptChipPath(args: { chip: PathChip; terminalMode?: TerminalMode }): string {
+  const chipAny = args.chip as any;
+  const preferWindows = args.terminalMode === "windows" || args.terminalMode === "pwsh";
+  const candidates = preferWindows
+    ? [chipAny?.winPath, chipAny?.wslPath, chipAny?.fileName]
+    : [chipAny?.wslPath, chipAny?.winPath, chipAny?.fileName];
+  for (const item of candidates) {
+    const text = String(item || "").trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+/**
  * 将 WSL/Windows 的绝对路径（若位于项目根内）转换为相对路径，用于 worktree 创建时的“可复用提示词”。
  * - 关键目标：避免把源项目的绝对路径直接分发到多个 worktree（不同 worktree 根目录不同，会导致路径失效）
- * - 若无法转换（不在项目内/无法识别），则返回原始路径文本
+ * - 若无法转换（不在项目内/无法识别），则保留原始路径样式
  */
 function toWorktreePromptRelPath(args: { pathText: string; projectWinRoot?: string; projectWslRoot?: string }): string {
   const raw = String(args.pathText || "").trim();
@@ -1078,7 +1097,10 @@ function toWorktreePromptRelPath(args: { pathText: string; projectWinRoot?: stri
     }
   } catch {}
 
-  // 3) 已是相对路径或无法转换：尽量统一分隔符为 /
+  // 3) 未命中项目根时：绝对路径保留原样；相对路径再统一分隔符为 /
+  if (/^[a-zA-Z]:[\\/]/.test(raw) || raw.startsWith("\\\\")) return raw;
+  const posixLike = raw.replace(/\\/g, "/");
+  if (posixLike.startsWith("/")) return posixLike;
   return raw.replace(/\\/g, "/");
 }
 
@@ -1086,8 +1108,15 @@ function toWorktreePromptRelPath(args: { pathText: string; projectWinRoot?: stri
  * 将 worktree 创建面板中的 chips + 草稿合并为最终提示词：
  * - 每个 chip 独占一行，并用反引号包裹
  * - 项目内绝对路径会被转换为相对路径，保证对不同 worktree 可复用
+ * - 项目外绝对路径会按目标终端环境保留对应样式（Windows / WSL）
  */
-function compileWorktreePromptText(args: { chips: PathChip[]; draft: string; projectWinRoot?: string; projectWslRoot?: string }): string {
+function compileWorktreePromptText(args: {
+  chips: PathChip[];
+  draft: string;
+  projectWinRoot?: string;
+  projectWslRoot?: string;
+  terminalMode?: TerminalMode;
+}): string {
   const chips = Array.isArray(args.chips) ? args.chips : [];
   const draft = String(args.draft || "");
   const parts: string[] = [];
@@ -1095,7 +1124,7 @@ function compileWorktreePromptText(args: { chips: PathChip[]; draft: string; pro
     parts.push(
       chips
         .map((c) => {
-          const raw = String((c as any)?.wslPath || (c as any)?.winPath || (c as any)?.fileName || "").trim();
+          const raw = resolveWorktreePromptChipPath({ chip: c, terminalMode: args.terminalMode });
           const p = toWorktreePromptRelPath({ pathText: raw, projectWinRoot: args.projectWinRoot, projectWslRoot: args.projectWslRoot });
           return p ? ("`" + p + "`") : "";
         })
