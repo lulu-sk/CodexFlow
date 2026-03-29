@@ -368,6 +368,13 @@ type WorktreeCreateDialogDraftRecord = {
   multiCounts: WorktreeProviderCounts;
 };
 
+type WorktreePromptSource = {
+  chips: PathChip[];
+  draft: string;
+  projectWinRoot?: string;
+  projectWslRoot?: string;
+};
+
 type CloseWorkingTabConfirmState = {
   open: boolean;
   tabId: string | null;
@@ -3833,6 +3840,29 @@ export default function CodexFlowManagerUI() {
   }, [buildProviderStartupCmd, codexCmd, codexTraceEnabled, providerItems]);
 
   /**
+   * 中文说明：按目标 Provider 的真实终端环境，编译 worktree 首次启动要注入的初始提示词。
+   * - 项目内路径统一转相对路径，保证不同 worktree 可复用；
+   * - 项目外绝对路径保留目标终端对应的 Windows / WSL 样式。
+   */
+  const buildWorktreePromptForProvider = useCallback((args: {
+    providerId: GitWorktreeProviderId;
+    prompt?: string;
+    promptSource?: WorktreePromptSource;
+  }): string => {
+    const prompt = typeof args.prompt === "string" ? String(args.prompt || "") : "";
+    if (prompt) return prompt;
+    if (!args.promptSource) return "";
+    const env = getProviderEnv(args.providerId);
+    return compileWorktreePromptText({
+      chips: args.promptSource.chips,
+      draft: args.promptSource.draft,
+      projectWinRoot: args.promptSource.projectWinRoot,
+      projectWslRoot: args.promptSource.projectWslRoot,
+      terminalMode: env.terminal as any,
+    });
+  }, [getProviderEnv]);
+
+  /**
    * 获取 Provider 的展示名称（用于菜单文案与外部终端标题）。
    */
   const getProviderLabel = useCallback((providerId: string): string => {
@@ -6015,7 +6045,8 @@ export default function CodexFlowManagerUI() {
   const startProviderInstanceInProject = useCallback(async (args: {
     project: Project;
     providerId: GitWorktreeProviderId;
-    prompt: string;
+    prompt?: string;
+    promptSource?: WorktreePromptSource;
     useYolo?: boolean;
   }): Promise<{ ok: boolean; tabId?: string; error?: string }> => {
     try {
@@ -6023,10 +6054,15 @@ export default function CodexFlowManagerUI() {
       const providerId = args.providerId;
       if (!project?.id) return { ok: false, error: "missing project" };
       const env = getProviderEnv(providerId);
+      const prompt = buildWorktreePromptForProvider({
+        providerId,
+        prompt: args.prompt,
+        promptSource: args.promptSource,
+      });
       const baseCmd = buildProviderStartupCmdForWorktreeCreate({ providerId, env, useYolo: args.useYolo });
-      const startupCmd = buildProviderStartupCmdWithInitialPrompt({ providerId, terminalMode: env.terminal as any, baseCmd, prompt: args.prompt });
+      const startupCmd = buildProviderStartupCmdWithInitialPrompt({ providerId, terminalMode: env.terminal as any, baseCmd, prompt });
       const started = await openProviderConsoleInProject({ project, providerId, startupCmd });
-      const hasInitialPrompt = String(args.prompt || "").trim().length > 0;
+      const hasInitialPrompt = String(prompt || "").trim().length > 0;
       const tabId = String(started.tabId || "").trim();
       if (started.ok && tabId && hasInitialPrompt && shouldEnableAgentTimerForProvider(providerId))
         startAgentTurnTimer(tabId);
@@ -6034,7 +6070,7 @@ export default function CodexFlowManagerUI() {
     } catch (e: any) {
       return { ok: false, error: String(e?.message || e) };
     }
-  }, [buildProviderStartupCmdForWorktreeCreate, getProviderEnv, openProviderConsoleInProject, shouldEnableAgentTimerForProvider, startAgentTurnTimer]);
+  }, [buildProviderStartupCmdForWorktreeCreate, buildWorktreePromptForProvider, getProviderEnv, openProviderConsoleInProject, shouldEnableAgentTimerForProvider, startAgentTurnTimer]);
 
   /**
    * 执行创建 worktree，并在每个 worktree 内启动对应引擎 CLI。
@@ -6044,7 +6080,8 @@ export default function CodexFlowManagerUI() {
     repoProject: Project;
     baseBranch: string;
     instances: Array<{ providerId: GitWorktreeProviderId; count: number }>;
-    prompt: string;
+    prompt?: string;
+    promptSource?: WorktreePromptSource;
     /** 新建子 worktree 的备注基名；为空则不自动写入备注。 */
     remarkBaseName?: string;
     /** 是否在本次创建/启动中临时启用 YOLO（不影响全局设置）。 */
@@ -6128,7 +6165,6 @@ export default function CodexFlowManagerUI() {
     setWorktreeCreateProgress(createWorktreeProgressInitialState(taskId));
     setWorktreeCreateDialog((prev) => (prev.open && prev.repoProjectId === repoId ? { ...prev, open: false, creating: false, error: undefined } : prev));
 
-    const prompt = String(args.prompt || "");
     const remarkBaseName = normalizeWorktreeRemarkBaseName(args.remarkBaseName);
     const managedChildProjectIds = listManagedWorktreeChildIds(repoId);
     let nextWorktreeRemarkIndex = resolveNextWorktreeRemarkIndex({
@@ -6264,7 +6300,13 @@ export default function CodexFlowManagerUI() {
         attachDirChildToParent(managementParentProjectId, wtProject.id);
         assignAutoRemarkLabelForWorktree(wtProject.id);
 
-        const started = await startProviderInstanceInProject({ project: wtProject, providerId, prompt, useYolo: args.useYolo });
+        const started = await startProviderInstanceInProject({
+          project: wtProject,
+          providerId,
+          prompt: args.prompt,
+          promptSource: args.promptSource,
+          useYolo: args.useYolo,
+        });
         if (started.ok && started.tabId) {
           if (!firstTabId) firstTabId = started.tabId;
           if (args.resetTransientPrefsOnSuccess && !transientRecordReset) {
@@ -10333,18 +10375,18 @@ export default function CodexFlowManagerUI() {
               if (!canSubmit) return;
               setDialog({ creating: true, error: undefined });
 
-              const prompt = compileWorktreePromptText({
+              const promptSource: WorktreePromptSource = {
                 chips: worktreeCreateDialog.promptChips,
                 draft: worktreeCreateDialog.promptDraft,
                 projectWinRoot: repo.winPath,
                 projectWslRoot: repo.wslPath,
-              });
+              };
 
               // 1) 优先在已选子 worktree 中启动实例（1:1 分配）
-	              const extraWarnings: string[] = [];
-	              let transientRecordReset = false;
-	              let firstReuseProjectId: string | null = null;
-	              let firstReuseTabId: string | null = null;
+              const extraWarnings: string[] = [];
+              let transientRecordReset = false;
+              let firstReuseProjectId: string | null = null;
+              let firstReuseTabId: string | null = null;
               for (let i = 0; i < selectedChildIdsOrdered.length; i++) {
                 const projectId = selectedChildIdsOrdered[i];
                 const wtProject = childWorktrees.find((p) => p.id === projectId) || null;
@@ -10352,16 +10394,21 @@ export default function CodexFlowManagerUI() {
                 const providerId = providerQueue[i] || worktreeCreateDialog.singleProviderId;
                 // 用户主动选择：若该 worktree 被隐藏，则自动取消隐藏
                 unhideProject(wtProject);
-	                const started = await startProviderInstanceInProject({ project: wtProject, providerId, prompt, useYolo: worktreeCreateDialog.useYolo });
-	                if (started.ok && started.tabId) {
-	                  if (!firstReuseTabId) firstReuseTabId = started.tabId;
-	                  if (!transientRecordReset) {
-	                    transientRecordReset = true;
-	                    resetWorktreeCreateTransientRecord(repo.id);
-	                  }
-	                } else if (!started.ok && started.error) {
-	                  extraWarnings.push(`${providerId}: ${started.error} (${getDirNodeLabel(wtProject)})`);
-	                }
+                const started = await startProviderInstanceInProject({
+                    project: wtProject,
+                    providerId,
+                    promptSource,
+                    useYolo: worktreeCreateDialog.useYolo,
+                  });
+                if (started.ok && started.tabId) {
+                  if (!firstReuseTabId) firstReuseTabId = started.tabId;
+                  if (!transientRecordReset) {
+                    transientRecordReset = true;
+                    resetWorktreeCreateTransientRecord(repo.id);
+                  }
+                } else if (!started.ok && started.error) {
+                  extraWarnings.push(`${providerId}: ${started.error} (${getDirNodeLabel(wtProject)})`);
+                }
                 if (!firstReuseProjectId) firstReuseProjectId = wtProject.id;
               }
 
@@ -10378,7 +10425,7 @@ export default function CodexFlowManagerUI() {
                   repoProject: repo,
                   baseBranch,
                   instances: remainingInstances,
-                  prompt,
+                  promptSource,
                   remarkBaseName: worktreeCreateDialog.remarkBaseName,
                   useYolo: worktreeCreateDialog.useYolo,
                   resetTransientPrefsOnSuccess: true,
