@@ -52,6 +52,7 @@ import {
   Hammer,
   Play,
   GitMerge,
+  GitBranch,
   Loader2,
 } from "lucide-react";
 import AboutSupport from "@/components/about-support";
@@ -149,6 +150,7 @@ import {
   loadWorktreeDeletePrefs,
   saveWorktreeDeletePrefs,
 } from "@/lib/worktree-delete-prefs";
+import { resolveWorktreeDeleteResetTargetBranch } from "@/lib/worktree-delete";
 import type {
   AppSettings,
   BuiltinIdeId,
@@ -1073,10 +1075,13 @@ export default function CodexFlowManagerUI() {
     open: false,
     projectId: "",
     prefsKey: undefined,
-    alignedToMain: undefined,
     action: "delete",
     afterRecycle: false,
     afterRecycleHint: undefined,
+    branches: [],
+    resetTargetBranch: "",
+    loadingBranches: false,
+    branchLoadError: undefined,
     running: false,
     needsForceRemoveWorktree: false,
     needsForceDeleteBranch: false,
@@ -6783,7 +6788,7 @@ export default function CodexFlowManagerUI() {
   }, [countRunningTerminalAgentsByProjectId]);
 
   /**
-   * 中文说明：计算“删除/对齐偏好”的仓库维度 key。
+   * 中文说明：计算“删除/重置偏好”的仓库维度 key。
    * - 优先使用主 worktree 路径（同仓库多个子 worktree 共用一份记忆）；
    * - 回退到当前项目路径，保证异常场景下仍可用。
    */
@@ -6797,35 +6802,86 @@ export default function CodexFlowManagerUI() {
   }, [gitInfoByProjectId]);
 
   /**
-   * 中文说明：主动查询“当前 worktree 与主 worktree 是否已对齐”。
-   * - 优先使用主进程只读接口直接比较提交 SHA，避免受前端缓存影响；
-   * - 仅在删除/重置弹窗仍停留在同一 projectId 时写回结果，避免竞态覆盖。
+   * 中文说明：加载删除弹窗里“重置到分支”的可选分支列表，并推断默认目标分支。
+   * - 优先使用创建记录中的基分支作为默认值；
+   * - 若创建记录缺失，则退回到目标基 worktree 当前分支或首个可选分支；
+   * - 加载失败时不阻断“删除”动作，仅禁用“重置”动作并显示提示。
    */
-  const refreshWorktreeDeleteAlignedState = useCallback(async (project: Project): Promise<void> => {
+  const loadWorktreeDeleteBranches = useCallback(async (project: Project): Promise<void> => {
     const pid = String(project?.id || "").trim();
-    const worktreePath = String(project?.winPath || "").trim();
-    if (!pid || !worktreePath) return;
+    if (!pid) return;
+
     try {
-      const res: any = await (window as any).host?.gitWorktree?.isAlignedToMain?.({ worktreePath });
-      const aligned = !!(res && res.ok && res.aligned === true);
+      const metaRes: any = await (window as any).host?.gitWorktree?.getMeta?.(project.winPath);
+      const meta = metaRes && metaRes.ok ? metaRes.meta : null;
+
+      let repoMainPath = String(meta?.repoMainPath || "").trim();
+      let fallbackRepoPath = String(project.winPath || "").trim();
+      try {
+        const st: any = await (window as any).host?.gitWorktree?.statusBatch?.([project.winPath]);
+        const info = st && st.ok && Array.isArray(st.items) ? (st.items[0] as any) : null;
+        const main = String(info?.mainWorktree || info?.repoRoot || "").trim();
+        fallbackRepoPath = main || String(project.winPath || "").trim();
+      } catch {}
+      if (!repoMainPath) repoMainPath = fallbackRepoPath;
+
+      const branchListCandidates = buildWorktreeRecycleBranchListCandidates({
+        repoMainPath,
+        fallbackRepoPath,
+        projectPath: project.winPath,
+      });
+      let listRes: any = null;
+      let listError = "";
+      let branchListPath = "";
+      for (const candidatePath of branchListCandidates) {
+        const one: any = await (window as any).host?.gitWorktree?.listBranches?.(candidatePath);
+        if (one && one.ok) {
+          listRes = one;
+          branchListPath = candidatePath;
+          break;
+        }
+        listError = String(one?.error || "").trim() || listError;
+      }
+      if (!(listRes && listRes.ok)) throw new Error(listError || (t("projects:worktreeListBranchesFailed", "读取分支列表失败") as string));
+
+      const repoCurrentBranch =
+        branchListPath && branchListPath !== String(project.winPath || "").trim()
+          ? String(listRes.current || "").trim()
+          : "";
+      const branches = Array.from(
+        new Set<string>((Array.isArray(listRes.branches) ? listRes.branches : []).map((item: any) => String(item || "").trim()).filter(Boolean))
+      );
+      const preferredBranch = resolveWorktreeDeleteResetTargetBranch({
+        branches,
+        recordedBaseBranch: String(meta?.baseBranch || "").trim(),
+        repoCurrentBranch,
+      });
+
       setWorktreeDeleteDialog((prev) => {
         if (!prev.open || prev.projectId !== pid) return prev;
-        if (aligned !== true) return { ...prev, alignedToMain: false };
-        // 已对齐时不允许勾选“保留目录并对齐到主 worktree”，避免无意义操作。
+        const currentBranch = String(prev.resetTargetBranch || "").trim();
+        const nextBranch = currentBranch && branches.includes(currentBranch) ? currentBranch : preferredBranch;
         return {
           ...prev,
-          alignedToMain: true,
-          action: "delete",
-          needsForceRemoveWorktree: false,
-          needsForceDeleteBranch: false,
-          needsForceResetWorktree: false,
-          error: undefined,
+          branches,
+          resetTargetBranch: nextBranch,
+          loadingBranches: false,
+          branchLoadError: undefined,
         };
       });
-    } catch {
-      setWorktreeDeleteDialog((prev) => (prev.open && prev.projectId === pid ? { ...prev, alignedToMain: false } : prev));
+    } catch (e: any) {
+      setWorktreeDeleteDialog((prev) => {
+        if (!prev.open || prev.projectId !== pid) return prev;
+        return {
+          ...prev,
+          branches: [],
+          resetTargetBranch: "",
+          loadingBranches: false,
+          branchLoadError: String(e?.message || e),
+        };
+      });
     }
-  }, []);
+  }, [t]);
 
   /**
    * 打开“回收 worktree 到基分支”对话框（默认分支来自 worktree 元数据）。
@@ -7421,7 +7477,7 @@ export default function CodexFlowManagerUI() {
 		  }, [confirmWorktreeRecycleByTerminalAgents, showGitActionErrorDialog, t, worktreeRecycleDialog]);
 
   /**
-   * 打开“删除 worktree / 对齐到基工作区”对话框。
+   * 打开“删除 worktree / 重置到目标分支”对话框。
    */
 		  const openWorktreeDeleteDialog = useCallback(async (project: Project, afterRecycle?: boolean, action?: "delete" | "reset", afterRecycleHint?: string) => {
 		    const pid = String(project?.id || "").trim();
@@ -7462,30 +7518,36 @@ export default function CodexFlowManagerUI() {
 	      open: true,
 	      projectId: pid,
 	      prefsKey: prefsKey || undefined,
-	      alignedToMain: undefined,
 	      action: nextAction,
 	      afterRecycle: !!afterRecycle,
 	      afterRecycleHint: afterRecycleHint || undefined,
+	      branches: [],
+	      resetTargetBranch: "",
+	      loadingBranches: true,
+	      branchLoadError: undefined,
 	      running: false,
 	      needsForceRemoveWorktree: false,
 	      needsForceDeleteBranch: false,
 	      needsForceResetWorktree: false,
 	      error: undefined,
 	    });
-	    void refreshWorktreeDeleteAlignedState(project);
-	  }, [confirmWorktreeDeleteAndResetByTerminalAgents, refreshWorktreeDeleteAlignedState, resolveWorktreeDeletePrefsKey, t]);
+	    void loadWorktreeDeleteBranches(project);
+	  }, [confirmWorktreeDeleteAndResetByTerminalAgents, loadWorktreeDeleteBranches, resolveWorktreeDeletePrefsKey, t]);
 
   /**
-   * 关闭“删除 worktree / 对齐到基工作区”对话框。
+   * 关闭“删除 worktree / 重置到目标分支”对话框。
    */
 		  const closeWorktreeDeleteDialog = useCallback(() => {
 		    setWorktreeDeleteDialog((prev) => ({
 		      ...prev,
 		      open: false,
 		      prefsKey: undefined,
-		      alignedToMain: undefined,
 		      action: "delete",
 		      afterRecycleHint: undefined,
+		      branches: [],
+		      resetTargetBranch: "",
+		      loadingBranches: false,
+		      branchLoadError: undefined,
 	      running: false,
 	      needsForceRemoveWorktree: false,
 	      needsForceDeleteBranch: false,
@@ -7495,9 +7557,9 @@ export default function CodexFlowManagerUI() {
 	  }, []);
 
   /**
-   * 执行“删除 worktree / 对齐到基工作区”。
+   * 执行“删除 worktree / 重置到目标分支”。
    * - 删除：worktree remove + 删除专用分支；必要时二次强确认。
-   * - 对齐：保持目录不删除，将该子 worktree 强制更新到基工作区当前基线并恢复为干净状态；必要时二次强确认。
+   * - 重置：保持目录不删除，将该子 worktree 强制更新到所选目标分支并恢复为干净状态；必要时二次强确认。
    */
 		  const submitWorktreeDelete = useCallback(async (opts?: { forceRemoveWorktree?: boolean; forceDeleteBranch?: boolean; forceResetWorktree?: boolean }) => {
 		    const dlg = worktreeDeleteDialog;
@@ -7531,8 +7593,14 @@ export default function CodexFlowManagerUI() {
     setWorktreeDeleteDialog((prev) => (prev.open && prev.projectId === pid ? { ...prev, running: true, error: undefined } : prev));
     try {
       if (dlg.action === "reset") {
+        const targetRef = String(dlg.resetTargetBranch || "").trim();
+        if (!targetRef) {
+          setWorktreeDeleteDialog((prev) => (prev.open && prev.projectId === pid ? { ...prev, running: false, error: t("projects:worktreeDeleteResetBranchRequired", "请选择要重置到的目标分支。") as string } : prev));
+          return;
+        }
         const res: any = await (window as any).host?.gitWorktree?.reset?.({
           worktreePath: project.winPath,
+          targetRef,
           force: opts?.forceResetWorktree === true,
         });
         if (res && res.ok) {
@@ -11485,7 +11553,7 @@ export default function CodexFlowManagerUI() {
         </DialogContent>
       </Dialog>
 
-	      {/* 删除 worktree / 重置为基 worktree 状态（必要时强确认） */}
+	      {/* 删除 worktree / 重置到目标分支（必要时强确认） */}
       <Dialog
         open={worktreeDeleteDialog.open}
         onOpenChange={(open) => {
@@ -11493,18 +11561,18 @@ export default function CodexFlowManagerUI() {
           closeWorktreeDeleteDialog();
         }}
       >
-        <DialogContent className="max-w-md">
-          <DialogHeader className="pb-2 border-b border-slate-100 dark:border-slate-800/50">
-	            <DialogTitle>
+        <DialogContent className="max-w-[452px] !p-4">
+          <DialogHeader className="mb-3 pb-1.5 border-b border-slate-100 dark:border-slate-800/50">
+	            <DialogTitle className="!mb-1 text-[15px] leading-none">
 	              {worktreeDeleteDialog.action === "reset"
-	                ? (t("projects:worktreeResetTitle", "重置为基 worktree 状态") as string)
+	                ? (t("projects:worktreeResetTitle", "重置到目标分支") as string)
 	                : worktreeDeleteDialog.afterRecycle
 	                  ? (t("projects:worktreeDeleteAfterRecycleTitle", "合并成功，是否删除该 worktree？") as string)
 	                  : (t("projects:worktreeDeleteTitle", "删除 worktree") as string)}
 	            </DialogTitle>
-	            <DialogDescription className={worktreeDeleteDialog.action === "reset" ? "whitespace-pre-line" : ""}>
+	            <DialogDescription className={`text-[12px] leading-snug ${worktreeDeleteDialog.action === "reset" ? "whitespace-pre-line" : ""}`}>
 	              {worktreeDeleteDialog.action === "reset"
-	                ? (t("projects:worktreeResetDesc", "将此 worktree 重置到与基 worktree 当前签出的修订版一致，并清理工作区使其恢复为干净状态。\n此操作会丢弃未提交的修改，并删除未跟踪的文件（默认不删除被忽略的文件）。") as string)
+	                ? (t("projects:worktreeResetDesc", "将该 worktree 重置到所选分支当前指向的修订版，并清理工作区。未提交修改会被丢弃。") as string)
 	                : (t("projects:worktreeDeleteDesc", "将执行 git worktree remove，并删除该 worktree 的专用分支。") as string)}
 	            </DialogDescription>
           </DialogHeader>
@@ -11512,51 +11580,58 @@ export default function CodexFlowManagerUI() {
             const project = projectsRef.current.find((x) => x.id === worktreeDeleteDialog.projectId) || null;
             if (!project) return null;
             const isReset = worktreeDeleteDialog.action === "reset";
-            const alreadyAligned = worktreeDeleteDialog.alignedToMain === true;
-		            const needForceReset = isReset && worktreeDeleteDialog.needsForceResetWorktree === true;
+            const needForceReset = isReset && worktreeDeleteDialog.needsForceResetWorktree === true;
             const needForceRemove = !isReset && worktreeDeleteDialog.needsForceRemoveWorktree === true;
             const needForceBranch = !isReset && worktreeDeleteDialog.needsForceDeleteBranch === true;
-            const forceHints = needForceReset
-              ? [t("projects:worktreeResetForceHint", "检测到未提交修改：强制重置将丢弃这些修改。") as string]
-              : [
-                needForceRemove ? (t("projects:worktreeDeleteForceRemoveHint", "检测到未提交修改：强制移除将丢弃这些修改。") as string) : "",
-                needForceBranch ? (t("projects:worktreeDeleteForceBranchHint", "分支未合并：强制删除会丢弃该分支提交。") as string) : "",
-              ].filter(Boolean);
+            const selectedResetTargetBranch = String(worktreeDeleteDialog.resetTargetBranch || "").trim();
+            const forceHint = needForceReset
+              ? (t("projects:worktreeResetForceHint", "检测到未提交修改：强制重置将丢弃这些修改。") as string)
+              : needForceRemove
+                ? (t("projects:worktreeDeleteForceRemoveHint", "检测到未提交修改：强制移除将丢弃这些修改。") as string)
+                : needForceBranch
+                  ? (t("projects:worktreeDeleteForceBranchHint", "分支未合并：强制删除将丢失该分支上的提交。") as string)
+                  : "";
 	            const primaryLabel = isReset
 	              ? (needForceReset ? (t("projects:worktreeResetForceAction", "强制重置") as string) : (t("projects:worktreeResetAction", "重置") as string))
 	              : needForceRemove || needForceBranch
 	                ? (t("projects:worktreeDeleteForceAction", "强制删除") as string)
 	                : (t("projects:worktreeDeleteAction", "删除") as string);
 	            const runningLabel = isReset ? (t("projects:worktreeResetting", "重置中…") as string) : (t("projects:worktreeDeleting", "删除中…") as string);
+            const resetHint = isReset
+              ? (t("projects:worktreeDeleteResetHintChecked", "将重置到 {branch} 并清理；不会执行“移除 worktree”。", { branch: selectedResetTargetBranch || (t("projects:worktreeRecycleSelectBranchPlaceholder", "请选择") as string) }) as string)
+              : (t("projects:worktreeDeleteResetHint", "保留目录，仅将该 worktree 重置到所选分支并清理；不会执行“移除 worktree”。") as string);
             const doSubmit = () =>
               isReset ? void submitWorktreeDelete({ forceResetWorktree: needForceReset }) : void submitWorktreeDelete({ forceRemoveWorktree: needForceRemove, forceDeleteBranch: needForceBranch });
 
 	            return (
-	              <div className="space-y-3">
-	                <div className="rounded-md border border-slate-200/60 bg-slate-50/50 px-2.5 py-1.5 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)]">
-	                  <div className="text-[9px] uppercase font-bold text-slate-400 mb-0.5 tracking-wider">{t("projects:worktreePath", "PATH") as string}</div>
-	                  <div className="font-mono text-[10px] break-all text-slate-700 dark:text-[var(--cf-text-secondary)] leading-tight">{project.winPath}</div>
+	              <div className="space-y-2">
+	                <div className="flex items-center gap-2 rounded-apple border border-slate-200/60 bg-slate-50/60 px-2.5 py-1.5 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)]">
+	                  <div className="shrink-0 rounded-full bg-white/85 px-2 py-0.5 text-[9px] font-apple-semibold uppercase tracking-[0.14em] text-slate-500 shadow-apple-inner dark:bg-[var(--cf-surface-solid)] dark:text-[var(--cf-text-muted)]">
+	                    {t("projects:worktreePath", "PATH") as string}
+	                  </div>
+	                  <div className="min-w-0 truncate font-mono text-[10px] leading-tight text-slate-700 dark:text-[var(--cf-text-secondary)]" title={project.winPath}>
+	                    {project.winPath}
+	                  </div>
 	                </div>
 
-                  {alreadyAligned ? (
-                    <div className="rounded-md border border-slate-200/60 bg-slate-50/50 px-2.5 py-2 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)]">
-                      <div className="text-[10px] text-slate-600 dark:text-[var(--cf-text-secondary)] leading-snug">
-                        {t("projects:worktreeDeleteResetHintAligned", "检测到当前已与基 worktree 对齐，已隐藏对齐选项。") as string}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="rounded-md border border-slate-200/60 bg-white/60 px-2.5 py-2 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)]">
-                      <label className="flex gap-2 items-start cursor-pointer">
-	                      <input
-	                        type="checkbox"
-	                        className="mt-0.5"
-	                        checked={worktreeDeleteDialog.action === "reset"}
-	                        disabled={worktreeDeleteDialog.running}
-	                        onChange={(e) => {
-	                          const preferResetToMain = e.target.checked === true;
-	                          const prefsKey = String(worktreeDeleteDialog.prefsKey || "").trim();
-	                          if (prefsKey) saveWorktreeDeletePrefs(prefsKey, { preferResetToMain });
-	                          setWorktreeDeleteDialog((prev) => ({
+                  <div
+                    className={`rounded-apple border px-2.5 py-2 transition-all duration-apple ease-apple ${
+                      isReset
+                        ? "border-[var(--cf-accent)]/15 bg-[var(--cf-surface-solid)]/95 shadow-apple-xs"
+                        : "border-[var(--cf-border)] bg-[var(--cf-surface-muted)]/75 hover:border-[var(--cf-border-strong)]"
+                    }`}
+                  >
+                    <label className="group flex cursor-pointer items-start gap-2.5">
+                      <input
+                        type="checkbox"
+                        className="sr-only"
+                        checked={worktreeDeleteDialog.action === "reset"}
+                        disabled={worktreeDeleteDialog.running}
+                        onChange={(e) => {
+                          const preferResetToMain = e.target.checked === true;
+                          const prefsKey = String(worktreeDeleteDialog.prefsKey || "").trim();
+                          if (prefsKey) saveWorktreeDeletePrefs(prefsKey, { preferResetToMain });
+                          setWorktreeDeleteDialog((prev) => ({
                             ...prev,
                             action: preferResetToMain ? "reset" : "delete",
                             needsForceRemoveWorktree: false,
@@ -11566,52 +11641,124 @@ export default function CodexFlowManagerUI() {
                           }));
                         }}
                       />
-			                      <div className="space-y-0.5">
-			                        <div className="text-[11px] font-semibold text-slate-700 dark:text-[var(--cf-text-primary)]">
-			                          {t("projects:worktreeDeleteResetOption", "保留目录并对齐到基 worktree") as string}
-			                        </div>
-			                        <div className="text-[10px] text-slate-500 dark:text-[var(--cf-text-secondary)] leading-snug">
-			                          {isReset
-			                            ? (t("projects:worktreeDeleteResetHintChecked", "将对齐到基 worktree 当前签出版本并清理；不会执行“移除worktree”。") as string)
-			                            : (t(
-			                                "projects:worktreeDeleteResetHint",
-			                                "仅重置到与基 worktree 当前签出的修订版一致并清理；不会执行“移除worktree”。"
-			                              ) as string)}
-			                        </div>
-		                      </div>
-                      </label>
+                      <span
+                        className={`mt-[1px] flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-[6px] border transition-all duration-apple ease-apple ${
+                          isReset
+                            ? "border-[var(--cf-accent)] bg-[var(--cf-accent)] text-white shadow-apple-sm"
+                            : "border-[var(--cf-border-strong)] bg-white/80 text-transparent group-hover:border-[var(--cf-accent)]/45 dark:bg-[var(--cf-surface-solid)]"
+                        }`}
+                      >
+                        <Check className={`h-3 w-3 transition-all duration-apple ease-apple ${isReset ? "scale-100 opacity-100" : "scale-75 opacity-0"}`} />
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="text-[11px] font-apple-semibold leading-none text-[var(--cf-text-primary)]">
+                              {t("projects:worktreeDeleteResetOption", "保留目录并重置") as string}
+                            </div>
+                            {!isReset ? (
+                              <div className="mt-0.5 text-[10px] leading-snug text-[var(--cf-text-secondary)]">
+                                {resetHint}
+                              </div>
+                            ) : null}
+                          </div>
+                          {isReset && selectedResetTargetBranch ? (
+                            <div className="hidden max-w-[42%] shrink-0 items-center gap-1 rounded-full border border-[var(--cf-accent)]/15 bg-[var(--cf-accent)]/7 px-2 py-[3px] text-[10px] font-apple-medium text-[var(--cf-accent)] sm:inline-flex">
+                              <GitBranch className="h-[11px] w-[11px] shrink-0" />
+                              <span className="truncate">{selectedResetTargetBranch}</span>
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    </label>
+
+                    <div className={`overflow-hidden transition-all duration-300 ease-apple ${isReset ? "mt-1.5 max-h-24 opacity-100" : "mt-0 max-h-0 opacity-0"}`}>
+                      <div className="animate-in fade-in slide-in-from-top-1 duration-300 ease-apple ml-[26px]">
+                        <div className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-2">
+                          <div className="flex items-center gap-1.5 text-[10px] text-[var(--cf-text-muted)]">
+                            <GitBranch className="h-3 w-3 shrink-0" />
+                            <span className="uppercase tracking-[0.14em] font-apple-semibold">
+                              {t("projects:worktreeDeleteResetBranchLabel", "目标分支") as string}
+                            </span>
+                          </div>
+                          <div className="relative min-w-0">
+                            <select
+                              className="h-[30px] w-full appearance-none rounded-full border border-[var(--cf-border)] bg-[var(--cf-surface-solid)] pl-3 pr-10 text-[12px] text-[var(--cf-text-primary)] outline-none shadow-apple-inner transition-all duration-apple ease-apple hover:border-[var(--cf-border-strong)] focus:border-[var(--cf-accent)]/35 focus:ring-2 focus:ring-[var(--cf-accent)]/10 disabled:cursor-not-allowed disabled:opacity-60"
+                              value={selectedResetTargetBranch}
+                              disabled={worktreeDeleteDialog.running || worktreeDeleteDialog.loadingBranches || worktreeDeleteDialog.branches.length === 0}
+                              onChange={(e) =>
+                                setWorktreeDeleteDialog((prev) => ({
+                                  ...prev,
+                                  resetTargetBranch: e.target.value,
+                                  needsForceResetWorktree: false,
+                                  error: undefined,
+                                }))
+                              }
+                            >
+                              {!selectedResetTargetBranch ? (
+                                <option value="" disabled>
+                                  {worktreeDeleteDialog.loadingBranches
+                                    ? (t("projects:worktreeDeleteResetBranchLoading", "正在读取分支…") as string)
+                                    : worktreeDeleteDialog.branches.length === 0
+                                      ? (t("projects:worktreeDeleteResetBranchEmpty", "未找到可选分支") as string)
+                                      : (t("projects:worktreeRecycleSelectBranchPlaceholder", "请选择") as string)}
+                                </option>
+                              ) : null}
+                              {worktreeDeleteDialog.branches.map((branch) => (
+                                <option key={branch} value={branch}>
+                                  {branch}
+                                </option>
+                              ))}
+                            </select>
+                            <div className="pointer-events-none absolute inset-y-0 right-1 flex items-center">
+                              <div className="flex h-5 w-5 items-center justify-center rounded-full border border-[var(--cf-border)] bg-[var(--cf-surface-muted)] text-[var(--cf-text-muted)] shadow-apple-inner">
+                                {worktreeDeleteDialog.loadingBranches ? (
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                ) : (
+                                  <ChevronDown className="h-3 w-3" />
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                        {worktreeDeleteDialog.branchLoadError ? (
+                          <div className="mt-1.5 rounded-apple border border-amber-200/80 bg-amber-50/90 px-2 py-1.5 text-[10px] leading-snug text-amber-800 shadow-apple-inner dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-200">
+                            {worktreeDeleteDialog.branchLoadError}
+                          </div>
+                        ) : null}
+                      </div>
                     </div>
-                  )}
+                  </div>
 	                {worktreeDeleteDialog.afterRecycleHint ? (
-	                  <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800 whitespace-pre-line">
+	                  <div className="rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-[11px] text-blue-800 whitespace-pre-line">
 	                    {worktreeDeleteDialog.afterRecycleHint}
 	                  </div>
 	                ) : null}
-	                {forceHints.length > 0 ? (
-	                  <div className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 flex gap-2 items-start">
+	                {forceHint ? (
+	                  <div className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 flex gap-2 items-start">
                     <TriangleAlert className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
-                    <div className="text-[10px] text-amber-800 leading-normal font-medium whitespace-pre-line">
-	                    {forceHints.join("\n")}
+                    <div className="text-[10px] text-amber-800 leading-normal font-medium">
+	                    {forceHint}
 	                  </div>
 	</div>
                 ) : null}
                 {worktreeDeleteDialog.error ? (
-                  <div className="rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-[10px] font-medium text-red-800 flex items-center gap-2">
+                  <div className="rounded-md border border-red-200 bg-red-50 px-2 py-1.5 text-[10px] font-medium text-red-800 flex items-center gap-2">
                     <TriangleAlert className="h-3.5 w-3.5" />
                     {worktreeDeleteDialog.error}
                   </div>
                 ) : null}
 
                 <div className="flex justify-end gap-2 pt-1 border-t border-slate-100 dark:border-slate-800/50">
-                  <Button variant="outline" size="sm" className="h-8 text-xs" onClick={closeWorktreeDeleteDialog} disabled={worktreeDeleteDialog.running}>
+                  <Button variant="outline" size="sm" className="h-7 px-3 text-[11px]" onClick={closeWorktreeDeleteDialog} disabled={worktreeDeleteDialog.running}>
                     {t("common:cancel", "取消") as string}
                   </Button>
                   <Button
                     variant={needForceReset || needForceRemove || needForceBranch ? "danger" : "secondary"}
                     size="sm"
-                    className="h-8 text-xs"
+                    className="h-7 px-3 text-[11px]"
                     onClick={doSubmit}
-                    disabled={worktreeDeleteDialog.running}
+                    disabled={worktreeDeleteDialog.running || (isReset && (worktreeDeleteDialog.loadingBranches || !selectedResetTargetBranch))}
                   >
                     {worktreeDeleteDialog.running ? runningLabel : primaryLabel}
                   </Button>
@@ -11634,7 +11781,7 @@ export default function CodexFlowManagerUI() {
           <DialogHeader className="pb-2 border-b border-slate-100 dark:border-slate-800/50">
 	            <DialogTitle>{t("projects:worktreePostRecycleTitle", "合并完成") as string}</DialogTitle>
 	            <DialogDescription>
-	              {t("projects:worktreePostRecycleDesc", "已将变更合并到目标分支。你可以选择删除该 worktree，或将其重置为基 worktree 状态以便复用。") as string}
+	              {t("projects:worktreePostRecycleDesc", "已将变更合并到目标分支。你可以选择删除该 worktree，或将其重置到目标分支以便复用。") as string}
 	            </DialogDescription>
           </DialogHeader>
           {(function renderPostRecycleBody() {
@@ -11663,7 +11810,7 @@ export default function CodexFlowManagerUI() {
                       void openWorktreeDeleteDialog(project, true, "reset", hint);
                     }}
                   >
-	                    {t("projects:worktreePostRecycleActionReset", "重置为基 worktree 状态") as string}
+	                    {t("projects:worktreePostRecycleActionReset", "重置到目标分支") as string}
 	                  </Button>
                   <Button
                     variant="danger"

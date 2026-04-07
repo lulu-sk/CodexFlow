@@ -235,14 +235,20 @@ type WorktreeDeleteDialogState = {
   projectId: string;
   /** 偏好存储维度 key（通常为默认操作落点 worktree 路径归一化结果）。 */
   prefsKey?: string;
-  /** 当前 worktree 是否已与基 worktree 对齐（字段名为兼容历史沿用）。 */
-  alignedToMain?: boolean;
-  /** 操作类型：delete=删除 worktree；reset=对齐到基工作区当前基线（保持目录，不删除）。 */
+  /** 操作类型：delete=删除 worktree；reset=重置到目标分支（保持目录，不删除）。 */
   action: "delete" | "reset";
   /** 是否为“回收成功后”的推荐删除（仅用于 UI 文案） */
   afterRecycle?: boolean;
   /** 回收流程的额外提示（例如：回收前的自动提交提醒）。 */
   afterRecycleHint?: string;
+  /** 重置动作可选的目标分支列表。 */
+  branches: string[];
+  /** 当前选中的重置目标分支。 */
+  resetTargetBranch: string;
+  /** 是否正在读取重置动作的目标分支列表。 */
+  loadingBranches: boolean;
+  /** 读取重置目标分支失败时的提示。 */
+  branchLoadError?: string;
   running: boolean;
   /** 当需要强确认时，进入二次确认步骤 */
   needsForceRemoveWorktree?: boolean;
