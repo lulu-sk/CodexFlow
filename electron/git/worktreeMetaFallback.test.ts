@@ -228,6 +228,59 @@ describe("worktree meta 缺失回退（recycle/reset/remove）", () => {
   );
 
   it(
+    "reset：指定目标分支时会同步更新元数据中的 baseBranch 与 repoMainPath",
+    async () => {
+      const repo = await fsp.mkdtemp(path.join(os.tmpdir(), "codexflow-wt-reset-target-"));
+      const wtParent = await fsp.mkdtemp(path.join(os.tmpdir(), "codexflow-wt-reset-target-parent-"));
+      const wtDir = path.join(wtParent, "wt");
+      const releaseDir = path.join(wtParent, "release-owner");
+      const userData = await fsp.mkdtemp(path.join(os.tmpdir(), "codexflow-userdata-"));
+      userDataDir = userData;
+
+      try {
+        await git(repo, ["init"]);
+        await git(repo, ["config", "user.name", "CodexFlow"]);
+        await git(repo, ["config", "user.email", "codexflow@example.com"]);
+        await git(repo, ["config", "core.autocrlf", "false"]);
+        await git(repo, ["config", "core.eol", "lf"]);
+
+        await git(repo, ["checkout", "-b", "main"]);
+        await fsp.writeFile(path.join(repo, "a.txt"), "A\n", "utf8");
+        await git(repo, ["add", "a.txt"]);
+        await git(repo, ["commit", "-m", "main: init"]);
+
+        await git(repo, ["worktree", "add", "-b", "release", releaseDir, "main"]);
+        await fsp.writeFile(path.join(releaseDir, "release.txt"), "release\n", "utf8");
+        await git(releaseDir, ["add", "release.txt"]);
+        await git(releaseDir, ["commit", "-m", "release: ahead"]);
+
+        await git(repo, ["worktree", "add", "-b", "wt", wtDir, "main"]);
+
+        const releaseSha = (await git(repo, ["rev-parse", "release"])).trim();
+        const resetRes = await resetWorktreeAsync({ worktreePath: wtDir, targetRef: "release" });
+        expect(resetRes.ok).toBe(true);
+
+        const wtSha = (await git(repo, ["rev-parse", "wt"])).trim();
+        expect(wtSha).toBe(releaseSha);
+
+        const meta = getWorktreeMeta(wtDir);
+        expect(meta).toBeTruthy();
+        if (meta) {
+          expect(meta.baseBranch).toBe("release");
+          expect(meta.repoMainPath).toBe(releaseDir);
+          expect(meta.wtBranch).toBe("wt");
+          expect(meta.baseRefAtCreate).toBe(releaseSha);
+        }
+      } finally {
+        try { await fsp.rm(wtParent, { recursive: true, force: true }); } catch {}
+        try { await fsp.rm(repo, { recursive: true, force: true }); } catch {}
+        try { await fsp.rm(userData, { recursive: true, force: true }); } catch {}
+      }
+    },
+    { timeout: 120_000 }
+  );
+
+  it(
     "remove：无创建记录时仍可推断 repoMainPath/wtBranch 并删除 worktree + 分支",
     async () => {
       const repo = await fsp.mkdtemp(path.join(os.tmpdir(), "codexflow-wt-remove-main-"));

@@ -17,13 +17,42 @@ export type IsWorktreeAlignedToMainResult =
 const resetWorktreeTaskByPathKey = new Map<string, Promise<ResetWorktreeResult>>();
 
 /**
- * 中文说明：对齐 worktree 到基工作区当前基线，并恢复为干净状态（保持目录，不删除）。
+ * 中文说明：解析 reset 目标应回写到元数据中的基分支名。
+ * - 若 targetRef 明确指向本地分支，则以该分支作为新的 baseBranch；
+ * - 否则回退到调用方提供的 fallbackBaseBranch，保持兼容历史调用。
+ */
+async function resolveResetBaseBranchAsync(args: {
+  repoMainPath: string;
+  gitPath?: string;
+  targetRef?: string;
+  fallbackBaseBranch?: string;
+}): Promise<string> {
+  const repoMainPath = toFsPathAbs(args.repoMainPath);
+  const gitPath = args.gitPath;
+  const targetRef = String(args.targetRef || "").trim();
+  if (repoMainPath && targetRef) {
+    const localBranch = targetRef.startsWith("refs/heads/") ? targetRef.slice("refs/heads/".length) : targetRef;
+    if (localBranch) {
+      const verify = await execGitAsync({
+        gitPath,
+        argv: ["-C", repoMainPath, "show-ref", "--verify", "--quiet", `refs/heads/${localBranch}`],
+        timeoutMs: 8_000,
+      });
+      if (verify.ok) return localBranch;
+    }
+  }
+  return String(args.fallbackBaseBranch || "").trim();
+}
+
+/**
+ * 中文说明：对齐 worktree 到目标分支/目标基线，并恢复为干净状态（保持目录，不删除）。
  *
  * 行为约定：
- * - 以 targetRef 为“基工作区当前基线”；若未提供 targetRef，则默认使用基 worktree 的 `HEAD` 提交号（更符合“当前签出的修订版”语义）。
+ * - 以 targetRef 为“目标基线”；若未提供 targetRef，则默认使用基 worktree 的 `HEAD` 提交号（更符合“当前签出的修订版”语义）。
  * - 将 worktree 分支（wtBranch）强制 reset 到 targetRef，并执行 `git clean -fd` 清理未跟踪文件（保留 ignored）。
  * - 若 worktree 有未提交修改且未传 force，则返回 needsForce=true，等待 UI 二次确认。
  * - 若已与目标基线对齐且工作区干净，则直接返回 ok=true + alreadyAligned=true（避免重复执行重置）。
+ * - 若 targetRef 指向本地分支，则会同步把 meta.baseBranch / repoMainPath 更新到新的目标分支语义。
  * - 成功后会把 meta.baseRefAtCreate 更新为 targetRef 的最新提交号，确保后续“按分叉点回收”边界正确。
  */
 export async function resetWorktreeAsync(req: {
@@ -85,9 +114,25 @@ export async function resetWorktreeAsync(req: {
     if (!targetRef) return { ok: false, needsForce: false, error: "无法确定目标基线（请手动指定 targetRef）" };
     const targetShaRes = await execGitAsync({ gitPath, argv: ["-C", wt, "rev-parse", targetRef], timeoutMs: 12_000 });
     const targetSha = targetShaRes.ok ? String(targetShaRes.stdout || "").trim() : "";
+    const nextBaseBranch = await resolveResetBaseBranchAsync({
+      repoMainPath,
+      gitPath,
+      targetRef: reqTargetRef,
+      fallbackBaseBranch: String(baseBranchFromMain || metaBaseBranch).trim(),
+    });
+    if (nextBaseBranch) {
+      const resolvedRepoMain = await resolveRepoMainPathForBranchAsync({
+        dir: wt,
+        branch: nextBaseBranch,
+        fallbackPath: repoMainPath,
+        gitPath,
+        timeoutMs: 12_000,
+      });
+      if (resolvedRepoMain.ok) repoMainPath = resolvedRepoMain.repoMainPath;
+    }
 
     // 2) 写入/更新映射，保证后续 delete/recycle/fork-point 等功能无需依赖“创建时记录”
-    let meta: WorktreeMeta = buildNextWorktreeMeta({ existing: existingMeta, repoMainPath, baseBranch: String(baseBranchFromMain || metaBaseBranch).trim(), wtBranch });
+    let meta: WorktreeMeta = buildNextWorktreeMeta({ existing: existingMeta, repoMainPath, baseBranch: nextBaseBranch, wtBranch });
     try { setWorktreeMeta(wt, meta); } catch {}
 
     // 1) 检查 worktree 是否有未提交修改（未确认 force 则拒绝）

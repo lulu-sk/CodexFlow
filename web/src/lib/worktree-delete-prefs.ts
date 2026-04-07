@@ -2,11 +2,11 @@
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
 /**
- * “删除 worktree / 对齐到主 worktree”对话框偏好持久化。
+ * “删除 worktree / 重置到目标分支”对话框偏好持久化。
  *
  * 设计目标：
  * - 按仓库维度（repoKey）隔离，避免不同仓库互相覆盖；
- * - 仅保存一个稳定偏好：是否默认勾选“保留目录并对齐到主 worktree”；
+ * - 仅保存一个稳定偏好：是否默认勾选“保留目录并重置”；
  * - 读写失败时静默降级，不阻断主流程。
  */
 
@@ -44,7 +44,7 @@ function normalizeRepoKey(value: unknown): string {
 }
 
 /**
- * 中文说明：归一化删除/对齐偏好对象。
+ * 中文说明：归一化删除/重置偏好对象。
  */
 function normalizePrefs(input: unknown): WorktreeDeletePrefs {
   const obj = (input && typeof input === "object") ? (input as any) : {};
@@ -52,7 +52,7 @@ function normalizePrefs(input: unknown): WorktreeDeletePrefs {
 }
 
 /**
- * 中文说明：读取指定 repoKey 的删除/对齐偏好；不存在时返回 null。
+ * 中文说明：读取指定 repoKey 的删除/重置偏好；不存在时返回 null。
  */
 export function loadWorktreeDeletePrefs(repoKey: string): WorktreeDeletePrefs | null {
   const key = normalizeRepoKey(repoKey);
@@ -74,7 +74,7 @@ export function loadWorktreeDeletePrefs(repoKey: string): WorktreeDeletePrefs | 
 }
 
 /**
- * 中文说明：写入指定 repoKey 的删除/对齐偏好（覆盖保存）。
+ * 中文说明：写入指定 repoKey 的删除/重置偏好（覆盖保存）。
  */
 export function saveWorktreeDeletePrefs(repoKey: string, prefs: WorktreeDeletePrefs): void {
   const key = normalizeRepoKey(repoKey);
