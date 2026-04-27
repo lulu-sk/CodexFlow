@@ -44,11 +44,11 @@ function clampScrollTop(value: number, min: number, max: number): number {
 /**
  * 中文说明：二分查找第一个“底部进入可视区”的索引。
  */
-function findVisibleStartIndex(tops: number[], heights: number[], offset: number): number {
+export function findVisibleStartIndex(tops: number[], heights: number[], offset: number): number {
   if (tops.length === 0) return 0;
   let left = 0;
   let right = tops.length - 1;
-  let answer = 0;
+  let answer = tops.length - 1;
   while (left <= right) {
     const mid = (left + right) >> 1;
     const bottom = tops[mid] + heights[mid];
@@ -85,8 +85,9 @@ function findVisibleEndIndex(tops: number[], offset: number): number {
 /**
  * 中文说明：订阅滚动容器位置与高度，驱动虚拟列表窗口计算。
  */
-function useVirtualizedViewport(scrollContainerRef: React.RefObject<HTMLDivElement | null>): VirtualizedViewportState {
+function useVirtualizedViewport(scrollContainerRef: React.RefObject<HTMLDivElement | null>, syncSignal: number): VirtualizedViewportState {
   const [viewport, setViewport] = useState<VirtualizedViewportState>({ scrollTop: 0, height: 0 });
+  const syncViewportRef = useRef<(() => void) | null>(null);
 
   useLayoutEffect(() => {
     const container = scrollContainerRef.current;
@@ -105,6 +106,7 @@ function useVirtualizedViewport(scrollContainerRef: React.RefObject<HTMLDivEleme
         return { scrollTop: nextScrollTop, height: nextHeight };
       });
     };
+    syncViewportRef.current = syncViewport;
 
     /**
      * 中文说明：使用 rAF 合并高频滚动事件，降低状态更新压力。
@@ -130,6 +132,7 @@ function useVirtualizedViewport(scrollContainerRef: React.RefObject<HTMLDivEleme
 
     return () => {
       container.removeEventListener("scroll", scheduleSync);
+      if (syncViewportRef.current === syncViewport) syncViewportRef.current = null;
       if (resizeObserver) {
         try {
           resizeObserver.disconnect();
@@ -140,6 +143,10 @@ function useVirtualizedViewport(scrollContainerRef: React.RefObject<HTMLDivEleme
       if (rafId) window.cancelAnimationFrame(rafId);
     };
   }, [scrollContainerRef]);
+
+  useLayoutEffect(() => {
+    syncViewportRef.current?.();
+  }, [syncSignal]);
 
   return viewport;
 }
@@ -201,7 +208,6 @@ function VirtualizedListInner<TItem>({
   getItemKey,
   renderItem,
 }: VirtualizedListProps<TItem>, ref: React.ForwardedRef<VirtualizedListHandle>) {
-  const viewport = useVirtualizedViewport(scrollContainerRef);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const heightsRef = useRef<Record<string, number>>({});
   const [layoutVersion, setLayoutVersion] = useState(0);
@@ -239,9 +245,19 @@ function VirtualizedListInner<TItem>({
     return { tops, heights, totalHeight };
   }, [items, estimateItemHeight, getItemKey, layoutVersion]);
 
+  useLayoutEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    if (container.scrollTop > maxScrollTop) container.scrollTop = maxScrollTop;
+  }, [layout.totalHeight, scrollContainerRef]);
+
+  const viewport = useVirtualizedViewport(scrollContainerRef, layout.totalHeight);
   const overscanPx = Math.max(estimateItemHeight, overscan ?? estimateItemHeight * 4);
-  const windowStart = Math.max(0, viewport.scrollTop - overscanPx);
-  const windowEnd = Math.max(0, viewport.scrollTop + viewport.height + overscanPx);
+  const hostOffsetTop = Math.max(0, hostRef.current?.offsetTop || 0);
+  const viewportTopInList = Math.max(0, viewport.scrollTop - hostOffsetTop);
+  const windowStart = Math.max(0, viewportTopInList - overscanPx);
+  const windowEnd = Math.max(0, viewportTopInList + viewport.height + overscanPx);
   const startIndex = items.length > 0 ? findVisibleStartIndex(layout.tops, layout.heights, windowStart) : 0;
   const endIndex = items.length > 0 ? Math.min(items.length - 1, findVisibleEndIndex(layout.tops, windowEnd)) : -1;
 
