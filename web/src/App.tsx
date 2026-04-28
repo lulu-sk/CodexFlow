@@ -3602,7 +3602,7 @@ export default function CodexFlowManagerUI() {
     return () => { window.removeEventListener('resize', onResize); };
   }, [historyCtxMenu.show, historyCtxMenu.x, historyCtxMenu.y]);
 
-  // Auto-adjust project context menu position to stay within viewport (pre-paint to avoid visible jump)
+  // 项目右键菜单高度会随项目级规则入口异步变化，需要在菜单项数量变化后重新限制位置。
   useLayoutEffect(() => {
     if (!projectCtxMenu.show) return;
     const margin = 8;
@@ -3628,7 +3628,7 @@ export default function CodexFlowManagerUI() {
     const onResize = () => adjust();
     window.addEventListener('resize', onResize);
     return () => { window.removeEventListener('resize', onResize); };
-  }, [projectCtxMenu.show, projectCtxMenu.x, projectCtxMenu.y]);
+  }, [projectCtxMenu.show, projectCtxMenu.x, projectCtxMenu.y, projectCtxRuleEntries.length]);
 
   // Auto-adjust agent timer context menu position to stay within viewport (pre-paint to avoid visible jump)
   useLayoutEffect(() => {
@@ -9831,7 +9831,12 @@ export default function CodexFlowManagerUI() {
               <div
                 ref={projectCtxMenuRef}
                 className="absolute z-50 min-w-[160px] rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple shadow-apple-lg p-1.5 text-sm text-[var(--cf-text-primary)] dark:shadow-apple-dark-lg"
-                style={{ left: projectCtxMenu.x, top: projectCtxMenu.y }}
+                style={{
+                  left: projectCtxMenu.x,
+                  top: projectCtxMenu.y,
+                  maxHeight: "calc(100vh - 16px)",
+                  overflowY: "auto",
+                }}
                 onClick={(e) => e.stopPropagation()}
               >
                 {menuItems}
