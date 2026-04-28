@@ -251,6 +251,18 @@ async function clickElement(target: HTMLElement): Promise<void> {
   });
 }
 
+/**
+ * 中文说明：派发右键菜单事件，返回事件是否未被 preventDefault。
+ */
+async function dispatchContextMenu(target: HTMLElement): Promise<{ allowed: boolean; defaultPrevented: boolean }> {
+  const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+  let allowed = false;
+  await act(async () => {
+    allowed = target.dispatchEvent(event);
+  });
+  return { allowed, defaultPrevented: event.defaultPrevented };
+}
+
 describe("PathChipsInput（复制文件名按钮）", () => {
   let cleanup: (() => void) | null = null;
 
@@ -507,5 +519,37 @@ describe("PathChipsInput 撤回历史", () => {
     });
 
     expect(image.getAttribute("src")).toBe("file:///C:/repo/image.png");
+  });
+});
+
+describe("PathChipsInput 右键菜单事件", () => {
+  let cleanup: (() => void) | null = null;
+
+  afterEach(() => {
+    try { cleanup?.(); } catch {}
+    cleanup = null;
+  });
+
+  it("输入区右键应放行原生菜单，并阻止父级右键菜单截获", async () => {
+    const mounted = createMountedRoot();
+    cleanup = mounted.unmount;
+    const parentContextMenu = vi.fn((event: React.MouseEvent<HTMLDivElement>) => {
+      event.preventDefault();
+    });
+
+    await act(async () => {
+      mounted.root.render(
+        <div onContextMenu={parentContextMenu}>
+          <Harness initialDraft="hello" />
+        </div>
+      );
+    });
+
+    const editor = getEditor(mounted.host);
+    const result = await dispatchContextMenu(editor);
+
+    expect(parentContextMenu).not.toHaveBeenCalled();
+    expect(result.allowed).toBe(true);
+    expect(result.defaultPrevented).toBe(false);
   });
 });

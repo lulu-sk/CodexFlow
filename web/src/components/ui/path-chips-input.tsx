@@ -544,7 +544,7 @@ export default function PathChipsInput({
     base,
     "transition-all duration-apple ease-apple select-none hover:border-[var(--cf-border-strong)] text-[var(--cf-text-primary)]",
     // 减小顶部内边距，靠近容器上边缘；保留底部内边距保证输入区呼吸感
-    multiline ? "min-h-[7.5rem] pt-0.5 pb-2" : "min-h-10 pt-0.5 pb-1",
+    multiline ? "flex flex-col min-h-[7.5rem] pt-0.5 pb-2" : "min-h-10 pt-0.5 pb-1",
     className
   );
 
@@ -1117,6 +1117,14 @@ export default function PathChipsInput({
   }, [resolveChipFileName]);
 
   /**
+   * 中文说明：放行输入框原生右键菜单，并阻止外层标签页右键处理吞掉默认编辑菜单。
+   */
+  const onEditableContextMenu = useCallback((event: React.MouseEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    event.stopPropagation();
+    setCtxMenu((menu) => menu.show ? { ...menu, show: false } : menu);
+  }, []);
+
+  /**
    * 中文说明：将当前草稿中的路径片段提交为 Chip，并清空草稿。
    */
   const commitDraftToChips = useCallback(() => {
@@ -1548,13 +1556,14 @@ export default function PathChipsInput({
             onBeforeInput={onBeforeInput}
             onKeyDown={onKeyDown}
             onPaste={onPaste}
+            onContextMenu={onEditableContextMenu}
             rows={3}
             // 说明：
             // - resize-none 禁用手动拖拽；whitespace-pre-wrap + break-words 实现中文/长词自动换行；
             // - leading-5 提升可读性；min-h 保持与容器协调；pb-10 给右下角发送按钮留出垂直空间；
             style={balancedScrollbarGutter ? ({ scrollbarGutter: 'stable both-edges' } as any) : undefined}
             className={cn(
-              "block w-full min-w-[8rem] outline-none bg-[var(--cf-surface-solid)] placeholder:text-[var(--cf-text-muted)] text-[var(--cf-text-primary)] select-text resize-none whitespace-pre-wrap break-words leading-5",
+              "block flex-1 w-full min-w-[8rem] outline-none bg-[var(--cf-surface-solid)] placeholder:text-[var(--cf-text-muted)] text-[var(--cf-text-primary)] select-text resize-none whitespace-pre-wrap break-words leading-5",
               "py-0.5 pb-10 min-h-[1.5rem]",
               draftInputClassName,
             )}
@@ -1568,6 +1577,7 @@ export default function PathChipsInput({
             onBeforeInput={onBeforeInput}
             onKeyDown={onKeyDown}
             onPaste={onPaste}
+            onContextMenu={onEditableContextMenu}
             onPointerDown={(e) => { try { (e.target as HTMLElement).setPointerCapture((e as any).pointerId); } catch {} }}
             placeholder={chips.length === 0 ? (rest as any)?.placeholder : undefined}
             style={balancedScrollbarGutter ? ({ scrollbarGutter: 'stable both-edges' } as any) : undefined}

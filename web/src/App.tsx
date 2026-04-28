@@ -425,6 +425,15 @@ function isNodeInsideTerminal(node: EventTarget | null | undefined): boolean {
 }
 
 /**
+ * 中文说明：判断右键目标是否为可编辑元素，用于避免调试菜单截获系统编辑菜单。
+ */
+function isEditableContextMenuTarget(node: EventTarget | null | undefined): boolean {
+  const el = node && typeof (node as any).closest === "function" ? (node as HTMLElement) : null;
+  if (!el) return false;
+  return !!el.closest("input, textarea, select, [contenteditable='true']");
+}
+
+/**
  * 中文说明：归一化 worktree 备注基名（去首尾空白，并压缩连续空白为单个空格）。
  */
 function normalizeWorktreeRemarkBaseName(value: unknown): string {
@@ -1422,6 +1431,10 @@ export default function CodexFlowManagerUI() {
   const openTabContextMenu = React.useCallback((event: React.MouseEvent, tabId: string | null, source: string) => {
     const id = tabId || "none";
     notifyLog(`ctx.menu.request source=${source} tab=${id} enabled=${showNotifDebugMenu ? '1' : '0'}`);
+    if (isEditableContextMenuTarget(event.target)) {
+      notifyLog(`ctx.menu.editableSkip source=${source} tab=${id}`);
+      return;
+    }
     event.preventDefault();
     event.stopPropagation();
     if (!showNotifDebugMenu) {
