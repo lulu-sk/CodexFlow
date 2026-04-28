@@ -3312,58 +3312,153 @@ ipcMain.handle('history.list', async (_e, args: {
   }
 });
 
-ipcMain.handle('history.read', async (_e, args: { filePath: string; providerId?: string }) => {
-  const filePath = String(args?.filePath || '');
-  const providerHint = String(args?.providerId || '').trim().toLowerCase();
-  try {
-    const cached = getCachedDetails(filePath);
-    if (cached) return cached;
-  } catch {}
-  try {
-    const det = getIndexedDetails(filePath);
-    if (det) {
-      try { cacheDetails(filePath, det); } catch {}
-      return det;
-    }
-  } catch {}
+type HistoryReadProviderId = "codex" | "claude" | "gemini";
 
-  const inferProviderId = (): "codex" | "claude" | "gemini" => {
-    const hint = providerHint;
-    if (hint === 'codex' || hint === 'claude' || hint === 'gemini') return hint as any;
-    try {
-      const found = getIndexedSummaries().find((s: any) => String(s?.filePath || '') === filePath);
-      const pid = String((found as any)?.providerId || '').trim().toLowerCase();
-      if (pid === 'codex' || pid === 'claude' || pid === 'gemini') return pid as any;
-    } catch {}
-    try {
-      const fp = filePath.replace(/\\/g, '/').toLowerCase();
-      const base = fp.split('/').pop() || '';
-      if (fp.includes('/.claude/')) return 'claude';
-      if (fp.includes('/.gemini/')) return 'gemini';
-      if (base.endsWith('.ndjson')) return 'claude';
-      if (base.startsWith('session-') && base.endsWith('.json')) return 'gemini';
-    } catch {}
-    return 'codex';
+/**
+ * 中文说明：规范化 history.read 的 provider hint，避免无效字符串影响路径推断。
+ */
+function normalizeHistoryReadProviderHint(providerHint?: string): HistoryReadProviderId | null {
+  const hint = String(providerHint || "").trim().toLowerCase();
+  if (hint === "codex" || hint === "claude" || hint === "gemini") return hint;
+  return null;
+}
+
+/**
+ * 中文说明：根据文件路径特征判断会话所属 Provider，路径特征优先于外部 hint。
+ */
+function inferHistoryReadProviderFromPath(filePath?: string): HistoryReadProviderId | null {
+  const fp = String(filePath || "").replace(/\\/g, "/").toLowerCase();
+  if (!fp) return null;
+  const base = fp.split("/").pop() || "";
+  if (fp.includes("/.codex/")) return "codex";
+  if (fp.includes("/.claude/")) return "claude";
+  if (fp.includes("/.gemini/")) return "gemini";
+  if (base.endsWith(".ndjson")) return "claude";
+  if (base.startsWith("session-") && base.endsWith(".json")) return "gemini";
+  return null;
+}
+
+/**
+ * 中文说明：生成 history.read 可尝试的文件系统路径，兼容 Windows 侧读取 WSL/POSIX 路径。
+ */
+function buildHistoryReadPathCandidates(filePath: string): string[] {
+  const raw = String(filePath || "").trim();
+  const candidates: string[] = [];
+  /**
+   * 中文说明：按优先级加入候选路径，并保持去重后的稳定顺序。
+   */
+  const push = (value?: string) => {
+    const next = String(value || "").trim();
+    if (next && !candidates.includes(next)) candidates.push(next);
   };
+  if (!raw) return candidates;
 
-  const providerId = inferProviderId();
+  if (process.platform === "win32") {
+    if (/^\//.test(raw)) {
+      const mnt = raw.match(/^\/mnt\/([a-zA-Z])\/(.*)$/);
+      if (mnt?.[1]) push(`${mnt[1].toUpperCase()}:\\${String(mnt[2] || "").replace(/\//g, "\\")}`);
+      try { push(wsl.wslToUNC(raw, settings.getSettings().distro || "Ubuntu-24.04")); } catch {}
+    }
+    try { push(wsl.normalizeWinPath(raw)); } catch {}
+  }
+
+  push(raw);
+  return candidates;
+}
+
+/**
+ * 中文说明：选择第一个当前进程可直接读取的历史文件路径。
+ */
+function resolveHistoryReadFilePath(filePath: string): string {
+  const candidates = buildHistoryReadPathCandidates(filePath);
+  for (const candidate of candidates) {
+    try {
+      const stat = fs.statSync(candidate);
+      if (stat.isFile()) return candidate;
+    } catch {}
+  }
+  return candidates[0] || String(filePath || "").trim();
+}
+
+/**
+ * 中文说明：从缓存或索引详情中读取非空历史详情，支持原始路径与解析路径双 key 查询。
+ */
+function getHistoryReadCachedDetails(filePaths: string[]): any | null {
+  const candidates = Array.from(new Set(filePaths.map((item) => String(item || "").trim()).filter(Boolean)));
+  for (const candidate of candidates) {
+    try {
+      const cached = getCachedDetails(candidate);
+      if (cached) return cached;
+    } catch {}
+  }
+  for (const candidate of candidates) {
+    try {
+      const det = getIndexedDetails(candidate);
+      if (det) return det;
+    } catch {}
+  }
+  return null;
+}
+
+/**
+ * 中文说明：把解析出的详情写入原始路径与解析路径两个缓存 key，避免下次重复全量解析。
+ */
+function cacheHistoryReadDetails(filePaths: string[], details: any): void {
+  const candidates = Array.from(new Set(filePaths.map((item) => String(item || "").trim()).filter(Boolean)));
+  for (const candidate of candidates) {
+    try { cacheDetails(candidate, details); } catch {}
+  }
+}
+
+/**
+ * 中文说明：综合路径、索引摘要和外部 hint 推断 history.read 应使用的 Provider 解析器。
+ */
+function inferHistoryReadProviderId(filePaths: string[], providerHint?: string): HistoryReadProviderId {
+  for (const candidate of filePaths) {
+    const byPath = inferHistoryReadProviderFromPath(candidate);
+    if (byPath) return byPath;
+  }
+  try {
+    const candidates = new Set(filePaths.map((item) => String(item || "").trim()).filter(Boolean));
+    const found = getIndexedSummaries().find((summary: any) => candidates.has(String(summary?.filePath || "").trim()));
+    const indexed = normalizeHistoryReadProviderHint(String((found as any)?.providerId || ""));
+    if (indexed) return indexed;
+  } catch {}
+  return normalizeHistoryReadProviderHint(providerHint) || "codex";
+}
+
+ipcMain.handle('history.read', async (_e, args: { filePath: string; providerId?: string; forceParse?: boolean }) => {
+  const requestedFilePath = String(args?.filePath || '').trim();
+  const filePath = resolveHistoryReadFilePath(requestedFilePath);
+  const lookupPaths = Array.from(new Set([requestedFilePath, filePath].filter(Boolean)));
+  const providerHint = String(args?.providerId || '').trim().toLowerCase();
+  const forceParse = !!args?.forceParse;
+  if (!forceParse) {
+    const cached = getHistoryReadCachedDetails(lookupPaths);
+    if (cached) {
+      cacheHistoryReadDetails(lookupPaths, cached);
+      return cached;
+    }
+  }
+
+  const providerId = inferHistoryReadProviderId(lookupPaths, providerHint);
 
   if (providerId === "claude") {
     const stat = await fsp.stat(filePath);
     const parsed = await parseClaudeSessionFile(filePath, stat, { summaryOnly: false, maxLines: 50_000 });
-    try { cacheDetails(filePath, parsed as any); } catch {}
+    cacheHistoryReadDetails(lookupPaths, parsed as any);
     return parsed as any;
   }
   if (providerId === "gemini") {
     const stat = await fsp.stat(filePath);
     const parsed = await parseGeminiSessionFile(filePath, stat, { summaryOnly: false, maxBytes: 64 * 1024 * 1024 });
-    try { cacheDetails(filePath, parsed as any); } catch {}
+    cacheHistoryReadDetails(lookupPaths, parsed as any);
     return parsed as any;
   }
 
   const parsed = await history.readHistoryFile(filePath, { maxLines: 0 });
-  const withMeta = { ...(parsed as any), providerId: "codex", filePath };
-  try { cacheDetails(filePath, withMeta as any); } catch {}
+  const withMeta = { ...(parsed as any), providerId: "codex", filePath: requestedFilePath || filePath };
+  cacheHistoryReadDetails(lookupPaths, withMeta as any);
   return withMeta;
 });
 

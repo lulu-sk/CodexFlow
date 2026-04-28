@@ -10,6 +10,7 @@
   "deselectAll": "Deselect All",
   "invertSelection": "Invert",
   "loadingFilters": "Loading filters…",
+  "noFilterOptions": "No filterable content",
   "skippedLines": "Skipped {count} unparsable lines during parsing.",
   "selectRightToView": "Select a history item on the right to view details.",
   "showing": "… {total} total, showing first {count}",
