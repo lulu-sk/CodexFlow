@@ -449,7 +449,8 @@ describe("TerminalManager（长文本发送策略）", () => {
     );
     expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex-single", "\r");
 
-    vi.advanceTimersByTime(31);
+    const minWaitMs = getPasteSubmitMinWaitMs({ providerId: "codex", terminalMode: "pwsh" as any, textLength: text.length });
+    vi.advanceTimersByTime(minWaitMs - 1);
     expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex-single", "\r");
     vi.advanceTimersByTime(1);
     expect(hostPty.write).toHaveBeenCalledWith("pty-codex-single", "\r");
@@ -457,18 +458,30 @@ describe("TerminalManager（长文本发送策略）", () => {
     tm.disposeAll(false);
   });
 
-  it("Codex 在 PowerShell 短多行文本场景下，会通过 bracketed paste 快速提交", async () => {
+  it("Codex 在 PowerShell 短多行文本场景下，会等待局部屏幕 ACK 后再提交", async () => {
     vi.useFakeTimers();
     const adapter: any = createAdapterStub();
     const hostPty = createHostPtyStub();
     createTerminalAdapterMock.mockReturnValue(adapter);
+    let snapshotText = "";
+    adapter.readCursorTextSnapshot.mockImplementation(() => {
+      if (!snapshotText) return null;
+      return {
+        bufferType: "alternate",
+        cursorAbsY: 22,
+        startAbsY: 21,
+        endAbsY: 22,
+        lines: [snapshotText],
+        text: snapshotText,
+      };
+    });
 
     const ptyByTab: Record<string, string> = { "tab-codex-short-multi": "pty-codex-short-multi" };
     const tm = new TerminalManager((tabId) => ptyByTab[tabId], hostPty as any, {});
     tm.ensurePersistentContainer("tab-codex-short-multi");
     tm.setPty("tab-codex-short-multi", "pty-codex-short-multi");
 
-    const text = "第一行\n第二行";
+    const text = "第一行\n第二行用于局部屏幕ACK命中";
     await tm.sendTextAndEnter("tab-codex-short-multi", text, { providerId: "codex", terminalMode: "pwsh" as any });
 
     expect(adapter.paste).not.toHaveBeenCalled();
@@ -478,9 +491,15 @@ describe("TerminalManager（长文本发送策略）", () => {
     );
     expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex-short-multi", "\r");
 
-    vi.advanceTimersByTime(31);
+    const minWaitMs = getPasteSubmitMinWaitMs({ providerId: "codex", terminalMode: "pwsh" as any, textLength: text.length });
+    vi.advanceTimersByTime(minWaitMs);
     expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex-short-multi", "\r");
-    vi.advanceTimersByTime(1);
+
+    snapshotText = "第二行用于局部屏幕ACK命中";
+    hostPty.emitData("pty-codex-short-multi", "输入区已显示正文尾部");
+    vi.advanceTimersByTime(40);
+    expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex-short-multi", "\r");
+    vi.advanceTimersByTime(40);
     expect(hostPty.write).toHaveBeenCalledWith("pty-codex-short-multi", "\r");
 
     tm.disposeAll(false);

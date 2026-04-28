@@ -781,10 +781,11 @@ export default class TerminalManager {
   }
 
   /**
-   * 中文说明：Codex 在 Windows/PowerShell 短文本场景下，快速写入正文并在短暂 settle 后提交。
+   * 中文说明：Codex 在 Windows/PowerShell 短文本场景下，快速写入正文并在最小 settle 后提交。
    *
    * 设计背景：
    * - 短文本不需要等待局部屏幕 ACK；等待 ACK 失败时会退到数秒级 hard timeout，造成“短消息偶现几秒后才发送”；
+   * - Codex TUI 的 Windows paste-burst 保护会在短窗口内把 Enter 当作正文换行，因此提交前仍复用 Codex 的最小等待时间；
    * - 多行短文本仍保留显式 bracketed paste，避免 PowerShell/ConPTY 将内嵌换行拆成多次提交；
    * - 单行短文本优先复用 xterm paste 通道，失败时再直接写入 PTY。
    *
@@ -802,12 +803,16 @@ export default class TerminalManager {
     traceId?: string | null,
   ): void {
     const normalizedText = String(text ?? "");
+    const submitDelayMs = Math.max(
+      CODEX_WINDOWS_FAST_SUBMIT_DELAY_MS,
+      getPasteSubmitMinWaitMs({ providerId: "codex", terminalMode, textLength: normalizedText.length }),
+    );
     const sendEnter = () => {
-      this.logSendDiagnostic(traceId, `fast.enter delayMs=${CODEX_WINDOWS_FAST_SUBMIT_DELAY_MS}`);
+      this.logSendDiagnostic(traceId, `fast.enter delayMs=${submitDelayMs}`);
       try { this.hostPty.write(ptyId, "\r"); } catch {}
     };
     const scheduleEnter = () => {
-      try { window.setTimeout(sendEnter, CODEX_WINDOWS_FAST_SUBMIT_DELAY_MS); } catch { sendEnter(); }
+      try { window.setTimeout(sendEnter, submitDelayMs); } catch { sendEnter(); }
     };
 
     if (this.shouldForceCodexWindowsBracketedPaste("codex", terminalMode, normalizedText)) {
@@ -1171,17 +1176,19 @@ export default class TerminalManager {
 
   /**
    * 中文说明：判断 Codex Windows 当前文本是否需要启用屏幕 ACK/静默等待的保守提交策略。
+   * 设计目标：多行文本和大文本都可能触发 Codex 的 paste-burst 保护，需等待输入区稳定后再提交。
    * @param providerId providerId
    * @param terminalMode 当前标签页运行终端类型
    * @param text 待发送正文
-   * @returns 是否启用大文本保守提交策略
+   * @returns 是否启用保守提交策略
    */
   private shouldUseCodexWindowsQuietSubmitStrategy(providerId?: string | null, terminalMode?: TerminalMode | null, text?: string): boolean {
     if (!this.shouldUseCodexWindowsSubmitStrategy(providerId, terminalMode))
       return false;
     const normalized = this.normalizeSendProbeText(text || "");
+    const lineCount = normalized ? normalized.split("\n").length : 0;
     const charCount = Array.from(normalized).length;
-    return charCount > CODEX_LARGE_PASTE_CHAR_THRESHOLD;
+    return lineCount > 1 || charCount > CODEX_LARGE_PASTE_CHAR_THRESHOLD;
   }
 
   /**
