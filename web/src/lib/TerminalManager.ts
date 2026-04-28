@@ -65,6 +65,7 @@ const TERMINAL_SEND_SCREEN_ACK_STABLE_POLLS = 2;
 const CLAUDE_LARGE_PASTE_LINE_THRESHOLD = 5;
 const CLAUDE_LARGE_PASTE_CHAR_THRESHOLD = 1000;
 const CODEX_LARGE_PASTE_CHAR_THRESHOLD = 1000;
+const CODEX_WINDOWS_FAST_SUBMIT_DELAY_MS = 32;
 const GEMINI_LARGE_PASTE_LINE_THRESHOLD = 5;
 const GEMINI_LARGE_PASTE_CHAR_THRESHOLD = 500;
 const GEMINI_HUGE_PASTE_CHUNK_THRESHOLD = 900;
@@ -780,6 +781,57 @@ export default class TerminalManager {
   }
 
   /**
+   * 中文说明：Codex 在 Windows/PowerShell 短文本场景下，快速写入正文并在短暂 settle 后提交。
+   *
+   * 设计背景：
+   * - 短文本不需要等待局部屏幕 ACK；等待 ACK 失败时会退到数秒级 hard timeout，造成“短消息偶现几秒后才发送”；
+   * - 多行短文本仍保留显式 bracketed paste，避免 PowerShell/ConPTY 将内嵌换行拆成多次提交；
+   * - 单行短文本优先复用 xterm paste 通道，失败时再直接写入 PTY。
+   *
+   * @param ptyId 当前标签页绑定的 PTY id
+   * @param text 已规范化的待发送文本（不含尾随换行）
+   * @param adapter 当前 tab 绑定的终端适配器
+   * @param terminalMode 当前终端类型
+   * @param traceId 可选诊断 trace id
+   */
+  private sendCodexWindowsFastTextAndEnter(
+    ptyId: string,
+    text: string,
+    adapter: TerminalAdapterAPI | null,
+    terminalMode: TerminalMode,
+    traceId?: string | null,
+  ): void {
+    const normalizedText = String(text ?? "");
+    const sendEnter = () => {
+      this.logSendDiagnostic(traceId, `fast.enter delayMs=${CODEX_WINDOWS_FAST_SUBMIT_DELAY_MS}`);
+      try { this.hostPty.write(ptyId, "\r"); } catch {}
+    };
+    const scheduleEnter = () => {
+      try { window.setTimeout(sendEnter, CODEX_WINDOWS_FAST_SUBMIT_DELAY_MS); } catch { sendEnter(); }
+    };
+
+    if (this.shouldForceCodexWindowsBracketedPaste("codex", terminalMode, normalizedText)) {
+      this.logSendDiagnostic(traceId, `trigger.mode=host.bracketed.fast chars=${normalizedText.length}`);
+      try { this.hostPty.write(ptyId, buildBracketedPastePayload(normalizedText)); } catch {}
+      scheduleEnter();
+      return;
+    }
+
+    if (adapter && typeof (adapter as any).paste === "function") {
+      try {
+        (adapter as any).paste(normalizedText);
+        this.logSendDiagnostic(traceId, `trigger.mode=adapter.paste.fast chars=${normalizedText.length}`);
+        scheduleEnter();
+        return;
+      } catch {}
+    }
+
+    this.logSendDiagnostic(traceId, `trigger.mode=host.write.fast chars=${normalizedText.length}`);
+    try { this.hostPty.write(ptyId, normalizedText); } catch {}
+    scheduleEnter();
+  }
+
+  /**
    * 中文说明：Codex 在 Windows/PowerShell 长文本场景下，使用“等待 PTY 回显静默后再回车”的保守提交策略。
    *
    * 设计背景：
@@ -1115,6 +1167,21 @@ export default class TerminalManager {
     return String(providerId || '').trim().toLowerCase() === 'codex'
       && !!terminalMode
       && isWindowsLikeTerminal(terminalMode);
+  }
+
+  /**
+   * 中文说明：判断 Codex Windows 当前文本是否需要启用屏幕 ACK/静默等待的保守提交策略。
+   * @param providerId providerId
+   * @param terminalMode 当前标签页运行终端类型
+   * @param text 待发送正文
+   * @returns 是否启用大文本保守提交策略
+   */
+  private shouldUseCodexWindowsQuietSubmitStrategy(providerId?: string | null, terminalMode?: TerminalMode | null, text?: string): boolean {
+    if (!this.shouldUseCodexWindowsSubmitStrategy(providerId, terminalMode))
+      return false;
+    const normalized = this.normalizeSendProbeText(text || "");
+    const charCount = Array.from(normalized).length;
+    return charCount > CODEX_LARGE_PASTE_CHAR_THRESHOLD;
   }
 
   /**
@@ -1595,8 +1662,10 @@ export default class TerminalManager {
       ? "gemini-paste-quiet"
       : this.shouldUseClaudeWindowsSubmitStrategy(options?.providerId, options?.terminalMode, text)
         ? "claude-paste-quiet"
-      : this.shouldUseCodexWindowsSubmitStrategy(options?.providerId, options?.terminalMode)
+      : this.shouldUseCodexWindowsQuietSubmitStrategy(options?.providerId, options?.terminalMode, text)
         ? "codex-paste-quiet"
+      : this.shouldUseCodexWindowsSubmitStrategy(options?.providerId, options?.terminalMode)
+        ? "codex-fast-submit"
         : "default-outbound";
 
     this.logSendDiagnostic(
@@ -1620,8 +1689,12 @@ export default class TerminalManager {
       this.sendClaudeWindowsTextAndEnter(ptyId, text, adapter, options!.terminalMode!, traceId);
       return;
     }
-    if (this.shouldUseCodexWindowsSubmitStrategy(options?.providerId, options?.terminalMode)) {
+    if (this.shouldUseCodexWindowsQuietSubmitStrategy(options?.providerId, options?.terminalMode, text)) {
       this.sendCodexWindowsTextAndEnter(ptyId, text, adapter, options!.terminalMode!, traceId);
+      return;
+    }
+    if (this.shouldUseCodexWindowsSubmitStrategy(options?.providerId, options?.terminalMode)) {
+      this.sendCodexWindowsFastTextAndEnter(ptyId, text, adapter, options!.terminalMode!, traceId);
       return;
     }
 

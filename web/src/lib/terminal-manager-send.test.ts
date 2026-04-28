@@ -366,7 +366,7 @@ describe("TerminalManager（长文本发送策略）", () => {
     expect(hostPty.write).toHaveBeenCalledWith("pty-screen-ack-gated", "\r");
   });
 
-  it("Codex 在 PowerShell 多行文本场景下，会通过单次 bracketed paste 发送正文并在最小等待后提交", async () => {
+  it("Codex 在 PowerShell 长多行文本场景下，会通过单次 bracketed paste 发送正文并在最小等待后提交", async () => {
     vi.useFakeTimers();
     const adapter: any = createAdapterStub();
     const hostPty = createHostPtyStub();
@@ -390,7 +390,7 @@ describe("TerminalManager（长文本发送策略）", () => {
     tm.ensurePersistentContainer("tab-codex");
     tm.setPty("tab-codex", "pty-codex");
 
-    const text = [
+    const baseText = [
       "请完成：",
       "1. 检查 Serena、GitNexus、ast-grep 在当前会话是否可用；任一不可用，直接报告并停止。",
       "2. Serena分别检查源仓、当前仓的准备状态；若未完成 onboarding，则完成。若一次只能激活一个项目，请明确说明后续需在两仓间切换。",
@@ -399,6 +399,8 @@ describe("TerminalManager（长文本发送策略）", () => {
       "",
       "最后只输出：三者可用性、源仓准备状态、当前仓准备状态、需预处理项、是否可进入正式任务。",
     ].join("\n");
+    const text = Array.from({ length: 4 }, () => baseText).join("\n");
+    expect(text.length).toBeGreaterThan(1000);
     await tm.sendTextAndEnter("tab-codex", text, { providerId: "codex", terminalMode: "pwsh" as any });
     const minWaitMs = getPasteSubmitMinWaitMs({ providerId: "codex", terminalMode: "pwsh" as any, textLength: text.length });
 
@@ -426,24 +428,11 @@ describe("TerminalManager（长文本发送策略）", () => {
     tm.disposeAll(false);
   });
 
-  it("Codex 在 PowerShell 单行文本场景下，仍优先走 adapter.paste", async () => {
+  it("Codex 在 PowerShell 短单行文本场景下，会优先走 adapter.paste 并快速提交", async () => {
     vi.useFakeTimers();
     const adapter: any = createAdapterStub();
     const hostPty = createHostPtyStub();
     createTerminalAdapterMock.mockReturnValue(adapter);
-
-    let snapshotText = "";
-    adapter.readCursorTextSnapshot.mockImplementation(() => {
-      if (!snapshotText) return null;
-      return {
-        bufferType: "alternate",
-        cursorAbsY: 22,
-        startAbsY: 21,
-        endAbsY: 22,
-        lines: [snapshotText],
-        text: snapshotText,
-      };
-    });
 
     const ptyByTab: Record<string, string> = { "tab-codex-single": "pty-codex-single" };
     const tm = new TerminalManager((tabId) => ptyByTab[tabId], hostPty as any, {});
@@ -452,7 +441,6 @@ describe("TerminalManager（长文本发送策略）", () => {
 
     const text = "单行正文不会拆分";
     await tm.sendTextAndEnter("tab-codex-single", text, { providerId: "codex", terminalMode: "pwsh" as any });
-    const minWaitMs = getPasteSubmitMinWaitMs({ providerId: "codex", terminalMode: "pwsh" as any, textLength: text.length });
 
     expect(adapter.paste).toHaveBeenCalledWith(text);
     expect(hostPty.write).not.toHaveBeenCalledWith(
@@ -461,20 +449,39 @@ describe("TerminalManager（长文本发送策略）", () => {
     );
     expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex-single", "\r");
 
-    snapshotText = text;
-    vi.advanceTimersByTime(40);
+    vi.advanceTimersByTime(31);
     expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex-single", "\r");
-
-    vi.advanceTimersByTime(40);
-    const remainMinWaitMs = Math.max(0, minWaitMs - 80);
-    if (remainMinWaitMs > 0) {
-      expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex-single", "\r");
-      vi.advanceTimersByTime(remainMinWaitMs - 1);
-      expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex-single", "\r");
-      vi.advanceTimersByTime(1);
-    }
-
+    vi.advanceTimersByTime(1);
     expect(hostPty.write).toHaveBeenCalledWith("pty-codex-single", "\r");
+
+    tm.disposeAll(false);
+  });
+
+  it("Codex 在 PowerShell 短多行文本场景下，会通过 bracketed paste 快速提交", async () => {
+    vi.useFakeTimers();
+    const adapter: any = createAdapterStub();
+    const hostPty = createHostPtyStub();
+    createTerminalAdapterMock.mockReturnValue(adapter);
+
+    const ptyByTab: Record<string, string> = { "tab-codex-short-multi": "pty-codex-short-multi" };
+    const tm = new TerminalManager((tabId) => ptyByTab[tabId], hostPty as any, {});
+    tm.ensurePersistentContainer("tab-codex-short-multi");
+    tm.setPty("tab-codex-short-multi", "pty-codex-short-multi");
+
+    const text = "第一行\n第二行";
+    await tm.sendTextAndEnter("tab-codex-short-multi", text, { providerId: "codex", terminalMode: "pwsh" as any });
+
+    expect(adapter.paste).not.toHaveBeenCalled();
+    expect(hostPty.write).toHaveBeenCalledWith(
+      "pty-codex-short-multi",
+      `${BRACKETED_PASTE_START}${text}${BRACKETED_PASTE_END}`,
+    );
+    expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex-short-multi", "\r");
+
+    vi.advanceTimersByTime(31);
+    expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex-short-multi", "\r");
+    vi.advanceTimersByTime(1);
+    expect(hostPty.write).toHaveBeenCalledWith("pty-codex-short-multi", "\r");
 
     tm.disposeAll(false);
   });
