@@ -437,15 +437,15 @@ export default class TerminalManager {
     };
 
     const provider = String(providerId || "").trim().toLowerCase();
-    const placeholderMarkers =
-      provider === "codex"
-        ? [this.buildCodexScreenAckMarker(normalized)]
-        : provider === "gemini"
-          ? [this.buildGeminiScreenAckMarker(normalized)]
-          : provider === "claude"
-            ? this.buildClaudeScreenAckMarkers(normalized)
-            : [];
-    placeholderMarkers.forEach((marker) => pushMarker(marker));
+    if (provider === "codex") {
+      const codexMarker = this.buildCodexScreenAckMarker(normalized);
+      pushMarker(codexMarker);
+      if (codexMarker) pushMarker("[Pasted Content");
+    } else if (provider === "gemini") {
+      pushMarker(this.buildGeminiScreenAckMarker(normalized));
+    } else if (provider === "claude") {
+      this.buildClaudeScreenAckMarkers(normalized).forEach((marker) => pushMarker(marker));
+    }
 
     const lines = normalized
       .split("\n")
@@ -553,6 +553,7 @@ export default class TerminalManager {
     let unsub: (() => void) | undefined;
     let dataEventCount = 0;
     let screenAckStableCount = 0;
+    let ptyAckBuffer = "";
     let lastScreenAckMarker = "";
     let lastScreenAckBlockedMarker = "";
 
@@ -677,6 +678,19 @@ export default class TerminalManager {
     unsub = this.hostPty.onData(ptyId, (data) => {
       if (!data) return;
       dataEventCount += 1;
+      if (screenAckProbe?.markers.length) {
+        ptyAckBuffer = (ptyAckBuffer + data).slice(-4096);
+        const haystack = this.collapseSendProbeWhitespace(ptyAckBuffer);
+        const matchedPtyAckMarker = screenAckProbe.markers.find((marker) => haystack.includes(marker));
+        if (matchedPtyAckMarker) {
+          this.logSendDiagnostic(
+            traceId,
+            `pty-ack.hit elapsedMs=${Math.max(0, Date.now() - startedAt)} marker=${matchedPtyAckMarker}`
+          );
+          attemptFinish("pty-ack");
+          return;
+        }
+      }
       if (dataEventCount <= 3 || data.includes("[Pasted Content")) {
         this.logSendDiagnostic(
           traceId,

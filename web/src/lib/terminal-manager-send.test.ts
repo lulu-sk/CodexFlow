@@ -479,6 +479,33 @@ describe("TerminalManager（长文本发送策略）", () => {
     tm.disposeAll(false);
   });
 
+  it("Codex 在屏幕 ACK 未命中但 PTY 已回显粘贴占位符时，会在最小等待后提交", async () => {
+    vi.useFakeTimers();
+    const adapter: any = createAdapterStub();
+    const hostPty = createHostPtyStub();
+    createTerminalAdapterMock.mockReturnValue(adapter);
+
+    adapter.readCursorTextSnapshot.mockReturnValue(null);
+
+    const ptyByTab: Record<string, string> = { "tab-codex-pty-ack": "pty-codex-pty-ack" };
+    const tm = new TerminalManager((tabId) => ptyByTab[tabId], hostPty as any, {});
+    tm.ensurePersistentContainer("tab-codex-pty-ack");
+    tm.setPty("tab-codex-pty-ack", "pty-codex-pty-ack");
+
+    const text = "x".repeat(1201);
+    const minWaitMs = getPasteSubmitMinWaitMs({ providerId: "codex", terminalMode: "pwsh" as any, textLength: text.length });
+    await tm.sendTextAndEnter("tab-codex-pty-ack", text, { providerId: "codex", terminalMode: "pwsh" as any });
+
+    hostPty.emitData("pty-codex-pty-ack", "[Pasted Content 1.2k chars]");
+    vi.advanceTimersByTime(minWaitMs - 1);
+    expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex-pty-ack", "\r");
+
+    vi.advanceTimersByTime(1);
+    expect(hostPty.write).toHaveBeenCalledWith("pty-codex-pty-ack", "\r");
+
+    tm.disposeAll(false);
+  });
+
   it("Codex 在 PowerShell 多行文本的 write_only 场景下，会通过单次 bracketed paste 写入正文", async () => {
     const adapter: any = createAdapterStub();
     const hostPty = createHostPtyStub();
