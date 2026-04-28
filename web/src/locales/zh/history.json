@@ -10,6 +10,7 @@
   "deselectAll": "取消全选",
   "invertSelection": "反选",
   "loadingFilters": "加载筛选项中…",
+  "noFilterOptions": "暂无可筛选内容",
   "skippedLines": "解析时跳过了 {count} 行不可解析内容。",
   "selectRightToView": "请选择右侧一条历史以查看详情。",
   "showing": "… 共 {total} 条，展示前 {count} 条",

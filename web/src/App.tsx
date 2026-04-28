@@ -13003,6 +13003,45 @@ function filterHistoryMessages(
   return { messages: filteredMessages, matches };
 }
 
+/**
+ * 中文说明：规整 history.read 返回的消息数组，避免异常返回结构让详情加载流程中断。
+ */
+function normalizeHistoryReadMessages(res: any): HistoryMessage[] {
+  const rawMessages = Array.isArray(res?.messages) ? res.messages : [];
+  return rawMessages.map((message: any) => ({
+    role: String(message?.role || "unknown"),
+    content: Array.isArray(message?.content) ? message.content : [],
+  }));
+}
+
+/**
+ * 中文说明：从历史消息内容中构造筛选项状态，默认只展示主对话文本与图片。
+ */
+function buildHistoryTypeFilter(messages: HistoryMessage[]): Record<string, boolean> {
+  const allKeys = new Set<string>();
+  for (const message of messages) {
+    for (const item of message.content || []) {
+      for (const key of keysOfItemCanonical(item)) allKeys.add(key);
+    }
+  }
+
+  // 去重策略：若同时存在 base 与 message.<base>，则仅保留 base，避免筛选项重复展示。
+  const bases = new Set(['input_text','output_text','text','code','json','instructions','environment_context','summary']);
+  const filtered: string[] = [];
+  for (const key of Array.from(allKeys)) {
+    if (key.startsWith('message.')) {
+      const tail = key.slice('message.'.length);
+      if (bases.has(tail) && allKeys.has(tail)) continue;
+    }
+    filtered.push(key);
+  }
+  filtered.sort();
+
+  const next: Record<string, boolean> = {};
+  for (const key of filtered) next[key] = (key === 'input_text' || key === 'output_text' || key === 'image');
+  return next;
+}
+
 function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, onResume, onResumeExternal, getResumeShellLabel }: { sessions: HistorySession[]; selectedHistoryId: string | null; projectWinPath?: string; onBack?: () => void; onResume?: (filePath?: string) => void; onResumeExternal?: (filePath?: string) => void; getResumeShellLabel: (filePath?: string) => ShellLabel }) {
   const { t } = useTranslation(['history', 'common']);
   const MAX_HISTORY_MESSAGE_CACHE = 5;
@@ -13400,13 +13439,23 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
     if (!selectedHistoryId || !selectedSession || !selectedSession.filePath) return;
     const signature = selectedSessionFingerprint;
     const hasMessages = !!(selectedLocalSession && Array.isArray(selectedLocalSession.messages) && selectedLocalSession.messages.length > 0);
-    if (hasMessages && lastLoadedFingerprintRef.current === signature) return;
+    if (lastLoadedFingerprintRef.current === signature && (hasMessages || loaded)) return;
     setLoaded(false);
+    setTypeFilter({});
     const seq = ++reqSeq.current;
     (async () => {
       try {
-        const res: any = await window.host.history.read({ filePath: String(selectedSession.filePath || ''), providerId: selectedSession.providerId });
-        const msgs = (res.messages || []).map((m: any) => ({ role: m.role as any, content: m.content }));
+        const filePath = String(selectedSession.filePath || '');
+        let res: any = await window.host.history.read({ filePath, providerId: selectedSession.providerId });
+        let msgs = normalizeHistoryReadMessages(res);
+        if (msgs.length === 0 && filePath) {
+          const reparsed: any = await window.host.history.read({ filePath, forceParse: true });
+          const reparsedMessages = normalizeHistoryReadMessages(reparsed);
+          if (reparsedMessages.length > 0) {
+            res = reparsed;
+            msgs = reparsedMessages;
+          }
+        }
         if (seq === reqSeq.current) {
           const allowedIds = new Set(touchMessageCache(selectedHistoryId));
           setLocalSessions((cur) => {
@@ -13418,25 +13467,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
           lastLoadedFingerprintRef.current = signature;
         }
         try {
-          const allKeys = new Set<string>();
-          for (const mm of msgs) {
-            for (const it of (mm.content || [])) for (const k of keysOfItemCanonical(it)) allKeys.add(k);
-          }
-          // 去重策略：若同时存在 base 与 message.<base>，则仅保留 base（避免重复展示）。
-          const BASES = new Set(['input_text','output_text','text','code','json','instructions','environment_context','summary']);
-          const hasBase = (b: string) => allKeys.has(b);
-          const filtered: string[] = [];
-          for (const k of Array.from(allKeys)) {
-            if (k.startsWith('message.')) {
-              const tail = k.slice('message.'.length);
-              if (BASES.has(tail) && hasBase(tail)) continue;
-            }
-            filtered.push(k);
-          }
-          filtered.sort();
-          // 默认仅勾选 input_text 与 output_text，以突出用户与助手的主要对话内容
-          const next: Record<string, boolean> = {};
-          for (const k of filtered) next[k] = (k === 'input_text' || k === 'output_text' || k === 'image');
+          const next = buildHistoryTypeFilter(msgs);
           if (seq === reqSeq.current) setTypeFilter(next);
         } catch {}
       } catch (e) {
@@ -13687,7 +13718,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
                   ))
                 ) : (
                   <div className="col-span-full flex items-center justify-center py-2 text-[var(--cf-text-muted)] font-apple-regular text-[0.68rem]">
-                    {t('history:loadingFilters')}
+                    {loaded ? t('history:noFilterOptions') : t('history:loadingFilters')}
                   </div>
                 )}
               </div>

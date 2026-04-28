@@ -459,7 +459,7 @@ export interface HistoryAPI {
     offset?: number;
     historyRoot?: string;
   }): Promise<{ ok: boolean; sessions?: HistorySummary[]; error?: string }>;
-  read(args: { filePath: string; providerId?: "codex" | "claude" | "gemini" }): Promise<{ id: string; title: string; date: number; messages: HistoryMessage[]; skippedLines: number; providerId?: "codex" | "claude" | "gemini" }>;
+  read(args: { filePath: string; providerId?: "codex" | "claude" | "gemini"; forceParse?: boolean }): Promise<{ id: string; title: string; date: number; messages: HistoryMessage[]; skippedLines: number; providerId?: "codex" | "claude" | "gemini" }>;
   findEmptySessions(): Promise<{ ok: boolean; candidates?: Array<{ id: string; title: string; rawDate?: string; date: number; filePath: string; sizeKB?: number }>; error?: string }>;
   trash(args: { filePath: string }): Promise<{ ok: true; notFound?: boolean } | { ok: false; error: string }>;
   trashMany(args: { filePaths: string[] }): Promise<{ ok: boolean; results?: Array<{ filePath: string; ok: boolean; notFound?: boolean; error?: string }>; summary?: { ok: number; notFound: number; failed: number }; error?: string }>;

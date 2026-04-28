@@ -377,7 +377,7 @@ contextBridge.exposeInMainWorld('host', {
     }) => {
       return await ipcRenderer.invoke('history.list', args);
     },
-    read: async (args: { filePath: string; providerId?: "codex" | "claude" | "gemini" }) => {
+    read: async (args: { filePath: string; providerId?: "codex" | "claude" | "gemini"; forceParse?: boolean }) => {
       return await ipcRenderer.invoke('history.read', args);
     },
     findEmptySessions: async () => {
