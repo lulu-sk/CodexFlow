@@ -80,3 +80,26 @@ export function filterHistoryPreviewText(raw: string): string {
   }
 }
 
+/**
+ * 过滤 Codex 历史预览文本：
+ * - 优先提取官方 Codex “Files mentioned” 模板里的真实请求段；
+ * - 非模板内容继续沿用通用预览过滤策略。
+ */
+export function filterCodexHistoryPreviewText(raw: string): string {
+  try {
+    const text = String(raw || "").replace(/\r\n/g, "\n");
+    const marker = text.match(/^##\s*My request for Codex:?\s*$/im);
+    if (marker && typeof marker.index === "number") {
+      const request = text.slice(marker.index + marker[0].length).trim();
+      const cleaned = request.replace(/```[\s\S]*?```/g, "").replace(/[\r\n\t]+/g, " ").replace(/\s{2,}/g, " ").trim();
+      if (cleaned) return cleaned;
+    }
+    if (/^#\s*Files mentioned by the user:/i.test(text.trim())) return "";
+    if (/^#\s*AGENTS\.md instructions\b/i.test(text.trim())) return "";
+    if (/^<environment_context>/i.test(text.trim())) return "";
+    return filterHistoryPreviewText(text);
+  } catch {
+    return filterHistoryPreviewText(String(raw || ""));
+  }
+}
+

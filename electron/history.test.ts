@@ -1,9 +1,10 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { promises as fsp } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 let userDataDir = "";
+const wslMockState = vi.hoisted(() => ({ sessionRoots: [] as string[] }));
 
 vi.mock("electron", () => ({
   app: {
@@ -11,9 +12,23 @@ vi.mock("electron", () => ({
   },
 }));
 
-import { readHistoryFile } from "./history";
+vi.mock("./wsl", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./wsl")>();
+  return {
+    ...actual,
+    getSessionsRootsFastAsync: vi.fn(async () => wslMockState.sessionRoots),
+  };
+});
+
+import { listHistory, readHistoryFile } from "./history";
 
 const tempDirs: string[] = [];
+
+beforeEach(async () => {
+  userDataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "codexflow-history-user-data-"));
+  tempDirs.push(userDataDir);
+  wslMockState.sessionRoots = [];
+});
 
 /**
  * 中文说明：创建临时 Codex JSONL 历史文件，供解析回归测试使用。
@@ -24,6 +39,21 @@ async function createHistoryJsonlFile(lines: unknown[]): Promise<string> {
   const filePath = path.join(dir, "rollout-test.jsonl");
   const body = lines.map((line) => JSON.stringify(line)).join("\n");
   await fsp.writeFile(filePath, `${body}\n`, "utf8");
+  return filePath;
+}
+
+/**
+ * 中文说明：创建符合 Codex sessions 年/月/日目录结构的临时历史文件，供列表扫描测试使用。
+ */
+async function createHistoryListJsonlFile(lines: unknown[]): Promise<string> {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), "codexflow-history-root-"));
+  tempDirs.push(root);
+  const dir = path.join(root, "2026", "04", "29");
+  await fsp.mkdir(dir, { recursive: true });
+  const filePath = path.join(dir, "rollout-2026-04-29T03-35-01-test.jsonl");
+  const body = lines.map((line) => JSON.stringify(line)).join("\n");
+  await fsp.writeFile(filePath, `${body}\n`, "utf8");
+  wslMockState.sessionRoots = [root];
   return filePath;
 }
 
@@ -71,11 +101,105 @@ function collectTexts(messages: Array<{ content?: Array<{ text?: string }> }>): 
 
 afterEach(async () => {
   delete (global as any).__historyCache;
+  delete (global as any).__historySummaryCache;
+  userDataDir = "";
   await Promise.all(tempDirs.splice(0).map(async (dir) => {
     try {
       await fsp.rm(dir, { recursive: true, force: true });
     } catch {}
   }));
+});
+
+describe("electron/history.listHistory", () => {
+  it("列表摘要优先使用 Codex thread_name_updated 作为预览标题", async () => {
+    const userRequest = [
+      "# Files mentioned by the user:",
+      "",
+      "## workflows/alp-auto-current-ops.json",
+      "",
+      "## My request for Codex:",
+      "工作流包 alp-auto-current-ops 节点的位置调整优化，重叠的地方调整间距",
+    ].join("\n");
+    const largeImage = `data:image/png;base64,${"a".repeat(96 * 1024)}`;
+    await createHistoryListJsonlFile([
+      {
+        timestamp: "2026-04-29T03:35:01.000Z",
+        type: "session_meta",
+        payload: {
+          id: "session-thread-name",
+          cwd: "/workspace/project",
+        },
+      },
+      {
+        timestamp: "2026-04-29T03:35:02.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [
+            { type: "input_text", text: userRequest },
+            { type: "input_image", image_url: largeImage },
+          ],
+        },
+      },
+      {
+        timestamp: "2026-04-29T03:35:08.000Z",
+        type: "event_msg",
+        payload: {
+          type: "thread_name_updated",
+          thread_id: "session-thread-name",
+          thread_name: "优化 alp-auto-current-ops 节点布局",
+        },
+      },
+    ]);
+
+    const sessions = await listHistory({});
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].title).toBe("优化 alp-auto-current-ops 节点布局");
+    expect(sessions[0].preview).toBe("优化 alp-auto-current-ops 节点布局");
+  });
+
+  it("没有线程名时会从 Files mentioned 模板中提取真实请求", async () => {
+    await createHistoryListJsonlFile([
+      {
+        timestamp: "2026-04-29T03:35:01.000Z",
+        type: "session_meta",
+        payload: {
+          id: "session-clean-request",
+          cwd: "/workspace/project",
+        },
+      },
+      {
+        timestamp: "2026-04-29T03:35:02.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: [
+                "# Files mentioned by the user:",
+                "",
+                "## workflows/alp-auto-current-ops.json",
+                "",
+                "## My request for Codex:",
+                "工作流包 alp-auto-current-ops 节点的位置调整优化，重叠的地方调整间距",
+              ].join("\n"),
+            },
+          ],
+        },
+      },
+    ]);
+
+    const sessions = await listHistory({});
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].title).toBe("工作流包 alp-auto-current-ops 节点的位置调整优化，重叠的地方调整间距");
+    expect(sessions[0].preview).toBe("工作流包 alp-auto-current-ops 节点的位置调整优化，重叠的地方调整间距");
+    expect(sessions[0].preview || "").not.toContain("# Files mentioned by the user");
+  });
 });
 
 describe("electron/history.readHistoryFile", () => {
@@ -350,6 +474,59 @@ describe("electron/history.readHistoryFile", () => {
     expect(userMessages[0]?.content?.map((item) => item.type)).toEqual(["input_text", "image"]);
     expect(userMessages[0]?.content?.[1]?.localPath).toBe(wslImagePath);
     expect(String(userMessages[0]?.content?.[1]?.src || "")).toMatch(/^file:\/\//);
+  });
+
+  it("会清理 Codex 新格式用户消息中的图片边界占位符", async () => {
+    const dataUrlA = "data:image/png;base64,QUFB";
+    const dataUrlB = "data:image/png;base64,QkJC";
+    const messageText = "请结合这些截图调整布局";
+    const filePath = await createHistoryJsonlFile([
+      {
+        timestamp: "2026-03-25T01:05:00.000Z",
+        type: "session_meta",
+        payload: {
+          id: "session-user-inline-images",
+          cwd: "/tmp/demo",
+        },
+      },
+      {
+        timestamp: "2026-03-25T01:05:01.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [
+            { type: "input_text", text: messageText },
+            { type: "input_text", text: "<image>" },
+            { type: "input_image", image_url: dataUrlA },
+            { type: "input_text", text: "</image>" },
+            { type: "input_text", text: "<image>" },
+            { type: "input_image", image_url: dataUrlB },
+            { type: "input_text", text: "</image>" },
+          ],
+        },
+      },
+      {
+        timestamp: "2026-03-25T01:05:01.100Z",
+        type: "event_msg",
+        payload: {
+          type: "user_message",
+          message: messageText,
+          images: [dataUrlA, dataUrlB],
+          local_images: [],
+          text_elements: [],
+        },
+      },
+    ]);
+
+    const parsed = await readHistoryFile(filePath, { maxLines: 0 });
+    const userMessages = parsed.messages.filter((message) => message.role === "user");
+    const content = userMessages[0]?.content || [];
+
+    expect(userMessages).toHaveLength(1);
+    expect(content.map((item) => item.type)).toEqual(["input_text", "image", "image"]);
+    expect(content.map((item) => item.text).join("\n")).not.toContain("<image>");
+    expect(parsed.messages.some((message) => message.role === "event_msg")).toBe(false);
   });
 
   it("view_image 参数使用正斜杠 Windows 路径时会保留完整盘符路径", async () => {

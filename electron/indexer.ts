@@ -16,7 +16,7 @@ import { getClaudeRootCandidatesFastAsync, discoverClaudeSessionFiles } from "./
 import { getGeminiRootCandidatesFastAsync, discoverGeminiSessionFiles } from "./agentSessions/gemini/discovery";
 import { parseClaudeSessionFile } from "./agentSessions/claude/parser";
 import { parseGeminiSessionFile, deriveGeminiProjectHashCandidatesFromPath } from "./agentSessions/gemini/parser";
-import { filterHistoryPreviewText } from "./agentSessions/shared/preview";
+import { filterCodexHistoryPreviewText } from "./agentSessions/shared/preview";
 import {
   dirKeyFromCwd as dirKeyFromCwdShared,
   dirKeyOfFilePath as dirKeyOfFilePathShared,
@@ -72,6 +72,21 @@ type DirKeyResolutionState = {
 const DETAILS_CACHE_LIMIT = 8;
 // 历史首条输入预览的索引长度上限：用于搜索匹配（展示仍由前端自行截断）
 const HISTORY_PREVIEW_SEARCH_MAX_CHARS = 240;
+
+/**
+ * 从 Codex 事件中提取 App Server 生成的线程名。
+ */
+function extractCodexThreadNameFromRecord(obj: any): string {
+  try {
+    if (!obj || typeof obj !== "object") return "";
+    if (obj.type !== "event_msg") return "";
+    const payload = obj.payload;
+    if (!payload || payload.type !== "thread_name_updated") return "";
+    return String(payload.thread_name || "").replace(/\s+/g, " ").trim();
+  } catch {
+    return "";
+  }
+}
 
 const g: any = global as any;
 if (!g.__indexer) g.__indexer = {};
@@ -231,7 +246,7 @@ function stripDetailsForPersist(details: Details): Details {
 }
 
 // 中文说明：历史索引语义调整后提升版本，强制丢弃旧的 index/details 缓存，避免继续沿用错误 dirKey。
-const VERSION = "v11";
+const VERSION = "v12";
 
 /**
  * 读取 Claude Code 的 Agent 历史开关（默认 false）。
@@ -1055,6 +1070,11 @@ async function parseCodexDetails(fp: string, stat: fs.Stats, opts?: { summaryOnl
           if (!line) continue;
           try {
             const obj = JSON.parse(line);
+            const threadName = extractCodexThreadNameFromRecord(obj);
+            if (threadName) {
+              title = threadName;
+              preview = threadName.slice(0, HISTORY_PREVIEW_SEARCH_MAX_CHARS);
+            }
             if (runtimeShell === 'unknown') {
               const hint = detectRuntimeShellFromContent(obj, prefixAcc);
               if (hint !== 'unknown') runtimeShell = hint;
@@ -1179,7 +1199,7 @@ async function parseCodexDetails(fp: string, stat: fs.Stats, opts?: { summaryOnl
                       const t = String((it as any)?.text || '').trim();
                       if (t) {
                         // 预览行级过滤：跳过路径/空行，直到遇到有效内容
-                        const filtered = filterHistoryPreviewText(t);
+                        const filtered = filterCodexHistoryPreviewText(t);
                         if (filtered) { preview = filtered.slice(0, HISTORY_PREVIEW_SEARCH_MAX_CHARS); break; }
                       }
                     }
@@ -1190,7 +1210,7 @@ async function parseCodexDetails(fp: string, stat: fs.Stats, opts?: { summaryOnl
                       if (ty === 'instructions' || ty === 'environment_context') continue;
                       const t = String((it as any)?.text || '').trim();
                       if (t) {
-                        const filtered = filterHistoryPreviewText(t);
+                        const filtered = filterCodexHistoryPreviewText(t);
                         if (filtered) { preview = filtered.slice(0, HISTORY_PREVIEW_SEARCH_MAX_CHARS); break; }
                       }
                     }
