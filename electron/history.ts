@@ -53,6 +53,7 @@ export type Message = { role: string; content: MessageContent[] };
 
 // 历史摘要前缀与缓存上限（控制内存占用）
 const SUMMARY_PREFIX_BYTES = 48 * 1024; // 仅保留文件头 48KB，用于提取 metadata / cwd 提示
+const SUMMARY_THREAD_NAME_SCAN_BYTES = 8 * 1024 * 1024; // 额外扫描上限，仅用于定位 Codex thread_name_updated
 const SUMMARY_CACHE_MAX_ENTRIES = 800;
 
 /**
@@ -300,6 +301,9 @@ function titleFromFilename(filePath: string): string {
   }
 }
 
+/**
+ * 中文说明：将标题压缩为适合列表展示的一行文本。
+ */
 function clampTitle(s: string, max = 96): string {
   const ss = String(s || '').replace(/[\r\n]+/g, ' ').replace(/```[\s\S]*?```/g, '').replace(/\s{2,}/g, ' ').trim();
   if (!ss) return '';
@@ -332,56 +336,239 @@ function looksNumericOnly(s: string): boolean {
   return false;
 }
 
-function extractTitleFromPrefix(prefix: string): { user?: string; assistant?: string } {
-  const out: { user?: string; assistant?: string } = {};
+type PrefixTitleParts = { threadName?: string; user?: string; assistant?: string };
+
+/**
+ * 中文说明：按 Codex 插件的预览口径规整历史摘要文本，保留完整内容供搜索使用。
+ */
+function normalizeHistoryPreviewText(value: unknown): string {
+  const text = String(value || '')
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  return text;
+}
+
+/**
+ * 中文说明：识别 Codex 自动注入的上下文块，避免把 AGENTS/环境信息误当成会话标题。
+ */
+function isSyntheticCodexContextText(value: string): boolean {
+  const text = String(value || '').trim();
+  if (!text) return true;
+  if (/^#\s*AGENTS\.md instructions\b/i.test(text)) return true;
+  if (/^<environment_context>/i.test(text)) return true;
+  if (/^Another language model started to solve this problem\b/i.test(text)) return true;
+  if (/^#\s*Files mentioned by the user:/i.test(text) && !/^##\s*My request for Codex:?\s*$/im.test(text)) return true;
+  return false;
+}
+
+/**
+ * 中文说明：从 Codex “Files mentioned” 模板中提取真正的用户请求段。
+ */
+function extractCodexRequestText(value: string): string {
+  const raw = String(value || '').replace(/\r\n/g, '\n');
+  const marker = raw.match(/^##\s*My request for Codex:?\s*$/im);
+  if (marker && typeof marker.index === 'number') {
+    const request = raw.slice(marker.index + marker[0].length);
+    return normalizeHistoryPreviewText(request);
+  }
+  if (isSyntheticCodexContextText(raw)) return '';
+  return normalizeHistoryPreviewText(raw);
+}
+
+/**
+ * 中文说明：从 JSONL 记录中提取 Codex 服务端生成的线程名。
+ */
+function extractThreadNameFromRecord(obj: any): string {
+  try {
+    if (!obj || typeof obj !== 'object') return '';
+    if (obj.type !== 'event_msg') return '';
+    const payload = obj.payload;
+    if (!payload || payload.type !== 'thread_name_updated') return '';
+    return normalizeHistoryPreviewText(payload.thread_name);
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 中文说明：从新旧格式消息记录中提取角色与纯文本内容。
+ */
+function extractMessageTextFromRecord(obj: any): { role: string; text: string } | null {
+  try {
+    if (!obj || typeof obj !== 'object') return null;
+    const recordType = String(obj.type || obj.record_type || '').toLowerCase();
+    const src = recordType === 'response_item' && obj.payload?.type === 'message'
+      ? obj.payload
+      : (recordType === 'message' ? obj : null);
+    if (!src) return null;
+    const role = String(src.role || src.actor || src.from || '').toLowerCase();
+    let text = '';
+    if (Array.isArray(src.content)) {
+      for (const c of src.content) {
+        if (!c) continue;
+        const s = c.text ?? c.input_text ?? c.output_text ?? c.code ?? '';
+        if (typeof s === 'string' && s.trim()) {
+          text = s;
+          break;
+        }
+      }
+    } else if (typeof src.content === 'string') {
+      text = src.content;
+    } else if (typeof src.input_text === 'string') {
+      text = src.input_text;
+    }
+    if (!text.trim()) return null;
+    return { role, text };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 中文说明：解析历史文件前缀中的线程名、用户请求和助手首段文本。
+ */
+function extractTitleFromPrefix(prefix: string): PrefixTitleParts {
+  const out: PrefixTitleParts = {};
   try {
     const lines = String(prefix || '').split(/\r?\n/).filter(Boolean).slice(0, 200);
     for (const line of lines) {
       try {
         const obj = JSON.parse(line);
-        const role = String(obj.role || obj.actor || obj.from || '').toLowerCase();
-        const type = String(obj.type || obj.record_type || '').toLowerCase();
-        if (type !== 'message') continue;
-        let text = '';
-        if (Array.isArray(obj.content)) {
-          for (const c of obj.content) {
-            if (!c) continue;
-            const s = c.text ?? c.code ?? '';
-            if (typeof s === 'string' && s.trim()) { text = s; break; }
-          }
-        } else if (typeof obj.content === 'string') {
-          text = obj.content;
-        } else if (typeof obj.input_text === 'string') {
-          text = obj.input_text;
+        const threadName = extractThreadNameFromRecord(obj);
+        if (threadName && !out.threadName) out.threadName = threadName;
+        const msg = extractMessageTextFromRecord(obj);
+        if (msg) {
+          const cand = msg.role === 'user'
+            ? extractCodexRequestText(msg.text)
+            : normalizeHistoryPreviewText(msg.text);
+          if (!cand || looksNumericOnly(cand)) continue;
+          if (msg.role === 'user' && !out.user) out.user = cand;
+          else if (!out.assistant) out.assistant = cand;
         }
-        const cand = clampTitle(text);
-        if (!cand || looksNumericOnly(cand)) continue;
-        if (role === 'user' && !out.user) out.user = cand;
-        else if (!out.assistant) out.assistant = cand;
-        if (out.user && out.assistant) break;
+        if (out.threadName && out.user && out.assistant) break;
       } catch { continue; }
     }
   } catch {}
   return out;
 }
 
-function deriveTitle(parsed: any, prefix: string, filePath: string, fallbackId: string): string {
+/**
+ * 中文说明：从 JSON 字符串片段中解码单个字段值。
+ */
+function decodeJsonStringFragment(value: string): string {
+  try {
+    return JSON.parse(`"${value}"`);
+  } catch {
+    return String(value || '').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+  }
+}
+
+/**
+ * 中文说明：在有限字节范围内流式查找 Codex 线程名，避免解析包含大图片的整行 JSON。
+ */
+async function scanThreadNameFromFile(filePath: string, maxBytes = SUMMARY_THREAD_NAME_SCAN_BYTES): Promise<string> {
+  return await new Promise<string>((resolve) => {
+    try {
+      const marker = '"thread_name_updated"';
+      const rs = fs.createReadStream(filePath, { encoding: 'utf8', start: 0, end: Math.max(0, maxBytes - 1), highWaterMark: 64 * 1024 });
+      let carry = '';
+      let eventBuffer = '';
+      let markerSeen = false;
+      let done = false;
+      const finish = (value: string): void => {
+        if (done) return;
+        done = true;
+        try { rs.close(); } catch {}
+        resolve(normalizeHistoryPreviewText(value));
+      };
+      const tryExtract = (): void => {
+        if (!markerSeen) return;
+        const m = eventBuffer.match(/"thread_name"\s*:\s*"((?:\\.|[^"\\])*)"/);
+        if (m && typeof m[1] === 'string') {
+          finish(decodeJsonStringFragment(m[1]));
+          return;
+        }
+        if (eventBuffer.length > 8192) finish('');
+      };
+      rs.on('data', (chunk) => {
+        if (done) return;
+        const text = String(chunk || '');
+        if (markerSeen) {
+          eventBuffer += text;
+          tryExtract();
+          return;
+        }
+        const combined = carry + text;
+        const idx = combined.indexOf(marker);
+        if (idx >= 0) {
+          markerSeen = true;
+          eventBuffer = combined.slice(idx);
+          tryExtract();
+          return;
+        }
+        carry = combined.slice(Math.max(0, combined.length - marker.length + 1));
+      });
+      rs.on('end', () => finish(''));
+      rs.on('error', () => finish(''));
+    } catch {
+      resolve('');
+    }
+  });
+}
+
+/**
+ * 中文说明：依据插件策略生成历史摘要文本：线程名优先，其次干净用户请求，再回退显式标题/助手文本。
+ */
+function deriveHistorySummaryText(
+  parsed: any,
+  prefix: string,
+  filePath: string,
+  fallbackId: string,
+  opts?: { threadName?: string; prefixParts?: PrefixTitleParts }
+): { title: string; preview?: string } {
+  const prefixParts = opts?.prefixParts || extractTitleFromPrefix(prefix);
+  const threadName = normalizeHistoryPreviewText(opts?.threadName || prefixParts.threadName || '');
   // Prefer explicit fields
   const pTitle = (parsed && typeof parsed.title === 'string') ? parsed.title : undefined;
-  const pInstr = (parsed && typeof parsed.instructions === 'string') ? parsed.instructions : undefined;
-  const first = clampTitle(pInstr || pTitle || '');
-  if (first && !looksNumericOnly(first)) return first;
-  // Next: pick first user message text from prefix, then assistant
-  const msgs = extractTitleFromPrefix(prefix);
-  if (msgs.user) return msgs.user;
-  if (msgs.assistant) return msgs.assistant;
+  const pPayloadTitle = (parsed && typeof parsed.payload?.title === 'string') ? parsed.payload.title : undefined;
+  const explicit = normalizeHistoryPreviewText(pTitle || pPayloadTitle || '');
+  const preview = threadName || prefixParts.user || explicit || prefixParts.assistant || '';
+  const title = clampTitle(preview);
+  if (title && !looksNumericOnly(title)) return { title, preview };
   // Fallback: directory or filename
   try {
     const base = path.basename(filePath).replace(/\.jsonl$/i, '') || fallbackId;
-    return `Session ${base}`;
+    return { title: `Session ${base}` };
   } catch {
-    return `Session ${fallbackId}`;
+    return { title: `Session ${fallbackId}` };
   }
+}
+
+/**
+ * 中文说明：生成单个历史文件的列表摘要标题与搜索预览。
+ */
+async function resolveHistorySummaryText(
+  parsed: any,
+  prefix: string,
+  filePath: string,
+  fallbackId: string,
+  providerId: ProviderId
+): Promise<{ title: string; preview?: string }> {
+  const prefixParts = extractTitleFromPrefix(prefix);
+  let threadName = prefixParts.threadName || '';
+  if (!threadName && providerId === 'codex') {
+    threadName = await scanThreadNameFromFile(filePath);
+  }
+  return deriveHistorySummaryText(parsed, prefix, filePath, fallbackId, { threadName, prefixParts });
+}
+
+/**
+ * 中文说明：兼容旧调用方，返回单行标题文本。
+ */
+function deriveTitle(parsed: any, prefix: string, filePath: string, fallbackId: string): string {
+  return deriveHistorySummaryText(parsed, prefix, filePath, fallbackId).title;
 }
 
 // No timestamp parsing here; UI shows raw timestamp string, and ordering uses file mtime.
@@ -398,7 +585,7 @@ type HistoryListCacheEntry = {
 };
 
 // 中文说明：历史归属语义变更后提升版本，强制失效旧的列表缓存，避免继续复用错误归属结果。
-const PARSER_VERSION = 'v10';
+const PARSER_VERSION = 'v12';
 const CACHE_SCHEMA_VERSION = '2';
 
 /**
@@ -642,6 +829,9 @@ export async function computeHistoryRoots(_historyRoot?: string): Promise<string
   return Array.from(new Set(exists));
 }
 
+/**
+ * 中文说明：列出归属于当前项目的 Codex 历史摘要，并生成可搜索的标题/预览。
+ */
 export async function listHistory(project: { wslPath?: string; winPath?: string }, opts?: { historyRoot?: string; limit?: number; offset?: number }): Promise<HistorySummary[]> {
   const projectWslPath = project.wslPath || '';
   const projectWinPath = project.winPath || '';
@@ -656,6 +846,7 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
     providerId: ProviderId;
     id: string;
     title: string;
+    preview?: string;
     date: number;
     prefix: string;
     rawDate?: string;
@@ -889,6 +1080,7 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
             let timestamp = 0;
             let rawDate: string | undefined = undefined;
             let title = titleFromFilename(fp);
+            let preview: string | undefined = undefined;
             let providerId: ProviderId = inferHistoryProviderIdFromPath(fp);
             let dirKey: string | undefined = undefined;
             let projectHash: string | undefined = undefined;
@@ -904,6 +1096,8 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
               }
               providerId = cached.providerId || providerId;
               id = cached.id;
+              title = cached.title || title;
+              preview = cached.preview;
               timestamp = cached.date;
               prefix = trimmed;
               rawDate = cached.rawDate;
@@ -961,10 +1155,23 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
                   changed = true;
                 }
               }
+              if (!preview) {
+                const summaryText = await resolveHistorySummaryText(parsed, prefix, fp, id, providerId);
+                if (summaryText.title && summaryText.title !== title) {
+                  title = summaryText.title;
+                  changed = true;
+                }
+                if (summaryText.preview !== preview) {
+                  preview = summaryText.preview;
+                  changed = true;
+                }
+              }
               if (stat && changed) {
                 const entry: SumCache = {
                   ...cached,
                   providerId,
+                  title,
+                  preview,
                   prefix,
                   rawDate,
                   dirKey,
@@ -1004,10 +1211,11 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
               // Do not trust or parse timestamp for ordering; we'll use file mtime for numeric date
               // Do not use parsed timestamp for ordering; rely on file mtime
               timestamp = stat?.mtimeMs || 0;
-              // Title: prefer filename timestamp (simple and stable)
-              title = titleFromFilename(fp);
               if (runtimeShell === 'unknown') runtimeShell = detectRuntimeShell(fp);
               dirKey = Array.from(new Set(collectHistoryCwdCandidates(parsed, prefix).map(canon).filter(Boolean)))[0];
+              const summaryText = await resolveHistorySummaryText(parsed, prefix, fp, id, providerId);
+              title = summaryText.title || titleFromFilename(fp);
+              preview = summaryText.preview;
               // 写入缓存
               if (stat) {
                 const entry: SumCache = {
@@ -1016,6 +1224,7 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
                   providerId,
                   id,
                   title,
+                  preview,
                   date: timestamp,
                   prefix,
                   rawDate,
@@ -1080,6 +1289,7 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
               date: (stat?.mtimeMs || 0),
               filePath: fp,
               rawDate,
+              preview,
               dirKey,
               projectHash,
               resumeMode,
@@ -1114,7 +1324,9 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
   return sliced;
 }
 
-// List both belongs-to-project and all sessions for the same roots.
+/**
+ * 中文说明：同时返回当前项目历史与同根目录下的全部历史摘要。
+ */
 export async function listHistorySplit(project: { wslPath?: string; winPath?: string }, opts?: { historyRoot?: string; limit?: number; offset?: number }): Promise<{ belongs: HistorySummary[]; all: HistorySummary[] }> {
   const belongs = await listHistory(project, opts);
   const rootOriginal = opts?.historyRoot || defaultHistoryRoot();
@@ -1129,6 +1341,7 @@ export async function listHistorySplit(project: { wslPath?: string; winPath?: st
     providerId: ProviderId;
     id: string;
     title: string;
+    preview?: string;
     date: number;
     prefix: string;
     rawDate?: string;
@@ -1167,6 +1380,7 @@ export async function listHistorySplit(project: { wslPath?: string; winPath?: st
               let timestamp = 0;
               let rawDate: string | undefined = undefined;
               let title = titleFromFilename(fp);
+              let preview: string | undefined = undefined;
               let providerId: ProviderId = inferHistoryProviderIdFromPath(fp);
               let dirKey: string | undefined = undefined;
               let projectHash: string | undefined = undefined;
@@ -1182,6 +1396,8 @@ export async function listHistorySplit(project: { wslPath?: string; winPath?: st
                 }
                 providerId = cached.providerId || providerId;
                 id = cached.id;
+                title = cached.title || title;
+                preview = cached.preview;
                 timestamp = cached.date;
                 prefix = trimmed;
                 rawDate = cached.rawDate;
@@ -1241,10 +1457,23 @@ export async function listHistorySplit(project: { wslPath?: string; winPath?: st
                     changed = true;
                   }
                 }
+                if (!preview) {
+                  const summaryText = await resolveHistorySummaryText(parsed, prefix, fp, id, providerId);
+                  if (summaryText.title && summaryText.title !== title) {
+                    title = summaryText.title;
+                    changed = true;
+                  }
+                  if (summaryText.preview !== preview) {
+                    preview = summaryText.preview;
+                    changed = true;
+                  }
+                }
                 if (stat && changed) {
                   const entry: SumCache = {
                     ...cached,
                     providerId,
+                    title,
+                    preview,
                     prefix,
                     rawDate,
                     dirKey,
@@ -1277,9 +1506,11 @@ export async function listHistorySplit(project: { wslPath?: string; winPath?: st
                   } catch { rawDate = undefined; }
                 }
                 timestamp = stat?.mtimeMs || 0;
-                title = titleFromFilename(fp);
                 if (runtimeShell === 'unknown') runtimeShell = detectRuntimeShell(fp);
                 dirKey = Array.from(new Set(collectHistoryCwdCandidates(parsed, prefix).map(canon).filter(Boolean)))[0];
+                const summaryText = await resolveHistorySummaryText(parsed, prefix, fp, id, providerId);
+                title = summaryText.title || titleFromFilename(fp);
+                preview = summaryText.preview;
                 if (stat) {
                   const entry: SumCache = {
                     mtimeMs: stat.mtimeMs,
@@ -1287,6 +1518,7 @@ export async function listHistorySplit(project: { wslPath?: string; winPath?: st
                     providerId,
                     id,
                     title,
+                    preview,
                     date: timestamp,
                     prefix,
                     rawDate,
@@ -1311,6 +1543,7 @@ export async function listHistorySplit(project: { wslPath?: string; winPath?: st
                 date: (stat?.mtimeMs || 0),
                 filePath: fp,
                 rawDate,
+                preview,
                 dirKey,
                 projectHash,
                 resumeMode,
@@ -1520,35 +1753,96 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
   }
 
   /**
-   * 中文说明：把仅包含图片绝对路径的 `event_msg.user_message` 恢复为“文本 + 多张图片”内容。
-   * - 仅当 `images/local_images/text_elements` 都为空时才介入，避免与现代 `input_image` 记录重复；
-   * - 保留原始输入文本，便于搜索与上下文回看；
-   * - 为每个路径生成独立图片内容项，解决一条消息多图只挂上一张的问题。
+   * 中文说明：从未知值中提取非空字符串数组。
    */
-  function buildPathOnlyCodexUserMessageEventContent(payload: any): MessageContent[] | null {
+  function normalizeStringArray(value: unknown): string[] {
+    if (!Array.isArray(value)) return [];
+    return value
+      .filter((item) => typeof item === 'string' && String(item).trim().length > 0)
+      .map((item) => String(item).trim());
+  }
+
+  /**
+   * 中文说明：判断内容块是否为 Codex 图片块。
+   */
+  function isCodexImageBlockLike(block: any): boolean {
+    try {
+      if (!block || typeof block !== 'object') return false;
+      const type = String(block.type || '').toLowerCase();
+      const imageUrl = typeof block.image_url === 'string' ? block.image_url : (typeof block.url === 'string' ? block.url : '');
+      return type === 'input_image' || /^data:image\//i.test(imageUrl);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 中文说明：判断文本项是否只是 Codex 为图片插入的边界标记。
+   */
+  function isCodexImageBoundaryText(text?: string): boolean {
+    return /^<\/?image>$/i.test(String(text || '').trim());
+  }
+
+  /**
+   * 中文说明：判断当前内容项是否应作为图片边界噪音跳过。
+   */
+  function shouldSkipCodexImageBoundaryContentItem(item: any, messageHasImageBlock: boolean): boolean {
+    if (!messageHasImageBlock) return false;
+    if (typeof item === 'string') return isCodexImageBoundaryText(item);
+    if (!item || typeof item !== 'object') return false;
+    const type = String(item.type || '').trim().toLowerCase();
+    if (type !== 'input_text' && type !== 'text') return false;
+    return isCodexImageBoundaryText(item.text);
+  }
+
+  /**
+   * 中文说明：把 `event_msg.user_message` 恢复为“文本 + 多张图片”内容。
+   * - 支持新版 `images/local_images` 数组，也兼容旧版仅在正文里记录图片绝对路径的日志；
+   * - 保留原始输入文本，便于搜索与上下文回看；
+   * - 为每张图片生成独立图片内容项，解决一条消息多图只挂上一张的问题。
+   */
+  function buildCodexUserMessageEventContent(payload: any): MessageContent[] | null {
     try {
       if (!payload || typeof payload !== 'object') return null;
-      const hasInlineImages = Array.isArray(payload.images)
-        && payload.images.some((item: any) => String(item || '').trim().length > 0);
-      const hasLocalImages = Array.isArray(payload.local_images)
-        && payload.local_images.some((item: any) => typeof item === 'string' && String(item).trim().length > 0);
-      const hasTextElements = Array.isArray(payload.text_elements) && payload.text_elements.length > 0;
-      if (hasInlineImages || hasLocalImages || hasTextElements) return null;
-
+      const inlineImages = normalizeStringArray(payload.images);
+      const localImages = normalizeStringArray(payload.local_images);
       const messageText = typeof payload.message === 'string' ? payload.message : '';
       const pathCandidates = extractImagePathCandidatesFromText(messageText);
-      if (pathCandidates.length === 0) return null;
+      if (inlineImages.length === 0 && localImages.length === 0 && pathCandidates.length === 0) return null;
 
       const contentArr: MessageContent[] = [];
+      let imageItemCount = 0;
       appendTaggedTextContent(contentArr, messageText, { itemType: 'input_text', containerTag: 'message.input_text' });
-      for (const localPath of pathCandidates) {
+
+      const imageCount = Math.max(inlineImages.length, localImages.length);
+      for (let index = 0; index < imageCount; index += 1) {
+        const imageData = String(inlineImages[index] || '').trim();
         const imageItem = createHistoryImageContent({
-          localPath,
+          localPath: localImages[index],
+          dataUrl: /^data:image\//i.test(imageData) ? imageData : undefined,
+          base64Data: imageData && !/^data:image\//i.test(imageData) ? imageData : undefined,
           tags: ['message.image', 'event_msg.user_message.image'],
         });
-        if (imageItem) contentArr.push(imageItem);
+        if (imageItem) {
+          contentArr.push(imageItem);
+          imageItemCount += 1;
+        }
       }
-      return contentArr.length > 0 ? contentArr : null;
+
+      if (imageCount === 0) {
+        for (const localPath of pathCandidates) {
+          const imageItem = createHistoryImageContent({
+            localPath,
+            tags: ['message.image', 'event_msg.user_message.image'],
+          });
+          if (imageItem) {
+            contentArr.push(imageItem);
+            imageItemCount += 1;
+          }
+        }
+      }
+
+      return imageItemCount > 0 ? contentArr : null;
     } catch {
       return null;
     }
@@ -1693,8 +1987,8 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
         Object.prototype.hasOwnProperty.call(obj, 'id') &&
         Object.prototype.hasOwnProperty.call(obj, 'timestamp')
       );
-      const pathOnlyUserMessageContent = obj.type === 'event_msg' && obj.payload && obj.payload.type === 'user_message'
-        ? buildPathOnlyCodexUserMessageEventContent(obj.payload)
+      const userMessageEventContent = obj.type === 'event_msg' && obj.payload && obj.payload.type === 'user_message'
+        ? buildCodexUserMessageEventContent(obj.payload)
         : null;
 
       if (obj.type === 'message' || obj.record_type === 'message' || (obj.type === 'response_item' && obj.payload && (obj.payload.type === 'message' || obj.payload.record_type === 'message'))) {
@@ -1707,8 +2001,10 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
           let localImageCursor = 0;
 	        // 仅“前缀”匹配提取 <user_instructions>/<permissions instructions>/<environment_context> 等，不做全文搜索（性能考虑）
 	        if (Array.isArray(src.content)) {
+            const messageHasImageBlock = src.content.some((item: any) => isCodexImageBlockLike(item));
 	          for (const c of src.content) {
 	            if (!c) continue;
+              if (shouldSkipCodexImageBoundaryContentItem(c, messageHasImageBlock)) continue;
               if (typeof c === 'object') {
                 const localPathHint = String(localImages[localImageCursor] || latestImagePathCandidate() || '');
                 const imageItem = createCodexImageContent(c, localPathHint);
@@ -1823,12 +2119,12 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
           }
         } catch {}
         if (contentArr.length > 0) messages.push({ role, content: contentArr });
-      } else if (pathOnlyUserMessageContent) {
+      } else if (userMessageEventContent) {
         try {
           rememberImagePathsFromText(typeof obj.payload?.message === 'string' ? obj.payload.message : '');
         } catch {}
-        if (!mergePathOnlyUserMessageIntoPreviousUserMessage(pathOnlyUserMessageContent))
-          messages.push({ role: 'user', content: pathOnlyUserMessageContent });
+        if (!mergePathOnlyUserMessageIntoPreviousUserMessage(userMessageEventContent))
+          messages.push({ role: 'user', content: userMessageEventContent });
       } else if (obj.type === 'function_call' || (obj.type === 'response_item' && obj.payload && obj.payload.type === 'function_call')) {
         // 工具/函数调用
         const src: any = (obj.type === 'response_item' && obj.payload) ? obj.payload : obj;
