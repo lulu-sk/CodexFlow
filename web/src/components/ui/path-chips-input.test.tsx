@@ -263,7 +263,7 @@ async function dispatchContextMenu(target: HTMLElement): Promise<{ allowed: bool
   return { allowed, defaultPrevented: event.defaultPrevented };
 }
 
-describe("PathChipsInput（复制文件名按钮）", () => {
+describe("PathChipsInput（复制名称按钮）", () => {
   let cleanup: (() => void) | null = null;
 
   afterEach(() => {
@@ -286,7 +286,7 @@ describe("PathChipsInput（复制文件名按钮）", () => {
     expect(copyButton).not.toBeNull();
   });
 
-  it("目录 Chip 不显示复制文件名按钮", async () => {
+  it("目录 Chip 显示带 aria-label 的复制文件夹名称按钮", async () => {
     cleanup = await renderPathChipsInput([
       createPathChip({
         id: "dir-chip",
@@ -298,8 +298,8 @@ describe("PathChipsInput（复制文件名按钮）", () => {
       }),
     ]);
 
-    const copyButton = document.querySelector('button[aria-label="common:files.copyFileNameWithExt"]');
-    expect(copyButton).toBeNull();
+    const copyButton = document.querySelector('button[aria-label="common:files.copyFolderName"]');
+    expect(copyButton).not.toBeNull();
   });
 
   it("普通文件 Chip 即便带有预览字段也不应渲染图片缩略图", async () => {
@@ -551,5 +551,27 @@ describe("PathChipsInput 右键菜单事件", () => {
     expect(parentContextMenu).not.toHaveBeenCalled();
     expect(result.allowed).toBe(true);
     expect(result.defaultPrevented).toBe(false);
+  });
+
+  it("目录 Chip 右键菜单提供复制文件夹名称选项", async () => {
+    cleanup = await renderPathChipsInput([
+      createPathChip({
+        id: "dir-context-chip",
+        chipKind: "file",
+        fileName: "docs",
+        winPath: "C:\\repo\\docs\\",
+        wslPath: "/mnt/c/repo/docs/",
+        isDir: true,
+      }),
+    ]);
+
+    const label = Array.from(document.querySelectorAll("span")).find((span) => span.textContent === "docs");
+    if (!label) throw new Error("missing directory chip label");
+
+    const result = await dispatchContextMenu(label as HTMLElement);
+    const menuItem = Array.from(document.querySelectorAll("button")).find((button) => button.textContent === "common:files.copyFolderName");
+
+    expect(result.defaultPrevented).toBe(true);
+    expect(menuItem).not.toBeUndefined();
   });
 });
