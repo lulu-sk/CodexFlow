@@ -498,6 +498,7 @@ export default function PathChipsInput({
 }: PathChipsInputProps) {
   const { t } = useTranslation(['common', 'history']);
   const copyFileNameLabel = String(t("common:files.copyFileNameWithExt") || "Copy");
+  const copyFolderNameLabel = String(t("common:files.copyFolderName") || "Copy folder name");
   // 统一引用：支持 input 与 textarea（multiline 时渲染 textarea）
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
   const valueStateRef = useRef<PathChipsValueState>({
@@ -1094,13 +1095,13 @@ export default function PathChipsInput({
     } catch { return false; }
   }, []);
 
-  // 解析文件名（保留后缀）。优先使用 fileName，其次从路径尾段提取
+  // 解析文件或文件夹名称。优先使用 fileName，其次从路径尾段提取
   const resolveChipFileName = useCallback((chip?: any): string => {
     try {
       if (!chip) return "";
       const n = String(chip.fileName || "").trim();
       if (n) return n;
-      const raw = String(chip.wslPath || chip.winPath || "");
+      const raw = String(chip.wslPath || chip.winPath || "").replace(/[\/\\]+$/, "");
       if (!raw) return "";
       const seg = raw.split(/[\/\\]/).pop() || "";
       return seg;
@@ -1108,7 +1109,7 @@ export default function PathChipsInput({
   }, []);
 
   /**
-   * 中文说明：复制 Chip 对应的文件名（含后缀），统一复用跨平台剪贴板封装。
+   * 中文说明：复制 Chip 对应的文件或文件夹名称，统一复用跨平台剪贴板封装。
    */
   const copyChipFileName = useCallback(async (chip?: PathChip): Promise<boolean> => {
     const name = resolveChipFileName(chip);
@@ -1425,7 +1426,8 @@ export default function PathChipsInput({
             const labelText = isRule
               ? ruleLabel
               : chip.fileName || (chip as any)?.wslPath || t('common:files.image');
-            const isDir = !!(chipAny as any).isDir || (/\/$/.test(String(chip.wslPath || '')));
+            const isDir = isChipDir(chipAny);
+            const copyChipNameLabel = isDir ? copyFolderNameLabel : copyFileNameLabel;
             const previewSrc = resolveChipPreviewSrc(chip);
             /**
              * 中文说明：统一渲染单个 Chip；若存在图片预览能力，则由共享组件注入悬停预览与点击弹窗交互。
@@ -1486,21 +1488,19 @@ export default function PathChipsInput({
                 >
                   {labelText}
                 </span>
-                {!isDir && (
-                  <button
-                    type="button"
-                    data-chip-action="true"
-                    title={copyFileNameLabel}
-                    aria-label={copyFileNameLabel}
-                    className="ml-0.5 rounded-apple-sm p-0.5 text-[var(--cf-text-secondary)] hover:text-[var(--cf-text-primary)] hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast flex items-center justify-center"
-                    onClick={async (ev) => {
-                      ev.preventDefault(); ev.stopPropagation();
-                      await copyChipFileName(chipAny);
-                    }}
-                  >
-                    <Copy className="h-3 w-3" />
-                  </button>
-                )}
+                <button
+                  type="button"
+                  data-chip-action="true"
+                  title={copyChipNameLabel}
+                  aria-label={copyChipNameLabel}
+                  className="ml-0.5 rounded-apple-sm p-0.5 text-[var(--cf-text-secondary)] hover:text-[var(--cf-text-primary)] hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast flex items-center justify-center"
+                  onClick={async (ev) => {
+                    ev.preventDefault(); ev.stopPropagation();
+                    await copyChipFileName(chipAny);
+                  }}
+                >
+                  <Copy className="h-3 w-3" />
+                </button>
                 <button
                   type="button"
                   data-chip-action="true"
@@ -1618,18 +1618,15 @@ export default function PathChipsInput({
               >
                 {t('history:openContaining')}
               </button>
-              {/* 复制文件名（含后缀）：仅文件显示 */}
-              {!isChipDir(ctxMenu.chip) && (
-                <button
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
-                  onClick={async () => {
-                    await copyChipFileName(ctxMenu.chip as PathChip);
-                    setCtxMenu((m) => ({ ...m, show: false }));
-                  }}
-                >
-                  {t('common:files.copyFileNameWithExt')}
-                </button>
-              )}
+              <button
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
+                onClick={async () => {
+                  await copyChipFileName(ctxMenu.chip as PathChip);
+                  setCtxMenu((m) => ({ ...m, show: false }));
+                }}
+              >
+                {isChipDir(ctxMenu.chip) ? t('common:files.copyFolderName') : t('common:files.copyFileNameWithExt')}
+              </button>
               <button
                 className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
                 onClick={async () => {

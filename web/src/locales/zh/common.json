@@ -33,6 +33,7 @@
   },
   "files": {
     "copyFileNameWithExt": "复制文件名（含后缀）",
+    "copyFolderName": "复制文件夹名称",
     "cannotOpenPath": "无法打开路径",
     "image": "图片",
     "path": "路径",

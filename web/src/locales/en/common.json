@@ -33,6 +33,7 @@
   },
   "files": {
     "copyFileNameWithExt": "Copy filename (with extension)",
+    "copyFolderName": "Copy folder name",
     "cannotOpenPath": "Unable to open path",
     "image": "Image",
     "path": "Path",
