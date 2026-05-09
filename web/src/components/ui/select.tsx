@@ -10,17 +10,48 @@ type Ctx = {
   setValue?: (v: string) => void;
   open: boolean;
   setOpen: (v: boolean) => void;
-  items: React.MutableRefObject<Map<string, string>>;
+  items: Map<string, string>;
   /** 触发元素引用，用于定位下拉层（固定定位到视口） */
   triggerRef: React.MutableRefObject<HTMLButtonElement | null>;
 };
 
 const SelectCtx = React.createContext<Ctx | null>(null);
 
+/**
+ * 把 SelectItem 的子节点归一化为可展示文本，避免复杂节点回退为对象字符串。
+ */
+function resolveSelectItemText(children: React.ReactNode): string {
+  if (typeof children === 'string' || typeof children === 'number')
+    return String(children);
+  if (Array.isArray(children))
+    return children.map((child) => resolveSelectItemText(child)).join('');
+  if (React.isValidElement(children))
+    return resolveSelectItemText(children.props.children);
+  return '';
+}
+
+/**
+ * 递归收集当前 Select 树中的 value-label 映射，确保触发器首帧即可拿到最终展示文案。
+ */
+function collectSelectItems(children: React.ReactNode, out: Map<string, string> = new Map<string, string>()): Map<string, string> {
+  React.Children.forEach(children, (child) => {
+    if (!React.isValidElement(child)) return;
+    if (child.type === SelectItem) {
+      const value = typeof child.props.value === 'string' ? child.props.value : '';
+      if (value)
+        out.set(value, resolveSelectItemText(child.props.children));
+      return;
+    }
+    if ('children' in child.props)
+      collectSelectItems(child.props.children, out);
+  });
+  return out;
+}
+
 export function Select({ value, onValueChange, children }: { value?: string; onValueChange?: (v: string) => void; children: React.ReactNode }) {
   const [open, setOpen] = React.useState(false);
-  const items = React.useRef(new Map<string, string>());
   const triggerRef = React.useRef<HTMLButtonElement | null>(null);
+  const items = React.useMemo(() => collectSelectItems(children), [children]);
   return (
     <SelectCtx.Provider value={{ value, setValue: onValueChange, open, setOpen, items, triggerRef }}>{children}</SelectCtx.Provider>
   );
@@ -68,7 +99,7 @@ export function SelectTrigger({
             return;
           }
           event.preventDefault();
-          const keys = Array.from(ctx.items.current.keys());
+          const keys = Array.from(ctx.items.keys());
           if (keys.length === 0) {
             return;
           }
@@ -108,11 +139,20 @@ export function SelectTrigger({
 
 export function SelectValue({ placeholder }: { placeholder?: string }) {
   const ctx = React.useContext(SelectCtx)!;
-  const label = (ctx.value ? ctx.items.current.get(ctx.value) : undefined) || ctx.value;
+  const value = ctx.value;
+  const label = value !== undefined ? ctx.items.get(value) : undefined;
   return <span className="truncate text-left">{label || placeholder}</span>;
 }
 
-export function SelectContent({ children }: { children: React.ReactNode }) {
+export function SelectContent({
+  children,
+  fitContent = false,
+  maxContentWidth = 360,
+}: {
+  children: React.ReactNode;
+  fitContent?: boolean;
+  maxContentWidth?: number;
+}) {
   const ctx = React.useContext(SelectCtx)!;
   const contentRef = React.useRef<HTMLDivElement | null>(null);
   const [style, setStyle] = React.useState<React.CSSProperties>({});
@@ -127,9 +167,14 @@ export function SelectContent({ children }: { children: React.ReactNode }) {
     const viewportW = window.innerWidth;
     const viewportH = window.innerHeight;
     const gap = 4; // 触发器与弹层间距
+    const resolvedMaxWidth = Math.max(
+      rect.width,
+      Math.min(Math.max(160, Math.floor(Number(maxContentWidth) || 360)), viewportW - 16),
+    );
+    const estimatedWidth = fitContent ? resolvedMaxWidth : rect.width;
 
     // 初步放在下方
-    let left = Math.max(8, Math.min(rect.left, viewportW - rect.width - 8));
+    let left = Math.max(8, Math.min(rect.left, viewportW - estimatedWidth - 8));
     let top = rect.bottom + gap;
     let maxHeight = Math.min(320, viewportH - top - 8);
 
@@ -143,8 +188,10 @@ export function SelectContent({ children }: { children: React.ReactNode }) {
       }
     }
 
-    setStyle({ position: 'fixed', left, top, width: rect.width, maxHeight });
-  }, [ctx.open]);
+    setStyle(fitContent
+      ? { position: 'fixed', left, top, width: 'max-content', minWidth: rect.width, maxWidth: resolvedMaxWidth, maxHeight }
+      : { position: 'fixed', left, top, width: rect.width, maxHeight });
+  }, [ctx.open, fitContent, maxContentWidth]);
 
   React.useLayoutEffect(() => {
     if (!ctx.open) return;
@@ -196,7 +243,7 @@ export function SelectContent({ children }: { children: React.ReactNode }) {
   return createPortal(
     <div
       ref={contentRef}
-      className={cn('z-[60] rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple p-1 shadow-apple-lg overflow-auto text-[var(--cf-text-primary)] dark:shadow-apple-dark-lg')}
+      className={cn('z-[60] overflow-auto rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] p-1 text-[var(--cf-text-primary)] shadow-apple-lg backdrop-blur-apple dark:shadow-apple-dark-lg')}
       style={style}
       role="listbox"
     >
@@ -208,14 +255,10 @@ export function SelectContent({ children }: { children: React.ReactNode }) {
 
 export function SelectItem({ value, children, disabled }: { value: string; children: React.ReactNode; disabled?: boolean }) {
   const ctx = React.useContext(SelectCtx)!;
-  // 记录 value -> 可见标签 的映射，便于 SelectValue 展示中文标签
-  React.useEffect(() => {
-    try { ctx.items.current.set(value, typeof children === 'string' ? children : String(children)); } catch {}
-  }, [value, children]);
   return (
     <div
       className={cn(
-        'rounded-apple-sm px-3 py-2 text-sm transition-all duration-apple-fast',
+        'whitespace-nowrap rounded-apple-sm px-3 py-2 text-sm transition-all duration-apple-fast',
         disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:bg-[var(--cf-surface-hover)]',
         ctx.value === value && !disabled && 'bg-[var(--cf-surface-hover)] font-apple-medium',
       )}

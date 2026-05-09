@@ -50,6 +50,7 @@ html, body, #root { height: 100%; }
   --cf-yellow: #ffcc00;           /* 警告、提示 */
   --cf-yellow-hover: #c89e00;     /* 悬停 */
   --cf-yellow-light: rgba(255, 204, 0, 0.1);
+  --cf-warning: #9a6700;          /* 警告强调文本/描边 */
   --cf-warning-foreground: #1d1d1f; /* 警告前景：保持充足对比 */
   --cf-orange: #ff9500;           /* 橙色 */
   --cf-orange-hover: #c77700;
@@ -65,6 +66,28 @@ html, body, #root { height: 100%; }
   --cf-scrollbar-thumb: rgba(0, 0, 0, 0.2);
   --cf-scrollbar-thumb-hover: rgba(0, 0, 0, 0.3);
   --cf-scrollbar-track: transparent;
+  /* Git 工作台专用层次 */
+  --cf-git-bg-glow-1: rgba(0, 122, 255, 0.14);
+  --cf-git-bg-glow-2: rgba(175, 82, 222, 0.1);
+  --cf-git-panel: rgba(255, 255, 255, 0.88);
+  --cf-git-panel-elevated: rgba(255, 255, 255, 0.96);
+  --cf-git-panel-muted: rgba(247, 247, 250, 0.9);
+  --cf-git-panel-line: rgba(15, 23, 42, 0.08);
+  --cf-git-panel-shadow: 0 16px 32px rgba(15, 23, 42, 0.08);
+  --cf-git-surface-top-highlight: rgba(255, 255, 255, 0.28);
+  --cf-git-header-top-highlight: rgba(255, 255, 255, 0.2);
+  --cf-git-toolbar-top-highlight: rgba(255, 255, 255, 0.45);
+  --cf-git-toolbar-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.94) 0%, rgba(248, 248, 250, 0.88) 100%);
+  --cf-git-header-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.92) 0%, rgba(247, 247, 249, 0.82) 100%);
+  --cf-git-row-hover: rgba(15, 23, 42, 0.045);
+  --cf-git-row-current-branch: rgba(228, 250, 255, 0.92);
+  --cf-git-row-current-branch-hover: rgba(214, 244, 250, 0.96);
+  --cf-git-row-selected: linear-gradient(180deg, rgba(0, 122, 255, 0.14) 0%, rgba(90, 200, 250, 0.08) 100%);
+  --cf-git-row-selected-border: rgba(0, 122, 255, 0.24);
+  --cf-git-row-filtered: rgba(10, 132, 255, 0.32);
+  --cf-git-badge-muted: rgba(15, 23, 42, 0.05);
+  --cf-git-badge-muted-border: rgba(15, 23, 42, 0.1);
+  --cf-git-graph-ring: rgba(255, 255, 255, 0.95);
 }
 
 .dark {
@@ -103,6 +126,7 @@ html, body, #root { height: 100%; }
   --cf-yellow: #ffd60a;           /* 警告、提示 */
   --cf-yellow-hover: #ffed4e;     /* 悬停 */
   --cf-yellow-light: rgba(255, 214, 10, 0.15);
+  --cf-warning: #ffd60a;          /* 警告强调文本/描边 */
   --cf-warning-foreground: #1d1d1f; /* 警告前景：暗色下仍使用深色文字以确保对比 */
   --cf-orange: #ff9f0a;           /* 橙色 */
   --cf-orange-hover: #ffb340;
@@ -118,6 +142,28 @@ html, body, #root { height: 100%; }
   --cf-scrollbar-thumb: rgba(255, 255, 255, 0.15);
   --cf-scrollbar-thumb-hover: rgba(255, 255, 255, 0.25);
   --cf-scrollbar-track: transparent;
+  /* Git 工作台专用层次（暗色） */
+  --cf-git-bg-glow-1: rgba(10, 132, 255, 0.2);
+  --cf-git-bg-glow-2: rgba(191, 90, 242, 0.14);
+  --cf-git-panel: rgba(30, 30, 32, 0.92);
+  --cf-git-panel-elevated: rgba(42, 42, 44, 0.96);
+  --cf-git-panel-muted: rgba(35, 35, 37, 0.9);
+  --cf-git-panel-line: rgba(255, 255, 255, 0.1);
+  --cf-git-panel-shadow: 0 18px 42px rgba(0, 0, 0, 0.35);
+  --cf-git-surface-top-highlight: rgba(255, 255, 255, 0.05);
+  --cf-git-header-top-highlight: rgba(255, 255, 255, 0.04);
+  --cf-git-toolbar-top-highlight: rgba(255, 255, 255, 0.08);
+  --cf-git-toolbar-bg: linear-gradient(180deg, rgba(50, 50, 52, 0.94) 0%, rgba(30, 30, 32, 0.9) 100%);
+  --cf-git-header-bg: linear-gradient(180deg, rgba(48, 48, 50, 0.92) 0%, rgba(32, 32, 34, 0.86) 100%);
+  --cf-git-row-hover: rgba(255, 255, 255, 0.06);
+  --cf-git-row-current-branch: rgba(63, 71, 73, 0.78);
+  --cf-git-row-current-branch-hover: rgba(74, 84, 87, 0.86);
+  --cf-git-row-selected: linear-gradient(180deg, rgba(10, 132, 255, 0.22) 0%, rgba(100, 210, 255, 0.12) 100%);
+  --cf-git-row-selected-border: rgba(100, 210, 255, 0.26);
+  --cf-git-row-filtered: rgba(100, 210, 255, 0.32);
+  --cf-git-badge-muted: rgba(255, 255, 255, 0.06);
+  --cf-git-badge-muted-border: rgba(255, 255, 255, 0.12);
+  --cf-git-graph-ring: rgba(36, 36, 38, 0.95);
 }
 
 .dark .text-slate-900,
@@ -519,4 +565,1006 @@ body {
 }
 .dark .cf-history-markdown [data-rehype-pretty-code-figure] span[style*="--shiki-dark"] {
   color: var(--shiki-dark) !important;
+}
+
+/* Git Diff（Monaco）活动行高亮 */
+.cf-git-diff-active-line {
+  background: color-mix(in oklab, var(--cf-accent) 18%, transparent);
+}
+
+.cf-git-diff-active-line-margin {
+  border-left: 2px solid color-mix(in oklab, var(--cf-accent) 82%, white);
+}
+
+.cf-git-diff-excluded-line {
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      color-mix(in oklab, var(--cf-surface-muted) 78%, transparent) 0,
+      color-mix(in oklab, var(--cf-surface-muted) 78%, transparent) 5px,
+      transparent 5px,
+      transparent 10px
+    );
+  opacity: 0.7;
+}
+
+.cf-git-diff-excluded-line-margin {
+  border-left: 2px solid color-mix(in oklab, var(--cf-text-muted) 52%, transparent);
+}
+
+.cf-git-header-surface {
+  background: var(--cf-git-header-bg);
+}
+
+.cf-git-toolbar-surface {
+  background: var(--cf-git-toolbar-bg);
+}
+
+.cf-git-row-selected-surface {
+  background: var(--cf-git-row-selected);
+}
+
+/* Git Merge（三栏冲突解决器）块高亮 */
+.cf-git-merge-viewer .monaco-editor,
+.cf-git-merge-viewer .monaco-editor-background,
+.cf-git-merge-viewer .monaco-editor .margin {
+  background: transparent !important;
+}
+
+.cf-git-merge-conflict-block {
+  background:
+    linear-gradient(90deg, rgba(245, 158, 11, 0.34) 0%, rgba(249, 115, 22, 0.24) 100%);
+  box-shadow:
+    inset 3px 0 0 rgba(217, 119, 6, 0.9),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35),
+    inset 0 -1px 0 rgba(217, 119, 6, 0.18),
+    inset 0 0 0 1px rgba(217, 119, 6, 0.12);
+}
+
+.cf-git-merge-conflict-block-margin {
+  border-left: 3px solid rgba(217, 119, 6, 0.88);
+}
+
+.cf-git-merge-conflict-empty-anchor,
+.cf-git-merge-change-empty-anchor,
+.cf-git-merge-selected-empty-anchor,
+.cf-git-merge-source-empty-anchor,
+.cf-git-merge-source-selected-empty-anchor {
+  position: relative;
+}
+
+.cf-git-merge-conflict-empty-anchor::before,
+.cf-git-merge-change-empty-anchor::before,
+.cf-git-merge-selected-empty-anchor::before,
+.cf-git-merge-source-empty-anchor::before,
+.cf-git-merge-source-selected-empty-anchor::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 2px;
+  height: 0;
+  border-top-style: solid;
+}
+
+.cf-git-merge-conflict-empty-anchor::after,
+.cf-git-merge-change-empty-anchor::after,
+.cf-git-merge-selected-empty-anchor::after,
+.cf-git-merge-source-empty-anchor::after,
+.cf-git-merge-source-selected-empty-anchor::after {
+  content: "";
+  position: absolute;
+  top: -1px;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+}
+
+.cf-git-merge-conflict-empty-anchor::before {
+  border-top-width: 3px;
+  border-top-color: rgba(217, 119, 6, 0.88);
+}
+
+.cf-git-merge-conflict-empty-anchor::after {
+  right: 8px;
+  background: rgba(217, 119, 6, 0.88);
+}
+
+.cf-git-merge-conflict-empty-anchor-margin {
+  border-left: 3px solid rgba(217, 119, 6, 0.88);
+}
+
+.cf-git-merge-change-block {
+  background:
+    linear-gradient(90deg, rgba(34, 197, 94, 0.32) 0%, rgba(59, 130, 246, 0.14) 100%);
+  box-shadow:
+    inset 3px 0 0 rgba(22, 163, 74, 0.88),
+    inset 0 1px 0 rgba(255, 255, 255, 0.32),
+    inset 0 -1px 0 rgba(22, 163, 74, 0.14),
+    inset 0 0 0 1px rgba(22, 163, 74, 0.1);
+}
+
+.cf-git-merge-change-block-margin {
+  border-left: 3px solid rgba(22, 163, 74, 0.86);
+}
+
+.cf-git-merge-resolved-single-line,
+.cf-git-merge-resolved-start-line,
+.cf-git-merge-resolved-end-line,
+.cf-git-merge-source-resolved-single-line,
+.cf-git-merge-source-resolved-start-line,
+.cf-git-merge-source-resolved-end-line {
+  background-color: transparent;
+}
+
+.cf-git-merge-resolved-single-line {
+  border-top: 2px dashed rgba(99, 102, 241, 0.72);
+  border-bottom: 2px dashed rgba(99, 102, 241, 0.72);
+}
+
+.cf-git-merge-resolved-start-line {
+  border-top: 2px dashed rgba(99, 102, 241, 0.72);
+}
+
+.cf-git-merge-resolved-end-line {
+  border-bottom: 2px dashed rgba(99, 102, 241, 0.72);
+}
+
+.cf-git-merge-resolved-single-line-margin {
+  border-top: 2px dashed rgba(99, 102, 241, 0.68);
+  border-bottom: 2px dashed rgba(99, 102, 241, 0.68);
+}
+
+.cf-git-merge-resolved-start-line-margin {
+  border-top: 2px dashed rgba(99, 102, 241, 0.68);
+}
+
+.cf-git-merge-resolved-end-line-margin {
+  border-bottom: 2px dashed rgba(99, 102, 241, 0.68);
+}
+
+.cf-git-merge-change-empty-anchor::before {
+  border-top-width: 3px;
+  border-top-color: rgba(22, 163, 74, 0.88);
+}
+
+.cf-git-merge-change-empty-anchor::after {
+  right: 8px;
+  background: rgba(22, 163, 74, 0.88);
+}
+
+.cf-git-merge-change-empty-anchor-margin {
+  border-left: 3px solid rgba(22, 163, 74, 0.86);
+}
+
+.cf-git-merge-resolved-empty-anchor::before {
+  border-top-width: 2px;
+  border-top-style: dashed;
+  border-top-color: rgba(99, 102, 241, 0.72);
+}
+
+.cf-git-merge-resolved-empty-anchor::after {
+  right: 8px;
+  background: rgba(99, 102, 241, 0.72);
+}
+
+.cf-git-merge-resolved-empty-anchor-margin {
+  border-left: 2px dashed rgba(99, 102, 241, 0.68);
+}
+
+.cf-git-merge-selected-block {
+  background:
+    linear-gradient(90deg, rgba(37, 99, 235, 0.2) 0%, rgba(59, 130, 246, 0.12) 100%);
+  box-shadow:
+    inset 4px 0 0 rgba(37, 99, 235, 0.96),
+    inset 0 0 0 1px rgba(37, 99, 235, 0.22);
+}
+
+.cf-git-merge-selected-block-margin {
+  border-left: 4px solid rgba(37, 99, 235, 0.96);
+}
+
+.cf-git-merge-selected-empty-anchor::before {
+  border-top-width: 4px;
+  border-top-color: rgba(37, 99, 235, 0.96);
+}
+
+.cf-git-merge-selected-empty-anchor::after {
+  right: 8px;
+  background: rgba(37, 99, 235, 0.96);
+}
+
+.cf-git-merge-selected-empty-anchor-margin {
+  border-left: 4px solid rgba(37, 99, 235, 0.96);
+}
+
+.cf-git-merge-source-selected-block {
+  background: rgba(37, 99, 235, 0.16);
+  box-shadow:
+    inset 3px 0 0 rgba(37, 99, 235, 0.84),
+    inset 0 0 0 1px rgba(37, 99, 235, 0.14);
+}
+
+.cf-git-merge-source-selected-block-margin {
+  border-left: 3px solid rgba(37, 99, 235, 0.84);
+}
+
+.cf-git-merge-source-selected-empty-anchor::before {
+  border-top-width: 3px;
+  border-top-color: rgba(37, 99, 235, 0.84);
+}
+
+.cf-git-merge-source-selected-empty-anchor::after {
+  left: 8px;
+  background: rgba(37, 99, 235, 0.84);
+}
+
+.cf-git-merge-source-selected-empty-anchor-margin {
+  border-left: 3px solid rgba(37, 99, 235, 0.84);
+}
+
+.cf-git-merge-source-block {
+  background:
+    linear-gradient(90deg, rgba(34, 197, 94, 0.26) 0%, rgba(59, 130, 246, 0.1) 100%);
+  box-shadow:
+    inset 2px 0 0 rgba(22, 163, 74, 0.82),
+    inset 0 0 0 1px rgba(22, 163, 74, 0.12);
+}
+
+.cf-git-merge-source-block-margin {
+  border-left: 2px solid rgba(22, 163, 74, 0.72);
+}
+
+.cf-git-merge-source-resolved-single-line {
+  border-top: 2px dashed rgba(22, 163, 74, 0.72);
+  border-bottom: 2px dashed rgba(22, 163, 74, 0.72);
+}
+
+.cf-git-merge-source-resolved-start-line {
+  border-top: 2px dashed rgba(22, 163, 74, 0.72);
+}
+
+.cf-git-merge-source-resolved-end-line {
+  border-bottom: 2px dashed rgba(22, 163, 74, 0.72);
+}
+
+.cf-git-merge-source-resolved-single-line-margin {
+  border-top: 2px dashed rgba(22, 163, 74, 0.68);
+  border-bottom: 2px dashed rgba(22, 163, 74, 0.68);
+}
+
+.cf-git-merge-source-resolved-start-line-margin {
+  border-top: 2px dashed rgba(22, 163, 74, 0.68);
+}
+
+.cf-git-merge-source-resolved-end-line-margin {
+  border-bottom: 2px dashed rgba(22, 163, 74, 0.68);
+}
+
+.cf-git-merge-source-empty-anchor::before {
+  border-top-width: 3px;
+  border-top-color: rgba(22, 163, 74, 0.82);
+}
+
+.cf-git-merge-source-empty-anchor::after {
+  left: 8px;
+  background: rgba(22, 163, 74, 0.82);
+}
+
+.cf-git-merge-source-empty-anchor-margin {
+  border-left: 2px solid rgba(22, 163, 74, 0.82);
+}
+
+.cf-git-merge-source-resolved-empty-anchor::before {
+  border-top-width: 2px;
+  border-top-style: dashed;
+  border-top-color: rgba(22, 163, 74, 0.72);
+}
+
+.cf-git-merge-source-resolved-empty-anchor::after {
+  left: 8px;
+  background: rgba(22, 163, 74, 0.72);
+}
+
+.cf-git-merge-source-resolved-empty-anchor-margin {
+  border-left: 2px dashed rgba(22, 163, 74, 0.68);
+}
+
+.cf-git-merge-divider-column {
+  height: 100%;
+  min-height: 0;
+  background:
+    linear-gradient(180deg, rgba(241, 245, 249, 0.9) 0%, rgba(226, 232, 240, 0.9) 100%);
+  border-left: 1px solid rgba(148, 163, 184, 0.18);
+  border-right: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.cf-git-merge-fold-separator-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.cf-git-merge-fold-separator {
+  fill: none;
+  stroke: rgba(100, 116, 139, 0.78);
+  stroke-width: 1.05;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.96;
+}
+
+.cf-git-merge-fold-separator[data-side="left"] {
+  stroke: rgba(71, 85, 105, 0.72);
+}
+
+.cf-git-merge-fold-separator[data-side="right"] {
+  stroke: rgba(100, 116, 139, 0.72);
+}
+
+.cf-git-merge-connector-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.cf-git-merge-connector {
+  fill: rgba(34, 197, 94, 0.26);
+  stroke: rgba(22, 163, 74, 0.38);
+  stroke-width: 1;
+  opacity: 0.94;
+  filter: drop-shadow(0 1px 1px rgba(15, 23, 42, 0.08));
+  transition:
+    opacity 140ms ease,
+    fill 140ms ease,
+    stroke 140ms ease;
+}
+
+.cf-git-merge-connector[data-kind="conflict"] {
+  fill: rgba(245, 158, 11, 0.28);
+  stroke: rgba(217, 119, 6, 0.42);
+}
+
+.cf-git-merge-connector[data-selected="true"] {
+  opacity: 1;
+  stroke-width: 1.2;
+}
+
+.cf-git-merge-connector[data-selected="true"][data-kind="change"] {
+  fill: rgba(34, 197, 94, 0.34);
+}
+
+.cf-git-merge-connector[data-selected="true"][data-kind="conflict"] {
+  fill: rgba(245, 158, 11, 0.38);
+}
+
+.cf-git-merge-gutter-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
+}
+
+.cf-git-merge-gutter-control {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid color-mix(in oklab, var(--cf-border-strong) 88%, transparent);
+  background: color-mix(in oklab, var(--cf-surface-solid) 96%, transparent);
+  color: var(--cf-text-secondary);
+  font-size: 10px;
+  font-weight: 600;
+  box-shadow:
+    0 1px 4px rgba(15, 23, 42, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.58);
+  pointer-events: auto;
+  transform: translate(-50%, 0);
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease,
+    box-shadow 140ms ease,
+    transform 140ms ease;
+  touch-action: manipulation;
+}
+
+.cf-git-merge-gutter-control[data-operation="apply"] {
+  background: color-mix(in oklab, var(--cf-green-light) 72%, var(--cf-surface-solid));
+  color: color-mix(in oklab, var(--cf-green-hover) 70%, var(--cf-text-primary));
+}
+
+.cf-git-merge-gutter-control:hover {
+  background: color-mix(in oklab, var(--cf-accent-light) 68%, var(--cf-surface-solid));
+  color: var(--cf-text-primary);
+  transform: translate(-50%, -1px);
+}
+
+.cf-git-merge-gutter-control[data-operation="ignore"] {
+  background: color-mix(in oklab, var(--cf-surface-solid) 98%, transparent);
+  color: var(--cf-text-muted);
+}
+
+.cf-git-merge-gutter-control[data-selected="true"] {
+  border-color: color-mix(in oklab, var(--cf-accent) 72%, transparent);
+  color: var(--cf-text-primary);
+}
+
+.cf-git-merge-toolbar-group-label {
+  color: var(--cf-text-secondary);
+  font-size: 11px;
+  line-height: 1;
+  user-select: none;
+}
+
+.cf-git-merge-toolbar-icon-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  border-radius: 0.375rem;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--cf-text-secondary);
+  transition:
+    background-color 0.14s ease,
+    border-color 0.14s ease,
+    color 0.14s ease,
+    box-shadow 0.14s ease,
+    transform 0.14s ease;
+  touch-action: manipulation;
+}
+
+.cf-git-merge-toolbar-icon-action:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--cf-surface-hover) 88%, transparent);
+  border-color: color-mix(in oklab, var(--cf-border) 72%, transparent);
+  color: var(--cf-text-primary);
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08);
+}
+
+.cf-git-merge-toolbar-icon-action:focus-visible {
+  outline: none;
+  border-color: color-mix(in oklab, var(--cf-accent) 42%, transparent);
+  box-shadow:
+    0 0 0 2px color-mix(in oklab, var(--cf-accent) 18%, transparent),
+    0 2px 6px rgba(15, 23, 42, 0.08);
+}
+
+.cf-git-merge-toolbar-icon-action:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+
+.cf-git-merge-toolbar-toggle {
+  border: 1px solid transparent !important;
+}
+
+.cf-git-merge-toolbar-toggle-active {
+  background: color-mix(in oklab, var(--cf-accent-light) 72%, transparent) !important;
+  border-color: color-mix(in oklab, var(--cf-accent) 34%, transparent) !important;
+  color: var(--cf-text-primary) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.45),
+    0 1px 2px rgba(15, 23, 42, 0.06);
+}
+
+.cf-git-merge-toolbar-magic-action:not(:disabled) {
+  background: color-mix(in oklab, var(--cf-yellow) 16%, transparent);
+  border-color: color-mix(in oklab, var(--cf-yellow) 30%, transparent);
+  color: color-mix(in oklab, var(--cf-yellow-hover) 72%, black);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    0 2px 6px rgba(15, 23, 42, 0.08);
+}
+
+.cf-git-merge-toolbar-magic-action:not(:disabled):hover {
+  background: color-mix(in oklab, var(--cf-yellow) 24%, transparent);
+  border-color: color-mix(in oklab, var(--cf-yellow-hover) 36%, transparent);
+  color: color-mix(in oklab, var(--cf-yellow-hover) 88%, black);
+}
+
+.cf-git-merge-gutter-control:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px color-mix(in oklab, var(--cf-accent) 36%, transparent),
+    0 2px 6px rgba(15, 23, 42, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.58);
+}
+
+.cf-git-diff-partial-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  pointer-events: none;
+}
+
+.cf-git-diff-partial-control {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  border: 1px solid color-mix(in oklab, var(--cf-border-strong) 88%, transparent);
+  background: color-mix(in oklab, var(--cf-surface-solid) 94%, transparent);
+  color: var(--cf-text-secondary);
+  box-shadow:
+    0 1px 3px rgba(15, 23, 42, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.5);
+  pointer-events: auto;
+  transition:
+    transform 140ms ease,
+    background-color 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.cf-git-diff-partial-control:hover {
+  transform: translateY(-0.5px);
+  box-shadow:
+    0 4px 10px rgba(15, 23, 42, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.56);
+}
+
+.cf-git-diff-partial-checkbox,
+.cf-git-diff-partial-line-checkbox {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+}
+
+.cf-git-diff-partial-line-checkbox {
+  width: 14px;
+  height: 14px;
+}
+
+.cf-git-diff-partial-checkbox-mark {
+  position: relative;
+  display: block;
+  width: 9px;
+  height: 9px;
+}
+
+.cf-git-diff-partial-checkbox-mark::before,
+.cf-git-diff-partial-checkbox-mark::after {
+  content: "";
+  position: absolute;
+  opacity: 0;
+}
+
+.cf-git-diff-partial-checkbox-mark::before {
+  left: 1px;
+  top: 0;
+  width: 6px;
+  height: 3px;
+  border-left: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
+}
+
+.cf-git-diff-partial-checkbox-mark::after {
+  left: 1px;
+  top: 3px;
+  width: 7px;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.cf-git-diff-partial-checkbox[data-state="full"],
+.cf-git-diff-partial-line-checkbox[data-state="full"] {
+  border-color: color-mix(in oklab, var(--cf-accent) 48%, transparent);
+  background: color-mix(in oklab, var(--cf-accent-light) 92%, white);
+  color: var(--cf-accent-hover);
+}
+
+.cf-git-diff-partial-checkbox[data-state="excluded"],
+.cf-git-diff-partial-line-checkbox[data-state="excluded"] {
+  border-color: color-mix(in oklab, var(--cf-border-strong) 84%, transparent);
+  background: color-mix(in oklab, var(--cf-surface-muted) 94%, transparent);
+  color: var(--cf-text-muted);
+}
+
+.cf-git-diff-partial-checkbox[data-state="full"] .cf-git-diff-partial-checkbox-mark::before,
+.cf-git-diff-partial-line-checkbox[data-state="full"] .cf-git-diff-partial-checkbox-mark::before {
+  opacity: 1;
+}
+
+.cf-git-diff-partial-checkbox[data-state="partial"] .cf-git-diff-partial-checkbox-mark::after {
+  opacity: 1;
+}
+
+/* Git 工作台：强化层级、细节反馈与玻璃质感，同时保持高信息密度 */
+.cf-git-workbench {
+  border-radius: inherit;
+  background-image:
+    radial-gradient(circle at left top, var(--cf-git-bg-glow-1) 0%, transparent 28%),
+    radial-gradient(circle at right top, var(--cf-git-bg-glow-2) 0%, transparent 24%),
+    linear-gradient(180deg, color-mix(in oklab, var(--cf-app-bg) 94%, white) 0%, var(--cf-app-bg) 100%);
+}
+
+.cf-git-toolbar,
+.cf-git-pane-header,
+.cf-git-footer,
+.cf-git-banner,
+.cf-git-log-header,
+.cf-git-filterbar,
+.cf-git-dialog-panel,
+.cf-git-menu-panel,
+.cf-git-empty-state {
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+.cf-git-toolbar {
+  background: var(--cf-git-toolbar-bg);
+  box-shadow: inset 0 1px 0 var(--cf-git-toolbar-top-highlight);
+}
+
+.cf-git-pane-footer {
+  background: var(--cf-git-header-bg);
+}
+
+.cf-git-banner-danger,
+.cf-git-banner-info,
+.cf-git-banner-warn {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+.cf-git-diff-panel,
+.cf-git-diff-panel-fullscreen {
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--cf-git-panel) 90%, transparent) 0%, color-mix(in oklab, var(--cf-git-panel-elevated) 96%, transparent) 100%);
+}
+
+.cf-git-pane,
+.cf-git-bottom-panel,
+.cf-git-console,
+.cf-git-worktree-panel,
+.cf-git-diff-viewer {
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--cf-git-panel) 88%, transparent) 0%, color-mix(in oklab, var(--cf-git-panel-elevated) 96%, transparent) 100%);
+  box-shadow: inset 0 1px 0 var(--cf-git-surface-top-highlight);
+}
+
+.cf-git-pane-header,
+.cf-git-footer,
+.cf-git-log-header,
+.cf-git-filterbar {
+  background: var(--cf-git-header-bg);
+  box-shadow: inset 0 1px 0 var(--cf-git-header-top-highlight);
+}
+
+.cf-git-bottom-handle {
+  background: linear-gradient(180deg, color-mix(in oklab, var(--cf-surface-muted) 92%, transparent) 0%, color-mix(in oklab, var(--cf-surface-solid) 88%, transparent) 100%);
+}
+
+.cf-git-empty-state,
+.cf-git-dialog-panel,
+.cf-git-menu-panel,
+.cf-git-inline-card,
+.cf-git-meta-card,
+.cf-git-console-entry {
+  box-shadow: var(--cf-git-panel-shadow);
+}
+
+.cf-git-empty-state {
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--cf-git-panel-elevated) 94%, transparent) 0%, color-mix(in oklab, var(--cf-git-panel) 92%, transparent) 100%);
+}
+
+.cf-git-empty-state-icon {
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--cf-accent-light) 85%, white) 0%, color-mix(in oklab, var(--cf-teal-light) 80%, white) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    0 10px 20px rgba(0, 122, 255, 0.12);
+}
+
+.cf-git-inline-card,
+.cf-git-meta-card,
+.cf-git-console-entry {
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--cf-git-panel-elevated) 96%, transparent) 0%, color-mix(in oklab, var(--cf-git-panel) 94%, transparent) 100%);
+  border: 1px solid color-mix(in oklab, var(--cf-border) 100%, transparent);
+}
+
+.cf-git-meta-card {
+  padding: 0.625rem;
+  border-radius: 12px;
+}
+
+.cf-git-meta-label {
+  width: 2.25rem;
+  flex: 0 0 2.25rem;
+  color: var(--cf-text-muted);
+  font-weight: 500;
+}
+
+.cf-git-section-toggle {
+  color: var(--cf-text-secondary);
+  font-weight: 500;
+  border-radius: 8px;
+  transition: color 160ms ease, background-color 160ms ease;
+}
+
+.cf-git-section-toggle:hover {
+  color: var(--cf-text-primary);
+  background: var(--cf-git-row-hover);
+}
+
+.cf-git-group-row {
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--cf-git-panel-muted) 98%, transparent) 0%, color-mix(in oklab, var(--cf-git-panel) 95%, transparent) 100%);
+}
+
+.cf-git-list-row,
+.cf-git-tree-row,
+.cf-git-log-row,
+.cf-git-worktree-row,
+.cf-git-menu-item {
+  transition:
+    background-color 160ms ease,
+    box-shadow 160ms ease,
+    color 160ms ease,
+    border-color 160ms ease;
+}
+
+.cf-git-list-row:hover,
+.cf-git-tree-row:hover,
+.cf-git-log-row:hover,
+.cf-git-worktree-row:hover,
+.cf-git-menu-item:hover {
+  background: var(--cf-git-row-hover);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.cf-git-row-selected {
+  background: var(--cf-git-row-selected);
+  box-shadow:
+    inset 0 0 0 1px var(--cf-git-row-selected-border),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+.cf-git-row-current-branch {
+  background: var(--cf-git-row-current-branch);
+}
+
+.cf-git-log-row.cf-git-row-current-branch:hover {
+  background: var(--cf-git-row-current-branch-hover);
+}
+
+.cf-git-row-filtered {
+  box-shadow: inset 0 0 0 1px var(--cf-git-row-filtered);
+}
+
+.cf-git-inline-note {
+  background: linear-gradient(180deg, color-mix(in oklab, var(--cf-surface-muted) 96%, transparent) 0%, color-mix(in oklab, var(--cf-git-panel) 92%, transparent) 100%);
+}
+
+.cf-git-ref-pills {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+  align-items: center;
+  gap: 0.125rem;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.cf-git-ref-pill,
+.cf-git-status-badge,
+.cf-git-inline-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 1rem;
+  max-width: 100%;
+  padding: 0 0.3rem;
+  border-radius: 999px;
+  border: 1px solid var(--cf-git-badge-muted-border);
+  background: var(--cf-git-badge-muted);
+  color: var(--cf-text-secondary);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 10px;
+  line-height: 1.1;
+}
+
+.cf-git-ref-pill {
+  max-width: 7rem;
+}
+
+.cf-git-log-row .cf-git-ref-pill {
+  max-width: 6.25rem;
+}
+
+.cf-git-status-badge {
+  min-height: 0.9375rem;
+  padding: 0 0.3rem;
+}
+
+.cf-git-tree-row,
+.cf-git-worktree-row {
+  contain: layout paint;
+}
+
+/* 日志行在分页追加后需要稳定重绘标题列；这里彻底禁用 contain，避免滚动加载触发滚动条宽度变化后，浏览器错误复用旧的文本绘制结果。 */
+.cf-git-log-row .truncate,
+.cf-git-tree-row .truncate,
+.cf-git-worktree-row .truncate {
+  min-width: 0;
+}
+
+.cf-git-log-row [title],
+.cf-git-tree-row [title],
+.cf-git-worktree-row [title] {
+  cursor: default;
+}
+
+/* 提交信息列在分页后偶发整列不绘制文字；单独收口字体与绘制属性，避免命中虚拟列表里的异常文本缓存。 */
+.cf-git-log-subject-text {
+  font-family: inherit;
+  font-weight: 500;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+
+.cf-git-tone-accent {
+  background: color-mix(in oklab, var(--cf-accent) 14%, transparent);
+  border-color: color-mix(in oklab, var(--cf-accent) 28%, transparent);
+  color: var(--cf-accent);
+}
+
+.cf-git-tone-success {
+  background: color-mix(in oklab, var(--cf-green) 16%, transparent);
+  border-color: color-mix(in oklab, var(--cf-green) 26%, transparent);
+  color: var(--cf-green);
+}
+
+.cf-git-tone-warning {
+  background: color-mix(in oklab, var(--cf-yellow) 18%, transparent);
+  border-color: color-mix(in oklab, var(--cf-yellow) 28%, transparent);
+  color: color-mix(in oklab, var(--cf-yellow-hover) 74%, black);
+}
+
+.cf-git-tone-danger {
+  background: color-mix(in oklab, var(--cf-red) 16%, transparent);
+  border-color: color-mix(in oklab, var(--cf-red) 26%, transparent);
+  color: var(--cf-red);
+}
+
+.cf-git-tone-info {
+  background: color-mix(in oklab, var(--cf-teal) 16%, transparent);
+  border-color: color-mix(in oklab, var(--cf-teal) 26%, transparent);
+  color: var(--cf-teal-hover);
+}
+
+.cf-git-tone-muted {
+  background: var(--cf-git-badge-muted);
+  border-color: var(--cf-git-badge-muted-border);
+  color: var(--cf-text-secondary);
+}
+
+.cf-git-filter-input,
+.cf-git-editor-input {
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--cf-git-panel-elevated) 98%, transparent) 0%, color-mix(in oklab, var(--cf-git-panel) 92%, transparent) 100%);
+}
+
+.cf-git-filter-input {
+  height: 1.5625rem;
+  min-height: 1.5625rem;
+  padding-top: 0.0625rem;
+  padding-bottom: 0.0625rem;
+}
+
+.cf-git-toolbar .inline-flex,
+.cf-git-filterbar .inline-flex,
+.cf-git-pane-footer .inline-flex,
+.cf-git-footer .inline-flex {
+  transition:
+    transform 0.16s ease,
+    box-shadow 0.16s ease,
+    background-color 0.16s ease;
+}
+
+.cf-git-toolbar button:hover:not(:disabled),
+.cf-git-filterbar button:hover:not(:disabled),
+.cf-git-pane-footer button:hover:not(:disabled) {
+  transform: translateY(-0.5px);
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.08);
+}
+
+.cf-git-empty-panel {
+  color: var(--cf-text-secondary);
+}
+
+.cf-git-console {
+  background: linear-gradient(180deg, color-mix(in oklab, var(--cf-git-panel-muted) 94%, transparent) 0%, color-mix(in oklab, var(--cf-git-panel) 92%, transparent) 100%);
+}
+
+.cf-git-dialog-sidebar {
+  background: linear-gradient(180deg, color-mix(in oklab, var(--cf-git-panel) 92%, transparent) 0%, color-mix(in oklab, var(--cf-git-panel-muted) 94%, transparent) 100%);
+}
+
+.cf-git-menu-panel {
+  background: linear-gradient(180deg, color-mix(in oklab, var(--cf-git-panel-elevated) 98%, transparent) 0%, color-mix(in oklab, var(--cf-git-panel) 94%, transparent) 100%);
+}
+
+.cf-git-splitter > div {
+  background: var(--cf-git-panel-line);
+}
+
+.cf-git-toolbar-scroll {
+  scrollbar-width: none;
+}
+
+.cf-git-toolbar-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.cf-git-bottom-tabs-list {
+  overflow: visible;
+  border: 1px solid color-mix(in oklab, var(--cf-git-panel-line) 100%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--cf-git-panel-elevated) 96%, transparent) 0%, color-mix(in oklab, var(--cf-git-panel) 92%, transparent) 100%);
+  box-shadow: inset 0 1px 0 var(--cf-git-header-top-highlight);
+}
+
+.cf-git-bottom-tabs-trigger {
+  min-height: 1.5rem;
+  border-radius: 10px;
+  box-shadow: none !important;
+}
+
+.cf-git-bottom-tabs-trigger[data-state="active"] {
+  border-color: color-mix(in oklab, var(--cf-tab-border-strong) 72%, var(--cf-git-panel-line));
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--cf-tab-pill-active-top) 96%, var(--cf-git-panel-elevated)) 0%, color-mix(in oklab, var(--cf-tab-pill-active-bottom) 92%, var(--cf-git-panel)) 100%);
+  box-shadow:
+    inset 0 1px 0 var(--cf-git-header-top-highlight),
+    0 4px 10px rgba(15, 23, 42, 0.12) !important;
+}
+
+.dark .cf-git-bottom-tabs-trigger[data-state="active"] {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 6px 14px rgba(0, 0, 0, 0.28) !important;
+}
+
+.cf-git-bottom-tabs-trigger:hover:not([data-state="active"]) {
+  box-shadow: inset 0 1px 0 var(--cf-git-header-top-highlight) !important;
+}
+
+.cf-git-diff-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--cf-git-panel) 90%, transparent) 0%, color-mix(in oklab, var(--cf-git-panel-muted) 96%, transparent) 100%);
+}
+
+.cf-git-diff-viewer .monaco-diff-editor,
+.cf-git-diff-viewer .monaco-editor,
+.cf-git-diff-viewer .monaco-editor-background,
+.cf-git-diff-viewer .monaco-editor .margin {
+  background: transparent !important;
+}
+
+.cf-git-diff-active-line-margin {
+  border-left-color: var(--cf-git-graph-ring);
 }

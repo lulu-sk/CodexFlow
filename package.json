@@ -39,6 +39,7 @@
     "undici": "^6.18.2"
   },
   "devDependencies": {
+    "@monaco-editor/react": "^4.7.0",
     "@tailwindcss/line-clamp": "^0.4.4",
     "@tailwindcss/typography": "^0.5.19",
     "@types/node": "^20.11.30",
@@ -62,8 +63,9 @@
     "i18next-resources-to-backend": "^1.2.1",
     "jsdom": "^27.0.0",
     "lucide-react": "^0.453.0",
-    "postcss": "^8.4.35",
+    "monaco-editor": "^0.55.1",
     "patch-package": "^8.0.1",
+    "postcss": "^8.4.35",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-i18next": "^14.1.2",

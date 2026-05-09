@@ -32,7 +32,7 @@
   "projectIdeDialogModeCustom": "自定义命令",
   "projectIdeDialogBuiltinLabel": "选择内置 IDE",
   "projectIdeDialogCustomNameLabel": "自定义 IDE 名称（可选）",
-  "projectIdeDialogCustomNamePlaceholder": "例如：IntelliJ IDEA",
+  "projectIdeDialogCustomNamePlaceholder": "例如：Android Studio",
   "projectIdeDialogCustomCommandLabel": "命令模板",
   "projectIdeDialogCustomCommandPlaceholder": "例如：\"C:\\\\Path\\\\IDE.exe\" --line {line} {path}",
   "projectIdeDialogCustomCommandHint": "可用占位符：{path} {line} {column} {project} {pathLineCol}（以及 rawPath/rawProject/rawPathLineCol）。",

@@ -24,13 +24,19 @@ export const TabsList = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HT
 ));
 TabsList.displayName = 'TabsList';
 
-export function TabsTrigger({ value, className, children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { value: string }) {
+type TabsTriggerProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
+  value: string;
+  compact?: boolean;
+};
+
+export function TabsTrigger({ value, compact = false, className, children, ...props }: TabsTriggerProps) {
   const ctx = React.useContext(TabsContext);
   const active = ctx.value === value;
   return (
     <button
       className={cn(
-        'group/tab relative inline-flex h-[24px] min-w-[72px] items-center gap-2 whitespace-nowrap rounded-full border border-transparent bg-transparent px-3 pr-6 text-xs font-apple-medium leading-tight text-[var(--cf-text-secondary)] transition-all duration-apple ease-apple ring-1 ring-transparent',
+        'group/tab relative inline-flex h-[24px] whitespace-nowrap rounded-full border border-transparent bg-transparent text-xs font-apple-medium leading-tight text-[var(--cf-text-secondary)] transition-all duration-apple ease-apple ring-1 ring-transparent',
+        compact ? 'min-w-0 gap-0 px-3' : 'min-w-[72px] items-center gap-2 px-3 pr-6',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cf-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--cf-app-bg)]',
         active
           ? 'bg-gradient-to-b from-[var(--cf-tab-pill-active-top)] to-[var(--cf-tab-pill-active-bottom)] text-[var(--cf-text-primary)] border-[var(--cf-tab-border-strong)] ring-black/10 shadow-[0_6px_14px_rgba(15,23,42,0.12)] dark:ring-white/15 dark:shadow-[0_8px_18px_rgba(0,0,0,0.55)]'

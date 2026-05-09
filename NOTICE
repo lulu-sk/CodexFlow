@@ -12,6 +12,24 @@ This distribution bundles components including (examples):
 - node-pty (MIT)
 - xterm.js (MIT)
 
+Git/VCS workbench attribution:
+
+This distribution includes Git, VCS, diff/merge, changelist, shelf/stash,
+update, and log-view behavior that was implemented with reference to
+IntelliJ IDEA Community Edition / IntelliJ Platform open-source code.
+
+IntelliJ IDEA Community Edition
+Copyright (C) JetBrains s.r.o. and contributors
+https://www.jetbrains.com/idea/
+
+The referenced IntelliJ IDEA Community Edition / IntelliJ Platform source
+code is licensed under the Apache License, Version 2.0. The CodexFlow
+implementation rewrites the behavior for Electron, React, and TypeScript.
+It does not include JetBrains product branding, icons, or endorsement.
+
+JetBrains and IntelliJ IDEA are trademarks of JetBrains s.r.o. Their names
+are used here only to identify the origin of the referenced open-source work.
+
 For a complete list of licenses and attributions, see the licenses
 included with each package in node_modules/**/LICENSE.
 This NOTICE is for attribution only and does not modify the License.

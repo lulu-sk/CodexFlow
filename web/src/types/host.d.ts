@@ -134,6 +134,124 @@ export type Project = {
   lastOpenedAt?: number;
 };
 
+export type GitUpdateExecutionPhase =
+  | "repository-graph"
+  | "preflight"
+  | "tracked-branch-config"
+  | "fetch"
+  | "updater-selection"
+  | "save-if-needed"
+  | "root-update"
+  | "result-aggregation";
+
+export type GitUpdateRootResultCode =
+  | "NOTHING_TO_UPDATE"
+  | "SUCCESS"
+  | "INCOMPLETE"
+  | "CANCEL"
+  | "ERROR"
+  | "NOT_READY"
+  | "SKIPPED";
+
+export type GitUpdateFetchStrategy =
+  | "tracked-remote"
+  | "default-remote"
+  | "all-remotes";
+
+export type GitUpdateFetchStatus =
+  | "success"
+  | "failed"
+  | "skipped"
+  | "cancelled";
+
+export type GitUpdateLocalChangesRestorePolicy = "not-applicable" | "restore" | "keep-saved";
+
+export type GitUpdatePreservingStatus =
+  | "not-needed"
+  | "saved"
+  | "restored"
+  | "kept-saved"
+  | "restore-failed";
+
+export type GitUpdateSkipReasonCode =
+  | "requested"
+  | "detached-head"
+  | "no-tracked-branch"
+  | "remote-missing"
+  | "parent-failed"
+  | "fetch-failed"
+  | "updated-by-parent";
+
+export type GitUpdateSubmoduleMode = "branch" | "detached";
+export type GitUpdateSubmoduleUpdateStrategy = "root" | "detached-updater" | "updated-by-parent";
+
+export type GitUpdateSessionProgressFetchResult = {
+  status: GitUpdateFetchStatus;
+  strategy: GitUpdateFetchStrategy;
+  remotes: string[];
+  fetchedRemotes: string[];
+  failedRemotes: Array<{ remote: string; error: string }>;
+  upstream?: string;
+  trackedRemote?: string;
+  skippedReason?: string;
+  error?: string;
+};
+
+export type GitUpdateSessionProgressUnfinishedState = {
+  code: "rebase-in-progress" | "merge-in-progress" | "unmerged-files";
+  stage: "preflight" | "update";
+  localChangesRestorePolicy: GitUpdateLocalChangesRestorePolicy;
+  savedLocalChangesRef?: string;
+  message: string;
+};
+
+export type GitUpdateSessionProgressPreservingState = {
+  saveChangesPolicy: "stash" | "shelve";
+  status: GitUpdatePreservingStatus;
+  localChangesRestorePolicy: GitUpdateLocalChangesRestorePolicy;
+  savedLocalChangesRef?: string;
+  savedLocalChangesDisplayName?: string;
+  message?: string;
+  notRestoredReason?: "unfinished-state" | "restore-failed" | "manual-decision";
+};
+
+export type GitUpdateSessionProgressSubmoduleUpdate = {
+  mode: GitUpdateSubmoduleMode;
+  strategy: GitUpdateSubmoduleUpdateStrategy;
+  parentRepoRoot?: string;
+  relativePath?: string;
+  recursive: boolean;
+  detachedHead: boolean;
+};
+
+export type GitUpdateSessionProgressSnapshot = {
+  requestedRepoRoot: string;
+  currentPhase?: GitUpdateExecutionPhase;
+  activeRepoRoot?: string;
+  activeRootName?: string;
+  activePhase?: GitUpdateExecutionPhase;
+  cancelled: boolean;
+  cancelReason?: string;
+  totalRoots: number;
+  completedRoots: number;
+  runningRoots: number;
+  remainingRoots: number;
+  multiRoot: boolean;
+  roots: Array<{
+    repoRoot: string;
+    rootName: string;
+    kind: "repository" | "submodule";
+    currentPhase?: GitUpdateExecutionPhase;
+    resultCode?: GitUpdateRootResultCode;
+    skippedReason?: string;
+    skippedReasonCode?: GitUpdateSkipReasonCode;
+    fetchResult?: GitUpdateSessionProgressFetchResult;
+    unfinishedState?: GitUpdateSessionProgressUnfinishedState;
+    preservingState?: GitUpdateSessionProgressPreservingState;
+    submoduleUpdate?: GitUpdateSessionProgressSubmoduleUpdate;
+  }>;
+};
+
 export type HistorySummary = {
   providerId: "codex" | "claude" | "gemini";
   id: string;
@@ -408,6 +526,7 @@ export type GitDirInfo = {
   isRepoRoot: boolean;
   branch?: string;
   detached: boolean;
+  /** detached 时返回 canonical HEAD hash；展示层按需自行缩写。 */
   headSha?: string;
   isWorktree: boolean;
   worktrees?: GitWorktreeListEntry[];
@@ -446,6 +565,39 @@ export interface GitWorktreeAPI {
   autoCommit(args: { worktreePath: string; message: string }): Promise<{ ok: boolean; committed: boolean; error?: string }>;
   openExternalTool(dir: string): Promise<{ ok: boolean; error?: string }>;
   openTerminal(dir: string): Promise<{ ok: boolean; error?: string }>;
+}
+
+export interface GitFeatureAPI {
+  call(args: { action: string; payload?: any; requestId?: number }): Promise<{ ok: boolean; data?: any; error?: string }>;
+  onProgress?(handler: (payload: { requestId: number; action: string; repoRoot?: string; message: string; detail?: string; updateSession?: GitUpdateSessionProgressSnapshot }) => void): () => void;
+}
+
+export interface GitWorkbenchAPI {
+  /**
+   * 请求宿主打开 GitWorkbench；可按公共 actionId 触发提交、提交并推送、拉取、获取、推送、更新项目、冲突解决、搁置等入口。
+   */
+  show(args: {
+    actionId?: string;
+    projectId?: string;
+    projectPath?: string;
+    prefillCommitMessage?: string;
+    focusCommitMessage?: boolean;
+    selectCommitMessage?: boolean;
+    requestId?: number;
+  }): Promise<{ ok: boolean; error?: string }>;
+  /**
+   * 监听主进程转发的 GitWorkbench 打开请求，供 App 宿主统一切 tab 并下发到具体工作台实例。
+   */
+  onShowRequest?(handler: (payload: {
+    actionId?: string;
+    projectId?: string;
+    projectPath?: string;
+    prefillCommitMessage?: string;
+    focusCommitMessage?: boolean;
+    selectCommitMessage?: boolean;
+    requestId?: number;
+    receivedAt?: number;
+  }) => void): () => void;
 }
 
 export interface HistoryAPI {
@@ -750,6 +902,12 @@ export interface UtilsAPI {
   /** 获取当前用户主目录路径（轻量）。 */
   getHomeDir(): Promise<{ ok: boolean; homeDir?: string; error?: string }>;
   chooseFolder(): Promise<{ ok: boolean; path?: string; canceled?: boolean; error?: string }>;
+  chooseFiles(args?: {
+    title?: string;
+    defaultPath?: string;
+    multiSelections?: boolean;
+    filters?: Array<{ name: string; extensions: string[] }>;
+  }): Promise<{ ok: boolean; paths?: string[]; canceled?: boolean; error?: string }>;
   debugTermGet(): Promise<{ ok: boolean; enabled?: boolean; error?: string }>;
   debugTermSet(enabled: boolean): Promise<{ ok: boolean; error?: string }>;
   /** 列出系统已安装字体名称（Windows）。其他平台返回空数组。 */
@@ -769,7 +927,7 @@ export interface FileIndexAPI {
   ensureIndex(args: { root: string; excludes?: string[] }): Promise<{ ok: boolean; total?: number; updatedAt?: number; error?: string }>;
   getAllCandidates(root: string): Promise<{ ok: boolean; items?: Array<{ rel: string; isDir: boolean }>; error?: string }>;
   /**
-   * 中文说明：主进程侧 @ 搜索（仅返回 topN）。
+   * 主进程侧 @ 搜索（仅返回 topN）。
    * 目的：避免把全量候选列表跨进程传到渲染层/Worker，导致大仓库下的内存峰值与页面刷新。
    */
   searchAt(args: {
@@ -795,6 +953,11 @@ export interface FileIndexAPI {
   onChanged?: (handler: (payload: { root: string; reason?: string; adds?: { rel: string; isDir: boolean }[]; removes?: { rel: string; isDir: boolean }[] }) => void) => () => void;
 }
 
+export interface GitRepoWatchAPI {
+  setActiveRoots(roots: string[]): Promise<{ ok: boolean; opened?: number; closed?: number; remain?: number; error?: string }>;
+  onChanged?: (handler: (payload: { repoRoot: string; reason: string; paths: string[] }) => void) => () => void;
+}
+
 export interface ImagesAPI {
   saveDataURL(args: { dataURL: string; projectWinRoot?: string; projectWslRoot?: string; projectName?: string; ext?: string; prefix?: string; providerId?: string; runtimeEnv?: "wsl" | "windows" | "pwsh"; distro?: string }): Promise<{ ok: boolean; winPath?: string; wslPath?: string; fileName?: string; error?: string }>;
   clipboardHasImage(): Promise<{ ok: boolean; has?: boolean; error?: string }>;
@@ -806,7 +969,7 @@ export interface ImagesAPI {
 
 export interface AppAPI {
   /**
-   * 中文说明：本次主进程启动的唯一标识（跨 reload 稳定）。
+   * 本次主进程启动的唯一标识（跨 reload 稳定）。
    * 用途：渲染层区分“渲染 reload/HMR”与“应用重启”，避免重启后恢复失效的控制台绑定。
    */
   bootId: string;
@@ -845,6 +1008,8 @@ declare global {
       dirTree?: DirTreeAPI;
       buildRun?: BuildRunAPI;
       gitWorktree?: GitWorktreeAPI;
+      gitFeature?: GitFeatureAPI;
+      gitWorkbench?: GitWorkbenchAPI;
       history: HistoryAPI;
       settings: SettingsAPI;
       storage: StorageAPI;
@@ -856,6 +1021,7 @@ declare global {
       notifications: NotificationsAPI;
       wsl?: WslAPI;
       fileIndex?: FileIndexAPI;
+      gitRepoWatch?: GitRepoWatchAPI;
       images?: ImagesAPI;
       debug?: {
         get(): Promise<any>;

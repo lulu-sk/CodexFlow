@@ -1,0 +1,2800 @@
+{
+  "actionDialogs": {
+    "common": {
+      "cancel": "取消",
+      "confirm": "确定",
+      "defaultBadge": "默认"
+    },
+    "branch": {
+      "title": "新建分支",
+      "confirm": "创建",
+      "nameLabel": "分支名称",
+      "namePlaceholder": "功能/xxx",
+      "fromCommitDescription": "基于当前提交创建新分支",
+      "newDescription": "请输入新分支名称",
+      "fromRefDescription": "基于 {{target}} 创建新分支"
+    },
+    "tag": {
+      "title": "新建标签",
+      "confirm": "创建",
+      "description": "基于当前提交创建标签",
+      "nameLabel": "标签名称",
+      "namePlaceholder": "v1.0.0"
+    },
+    "reset": {
+      "title": "重置当前分支",
+      "description": "请选择重置模式",
+      "confirm": "执行",
+      "footerHint": "当前分支会移动到所选提交；执行后仍可通过 git reflog 找回历史。",
+      "modeLabel": "重置模式",
+      "modeDescription": "不同模式会影响暂存区与工作区的保留方式，请确认后再执行。",
+      "options": {
+        "mixed": {
+          "label": "混合（Mixed）",
+          "description": "保留工作区改动，重置暂存区，适合撤销提交后继续整理文件。"
+        },
+        "soft": {
+          "label": "软重置（Soft）",
+          "description": "仅移动当前分支指针，保留暂存区与工作区，适合重新组织提交。"
+        },
+        "hard": {
+          "label": "硬重置（Hard）",
+          "description": "同时重置 HEAD、暂存区与工作区，会直接丢弃未保存的本地改动。"
+        }
+      }
+    },
+    "undoCommit": {
+      "title": "撤销提交",
+      "description": "将重置到当前提交的父提交并保留工作区改动。",
+      "confirm": "撤销",
+      "footerHint": "该操作不会删除工作区中的文件内容，但会把当前提交从分支历史中移除。",
+      "targetChangeListLabel": "恢复到更改列表",
+      "targetChangeListDescription": "撤销后的文件将移动到所选更改列表，并把原提交信息回填到对应草稿。"
+    },
+    "deleteCommit": {
+      "title": "删除提交",
+      "description": "是否要从“{{branch}}”分支删除 {{count}} 个提交？",
+      "descriptionDetached": "是否要删除 {{count}} 个提交？",
+      "confirm": "删除",
+      "footerHint": "该操作会改写当前分支历史；若这些提交已推送到远端，请谨慎执行。",
+      "dontAskAgain": "不再询问"
+    },
+    "commitDetailsPatch": {
+      "applyTitle": "优选所选更改",
+      "applyDescription": "把当前提交详情里选中的更改应用到工作区；启用更改列表时，可指定目标更改列表。",
+      "applyConfirm": "优选",
+      "revertTitle": "还原所选更改",
+      "revertDescription": "把当前提交详情里选中的更改以反向补丁形式应用到工作区；启用更改列表时，可指定目标更改列表。",
+      "revertConfirm": "还原",
+      "targetChangeListLabel": "目标更改列表",
+      "applyTargetDescription": "应用后的文件会归入所选更改列表，避免直接落到错误列表。",
+      "revertTargetDescription": "还原后的文件会归入所选更改列表，便于后续继续整理。"
+    },
+    "editCommitMessage": {
+      "title": "编辑提交信息",
+      "description": "支持编辑当前分支历史线上的提交信息（非 HEAD 会通过自动变基方式执行）。",
+      "confirm": "保存",
+      "footerHint": "修改非 HEAD 提交时会自动进入一次受控变基，保存前请确认消息内容。",
+      "messageLabel": "提交信息",
+      "messagePlaceholder": "请输入新的提交信息"
+    },
+    "remoteEditor": {
+      "addTitle": "新增远端",
+      "editTitle": "编辑远端",
+      "addDescription": "添加新的 Git 远端配置",
+      "editDescription": "更新远端 {{name}} 的名称与地址",
+      "addConfirm": "新增",
+      "saveConfirm": "保存",
+      "nameLabel": "远端名称",
+      "namePlaceholder": "origin",
+      "fetchUrlLabel": "获取地址",
+      "fetchUrlPlaceholder": "https://example.com/repo.git",
+      "pushUrlLabel": "推送地址",
+      "pushUrlPlaceholder": "留空则沿用获取地址",
+      "removeTitle": "移除远端",
+      "removeDescription": "确定移除远端 {{name}} 吗？",
+      "removeConfirm": "移除"
+    },
+    "checkoutRevision": {
+      "title": "签出标签或修订",
+      "description": "请输入标签名称或提交哈希",
+      "confirm": "签出",
+      "label": "标签 / 修订",
+      "placeholder": "v1.0.0 或 a1b2c3d"
+    },
+    "fixup": {
+      "title": "创建 Fixup 提交",
+      "description": "仅基于当前 Git 面板中已选中的 {{count}} 项改动创建自动提交，不会扩大到整仓改动。",
+      "confirm": "继续"
+    },
+    "squashTo": {
+      "title": "创建 Squash 提交",
+      "description": "仅基于当前 Git 面板中已选中的 {{count}} 项改动创建自动提交，不会扩大到整仓改动。",
+      "confirm": "继续"
+    },
+    "squashCommits": {
+      "title": "压缩提交",
+      "description": "将所选连续提交压缩为一个提交（需位于当前分支主线，且工作区干净）。",
+      "confirm": "压缩",
+      "messageLabel": "新提交信息",
+      "messagePlaceholder": "请输入提交信息"
+    },
+    "commitFiles": {
+      "title": "提交文件",
+      "description": "将提交 {{count}} 个文件。",
+      "confirm": "提交",
+      "messageLabel": "提交信息",
+      "messagePlaceholder": "请输入提交信息"
+    },
+    "moveToChangelist": {
+      "title": "移动到更改列表",
+      "description": "选择目标更改列表",
+      "confirm": "移动",
+      "targetLabel": "目标列表"
+    },
+    "shelveChanges": {
+      "title": "搁置更改",
+      "description": "请输入搁置说明",
+      "confirm": "搁置",
+      "messageLabel": "说明",
+      "messagePlaceholder": "搁置所选更改"
+    },
+    "newChangeList": {
+      "title": "新建更改列表",
+      "description": "请输入更改列表名称",
+      "confirm": "创建",
+      "nameLabel": "列表名称",
+      "namePlaceholder": "默认更改列表",
+      "setActiveLabel": "设为活动更改列表"
+    },
+    "editChangeList": {
+      "title": "编辑更改列表",
+      "description": "请输入新的更改列表名称",
+      "confirm": "保存",
+      "nameLabel": "列表名称",
+      "namePlaceholder": "请输入名称"
+    },
+    "deleteChangeList": {
+      "chooseNextTitle": "选择新的活动更改列表",
+      "chooseNextDescription": "删除活动更改列表前，请先选择新的活动列表用于接收文件。",
+      "chooseNextConfirm": "下一步",
+      "targetLabel": "目标列表",
+      "title": "删除更改列表",
+      "descriptionWithTarget": "将删除 {{count}} 个更改列表（{{names}}），其中的文件会移动到所选目标列表。",
+      "descriptionWithoutTarget": "将删除 {{count}} 个更改列表（{{names}}），其中的文件会回到活动更改列表。",
+      "confirm": "删除",
+      "failed": "删除更改列表失败"
+    },
+    "worktree": {
+      "title": "新增工作树",
+      "description": "填写新工作树目录与可选分支名称",
+      "descriptionWithRef": "填写新工作树目录与可选分支名称（基于 {{ref}}）",
+      "confirm": "创建",
+      "pathLabel": "目录",
+      "pathPlaceholder": "/路径/工作树",
+      "branchNameLabel": "新分支（可选）",
+      "branchNamePlaceholder": "功能/xxx",
+      "emptyPathError": "工作树目录不能为空",
+      "createFailed": "新增工作树失败"
+    },
+    "dateFilter": {
+      "title": "日期筛选",
+      "description": "请输入日期范围（ISO 日期格式，如 2026-03-05）",
+      "confirm": "应用",
+      "fromLabel": "起始日期",
+      "fromPlaceholder": "YYYY-MM-DD",
+      "toLabel": "结束日期",
+      "toPlaceholder": "YYYY-MM-DD"
+    },
+    "removeWorktree": {
+      "title": "移除工作树",
+      "description": "将移除：{{path}}",
+      "confirm": "移除",
+      "strategyLabel": "移除策略",
+      "safeLabel": "普通移除",
+      "forceLabel": "强制移除",
+      "failed": "移除工作树失败"
+    },
+    "checkoutRebaseCurrent": {
+      "description": "签出 {{target}} 并在 {{branch}} 上执行 `git rebase`。",
+      "confirm": "执行",
+      "failed": "签出并变基失败"
+    },
+    "rebaseCurrentToTarget": {
+      "description": "执行：checkout {{branch}} && rebase {{target}}",
+      "confirm": "执行",
+      "failed": "变基失败"
+    },
+    "mergeTargetToCurrent": {
+      "description": "执行：checkout {{branch}} && merge {{target}}",
+      "confirm": "合并",
+      "failed": "合并失败"
+    },
+    "pullRemoteToCurrent": {
+      "rebaseDescription": "执行：git pull --rebase {{remote}} {{branch}}",
+      "mergeDescription": "执行：git pull {{remote}} {{branch}}",
+      "confirm": "执行"
+    }
+  },
+  "activity": {
+    "progress": {
+      "processing": "处理中"
+    },
+    "errors": {
+      "featureUnavailable": "Git 功能不可用",
+      "showWorkbenchUnsupported": "当前宿主不支持打开 Git 工作台"
+    },
+    "branchAction": {
+      "new": "新建分支",
+      "rename": "重命名分支",
+      "delete": "删除分支",
+      "deleteRemote": "删除远端分支",
+      "addRemote": "新增远端",
+      "editRemote": "编辑远端",
+      "removeRemote": "移除远端",
+      "configureRemotes": "配置远端",
+      "checkoutUpdate": "签出并更新分支",
+      "rebase": "执行分支变基",
+      "merge": "执行分支合并",
+      "compare": "加载分支差异",
+      "toggleMine": "切换我的分支筛选",
+      "updateBranch": "更新目标分支",
+      "pushBranch": "推送目标分支",
+      "createWorktree": "创建工作树",
+      "openExistingWorktree": "打开已签出工作树",
+      "pullRemote": "拉取远端分支",
+      "default": "执行分支操作"
+    },
+    "actions": {
+      "refreshWorkbench": "刷新 Git 工作台",
+      "initRepo": "初始化 Git 仓库",
+      "switchBranch": "签出分支",
+      "continueOperation": "继续 Git 操作",
+      "abortOperation": "中止 Git 操作",
+      "createCommit": "创建提交",
+      "rollbackChanges": "回滚文件变更",
+      "deleteFiles": "删除文件",
+      "stageFiles": "暂存文件",
+      "unstageFiles": "从暂存区移除文件",
+      "revertUnstaged": "还原未暂存更改",
+      "readConflictContent": "读取冲突内容",
+      "restoreFromRevision": "从修订恢复文件",
+      "loadDiff": "加载差异",
+      "exportPatch": "导出补丁",
+      "loadMoreHistory": "加载更多提交历史",
+      "loadHistory": "加载提交历史",
+      "readCommitDetails": "读取提交详情",
+      "readCommitDetailActions": "读取提交详情动作",
+      "runCommitDetailAction": "执行提交详情动作",
+      "prepareCommitMessage": "准备提交信息",
+      "prepareInteractiveRebase": "准备交互式变基",
+      "runInteractiveRebase": "执行交互式变基",
+      "resolveFileHistoryPath": "解析文件历史路径",
+      "runLogAction": "执行日志操作",
+      "fetchRemoteChanges": "获取远端变更",
+      "updateCurrentBranch": "更新当前分支",
+      "pushToRemote": "推送到远端",
+      "readTrackedBranchFix": "读取跟踪分支修复建议",
+      "applyTrackedBranchFix": "应用跟踪分支修复",
+      "readPushPreview": "读取推送预览",
+      "createShelf": "创建搁置",
+      "importShelfPatch": "导入搁置补丁",
+      "restoreShelf": "取消搁置",
+      "deleteShelf": "删除搁置",
+      "createStash": "创建暂存",
+      "applyStash": "恢复暂存",
+      "dropStash": "删除暂存",
+      "addWorktree": "新增工作树",
+      "removeWorktree": "移除工作树",
+      "readGitConsole": "读取 Git 控制台",
+      "clearGitConsole": "清空 Git 控制台",
+      "updateChangesView": "更新更改视图",
+      "updateChangeLists": "更新变更列表",
+      "default": "处理 Git 操作"
+    }
+  },
+  "dialogs": {
+    "fetch": {
+      "title": "获取远端变更",
+      "description": "显式选择目标仓库、远端范围与附加参数，避免 fetch 退化为单一默认动作。",
+      "targetRepository": "目标仓库",
+      "selectRepository": "请选择仓库",
+      "repositoryUnavailable": "当前仓库不可用",
+      "extraOptions": "附加参数",
+      "remote": "远端",
+      "selectRemote": "请选择远端",
+      "remoteHint": "仅在“指定远端”模式下生效。",
+      "tagMode": "标签策略",
+      "tagModeOptions": {
+        "auto": "默认",
+        "all": "获取全部标签",
+        "none": "跳过标签"
+      },
+      "refspec": "引用规范",
+      "refspecPlaceholder": "可选，例如 refs/heads/main:refs/remotes/origin/main",
+      "unshallow": "将浅克隆仓库补全为完整历史（`--unshallow`）",
+      "commandPreview": "命令预览",
+      "remotesSummary": "当前仓库远端：{{names}}",
+      "noRemotes": "当前仓库尚未配置远端",
+      "cancel": "取消",
+      "submit": "开始获取",
+      "listSeparator": "、",
+      "scope": {
+        "title": "获取范围",
+        "selected": "已选",
+        "defaultRemote": {
+          "label": "默认远端",
+          "description": "对齐原生 `git fetch`，优先当前分支上游，其次 origin。"
+        },
+        "specificRemote": {
+          "label": "指定远端",
+          "description": "显式选择某个远端；适合多远端仓库做定向 fetch。"
+        },
+        "allRemotes": {
+          "label": "全部远端",
+          "description": "顺序获取当前仓库配置的全部远端。"
+        }
+      }
+    },
+    "pull": {
+      "title": "拉取",
+      "titleWithBranch": "拉取到 {{branch}}",
+      "description": "选择远端与分支，执行独立拉取。",
+      "repositoryRoot": "仓库根目录",
+      "selectRepository": "请选择仓库",
+      "remote": "远端",
+      "branch": "分支",
+      "selectRemote": "请选择远端",
+      "selectBranch": "请选择远端分支",
+      "selectRemoteFirst": "请先选择远端",
+      "refreshBranchesAria": "获取远端分支列表",
+      "refreshBranches": "获取 {{remote}} 的最新分支",
+      "refreshBranchesDisabled": "请选择远端后再获取",
+      "modifyOptions": "修改选项",
+      "strategy": "拉取策略",
+      "extraOptions": "附加选项",
+      "cancel": "取消",
+      "submit": "拉取",
+      "submitting": "拉取中...",
+      "modes": {
+        "merge": {
+          "label": "合并",
+          "description": "保持现有历史，直接把远端变更合并到当前分支。"
+        },
+        "rebase": {
+          "label": "变基",
+          "description": "先获取远端，再将本地提交重放到最新远端之上。"
+        }
+      },
+      "options": {
+        "mergeOnly": "变基模式下不支持该合并选项。",
+        "ffOnly": {
+          "label": "仅快进",
+          "description": "只允许快进；若需要合并提交则直接失败。",
+          "conflict": "与 `--no-ff`、`--squash` 互斥。"
+        },
+        "noFf": {
+          "label": "禁止快进",
+          "description": "即使可快进也保留合并提交，显式记录这次拉取。",
+          "conflict": "与 `--ff-only`、`--squash` 互斥。"
+        },
+        "squash": {
+          "label": "压缩",
+          "description": "把远端变更压成工作区改动，不立即生成合并提交。",
+          "conflict": "与 `--ff-only`、`--no-ff` 互斥。"
+        },
+        "noCommit": {
+          "label": "不自动提交",
+          "description": "完成合并后停在暂存区，由你手动确认提交内容。"
+        },
+        "noVerify": {
+          "label": "跳过钩子",
+          "description": "跳过预合并 / 预变基钩子；仅在当前 Git 支持时可用。",
+          "unsupported": "当前 Git 不支持 `git pull --no-verify`。"
+        }
+      }
+    },
+    "interactiveRebase": {
+      "title": "交互式变基",
+      "description": "共 {{count}} 个提交，范围从 {{from}} 到当前 HEAD。",
+      "failed": "执行交互式变基失败",
+      "warnings": {
+        "autosquash": {
+          "title": "检测到 autosquash 提交",
+          "message": "当前计划包含 fixup!/squash!/amend! 提交。应用内编辑器会固定展示真实 replay 顺序，并以 `--no-autosquash` 执行。"
+        },
+        "updateRefs": {
+          "title": "检测到 rebase.updateRefs",
+          "message": "当前 Git 配置启用了 `rebase.updateRefs`。应用内结果仍会按真实 Git 执行，但相关引用会在变基期间被联动改写。"
+        }
+      },
+      "discardChangesConfirm": "当前交互式变基计划已修改，确定放弃这些更改吗？",
+      "listSeparator": "、",
+      "range": {
+        "root": "仓库根提交",
+        "afterHash": "{{hash}} 之后",
+        "target": "目标提交"
+      },
+      "summary": {
+        "keep": "保留 {{count}}",
+        "rewrite": "改写 {{count}}",
+        "drop": "丢弃 {{count}}",
+        "autosquash": "自动压缩 {{count}}"
+      },
+      "orderHint": "提交按从旧到新的顺序展示。上下移动会直接改变最终重放顺序。",
+      "autosquashCandidate": "自动压缩候选",
+      "openDiff": "打开差异",
+      "moveTop": "置顶",
+      "moveUp": "上移",
+      "moveDown": "下移",
+      "moveBottom": "置底",
+      "quickActions": "上下文动作",
+      "actionLabel": "动作",
+      "messageLabel": "提交信息",
+      "messageOverrideLabel": "提交信息覆盖（可选）",
+      "fillSuggestedMessage": "填充建议消息",
+      "messagePlaceholder": "请输入新的提交信息",
+      "squashPlaceholder": "留空则使用 Git 默认的压缩提交信息",
+      "squashHint": "留空时由 Git 按当前变基进度生成默认的压缩提交信息；如果你想固定最终信息，可以手动填写或点击“填充建议消息”。",
+      "reset": "重置计划",
+      "cancel": "取消",
+      "submit": "开始变基",
+      "empty": "当前没有可编辑的提交",
+      "actions": {
+        "pick": "保留",
+        "edit": "编辑",
+        "reword": "改写消息",
+        "squash": "压缩",
+        "fixup": "整理",
+        "drop": "丢弃",
+        "attachTargetMissing": "前方缺少可附着的目标提交"
+      },
+      "details": {
+        "title": "提交详情",
+        "loading": "正在读取提交详情...",
+        "author": "作者：{{value}}",
+        "email": "邮箱：{{value}}",
+        "time": "时间：{{value}}",
+        "parents": "父提交：{{value}}",
+        "branches": "分支：{{value}}",
+        "tags": "标签：{{value}}",
+        "files": "变更文件（{{count}}）",
+        "moreFiles": "还有 {{count}} 个文件未展开",
+        "subject": "原始消息首行：{{value}}"
+      },
+      "reason": {
+        "mergeCommit": "所选提交是一个合并提交，应用内不支持交互式变基。",
+        "nonLinearHistory": "所选提交范围不是线性的首父提交链历史，因此应用内不支持交互式变基。",
+        "targetOutsideHead": "所选提交已不在 HEAD 历史线上，请刷新日志后重试。",
+        "unexpectedHash": "提交历史已发生变化，请刷新日志后重试。",
+        "unresolvedHash": "读取当前提交链失败，请刷新日志后重试。",
+        "detachedHead": "游离 HEAD 状态下无法打开交互式变基编辑器。",
+        "commitNotFound": "读取目标提交失败，请刷新日志后重试。"
+      },
+      "fallback": {
+        "started": "当前历史不适合应用内变基编辑器，已改为在应用内终端启动传统 interactive rebase；完成后请返回 Git 面板刷新状态。",
+        "openTerminalFailed": "无法在应用内终端启动传统 interactive rebase，请稍后重试或改用外部终端。",
+        "prepareFailed": "准备传统 interactive rebase 回退链路失败"
+      }
+    },
+    "shelfRestore": {
+      "title": "取消搁置",
+      "description": "选择需要取消搁置的文件，并决定是否在成功后从搁置区中移除已应用内容。",
+      "files": {
+        "title": "待取消搁置的文件",
+        "selectedCount": "已选 {{selected}} / {{total}}",
+        "empty": "该搁置记录没有可取消搁置的文件列表。"
+      },
+      "targetChangeList": {
+        "title": "目标更改列表",
+        "default": "取消搁置到当前默认列表"
+      },
+      "removeApplied": {
+        "title": "移除已成功应用的内容",
+        "description": "开启后会从搁置区中删除已取消搁置的文件；关闭时保留原记录，便于稍后再次取消搁置。"
+      },
+      "actions": {
+        "selectAll": "全选",
+        "clearSelection": "取消全选",
+        "cancel": "取消",
+        "submit": "恢复所选文件"
+      }
+    },
+    "rollbackViewer": {
+      "files": {
+        "title": "待回滚文件",
+        "selectedCount": "已选 {{selected}} / {{total}}"
+      },
+      "toolbar": {
+        "refresh": "刷新",
+        "showDiff": "显示差异",
+        "viewOptions": "视图选项"
+      },
+      "viewMenu": {
+        "groupBy": "分组依据",
+        "directory": "目录"
+      },
+      "labels": {
+        "repositoryRoot": "仓库根",
+        "fromPath": "来自 {{path}}"
+      },
+      "empty": "当前没有可展示的本地更改。",
+      "summary": "已选 {{selected}} / {{total}}。回滚只会处理当前勾选的文件，并保持其余本地更改不受影响。",
+      "actions": {
+        "selectAll": "全选",
+        "clearSelection": "取消全选",
+        "rollback": "回滚所选更改",
+        "submitting": "回滚中...",
+        "close": "关闭",
+        "rollbackAndContinue": "回滚并继续"
+      }
+    },
+    "conflictMerge": {
+      "title": "合并",
+      "loadingPath": "正在读取冲突文件…",
+      "loadingContent": "正在读取冲突内容…",
+      "rangeUnavailable": "无法定位",
+      "autoResolvableCount": "{{count}} 个块可自动处理",
+      "sources": {
+        "ours": "左侧来源",
+        "theirs": "右侧来源",
+        "base": "基线",
+        "result": "结果",
+        "oursShort": "左侧",
+        "theirsShort": "右侧"
+      },
+      "fallbacks": {
+        "sourceUnavailable": "当前来源不可用。",
+        "binary": "二进制内容暂不支持应用内预览。",
+        "tooLarge": "文件过大，暂不支持应用内预览。",
+        "empty": "当前来源内容为空。"
+      },
+      "toolbar": {
+        "applyNonConflicted": "应用不冲突的更改:",
+        "collapseUnchanged": "收起未更改的片段",
+        "autoResolveSimple": "解决简单的冲突",
+        "previous": "上一个更改",
+        "next": "下一个更改",
+        "reload": "重新读取",
+        "focusAuto": "当前聚焦：第 {{index}} 块，建议结果：{{label}}",
+        "focusManual": "当前聚焦：第 {{index}} 块，需要手工确认",
+        "focusHint": "左侧与右侧为只读来源，中间为可编辑结果；按块应用或忽略后再点击“应用”。"
+      },
+      "hints": {
+        "allResolved": "所有变更块都已处理，可直接应用当前结果。",
+        "unresolvedChangesOnly": "当前仍有 {{count}} 个变更块未处理，但其中不包含真正冲突。",
+        "unresolvedConflicts": "当前仍有 {{changes}} 个未处理块，其中 {{conflicts}} 个为冲突。"
+      },
+      "prompts": {
+        "resolveWithPending": "当前仍有 {{changes}} 个未处理块，其中 {{conflicts}} 个是冲突。继续应用会按当前结果写回文件并执行 git add，是否继续？",
+        "acceptSourceWithLabel": "当前结果已经修改。继续将直接整份采用{{label}}并关闭合并器，是否继续？",
+        "acceptSource": "当前结果已经修改。继续将直接整份采用该侧内容并关闭合并器，是否继续？"
+      },
+      "summary": {
+        "noChanges": "没有未处理的更改。",
+        "changesOnly": "{{changes}} 个更改。没有冲突。",
+        "withConflicts": "{{changes}} 个更改。{{conflicts}} 个冲突。"
+      },
+      "badges": {
+        "conflict": "冲突",
+        "nonConflict": "不冲突",
+        "autoResolvable": "可自动处理",
+        "edited": "已编辑",
+        "oneSideApplied": "单侧已应用"
+      },
+      "currentBlock": {
+        "title": "当前块",
+        "conflict": "冲突块 {{index}}",
+        "change": "更改块 {{index}}",
+        "none": "没有待处理块",
+        "resultRange": "结果 {{range}}",
+        "resolved": "结果已全部收口",
+        "summaryTitle": "块摘要",
+        "summaryEmpty": "当前没有待处理块。你仍可继续检查结果列后点击“应用”完成写回。"
+      },
+      "selectedBlockHint": {
+        "none": "当前没有待处理块。你仍可检查结果列，确认无误后点击“应用”。",
+        "modified": "当前块已经被手工编辑。为避免覆盖你的手工结果，自动处理会停用。",
+        "oneSideApplied": "当前块已经先采用了一侧。你还可以补上另一侧、恢复为基线，或保留两侧内容。",
+        "auto": "建议结果：{{label}}。",
+        "manual": "这个块需要你手工比较左右两侧后再决定。"
+      },
+      "viewSource": {
+        "title": "查看来源",
+        "description": "这里只切换聚焦和查看行号，不会修改内容。",
+        "focus": "聚焦：{{label}}",
+        "currentFocus": "当前聚焦",
+        "sharedOriginal": "共同原文",
+        "noBase": "当前块不含基线"
+      },
+      "baseDescription": {
+        "default": "基线 = 你和对方开始各自修改前的共同原文。",
+        "missing": "当前块没有基线，通常表示双方都在这里新增了内容，或共同原文在这里是空的。",
+        "withBase": "基线 = 你和对方开始各自修改前的共同原文。恢复为基线，就是把当前块还原成那份共同原文。"
+      },
+      "processCurrentBlock": {
+        "title": "处理当前块",
+        "description": "这些按钮只影响当前选中的块，不会整份替换文件。"
+      },
+      "pendingList": {
+        "title": "待处理块列表",
+        "description": "点击任意条目即可定位到对应块。",
+        "count": "{{count}} 个块",
+        "empty": "当前结果已经没有待处理块，可直接继续检查后应用。"
+      },
+      "autoResolution": {
+        "unavailable": "无法自动解决",
+        "base": "恢复为基线",
+        "withLabel": "采用{{label}}",
+        "ours": "采用左侧内容",
+        "theirs": "采用右侧内容",
+        "auto": "自动合并两边可兼容的修改",
+        "both": "同时保留两侧修改"
+      },
+      "actions": {
+        "applyNonConflictedWithLabel": "应用{{label}}中的不冲突更改",
+        "applyNonConflicted": "应用该侧中的不冲突更改",
+        "applyAllNonConflicted": "应用所有不冲突的更改",
+        "applyCurrentBlockWithLabel": "当前块采用{{label}}",
+        "applyCurrentBlock": "当前块采用该侧内容",
+        "restoreBase": "当前块恢复为基线",
+        "keepBoth": "当前块保留两侧",
+        "ignoreOurs": "当前块忽略左侧",
+        "ignoreTheirs": "当前块忽略右侧",
+        "autoResolveCurrent": "自动处理当前块",
+        "resolveWithSourceWithLabel": "整份采用{{label}}",
+        "resolveWithSource": "整份采用该侧内容",
+        "apply": "应用",
+        "applying": "应用中…",
+        "cancel": "取消"
+      }
+    },
+    "multipleFileMerge": {
+      "title": "冲突文件",
+      "counters": {
+        "unresolved": "{{count}} 个未解决",
+        "resolved": "{{count}} 个已解决"
+      },
+      "sections": {
+        "unresolved": "未解决冲突",
+        "resolved": "已解决冲突"
+      },
+      "operationStates": {
+        "rebasing": "变基",
+        "merging": "合并",
+        "grafting": "优选",
+        "reverting": "还原"
+      },
+      "scopeHint": {
+        "reverseSides": "当前仓库使用反转冲突侧语义，左/右来源与接受动作已按当前映射规则校正。",
+        "default": "左侧集中浏览冲突文件，右侧执行接受某一侧更改、合并或外部打开等操作。"
+      },
+      "summary": {
+        "batch": "批量操作将作用于 {{count}} 个未解决文件",
+        "single": "未勾选时，批量操作会作用于当前选中的未解决文件",
+        "resolved": "当前选中的是已解决文件，可继续打开复查结果",
+        "prompt": "请选择一个未解决文件，或先勾选多个文件后再执行批量采用"
+      },
+      "details": {
+        "noSelection": "当前没有选中文件。",
+        "primaryActionDisabled": "当前文件暂时不可执行主操作。",
+        "primaryActionResolved": "主操作：{{label}}（复查当前结果）",
+        "primaryActionMerge": "主操作：{{label}}（进入应用内三方合并）",
+        "primaryActionExternal": "主操作：{{label}}（交给外部 IDE 或系统默认程序处理）",
+        "resolvedFile": "该文件已从未解决列表移除，但仍保留在统一状态源中，可继续打开查看当前结果。",
+        "canOpenMerge": "当前文件支持继续进入应用内合并。",
+        "cannotOpenMerge": "当前文件不支持应用内合并，建议直接交给外部 IDE 或系统默认程序处理。",
+        "batchApplied": "已勾选 {{count}} 个未解决文件；“接受某一侧更改”会批量写回并自动执行 `git add`。",
+        "noSelectionHint": "当前没有选中文件。若所有未解决文件都已清空，对话框会自动收起；已解决文件仍会由提交面板与状态条共享同一状态源。",
+        "operationInProgress": "当前仓库仍处于 {{badge}} 进行中状态。关闭后，顶部状态条仍会保留继续 / 中止入口。"
+      },
+      "badges": {
+        "resolved": "已解决",
+        "openableMerge": "应用内合并",
+        "binary": "二进制",
+        "tooLarge": "文件过大",
+        "reverseSides": "已反转冲突侧",
+        "openable": "可打开"
+      },
+      "revisionState": {
+        "binary": "{{label}}：二进制",
+        "tooLarge": "{{label}}：文件过大",
+        "available": "{{label}}：可用",
+        "unavailable": "{{label}}：不可用"
+      },
+      "directorySummary": "{{count}} 个文件",
+      "toolbar": {
+        "refresh": "刷新",
+        "nextUnresolved": "下一个未解决",
+        "clearSelection": "清空多选",
+        "selectAllUnresolved": "全选未解决"
+      },
+      "headers": {
+        "selected": "选中",
+        "file": "文件",
+        "ours": "你的更改",
+        "theirs": "他们的更改",
+        "status": "状态"
+      },
+      "loading": "正在读取冲突表…",
+      "empty": "当前没有需要显示的冲突文件。",
+      "sectionCount": "{{count}} 个文件",
+      "sidebar": {
+        "selectedFile": "当前选中文件",
+        "conflictState": "冲突状态"
+      },
+      "buttons": {
+        "openInIde": "在外部 IDE 中打开",
+        "openInSystem": "使用系统程序打开"
+      },
+      "footer": {
+        "groupByDirectory": "按目录对文件分组",
+        "hideResolved": "隐藏已解决",
+        "showResolved": "显示已解决",
+        "locateInCommitPanel": "在提交面板中定位",
+        "continueCurrentOperation": "继续当前操作",
+        "abortCurrentOperation": "中止当前操作",
+        "close": "关闭"
+      },
+      "blocks": {
+        "primaryAction": "主操作",
+        "sourceSnapshot": "来源快照"
+      },
+      "actions": {
+        "acceptSideWithLabel": "接受{{label}}",
+        "acceptSide": "接受该侧更改"
+      },
+      "reopenAction": "继续处理冲突",
+      "reopenTitle": "继续处理冲突",
+      "reopenDescription": "当前仓库仍有未解决冲突，可直接回到统一 resolver 继续处理。",
+      "openTargetRepoSuccess": "已打开目标仓库，可继续处理其冲突"
+    },
+    "rebaseWarning": {
+      "kind": {
+        "publishedCommits": "已发布提交",
+        "mergeCommits": "合并提交"
+      },
+      "titles": {
+        "publishedCommits": "变基会改写已发布提交",
+        "mergeCommits": "变基将跨越合并提交"
+      },
+      "descriptions": {
+        "publishedCommits": "当前分支存在已经发布到远端的提交。继续变基会改写这些提交历史，可能影响其他协作者。",
+        "mergeCommits": "当前分支包含合并提交。继续变基可能改变这些合并点的历史结构。"
+      },
+      "details": {
+        "publishedCommits": "检测到待变基的 {{total}} 个提交里至少有 {{published}} 个已经出现在远端引用中。",
+        "publishedCommitsWithoutTotal": "检测到至少有 {{published}} 个待变基提交已经出现在远端引用中。",
+        "mergeCommits": "检测到 {{count}} 个合并提交。你可以改用合并更新，或明确确认后继续变基。"
+      },
+      "actions": {
+        "continueRebase": "仍然变基",
+        "useMerge": "改用合并"
+      },
+      "currentMode": "当前更新方式为 {{method}}",
+      "cancel": "取消"
+    },
+    "pushRejected": {
+      "titles": {
+        "staleInfo": "带租约保护的强制推送被拒绝",
+        "rejectedOther": "远端拒绝了推送",
+        "noFastForward": "推送被拒绝，需要先同步远端"
+      },
+      "descriptions": {
+        "withGitOutput": "{{base}}\n\nGit 输出：{{detail}}",
+        "staleInfo": "远端引用已变化，当前租约保护已过期。如果你仍想覆盖远端，请使用普通强制推送继续。",
+        "rejectedOther": "远端拒绝了推送。请先处理远端策略或服务端钩子限制，然后重试。",
+        "noFastForwardWithUpstream": "远端分支 {{upstream}} 已领先于当前分支，请先更新后再重试推送，或在确认覆盖远端时改用带租约保护的强制推送。",
+        "noFastForwardWithRemote": "远端 {{remote}}/{{branch}} 已领先于当前分支，请先更新后再重试推送，或在确认覆盖远端时改用带租约保护的强制推送。"
+      },
+      "badges": {
+        "leaseExpired": "租约保护已过期",
+        "remoteRejected": "远端拒绝",
+        "pushRejected": "推送被拒绝"
+      },
+      "actions": {
+        "updateWithMerge": "先更新（合并）再推送",
+        "updateWithRebase": "先更新（变基）再推送",
+        "forceWithLease": "强制推送（保留租约保护）",
+        "forcePush": "继续强制推送（无租约保护）",
+        "cancel": "取消"
+      },
+      "meta": {
+        "localBranch": "本地分支：{{branch}}",
+        "upstream": "上游：{{branch}}",
+        "target": "目标：{{remote}}/{{branch}}"
+      },
+      "cards": {
+        "staleInfo": {
+          "force": {
+            "title": "继续强制推送",
+            "description": "改用普通强制推送会移除租约保护，仅在你确认要覆盖远端当前引用时使用。"
+          },
+          "cancel": {
+            "title": "取消",
+            "description": "保留当前状态，不再继续推送；你可以先拉取、检查远端历史，再决定是否覆盖。"
+          }
+        },
+        "rejectedOther": {
+          "policy": {
+            "title": "先处理远端限制",
+            "description": "这类拒绝通常来自分支保护、服务端钩子或平台策略，需要先解除远端限制后再重试。"
+          },
+          "cancel": {
+            "title": "关闭",
+            "description": "先保留当前提交状态，稍后在满足远端规则后重新发起推送。"
+          }
+        },
+        "needsUpdate": {
+          "update": {
+            "title": "先更新再推送",
+            "description": "可选择合并或变基，更新过程会进入正式更新会话，并在成功后继续重试推送。"
+          },
+          "forceWithLease": {
+            "title": "保留租约保护的强制推送",
+            "description": "仅在确认远端变更应被当前提交覆盖时使用，仍保留租约保护，避免盲目强推。"
+          },
+          "cancel": {
+            "title": "取消",
+            "description": "保留当前推送对话框状态，稍后可手动调整更新方式、目标分支或直接关闭。"
+          }
+        }
+      }
+    },
+    "updateReset": {
+      "title": "重置到远端跟踪分支",
+      "description": "该操作会以重置方式更新当前仓库，并可能覆盖本地工作区内容。请确认后再继续。",
+      "currentBranch": "当前分支：{{branch}}",
+      "upstreamBranch": "远端跟踪分支：{{branch}}",
+      "unconfigured": "未配置",
+      "warning": "这不是常规更新选项。它只会对当前仓库执行一次独立重置，不会改写已保存的合并 / 变基默认设置。",
+      "cancel": "取消",
+      "submit": "重置并更新"
+    },
+    "branchCompare": {
+      "currentBranch": "当前分支",
+      "titleFiles": "选择另一分支以比较文件",
+      "titleCommits": "选择另一分支以比较提交",
+      "descriptionFiles": "将展示 {{target}} 与另一分支之间的文件差异",
+      "descriptionCommits": "将展示 {{target}} 与另一分支之间的提交差异",
+      "confirmFiles": "查看文件差异",
+      "confirmCommits": "查看提交差异",
+      "otherBranch": "另一分支",
+      "badges": {
+        "local": "本地",
+        "remote": "远端"
+      }
+    },
+    "branchCompareFiles": {
+      "title": "比较文件",
+      "scope": "范围：{{label}}。",
+      "description": "共 {{count}} 个文件，单击文件即可打开差异。",
+      "empty": "当前比较范围内没有文件差异。",
+      "fromPath": "来自 {{path}}"
+    },
+    "remoteManager": {
+      "title": "远端管理",
+      "currentRepository": "当前仓库",
+      "count": "共 {{count}} 个远端配置",
+      "emptyInline": "当前仓尚未配置远端",
+      "addRemote": "新增远端",
+      "empty": "当前仓库没有远端配置。可通过“新增远端”录入 fetch / push 地址。",
+      "fetchUrl": "获取地址：{{value}}",
+      "pushUrl": "推送地址：{{value}}",
+      "unconfigured": "未配置",
+      "edit": "编辑",
+      "remove": "移除"
+    },
+    "updateCommitRanges": {
+      "title": "查看更新提交",
+      "description": "当前更新涉及多个仓库，请选择要查看的提交范围。",
+      "commitCount": "提交 {{count}}",
+      "fileCount": "文件 {{count}}",
+      "viewCommits": "查看提交"
+    },
+    "updateScope": {
+      "detachedHead": "游离 HEAD",
+      "kind": {
+        "repository": "仓库",
+        "submodule": "子模块"
+      },
+      "source": {
+        "current": "当前仓",
+        "linked": "关联仓",
+        "nested": "嵌套仓",
+        "submodule": "子模块"
+      }
+    },
+    "updateOptions": {
+      "title": "更新选项",
+      "description": "保存更新项目的默认更新方式、保留本地改动策略，以及多仓联动范围。",
+      "cancel": "取消",
+      "save": "保存",
+      "savePolicyHint": "“暂存（stash）”会写入 Git 暂存记录；“搁置（shelve）”会写入统一系统搁置区。两者都会通过同一“查看已保存改动”入口继续恢复。",
+      "methods": {
+        "merge": {
+          "title": "合并",
+          "description": "始终按合并方式更新当前分支。"
+        },
+        "rebase": {
+          "title": "变基",
+          "description": "始终按变基方式更新当前分支。"
+        },
+        "reset": {
+          "title": "重置"
+        }
+      },
+      "savePolicies": {
+        "stash": {
+          "title": "暂存（stash）",
+          "description": "使用暂存记录保存并恢复本地改动，并复用统一查看入口。"
+        },
+        "shelve": {
+          "title": "搁置（shelve）",
+          "description": "使用系统搁置记录保存并恢复本地改动，和手动搁置共用同一平台层。"
+        }
+      },
+      "preview": {
+        "sourceLabel": "正式 Update 选项",
+        "detailLabel": "已固定为 {{method}}。"
+      },
+      "summary": {
+        "currentRepository": "当前仓库",
+        "branch": "分支 {{branch}}",
+        "detached": "游离 HEAD / 待进入可更新分支",
+        "executionPrefix": "当前若执行更新项目，将按",
+        "executionSuffix": "运行",
+        "source": "来源：{{source}} · {{detail}}"
+      },
+      "sections": {
+        "method": "更新方式",
+        "savePolicy": "保存本地改动策略"
+      },
+      "scope": {
+        "title": "多仓默认范围",
+        "summary": "当前默认会纳入 {{includedCount}} 个仓；已关联仓 {{linkedCount}} 个。",
+        "rootScanDepth": "扫描深度",
+        "includeNestedRoots": {
+          "title": "额外扫描普通嵌套仓",
+          "description": "子模块始终会纳入依赖排序；开启后会继续扫描当前仓和关联仓下的普通嵌套 Git 仓库。"
+        },
+        "syncStrategies": {
+          "current": {
+            "title": "仅当前仓库",
+            "description": "默认只更新当前仓库与其子模块，不联动额外关联仓。"
+          },
+          "linked": {
+            "title": "联动关联仓",
+            "description": "把当前仓与已关联仓一起纳入更新项目，并允许按默认规则跳过部分仓。"
+          }
+        },
+        "linkedRepos": {
+          "title": "关联仓列表",
+          "description": "这里维护“联动关联仓”模式默认会一起更新的独立仓根目录。",
+          "add": "添加仓库",
+          "remove": "移除关联仓",
+          "empty": "暂无关联仓。若要把多个独立仓作为默认 Update 范围，请先在这里添加。",
+          "chooseFailed": "选择关联仓目录失败"
+        },
+        "preview": {
+          "title": "默认范围预览",
+          "description": "预览会按真实仓库图、子模块和跳过规则计算，不是前端静态猜测。",
+          "refresh": "刷新预览",
+          "refreshFailed": "刷新多仓范围预览失败",
+          "dirtyHint": "预览基于上一次检测结果。修改关联仓、跳过规则或嵌套仓扫描设置后，建议刷新一次再保存。",
+          "empty": "当前没有可预览的仓库范围。",
+          "parentRepository": "父仓：{{path}}",
+          "defaultSkipped": "默认跳过",
+          "requestedSkipReason": "已按默认范围配置跳过该仓库"
+        }
+      }
+    },
+    "updateRuntimeScope": {
+      "title": "选择本次更新范围",
+      "description": "仅影响这一次更新项目；保存的默认范围与多仓设置不会被改写。",
+      "cancel": "取消",
+      "confirm": "按当前选择继续",
+      "summary": {
+        "branch": "分支 {{branch}}",
+        "detached": "游离 HEAD / 当前分支待解析",
+        "selection": "已选择 {{count}} 个仓库；本次确认后会显式把所选范围写入本次执行参数，不会覆盖默认配置。"
+      },
+      "badges": {
+        "currentRun": "本次执行",
+        "included": "已纳入 {{count}}",
+        "detachedHead": "游离 HEAD {{count}}",
+        "defaultSkipped": "默认跳过 {{count}}",
+        "fixedIncluded": "固定纳入"
+      },
+      "risk": {
+        "title": "执行风险",
+        "description": "这里优先展示会直接影响多仓更新行为的游离 HEAD / 跳过 / 子模块差异。",
+        "detachedNote": "游离 HEAD 的普通仓通常会在预检阶段被跳过；游离 HEAD 子模块则可能走“由父仓递归更新”或“独立更新器”两种路径。"
+      },
+      "repositories": {
+        "title": "仓库列表",
+        "description": "当前仓固定纳入；关联仓、普通嵌套仓和子模块可按本次执行单独勾选。",
+        "parentRepository": "父仓：{{path}}",
+        "detachedNote": "该仓库当前处于游离 HEAD，运行时可能被跳过或转为特殊子模块更新路径。"
+      },
+      "skipped": {
+        "title": "本次默认跳过",
+        "description": "这些仓库当前不会进入执行根仓库列表，原因来自仓库图或上游分支解析结果。"
+      }
+    },
+    "smartOperation": {
+      "titles": {
+        "mergeConflict": {
+          "merge": "合并过程中出现冲突",
+          "cherryPick": "优选过程中出现冲突"
+        },
+        "restoreFromRevision": "从修订恢复将覆盖本地修改",
+        "localChangesOverwritten": {
+          "merge": "本地改动会被合并覆盖",
+          "reset": "本地改动会被重置覆盖",
+          "checkout": "本地改动会被签出覆盖",
+          "cherryPick": "本地改动会被优选覆盖"
+        },
+        "untrackedOverwritten": {
+          "merge": "未跟踪文件会被合并覆盖",
+          "reset": "未跟踪文件会被重置覆盖",
+          "checkout": "未跟踪文件会被签出覆盖",
+          "cherryPick": "未跟踪文件会被优选覆盖"
+        }
+      },
+      "descriptions": {
+        "mergeConflict": {
+          "merge": "当前仓库已进入合并冲突状态，请先解决冲突并完成或中止本次合并，然后再继续后续更新操作。",
+          "cherryPick": "当前仓库已进入优选冲突状态，请先解决冲突并继续或中止本次优选。"
+        },
+        "restoreFromRevision": "目标文件在本地已修改。继续后会覆盖当前本地内容。",
+        "localChangesOverwritten": {
+          "merge": "以下文件的本地改动会被本次合并覆盖。请先提交、暂存，或改用保存本地改动后再重试。",
+          "reset": "以下文件的本地改动会被本次重置覆盖。系统会在可行时自动保护非冲突改动；若仍提示这些文件，请先提交、暂存，或手动处理后再重试。",
+          "checkout": "以下文件的本地改动会被本次签出覆盖。请先提交、暂存，或改用智能签出后再重试。",
+          "cherryPick": "以下文件的本地改动会被本次优选覆盖。请先提交、暂存，或改用保存本地改动后再重试。"
+        },
+        "untrackedOverwritten": {
+          "merge": "以下未跟踪文件会被本次合并覆盖。请先移动、删除，或纳入版本控制后再重试。",
+          "reset": "以下未跟踪文件会被本次重置覆盖。请先移动、删除，或纳入版本控制后再重试。",
+          "checkout": "以下未跟踪文件会被本次签出覆盖。请先移动、删除，或纳入版本控制后再重试。",
+          "cherryPick": "以下未跟踪文件会被本次优选覆盖。请先移动、删除，或纳入版本控制后再重试。"
+        }
+      },
+      "kinds": {
+        "conflict": "冲突",
+        "localChanges": "本地改动",
+        "untrackedFiles": "未跟踪文件"
+      },
+      "operations": {
+        "merge": "合并",
+        "reset": "重置",
+        "checkout": "签出",
+        "cherryPick": "优选"
+      },
+      "viewChanges": {
+        "default": "查看这些变更",
+        "showFiles": "显示文件"
+      },
+      "summary": {
+        "withFiles": "共 {{count}} 个文件需要处理后才能继续本次 {{operation}}。",
+        "noFiles": "当前问题需要先处理后才能继续本次 {{operation}}。",
+        "repository": "仓库：{{name}}"
+      },
+      "affectedFiles": "受影响文件",
+      "emptyFiles": "当前问题未附带文件列表，请根据上方说明先处理仓库状态后再继续。",
+      "actions": {
+        "smartCheckout": {
+          "label": "智能签出",
+          "description": {
+            "shelve": "先搁置本地改动，签出完成后再尝试恢复。",
+            "stash": "先暂存本地改动，签出完成后再尝试恢复。"
+          }
+        },
+        "retryWithShelve": {
+          "label": "先搁置后重试",
+          "description": "先搁置本地改动，成功后再自动恢复并重试当前操作。"
+        },
+        "retryWithStash": {
+          "label": "先暂存后重试",
+          "description": "先暂存本地改动，成功后再自动恢复并重试当前操作。"
+        },
+        "overwriteModified": {
+          "label": "覆盖已修改的文件"
+        },
+        "forceCheckout": {
+          "label": "强制签出"
+        },
+        "force": {
+          "label": "强制继续"
+        },
+        "rollback": {
+          "label": "回滚这些更改"
+        }
+      },
+      "acknowledge": "我知道了"
+    },
+    "fixTrackedBranch": {
+      "title": "修复上游分支后继续更新",
+      "empty": "当前没有需要修复的上游分支问题。",
+      "setTracked": "同时写入 Git 上游分支配置；若不勾选，则仅对本次更新项目生效",
+      "unsupported": "当前问题不支持在此对话框内自动修复，请先切换到本地分支并补齐上游后再继续。",
+      "resetHint": "修复上游分支后会继续执行本次重置更新，不会改写已保存的合并 / 变基默认设置。",
+      "description": {
+        "multiRoot": "检测到部分仓库缺少可用的上游分支，请逐仓确认后继续更新项目。",
+        "singleRoot": "当前分支缺少可用的上游分支，请确认远端分支后继续更新项目。"
+      },
+      "issueTitles": {
+        "remoteMissing": "上游分支失效",
+        "noTrackedBranch": "缺少上游分支"
+      },
+      "messages": {
+        "remoteMissing": "当前上游分支 {{upstream}} 在本地不存在或已失效。",
+        "noTrackedBranch": "当前分支 {{branch}} 未配置远端上游分支。"
+      },
+      "labels": {
+        "localBranch": "本地分支：{{branch}}",
+        "currentUpstream": "当前上游：{{branch}}",
+        "remote": "远端",
+        "remoteBranch": "远端分支"
+      },
+      "placeholders": {
+        "remote": "选择远端",
+        "remoteBranch": "选择远端分支"
+      },
+      "continueMethod": {
+        "title": "继续更新方式",
+        "merge": "应用修复后继续按合并方式更新。",
+        "rebase": "应用修复后继续按变基方式更新。"
+      },
+      "actions": {
+        "later": "稍后处理",
+        "close": "关闭",
+        "applyAndContinueUpdate": "应用并继续更新",
+        "applyAndContinueReset": "应用并继续重置"
+      }
+    },
+    "updateResult": {
+      "defaultTitle": "更新项目已完成",
+      "summary": {
+        "title": "{{files}} 个文件在 {{commits}} 个提交中已更新",
+        "filteredCommits": "当前日志视图聚焦主仓范围，可查看 {{count}} 个提交。",
+        "skippedRoots": "另有 {{count}} 个仓库被跳过，可展开查看原因。"
+      },
+      "range": "范围：{{range}}",
+      "skippedRoots": "跳过仓库：{{roots}}",
+      "skippedRootsMore": " 等 {{count}} 个",
+      "skippedReasons": {
+        "requested": "已按当前范围配置跳过",
+        "detachedHead": "当前仓库处于游离 HEAD",
+        "noTrackedBranch": "缺少可用的上游分支",
+        "remoteMissing": "上游分支在本地不存在或已失效",
+        "parentFailed": "父仓更新失败",
+        "fetchFailed": "获取远端失败",
+        "updatedByParent": "已由父仓递归更新"
+      },
+      "counts": {
+        "files": "文件 {{count}}",
+        "commits": "提交 {{count}}",
+        "filteredCommits": "可查看 {{count}}"
+      },
+      "console": {
+        "default": "查看控制台",
+        "focused": "已聚焦控制台"
+      },
+      "expand": {
+        "expand": "展开详情（{{count}}）",
+        "collapse": "收起详情"
+      },
+      "running": {
+        "current": "当前",
+        "preparing": "正在准备更新会话",
+        "waitingForSnapshot": "主进程已启动更新流程，正在等待首个会话快照。",
+        "completed": "已完成 {{completed}}/{{total}}",
+        "running": "运行中 {{count}}",
+        "remaining": "剩余 {{count}}",
+        "multiRootHint": "当前为多仓更新会话，以下可查看各仓库的实时阶段与收口状态。",
+        "singleRootHint": "当前为单仓更新会话。"
+      },
+      "postActions": {
+        "viewCommits": "查看提交",
+        "copyRevisionRange": "复制提交范围",
+        "openSavedChanges": "查看已保存改动",
+        "resolveConflicts": "处理该仓冲突",
+        "fixTrackedBranch": "修复上游分支",
+        "openParentRepo": "打开父仓",
+        "openRepoRoot": "打开该仓",
+        "retryUpdateRoot": "重试该仓更新"
+      }
+    }
+  },
+  "workbench": {
+    "common": {
+      "refresh": "刷新",
+      "close": "关闭",
+      "cancel": "取消",
+      "undo": "撤销",
+      "configure": "配置...",
+      "save": "保存",
+      "delete": "删除",
+      "operationFailed": "操作失败"
+    },
+    "misc": {
+      "noRepo": {
+        "title": "未检测到 Git 仓库",
+        "description": "当前目录尚未初始化 Git。你可以在此目录执行 `git init`，或者点击下方按钮直接创建仓库。",
+        "init": "初始化仓库",
+        "initFailed": "初始化仓库失败",
+        "redetect": "重新检测"
+      },
+      "splitter": {
+        "main": "拖拽调整左右宽度；鼠标中键收起/展开左侧",
+        "bottom": "拖拽调整高度；鼠标中键收起/展开",
+        "bottomPanel": "鼠标中键收起/展开底部面板",
+        "expandBottomPanel": "展开底部面板",
+        "collapseBottomPanel": "收起底部面板"
+      },
+      "updateInfo": {
+        "range": "切换更新信息范围",
+        "rangePlaceholder": "范围",
+        "textPlaceholder": "文本或哈希",
+        "regexMode": "匹配模式（Regex）",
+        "caseSensitive": "大小写敏感",
+        "dashboard": "日志分支 Dashboard 设置",
+        "show": "显示",
+        "whenSelectingBranch": "选择分支时",
+        "grouping": "分组",
+        "showBranchOverview": "显示分支概览",
+        "hideBranchOverview": "隐藏分支概览",
+        "selectionFilter": "更改日志筛选",
+        "selectionNavigate": "选择即导航",
+        "navigateToBranch": "导航到分支",
+        "groupByRepository": "按仓库分组",
+        "groupByDirectory": "按目录分组",
+        "repositoryGrouping": "仓库分组",
+        "directoryGrouping": "目录分组",
+        "branchFilter": "分支",
+        "branchSearchPlaceholder": "搜索分支",
+        "authorFilter": "用户",
+        "authorSearchPlaceholder": "搜索用户",
+        "dateFilter": "日期",
+        "apply": "应用",
+        "pathFilterTitle": "路径筛选",
+        "pathFilterDescription": "输入目录或文件路径（相对仓库根目录）",
+        "pathLabel": "路径",
+        "pathPlaceholder": "src/components/…",
+        "pathValue": "路径：{{path}}",
+        "clearFilters": "清空筛选",
+        "title": "{{count}} 个文件已更新",
+        "loadingCommits": "正在加载提交...",
+        "resizeColumn": "拖动以调整“{{label}}”列宽"
+      },
+      "bottomTabs": {
+        "log": "日志",
+        "git": "Git"
+      },
+      "console": {
+        "title": "Git 控制台",
+        "pauseAutoRefresh": "暂停自动刷新",
+        "resumeAutoRefresh": "恢复自动刷新",
+        "copyCurrentLog": "复制当前控制台日志",
+        "copy": "复制",
+        "refresh": "刷新",
+        "clear": "清空",
+        "pausedNotice": "Git 控制台已暂停自动刷新。可先复制日志，再点击“恢复”继续跟踪实时输出。",
+        "focusedTitle": "已聚焦更新会话 #{{requestId}}",
+        "focusedRunning": "正在执行更新",
+        "focusedCompleted": "更新已完成",
+        "cancelFocus": "取消聚焦",
+        "empty": "暂无日志，执行 Git 操作后会显示命令与输出。"
+      },
+      "conflicts": {
+        "title": "Git 冲突",
+        "dialogDescription": "统一查看当前仓库里的冲突文件，支持表格式合并/打开、目录分组，以及与提交面板共享的已解决冲突状态源。",
+        "operationProblemDescription": "当前仓库存在未解决冲突，请先完成处理。",
+        "restoreSavedChangesTitle": "恢复已保存改动时发现冲突",
+        "restoreSavedChangesDescription": "请先解决恢复本地改动时产生的冲突。",
+        "resolveBeforeCommitTitle": "解决提交前冲突",
+        "resolveBeforeCommitDescription": "当前提交范围内仍存在未解决冲突，请先完成冲突处理后再重新提交。",
+        "noEntries": "当前没有可处理的冲突文件",
+        "resolveAction": "处理冲突",
+        "tableLoadFailed": "读取冲突表失败",
+        "contentLoadFailed": "读取冲突内容失败",
+        "writeResultFailed": "写入冲突结果失败",
+        "markResolvedFailed": "标记冲突为已解决失败",
+        "rollbackResolvedFailed": "回滚已解决冲突失败",
+        "unresolved": "未解决 {{count}}",
+        "resolved": "已解决 {{count}}",
+        "currentStrategy": "当前策略",
+        "strategyDescription": "冲突面板由 status 刷新链驱动，覆盖 staging area changes 与仓库映射变化后的自动显隐。",
+        "shortcutActions": "快捷操作",
+        "conflictFiles": "冲突文件",
+        "unresolvedSection": "未解决冲突",
+        "resolvedSection": "已解决冲突",
+        "openUnifiedResolver": "统一处理",
+        "merge": "合并",
+        "open": "打开",
+        "openUnifiedDescription": "独立冲突面板与统一 resolver 共享同一组冲突状态源。",
+        "disableAutoPanel": "停用自动面板",
+        "backToCommitPanel": "回到提交面板",
+        "empty": "当前没有需要处理的冲突文件。",
+        "closeCurrentPanel": "关闭当前面板",
+        "applySide": "应用{{side}}",
+        "applySideFailed": "{{action}}失败",
+        "resolutionConflictDetected": "在提交详情中应用所选更改后检测到冲突；你可以在这里继续处理每个有冲突的文件。"
+      },
+      "worktrees": {
+        "title": "工作树",
+        "new": "新增工作树",
+        "empty": "暂无额外工作树。创建后会显示在这里，并支持关闭记忆与 NEW 标识收口。",
+        "createNow": "立即创建",
+        "openProject": "打开项目",
+        "help": "了解 Git 工作树",
+        "helpOpenFailed": "打开工作树帮助失败",
+        "newBadge": "新"
+      },
+      "updateOptions": {
+        "saved": "已保存更新项目选项：{{updateMethod}}；本地改动保存策略已记录为 {{policy}}"
+      },
+      "diff": {
+        "previous": "上一个差异",
+        "next": "下一个差异",
+        "previousFile": "上一文件",
+        "nextFile": "下一文件",
+        "noFileSwitch": "当前没有可切换的文件组选区",
+        "copyPath": "复制路径",
+        "viewerMode": "查看器模式",
+        "side": "并排查看器",
+        "unified": "统一查看器",
+        "whitespace": "空白忽略策略",
+        "none": "不忽略",
+        "ignoreWhitespace": "忽略空白",
+        "highlight": "单词高亮",
+        "on": "高亮显示单词",
+        "off": "关闭高亮",
+        "collapseUnchanged": "收起未变更",
+        "moreActions": "部分提交更多操作",
+        "includeAll": "全部纳入",
+        "excludeAll": "全部排除",
+        "revertWholeFile": "回退整文件",
+        "close": "关闭差异视图",
+        "loading": "正在加载差异视图组件...",
+        "detailsPreviewClosed": "详情预览已关闭",
+        "showPreview": "显示预览",
+        "selectedLines": "所选行",
+        "currentLine": "当前行",
+        "matchedLines": "命中行",
+        "partialSummary": "已纳入 {{selectedHunkCount}}/{{hunkCount}} 个 hunk，{{selectedLineCount}}/{{totalLineCount}} 行",
+        "partialHint": "命中 {{lineCount}} 行 / {{hunkCount}} 个 hunk",
+        "partialGuide": "可直接点击差异视图中缝与行侧复选框，或先框选变更行后批量纳入 / 排除",
+        "clickToOpenNote": "单击文件不再自动切换差异视图，可通过回车、双击、右键“显示差异”或重新开启详情预览查看。",
+        "compareThreeVersions": "比较三个版本",
+        "enterFullscreen": "进入全屏",
+        "exitFullscreen": "退出全屏",
+        "exportPatch": "导出补丁",
+        "exportPatchShort": "导出补丁",
+        "exportPatchFailed": "导出补丁失败",
+        "exportUnsupported": "当前视图不支持导出补丁",
+        "locateDisabled": "无法定位该文件",
+        "locateInChanges": "在更改中定位",
+        "noLocateFile": "没有可定位的文件",
+        "partialExclude": "排除{{label}}",
+        "partialInclude": "纳入{{label}}",
+        "wordHighlightDisabledNote": "已关闭单词高亮",
+        "partialLabel": "部分"
+      },
+      "restoreFromRevision": {
+        "confirm": "恢复",
+        "label": "修订",
+        "placeholder": "HEAD~1 或 a1b2c3d"
+      },
+      "branchPopup": {
+        "search": "搜索分支/标签/远端",
+        "currentRepo": "当前仓",
+        "head": "HEAD："
+      },
+      "push": {
+        "pushTags": "推送标签",
+        "pushTagsTo": "推送标签到...",
+        "deleteTag": "删除标签",
+        "deleteTagTitle": "删除标签",
+        "deleteTagDescription": "确定删除标签 {{name}} 吗？",
+        "deleteTagConfirm": "删除",
+        "deleteTagFailed": "删除标签失败",
+        "forceWithLease": "强制推送（保留租约保护）",
+        "tagMode": "推送标签模式",
+        "tagModePlaceholder": "标签模式",
+        "allTags": "全部标签",
+        "follow": "当前分支相关",
+        "noTags": "当前不推送标签",
+        "runHooks": "运行 Git 钩子",
+        "previewBeforeCommitPush": "提交并推送时先预览",
+        "previewProtectedBranches": "仅保护分支预览",
+        "pushRejectedToUpdateFlow": "推送被拒绝时进入更新决策流",
+        "pendingCommits": "待推送提交：{{count}}",
+        "changedFilesCount": "变更文件：{{count}}",
+        "canPush": "可推送",
+        "changedFiles": "变更文件",
+        "collapse": "收起",
+        "commitCount": "提交 {{count}}",
+        "expand": "展开",
+        "fileCount": "文件 {{count}}",
+        "fromPath": "来自 {{path}}",
+        "loadingPreview": "正在读取推送预览...",
+        "previewLoadFailed": "读取推送预览失败",
+        "moreOptions": "更多推送选项",
+        "needsAttention": "需要处理",
+        "noCommits": "没有可推送的提交",
+        "noContent": "当前没有可推送的内容",
+        "noFileChanges": "没有文件变更",
+        "noTitle": "（无标题）",
+        "overview": "推送总览",
+        "push": "推送",
+        "pushTagFailed": "推送标签失败",
+        "pushTagsDescription": "请选择标签 {{name}} 的推送远端",
+        "pushing": "推送中...",
+        "remoteRepository": "远端仓库",
+        "selectedCommit": "所选提交",
+        "synced": "本地分支已与远端分支同步",
+        "totalFileCount": "共 {{count}} 个文件",
+        "unavailable": "当前不可推送"
+      },
+      "changeListManyFilesDescription": "该节点包含 {{count}} 个文件，数量较多，已改为通过浏览对话框查看。",
+      "status": {
+        "ready": "就绪",
+        "busy": "正在{{activity}}",
+        "noRepo": "未检测到 Git 仓库"
+      },
+      "actionUnsupported": "不支持的操作：{{label}}",
+      "headBadge": "HEAD"
+    },
+    "console": {
+      "loadFailed": "读取 Git 控制台失败",
+      "copyFailed": "复制 Git 控制台日志失败",
+      "clearFailed": "清空 Git 控制台失败"
+    },
+    "repo": {
+      "detectFailed": "检测仓库失败"
+    },
+    "changelist": {
+      "saveCommitDraftFailed": "保存更改列表提交草稿失败",
+      "clearCommitDraftsFailed": "清理更改列表提交草稿失败",
+      "createFailed": "创建更改列表失败",
+      "activateFailed": "设置活动更改列表失败",
+      "editFailed": "编辑更改列表失败",
+      "targetNotFound": "未找到目标更改列表",
+      "selectTarget": "请选择目标更改列表"
+    },
+    "patch": {
+      "createFailed": "创建补丁失败",
+      "saveFailed": "保存补丁失败",
+      "copyFailed": "补丁已生成，但复制失败"
+    },
+    "logAction": {
+      "cherryPick": "优选",
+      "revert": "还原提交",
+      "currentOperation": "当前 Git 操作",
+      "feedback": {
+        "conflictEnteredOperation": "{{action}}发生冲突，仓库已进入 {{operation}} 状态，可继续或中止。",
+        "enteredOperation": "{{action}}未自动完成，仓库已进入 {{operation}} 状态，可继续或中止。"
+      }
+    },
+    "branch": {
+      "checkoutFailed": "签出分支失败",
+      "checkoutRevisionFailed": "签出修订失败",
+      "createFailed": "新建分支失败",
+      "renameFailed": "重命名分支失败",
+      "deleteFailed": "删除分支失败",
+      "deleteRemoteGenericFailed": "删除远端分支失败",
+      "currentBranchDescription": "当前分支：{{branch}}",
+      "deleteDescription": "确定删除分支 {{name}} 吗？",
+      "deleteRemoteDescription": "确定删除远端分支 {{name}} 吗？",
+      "deleteTitle": "删除分支",
+      "deleteRemoteTitle": "删除远端分支",
+      "deleteTrackedRemoteBranchTitle": "删除跟踪远端分支",
+      "deleteTrackedRemoteBranchAction": "删除跟踪远端分支",
+      "deleteRemoteFailed": "删除远端分支“{{name}}”失败",
+      "deleted": "已删除分支“{{name}}”",
+      "deletedRemoteBranch": "已删除远端分支“{{name}}”",
+      "deletedTag": "已删除标签“{{name}}”",
+      "forceDeletedWithUnmerged": "分支“{{name}}”已强制删除；检测到未合并提交，可通过下方动作恢复或查看影响范围。",
+      "restoreDeletedBranchAction": "恢复分支",
+      "restoreDeletedBranchFailed": "恢复分支“{{name}}”失败",
+      "viewDeletedBranchCommitsAction": "查看提交",
+      "restoreTagAction": "恢复标签",
+      "restoreTagFailed": "恢复标签“{{name}}”失败",
+      "restoredDeletedBranch": "已恢复分支“{{name}}”",
+      "restoredTag": "已恢复标签“{{name}}”",
+      "returnedToBranch": "已回到分支“{{branch}}”",
+      "rollbackToBranchFailed": "回到分支“{{branch}}”失败",
+      "checkoutUpdateFailed": "签出并更新失败",
+      "renameTitle": "重命名分支",
+      "newNameLabel": "新分支名",
+      "newNamePlaceholder": "功能/xxx",
+      "invalidRemoteBranchForDelete": "远端分支格式无效或不支持删除远端 HEAD 引用",
+      "checkedOutWorktreeNotFound": "未找到该分支对应的已签出工作树"
+    },
+    "historyRewrite": {
+      "undoDeleteCommitFailed": "撤销删除提交失败",
+      "deleteCommitUndone": "已撤销删除提交",
+      "deleteCommitUndoneDetail": "已恢复删除前的提交历史",
+      "undoCommitMoveWarningFallback": "撤销提交后移动更改列表失败"
+    },
+    "leftPanel": {
+      "middleClickToggle": "鼠标中键：收起/展开左侧提交面板",
+      "tabs": {
+        "commit": "提交",
+        "shelve": "搁置"
+      }
+    },
+    "topToolbar": {
+      "updateProject": "更新项目",
+      "updateNow": "立即更新",
+      "updateOptions": "更新选项",
+      "updateOptionsWithEllipsis": "更新选项...",
+      "resetToTracked": "重置到远端跟踪分支...",
+      "pull": "拉取远端分支",
+      "pullShort": "拉取",
+      "fetch": "获取远端变更",
+      "fetchShort": "获取",
+      "commitShort": "提交",
+      "commit": "打开提交工作流",
+      "commitWithEllipsis": "提交...",
+      "push": "推送到远端",
+      "pushShort": "推送",
+      "showConflictsPanel": "显示冲突面板",
+      "enableConflictsPanel": "重新启用冲突自动面板",
+      "enableConflictsPanelShort": "启用冲突面板",
+      "conflicts": "冲突",
+      "disabled": {
+        "notRepo": "当前目录不是 Git 仓库",
+        "busy": "当前有进行中的 Git 操作",
+        "noRemotes": "当前仓库没有可用远端",
+        "pullDetached": "游离 HEAD 状态下不支持拉取",
+        "noRollbackSelection": "当前没有可回滚的已跟踪改动"
+      }
+    },
+    "notices": {
+      "autoCloseIn30s": "30 秒后自动关闭",
+      "cancel": "取消",
+      "actionFailed": "Git 提示动作执行失败",
+      "cancelRequestFailed": "取消请求发送失败",
+      "updateCancelled": "更新项目已取消",
+      "updateRequestNotCancelable": "当前更新请求已经结束或无法取消"
+    },
+    "operationState": {
+      "submitChanges": "提交更改",
+      "cherryPickResolved": "所有冲突已解决，现在请提交更改以完成当前优选。",
+      "resolveConflictsTitle": "解决当前操作冲突",
+      "resolveConflictsDescriptionForCherryPick": "统一查看并处理当前仓库中的冲突文件；全部解决后，请提交更改以完成当前优选。",
+      "resolveConflictsDescription": "统一查看并处理当前仓库中的冲突文件；全部解决后可直接继续或中止当前 Git 操作。",
+      "states": {
+        "rebasing": {
+          "title": "当前仓库处于变基过程中",
+          "badge": "变基",
+          "continueLabel": "继续变基",
+          "abortLabel": "中止变基"
+        },
+        "merging": {
+          "title": "当前仓库处于合并过程中",
+          "badge": "合并",
+          "continueLabel": "继续合并",
+          "abortLabel": "中止合并"
+        },
+        "grafting": {
+          "title": "当前仓库处于优选过程中",
+          "badge": "优选",
+          "continueLabel": "继续优选",
+          "abortLabel": "中止优选"
+        },
+        "reverting": {
+          "title": "当前仓库处于还原过程中",
+          "badge": "还原",
+          "continueLabel": "继续还原",
+          "abortLabel": "中止还原"
+        }
+      },
+      "hints": {
+        "unresolved": "还有 {{count}} 个文件存在未解决冲突，请先在提交面板或外部工具中完成处理。",
+        "resolved": "已有 {{count}} 个冲突文件完成解析，现在可以继续或中止当前操作。",
+        "clean": "当前仓库没有未解决冲突文件，可以直接继续或中止该操作。"
+      },
+      "resolveButton": "解决冲突",
+      "continueDisabled": "仍存在未解决冲突，暂时不能继续",
+      "feedback": {
+        "continueConflict": "继续 {{operation}} 时再次发生冲突，仓库仍处于进行中状态。",
+        "continueRunning": "已继续 {{operation}}，仓库仍处于进行中状态。",
+        "abortRunning": "{{operation}} 尚未中止，仓库仍处于进行中状态。"
+      }
+    },
+    "changes": {
+      "toolbar": {
+        "rollback": "回滚 Ctrl+Alt+Z",
+        "stageActions": "暂存区动作",
+        "viewOptions": "视图选项",
+        "expandAll": "展开全部",
+        "collapseAll": "收起全部",
+        "moreOptions": "更多选项"
+      },
+      "actions": {
+        "stageSelected": "暂存选中文件",
+        "stageSelectedDisabled": "当前选择中没有可暂存文件",
+        "stageWithoutContent": "暂存但不添加内容",
+        "stageWithoutContentDisabled": "当前选择中没有可执行 intent-to-add 的未跟踪文件",
+        "stageAll": "暂存所有更改",
+        "stageAllDisabled": "当前仓库没有可全局暂存的未跟踪或未暂存更改",
+        "stageTracked": "暂存所有已跟踪更改",
+        "stageTrackedDisabled": "当前仓库没有可全局暂存的已跟踪更改",
+        "unstage": "从暂存区移除",
+        "unstageSelected": "从暂存区移除选中文件",
+        "unstageSelectedDisabled": "当前选择中没有已暂存文件",
+        "revertUnstaged": "还原未暂存更改",
+        "revertUnstagedDisabled": "当前选择中没有可还原的未暂存更改",
+        "showStaged": "显示暂存版本",
+        "showLocal": "显示工作区版本",
+        "compareLocalToStaged": "工作区 → 暂存区",
+        "compareStagedToLocal": "暂存区 → 工作区",
+        "compareStagedToHead": "暂存区 ↔ HEAD",
+        "compareThreeVersions": "比较三个版本",
+        "stageStash": "将选中文件保存到暂存记录",
+        "stageStashDisabled": "当前选择不支持按路径写入暂存记录",
+        "stashSilently": "将全部改动保存到暂存记录",
+        "stashSilentlyDisabled": "当前仓库没有可写入暂存记录的改动"
+      },
+      "viewMenu": {
+        "groupBy": "分组依据",
+        "groupRepository": "仓库",
+        "groupModule": "模块",
+        "groupDirectory": "目录",
+        "display": "显示",
+        "showIgnored": "已忽略的文件"
+      },
+      "moreMenu": {
+        "configureLocalChanges": "配置本地更改",
+        "displayAs": "显示为",
+        "stagingArea": "暂存区域",
+        "changeLists": "变更列表",
+        "commit": "提交",
+        "commitAllWhenEmpty": "暂存区为空时全部提交",
+        "doubleClickEnterOpen": "双击/回车打开",
+        "diffPreview": "差异预览",
+        "sourceFile": "源文件",
+        "oneClickPreview": "一键显示差异预览"
+      },
+      "context": {
+        "merge": "合并",
+        "acceptTheirs": "接受对方版本",
+        "acceptYours": "接受当前版本",
+        "conflictDialog": {
+          "title": "解决冲突",
+          "description": "已按当前选择预选冲突文件，可直接批量采用当前版本 / 对方版本，或继续逐个打开合并工具。",
+          "acceptYoursAction": "接受当前版本 ",
+          "acceptTheirsAction": "接受对方版本 "
+        },
+        "commitFiles": "提交(I)文件...",
+        "rollback": "回滚(R)...",
+        "moveToAnotherChangelist": "移至另一个更改列表...",
+        "showDiff": "显示差异",
+        "showInStandaloneDiff": "在独立差异视图中显示",
+        "jumpToSource": "跳转到源(J)",
+        "delete": "删除(D)...",
+        "addToVcs": "添加到版本控制",
+        "ignore": "忽略",
+        "compareLocalToStaged": "比较 工作区 → 暂存区",
+        "compareStagedToLocal": "比较 暂存区 → 工作区",
+        "compareStagedToHead": "比较 暂存区 ↔ HEAD",
+        "newChangelist": "新建更改列表...",
+        "removeChangelist": "删除更改列表",
+        "setActiveChangelist": "设为活动更改列表",
+        "editChangelist": "编辑更改列表...",
+        "createPatchFromLocalCommit": "从本地更改创建补丁...",
+        "copyPatchToClipboard": "作为补丁复制到剪贴板",
+        "shelveChanges": "搁置更改...",
+        "localHistory": "本地历史记录(H)",
+        "showHistory": "显示历史记录...",
+        "gitMenu": "Git(G)",
+        "gitWorktreeItem": "工作树",
+        "fileHistory": "Git 文件历史(H)",
+        "gitWorktree": "Git 工作树 ›"
+      },
+      "stageFailed": "暂存失败",
+      "unstageFailed": "从暂存区移除失败",
+      "deleteFailed": "删除所选文件失败",
+      "revertUnstagedFailed": "还原未暂存更改失败",
+      "moveFailed": "移动失败",
+      "viewOptionsSaveFailed": "更新视图选项失败",
+      "groupingSaveFailed": "更新分组依据失败",
+      "localChangesOptionSaveFailed": "更新本地更改配置失败"
+    },
+    "branches": {
+      "loadFailed": "读取分支列表失败",
+      "common": {
+        "favorite": "收藏分支",
+        "unfavorite": "取消收藏",
+        "filtered": "筛选",
+        "repository": "仓库",
+        "submodule": "子模块",
+        "detachedHead": "游离 HEAD",
+        "detachedBranch": "游离 {{branch}}",
+        "currentBranch": "当前分支：{{branch}}",
+        "trackingBranch": "跟踪分支：{{branch}}",
+        "incomingCommits": "传入提交 {{count}}",
+        "outgoingCommits": "传出提交 {{count}}",
+        "unfetchedIncoming": "存在未获取的传入提交",
+        "divergedWarning": "当前分支与上游已分叉，请先查看传入/传出变化后再执行签出或更新。",
+        "backToRepositories": "返回仓库列表",
+        "groups": {
+          "repositories": "仓库",
+          "favorites": "收藏",
+          "recent": "最近",
+          "local": "本地",
+          "remote": "远端"
+        }
+      },
+      "syncEnableFailed": "开启分支同步失败",
+      "syncDisableFailed": "关闭分支同步失败",
+      "myBranchesEnableFailed": "开启我的分支筛选失败",
+      "myBranchesDisableFailed": "关闭我的分支筛选失败",
+      "favoriteAddFailed": "收藏分支失败",
+      "favoriteRemoveFailed": "取消收藏失败",
+      "remote": {
+        "addFailed": "新增远端失败",
+        "editFailed": "编辑远端失败",
+        "removeFailed": "移除远端失败"
+      },
+      "popup": {
+        "header": {
+          "fetch": "获取",
+          "syncStatus": "同步状态",
+          "myBranchesOnly": "只看我的分支"
+        }
+      },
+      "syncEnabled": "已开启分支同步",
+      "syncDisabled": "已关闭分支同步",
+      "myBranchesEnabled": "已开启只看我的分支",
+      "myBranchesDisabled": "已关闭只看我的分支",
+      "panel": {
+        "title": "分支",
+        "actionsTitle": "分支面板操作",
+        "currentHead": "HEAD(当前分支)",
+        "menu": {
+          "display": "显示",
+          "incomingOutgoing": "传入/传出",
+          "myBranches": "我的分支",
+          "repositories": "仓库",
+          "previousRepository": "上一个仓库",
+          "nextRepository": "下一个仓库",
+          "actions": "操作",
+          "remoteConfig": "远端配置",
+          "remoteConfigWithCount": "远端配置（{{count}}）",
+          "newBranch": "新建分支",
+          "tags": "标签",
+          "newTag": "新建标签"
+        }
+      },
+      "context": {
+        "currentBranch": "当前分支",
+        "targetBranch": "目标分支",
+        "detachedHeadUnsupported": "游离 HEAD 状态下不支持",
+        "currentBranchUnsupported": "当前分支不支持该操作",
+        "missingTarget": "缺少目标分支",
+        "alreadyCurrent": "已在当前分支",
+        "checkedOutInOtherWorktree": "已在其他工作树签出：{{path}}",
+        "checkout": "签出",
+        "openInCheckedOutWorktree": "在已签出的工作树中打开",
+        "notCheckedOutInOtherWorktree": "该分支未在其他工作树签出",
+        "checkoutAndUpdate": "签出并更新",
+        "noTrackingUpstream": "该分支未配置跟踪上游",
+        "newBranchFrom": "从 '{{target}}' 新建分支...",
+        "checkoutAndRebaseToCurrent": "签出并变基到 '{{branch}}'",
+        "compareWithCurrent": "与 '{{branch}}' 比较",
+        "compareCommitsWithAnyBranch": "与任意分支比较提交...",
+        "showWorktreeDiff": "显示与工作树的差异",
+        "compareFilesWithAnyBranch": "与任意分支比较文件...",
+        "rebaseCurrentToTarget": "将 '{{branch}}' 变基到 '{{target}}'",
+        "mergeTargetToCurrent": "将 '{{target}}' 合并到 '{{branch}}' 中",
+        "createWorktree": "创建新工作树...",
+        "pullRemoteRebase": "将 '{{branch}}' 与该远端分支变基拉取",
+        "pullRemoteMerge": "将 '{{branch}}' 与该远端分支合并拉取",
+        "invalidRemoteBranch": "远端分支格式无效",
+        "unsupportedRef": "不支持该引用",
+        "update": "更新",
+        "pushWithEllipsis": "推送...",
+        "trackingBranch": "跟踪分支 '{{branch}}'",
+        "branchSubmenu": "分支 '{{branch}}'",
+        "deleteTrackedRemoteBranch": "删除跟踪远端分支(D)",
+        "editRemote": "编辑远端 '{{remote}}'...",
+        "removeRemote": "移除远端 '{{remote}}'",
+        "configureRemotes": "配置远端...",
+        "renameWithEllipsis": "重命名...",
+        "delete": "删除(D)",
+        "localBranchOnly": "仅支持本地分支",
+        "currentBranchCannotDelete": "当前分支不支持删除",
+        "remoteHeadCannotDelete": "不支持删除远端 HEAD 引用",
+        "gitWorktree": "Git 工作树 ›"
+      }
+    },
+    "details": {
+      "loadFailed": "读取提交详情失败",
+      "openRepositoryVersionFailed": "打开仓库版本失败",
+      "compareLocalMultiCommitUnsupported": "多选提交聚合详情暂不支持与本地比较",
+      "comparePreviousLocalMultiCommitUnsupported": "多选提交聚合详情暂不支持“之前版本与本地比较”",
+      "editSourceUnsupported": "当前选择不支持编辑源",
+      "openRepositoryVersionUnsupported": "当前选择不支持打开仓库版本",
+      "openRepositoryVersionMultiCommitUnsupported": "多选提交聚合详情暂不支持打开仓库版本",
+      "revertSelectedUnsupported": "当前选择不支持还原所选更改",
+      "applySelectedUnsupported": "当前选择不支持优选所选更改",
+      "revertSelectedMultiCommitUnsupported": "多选提交聚合详情暂不支持还原所选更改",
+      "applySelectedMultiCommitUnsupported": "多选提交聚合详情暂不支持优选所选更改",
+      "revertSelectedFailed": "还原所选更改失败",
+      "applySelectedFailed": "优选所选更改失败",
+      "resolveRevertSelectedConflictsTitle": "解决还原所选更改冲突",
+      "resolveApplySelectedConflictsTitle": "解决优选所选更改冲突",
+      "extractSelectedUnsupported": "当前选择不支持提取所选更改",
+      "extractSelectedFailed": "提取所选更改失败",
+      "dropSelectedUnsupported": "当前选择不支持删除所选更改",
+      "dropSelectedFailed": "删除所选更改失败",
+      "restoreFromRevisionUnsupported": "当前选择不支持从修订恢复",
+      "restoreFromRevisionFailed": "从修订恢复失败",
+      "restoreFromRevisionMultiCommitUnsupported": "多选提交聚合详情暂不支持从修订恢复",
+      "context": {
+        "expand": "展开",
+        "collapse": "折叠",
+        "copyPath": "复制路径"
+      }
+    },
+    "branchFilter": {
+      "currentBranch": "当前分支",
+      "currentRepository": "当前仓库",
+      "noRemote": "没有可用远端"
+    },
+    "branchCompare": {
+      "invalidRef": "缺少有效的比较引用",
+      "noOtherBranch": "当前仓库没有可用于比较的其他分支",
+      "fileDiffLoadFailed": "读取文件差异失败"
+    },
+    "commit": {
+      "amendLoading": "正在读取上一提交...",
+      "amendNoDetails": "未读取到上一提交详情",
+      "amendLoadFailed": "读取上一提交详情失败",
+      "ignoreTargetsLoadFailed": "读取忽略目标失败",
+      "ignoreRuleWriteFailed": "写入忽略规则失败",
+      "ignoreAcrossReposUnsupported": "当前选择跨多个仓库，暂不支持一次性忽略。",
+      "amend": {
+        "noPreviousCommit": "当前没有可修改的上一提交"
+      },
+      "blocked": {
+        "conflicts": "冲突阻止了本次提交",
+        "noTrackedChanges": "没有可提交的已跟踪更改",
+        "readingAmend": "正在读取上一提交...",
+        "repoUnavailable": "仓库不可用",
+        "selectFiles": "请选择要提交的文件",
+        "selectRepository": "请选择一个仓库"
+      },
+      "partialSelectionInvalidated": "路径“{{path}}”的部分提交选择已失效并已重置",
+      "partialSelectionCheckFailed": "验证路径“{{path}}”的部分提交选择失败",
+      "failed": "提交失败",
+      "mergePrecheckConflictSummary": "因为仓库处于合并状态，仍有 {{count}} 个已跟踪更改未包含在本次提交中",
+      "mergePrecheckPreview": "未包含示例：{{examples}}{{suffix}}",
+      "ignoreTarget": {
+        "noAvailableTargets": "当前未找到可用的忽略目标"
+      }
+    },
+    "commitOptions": {
+      "empty": "没有提交选项",
+      "open": "打开选项",
+      "toggle": "切换选项"
+    },
+    "amendToggleLabel": "修改上一提交",
+    "errors": {
+      "openFileFailed": "打开文件失败",
+      "openDirectoryFailed": "打开目录失败",
+      "openProjectContinueUpdates": "已在应用中打开 {{rootName}}，可继续查看该仓库的更新",
+      "openProjectFailed": "在应用中打开项目失败",
+      "openProjectOpened": "已打开 {{rootName}}",
+      "readIgnoredFilesFailed": "读取已忽略文件失败",
+      "saveCommitPushPreferencesFailed": "保存提交并推送偏好失败"
+    },
+    "flow": {
+      "noAvailableRemote": "未找到可用远端",
+      "fetchSkipped": "已跳过获取：{{reason}}",
+      "fetchRemotes": "已获取远端：{{remotes}}",
+      "fetchFallbackDone": "已完成获取（使用默认 Git 流程）",
+      "noFetchRemotes": "当前仓库没有可获取的远端",
+      "branchWithName": "分支“{{name}}”",
+      "currentBranch": "当前分支",
+      "upToDate": "{{subject}} 已是最新{{upstreamSuffix}}",
+      "fastForwardUpdated": "{{subject}} 已通过快速前移更新{{upstreamSuffix}}，本地改动已保留",
+      "remoteRefUpdated": "已更新 {{subject}} 的远端引用{{upstreamSuffix}}",
+      "methodRebase": "变基",
+      "methodMerge": "合并",
+      "methodReset": "重置",
+      "methodPull": "拉取",
+      "updatedWithUpstreamAndRestoreFailed": "已通过 {{method}} 更新{{subject}}{{upstreamSuffix}}{{suffix}}",
+      "updatedAndRestoreFailed": "已通过 {{method}} 更新{{subject}}{{suffix}}",
+      "localChangesNotRestored": "，但本地改动未自动恢复",
+      "preservedLocalChanges": "并保留本地改动",
+      "restoredLocalChanges": "已恢复本地改动",
+      "updatedWithUpstream": "已通过 {{method}} 更新{{subject}}{{upstreamSuffix}}{{suffixText}}",
+      "updated": "已通过 {{method}} 更新{{subject}}{{suffixText}}",
+      "pushedBranch": "已推送分支“{{name}}”",
+      "pushDone": "推送已完成",
+      "pushToRemote": " 到“{{remote}}”",
+      "pushToRemoteBranch": " 到“{{remote}}/{{remoteBranch}}”",
+      "upstreamSet": "，并已设置上游分支",
+      "pushAutoUpdated": "，推送前已自动更新并重试 {{count}} 次",
+      "retryCount": "，已重试 {{count}} 次",
+      "retried": "，已重试",
+      "smartSwitchFailedWithDetail": "已智能签出到{{targetLabel}}；{{detail}}",
+      "smartSwitchFailed": "已智能签出到{{targetLabel}}，但本地改动未自动恢复",
+      "smartSwitchRestored": "已智能签出到{{targetLabel}}，并恢复本地改动",
+      "smartSwitchDone": "已智能签出到{{targetLabel}}",
+      "operation": {
+        "reset": "重置",
+        "checkout": "签出",
+        "cherryPick": "优选",
+        "merge": "合并"
+      },
+      "mergeConflict": "合并过程中发生冲突",
+      "resolveMergeConflictFirst": "请先解决当前合并冲突，并完成或中止合并后再继续。",
+      "untrackedOverwritten": "未跟踪文件会被 {{operationLabel}} 覆盖",
+      "localChangesOverwritten": "本地改动会被 {{operationLabel}} 覆盖",
+      "untrackedOverwrittenDescription": "在继续执行 {{operationLabel}} 之前，请先处理这些未跟踪文件。",
+      "localChangesOverwrittenDescription": "在继续执行 {{operationLabel}} 之前，请先处理这些本地改动。",
+      "pushRejected": {
+        "staleInfo": "远端引用已变化，当前租约保护已过期。如果你仍想覆盖远端，请使用普通强制推送继续。",
+        "other": "远端拒绝了推送。请先处理远端策略或服务端钩子限制，然后重试。",
+        "noFastForward": "远端已领先于当前分支。请先更新，或改用强制推送。",
+        "title": "推送被拒绝"
+      },
+      "saveChanges": {
+        "shelve": "搁置",
+        "stash": "暂存"
+      },
+      "remoteUpdated": "已更新远端“{{name}}”",
+      "remoteAdded": "已添加远端“{{name}}”",
+      "remoteRemoved": "已移除远端“{{name}}”"
+    },
+    "operation": {
+      "continueFailed": "继续当前操作失败",
+      "abortFailed": "中止当前操作失败",
+      "continueRestored": "已继续当前 Git 操作，本地改动已自动恢复",
+      "continueRestoreFailed": "当前 Git 操作已完成，但本地改动恢复失败",
+      "continueStillRunning": "已继续当前 Git 操作，仓库仍处于进行中状态",
+      "continueDone": "已继续当前 Git 操作",
+      "abortRestored": "已中止当前 Git 操作，本地改动已自动恢复",
+      "abortRestoreFailed": "当前 Git 操作已中止，但本地改动恢复失败",
+      "abortDone": "已中止当前 Git 操作"
+    },
+    "rollbackViewer": {
+      "groupingSaveFailed": "更新回滚窗口分组依据失败",
+      "selectChangesRequired": "请选择需要回滚的更改",
+      "rollbackFailed": "回滚失败",
+      "refreshFailed": "刷新可回滚更改失败",
+      "openTargetRepoFirst": "请先打开目标仓库后再查看这些变更",
+      "noLocalChanges": "当前未找到可回滚的本地更改",
+      "noTrackedChanges": "当前选择中没有可回滚的已跟踪改动",
+      "title": "回滚更改",
+      "description": "将所选已跟踪更改恢复到 HEAD。",
+      "continueCheckout": "回滚并继续签出",
+      "continueReset": "回滚并继续重置",
+      "continuePull": "回滚并继续拉取"
+    },
+    "log": {
+      "noTitle": "（无标题）",
+      "messageDraftLoadFailed": "读取提交信息失败",
+      "loadFailed": "读取日志失败",
+      "revisionDetailsLoadFailed": "读取修订详情失败",
+      "actionFailed": "执行 Git 日志动作失败",
+      "compareSelectionActive": "正在比较 {{label}}；单击可清除比较范围",
+      "fileHistoryActive": "文件历史截止到 {{revision}}；单击可清除修订锚点",
+      "compareSelectionLabel": "比较 {{label}}",
+      "historyUntilLabel": "历史截止到 {{revision}}",
+      "actions": {
+        "loadingAvailability": "正在读取动作可用性...",
+        "currentHeadOnly": "只有当前 HEAD 可以使用此操作",
+        "selectCommit": "请先选择一个提交",
+        "selectAtLeastTwo": "请至少选择两个提交",
+        "singleSelectionOnly": "此操作仅支持单选",
+        "mergeCommitUnsupported": "此处不支持合并提交",
+        "pushAllPrevious": "推送所有之前的提交",
+        "push": "推送",
+        "unavailable": "操作不可用",
+        "conditionNotMet": "未满足所需条件"
+      }
+    },
+    "shelf": {
+      "deletedNotice": "已删除搁置 {{label}}",
+      "restoreFailed": "恢复搁置记录失败",
+      "restoredNotice": "已恢复搁置记录 {{label}}",
+      "undoDelete": "撤销删除",
+      "createFailed": "创建搁置失败",
+      "restoreSelectionRequired": "请至少选择一个需要取消搁置的文件",
+      "importPatchWithFailures": "已导入 {{importedCount}} 个补丁；{{failedCount}} 个文件导入失败",
+      "importPatchDone": "已将 {{count}} 个补丁导入搁置区",
+      "importPatchTitle": "导入补丁到搁置列表",
+      "choosePatchFailed": "选择补丁文件失败",
+      "importPatchFailed": "导入补丁失败",
+      "noPatchToExport": "当前选择未生成可导出的补丁",
+      "renameTitle": "重命名搁置记录",
+      "renameFailed": "重命名搁置失败",
+      "viewStateSaveFailed": "保存搁置视图状态失败",
+      "createPatchFailed": "创建搁置补丁失败",
+      "recycleFailed": "移动搁置到回收区失败",
+      "restoreArchivedFailed": "恢复搁置记录失败",
+      "deleteForeverTitle": "彻底删除搁置记录",
+      "deleteForeverConfirm": "永久删除",
+      "deleteForeverFailed": "彻底删除搁置失败",
+      "modifyDescription": "修改 {{ref}} 的显示说明。",
+      "deleteDescription": "永久移除 {{ref}}，且无法从回收站恢复。"
+    },
+    "stageThreeWay": {
+      "head": "基线",
+      "loadFailed": "读取三版本比较失败",
+      "headUnavailable": "{{label}} 快照不可用",
+      "headTooLarge": "{{label}} 过大，无法在应用内预览",
+      "headBinary": "{{label}} 是二进制文件，无法内联预览",
+      "index": "暂存区",
+      "indexUnavailable": "{{label}} 快照不可用",
+      "indexTooLarge": "{{label}} 过大，无法在应用内预览",
+      "indexBinary": "{{label}} 是二进制文件，无法内联预览",
+      "loading": "正在读取 HEAD / Index / Working Tree 快照...",
+      "workingTree": "工作区",
+      "workingTreeUnavailable": "{{label}} 快照不可用",
+      "workingTreeTooLarge": "{{label}} 过大，无法在应用内预览",
+      "workingTreeBinary": "{{label}} 是二进制文件，无法内联预览",
+      "writeWorkingFileFailed": "写入工作区文件失败"
+    },
+    "diff": {
+      "loadFailed": "读取差异失败",
+      "exportPatchFailed": "导出补丁失败"
+    },
+    "stash": {
+      "createTitle": "创建暂存",
+      "createDescription": "为当前仓库创建新的暂存记录，并可选择是否保留暂存区或包含未跟踪文件。",
+      "createConfirm": "创建暂存",
+      "createMessagePlaceholder": "临时保存当前改动",
+      "createFailed": "创建暂存失败",
+      "stageSelectedFailed": "暂存选中文件失败",
+      "createSilentlyFailed": "创建暂存记录失败",
+      "includeUntracked": "包含未跟踪文件",
+      "includeUntrackedDescription": "对齐 `git stash push --include-untracked`，同时把当前未跟踪文件保存到暂存记录。",
+      "keepIndex": "保留暂存区内容",
+      "keepIndexDescription": "对齐 `git stash push --keep-index`，仅把工作区改动写入暂存记录。",
+      "applyConfirm": "应用",
+      "applyDescription": "应用所选暂存",
+      "applyTitle": "应用暂存",
+      "branchConfirm": "恢复为分支",
+      "branchDescription": "基于 {{ref}} 创建并切换到新分支，对齐 `git stash branch` 的行为。",
+      "branchNameLabel": "新分支名称",
+      "branchNamePlaceholder": "功能/xxx",
+      "branchNameRequired": "分支名称不能为空",
+      "branchTitle": "将暂存恢复为分支",
+      "popConfirm": "弹出",
+      "popDescription": "弹出所选暂存",
+      "popTitle": "弹出暂存",
+      "reinstateIndex": "同时恢复索引内容",
+      "reinstateIndexDescription": "对齐 `git stash apply/pop --index` 的行为，同时恢复工作区和索引内容。"
+    },
+    "specialFiles": {
+      "browseTitle": "浏览文件"
+    },
+    "push": {
+      "failed": "推送失败",
+      "forceWithLeaseFailed": "强制推送失败",
+      "forcePushFailed": "普通强制推送失败",
+      "openTargetRepoSuccess": "已打开目标仓库，继续加载其推送预览",
+      "selectRepoTitle": "选择待推送仓库",
+      "selectRepoDescription": "本次提交涉及多个仓库，请选择要继续打开 push 预览的目标仓库。",
+      "selectRepoConfirm": "继续推送",
+      "targetRepoLabel": "目标仓库"
+    },
+    "update": {
+      "failed": "更新失败"
+    },
+    "fetch": {
+      "failed": "获取失败",
+      "cancelled": "获取已取消",
+      "selectRepository": "请选择需要执行获取的仓库",
+      "selectRemote": "请选择要获取的远端"
+    },
+    "pull": {
+      "detachedHeadUnsupported": "游离 HEAD 状态下不支持拉取",
+      "selectRemoteBranch": "请选择要拉取的远端分支",
+      "rebaseFailed": "拉取（变基）失败",
+      "mergeFailed": "拉取（合并）失败"
+    },
+    "updateOptions": {
+      "loadFailed": "读取更新选项失败",
+      "loadRuntimeScopeFailed": "读取本次更新范围失败",
+      "refreshScopePreviewFailed": "刷新多仓范围预览失败",
+      "saveFailed": "保存更新选项失败",
+      "saveMethodPreferenceFailed": "保存更新方式偏好失败，本次仍会继续执行"
+    },
+    "updateReset": {
+      "loadFailed": "读取重置预览失败",
+      "detachedHeadUnsupported": "当前处于游离 HEAD，无法执行重置更新",
+      "failed": "重置更新失败"
+    },
+    "updateResult": {
+      "viewCommitsUnavailable": "当前结果未提供可查看的提交范围",
+      "copyRangeUnavailable": "当前结果未提供可复制的提交范围",
+      "copyRangeFailed": "复制提交范围失败",
+      "conflictRepoUnavailable": "当前结果未提供冲突所属仓库",
+      "retryRepoUnavailable": "当前结果未提供可重试的仓库",
+      "fixRepoUnavailable": "当前结果未提供需要修复的仓库",
+      "applyTrackedBranchFixFailed": "应用跟踪分支修复失败",
+      "noTrackedBranchIssue": "当前仓库没有可修复的上游分支问题",
+      "savedChangesRepoUnavailable": "当前结果未提供保存改动所属仓库",
+      "targetRepoUnavailable": "当前结果未提供目标仓库路径",
+      "openParentRepoSuccess": "已打开父仓，可继续处理该子仓更新问题",
+      "openTargetRepoSuccess": "已打开目标仓库"
+    },
+    "statusCodes": {
+      "added": "新增",
+      "modified": "修改",
+      "deleted": "删除",
+      "renamed": "重命名",
+      "copied": "复制",
+      "typeChanged": "类型变更",
+      "conflicted": "冲突"
+    },
+    "worktrees": {
+      "current": "当前",
+      "repositories": "仓库",
+      "mainRepository": "主仓库",
+      "mainWorktree": "主工作树"
+    }
+  },
+  "details": {
+    "commitRangeCopied": "已复制提交范围：{{revision}}",
+    "actions": {
+      "showDiff": "显示差异",
+      "compareRevisions": "比较版本",
+      "compareRevisionsTwoCommits": "仅支持恰好两个提交的版本比较",
+      "compareLocal": "与本地比较",
+      "comparePreviousLocal": "将之前版本与本地版本进行比较",
+      "editSource": "编辑源",
+      "openRepositoryVersion": "打开仓库版本",
+      "revertSelectedChanges": "还原所选更改",
+      "applySelectedChanges": "优选所选更改",
+      "extractSelectedChanges": "将所选更改提取到单独的提交...",
+      "extractSelectedChangesDescription": "从当前提交中提取所选更改，并直接改写目标提交历史。",
+      "extractSelectedChangesConfirm": "提取",
+      "dropSelectedChanges": "删除所选更改",
+      "createPatch": "创建补丁...",
+      "restoreFromRevision": "从修订中获取",
+      "selectionMustResolveToSingleCommit": "当前选择中的文件必须各自唯一映射到一个提交",
+      "pathHistory": "迄今为止的历史记录",
+      "toggleParentChanges": "显示对父项的更改",
+      "resetCurrentBranchToHere": "将当前分支重置到此处...",
+      "revertCommit": "还原提交",
+      "undoCommit": "撤销提交...",
+      "editCommitMessage": "编辑提交信息...",
+      "fixup": "整理提交...",
+      "squashTo": "压缩到...",
+      "squashCommits": "压缩提交...",
+      "checkoutRevision": "签出标签或修订...",
+      "showRepoAtRevision": "在修订版中显示仓库",
+      "newTag": "新建标签...",
+      "copyRevision": "复制修订号",
+      "gotoChild": "转到子提交",
+      "gotoParent": "转到父提交",
+      "multiCommitUnsupported": "不支持多提交聚合详情",
+      "singleCommitFileOnly": "单提交详情仅支持单个文件"
+    },
+    "browser": {
+      "title": "提交详情",
+      "empty": "未选择的提交",
+      "searchPlaceholder": "搜索",
+      "fileCount": "变更文件 {{count}} 个",
+      "selectedCount": "，已选中 {{count}} 个",
+      "toolbar": {
+        "refresh": "刷新详情",
+        "expandAll": "全部展开",
+        "collapseAll": "全部收起"
+      },
+      "tree": {
+        "expand": "展开",
+        "collapse": "收起",
+        "nodeFileCount": "{{count}} 个文件"
+      },
+      "summary": {
+        "selectedCommits": "已选择 {{count}} 个提交",
+        "fileUnion": "文件并集：{{count}} 项",
+        "hint": "提示：双击文件可在中间区域打开差异视图。"
+      },
+      "meta": {
+        "author": "作者",
+        "date": "日期",
+        "branches": "分支",
+        "tags": "标签",
+        "lineStats": "行变更",
+        "totalLines": "共 {{count}} 行",
+        "netIncrease": "净增 {{count}} 行",
+        "netDecrease": "净减 {{count}} 行",
+        "netNeutral": "净变化 0 行",
+        "totalLinesFallback": "共 0 行",
+        "netLinesFallback": "净变化 0 行",
+        "hash": "哈希"
+      },
+      "messages": {
+        "noSelection": "未选择变更",
+        "multiCommitUnsupported": "多选提交聚合详情暂不支持",
+        "pathHistorySingleFile": "仅支持单提交详情中的单个文件"
+      }
+    }
+  },
+  "specialFilesDialog": {
+    "searchPlaceholder": "搜索",
+    "empty": "无匹配项",
+    "summary": {
+      "count": "共 {{count}} 项",
+      "conflictHint": "；回车/双击打开合并工具",
+      "openSourceHint": "；回车/双击将打开源文件",
+      "openDiffHint": "；回车/双击优先打开差异视图"
+    },
+    "actions": {
+      "delete": "删除",
+      "resolveSelectedConflicts": "解决选中冲突"
+    }
+  },
+  "shelf": {
+    "recentlyDeleted": "最近删除",
+    "title": "搁置记录",
+    "visibleCount": "可见 {{count}} 条",
+    "importPatch": "导入补丁...",
+    "toggleArchived": {
+      "show": "显示已归档项",
+      "hide": "隐藏已归档项"
+    },
+    "expandAll": "展开全部",
+    "collapseAll": "收起全部",
+    "viewOptions": "视图选项",
+    "groupBy": "分组依据",
+    "groupByDirectory": "目录",
+    "deleteAction": "删除...",
+    "refresh": "刷新",
+    "empty": "暂无搁置记录",
+    "messages": {
+      "primaryUnavailable": "当前选择不可执行恢复搁置记录或取消搁置",
+      "deleteUnavailable": "当前选择不可删除"
+    },
+    "primary": {
+      "restore": "恢复搁置记录",
+      "restoreSelectedFile": "取消搁置所选文件...",
+      "restoreSelectedPath": "取消搁置所选路径...",
+      "restoreShelf": "取消搁置..."
+    },
+    "state": {
+      "recycled": "已归档",
+      "deleted": "已删除",
+      "restoring": "取消搁置中",
+      "restoreFailed": "取消搁置失败",
+      "restored": "已取消搁置",
+      "orphaned": "孤儿"
+    },
+    "context": {
+      "showDiff": "显示差异",
+      "showStandaloneDiff": "在新标签页中显示差异",
+      "compareWithLocal": "与本地比较",
+      "createPatch": "创建补丁...",
+      "copyPatch": "作为补丁复制到剪贴板",
+      "rename": "重命名..."
+    },
+    "stash": {
+      "title": "暂存列表",
+      "apply": "应用...",
+      "pop": "恢复...",
+      "branch": "恢复为分支...",
+      "drop": "删除"
+    },
+    "deletedNotice": "已删除搁置 {{label}}",
+    "restoreFailed": "恢复搁置记录失败",
+    "restoredNotice": "已恢复搁置记录 {{label}}",
+    "undoDelete": "撤销删除",
+    "importPatchWithFailures": "已导入 {{importedCount}} 个补丁；{{failedCount}} 个文件导入失败",
+    "importPatchDone": "已将 {{count}} 个补丁导入搁置区",
+    "modifyDescription": "修改 {{ref}} 的显示说明。",
+    "deleteDescription": "永久移除 {{ref}}，且无法从回收站恢复。"
+  },
+  "diffViewer": {
+    "empty": "请选择变更文件以查看差异。",
+    "tooLarge": "文件过大，暂不支持预览。",
+    "binary": "二进制文件无法预览。",
+    "fallbackHint": "你可以改用外部 IDE、系统默认程序，或直接导出当前比较视图的补丁。",
+    "actions": {
+      "openInIde": "在外部 IDE 中打开",
+      "openInSystem": "使用系统程序打开",
+      "exportPatch": "导出补丁"
+    },
+    "partial": {
+      "includeBlock": "纳入当前差异块（{{count}} 行）",
+      "excludeBlock": "排除当前差异块（{{count}} 行）",
+      "includeLine": "纳入当前改动行",
+      "excludeLine": "排除当前改动行"
+    }
+  },
+  "interactiveRebase": {
+    "title": "交互式变基",
+    "failed": "执行交互式变基失败",
+    "validation": {
+      "emptyPlan": "交互式变基计划不能为空",
+      "attachTargetMissing": "第 {{index}} 条提交前缺少可合并的目标提交",
+      "messageMissing": "第 {{index}} 条提交的提交信息不能为空"
+    },
+    "actions": {
+      "fixup": "整理",
+      "squash": "压缩"
+    }
+  },
+  "updateSession": {
+    "actions": {
+      "resolveConflicts": "处理该仓冲突",
+      "fixTrackedBranch": "修复上游分支",
+      "openParentRepo": "打开父仓",
+      "openRepoRoot": "打开该仓",
+      "retryUpdateRoot": "重试该仓更新"
+    },
+    "phases": {
+      "repositoryGraph": "构建仓库图",
+      "preflight": "前置检查",
+      "trackedBranchConfig": "解析跟踪分支",
+      "fetch": "获取远端",
+      "updaterSelection": "选择更新策略",
+      "saveIfNeeded": "保护本地改动",
+      "rootUpdate": "执行更新",
+      "resultAggregation": "汇总结果",
+      "waiting": "等待开始"
+    },
+    "results": {
+      "success": "成功",
+      "nothingToUpdate": "已是最新",
+      "skipped": "已跳过",
+      "cancelled": "已取消",
+      "incomplete": "未完成",
+      "notReady": "未就绪",
+      "error": "失败"
+    },
+    "methods": {
+      "merge": "合并",
+      "rebase": "变基",
+      "reset": "重置",
+      "fetch": "获取",
+      "submodule": "子模块更新"
+    },
+    "fetch": {
+      "successWithRemoteCount": "获取 {{count}} 个远端",
+      "success": "获取成功",
+      "skipped": "获取已跳过",
+      "cancelled": "获取已取消",
+      "failedWithRemote": "获取失败 · {{remote}}",
+      "failed": "获取失败"
+    },
+    "skippedReasons": {
+      "requested": "已按当前范围配置跳过",
+      "detachedHead": "当前仓库处于游离 HEAD",
+      "noTrackedBranch": "缺少可用的上游分支",
+      "remoteMissing": "上游分支在本地不存在或已失效",
+      "parentFailed": "父仓更新失败",
+      "fetchFailed": "获取远端失败",
+      "updatedByParent": "已由父仓递归更新"
+    },
+    "preserving": {
+      "restoredWithName": "已恢复 {{name}}",
+      "restored": "本地改动已恢复",
+      "savedWithName": "已暂存 {{name}}",
+      "saved": "本地改动已保存",
+      "keptSavedWithName": "保留 {{name}}",
+      "keptSaved": "本地改动保留为已保存",
+      "restoreFailedWithName": "{{name}} 恢复失败",
+      "restoreFailed": "本地改动恢复失败"
+    },
+    "submodule": {
+      "detached": "游离 HEAD 子模块",
+      "branch": "子模块分支",
+      "updatedByParent": "{{mode}} · 由父仓递归更新",
+      "detachedUpdater": "{{mode}} · 独立更新器",
+      "asRoot": "{{mode}} · 作为根仓库执行"
+    },
+    "badges": {
+      "fetchFailed": "获取失败",
+      "fetchSkipped": "获取跳过",
+      "fetchDone": "获取完成",
+      "restoreFailed": "恢复失败",
+      "keptSaved": "保留已保存",
+      "unfinished": "未完成状态",
+      "detachedSubmodule": "游离 HEAD 子模块"
+    },
+    "detail": {
+      "updatedWithMethodAndRange": "{{method}} · {{range}}",
+      "updatedRange": "已更新 · {{range}}",
+      "updatedMethodDone": "{{method}} 已完成",
+      "updatedSuccess": "更新成功",
+      "upToDateWithUpstream": "跟踪 {{upstream}}，当前已是最新",
+      "upToDate": "当前已是最新",
+      "skipped": "当前仓库已跳过",
+      "notCompletedWithMethod": "{{method}} 未完成",
+      "notCompleted": "更新未完成"
+    },
+    "result": {
+      "multipleRanges": "共 {{count}} 个更新范围",
+      "primaryRange": "{{rootName}} · {{range}}",
+      "updated": "已更新",
+      "title": "更新项目已完成"
+    }
+  },
+  "rollbackViewer": {
+    "actions": {
+      "showDiff": "显示差异",
+      "refresh": "刷新",
+      "rollback": "回滚",
+      "selectAll": "全选",
+      "clearSelection": "取消全选",
+      "selectOnly": "仅选择当前项",
+      "copyPath": "复制路径"
+    }
+  },
+  "changelist": {
+    "defaultName": "默认"
+  },
+  "savedChanges": {
+    "openTarget": {
+      "shelfSuccess": "已打开目标仓库，可继续查看其搁置列表",
+      "stashSuccess": "已打开目标仓库，可继续查看其暂存列表"
+    },
+    "errors": {
+      "loadStashFailed": "读取暂存列表失败",
+      "loadShelfFailed": "读取搁置列表失败",
+      "deleteShelfFailed": "删除搁置失败",
+      "restoreShelfFailed": "取消搁置失败",
+      "deleteStashFailed": "删除暂存失败",
+      "branchRestoreStashFailed": "以分支恢复暂存失败",
+      "restoreStashFailed": "恢复暂存失败",
+      "applyStashFailed": "应用暂存失败"
+    },
+    "conflicts": {
+      "restoreShelfTitle": "解决取消搁置冲突",
+      "restoreShelfDescription": "取消搁置 {{ref}} 后检测到冲突；可在这里逐个打开冲突文件继续处理。",
+      "branchRestoreStashTitle": "解决暂存分支冲突",
+      "branchRestoreStashDescription": "以分支 {{branch}} 恢复暂存 {{ref}} 后检测到冲突；可在这里逐个打开冲突文件继续处理。",
+      "restoreStashTitle": "解决恢复暂存冲突",
+      "restoreStashDescription": "恢复暂存 {{ref}} 后检测到冲突；可在这里逐个打开冲突文件继续处理。",
+      "applyStashTitle": "解决应用暂存冲突",
+      "applyStashDescription": "应用暂存 {{ref}} 后检测到冲突；可在这里逐个打开冲突文件继续处理。"
+    }
+  },
+  "branchFilter": {
+    "currentBranch": "当前分支",
+    "currentRepository": "当前仓库",
+    "noRemote": "没有可用远端"
+  },
+  "commit": {
+    "amendLoading": "正在读取上一提交...",
+    "amendNoDetails": "上一提交详情不可用",
+    "amendToggleLabel": "修改上一提交",
+    "blocked": {
+      "conflicts": "冲突阻止了本次提交",
+      "noTrackedChanges": "没有可提交的已跟踪更改",
+      "readingAmend": "正在读取上一提交...",
+      "repoUnavailable": "仓库不可用",
+      "selectFiles": "请选择要提交的文件",
+      "selectRepository": "请选择一个仓库"
+    },
+    "partialSelectionInvalidated": "路径“{{path}}”的部分提交选择已失效并已重置",
+    "partialSelectionCheckFailed": "验证路径“{{path}}”的部分提交选择失败",
+    "mergePrecheckConflictSummary": "由于仓库处于合并状态，仍有 {{count}} 个已跟踪更改未包含在本次提交中",
+    "mergePrecheckPreview": "未包含示例：{{examples}}{{suffix}}",
+    "ignoreTarget": {
+      "title": "忽略文件",
+      "description": "选择要写入的忽略目标。该弹出菜单只接收未跟踪文件投放。",
+      "count": "即将忽略 {{count}} 个文件：",
+      "hiddenCount": "还有 {{count}} 个文件未展开显示",
+      "repoProgress": "仓库 {{index}} / {{count}}",
+      "repoScope": "当前仓库：{{path}}",
+      "noAvailableTargets": "当前未找到可用的忽略目标"
+    },
+    "amend": {
+      "previousCommit": "上一提交",
+      "groupWithHash": "上一提交 {{hash}} · {{subject}}",
+      "groupWithoutHash": "上一提交 · {{subject}}",
+      "noPreviousCommit": "当前没有可修改的上一提交"
+    },
+    "action": {
+      "commit": "提交",
+      "commitAll": "全部提交",
+      "amend": "修改提交",
+      "amendAndPush": "修改并推送...",
+      "commitAndPush": "提交并推送..."
+    },
+    "renamesSeparatelyHint": "修改上一提交时不支持将文件移动单独提交。",
+    "checks": {
+      "emptyAfterCleanup": "清理提交消息后内容为空，请输入有效的提交信息。",
+      "emptyMessage": "提交信息不能为空。",
+      "authorDateInvalid": "作者时间格式无效，请使用有效的日期时间。",
+      "authorMissing": "未配置默认作者，请先设置 Git user.name / user.email，或在提交选项里填写作者。",
+      "defaultAuthor": "默认作者：{{author}}",
+      "updatedPrevious": "已更新上一提交{{suffix}}。",
+      "createdCommit": "已创建提交{{suffix}}。",
+      "pushAfterPushed": "提交后已直接推送。",
+      "pushAfter": "接下来将打开推送对话框。"
+    },
+    "mergePrecheckTitle": "存在未纳入提交的合并变更",
+    "mergePrecheckConfirm": "仍然提交",
+    "mergePrecheckRemainingHint": "若继续提交，剩余变更将留在工作区等待后续处理。",
+    "warningChecks": {
+      "title": "提交前存在需要确认的风险",
+      "confirm": "继续提交"
+    }
+  },
+  "commitOptions": {
+    "empty": "没有提交选项",
+    "open": "打开选项",
+    "toggle": "切换选项",
+    "title": "提交高级选项",
+    "description": "实时保存到当前提交流程。",
+    "close": "关闭",
+    "signOff": "提交后附加签署信息（`--signoff`）",
+    "runHooks": "运行 Git 钩子",
+    "runHooksDisabled": "当前已启用全局禁用策略，本次提交将自动追加 `--no-verify`。",
+    "cleanupMessage": "清理提交消息注释与空行（`--cleanup=strip`）",
+    "commitRenamesSeparately": "将文件移动单独提交（提交前先拆出 rename/move 变更）",
+    "authorLabel": "作者",
+    "authorPlaceholder": "姓名 <email@example.com>",
+    "authorHint": "与 Git `--author` 一致，请输入完整作者签名。",
+    "authorDateLabel": "作者时间（可选，Git `--date`）",
+    "authorDateEmpty": "低频选项，日常提交通常留空",
+    "lowFrequencyBadge": "低频",
+    "authorDatePlaceholder": "例如：2026-03-12 21:11:00",
+    "authorDateInvalid": "请输入有效时间，例如 2026-03-12 21:11:00。",
+    "authorDateHint": "只修改 author date，不修改 committer date。通常只在保留原作者时间时填写。",
+    "payloadHint": "未填写的字段不会进入提交参数。",
+    "reset": "重置",
+    "summary": {
+      "signOff": "签署信息",
+      "hooksDisabled": "钩子已全局禁用",
+      "hooksDisabledLocal": "不运行钩子",
+      "author": "作者：{{value}}",
+      "authorDate": "作者时间",
+      "cleanupMessage": "清理消息",
+      "commitRenamesSeparately": "重命名单独提交"
+    }
+  },
+  "commitTree": {
+    "searchPlaceholder": "搜索",
+    "loading": "正在刷新变更树",
+    "empty": "暂无可提交的变更",
+    "frozenReason": "当前仓库处于 {{state}} 状态",
+    "actions": {
+      "collapseGroup": "收起分组",
+      "expandGroup": "展开分组",
+      "resolve": "解决",
+      "browse": "浏览"
+    },
+    "badges": {
+      "active": "活动",
+      "frozen": "冻结",
+      "outdatedFiles": "{{count}} 个过期文件"
+    },
+    "conflictActions": {
+      "unstage": {
+        "icon": "重置",
+        "tooltip": "从暂存区移除"
+      },
+      "stage": {
+        "icon": "暂存",
+        "tooltip": "暂存更改"
+      },
+      "merge": {
+        "icon": "合并",
+        "tooltip": "打开合并工具"
+      },
+      "rollbackResolved": {
+        "icon": "回滚",
+        "tooltip": "回滚已解决冲突"
+      }
+    },
+    "groups": {
+      "conflict": "冲突",
+      "resolvedConflict": "已解决冲突",
+      "staged": "已暂存",
+      "unstaged": "未暂存",
+      "localChanges": "更改",
+      "unversioned": "未跟踪文件",
+      "ignored": "已忽略文件"
+    },
+    "tree": {
+      "expand": "展开",
+      "collapse": "收起",
+      "nodeFileCount": "{{count}} 个文件"
+    }
+  },
+  "errors": {
+    "openFileFailed": "打开文件失败",
+    "openProjectContinueUpdates": "已在应用中打开 {{rootName}}，可继续查看该仓库的更新",
+    "openProjectFailed": "在应用中打开项目失败",
+    "openProjectOpened": "已打开 {{rootName}}",
+    "readIgnoredFilesFailed": "读取已忽略文件失败",
+    "saveCommitPushPreferencesFailed": "保存提交并推送偏好失败",
+    "backend": {
+      "missingRepoPath": "缺少仓库路径",
+      "readTargetParentCommitFailed": "读取目标提交父提交失败",
+      "readParentCommitFailed": "读取父提交失败",
+      "writeReplayCommitFailed": "写入重放提交失败",
+      "writeExtractCommitFailed": "写入提取提交失败",
+      "fixupCommitFailed": "创建 Fixup 提交失败",
+      "squashCommitFailed": "创建 Squash 提交失败",
+      "cherryPickCommitFailed": "优选提交失败",
+      "revertCommitFailed": "还原提交失败",
+      "deleteCommitFailed": "删除提交失败",
+      "undoCommitFailed": "撤销提交失败",
+      "skipEmptyCherryPickFailed": "跳过空优选提交失败",
+      "unresolvedConflictsBeforeCommit": "存在未解决冲突文件，请先解决后再提交",
+      "mergeChangesExcludedFromCommit": "当前仓库仍有合并变更未纳入本次提交，请确认后重试",
+      "renameCommitPartialFailure": "文件移动已单独提交，但主提交失败：{{detail}}",
+      "multiRepoCommitPartialFailure": "部分仓库已提交，但仓库 '{{repoRoot}}' 提交失败：{{detail}}"
+    }
+  },
+  "flow": {
+    "noAvailableRemote": "未找到可用远端",
+    "fetchSkipped": "已跳过获取：{{reason}}",
+    "fetchRemotes": "已获取远端：{{remotes}}",
+    "fetchFallbackDone": "已完成获取（使用默认 Git 流程）",
+    "noFetchRemotes": "当前仓库没有可获取的远端",
+    "branchWithName": "分支“{{name}}”",
+    "targetBranch": "目标分支",
+    "currentBranch": "当前分支",
+    "upToDate": "{{subject}} 已是最新{{upstreamSuffix}}",
+    "fastForwardUpdated": "{{subject}} 已通过快速前移更新{{upstreamSuffix}}，本地改动已保留",
+    "remoteRefUpdated": "已更新 {{subject}} 的远端引用{{upstreamSuffix}}",
+    "methodRebase": "变基",
+    "methodMerge": "合并",
+    "methodReset": "重置",
+    "methodPull": "拉取",
+    "updatedWithUpstreamAndRestoreFailed": "已通过 {{method}} 更新{{subject}}{{upstreamSuffix}}{{suffix}}",
+    "updatedAndRestoreFailed": "已通过 {{method}} 更新{{subject}}{{suffix}}",
+    "localChangesNotRestored": "，但本地改动未自动恢复",
+    "preservedLocalChanges": "并保留本地改动",
+    "restoredLocalChanges": "已恢复本地改动",
+    "updatedWithUpstream": "已通过 {{method}} 更新{{subject}}{{upstreamSuffix}}{{suffixText}}",
+    "updated": "已通过 {{method}} 更新{{subject}}{{suffixText}}",
+    "pushedBranch": "已推送分支“{{name}}”",
+    "pushDone": "推送已完成",
+    "pushToRemote": " 到“{{remote}}”",
+    "pushToRemoteBranch": " 到“{{remote}}/{{remoteBranch}}”",
+    "upstreamSet": "，并已设置上游分支",
+    "pushAutoUpdated": "，推送前已自动更新并重试 {{count}} 次",
+    "retryCount": "，已重试 {{count}} 次",
+    "retried": "，已重试",
+    "smartSwitchFailedWithDetail": "已智能签出到{{targetLabel}}；{{detail}}",
+    "smartSwitchFailed": "已智能签出到{{targetLabel}}，但本地改动未自动恢复",
+    "smartSwitchRestored": "已智能签出到{{targetLabel}}，并恢复本地改动",
+    "smartSwitchDone": "已智能签出到{{targetLabel}}",
+    "operation": {
+      "reset": "重置",
+      "checkout": "签出",
+      "cherryPick": "优选",
+      "merge": "合并"
+    },
+    "mergeConflict": "合并过程中发生冲突",
+    "resolveMergeConflictFirst": "请先解决当前合并冲突，并完成或中止合并后再继续。",
+    "untrackedOverwritten": "未跟踪文件会被 {{operationLabel}} 覆盖",
+    "localChangesOverwritten": "本地改动会被 {{operationLabel}} 覆盖",
+    "untrackedOverwrittenDescription": "在继续执行 {{operationLabel}} 之前，请先处理这些未跟踪文件。",
+    "localChangesOverwrittenDescription": "在继续执行 {{operationLabel}} 之前，请先处理这些本地改动。",
+    "pushRejected": {
+      "staleInfo": "远端引用已变化，当前租约保护已过期。如果你仍想覆盖远端，请使用普通强制推送继续。",
+      "other": "远端拒绝了推送。请先处理远端策略或服务端钩子限制，然后重试。",
+      "noFastForward": "远端已领先于当前分支。请先更新，或改用强制推送。",
+      "title": "推送被拒绝",
+      "retrySuccessWithMethod": "已完成更新（{{method}}）并自动重试推送",
+      "retrySuccess": "已完成更新并自动重试推送"
+    },
+    "saveChanges": {
+      "shelve": "搁置",
+      "stash": "暂存"
+    },
+    "remoteUpdated": "已更新远端“{{name}}”",
+    "remoteAdded": "已添加远端“{{name}}”",
+    "remoteRemoved": "已移除远端“{{name}}”"
+  },
+  "log": {
+    "noTitle": "（无标题）",
+    "columns": {
+      "subject": "提交信息",
+      "author": "作者",
+      "date": "时间",
+      "hash": "哈希",
+      "refs": "引用"
+    },
+    "compareSelectionActive": "正在比较 {{label}}；单击可清除比较范围",
+    "fileHistoryActive": "文件历史截止到 {{revision}}；单击可清除修订锚点",
+    "compareSelectionLabel": "比较 {{label}}",
+    "historyUntilLabel": "历史截止到 {{revision}}",
+    "actions": {
+      "loadingAvailability": "正在读取动作可用性...",
+      "currentHeadOnly": "只有当前 HEAD 可以使用此操作",
+      "selectCommit": "请先选择一个提交",
+      "selectAtLeastTwo": "请至少选择两个提交",
+      "singleSelectionOnly": "此操作仅支持单选",
+      "mergeCommitUnsupported": "此处不支持合并提交",
+      "pushAllPrevious": "推送所有之前的提交",
+      "push": "推送",
+      "unavailable": "操作不可用",
+      "conditionNotMet": "未满足所需条件"
+    },
+    "filters": {
+      "date": "日期",
+      "searchPlaceholder": "搜索{{label}}",
+      "all": "全部",
+      "noMatch": "没有匹配项",
+      "allTime": "全部时间",
+      "recentDay": "最近 1 天",
+      "recentWeek": "最近 1 周",
+      "recent30Days": "最近 30 天",
+      "custom": "自定义...",
+      "fromPrefix": "自",
+      "toPrefix": "至"
+    }
+  },
+  "stageThreeWay": {
+    "head": "基线",
+    "headUnavailable": "{{label}} 快照不可用",
+    "headTooLarge": "{{label}} 过大，无法在应用内预览",
+    "headBinary": "{{label}} 是二进制文件，无法内联预览",
+    "index": "暂存区",
+    "indexUnavailable": "{{label}} 快照不可用",
+    "indexTooLarge": "{{label}} 过大，无法在应用内预览",
+    "indexBinary": "{{label}} 是二进制文件，无法内联预览",
+    "loading": "正在读取 HEAD / Index / Working Tree 快照...",
+    "workingTree": "工作区",
+    "workingTreeUnavailable": "{{label}} 快照不可用",
+    "workingTreeTooLarge": "{{label}} 过大，无法在应用内预览",
+    "workingTreeBinary": "{{label}} 是二进制文件，无法内联预览"
+  },
+  "stash": {
+    "applyConfirm": "应用",
+    "applyDescription": "应用所选暂存",
+    "applyTitle": "应用暂存",
+    "branchConfirm": "恢复为分支",
+    "branchDescription": "基于 {{ref}} 创建并切换到新分支，对齐 `git stash branch` 的行为。",
+    "branchNameLabel": "新分支名称",
+    "branchNamePlaceholder": "功能/xxx",
+    "branchNameRequired": "分支名称不能为空",
+    "branchTitle": "将暂存恢复为分支",
+    "popConfirm": "弹出",
+    "popDescription": "弹出所选暂存",
+    "popTitle": "弹出暂存",
+    "reinstateIndex": "同时恢复索引内容",
+    "reinstateIndexDescription": "对齐 `git stash apply/pop --index` 的行为，同时恢复工作区和索引内容。"
+  },
+  "statusCodes": {
+    "added": "新增",
+    "modified": "修改",
+    "deleted": "删除",
+    "renamed": "重命名",
+    "copied": "复制",
+    "typeChanged": "类型变更",
+    "conflicted": "冲突"
+  },
+  "worktrees": {
+    "current": "当前",
+    "mainRepository": "主仓库",
+    "mainWorktree": "主工作树"
+  },
+  "commitPanel": {
+    "conflictMergeThreeWay": {
+      "source": "来源",
+      "result": "结果",
+      "controls": {
+        "acceptLeft": "接受左侧更改",
+        "appendLeft": "追加左侧更改",
+        "ignoreLeft": "忽略左侧更改",
+        "acceptRight": "接受右侧更改",
+        "appendRight": "追加右侧更改",
+        "ignoreRight": "忽略右侧更改",
+        "resolveCurrent": "自动解决当前冲突"
+      }
+    }
+  }
+}

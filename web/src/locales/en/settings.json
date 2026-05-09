@@ -162,7 +162,7 @@
     "builtinWindsurf": "Windsurf",
     "builtinRider": "Rider",
     "customNameLabel": "Custom IDE Name (Optional)",
-    "customNamePlaceholder": "e.g. IntelliJ IDEA",
+    "customNamePlaceholder": "e.g. Android Studio",
     "customCommandLabel": "Command template",
     "customCommandPlaceholder": "e.g. \"C:\\\\Path\\\\IDE.exe\" --line {line} {path}",
     "customCommandHint": "Placeholders: {path} {line} {column} {project} {pathLineCol} (plus rawPath/rawProject/rawPathLineCol)."

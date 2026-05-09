@@ -162,7 +162,7 @@
     "builtinWindsurf": "Windsurf",
     "builtinRider": "Rider",
     "customNameLabel": "自定义 IDE 名称（可选）",
-    "customNamePlaceholder": "例如：IntelliJ IDEA",
+    "customNamePlaceholder": "例如：Android Studio",
     "customCommandLabel": "命令模板",
     "customCommandPlaceholder": "例如：\"C:\\\\Path\\\\IDE.exe\" --line {line} {path}",
     "customCommandHint": "可用占位符：{path} {line} {column} {project} {pathLineCol}（以及 rawPath/rawProject/rawPathLineCol）。"

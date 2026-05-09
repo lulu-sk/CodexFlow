@@ -57,7 +57,6 @@ Thumbs.db
 # Caches / Temp
 #############################
 .cache/
-.serena/
 .eslintcache
 *.swp
 *.swo
@@ -100,4 +99,17 @@ desktop.ini
 # 项目元信息（对外不展示的说明）
 #############################
 AGENTS.md
+.gitnexus
+
+#############################
+# 本地 AI / 交接产物
+#############################
+.cf_*.json
+.claude/
 .serena/
+CLAUDE.md
+docs/git-branch-log-handover/
+docs/git-update-handover/
+docs/git-log-graph-repair-playbook.md
+scripts/git-log-graph-forensics.ts
+scripts/resolve-simple-conflicts-parity-audit.mjs

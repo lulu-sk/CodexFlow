@@ -14,12 +14,14 @@
 
 const { spawn } = require("node:child_process");
 const crypto = require("node:crypto");
+const fs = require("node:fs");
 const net = require("node:net");
 const path = require("node:path");
 
 const DEFAULT_BASE_PORT = 5173;
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_WAIT_READY_MS = 30_000;
+const DEFAULT_ELECTRON_INSTALL_TIMEOUT_MS = 5 * 60_000;
 
 /**
  * 解析命令行参数（仅解析本脚本关注的参数；其它参数将原样透传给 Electron）。
@@ -215,6 +217,77 @@ function resolveElectronCommand(projectRoot) {
 }
 
 /**
+ * 判断 Electron 二进制是否已安装完成。
+ */
+function isElectronBinaryReady(projectRoot) {
+  const electronCmd = resolveElectronCommand(projectRoot);
+  return fs.existsSync(electronCmd) ? electronCmd : null;
+}
+
+/**
+ * 以显式超时执行子进程，避免下载/安装阶段无限挂起。
+ */
+function runCommandWithTimeout(file, args, options) {
+  const timeoutMs = Math.max(1_000, Math.floor(Number(options?.timeoutMs) || DEFAULT_ELECTRON_INSTALL_TIMEOUT_MS));
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const child = spawn(file, args, {
+      stdio: options?.stdio || "inherit",
+      cwd: options?.cwd,
+      env: options?.env,
+    });
+
+    const finish = (handler, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      handler(value);
+    };
+
+    const timer = setTimeout(() => {
+      try { child.kill("SIGTERM"); } catch {}
+      finish(reject, new Error(`命令执行超时（>${timeoutMs}ms）：${file}`));
+    }, timeoutMs);
+
+    child.on("error", (err) => finish(reject, err));
+    child.on("exit", (code) => {
+      if (code === 0) {
+        finish(resolve, undefined);
+        return;
+      }
+      finish(reject, new Error(`命令退出码异常：${file} ${args.join(" ")} code=${code}`));
+    });
+  });
+}
+
+/**
+ * 确保 Electron 平台二进制存在；缺失时尝试自动执行 electron 安装脚本。
+ */
+async function ensureElectronBinary(projectRoot) {
+  const readyPath = isElectronBinaryReady(projectRoot);
+  if (readyPath) return readyPath;
+
+  const installScript = path.join(projectRoot, "node_modules", "electron", "install.js");
+  if (!fs.existsSync(installScript)) {
+    throw new Error("未找到 node_modules/electron/install.js，请先在 Windows 侧重新执行 npm i");
+  }
+
+  console.log("[dev-worktree] 检测到 Electron 二进制缺失，开始尝试自动修复...");
+
+  await runCommandWithTimeout(process.execPath, [installScript], {
+    cwd: projectRoot,
+    env: { ...process.env },
+    timeoutMs: DEFAULT_ELECTRON_INSTALL_TIMEOUT_MS,
+  });
+
+  const repairedPath = isElectronBinaryReady(projectRoot);
+  if (repairedPath) return repairedPath;
+
+  throw new Error("Electron 安装脚本执行完成，但仍未生成平台二进制，请在 Windows 侧执行 npm i --force 或 node node_modules/electron/install.js 排查");
+}
+
+/**
  * 将 Vite 绑定 host 转换为用于本机访问的 host。
  * 说明：当 Vite 绑定到 `0.0.0.0`/`::` 时，`http://0.0.0.0:<port>` 在多数环境不可用；此处自动改用回环地址访问。
  */
@@ -306,7 +379,7 @@ async function main() {
   console.log(`[dev-worktree] 使用端口 ${port}，profile=${profileId}，host=${bindHost}，DEV_SERVER_URL=${devServerUrl}`);
 
   const npmRunner = resolveNpmRunner();
-  const electronCmd = resolveElectronCommand(projectRoot);
+  const electronCmd = await ensureElectronBinary(projectRoot);
 
   const vite = spawn(npmRunner.file, [...npmRunner.prefixArgs, "run", "dev:web", "--", "--port", String(port), "--strictPort", "--host", bindHost], {
     stdio: "inherit",
@@ -366,6 +439,7 @@ async function main() {
 
   electron.on("error", (e) => {
     console.error(`[dev-worktree] Electron 启动失败：${formatSpawnError(e)}`);
+    console.error("[dev-worktree] 若为 ENOENT，请优先在 Windows 侧执行 node node_modules/electron/install.js 或 npm i 重新安装 Electron 二进制");
     cleanupAndExit(1);
   });
 

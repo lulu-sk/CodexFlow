@@ -112,6 +112,8 @@ type TerminalMode = NonNullable<AppSettings["terminal"]>;
 type ConsoleTab = {
   id: string;
   name: string;
+  /** 标签类型：terminal=控制台，git=Git 工具窗。 */
+  kind?: "terminal" | "git";
   /** 创建该标签页时使用的引擎（Provider）id，用于标签图标等展示。 */
   providerId: string;
   logs: string[]; // kept for visual compatibility; no longer used once terminal mounts

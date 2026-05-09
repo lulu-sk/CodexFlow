@@ -32,7 +32,7 @@
   "projectIdeDialogModeCustom": "Custom Command",
   "projectIdeDialogBuiltinLabel": "Built-in IDE",
   "projectIdeDialogCustomNameLabel": "Custom IDE Name (Optional)",
-  "projectIdeDialogCustomNamePlaceholder": "e.g. IntelliJ IDEA",
+  "projectIdeDialogCustomNamePlaceholder": "e.g. Android Studio",
   "projectIdeDialogCustomCommandLabel": "Command Template",
   "projectIdeDialogCustomCommandPlaceholder": "e.g. \"C:\\\\Path\\\\IDE.exe\" --line {line} {path}",
   "projectIdeDialogCustomCommandHint": "Placeholders: {path} {line} {column} {project} {pathLineCol} (plus rawPath/rawProject/rawPathLineCol).",

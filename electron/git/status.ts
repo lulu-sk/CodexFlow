@@ -23,7 +23,7 @@ export type GitDirInfo = {
   branch?: string;
   /** detached HEAD 标记 */
   detached: boolean;
-  /** detached 时的 short sha（可选） */
+  /** detached 时的 canonical HEAD hash（展示层按需自行缩写） */
   headSha?: string;
   /** 是否在 `git worktree list` 中登记为 worktree 根（含主 worktree） */
   isWorktree: boolean;
@@ -148,7 +148,7 @@ export async function getGitDirInfoAsync(args: {
     base.detached = true;
     const sha = await execGitAsync({
       gitPath,
-      argv: ["-C", abs, "rev-parse", "--short", "HEAD"],
+      argv: ["-C", abs, "rev-parse", "HEAD"],
       timeoutMs,
     });
     if (sha.ok) base.headSha = String(sha.stdout || "").trim();
