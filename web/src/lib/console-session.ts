@@ -17,6 +17,7 @@ export type PersistedConsoleTab = {
   id: string;
   name: string;
   providerId: string;
+  kind?: "terminal" | "git";
   createdAt: number;
 };
 
@@ -32,7 +33,7 @@ export type PersistedConsoleSession = {
 };
 
 /**
- * 中文说明：安全获取 localStorage（部分环境可能抛异常）。
+ * 安全获取 localStorage（部分环境可能抛异常）。
  */
 function getLocalStorageSafe(): Storage | null {
   try {
@@ -44,7 +45,7 @@ function getLocalStorageSafe(): Storage | null {
 }
 
 /**
- * 中文说明：将输入转为非空字符串；否则返回空串。
+ * 将输入转为非空字符串；否则返回空串。
  */
 function toNonEmptyString(value: unknown): string {
   const s = typeof value === "string" ? value.trim() : String(value ?? "").trim();
@@ -52,7 +53,7 @@ function toNonEmptyString(value: unknown): string {
 }
 
 /**
- * 中文说明：对 tabsByProject 做最小校验与归一化，避免脏数据导致 UI 崩溃。
+ * 对 tabsByProject 做最小校验与归一化，避免脏数据导致 UI 崩溃。
  */
 function normalizeTabsByProject(input: unknown): Record<string, PersistedConsoleTab[]> {
   const out: Record<string, PersistedConsoleTab[]> = {};
@@ -69,9 +70,11 @@ function normalizeTabsByProject(input: unknown): Record<string, PersistedConsole
       if (!id) continue;
       const name = toNonEmptyString(obj.name) || "Console";
       const providerId = toNonEmptyString(obj.providerId) || "codex";
+      const kindRaw = toNonEmptyString(obj.kind).toLowerCase();
+      const kind = kindRaw === "git" ? "git" : "terminal";
       const createdAtNum = Number(obj.createdAt);
       const createdAt = Number.isFinite(createdAtNum) ? createdAtNum : Date.now();
-      tabs.push({ id, name, providerId, createdAt });
+      tabs.push({ id, name, providerId, kind, createdAt });
     }
     out[projectId] = tabs;
   }
@@ -79,7 +82,7 @@ function normalizeTabsByProject(input: unknown): Record<string, PersistedConsole
 }
 
 /**
- * 中文说明：归一化 Record<string, string|null>（空字符串视为 null）。
+ * 归一化 Record<string, string|null>（空字符串视为 null）。
  */
 function normalizeActiveTabByProject(input: unknown): Record<string, string | null> {
   const out: Record<string, string | null> = {};
@@ -94,7 +97,7 @@ function normalizeActiveTabByProject(input: unknown): Record<string, string | nu
 }
 
 /**
- * 中文说明：归一化 Record<string, string>（用于 tabId -> ptyId）。
+ * 归一化 Record<string, string>（用于 tabId -> ptyId）。
  */
 function normalizePtyByTab(input: unknown): Record<string, string> {
   const out: Record<string, string> = {};
@@ -109,7 +112,7 @@ function normalizePtyByTab(input: unknown): Record<string, string> {
 }
 
 /**
- * 中文说明：读取控制台会话快照。
+ * 读取控制台会话快照。
  */
 export function loadConsoleSession(options?: { currentBootId?: string }): PersistedConsoleSession | null {
   const ls = getLocalStorageSafe();
@@ -142,7 +145,7 @@ export function loadConsoleSession(options?: { currentBootId?: string }): Persis
 }
 
 /**
- * 中文说明：保存控制台会话快照。
+ * 保存控制台会话快照。
  */
 export function saveConsoleSession(session: PersistedConsoleSession): void {
   const ls = getLocalStorageSafe();
@@ -167,7 +170,7 @@ export function saveConsoleSession(session: PersistedConsoleSession): void {
 }
 
 /**
- * 中文说明：清除控制台会话快照。
+ * 清除控制台会话快照。
  */
 export function clearConsoleSession(): void {
   const ls = getLocalStorageSafe();

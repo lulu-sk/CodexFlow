@@ -12,7 +12,7 @@ const DIALOG_CONTENT_SELECTOR = '[data-cf-dialog-content="true"]';
 let dialogGlobalKeydownInstalled = false;
 
 /**
- * 中文说明：判断 Enter 自动确认是否需要跳过当前事件目标（仅在事件目标位于弹窗内时）。
+ * 判断 Enter 自动确认是否需要跳过当前事件目标（仅在事件目标位于弹窗内时）。
  * - textarea / 可编辑区域：Enter 通常用于换行
  * - button：让浏览器默认行为接管，避免二次触发
  */
@@ -34,7 +34,7 @@ function shouldSkipEnterAutoConfirm(target: EventTarget | null, dialogRoot: HTML
 }
 
 /**
- * 中文说明：判断按钮是否可被“Enter 自动确认”安全点击。
+ * 判断按钮是否可被“Enter 自动确认”安全点击。
  */
 function isClickableButton(btn: HTMLButtonElement | null): btn is HTMLButtonElement {
   if (!btn) return false;
@@ -51,7 +51,7 @@ function isClickableButton(btn: HTMLButtonElement | null): btn is HTMLButtonElem
 }
 
 /**
- * 中文说明：在弹窗内容区域内寻找“主按钮”。
+ * 在弹窗内容区域内寻找“主按钮”。
  * - 优先：`data-cf-dialog-primary="true"`
  * - 兜底：最后一个可点击的 button（符合大多数“取消在左/确认在右”的布局习惯）
  */
@@ -63,7 +63,7 @@ function findDialogPrimaryButton(root: HTMLElement): HTMLButtonElement | null {
 }
 
 /**
- * 中文说明：在弹窗内容区域内寻找“取消按钮”。
+ * 在弹窗内容区域内寻找“取消按钮”。
  * - 优先：`data-cf-dialog-cancel="true"`
  * - 兜底：根据按钮文本识别（如“取消/关闭/返回”或“Cancel/Close/Back”），避免误点确认按钮
  */
@@ -99,7 +99,7 @@ function findDialogCancelButton(root: HTMLElement): HTMLButtonElement | null {
 }
 
 /**
- * 中文说明：全局 Dialog 键盘处理。
+ * 全局 Dialog 键盘处理。
  * - 仅在存在打开的 DialogContent 时生效
  * - Enter：触发“主按钮”（确认）
  * - Escape：触发“取消按钮”（取消）；若未找到取消按钮则关闭弹窗
@@ -146,7 +146,7 @@ function handleGlobalDialogKeydown(event: KeyboardEvent) {
 }
 
 /**
- * 中文说明：确保全局 Dialog 键盘处理只注册一次。
+ * 确保全局 Dialog 键盘处理只注册一次。
  */
 function ensureDialogGlobalKeydownInstalled() {
   if (dialogGlobalKeydownInstalled) return;
@@ -154,6 +154,29 @@ function ensureDialogGlobalKeydownInstalled() {
   dialogGlobalKeydownInstalled = true;
   // 使用捕获阶段，避免被 xterm 等组件在冒泡阶段 stopPropagation 导致弹窗快捷键失效。
   window.addEventListener("keydown", handleGlobalDialogKeydown, true);
+}
+
+/**
+ * 判断调用方是否已经显式传入某类 Tailwind utility，避免 DialogContent 默认样式与业务侧自定义宽度/内边距并存。
+ */
+function hasDialogContentUtility(className: string | undefined, prefixes: string[]): boolean {
+  const tokens = String(className || "").trim().split(/\s+/).filter(Boolean);
+  return tokens.some((token) => prefixes.some((prefix) => token.startsWith(prefix)));
+}
+
+/**
+ * 组装 DialogContent 的基础样式；当调用方已声明自定义宽度或内边距时，移除对应默认 utility，避免样式冲突。
+ */
+function resolveDialogContentClassName(className: string | undefined, isVisible: boolean): string {
+  const hasCustomWidth = hasDialogContentUtility(className, ["w-", "min-w-", "max-w-"]);
+  const hasCustomPadding = hasDialogContentUtility(className, ["p-", "px-", "py-", "pt-", "pr-", "pb-", "pl-"]);
+  return cn(
+    "relative z-10 max-h-[calc(100vh-2rem)] overflow-y-auto rounded-apple-xl border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple-lg shadow-apple-xl text-[var(--cf-text-primary)] transition-all duration-apple-slow ease-apple dark:shadow-apple-dark-xl",
+    hasCustomWidth ? "" : "w-[520px]",
+    hasCustomPadding ? "" : "p-6",
+    isVisible ? "opacity-100 scale-100" : "opacity-0 scale-95",
+    className,
+  );
 }
 
 export function Dialog({ open: openProp, onOpenChange, children }: { open?: boolean; onOpenChange?: (v: boolean) => void; children: React.ReactNode }) {
@@ -233,11 +256,7 @@ export function DialogContent({ className, children, ...rest }: React.HTMLAttrib
         onClick={() => ctx.setOpen(false)} 
       />
       <div 
-        className={cn(
-          'relative z-10 w-[520px] rounded-apple-xl border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple-lg p-6 shadow-apple-xl text-[var(--cf-text-primary)] transition-all duration-apple-slow ease-apple dark:shadow-apple-dark-xl',
-          isVisible ? 'opacity-100 scale-100' : 'opacity-0 scale-95',
-          className
-        )}
+        className={resolveDialogContentClassName(className, isVisible)}
         data-cf-dialog-content="true"
         {...rest}
       >

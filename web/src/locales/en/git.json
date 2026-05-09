@@ -1,0 +1,2800 @@
+{
+  "actionDialogs": {
+    "common": {
+      "cancel": "Cancel",
+      "confirm": "Confirm",
+      "defaultBadge": "Default"
+    },
+    "branch": {
+      "title": "New Branch",
+      "confirm": "Create",
+      "nameLabel": "Branch Name",
+      "namePlaceholder": "feature/xxx",
+      "fromCommitDescription": "Create a new branch from the current commit.",
+      "newDescription": "Enter the new branch name.",
+      "fromRefDescription": "Create a new branch from {{target}}."
+    },
+    "tag": {
+      "title": "New Tag",
+      "confirm": "Create",
+      "description": "Create a tag from the current commit.",
+      "nameLabel": "Tag Name",
+      "namePlaceholder": "v1.0.0"
+    },
+    "reset": {
+      "title": "Reset Current Branch",
+      "description": "Choose a reset mode.",
+      "confirm": "Run",
+      "footerHint": "The current branch will move to the selected commit. You can still recover history later with git reflog.",
+      "modeLabel": "Reset Mode",
+      "modeDescription": "Each mode keeps or discards the index and working tree differently.",
+      "options": {
+        "mixed": {
+          "label": "Mixed",
+          "description": "Keep working tree changes, reset the index, and continue organizing files before recommitting."
+        },
+        "soft": {
+          "label": "Soft",
+          "description": "Move only the branch pointer and keep both the index and working tree intact."
+        },
+        "hard": {
+          "label": "Hard",
+          "description": "Reset HEAD, the index, and the working tree together. Unsaved local changes will be discarded."
+        }
+      }
+    },
+    "undoCommit": {
+      "title": "Undo Commit",
+      "description": "Reset to the parent of the current commit and keep the working tree changes.",
+      "confirm": "Undo",
+      "footerHint": "This keeps file content in the working tree, but removes the current commit from branch history.",
+      "targetChangeListLabel": "Restore to Changelist",
+      "targetChangeListDescription": "Moved files will be restored to the selected changelist, and the original commit message will be copied back into that draft."
+    },
+    "deleteCommit": {
+      "title": "Delete Commit",
+      "description": "Delete {{count}} selected commit(s) from branch “{{branch}}”?",
+      "descriptionDetached": "Delete {{count}} selected commit(s)?",
+      "confirm": "Delete",
+      "footerHint": "This rewrites the current branch history. Be careful if these commits were already pushed.",
+      "dontAskAgain": "Don't ask again"
+    },
+    "commitDetailsPatch": {
+      "applyTitle": "Cherry-pick Selected Changes",
+      "applyDescription": "Apply the selected changes from the current commit details into the working tree. When changelists are enabled, you can also choose the target changelist.",
+      "applyConfirm": "Cherry-pick",
+      "revertTitle": "Revert Selected Changes",
+      "revertDescription": "Apply the selected changes from the current commit details into the working tree as a reverse patch. When changelists are enabled, you can also choose the target changelist.",
+      "revertConfirm": "Revert",
+      "targetChangeListLabel": "Target Changelist",
+      "applyTargetDescription": "Applied files will be moved into the selected changelist so they do not fall into the wrong list by default.",
+      "revertTargetDescription": "Reverted files will be moved into the selected changelist so you can continue organizing them afterward."
+    },
+    "editCommitMessage": {
+      "title": "Edit Commit Message",
+      "description": "Edit commit messages on the current branch history. Non-HEAD commits are applied through an automated rebase.",
+      "confirm": "Save",
+      "footerHint": "Editing a non-HEAD commit triggers a controlled rebase. Review the final message before saving.",
+      "messageLabel": "Commit Message",
+      "messagePlaceholder": "Enter the new commit message"
+    },
+    "remoteEditor": {
+      "addTitle": "Add remote",
+      "editTitle": "Edit remote",
+      "addDescription": "Add a new Git remote configuration",
+      "editDescription": "Update the name and URLs for remote {{name}}",
+      "addConfirm": "Add",
+      "saveConfirm": "Save",
+      "nameLabel": "Remote name",
+      "namePlaceholder": "origin",
+      "fetchUrlLabel": "Fetch URL",
+      "fetchUrlPlaceholder": "https://example.com/repo.git",
+      "pushUrlLabel": "Push URL",
+      "pushUrlPlaceholder": "Leave blank to reuse the Fetch URL",
+      "removeTitle": "Remove remote",
+      "removeDescription": "Remove remote {{name}}?",
+      "removeConfirm": "Remove"
+    },
+    "checkoutRevision": {
+      "title": "Checkout tag or revision",
+      "description": "Enter a tag name or commit hash",
+      "confirm": "Checkout",
+      "label": "Tag / revision",
+      "placeholder": "v1.0.0 or a1b2c3d"
+    },
+    "fixup": {
+      "title": "Create Fixup Commit",
+      "description": "Create an automatic commit only from the {{count}} selected changes in the current Git panel. It will not expand to the whole repository.",
+      "confirm": "Continue"
+    },
+    "squashTo": {
+      "title": "Create Squash Commit",
+      "description": "Create an automatic commit only from the {{count}} selected changes in the current Git panel. It will not expand to the whole repository.",
+      "confirm": "Continue"
+    },
+    "squashCommits": {
+      "title": "Squash Commits",
+      "description": "Squash the selected consecutive commits into one commit. The range must be on the current branch mainline and the working tree must be clean.",
+      "confirm": "Squash",
+      "messageLabel": "New commit message",
+      "messagePlaceholder": "Enter the commit message"
+    },
+    "commitFiles": {
+      "title": "Commit Files",
+      "description": "Commit {{count}} file(s).",
+      "confirm": "Commit",
+      "messageLabel": "Commit message",
+      "messagePlaceholder": "Enter the commit message"
+    },
+    "moveToChangelist": {
+      "title": "Move to Changelist",
+      "description": "Choose the target changelist",
+      "confirm": "Move",
+      "targetLabel": "Target changelist"
+    },
+    "shelveChanges": {
+      "title": "Shelve Changes",
+      "description": "Enter the shelve description",
+      "confirm": "Shelve",
+      "messageLabel": "Description",
+      "messagePlaceholder": "Shelve selected changes"
+    },
+    "newChangeList": {
+      "title": "New Changelist",
+      "description": "Enter the changelist name",
+      "confirm": "Create",
+      "nameLabel": "Changelist name",
+      "namePlaceholder": "Default changelist",
+      "setActiveLabel": "Set as active changelist"
+    },
+    "editChangeList": {
+      "title": "Edit Changelist",
+      "description": "Enter the new changelist name",
+      "confirm": "Save",
+      "nameLabel": "Changelist name",
+      "namePlaceholder": "Enter the name"
+    },
+    "deleteChangeList": {
+      "chooseNextTitle": "Choose a new active changelist",
+      "chooseNextDescription": "Before deleting the active changelist, choose another active list to receive the files.",
+      "chooseNextConfirm": "Next",
+      "targetLabel": "Target changelist",
+      "title": "Delete Changelist",
+      "descriptionWithTarget": "Delete {{count}} changelist(s) ({{names}}). Their files will be moved to the selected target list.",
+      "descriptionWithoutTarget": "Delete {{count}} changelist(s) ({{names}}). Their files will return to the active changelist.",
+      "confirm": "Delete",
+      "failed": "Failed to delete changelist"
+    },
+    "worktree": {
+      "title": "New Worktree",
+      "description": "Enter the new worktree path and optional branch name.",
+      "descriptionWithRef": "Enter the new worktree path and optional branch name (based on {{ref}}).",
+      "confirm": "Create",
+      "pathLabel": "Path",
+      "pathPlaceholder": "/path/to/worktree",
+      "branchNameLabel": "New branch (optional)",
+      "branchNamePlaceholder": "feature/xxx",
+      "emptyPathError": "The worktree path cannot be empty",
+      "createFailed": "Failed to create worktree"
+    },
+    "dateFilter": {
+      "title": "Date Filter",
+      "description": "Enter a date range (ISO date format, for example 2026-03-05).",
+      "confirm": "Apply",
+      "fromLabel": "Start date",
+      "fromPlaceholder": "YYYY-MM-DD",
+      "toLabel": "End date",
+      "toPlaceholder": "YYYY-MM-DD"
+    },
+    "removeWorktree": {
+      "title": "Remove Worktree",
+      "description": "Remove: {{path}}",
+      "confirm": "Remove",
+      "strategyLabel": "Removal strategy",
+      "safeLabel": "Safe remove",
+      "forceLabel": "Force remove",
+      "failed": "Failed to remove worktree"
+    },
+    "checkoutRebaseCurrent": {
+      "description": "Checkout {{target}} and run `git rebase` onto {{branch}}.",
+      "confirm": "Run",
+      "failed": "Checkout and rebase failed"
+    },
+    "rebaseCurrentToTarget": {
+      "description": "Run: checkout {{branch}} && rebase {{target}}",
+      "confirm": "Run",
+      "failed": "Rebase failed"
+    },
+    "mergeTargetToCurrent": {
+      "description": "Run: checkout {{branch}} && merge {{target}}",
+      "confirm": "Merge",
+      "failed": "Merge failed"
+    },
+    "pullRemoteToCurrent": {
+      "rebaseDescription": "Run: git pull --rebase {{remote}} {{branch}}",
+      "mergeDescription": "Run: git pull {{remote}} {{branch}}",
+      "confirm": "Run"
+    }
+  },
+  "activity": {
+    "progress": {
+      "processing": "Processing"
+    },
+    "errors": {
+      "featureUnavailable": "Git features are unavailable",
+      "showWorkbenchUnsupported": "The current host does not support opening GitWorkbench"
+    },
+    "branchAction": {
+      "new": "Create branch",
+      "rename": "Rename branch",
+      "delete": "Delete branch",
+      "deleteRemote": "Delete remote branch",
+      "addRemote": "Add remote",
+      "editRemote": "Edit remote",
+      "removeRemote": "Remove remote",
+      "configureRemotes": "Configure remotes",
+      "checkoutUpdate": "Checkout and update branch",
+      "rebase": "Run branch rebase",
+      "merge": "Run branch merge",
+      "compare": "Load branch differences",
+      "toggleMine": "Toggle my branches filter",
+      "updateBranch": "Update target branch",
+      "pushBranch": "Push target branch",
+      "createWorktree": "Create worktree",
+      "openExistingWorktree": "Open checked-out worktree",
+      "pullRemote": "Pull remote branch",
+      "default": "Run branch action"
+    },
+    "actions": {
+      "refreshWorkbench": "Refresh Git workbench",
+      "initRepo": "Initialize Git repository",
+      "switchBranch": "Checkout branch",
+      "continueOperation": "Continue Git operation",
+      "abortOperation": "Abort Git operation",
+      "createCommit": "Create commit",
+      "rollbackChanges": "Rollback file changes",
+      "deleteFiles": "Delete files",
+      "stageFiles": "Stage files",
+      "unstageFiles": "Remove files from staging area",
+      "revertUnstaged": "Revert unstaged changes",
+      "readConflictContent": "Read conflict content",
+      "restoreFromRevision": "Restore files from revision",
+      "loadDiff": "Load diff",
+      "exportPatch": "Export patch",
+      "loadMoreHistory": "Load more commit history",
+      "loadHistory": "Load commit history",
+      "readCommitDetails": "Read commit details",
+      "readCommitDetailActions": "Read commit detail actions",
+      "runCommitDetailAction": "Run commit detail action",
+      "prepareCommitMessage": "Prepare commit message",
+      "prepareInteractiveRebase": "Prepare interactive rebase",
+      "runInteractiveRebase": "Run interactive rebase",
+      "resolveFileHistoryPath": "Resolve file history path",
+      "runLogAction": "Run log action",
+      "fetchRemoteChanges": "Fetch remote changes",
+      "updateCurrentBranch": "Update current branch",
+      "pushToRemote": "Push to remote",
+      "readTrackedBranchFix": "Read tracked-branch fix suggestion",
+      "applyTrackedBranchFix": "Apply tracked-branch fix",
+      "readPushPreview": "Read push preview",
+      "createShelf": "Create shelf",
+      "importShelfPatch": "Import shelf patch",
+      "restoreShelf": "Restore shelf",
+      "deleteShelf": "Delete shelf",
+      "createStash": "Create stash",
+      "applyStash": "Apply stash",
+      "dropStash": "Drop stash",
+      "addWorktree": "Add worktree",
+      "removeWorktree": "Remove worktree",
+      "readGitConsole": "Read Git console",
+      "clearGitConsole": "Clear Git console",
+      "updateChangesView": "Update changes view",
+      "updateChangeLists": "Update changelists",
+      "default": "Process Git action"
+    }
+  },
+  "dialogs": {
+    "fetch": {
+      "title": "Fetch Remote Changes",
+      "description": "Choose the target repository, remote scope, and extra flags explicitly so fetch does not collapse into a single default action.",
+      "targetRepository": "Target Repository",
+      "selectRepository": "Select a repository",
+      "repositoryUnavailable": "Current repository is unavailable",
+      "extraOptions": "Extra Options",
+      "remote": "Remote",
+      "selectRemote": "Select a remote",
+      "remoteHint": "Only applies in Specific Remote mode.",
+      "tagMode": "Tag Mode",
+      "tagModeOptions": {
+        "auto": "Default",
+        "all": "Fetch all tags",
+        "none": "Skip tags"
+      },
+      "refspec": "Refspec",
+      "refspecPlaceholder": "Optional, for example refs/heads/main:refs/remotes/origin/main",
+      "unshallow": "Convert a shallow clone into full history (`--unshallow`)",
+      "commandPreview": "Command Preview",
+      "remotesSummary": "Repository remotes: {{names}}",
+      "noRemotes": "This repository does not have any remotes configured yet",
+      "cancel": "Cancel",
+      "submit": "Start Fetch",
+      "listSeparator": ", ",
+      "scope": {
+        "title": "Fetch Scope",
+        "selected": "Selected",
+        "defaultRemote": {
+          "label": "Default Remote",
+          "description": "Mirror native `git fetch`: prefer the current branch upstream, then fall back to origin."
+        },
+        "specificRemote": {
+          "label": "Specific Remote",
+          "description": "Pick one remote explicitly. Useful for repositories with multiple remotes."
+        },
+        "allRemotes": {
+          "label": "All Remotes",
+          "description": "Fetch every configured remote for the current repository in sequence."
+        }
+      }
+    },
+    "pull": {
+      "title": "Pull",
+      "titleWithBranch": "Pull into {{branch}}",
+      "description": "Choose a remote and branch to run an explicit pull.",
+      "repositoryRoot": "Repository Root",
+      "selectRepository": "Select a repository",
+      "remote": "Remote",
+      "branch": "Branch",
+      "selectRemote": "Select a remote",
+      "selectBranch": "Select a remote branch",
+      "selectRemoteFirst": "Select a remote first",
+      "refreshBranchesAria": "Refresh remote branch list",
+      "refreshBranches": "Fetch the latest branches from {{remote}}",
+      "refreshBranchesDisabled": "Select a remote before refreshing",
+      "modifyOptions": "Modify Options",
+      "strategy": "Pull Strategy",
+      "extraOptions": "Extra Options",
+      "cancel": "Cancel",
+      "submit": "Pull",
+      "submitting": "Pulling...",
+      "modes": {
+        "merge": {
+          "label": "Merge",
+          "description": "Keep the current history and merge remote changes into the current branch."
+        },
+        "rebase": {
+          "label": "Rebase",
+          "description": "Fetch first, then replay local commits on top of the latest remote state."
+        }
+      },
+      "options": {
+        "mergeOnly": "This merge option is unavailable in rebase mode.",
+        "ffOnly": {
+          "label": "Fast-forward only",
+          "description": "Allow only fast-forward updates. Fail immediately if a merge commit would be required.",
+          "conflict": "Conflicts with `--no-ff` and `--squash`."
+        },
+        "noFf": {
+          "label": "No fast-forward",
+          "description": "Keep a merge commit even when fast-forward is possible so the pull stays explicit in history.",
+          "conflict": "Conflicts with `--ff-only` and `--squash`."
+        },
+        "squash": {
+          "label": "Squash",
+          "description": "Flatten remote changes into working tree changes without creating a merge commit immediately.",
+          "conflict": "Conflicts with `--ff-only` and `--no-ff`."
+        },
+        "noCommit": {
+          "label": "Do not auto-commit",
+          "description": "Stop after merge and leave changes in the staging area for manual review."
+        },
+        "noVerify": {
+          "label": "Skip hooks",
+          "description": "Skip pre-merge / pre-rebase hooks when the current Git version supports it.",
+          "unsupported": "The current Git version does not support `git pull --no-verify`."
+        }
+      }
+    },
+    "interactiveRebase": {
+      "title": "Interactive Rebase",
+      "description": "{{count}} commits in total, ranging from {{from}} to the current HEAD.",
+      "failed": "Interactive rebase failed",
+      "warnings": {
+        "autosquash": {
+          "title": "Autosquash commits detected",
+          "message": "The plan contains fixup!/squash!/amend! commits. The in-app editor always shows the real replay order and runs with `--no-autosquash`."
+        },
+        "updateRefs": {
+          "title": "rebase.updateRefs detected",
+          "message": "The current Git config enables `rebase.updateRefs`. The in-app result still follows real Git execution, but related refs are rewritten during the rebase."
+        }
+      },
+      "discardChangesConfirm": "The current interactive rebase plan has changed. Discard these edits?",
+      "listSeparator": ", ",
+      "range": {
+        "root": "the repository root commit",
+        "afterHash": "after {{hash}}",
+        "target": "the target commit"
+      },
+      "summary": {
+        "keep": "Keep {{count}}",
+        "rewrite": "Rewrite {{count}}",
+        "drop": "Drop {{count}}",
+        "autosquash": "Autosquash {{count}}"
+      },
+      "orderHint": "Commits are shown from oldest to newest. Moving entries changes the final replay order directly.",
+      "autosquashCandidate": "Autosquash candidate",
+      "openDiff": "Open Diff",
+      "moveTop": "Move to Top",
+      "moveUp": "Move Up",
+      "moveDown": "Move Down",
+      "moveBottom": "Move to Bottom",
+      "quickActions": "Context Actions",
+      "actionLabel": "Action",
+      "messageLabel": "Commit Message",
+      "messageOverrideLabel": "Override Message (Optional)",
+      "fillSuggestedMessage": "Fill Suggested Message",
+      "messagePlaceholder": "Enter the new commit message",
+      "squashPlaceholder": "Leave empty to use Git's default squash message",
+      "squashHint": "If left empty, Git generates the default squash message from the current rebase state. Fill it manually or use Fill Suggested Message to pin the final message.",
+      "reset": "Reset Plan",
+      "cancel": "Cancel",
+      "submit": "Start Rebase",
+      "empty": "There are no editable commits right now",
+      "actions": {
+        "pick": "Pick",
+        "edit": "Edit",
+        "reword": "Reword",
+        "squash": "Squash",
+        "fixup": "Fixup",
+        "drop": "Drop",
+        "attachTargetMissing": "There is no previous commit available to attach to"
+      },
+      "details": {
+        "title": "Commit Details",
+        "loading": "Loading commit details...",
+        "author": "Author: {{value}}",
+        "email": "Email: {{value}}",
+        "time": "Time: {{value}}",
+        "parents": "Parents: {{value}}",
+        "branches": "Branches: {{value}}",
+        "tags": "Tags: {{value}}",
+        "files": "Changed Files ({{count}})",
+        "moreFiles": "{{count}} more files are not expanded",
+        "subject": "Original subject: {{value}}"
+      },
+      "reason": {
+        "mergeCommit": "The selected commit is a merge commit, and in-app interactive rebase is not supported.",
+        "nonLinearHistory": "The selected commit range is not a linear first-parent history, so in-app interactive rebase is not supported.",
+        "targetOutsideHead": "The selected commit is no longer on HEAD history. Refresh the log and try again.",
+        "unexpectedHash": "The commit history has changed. Refresh the log and try again.",
+        "unresolvedHash": "Failed to read the current commit chain. Refresh the log and try again.",
+        "detachedHead": "Interactive rebase editor is unavailable in detached HEAD.",
+        "commitNotFound": "Failed to read the target commit. Refresh the log and try again."
+      },
+      "fallback": {
+        "started": "The current history cannot use the in-app rebase editor, so a traditional interactive rebase was started in an in-app terminal. Return to the Git panel and refresh after it finishes.",
+        "openTerminalFailed": "Failed to start a traditional interactive rebase in the in-app terminal. Try again later or use an external terminal.",
+        "prepareFailed": "Failed to prepare the traditional interactive rebase fallback"
+      }
+    },
+    "shelfRestore": {
+      "title": "Restore Shelved Change",
+      "description": "Choose which files to restore and decide whether applied content should be removed from the shelf after the restore succeeds.",
+      "files": {
+        "title": "Files to Restore",
+        "selectedCount": "{{selected}} / {{total}} selected",
+        "empty": "This shelved change does not contain a restorable file list."
+      },
+      "targetChangeList": {
+        "title": "Target Change List",
+        "default": "Restore to current default list"
+      },
+      "removeApplied": {
+        "title": "Remove Successfully Applied Content",
+        "description": "When enabled, restored files are removed from the shelf. When disabled, the original record stays available for later reuse."
+      },
+      "actions": {
+        "selectAll": "Select All",
+        "clearSelection": "Clear Selection",
+        "cancel": "Cancel",
+        "submit": "Restore Selected Files"
+      }
+    },
+    "rollbackViewer": {
+      "files": {
+        "title": "Files to Roll Back",
+        "selectedCount": "{{selected}} / {{total}} selected"
+      },
+      "toolbar": {
+        "refresh": "Refresh",
+        "showDiff": "Show Diff",
+        "viewOptions": "View Options"
+      },
+      "viewMenu": {
+        "groupBy": "Group By",
+        "directory": "Directory"
+      },
+      "labels": {
+        "repositoryRoot": "Repository Root",
+        "fromPath": "From {{path}}"
+      },
+      "empty": "There are no local changes to display right now.",
+      "summary": "{{selected}} / {{total}} selected. Rollback only applies to the checked files and leaves all other local changes untouched.",
+      "actions": {
+        "selectAll": "Select All",
+        "clearSelection": "Clear Selection",
+        "rollback": "Rollback Selected Changes",
+        "submitting": "Rolling back...",
+        "close": "Close",
+        "rollbackAndContinue": "Rollback and Continue"
+      }
+    },
+    "conflictMerge": {
+      "title": "Merge",
+      "loadingPath": "Loading conflicted file...",
+      "loadingContent": "Loading conflict content...",
+      "rangeUnavailable": "Unavailable",
+      "autoResolvableCount": "{{count}} blocks can be resolved automatically",
+      "sources": {
+        "ours": "Left Source",
+        "theirs": "Right Source",
+        "base": "Base",
+        "result": "Result",
+        "oursShort": "Left Side",
+        "theirsShort": "Right Side"
+      },
+      "fallbacks": {
+        "sourceUnavailable": "This source is unavailable.",
+        "binary": "Binary content is not supported in the in-app preview.",
+        "tooLarge": "The file is too large for the in-app preview.",
+        "empty": "This source is empty."
+      },
+      "toolbar": {
+        "applyNonConflicted": "Apply non-conflicting changes:",
+        "collapseUnchanged": "Collapse unchanged fragments",
+        "autoResolveSimple": "Resolve simple conflicts",
+        "previous": "Previous Change",
+        "next": "Next Change",
+        "reload": "Reload",
+        "focusAuto": "Focused on block {{index}}, suggested result: {{label}}",
+        "focusManual": "Focused on block {{index}}, manual review required",
+        "focusHint": "The left and right panes are read-only sources. The center pane is editable. Apply or ignore blocks before clicking Apply."
+      },
+      "hints": {
+        "allResolved": "All change blocks are handled. You can apply the current result now.",
+        "unresolvedChangesOnly": "{{count}} change blocks are still unresolved, but none of them are real conflicts.",
+        "unresolvedConflicts": "{{changes}} unresolved blocks remain, including {{conflicts}} conflicts."
+      },
+      "prompts": {
+        "resolveWithPending": "{{changes}} unresolved blocks remain, including {{conflicts}} conflicts. Continuing writes the current result back to disk and runs git add. Continue?",
+        "acceptSourceWithLabel": "The current result has been modified. Continue to replace the full result with {{label}} and close the merge viewer?",
+        "acceptSource": "The current result has been modified. Continue to replace the full result with that side and close the merge viewer?"
+      },
+      "summary": {
+        "noChanges": "No unresolved changes remain.",
+        "changesOnly": "{{changes}} changes. No conflicts.",
+        "withConflicts": "{{changes}} changes. {{conflicts}} conflicts."
+      },
+      "badges": {
+        "conflict": "Conflict",
+        "nonConflict": "Non-conflict",
+        "autoResolvable": "Auto-resolvable",
+        "edited": "Edited",
+        "oneSideApplied": "One side applied"
+      },
+      "currentBlock": {
+        "title": "Current Block",
+        "conflict": "Conflict Block {{index}}",
+        "change": "Change Block {{index}}",
+        "none": "No pending block",
+        "resultRange": "Result {{range}}",
+        "resolved": "All result blocks are resolved",
+        "summaryTitle": "Block Summary",
+        "summaryEmpty": "There are no pending blocks. You can still review the result pane and click Apply to finish."
+      },
+      "selectedBlockHint": {
+        "none": "There is no pending block. You can still inspect the result pane and click Apply when ready.",
+        "modified": "This block has been edited manually. Auto handling is disabled to avoid overwriting your manual result.",
+        "oneSideApplied": "One side has already been applied to this block. You can still apply the other side, restore the base, or keep both sides.",
+        "auto": "Suggested result: {{label}}.",
+        "manual": "This block needs a manual comparison before you decide."
+      },
+      "viewSource": {
+        "title": "View Source",
+        "description": "This only changes focus and visible line ranges. It does not modify content.",
+        "focus": "Focus: {{label}}",
+        "currentFocus": "Focused",
+        "sharedOriginal": "Shared Original",
+        "noBase": "This block has no base"
+      },
+      "baseDescription": {
+        "default": "Base = the shared original text before both sides started editing.",
+        "missing": "This block has no base. Usually both sides added content here, or the shared original was empty.",
+        "withBase": "Base = the shared original text before both sides started editing. Restoring the base puts this block back to that shared original."
+      },
+      "processCurrentBlock": {
+        "title": "Process Current Block",
+        "description": "These buttons only affect the selected block and never replace the whole file."
+      },
+      "pendingList": {
+        "title": "Pending Blocks",
+        "description": "Click any item to jump to the matching block.",
+        "count": "{{count}} blocks",
+        "empty": "There are no pending blocks left. You can continue reviewing and apply the result."
+      },
+      "autoResolution": {
+        "unavailable": "Cannot resolve automatically",
+        "base": "Restore Base",
+        "withLabel": "Use {{label}}",
+        "ours": "Use left content",
+        "theirs": "Use right content",
+        "auto": "Automatically merge compatible changes from both sides",
+        "both": "Keep both sides"
+      },
+      "actions": {
+        "applyNonConflictedWithLabel": "Apply non-conflicting changes from {{label}}",
+        "applyNonConflicted": "Apply non-conflicting changes from this side",
+        "applyAllNonConflicted": "Apply all non-conflicting changes",
+        "applyCurrentBlockWithLabel": "Use {{label}} for this block",
+        "applyCurrentBlock": "Use this side for the current block",
+        "restoreBase": "Restore base for current block",
+        "keepBoth": "Keep both sides in current block",
+        "ignoreOurs": "Ignore left side in current block",
+        "ignoreTheirs": "Ignore right side in current block",
+        "autoResolveCurrent": "Auto-resolve current block",
+        "resolveWithSourceWithLabel": "Use {{label}} for entire result",
+        "resolveWithSource": "Use this side for entire result",
+        "apply": "Apply",
+        "applying": "Applying...",
+        "cancel": "Cancel"
+      }
+    },
+    "multipleFileMerge": {
+      "title": "Conflict Files",
+      "counters": {
+        "unresolved": "{{count}} unresolved",
+        "resolved": "{{count}} resolved"
+      },
+      "sections": {
+        "unresolved": "Unresolved Conflicts",
+        "resolved": "Resolved Conflicts"
+      },
+      "operationStates": {
+        "rebasing": "Rebase",
+        "merging": "Merge",
+        "grafting": "Cherry-pick",
+        "reverting": "Revert"
+      },
+      "scopeHint": {
+        "reverseSides": "This repository is using reversed conflict-side semantics. Left/right sources and accept actions have been corrected to match the current mapping.",
+        "default": "Browse conflicted files on the left and use the right side to accept changes, merge, or open externally."
+      },
+      "summary": {
+        "batch": "Bulk actions will apply to {{count}} unresolved files",
+        "single": "When nothing is checked, bulk actions apply to the currently selected unresolved file",
+        "resolved": "The current selection is a resolved file. You can still open it to review the result.",
+        "prompt": "Select an unresolved file, or check multiple files before applying a bulk action"
+      },
+      "details": {
+        "noSelection": "No file is selected.",
+        "primaryActionDisabled": "This file cannot run the primary action right now.",
+        "primaryActionResolved": "Primary action: {{label}} (review the current result)",
+        "primaryActionMerge": "Primary action: {{label}} (enter in-app three-way merge)",
+        "primaryActionExternal": "Primary action: {{label}} (hand off to an external IDE or the system default app)",
+        "resolvedFile": "This file has been removed from the unresolved list, but it remains in the shared state source and can still be opened to review the current result.",
+        "canOpenMerge": "This file can still continue into in-app merge.",
+        "cannotOpenMerge": "This file does not support in-app merge. Hand it off to an external IDE or the system default app.",
+        "batchApplied": "With {{count}} unresolved files checked, Accept Side Changes will write the changes back in batch and run `git add` automatically.",
+        "noSelectionHint": "No file is selected. If all unresolved files are cleared, the dialog will auto-close; resolved files will still share the same state source as the commit panel and status bar.",
+        "operationInProgress": "The repository is still in progress for {{badge}}. After closing, the top status bar will keep the continue / abort entry."
+      },
+      "badges": {
+        "resolved": "Resolved",
+        "openableMerge": "In-app merge",
+        "binary": "Binary",
+        "tooLarge": "Too large",
+        "reverseSides": "Reversed conflict side",
+        "openable": "Openable"
+      },
+      "revisionState": {
+        "binary": "{{label}}: binary",
+        "tooLarge": "{{label}}: too large",
+        "available": "{{label}}: available",
+        "unavailable": "{{label}}: unavailable"
+      },
+      "directorySummary": "{{count}} files",
+      "toolbar": {
+        "refresh": "Refresh",
+        "nextUnresolved": "Next unresolved",
+        "clearSelection": "Clear selection",
+        "selectAllUnresolved": "Select all unresolved"
+      },
+      "headers": {
+        "selected": "Selected",
+        "file": "File",
+        "ours": "Yours",
+        "theirs": "Theirs",
+        "status": "Status"
+      },
+      "loading": "Loading conflict table…",
+      "empty": "There are no conflicted files to display.",
+      "sectionCount": "{{count}} files",
+      "sidebar": {
+        "selectedFile": "Selected File",
+        "conflictState": "Conflict State"
+      },
+      "buttons": {
+        "openInIde": "Open in external IDE",
+        "openInSystem": "Open with system app"
+      },
+      "footer": {
+        "groupByDirectory": "Group files by directory",
+        "hideResolved": "Hide resolved",
+        "showResolved": "Show resolved",
+        "locateInCommitPanel": "Locate in commit panel",
+        "continueCurrentOperation": "Continue current operation",
+        "abortCurrentOperation": "Abort current operation",
+        "close": "Close"
+      },
+      "blocks": {
+        "primaryAction": "Primary Action",
+        "sourceSnapshot": "Source Snapshot"
+      },
+      "actions": {
+        "acceptSideWithLabel": "Accept {{label}}",
+        "acceptSide": "Accept this side's changes"
+      },
+      "reopenAction": "Continue resolving conflicts",
+      "reopenTitle": "Continue Resolving Conflicts",
+      "reopenDescription": "The current repository still has unresolved conflicts. Return to the unified resolver and keep going.",
+      "openTargetRepoSuccess": "The target repository has been opened. You can continue resolving its conflicts."
+    },
+    "rebaseWarning": {
+      "kind": {
+        "publishedCommits": "Published commits",
+        "mergeCommits": "Merge commits"
+      },
+      "titles": {
+        "publishedCommits": "Rebase will rewrite published commits",
+        "mergeCommits": "Rebase will cross merge commits"
+      },
+      "descriptions": {
+        "publishedCommits": "The current branch contains commits that have already been published to a remote. Continuing the rebase rewrites that history and may affect collaborators.",
+        "mergeCommits": "The current branch contains merge commits. Continuing the rebase may change the historical structure of those merge points."
+      },
+      "details": {
+        "publishedCommits": "At least {{published}} of the {{total}} commits to rebase have already appeared in remote references.",
+        "publishedCommitsWithoutTotal": "At least {{published}} commits to rebase have already appeared in remote references.",
+        "mergeCommits": "{{count}} merge commit(s) were detected. You can switch to Merge update or explicitly confirm that the rebase should continue."
+      },
+      "actions": {
+        "continueRebase": "Continue Rebase",
+        "useMerge": "Use Merge Instead"
+      },
+      "currentMode": "Current update mode: {{method}}",
+      "cancel": "Cancel"
+    },
+    "pushRejected": {
+      "titles": {
+        "staleInfo": "Force with lease was rejected",
+        "rejectedOther": "The remote rejected the push",
+        "noFastForward": "Push rejected. Sync the remote first"
+      },
+      "descriptions": {
+        "withGitOutput": "{{base}}\n\nGit output: {{detail}}",
+        "staleInfo": "The remote reference changed and the current lease protection has expired. Use a normal force push only if you still intend to overwrite the remote.",
+        "rejectedOther": "The remote rejected this push. Resolve the remote policy or server hook restriction and try again.",
+        "noFastForwardWithUpstream": "The remote branch {{upstream}} is ahead of the current branch. Update first and retry the push, or switch to Force with Lease if you intend to overwrite the remote.",
+        "noFastForwardWithRemote": "The remote {{remote}}/{{branch}} is ahead of the current branch. Update first and retry the push, or switch to Force with Lease if you intend to overwrite the remote."
+      },
+      "badges": {
+        "leaseExpired": "Lease expired",
+        "remoteRejected": "Remote rejected",
+        "pushRejected": "Push rejected"
+      },
+      "actions": {
+        "updateWithMerge": "Update with Merge then Push",
+        "updateWithRebase": "Update with Rebase then Push",
+        "forceWithLease": "Force Push with Lease Protection",
+        "forcePush": "Continue Force Push Without Lease",
+        "cancel": "Cancel"
+      },
+      "meta": {
+        "localBranch": "Local branch: {{branch}}",
+        "upstream": "Upstream: {{branch}}",
+        "target": "Target: {{remote}}/{{branch}}"
+      },
+      "cards": {
+        "staleInfo": {
+          "force": {
+            "title": "Continue force push",
+            "description": "Switching to a normal force push removes lease protection. Use it only when you are sure the remote reference should be overwritten."
+          },
+          "cancel": {
+            "title": "Cancel",
+            "description": "Keep the current state and stop pushing. You can pull, inspect remote history, and decide later whether to overwrite."
+          }
+        },
+        "rejectedOther": {
+          "policy": {
+            "title": "Handle remote restrictions first",
+            "description": "This rejection usually comes from branch protection, a server hook, or a platform policy. Remove the remote restriction before retrying."
+          },
+          "cancel": {
+            "title": "Close",
+            "description": "Keep the current commit state for now, then retry the push after the remote rules are satisfied."
+          }
+        },
+        "needsUpdate": {
+          "update": {
+            "title": "Update before pushing",
+            "description": "Choose Merge or Rebase. The update flow will enter the formal Update Session and retry the push after it succeeds."
+          },
+          "forceWithLease": {
+            "title": "Force with lease",
+            "description": "Use this only when the remote changes should be overwritten by the current commit. Lease protection is still preserved to avoid blind force pushes."
+          },
+          "cancel": {
+            "title": "Cancel",
+            "description": "Keep the current push dialog state. You can adjust the update method, target branch, or close it later."
+          }
+        }
+      }
+    },
+    "updateReset": {
+      "title": "Reset to Remote Tracking Branch",
+      "description": "This action updates the current repository through the Reset path and may overwrite working tree content. Confirm before continuing.",
+      "currentBranch": "Current branch: {{branch}}",
+      "upstreamBranch": "Remote tracking branch: {{branch}}",
+      "unconfigured": "Not configured",
+      "warning": "This is not a normal Update option. It only runs a one-off Reset for the current repository and does not overwrite the saved Merge / Rebase defaults.",
+      "cancel": "Cancel",
+      "submit": "Reset and Update"
+    },
+    "branchCompare": {
+      "currentBranch": "Current branch",
+      "titleFiles": "Choose another branch to compare files",
+      "titleCommits": "Choose another branch to compare commits",
+      "descriptionFiles": "Show file differences between {{target}} and another branch",
+      "descriptionCommits": "Show commit differences between {{target}} and another branch",
+      "confirmFiles": "View file differences",
+      "confirmCommits": "View commit differences",
+      "otherBranch": "Other branch",
+      "badges": {
+        "local": "Local",
+        "remote": "Remote"
+      }
+    },
+    "branchCompareFiles": {
+      "title": "Compare Files",
+      "scope": "Scope: {{label}}.",
+      "description": "{{count}} files in total. Click a file to open the diff.",
+      "empty": "There are no file differences in the current comparison scope.",
+      "fromPath": "From {{path}}"
+    },
+    "remoteManager": {
+      "title": "Remote Manager",
+      "currentRepository": "Current Repository",
+      "count": "{{count}} remote configuration(s)",
+      "emptyInline": "No remotes are configured for this repository yet",
+      "addRemote": "Add Remote",
+      "empty": "This repository does not have any remote configurations. Use Add Remote to enter the fetch / push addresses.",
+      "fetchUrl": "Fetch: {{value}}",
+      "pushUrl": "Push: {{value}}",
+      "unconfigured": "Not configured",
+      "edit": "Edit",
+      "remove": "Remove"
+    },
+    "updateCommitRanges": {
+      "title": "View Updated Commits",
+      "description": "This update touched multiple repositories. Choose the commit range you want to inspect.",
+      "commitCount": "Commits {{count}}",
+      "fileCount": "Files {{count}}",
+      "viewCommits": "View Commits"
+    },
+    "updateScope": {
+      "detachedHead": "Detached HEAD",
+      "kind": {
+        "repository": "Repository",
+        "submodule": "Submodule"
+      },
+      "source": {
+        "current": "Current Repo",
+        "linked": "Linked Repo",
+        "nested": "Nested Repo",
+        "submodule": "Submodule"
+      }
+    },
+    "updateOptions": {
+      "title": "Update Options",
+      "description": "Save the default Update Project method, local change preservation policy, and linked repository scope.",
+      "cancel": "Cancel",
+      "save": "Save",
+      "savePolicyHint": "`stash` writes to Git stash entries, while `shelve` writes to the shared saved-changes area. Both continue through the same restore entry point.",
+      "methods": {
+        "merge": {
+          "title": "Merge",
+          "description": "Always update the current branch with Merge."
+        },
+        "rebase": {
+          "title": "Rebase",
+          "description": "Always update the current branch with Rebase."
+        },
+        "reset": {
+          "title": "Reset"
+        }
+      },
+      "savePolicies": {
+        "stash": {
+          "title": "Stash",
+          "description": "Use Git stash entries to save and restore local changes through the shared viewer."
+        },
+        "shelve": {
+          "title": "Shelve",
+          "description": "Use the shared shelve storage to save and restore local changes."
+        }
+      },
+      "preview": {
+        "sourceLabel": "Stored Update Options",
+        "detailLabel": "Pinned to {{method}}."
+      },
+      "summary": {
+        "currentRepository": "Current Repository",
+        "branch": "Branch {{branch}}",
+        "detached": "Detached HEAD / switch to an updatable branch",
+        "executionPrefix": "If Update Project runs now, it will use",
+        "executionSuffix": " mode.",
+        "source": "Source: {{source}} · {{detail}}"
+      },
+      "sections": {
+        "method": "Update Method",
+        "savePolicy": "Local Change Preservation"
+      },
+      "scope": {
+        "title": "Default Multi-Repo Scope",
+        "summary": "{{includedCount}} repositories are included by default; {{linkedCount}} linked repositories are configured.",
+        "rootScanDepth": "Scan Depth",
+        "includeNestedRoots": {
+          "title": "Scan regular nested repositories",
+          "description": "Submodules always participate in dependency ordering. When enabled, regular nested Git repositories under the current and linked repos are also scanned."
+        },
+        "syncStrategies": {
+          "current": {
+            "title": "Current repository only",
+            "description": "Only update the current repository and its submodules by default."
+          },
+          "linked": {
+            "title": "Include linked repositories",
+            "description": "Include linked repositories in Update Project and allow the default skip rules to exclude some roots."
+          }
+        },
+        "linkedRepos": {
+          "title": "Linked Repositories",
+          "description": "Manage the independent repository roots that should join Update Project in linked mode by default.",
+          "add": "Add Repository",
+          "remove": "Remove Linked Repo",
+          "empty": "No linked repositories yet. Add one here if multiple standalone repositories should join the default Update scope.",
+          "chooseFailed": "Failed to choose a linked repository folder"
+        },
+        "preview": {
+          "title": "Default Scope Preview",
+          "description": "The preview is calculated from the real repository graph, submodules, and skip rules instead of a static frontend guess.",
+          "refresh": "Refresh Preview",
+          "refreshFailed": "Failed to refresh the multi-repository scope preview",
+          "dirtyHint": "This preview is based on the previous scan. Refresh once after changing linked repos, skip rules, or nested scan settings before saving.",
+          "empty": "There are no repositories to preview right now.",
+          "parentRepository": "Parent repo: {{path}}",
+          "defaultSkipped": "Skipped by default",
+          "requestedSkipReason": "Skipped by the default scope configuration"
+        }
+      }
+    },
+    "updateRuntimeScope": {
+      "title": "Choose This Update Scope",
+      "description": "This only affects the current Update Project run. Saved defaults and multi-repo settings are not changed.",
+      "cancel": "Cancel",
+      "confirm": "Continue With Selection",
+      "summary": {
+        "branch": "Branch {{branch}}",
+        "detached": "Detached HEAD / current branch pending",
+        "selection": "{{count}} repositories selected. Confirming writes the explicit scope into the runtime payload without changing saved defaults."
+      },
+      "badges": {
+        "currentRun": "This Run",
+        "included": "Included {{count}}",
+        "detachedHead": "Detached HEAD {{count}}",
+        "defaultSkipped": "Skipped by Default {{count}}",
+        "fixedIncluded": "Always Included"
+      },
+      "risk": {
+        "title": "Execution Risk",
+        "description": "This highlights detached / skipped / submodule differences that directly affect multi-repository Update behavior.",
+        "detachedNote": "Regular repositories in Detached HEAD are usually skipped during preflight. Detached submodules may either update through the parent repository or by a standalone updater."
+      },
+      "repositories": {
+        "title": "Repositories",
+        "description": "The current repository is always included. Linked repos, nested repos, and submodules can be toggled just for this run.",
+        "parentRepository": "Parent repo: {{path}}",
+        "detachedNote": "This root is currently in Detached HEAD and may be skipped or redirected to a special submodule update path at runtime."
+      },
+      "skipped": {
+        "title": "Skipped This Time",
+        "description": "These repositories are not entering the execution root list because of repository graph or tracking-branch resolution results."
+      }
+    },
+    "smartOperation": {
+      "titles": {
+        "mergeConflict": {
+          "merge": "Merge conflict detected",
+          "cherryPick": "Cherry-pick conflict detected"
+        },
+        "restoreFromRevision": "Restoring from revision will overwrite local changes",
+        "localChangesOverwritten": {
+          "merge": "Local changes would be overwritten by Merge",
+          "reset": "Local changes would be overwritten by Reset",
+          "checkout": "Local changes would be overwritten by Checkout",
+          "cherryPick": "Local changes would be overwritten by Cherry-pick"
+        },
+        "untrackedOverwritten": {
+          "merge": "Untracked files would be overwritten by Merge",
+          "reset": "Untracked files would be overwritten by Reset",
+          "checkout": "Untracked files would be overwritten by Checkout",
+          "cherryPick": "Untracked files would be overwritten by Cherry-pick"
+        }
+      },
+      "descriptions": {
+        "mergeConflict": {
+          "merge": "The repository is already in a Merge conflict state. Resolve the conflicts and finish or abort the Merge before continuing.",
+          "cherryPick": "The repository is already in a Cherry-pick conflict state. Resolve the conflicts and then continue or abort the Cherry-pick."
+        },
+        "restoreFromRevision": "The target file has local modifications. Continuing overwrites the current local content.",
+        "localChangesOverwritten": {
+          "merge": "Local changes in these files would be overwritten by this Merge. Commit, stash, or preserve local changes before retrying.",
+          "reset": "Local changes in these files would be overwritten by this Reset. When possible the system protects non-conflicting edits automatically, but if these files are still listed, commit, stash, or handle them manually before retrying.",
+          "checkout": "Local changes in these files would be overwritten by this Checkout. Commit, stash, or retry with Smart Checkout first.",
+          "cherryPick": "Local changes in these files would be overwritten by this Cherry-pick. Commit, stash, or retry after preserving local changes."
+        },
+        "untrackedOverwritten": {
+          "merge": "These untracked files would be overwritten by this Merge. Move, delete, or add them to version control before retrying.",
+          "reset": "These untracked files would be overwritten by this Reset. Move, delete, or add them to version control before retrying.",
+          "checkout": "These untracked files would be overwritten by this Checkout. Move, delete, or add them to version control before retrying.",
+          "cherryPick": "These untracked files would be overwritten by this Cherry-pick. Move, delete, or add them to version control before retrying."
+        }
+      },
+      "kinds": {
+        "conflict": "Conflict",
+        "localChanges": "Local Changes",
+        "untrackedFiles": "Untracked Files"
+      },
+      "operations": {
+        "merge": "Merge",
+        "reset": "Reset",
+        "checkout": "Checkout",
+        "cherryPick": "Cherry-pick"
+      },
+      "viewChanges": {
+        "default": "View Changes",
+        "showFiles": "Show Files"
+      },
+      "summary": {
+        "withFiles": "{{count}} file(s) must be handled before this {{operation}} can continue.",
+        "noFiles": "This issue must be handled before this {{operation}} can continue.",
+        "repository": "Repository: {{name}}"
+      },
+      "affectedFiles": "Affected Files",
+      "emptyFiles": "No file list is attached to this issue. Resolve the repository state first and then continue.",
+      "actions": {
+        "smartCheckout": {
+          "label": "Smart Checkout",
+          "description": {
+            "shelve": "Shelve local changes first, then try to restore them after checkout finishes.",
+            "stash": "Stash local changes first, then try to restore them after checkout finishes."
+          }
+        },
+        "retryWithShelve": {
+          "label": "Shelve Then Retry",
+          "description": "Shelve local changes first, then auto-restore them after the operation succeeds and retry."
+        },
+        "retryWithStash": {
+          "label": "Stash Then Retry",
+          "description": "Stash local changes first, then auto-restore them after the operation succeeds and retry."
+        },
+        "overwriteModified": {
+          "label": "Overwrite Modified Files"
+        },
+        "forceCheckout": {
+          "label": "Force Checkout"
+        },
+        "force": {
+          "label": "Force Continue"
+        },
+        "rollback": {
+          "label": "Rollback These Changes"
+        }
+      },
+      "acknowledge": "Got It"
+    },
+    "fixTrackedBranch": {
+      "title": "Fix Tracking Branch and Continue",
+      "empty": "There are no tracked branch issues to fix right now.",
+      "setTracked": "Also write the Git tracking branch config. If unchecked, the change only applies to this Update Project run.",
+      "unsupported": "This issue cannot be fixed automatically in this dialog. Switch to a local branch and configure the upstream first.",
+      "resetHint": "After fixing the tracked branch, this Reset run continues without changing the saved Merge / Rebase default.",
+      "description": {
+        "multiRoot": "Some repositories are missing a usable upstream branch. Confirm each repository before continuing Update Project.",
+        "singleRoot": "The current branch is missing a usable upstream branch. Confirm the remote branch before continuing Update Project."
+      },
+      "issueTitles": {
+        "remoteMissing": "Upstream Branch Missing",
+        "noTrackedBranch": "No Tracking Branch"
+      },
+      "messages": {
+        "remoteMissing": "The upstream branch {{upstream}} does not exist locally or is no longer valid.",
+        "noTrackedBranch": "The current branch {{branch}} does not have a remote upstream configured."
+      },
+      "labels": {
+        "localBranch": "Local branch: {{branch}}",
+        "currentUpstream": "Current upstream: {{branch}}",
+        "remote": "Remote",
+        "remoteBranch": "Remote Branch"
+      },
+      "placeholders": {
+        "remote": "Select a remote",
+        "remoteBranch": "Select a remote branch"
+      },
+      "continueMethod": {
+        "title": "Continue With",
+        "merge": "Apply the fix and continue with Merge.",
+        "rebase": "Apply the fix and continue with Rebase."
+      },
+      "actions": {
+        "later": "Later",
+        "close": "Close",
+        "applyAndContinueUpdate": "Apply and Continue",
+        "applyAndContinueReset": "Apply and Continue Reset"
+      }
+    },
+    "updateResult": {
+      "defaultTitle": "Update Project Completed",
+      "summary": {
+        "title": "{{files}} files were updated across {{commits}} commits",
+        "filteredCommits": "The log view is focused on the primary repository range and can show {{count}} commits.",
+        "skippedRoots": "{{count}} additional repositories were skipped. Expand the details to review the reasons."
+      },
+      "range": "Range: {{range}}",
+      "skippedRoots": "Skipped repositories: {{roots}}",
+      "skippedRootsMore": " and {{count}} total",
+      "skippedReasons": {
+        "requested": "Skipped by the current scope configuration",
+        "detachedHead": "The repository is in Detached HEAD",
+        "noTrackedBranch": "No usable upstream branch is configured",
+        "remoteMissing": "The upstream branch does not exist locally or is no longer valid",
+        "parentFailed": "The parent repository update failed",
+        "fetchFailed": "Fetching remotes failed",
+        "updatedByParent": "Already updated recursively by the parent repository"
+      },
+      "counts": {
+        "files": "Files {{count}}",
+        "commits": "Commits {{count}}",
+        "filteredCommits": "Viewable {{count}}"
+      },
+      "console": {
+        "default": "View Console",
+        "focused": "Console Focused"
+      },
+      "expand": {
+        "expand": "Expand Details ({{count}})",
+        "collapse": "Collapse Details"
+      },
+      "running": {
+        "current": "Current",
+        "preparing": "Preparing Update Session",
+        "waitingForSnapshot": "The main process started the update flow and is waiting for the first session snapshot.",
+        "completed": "Completed {{completed}}/{{total}}",
+        "running": "Running {{count}}",
+        "remaining": "Remaining {{count}}",
+        "multiRootHint": "This is a multi-repository Update Session. Each root shows its live phase and closing status below.",
+        "singleRootHint": "This is a single-repository Update Session."
+      },
+      "postActions": {
+        "viewCommits": "View Commits",
+        "copyRevisionRange": "Copy Revision Range",
+        "openSavedChanges": "View Saved Changes",
+        "resolveConflicts": "Resolve Conflicts",
+        "fixTrackedBranch": "Fix Upstream Branch",
+        "openParentRepo": "Open Parent Repo",
+        "openRepoRoot": "Open Repository",
+        "retryUpdateRoot": "Retry This Repository"
+      }
+    }
+  },
+  "workbench": {
+    "common": {
+      "refresh": "Refresh",
+      "close": "Close",
+      "cancel": "Cancel",
+      "undo": "Undo",
+      "configure": "Configure...",
+      "save": "Save",
+      "delete": "Delete",
+      "operationFailed": "Operation failed"
+    },
+    "misc": {
+      "noRepo": {
+        "title": "No Git repository detected",
+        "description": "This directory has not been initialized as a Git repository yet. You can run `git init` here or create a repository from the button below.",
+        "init": "Initialize repository",
+        "initFailed": "Failed to initialize the repository",
+        "redetect": "Re-detect"
+      },
+      "splitter": {
+        "main": "Drag to resize the left and right panes; middle-click to collapse or expand the left side",
+        "bottom": "Drag to resize the height; middle-click to collapse or expand",
+        "bottomPanel": "Middle-click to collapse or expand the bottom panel",
+        "expandBottomPanel": "Expand bottom panel",
+        "collapseBottomPanel": "Collapse bottom panel"
+      },
+      "updateInfo": {
+        "range": "Switch Update Info range",
+        "rangePlaceholder": "Range",
+        "textPlaceholder": "Text or hash",
+        "regexMode": "Match mode (Regex)",
+        "caseSensitive": "Case sensitive",
+        "dashboard": "Log branch dashboard settings",
+        "show": "Show",
+        "whenSelectingBranch": "When selecting a branch",
+        "grouping": "Grouping",
+        "showBranchOverview": "Show branch overview",
+        "hideBranchOverview": "Hide branch overview",
+        "selectionFilter": "Filter the log",
+        "selectionNavigate": "Navigate to branch",
+        "navigateToBranch": "Navigate to branch",
+        "groupByRepository": "Group by repository",
+        "groupByDirectory": "Group by directory",
+        "repositoryGrouping": "Repository grouping",
+        "directoryGrouping": "Directory grouping",
+        "branchFilter": "Branch",
+        "branchSearchPlaceholder": "Search branches",
+        "authorFilter": "Author",
+        "authorSearchPlaceholder": "Search users",
+        "dateFilter": "Date",
+        "apply": "Apply",
+        "pathFilterTitle": "Path filter",
+        "pathFilterDescription": "Enter a directory or file path (relative to the repository root).",
+        "pathLabel": "Path",
+        "pathPlaceholder": "src/components/...",
+        "pathValue": "Path: {{path}}",
+        "clearFilters": "Clear filters",
+        "title": "{{count}} files updated",
+        "loadingCommits": "Loading commits...",
+        "resizeColumn": "Drag to resize the \"{{label}}\" column"
+      },
+      "bottomTabs": {
+        "log": "Log",
+        "git": "Git"
+      },
+      "console": {
+        "title": "Git Console",
+        "pauseAutoRefresh": "Pause auto refresh",
+        "resumeAutoRefresh": "Resume auto refresh",
+        "copyCurrentLog": "Copy current console log",
+        "copy": "Copy",
+        "refresh": "Refresh",
+        "clear": "Clear",
+        "pausedNotice": "Git Console auto refresh is paused. Copy the log first, then click Resume to keep tracking live output.",
+        "focusedTitle": "Focused Update Session #{{requestId}}",
+        "focusedRunning": "Running update",
+        "focusedCompleted": "Update completed",
+        "cancelFocus": "Unfocus",
+        "empty": "No logs yet. Git commands and output will appear after you run Git actions."
+      },
+      "conflicts": {
+        "title": "Git Conflicts",
+        "dialogDescription": "Review the current repository's conflict files in one place with table-style merge/open, directory grouping, and the resolved-conflict state shared with the commit panel.",
+        "operationProblemDescription": "This repository still has unresolved conflicts. Finish handling them before continuing.",
+        "restoreSavedChangesTitle": "Conflicts found while restoring saved changes",
+        "restoreSavedChangesDescription": "Please resolve the conflicts caused by restoring local changes first.",
+        "resolveBeforeCommitTitle": "Resolve commit-time conflicts",
+        "resolveBeforeCommitDescription": "Unresolved conflicts still exist in the current commit scope. Finish conflict handling before committing again.",
+        "noEntries": "There are no conflict files available to handle right now.",
+        "resolveAction": "Resolve Conflicts",
+        "tableLoadFailed": "Failed to load the conflicts table",
+        "contentLoadFailed": "Failed to load the conflict content",
+        "writeResultFailed": "Failed to write the conflict result",
+        "markResolvedFailed": "Failed to mark the conflict as resolved",
+        "rollbackResolvedFailed": "Failed to roll back the resolved conflict",
+        "unresolved": "Unresolved {{count}}",
+        "resolved": "Resolved {{count}}",
+        "currentStrategy": "Current strategy",
+        "strategyDescription": "The conflicts panel is driven by the status refresh chain and automatically appears or hides with staging-area changes and repository mapping changes.",
+        "shortcutActions": "Quick actions",
+        "conflictFiles": "Conflict files",
+        "unresolvedSection": "Unresolved conflicts",
+        "resolvedSection": "Resolved conflicts",
+        "openUnifiedResolver": "Open unified resolver",
+        "merge": "Merge",
+        "open": "Open",
+        "openUnifiedDescription": "The standalone conflicts panel and the unified resolver share the same conflict state source.",
+        "disableAutoPanel": "Disable auto panel",
+        "backToCommitPanel": "Back to commit panel",
+        "empty": "There are no conflict files to handle right now.",
+        "closeCurrentPanel": "Close current panel",
+        "applySide": "Apply {{side}}",
+        "applySideFailed": "{{action}} failed",
+        "resolutionConflictDetected": "A conflict was detected after applying the selected changes in commit details; you can continue handling each conflicted file here."
+      },
+      "worktrees": {
+        "title": "Worktrees",
+        "new": "New worktree",
+        "empty": "There are no extra worktrees yet. Create one here and it will appear in this panel, with NEW markers and dismissal memory.",
+        "createNow": "Create now",
+        "openProject": "Open project",
+        "help": "Learn about Git worktree",
+        "helpOpenFailed": "Failed to open the worktree help",
+        "newBadge": "NEW"
+      },
+      "updateOptions": {
+        "saved": "Saved Update Project options: {{updateMethod}}; the save-changes policy is now {{policy}}"
+      },
+      "diff": {
+        "previous": "Previous diff",
+        "next": "Next diff",
+        "previousFile": "Previous file",
+        "nextFile": "Next file",
+        "noFileSwitch": "No file group selection is available",
+        "copyPath": "Copy path",
+        "viewerMode": "Viewer mode",
+        "side": "Side-by-side",
+        "unified": "Unified",
+        "whitespace": "Whitespace handling",
+        "none": "Do not ignore",
+        "ignoreWhitespace": "Ignore whitespace",
+        "highlight": "Word highlighting",
+        "on": "Highlight words",
+        "off": "Disable highlighting",
+        "collapseUnchanged": "Collapse unchanged",
+        "moreActions": "Partial commit more actions",
+        "includeAll": "Include all",
+        "excludeAll": "Exclude all",
+        "revertWholeFile": "Revert whole file",
+        "close": "Close diff",
+        "loading": "Loading Diff component...",
+        "detailsPreviewClosed": "Details preview is closed",
+        "showPreview": "Show preview",
+        "selectedLines": "Selected lines",
+        "currentLine": "Current line",
+        "matchedLines": "Matched lines",
+        "partialSummary": "Included {{selectedHunkCount}}/{{hunkCount}} hunks, {{selectedLineCount}}/{{totalLineCount}} lines",
+        "partialHint": "The selected lines match {{lineCount}} lines / {{hunkCount}} hunks",
+        "partialGuide": "You can click the diff center seam and line checkboxes, or select changed lines first and then include or exclude them in bulk",
+        "clickToOpenNote": "Clicking a file no longer switches the diff automatically. Use Enter, double-click, right-click \"Show Diff\", or re-enable the details preview.",
+        "compareThreeVersions": "Compare Three Versions",
+        "enterFullscreen": "Enter fullscreen",
+        "exitFullscreen": "Exit fullscreen",
+        "exportPatch": "Export Patch",
+        "exportPatchShort": "Export patch",
+        "exportPatchFailed": "Failed to export the patch",
+        "exportUnsupported": "Patch export is not supported in the current view",
+        "locateDisabled": "Cannot locate the file",
+        "locateInChanges": "Locate in changes",
+        "noLocateFile": "No file available to locate",
+        "partialExclude": "Exclude {{label}}",
+        "partialInclude": "Include {{label}}",
+        "wordHighlightDisabledNote": "Word highlighting is disabled",
+        "partialLabel": "Partial"
+      },
+      "restoreFromRevision": {
+        "confirm": "Restore",
+        "label": "Revision",
+        "placeholder": "HEAD~1 or a1b2c3d"
+      },
+      "branchPopup": {
+        "search": "Search branches/tags/remotes",
+        "currentRepo": "Current repository",
+        "head": "HEAD:"
+      },
+      "push": {
+        "pushTags": "Push tags",
+        "pushTagsTo": "Push tags to...",
+        "deleteTag": "Delete tag",
+        "deleteTagTitle": "Delete Tag",
+        "deleteTagDescription": "Delete tag {{name}}?",
+        "deleteTagConfirm": "Delete",
+        "deleteTagFailed": "Failed to delete tag",
+        "forceWithLease": "Force push (preserve lease)",
+        "tagMode": "Push tag mode",
+        "tagModePlaceholder": "Tag mode",
+        "allTags": "All tags",
+        "follow": "Current branch related",
+        "noTags": "Do not push tags",
+        "runHooks": "Run Git hooks",
+        "previewBeforeCommitPush": "Preview before commit-and-push",
+        "previewProtectedBranches": "Preview protected branches only",
+        "pushRejectedToUpdateFlow": "Enter the update decision flow when push is rejected",
+        "pendingCommits": "Pending commits: {{count}}",
+        "changedFilesCount": "Changed files: {{count}}",
+        "canPush": "Can push",
+        "changedFiles": "Changed files",
+        "collapse": "Collapse",
+        "commitCount": "Commits {{count}}",
+        "expand": "Expand",
+        "fileCount": "Files {{count}}",
+        "fromPath": "From {{path}}",
+        "loadingPreview": "Loading push preview...",
+        "previewLoadFailed": "Failed to load the push preview",
+        "moreOptions": "More push options",
+        "needsAttention": "Needs attention",
+        "noCommits": "No commits to push",
+        "noContent": "Nothing to push right now",
+        "noFileChanges": "No file changes",
+        "noTitle": "(Untitled)",
+        "overview": "Push overview",
+        "push": "Push",
+        "pushTagFailed": "Failed to push tag",
+        "pushTagsDescription": "Select the push remote for tag {{name}}",
+        "pushing": "Pushing...",
+        "remoteRepository": "Remote repository",
+        "selectedCommit": "Selected commit",
+        "synced": "Local branch is synchronized with the remote branch",
+        "totalFileCount": "Total files {{count}}",
+        "unavailable": "Currently unavailable for push"
+      },
+      "changeListManyFilesDescription": "This node contains {{count}} files. Because the list is large, it is opened through the browse dialog.",
+      "status": {
+        "ready": "Ready",
+        "busy": "Working on {{activity}}",
+        "noRepo": "No Git repository detected"
+      },
+      "actionUnsupported": "Action not supported: {{label}}",
+      "headBadge": "HEAD"
+    },
+    "console": {
+      "loadFailed": "Failed to load the Git console",
+      "copyFailed": "Failed to copy the Git console log",
+      "clearFailed": "Failed to clear the Git console"
+    },
+    "repo": {
+      "detectFailed": "Failed to detect the repository"
+    },
+    "changelist": {
+      "saveCommitDraftFailed": "Failed to save the changelist commit draft",
+      "clearCommitDraftsFailed": "Failed to clear the changelist commit draft",
+      "createFailed": "Failed to create the changelist",
+      "activateFailed": "Failed to set the active changelist",
+      "editFailed": "Failed to edit the changelist",
+      "targetNotFound": "The target changelist was not found",
+      "selectTarget": "Select the target changelist"
+    },
+    "patch": {
+      "createFailed": "Failed to create the patch",
+      "saveFailed": "Failed to save the patch",
+      "copyFailed": "The patch was created, but copying it failed"
+    },
+    "logAction": {
+      "cherryPick": "Cherry-pick",
+      "revert": "Revert commit",
+      "currentOperation": "Current Git operation",
+      "feedback": {
+        "conflictEnteredOperation": "{{action}} hit a conflict. The repository has entered {{operation}} and can now continue or abort.",
+        "enteredOperation": "{{action}} did not finish automatically. The repository has entered {{operation}} and can now continue or abort."
+      }
+    },
+    "branch": {
+      "checkoutFailed": "Failed to checkout the branch",
+      "checkoutRevisionFailed": "Failed to checkout the revision",
+      "createFailed": "Failed to create the branch",
+      "renameFailed": "Failed to rename the branch",
+      "deleteFailed": "Failed to delete the branch",
+      "deleteRemoteGenericFailed": "Failed to delete the remote branch",
+      "currentBranchDescription": "Current branch: {{branch}}",
+      "deleteDescription": "Delete branch {{name}}?",
+      "deleteRemoteDescription": "Delete remote branch {{name}}?",
+      "deleteTitle": "Delete Branch",
+      "deleteRemoteTitle": "Delete Remote Branch",
+      "deleteTrackedRemoteBranchTitle": "Delete Tracking Remote Branch",
+      "deleteTrackedRemoteBranchAction": "Delete Tracking Remote Branch",
+      "deleteRemoteFailed": "Failed to delete remote branch '{{name}}'",
+      "deleted": "Deleted branch '{{name}}'",
+      "deletedRemoteBranch": "Deleted remote branch '{{name}}'",
+      "deletedTag": "Deleted tag '{{name}}'",
+      "forceDeletedWithUnmerged": "Branch '{{name}}' was force-deleted. Unmerged commits were detected; use the actions below to restore the branch or inspect the affected range.",
+      "restoreDeletedBranchAction": "Restore Branch",
+      "restoreDeletedBranchFailed": "Failed to restore branch '{{name}}'",
+      "viewDeletedBranchCommitsAction": "View Commits",
+      "restoreTagAction": "Restore Tag",
+      "restoreTagFailed": "Failed to restore tag '{{name}}'",
+      "restoredDeletedBranch": "Restored branch '{{name}}'",
+      "restoredTag": "Restored tag '{{name}}'",
+      "returnedToBranch": "Returned to branch '{{branch}}'",
+      "rollbackToBranchFailed": "Failed to return to branch '{{branch}}'",
+      "checkoutUpdateFailed": "Checkout and update failed",
+      "renameTitle": "Rename Branch",
+      "newNameLabel": "New Branch Name",
+      "newNamePlaceholder": "feature/xxx",
+      "invalidRemoteBranchForDelete": "The remote branch format is invalid, or deleting the remote HEAD ref is not supported",
+      "checkedOutWorktreeNotFound": "The checked-out worktree for this branch was not found"
+    },
+    "historyRewrite": {
+      "undoDeleteCommitFailed": "Failed to undo deleting the commit",
+      "deleteCommitUndone": "The deleted commit has been restored",
+      "deleteCommitUndoneDetail": "The commit history before deletion has been restored",
+      "undoCommitMoveWarningFallback": "Moving changes to the changelist after undoing the commit failed"
+    },
+    "leftPanel": {
+      "middleClickToggle": "Middle click: collapse/expand the left commit panel",
+      "tabs": {
+        "commit": "Commit",
+        "shelve": "Shelve"
+      }
+    },
+    "topToolbar": {
+      "updateProject": "Update Project",
+      "updateNow": "Update Now",
+      "updateOptions": "Update Options",
+      "updateOptionsWithEllipsis": "Update Options...",
+      "resetToTracked": "Reset to Remote Tracking Branch...",
+      "pull": "Pull remote branches",
+      "pullShort": "Pull",
+      "fetch": "Fetch remote changes",
+      "fetchShort": "Fetch",
+      "commitShort": "Commit",
+      "commit": "Open the commit workflow",
+      "commitWithEllipsis": "Commit...",
+      "push": "Push to remote",
+      "pushShort": "Push",
+      "showConflictsPanel": "Show conflicts panel",
+      "enableConflictsPanel": "Re-enable automatic conflicts panel",
+      "enableConflictsPanelShort": "Enable Conflicts Panel",
+      "conflicts": "Conflicts",
+      "disabled": {
+        "notRepo": "The current directory is not a Git repository",
+        "busy": "A Git operation is currently in progress",
+        "noRemotes": "This repository has no available remotes",
+        "pullDetached": "Pull is not supported in detached HEAD state",
+        "noRollbackSelection": "There are no tracked changes available to roll back"
+      }
+    },
+    "notices": {
+      "autoCloseIn30s": "Closes automatically in 30 seconds",
+      "cancel": "Cancel",
+      "actionFailed": "Git notice action failed",
+      "cancelRequestFailed": "Failed to send the cancel request",
+      "updateCancelled": "Update project cancelled",
+      "updateRequestNotCancelable": "The current update request has already finished or cannot be canceled"
+    },
+    "operationState": {
+      "submitChanges": "Submit Changes",
+      "cherryPickResolved": "All conflicts are resolved. Submit your changes now to finish the current cherry-pick.",
+      "resolveConflictsTitle": "Resolve Current Operation Conflicts",
+      "resolveConflictsDescriptionForCherryPick": "Review and resolve all conflicted files in the current repository. When everything is resolved, submit your changes to finish the current cherry-pick.",
+      "resolveConflictsDescription": "Review and resolve all conflicted files in the current repository. When everything is resolved, you can continue or abort the current Git operation.",
+      "states": {
+        "rebasing": {
+          "title": "The current repository is in Rebase",
+          "badge": "Rebase",
+          "continueLabel": "Continue Rebase",
+          "abortLabel": "Abort Rebase"
+        },
+        "merging": {
+          "title": "The current repository is in Merge",
+          "badge": "Merge",
+          "continueLabel": "Continue Merge",
+          "abortLabel": "Abort Merge"
+        },
+        "grafting": {
+          "title": "The current repository is in Cherry-pick",
+          "badge": "Cherry-pick",
+          "continueLabel": "Continue Cherry-pick",
+          "abortLabel": "Abort Cherry-pick"
+        },
+        "reverting": {
+          "title": "The current repository is in Revert",
+          "badge": "Revert",
+          "continueLabel": "Continue Revert",
+          "abortLabel": "Abort Revert"
+        }
+      },
+      "hints": {
+        "unresolved": "There are still {{count}} files with unresolved conflicts. Please finish them in the commit panel or an external tool first.",
+        "resolved": "{{count}} conflict files have been resolved. You can now continue or abort the current operation.",
+        "clean": "There are no unresolved conflict files in this repository. You can continue or abort directly."
+      },
+      "resolveButton": "Resolve Conflicts",
+      "continueDisabled": "There are still unresolved conflicts, so continuing is temporarily disabled",
+      "feedback": {
+        "continueConflict": "A conflict happened again while continuing {{operation}}. The repository remains in progress.",
+        "continueRunning": "{{operation}} has continued, and the repository remains in progress.",
+        "abortRunning": "{{operation}} has not been aborted yet, and the repository remains in progress."
+      }
+    },
+    "changes": {
+      "toolbar": {
+        "rollback": "Rollback Ctrl+Alt+Z",
+        "stageActions": "Staging Actions",
+        "viewOptions": "View Options",
+        "expandAll": "Expand All",
+        "collapseAll": "Collapse All",
+        "moreOptions": "More Options"
+      },
+      "actions": {
+        "stageSelected": "Stage Selected Files",
+        "stageSelectedDisabled": "No selected files can be staged",
+        "stageWithoutContent": "Stage Without Adding Content",
+        "stageWithoutContentDisabled": "No selected untracked files support intent-to-add",
+        "stageAll": "Stage All Changes",
+        "stageAllDisabled": "There are no untracked or unstaged changes to stage in this repository",
+        "stageTracked": "Stage All Tracked Changes",
+        "stageTrackedDisabled": "There are no tracked changes to stage in this repository",
+        "unstage": "Remove from Staging Area",
+        "unstageSelected": "Remove Selected Files from Staging Area",
+        "unstageSelectedDisabled": "There are no staged files in the current selection",
+        "revertUnstaged": "Revert Unstaged Changes",
+        "revertUnstagedDisabled": "There are no unstaged changes in the current selection to revert",
+        "showStaged": "Show Staged Version",
+        "showLocal": "Show Working Tree Version",
+        "compareLocalToStaged": "Working Tree -> Staging Area",
+        "compareStagedToLocal": "Staging Area -> Working Tree",
+        "compareStagedToHead": "Staging Area <-> HEAD",
+        "compareThreeVersions": "Compare Three Versions",
+        "stageStash": "Stash Selected Files",
+        "stageStashDisabled": "The current selection cannot be written to stash by path",
+        "stashSilently": "Stash All Changes",
+        "stashSilentlyDisabled": "There are no changes in this repository that can be written to stash"
+      },
+      "viewMenu": {
+        "groupBy": "Group By",
+        "groupRepository": "Repository",
+        "groupModule": "Module",
+        "groupDirectory": "Directory",
+        "display": "Display",
+        "showIgnored": "Ignored Files"
+      },
+      "moreMenu": {
+        "configureLocalChanges": "Configure Local Changes",
+        "displayAs": "Display As",
+        "stagingArea": "Staging Area",
+        "changeLists": "Change Lists",
+        "commit": "Commit",
+        "commitAllWhenEmpty": "Commit All When Staging Area Is Empty",
+        "doubleClickEnterOpen": "Double-click/Enter Opens",
+        "diffPreview": "Diff Preview",
+        "sourceFile": "Source File",
+        "oneClickPreview": "Show Diff Preview with One Click"
+      },
+      "context": {
+        "merge": "Merge",
+        "acceptTheirs": "Accept Theirs",
+        "acceptYours": "Accept Yours",
+        "conflictDialog": {
+          "title": "Resolve Conflicts",
+          "description": "The selected conflict files are preselected. You can accept Yours/Theirs in batch or continue opening the Merge tool one by one.",
+          "acceptYoursAction": "Accept Yours ",
+          "acceptTheirsAction": "Accept Theirs "
+        },
+        "commitFiles": "Commit File(s)...",
+        "rollback": "Rollback...",
+        "moveToAnotherChangelist": "Move to Another Changelist...",
+        "showDiff": "Show Diff",
+        "showInStandaloneDiff": "Show in Standalone Diff",
+        "jumpToSource": "Jump to Source",
+        "delete": "Delete...",
+        "addToVcs": "Add to VCS",
+        "ignore": "Ignore",
+        "compareLocalToStaged": "Compare Working Tree -> Staging Area",
+        "compareStagedToLocal": "Compare Staging Area -> Working Tree",
+        "compareStagedToHead": "Compare Staging Area <-> HEAD",
+        "newChangelist": "New Changelist...",
+        "removeChangelist": "Delete Changelist",
+        "setActiveChangelist": "Set Active Changelist",
+        "editChangelist": "Edit Changelist...",
+        "createPatchFromLocalCommit": "Create Patch from Local Changes...",
+        "copyPatchToClipboard": "Copy Patch to Clipboard",
+        "shelveChanges": "Shelve Changes...",
+        "localHistory": "Local History(H)",
+        "showHistory": "Show History...",
+        "gitMenu": "Git(G)",
+        "gitWorktreeItem": "Worktrees",
+        "fileHistory": "Git File History",
+        "gitWorktree": "Git Worktree >"
+      },
+      "stageFailed": "Failed to stage changes",
+      "unstageFailed": "Failed to remove changes from the staging area",
+      "deleteFailed": "Failed to delete the selected files",
+      "revertUnstagedFailed": "Failed to revert the unstaged changes",
+      "moveFailed": "Failed to move the selected changes",
+      "viewOptionsSaveFailed": "Failed to update the view options",
+      "groupingSaveFailed": "Failed to update the grouping mode",
+      "localChangesOptionSaveFailed": "Failed to update the local changes settings"
+    },
+    "branches": {
+      "loadFailed": "Failed to load the branch list",
+      "common": {
+        "favorite": "Favorite Branch",
+        "unfavorite": "Unfavorite",
+        "filtered": "Filtered",
+        "repository": "Repository",
+        "submodule": "Submodule",
+        "detachedHead": "Detached HEAD",
+        "detachedBranch": "Detached {{branch}}",
+        "currentBranch": "Current branch: {{branch}}",
+        "trackingBranch": "Tracking branch: {{branch}}",
+        "incomingCommits": "Incoming {{count}}",
+        "outgoingCommits": "Outgoing {{count}}",
+        "unfetchedIncoming": "Incoming commits are available but not fetched yet",
+        "divergedWarning": "The current branch has diverged from upstream. Review incoming / outgoing changes before checkout or update.",
+        "backToRepositories": "Back to Repository List",
+        "groups": {
+          "repositories": "Repositories",
+          "favorites": "Favorites",
+          "recent": "Recent",
+          "local": "Local",
+          "remote": "Remote"
+        }
+      },
+      "syncEnableFailed": "Failed to enable branch sync",
+      "syncDisableFailed": "Failed to disable branch sync",
+      "myBranchesEnableFailed": "Failed to enable My Branches filtering",
+      "myBranchesDisableFailed": "Failed to disable My Branches filtering",
+      "favoriteAddFailed": "Failed to favorite the branch",
+      "favoriteRemoveFailed": "Failed to remove the branch from favorites",
+      "remote": {
+        "addFailed": "Failed to add the remote",
+        "editFailed": "Failed to edit the remote",
+        "removeFailed": "Failed to remove the remote"
+      },
+      "popup": {
+        "header": {
+          "fetch": "Fetch",
+          "syncStatus": "Sync Status",
+          "myBranchesOnly": "My Branches Only"
+        }
+      },
+      "syncEnabled": "Branch sync is enabled",
+      "syncDisabled": "Branch sync is disabled",
+      "myBranchesEnabled": "Only my branches is enabled",
+      "myBranchesDisabled": "Only my branches is disabled",
+      "panel": {
+        "title": "Branches",
+        "actionsTitle": "Branch Panel Actions",
+        "currentHead": "HEAD (Current Branch)",
+        "menu": {
+          "display": "Display",
+          "incomingOutgoing": "Incoming / Outgoing",
+          "myBranches": "My Branches",
+          "repositories": "Repositories",
+          "previousRepository": "Previous Repository",
+          "nextRepository": "Next Repository",
+          "actions": "Actions",
+          "remoteConfig": "Remote Config",
+          "remoteConfigWithCount": "Remote Config ({{count}})",
+          "newBranch": "New Branch",
+          "tags": "Tags",
+          "newTag": "New Tag"
+        }
+      },
+      "context": {
+        "currentBranch": "Current Branch",
+        "targetBranch": "Target Branch",
+        "detachedHeadUnsupported": "Not supported in detached HEAD state",
+        "currentBranchUnsupported": "This operation is not supported on the current branch",
+        "missingTarget": "Missing target branch",
+        "alreadyCurrent": "Already on the current branch",
+        "checkedOutInOtherWorktree": "Already checked out in another worktree: {{path}}",
+        "checkout": "Checkout",
+        "openInCheckedOutWorktree": "Open in Checked-out Worktree",
+        "notCheckedOutInOtherWorktree": "This branch is not checked out in another worktree",
+        "checkoutAndUpdate": "Checkout and Update",
+        "noTrackingUpstream": "This branch does not have a tracking upstream configured",
+        "newBranchFrom": "New Branch from '{{target}}'...",
+        "checkoutAndRebaseToCurrent": "Checkout and Rebase onto '{{branch}}'",
+        "compareWithCurrent": "Compare with '{{branch}}'",
+        "compareCommitsWithAnyBranch": "Compare Commits with Any Branch...",
+        "showWorktreeDiff": "Show Diff with Working Tree",
+        "compareFilesWithAnyBranch": "Compare Files with Any Branch...",
+        "rebaseCurrentToTarget": "Rebase '{{branch}}' onto '{{target}}'",
+        "mergeTargetToCurrent": "Merge '{{target}}' into '{{branch}}'",
+        "createWorktree": "Create New Worktree...",
+        "pullRemoteRebase": "Pull Remote Branch into '{{branch}}' with Rebase",
+        "pullRemoteMerge": "Pull Remote Branch into '{{branch}}' with Merge",
+        "invalidRemoteBranch": "Invalid remote branch format",
+        "unsupportedRef": "Unsupported ref",
+        "update": "Update",
+        "pushWithEllipsis": "Push...",
+        "trackingBranch": "Tracking Branch '{{branch}}'",
+        "branchSubmenu": "Branch '{{branch}}'",
+        "deleteTrackedRemoteBranch": "Delete Tracking Remote Branch",
+        "editRemote": "Edit Remote '{{remote}}'...",
+        "removeRemote": "Remove Remote '{{remote}}'",
+        "configureRemotes": "Configure Remotes...",
+        "renameWithEllipsis": "Rename...",
+        "delete": "Delete",
+        "localBranchOnly": "Only local branches are supported",
+        "currentBranchCannotDelete": "The current branch cannot be deleted",
+        "remoteHeadCannotDelete": "Deleting the remote HEAD ref is not supported",
+        "gitWorktree": "Git Worktree >"
+      }
+    },
+    "details": {
+      "loadFailed": "Failed to load commit details",
+      "openRepositoryVersionFailed": "Failed to open the repository version",
+      "compareLocalMultiCommitUnsupported": "Comparing aggregated multi-commit details with local changes is not supported",
+      "comparePreviousLocalMultiCommitUnsupported": "Comparing the previous revision with local changes is not supported in aggregated multi-commit details",
+      "editSourceUnsupported": "Editing the source is not supported for the current selection",
+      "openRepositoryVersionUnsupported": "Opening the repository version is not supported for the current selection",
+      "openRepositoryVersionMultiCommitUnsupported": "Opening the repository version is not supported in aggregated multi-commit details",
+      "revertSelectedUnsupported": "Reverting the selected changes is not supported for the current selection",
+      "applySelectedUnsupported": "Cherry-picking the selected changes is not supported for the current selection",
+      "revertSelectedMultiCommitUnsupported": "Reverting the selected changes is not supported in aggregated multi-commit details",
+      "applySelectedMultiCommitUnsupported": "Cherry-picking the selected changes is not supported in aggregated multi-commit details",
+      "revertSelectedFailed": "Failed to revert the selected changes",
+      "applySelectedFailed": "Failed to cherry-pick the selected changes",
+      "resolveRevertSelectedConflictsTitle": "Resolve conflicts after reverting selected changes",
+      "resolveApplySelectedConflictsTitle": "Resolve conflicts after cherry-picking selected changes",
+      "extractSelectedUnsupported": "Extracting the selected changes is not supported for the current selection",
+      "extractSelectedFailed": "Failed to extract the selected changes",
+      "dropSelectedUnsupported": "Dropping the selected changes is not supported for the current selection",
+      "dropSelectedFailed": "Failed to drop the selected changes",
+      "restoreFromRevisionUnsupported": "Restoring from the revision is not supported for the current selection",
+      "restoreFromRevisionFailed": "Failed to restore from the revision",
+      "restoreFromRevisionMultiCommitUnsupported": "Restoring from a revision is not supported in aggregated multi-commit details",
+      "context": {
+        "expand": "Expand",
+        "collapse": "Collapse",
+        "copyPath": "Copy Path"
+      }
+    },
+    "rollbackViewer": {
+      "groupingSaveFailed": "Failed to update the rollback viewer grouping mode",
+      "selectChangesRequired": "Select the changes to roll back",
+      "rollbackFailed": "Rollback failed",
+      "refreshFailed": "Failed to refresh rollback-capable changes",
+      "openTargetRepoFirst": "Open the target repository before viewing these changes",
+      "noLocalChanges": "No local changes are available to roll back right now",
+      "noTrackedChanges": "There are no tracked changes in the current selection that can be rolled back",
+      "title": "Rollback Changes",
+      "description": "Restore the selected tracked changes to HEAD.",
+      "continueCheckout": "Rollback and Continue Checkout",
+      "continueReset": "Rollback and Continue Reset",
+      "continuePull": "Rollback and Continue Pull"
+    },
+    "operation": {
+      "continueFailed": "Failed to continue the current operation",
+      "abortFailed": "Failed to abort the current operation",
+      "continueRestored": "Continued the current Git operation and restored local changes automatically",
+      "continueRestoreFailed": "The current Git operation completed, but restoring local changes failed",
+      "continueStillRunning": "Continued the current Git operation, and the repository is still in progress",
+      "continueDone": "Continued the current Git operation",
+      "abortRestored": "Aborted the current Git operation and restored local changes automatically",
+      "abortRestoreFailed": "The current Git operation was aborted, but restoring local changes failed",
+      "abortDone": "Aborted the current Git operation"
+    },
+    "push": {
+      "failed": "Push failed",
+      "forceWithLeaseFailed": "Force push (with lease) failed",
+      "forcePushFailed": "Force push failed",
+      "openTargetRepoSuccess": "Opened the target repository and continued loading its push preview",
+      "selectRepoTitle": "Select the Repository to Push",
+      "selectRepoDescription": "This commit spans multiple repositories. Choose which repository should continue to the push preview.",
+      "selectRepoConfirm": "Continue to Push",
+      "targetRepoLabel": "Target Repository"
+    },
+    "updateOptions": {
+      "loadFailed": "Failed to load Update Options",
+      "loadRuntimeScopeFailed": "Failed to load the scope for this update",
+      "refreshScopePreviewFailed": "Failed to refresh the multi-repository scope preview",
+      "saveFailed": "Failed to save Update Options",
+      "saveMethodPreferenceFailed": "Failed to save the preferred update method; this run will continue anyway"
+    },
+    "update": {
+      "failed": "Update failed"
+    },
+    "fetch": {
+      "failed": "Fetch failed",
+      "cancelled": "Fetch cancelled",
+      "selectRepository": "Select the repository to fetch",
+      "selectRemote": "Select the remote to fetch"
+    },
+    "pull": {
+      "detachedHeadUnsupported": "Pull is not supported in detached HEAD state",
+      "selectRemoteBranch": "Select the remote branch to pull",
+      "rebaseFailed": "Pull (Rebase) failed",
+      "mergeFailed": "Pull (Merge) failed"
+    },
+    "updateReset": {
+      "loadFailed": "Failed to load the Reset preview",
+      "detachedHeadUnsupported": "Reset-based update is unavailable in detached HEAD state",
+      "failed": "Reset update failed"
+    },
+    "updateResult": {
+      "viewCommitsUnavailable": "The current result does not provide a commit range to inspect",
+      "copyRangeUnavailable": "The current result does not provide a commit range to copy",
+      "copyRangeFailed": "Failed to copy the commit range",
+      "conflictRepoUnavailable": "The current result does not provide the repository that owns these conflicts",
+      "retryRepoUnavailable": "The current result does not provide a repository that can be retried",
+      "fixRepoUnavailable": "The current result does not provide a repository that needs tracked-branch fixes",
+      "applyTrackedBranchFixFailed": "Failed to apply the tracked-branch fix",
+      "noTrackedBranchIssue": "There is no tracked-branch issue to fix in the current repository",
+      "savedChangesRepoUnavailable": "The current result does not provide the repository that owns the saved changes",
+      "targetRepoUnavailable": "The current result does not provide the target repository path",
+      "openParentRepoSuccess": "Opened the parent repository. You can continue handling this sub-repository update issue there.",
+      "openTargetRepoSuccess": "Opened the target repository"
+    },
+    "branchFilter": {
+      "currentBranch": "Current branch",
+      "currentRepository": "Current repository",
+      "noRemote": "No remote available"
+    },
+    "branchCompare": {
+      "invalidRef": "A valid comparison ref is required",
+      "noOtherBranch": "There is no other branch available for comparison in the current repository",
+      "fileDiffLoadFailed": "Failed to load the file diff"
+    },
+    "commit": {
+      "amendLoading": "Loading previous commit...",
+      "amendNoDetails": "Previous commit details unavailable",
+      "amendLoadFailed": "Failed to load the previous commit details",
+      "ignoreTargetsLoadFailed": "Failed to load the ignore targets",
+      "ignoreRuleWriteFailed": "Failed to write the ignore rules",
+      "ignoreAcrossReposUnsupported": "Ignoring files across multiple repositories in one action is not supported yet",
+      "amend": {
+        "noPreviousCommit": "There is no previous commit available to amend"
+      },
+      "blocked": {
+        "conflicts": "Conflicts block this commit",
+        "noTrackedChanges": "No tracked changes to commit",
+        "readingAmend": "Reading previous commit...",
+        "repoUnavailable": "Repository unavailable",
+        "selectFiles": "Select files to commit",
+        "selectRepository": "Select a repository"
+      },
+      "partialSelectionInvalidated": "The partial commit selection for '{{path}}' became invalid and has been reset",
+      "partialSelectionCheckFailed": "Failed to validate the partial commit selection for '{{path}}'",
+      "failed": "Commit failed",
+      "mergePrecheckConflictSummary": "There are still {{count}} tracked changes not included in this commit because the repository is in Merge",
+      "mergePrecheckPreview": "Examples not included: {{examples}}{{suffix}}",
+      "ignoreTarget": {
+        "noAvailableTargets": "No available ignore targets were found"
+      }
+    },
+    "commitOptions": {
+      "empty": "No commit options",
+      "open": "Open options",
+      "toggle": "Toggle options"
+    },
+    "amendToggleLabel": "Amend previous commit",
+    "errors": {
+      "openFileFailed": "Failed to open file",
+      "openDirectoryFailed": "Failed to open the directory",
+      "openProjectContinueUpdates": "Opened {{rootName}} in the app; you can continue viewing updates for this repository",
+      "openProjectFailed": "Failed to open the project in the app",
+      "openProjectOpened": "Opened {{rootName}}",
+      "readIgnoredFilesFailed": "Failed to read ignored files",
+      "saveCommitPushPreferencesFailed": "Failed to save commit and push preferences"
+    },
+    "flow": {
+      "noAvailableRemote": "No available remote found",
+      "fetchSkipped": "Fetch skipped: {{reason}}",
+      "fetchRemotes": "Fetched remotes: {{remotes}}",
+      "fetchFallbackDone": "Fetch completed (default Git flow used)",
+      "noFetchRemotes": "This repository has no remotes to fetch",
+      "branchWithName": "Branch \"{{name}}\"",
+      "currentBranch": "Current branch",
+      "upToDate": "{{subject}} is up to date{{upstreamSuffix}}",
+      "fastForwardUpdated": "{{subject}} fast-forwarded successfully{{upstreamSuffix}}, local changes preserved",
+      "remoteRefUpdated": "Updated the remote reference for {{subject}}{{upstreamSuffix}}",
+      "methodRebase": "Rebase",
+      "methodMerge": "Merge",
+      "methodReset": "Reset",
+      "methodPull": "Pull",
+      "updatedWithUpstreamAndRestoreFailed": "Updated {{subject}} by {{method}}{{upstreamSuffix}}{{suffix}}",
+      "updatedAndRestoreFailed": "Updated {{subject}} by {{method}}{{suffix}}",
+      "localChangesNotRestored": ", but local changes were not restored automatically",
+      "preservedLocalChanges": "with local changes preserved",
+      "restoredLocalChanges": "local changes restored",
+      "updatedWithUpstream": "Updated {{method}} {{subject}}{{upstreamSuffix}}{{suffixText}}",
+      "updated": "Updated {{method}} {{subject}}{{suffixText}}",
+      "pushedBranch": "Pushed branch \"{{name}}\"",
+      "pushDone": "Push completed",
+      "pushToRemote": " to \"{{remote}}\"",
+      "pushToRemoteBranch": " to \"{{remote}}/{{remoteBranch}}\"",
+      "upstreamSet": ", and the upstream branch has been set",
+      "pushAutoUpdated": ", auto-updated and retried {{count}} time(s) before pushing",
+      "retryCount": ", retried {{count}} time(s)",
+      "retried": ", retried",
+      "smartSwitchFailedWithDetail": "Smart switched to {{targetLabel}}; {{detail}}",
+      "smartSwitchFailed": "Smart switched to {{targetLabel}}, but local changes were not restored automatically",
+      "smartSwitchRestored": "Smart switched to {{targetLabel}} and restored local changes",
+      "smartSwitchDone": "Smart switched to {{targetLabel}}",
+      "operation": {
+        "reset": "Reset",
+        "checkout": "Checkout",
+        "cherryPick": "Cherry-pick",
+        "merge": "Merge"
+      },
+      "mergeConflict": "A conflict occurred during Merge",
+      "resolveMergeConflictFirst": "Please resolve the current Merge conflict and finish or abort the merge before continuing.",
+      "untrackedOverwritten": "Untracked files will be overwritten by {{operationLabel}}",
+      "localChangesOverwritten": "Local changes will be overwritten by {{operationLabel}}",
+      "untrackedOverwrittenDescription": "Please handle these untracked files before continuing this {{operationLabel}}.",
+      "localChangesOverwrittenDescription": "Please handle these local changes before continuing this {{operationLabel}}.",
+      "pushRejected": {
+        "staleInfo": "The remote reference has changed and the current lease is stale. If you still want to overwrite the remote, continue with a normal force push.",
+        "other": "The remote rejected the push. Please resolve remote policy or server hook restrictions first and try again.",
+        "noFastForward": "The remote is ahead of the current branch. Update first or use a force push.",
+        "title": "Push rejected"
+      },
+      "saveChanges": {
+        "shelve": "Shelve",
+        "stash": "Stash"
+      },
+      "remoteUpdated": "Updated remote \"{{name}}\"",
+      "remoteAdded": "Added remote \"{{name}}\"",
+      "remoteRemoved": "Removed remote \"{{name}}\""
+    },
+    "log": {
+      "noTitle": "(Untitled)",
+      "messageDraftLoadFailed": "Failed to load the commit message",
+      "loadFailed": "Failed to load the log",
+      "revisionDetailsLoadFailed": "Failed to load the revision details",
+      "actionFailed": "Failed to run the Git log action",
+      "compareSelectionActive": "Compare {{label}}; click to clear the compare range",
+      "fileHistoryActive": "File history up to {{revision}}; click to clear the revision anchor",
+      "compareSelectionLabel": "Compare {{label}}",
+      "historyUntilLabel": "History up to {{revision}}",
+      "actions": {
+        "loadingAvailability": "Loading action availability...",
+        "currentHeadOnly": "Only the current HEAD can use this action",
+        "selectCommit": "Select a commit first",
+        "selectAtLeastTwo": "Select at least two commits",
+        "singleSelectionOnly": "This action only supports a single selection",
+        "mergeCommitUnsupported": "Merge commits are not supported here",
+        "pushAllPrevious": "Push all previous commits",
+        "push": "Push",
+        "unavailable": "Action unavailable",
+        "conditionNotMet": "Required conditions are not met"
+      }
+    },
+    "shelf": {
+      "deletedNotice": "Deleted shelf {{label}}",
+      "restoreFailed": "Failed to restore shelf",
+      "restoredNotice": "Restored shelf {{label}}",
+      "undoDelete": "Undo delete",
+      "createFailed": "Failed to create the shelf",
+      "restoreSelectionRequired": "Select at least one file to restore",
+      "importPatchWithFailures": "Imported {{importedCount}} patches; {{failedCount}} files failed to import",
+      "importPatchDone": "Imported {{count}} patches into shelves",
+      "importPatchTitle": "Import Patch into Shelves",
+      "choosePatchFailed": "Failed to choose the patch file",
+      "importPatchFailed": "Failed to import the patch",
+      "noPatchToExport": "The current selection did not produce an exportable patch",
+      "renameTitle": "Rename Shelf Entry",
+      "renameFailed": "Failed to rename the shelf entry",
+      "viewStateSaveFailed": "Failed to save the shelf view state",
+      "createPatchFailed": "Failed to create the shelf patch",
+      "recycleFailed": "Failed to move the shelf entry to the recycle area",
+      "restoreArchivedFailed": "Failed to restore the shelf entry",
+      "deleteForeverTitle": "Delete Shelf Entry Permanently",
+      "deleteForeverConfirm": "Delete Permanently",
+      "deleteForeverFailed": "Failed to delete the shelf entry permanently",
+      "modifyDescription": "Modify the display description of {{ref}}.",
+      "deleteDescription": "Permanently remove {{ref}} and it cannot be restored from the recycle bin."
+    },
+    "stageThreeWay": {
+      "head": "HEAD",
+      "loadFailed": "Failed to load the three-way comparison",
+      "headUnavailable": "{{label}} snapshot unavailable",
+      "headTooLarge": "{{label}} is too large to preview in the app",
+      "headBinary": "{{label}} is binary and cannot be previewed inline",
+      "index": "Index",
+      "indexUnavailable": "{{label}} snapshot unavailable",
+      "indexTooLarge": "{{label}} is too large to preview in the app",
+      "indexBinary": "{{label}} is binary and cannot be previewed inline",
+      "loading": "Loading HEAD / Index / Working Tree snapshots...",
+      "workingTree": "Working Tree",
+      "workingTreeUnavailable": "{{label}} snapshot unavailable",
+      "workingTreeTooLarge": "{{label}} is too large to preview in the app",
+      "workingTreeBinary": "{{label}} is binary and cannot be previewed inline",
+      "writeWorkingFileFailed": "Failed to write the working tree file"
+    },
+    "diff": {
+      "loadFailed": "Failed to load the diff",
+      "exportPatchFailed": "Failed to export the patch"
+    },
+    "stash": {
+      "createTitle": "Create Stash",
+      "createDescription": "Create a new stash for the current repository, and optionally keep the index or include untracked files.",
+      "createConfirm": "Create Stash",
+      "createMessagePlaceholder": "Temporarily save current changes",
+      "createFailed": "Failed to create the stash",
+      "stageSelectedFailed": "Failed to stash the selected files",
+      "createSilentlyFailed": "Failed to create the stash",
+      "includeUntracked": "Include untracked files",
+      "includeUntrackedDescription": "Matches `git stash push --include-untracked` and saves the current untracked files as well.",
+      "keepIndex": "Keep index contents",
+      "keepIndexDescription": "Matches `git stash push --keep-index` and stashes only the working tree changes.",
+      "applyConfirm": "Apply",
+      "applyDescription": "Apply the selected stash",
+      "applyTitle": "Apply stash",
+      "branchConfirm": "Restore as Branch",
+      "branchDescription": "Create and switch to a new branch based on {{ref}}. This matches `git stash branch`.",
+      "branchNameLabel": "New branch name",
+      "branchNamePlaceholder": "feature/xxx",
+      "branchNameRequired": "Branch name cannot be empty",
+      "branchTitle": "Restore stash as branch",
+      "popConfirm": "Pop",
+      "popDescription": "Pop the selected stash",
+      "popTitle": "Pop stash",
+      "reinstateIndex": "Also restore index contents",
+      "reinstateIndexDescription": "Matches `git stash apply/pop --index` and restores both working tree and index content."
+    },
+    "specialFiles": {
+      "browseTitle": "Browse Files"
+    },
+    "statusCodes": {
+      "added": "Added",
+      "modified": "Modified",
+      "deleted": "Deleted",
+      "renamed": "Renamed",
+      "copied": "Copied",
+      "typeChanged": "Type changed",
+      "conflicted": "Conflict"
+    },
+    "worktrees": {
+      "current": "Current",
+      "repositories": "Repositories",
+      "mainRepository": "Main repository",
+      "mainWorktree": "Main worktree"
+    }
+  },
+  "details": {
+    "commitRangeCopied": "Copied revision range: {{revision}}",
+    "actions": {
+      "showDiff": "Show Diff",
+      "compareRevisions": "Compare Versions",
+      "compareRevisionsTwoCommits": "Comparing versions requires exactly two commits",
+      "compareLocal": "Compare with Local",
+      "comparePreviousLocal": "Compare Previous Revision with Local",
+      "editSource": "Edit Source",
+      "openRepositoryVersion": "Open Repository Version",
+      "revertSelectedChanges": "Revert Selected Changes",
+      "applySelectedChanges": "Cherry-pick Selected Changes",
+      "extractSelectedChanges": "Extract Selected Changes into a Separate Commit...",
+      "extractSelectedChangesDescription": "Extract the selected changes from the current commit and rewrite the target commit history directly.",
+      "extractSelectedChangesConfirm": "Extract",
+      "dropSelectedChanges": "Drop Selected Changes",
+      "createPatch": "Create Patch...",
+      "restoreFromRevision": "Restore from Revision",
+      "selectionMustResolveToSingleCommit": "Each selected file must resolve to exactly one commit",
+      "pathHistory": "History up to This Revision",
+      "toggleParentChanges": "Show Changes to Parent",
+      "resetCurrentBranchToHere": "Reset Current Branch to Here...",
+      "revertCommit": "Revert Commit",
+      "undoCommit": "Undo Commit...",
+      "editCommitMessage": "Edit Commit Message...",
+      "fixup": "Fixup...",
+      "squashTo": "Squash To...",
+      "squashCommits": "Squash Commits...",
+      "checkoutRevision": "Checkout Tag or Revision...",
+      "showRepoAtRevision": "Show Repository at Revision",
+      "newTag": "New Tag...",
+      "copyRevision": "Copy Revision Number",
+      "gotoChild": "Go to Child Commit",
+      "gotoParent": "Go to Parent Commit",
+      "multiCommitUnsupported": "Multi-commit aggregated details are not supported",
+      "singleCommitFileOnly": "Only a single file is supported in single-commit details"
+    },
+    "browser": {
+      "title": "Commit Details",
+      "empty": "No commit selected",
+      "searchPlaceholder": "Search",
+      "fileCount": "{{count}} changed files",
+      "selectedCount": ", {{count}} selected",
+      "toolbar": {
+        "refresh": "Refresh Details",
+        "expandAll": "Expand All",
+        "collapseAll": "Collapse All"
+      },
+      "tree": {
+        "expand": "Expand",
+        "collapse": "Collapse",
+        "nodeFileCount": "{{count}} files"
+      },
+      "summary": {
+        "selectedCommits": "{{count}} commits selected",
+        "fileUnion": "File union: {{count}} entries",
+        "hint": "Tip: double-click a file to open the diff in the center pane."
+      },
+      "meta": {
+        "author": "Author",
+        "date": "Date",
+        "branches": "Branches",
+        "tags": "Tags",
+        "lineStats": "Line Changes",
+        "totalLines": "{{count}} lines total",
+        "netIncrease": "Net +{{count}} lines",
+        "netDecrease": "Net -{{count}} lines",
+        "netNeutral": "Net change: 0 lines",
+        "totalLinesFallback": "0 lines total",
+        "netLinesFallback": "Net change: 0 lines",
+        "hash": "Hash"
+      },
+      "messages": {
+        "noSelection": "No change selected",
+        "multiCommitUnsupported": "This is not supported in aggregated multi-commit details",
+        "pathHistorySingleFile": "Path history only supports a single file in single-commit details"
+      }
+    }
+  },
+  "specialFilesDialog": {
+    "searchPlaceholder": "Search",
+    "empty": "No matches",
+    "summary": {
+      "count": "{{count}} items",
+      "conflictHint": "; press Enter or double-click to open Merge",
+      "openSourceHint": "; press Enter or double-click to open the source file",
+      "openDiffHint": "; press Enter or double-click to open Diff first"
+    },
+    "actions": {
+      "delete": "Delete",
+      "resolveSelectedConflicts": "Resolve Selected Conflicts"
+    }
+  },
+  "shelf": {
+    "recentlyDeleted": "Recently deleted",
+    "deletedNotice": "Deleted shelf {{label}}",
+    "restoreFailed": "Failed to restore shelf",
+    "restoredNotice": "Restored shelf {{label}}",
+    "undoDelete": "Undo delete",
+    "importPatchWithFailures": "Imported {{importedCount}} patches; {{failedCount}} files failed to import",
+    "importPatchDone": "Imported {{count}} patches into shelves",
+    "modifyDescription": "Modify the display description of {{ref}}.",
+    "deleteDescription": "Permanently remove {{ref}} and it cannot be restored from the recycle bin.",
+    "title": "Shelved Changes",
+    "visibleCount": "{{count}} visible",
+    "importPatch": "Import Patch...",
+    "toggleArchived": {
+      "show": "Show Archived Items",
+      "hide": "Hide Archived Items"
+    },
+    "expandAll": "Expand All",
+    "collapseAll": "Collapse All",
+    "viewOptions": "View Options",
+    "groupBy": "Group By",
+    "groupByDirectory": "Directory",
+    "deleteAction": "Delete...",
+    "refresh": "Refresh",
+    "empty": "No shelved changes",
+    "messages": {
+      "primaryUnavailable": "The current selection cannot be unshelved",
+      "deleteUnavailable": "The current selection cannot be deleted"
+    },
+    "primary": {
+      "restore": "Restore",
+      "restoreSelectedFile": "Unshelve Selected File...",
+      "restoreSelectedPath": "Unshelve Selected Path...",
+      "restoreShelf": "Unshelve..."
+    },
+    "state": {
+      "recycled": "Archived",
+      "deleted": "Deleted",
+      "restoring": "Restoring",
+      "restoreFailed": "Restore Failed",
+      "restored": "Restored",
+      "orphaned": "Orphaned"
+    },
+    "context": {
+      "showDiff": "Show Diff",
+      "showStandaloneDiff": "Show Diff in New Tab",
+      "compareWithLocal": "Compare with Local",
+      "createPatch": "Create Patch...",
+      "copyPatch": "Copy Patch to Clipboard",
+      "rename": "Rename..."
+    },
+    "stash": {
+      "title": "Stash List",
+      "apply": "Apply...",
+      "pop": "Pop...",
+      "branch": "Restore as Branch...",
+      "drop": "Delete"
+    }
+  },
+  "diffViewer": {
+    "empty": "Select a changed file to preview the diff.",
+    "tooLarge": "The file is too large to preview right now.",
+    "binary": "Binary files cannot be previewed.",
+    "fallbackHint": "You can open the current file in an external IDE or system app, or export a patch for the current comparison.",
+    "actions": {
+      "openInIde": "Open in external IDE",
+      "openInSystem": "Open with system app",
+      "exportPatch": "Export patch"
+    },
+    "partial": {
+      "includeBlock": "Include current diff block ({{count}} lines)",
+      "excludeBlock": "Exclude current diff block ({{count}} lines)",
+      "includeLine": "Include current changed line",
+      "excludeLine": "Exclude current changed line"
+    }
+  },
+  "interactiveRebase": {
+    "title": "Interactive Rebase",
+    "failed": "Interactive rebase failed",
+    "validation": {
+      "emptyPlan": "The interactive rebase plan cannot be empty",
+      "attachTargetMissing": "Entry {{index}} does not have a valid previous commit to attach to",
+      "messageMissing": "The commit message for entry {{index}} cannot be empty"
+    },
+    "actions": {
+      "fixup": "Fixup",
+      "squash": "Squash"
+    }
+  },
+  "updateSession": {
+    "actions": {
+      "resolveConflicts": "Resolve conflicts",
+      "fixTrackedBranch": "Fix upstream branch",
+      "openParentRepo": "Open parent repository",
+      "openRepoRoot": "Open this repository",
+      "retryUpdateRoot": "Retry updating this repository"
+    },
+    "phases": {
+      "repositoryGraph": "Build repository graph",
+      "preflight": "Preflight checks",
+      "trackedBranchConfig": "Resolve tracking branch",
+      "fetch": "Fetch remotes",
+      "updaterSelection": "Choose update strategy",
+      "saveIfNeeded": "Preserve local changes",
+      "rootUpdate": "Run update",
+      "resultAggregation": "Aggregate results",
+      "waiting": "Waiting to start"
+    },
+    "results": {
+      "success": "Success",
+      "nothingToUpdate": "Up to date",
+      "skipped": "Skipped",
+      "cancelled": "Cancelled",
+      "incomplete": "Incomplete",
+      "notReady": "Not ready",
+      "error": "Failed"
+    },
+    "methods": {
+      "merge": "Merge",
+      "rebase": "Rebase",
+      "reset": "Reset",
+      "fetch": "Fetch",
+      "submodule": "Submodule update"
+    },
+    "fetch": {
+      "successWithRemoteCount": "Fetched {{count}} remote(s)",
+      "success": "Fetch succeeded",
+      "skipped": "Fetch skipped",
+      "cancelled": "Fetch cancelled",
+      "failedWithRemote": "Fetch failed · {{remote}}",
+      "failed": "Fetch failed"
+    },
+    "skippedReasons": {
+      "requested": "Skipped by the current scope configuration",
+      "detachedHead": "The repository is in Detached HEAD",
+      "noTrackedBranch": "No usable upstream branch is configured",
+      "remoteMissing": "The upstream branch does not exist locally or is no longer valid",
+      "parentFailed": "The parent repository update failed",
+      "fetchFailed": "Fetching remotes failed",
+      "updatedByParent": "Already updated recursively by the parent repository"
+    },
+    "preserving": {
+      "restoredWithName": "Restored {{name}}",
+      "restored": "Local changes restored",
+      "savedWithName": "Saved {{name}}",
+      "saved": "Local changes saved",
+      "keptSavedWithName": "Kept {{name}}",
+      "keptSaved": "Local changes kept as saved",
+      "restoreFailedWithName": "Failed to restore {{name}}",
+      "restoreFailed": "Failed to restore local changes"
+    },
+    "submodule": {
+      "detached": "Detached submodule",
+      "branch": "Submodule branch",
+      "updatedByParent": "{{mode}} · updated recursively by parent repository",
+      "detachedUpdater": "{{mode}} · detached updater",
+      "asRoot": "{{mode}} · updated as a root"
+    },
+    "badges": {
+      "fetchFailed": "Fetch failed",
+      "fetchSkipped": "Fetch skipped",
+      "fetchDone": "Fetch done",
+      "restoreFailed": "Restore failed",
+      "keptSaved": "Saved changes kept",
+      "unfinished": "Unfinished state",
+      "detachedSubmodule": "Detached submodule"
+    },
+    "detail": {
+      "updatedWithMethodAndRange": "{{method}} · {{range}}",
+      "updatedRange": "Updated · {{range}}",
+      "updatedMethodDone": "{{method}} done",
+      "updatedSuccess": "Update succeeded",
+      "upToDateWithUpstream": "Tracking {{upstream}} and already up to date",
+      "upToDate": "Already up to date",
+      "skipped": "This repository was skipped",
+      "notCompletedWithMethod": "{{method}} not completed",
+      "notCompleted": "Update not completed"
+    },
+    "result": {
+      "multipleRanges": "{{count}} updated ranges in total",
+      "primaryRange": "{{rootName}} · {{range}}",
+      "updated": "Updated",
+      "title": "Update Project completed"
+    }
+  },
+  "rollbackViewer": {
+    "actions": {
+      "showDiff": "Show Diff",
+      "refresh": "Refresh",
+      "rollback": "Rollback",
+      "selectAll": "Select All",
+      "clearSelection": "Clear Selection",
+      "selectOnly": "Select Only This Item",
+      "copyPath": "Copy Path"
+    }
+  },
+  "changelist": {
+    "defaultName": "Default"
+  },
+  "savedChanges": {
+    "openTarget": {
+      "shelfSuccess": "Opened the target repository. You can continue browsing its shelved changes.",
+      "stashSuccess": "Opened the target repository. You can continue browsing its stash list."
+    },
+    "errors": {
+      "loadStashFailed": "Failed to load the stash list",
+      "loadShelfFailed": "Failed to load the shelved changes list",
+      "deleteShelfFailed": "Failed to delete the shelved change",
+      "restoreShelfFailed": "Failed to restore the shelved change",
+      "deleteStashFailed": "Failed to delete the stash",
+      "branchRestoreStashFailed": "Failed to restore the stash as a branch",
+      "restoreStashFailed": "Failed to restore the stash",
+      "applyStashFailed": "Failed to apply the stash"
+    },
+    "conflicts": {
+      "restoreShelfTitle": "Resolve shelved-restore conflicts",
+      "restoreShelfDescription": "Conflicts were detected after restoring shelved change {{ref}}. You can open each conflicted file here and continue resolving them.",
+      "branchRestoreStashTitle": "Resolve stash-branch conflicts",
+      "branchRestoreStashDescription": "Conflicts were detected after restoring stash {{ref}} as branch {{branch}}. You can open each conflicted file here and continue resolving them.",
+      "restoreStashTitle": "Resolve stash-restore conflicts",
+      "restoreStashDescription": "Conflicts were detected after restoring stash {{ref}}. You can open each conflicted file here and continue resolving them.",
+      "applyStashTitle": "Resolve stash-apply conflicts",
+      "applyStashDescription": "Conflicts were detected after applying stash {{ref}}. You can open each conflicted file here and continue resolving them."
+    }
+  },
+  "log": {
+    "noTitle": "(Untitled)",
+    "columns": {
+      "subject": "Commit Message",
+      "author": "Author",
+      "date": "Date",
+      "hash": "Hash",
+      "refs": "Refs"
+    },
+    "compareSelectionActive": "Compare {{label}}; click to clear the compare range",
+    "fileHistoryActive": "File history up to {{revision}}; click to clear the revision anchor",
+    "compareSelectionLabel": "Compare {{label}}",
+    "historyUntilLabel": "History up to {{revision}}",
+    "actions": {
+      "loadingAvailability": "Loading action availability...",
+      "currentHeadOnly": "Only the current HEAD can use this action",
+      "selectCommit": "Select a commit first",
+      "selectAtLeastTwo": "Select at least two commits",
+      "singleSelectionOnly": "This action only supports a single selection",
+      "mergeCommitUnsupported": "Merge commits are not supported here",
+      "pushAllPrevious": "Push all previous commits",
+      "push": "Push",
+      "unavailable": "Action unavailable",
+      "conditionNotMet": "Required conditions are not met"
+    },
+    "filters": {
+      "date": "Date",
+      "searchPlaceholder": "Search {{label}}",
+      "all": "All",
+      "noMatch": "No matches",
+      "allTime": "All time",
+      "recentDay": "Recent 1 day",
+      "recentWeek": "Recent 1 week",
+      "recent30Days": "Recent 30 days",
+      "custom": "Custom...",
+      "fromPrefix": "From",
+      "toPrefix": "To"
+    }
+  },
+  "commit": {
+    "amendLoading": "Loading previous commit...",
+    "amendNoDetails": "Previous commit details unavailable",
+    "amendToggleLabel": "Amend previous commit",
+    "blocked": {
+      "conflicts": "Conflicts block this commit",
+      "noTrackedChanges": "No tracked changes to commit",
+      "readingAmend": "Reading previous commit...",
+      "repoUnavailable": "Repository unavailable",
+      "selectFiles": "Select files to commit",
+      "selectRepository": "Select a repository"
+    },
+    "partialSelectionInvalidated": "The partial commit selection for '{{path}}' became invalid and has been reset",
+    "partialSelectionCheckFailed": "Failed to validate the partial commit selection for '{{path}}'",
+    "mergePrecheckConflictSummary": "There are still {{count}} tracked changes not included in this commit because the repository is in Merge",
+    "mergePrecheckPreview": "Examples not included: {{examples}}{{suffix}}",
+    "ignoreTarget": {
+      "title": "Ignore files",
+      "description": "Choose the ignore target to write. This popup only accepts untracked file drops.",
+      "count": "About to ignore {{count}} files:",
+      "hiddenCount": "There are {{count}} more files not shown",
+      "repoProgress": "Repository {{index}} / {{count}}",
+      "repoScope": "Current repository: {{path}}",
+      "noAvailableTargets": "No available ignore targets were found"
+    },
+    "amend": {
+      "previousCommit": "Previous commit",
+      "groupWithHash": "Previous commit {{hash}} · {{subject}}",
+      "groupWithoutHash": "Previous commit · {{subject}}",
+      "noPreviousCommit": "There is no previous commit available to amend"
+    },
+    "action": {
+      "commit": "Commit",
+      "commitAll": "Commit all",
+      "amend": "Amend commit",
+      "amendAndPush": "Amend and push...",
+      "commitAndPush": "Commit and push..."
+    },
+    "renamesSeparatelyHint": "Moving files separately is not supported when amending the previous commit.",
+    "checks": {
+      "emptyAfterCleanup": "The commit message is empty after cleanup. Please enter a valid commit message.",
+      "emptyMessage": "Commit message cannot be empty.",
+      "authorDateInvalid": "Invalid author date format. Please use a valid date and time.",
+      "authorMissing": "No default author is configured. Set Git user.name / user.email first, or fill in the author in commit options.",
+      "defaultAuthor": "Default author: {{author}}",
+      "updatedPrevious": "Updated previous commit{{suffix}}.",
+      "createdCommit": "Created commit{{suffix}}.",
+      "pushAfterPushed": "The commit has already been pushed.",
+      "pushAfter": "The push dialog will open next."
+    },
+    "mergePrecheckTitle": "There are Merge changes not included in this commit",
+    "mergePrecheckConfirm": "Commit Anyway",
+    "mergePrecheckRemainingHint": "If you continue, the remaining changes will stay in the working tree for later handling.",
+    "warningChecks": {
+      "title": "There are risks that need confirmation before committing",
+      "confirm": "Continue Commit"
+    }
+  },
+  "flow": {
+    "noAvailableRemote": "No available remote found",
+    "fetchSkipped": "Fetch skipped: {{reason}}",
+    "fetchRemotes": "Fetched remotes: {{remotes}}",
+    "fetchFallbackDone": "Fetch completed (default Git flow used)",
+    "noFetchRemotes": "This repository has no remotes to fetch",
+    "branchWithName": "Branch \"{{name}}\"",
+    "targetBranch": "Target branch",
+    "currentBranch": "Current branch",
+    "upToDate": "{{subject}} is up to date{{upstreamSuffix}}",
+    "fastForwardUpdated": "{{subject}} fast-forwarded successfully{{upstreamSuffix}}, local changes preserved",
+    "remoteRefUpdated": "Updated the remote reference for {{subject}}{{upstreamSuffix}}",
+    "methodRebase": "Rebase",
+    "methodMerge": "Merge",
+    "methodReset": "Reset",
+    "methodPull": "Pull",
+    "updatedWithUpstreamAndRestoreFailed": "Updated {{subject}} by {{method}}{{upstreamSuffix}}{{suffix}}",
+    "updatedAndRestoreFailed": "Updated {{subject}} by {{method}}{{suffix}}",
+    "localChangesNotRestored": ", but local changes were not restored automatically",
+    "preservedLocalChanges": "with local changes preserved",
+    "restoredLocalChanges": "local changes restored",
+    "updatedWithUpstream": "Updated {{method}} {{subject}}{{upstreamSuffix}}{{suffixText}}",
+    "updated": "Updated {{method}} {{subject}}{{suffixText}}",
+    "pushedBranch": "Pushed branch \"{{name}}\"",
+    "pushDone": "Push completed",
+    "pushToRemote": " to \"{{remote}}\"",
+    "pushToRemoteBranch": " to \"{{remote}}/{{remoteBranch}}\"",
+    "upstreamSet": ", and the upstream branch has been set",
+    "pushAutoUpdated": ", auto-updated and retried {{count}} time(s) before pushing",
+    "retryCount": ", retried {{count}} time(s)",
+    "retried": ", retried",
+    "smartSwitchFailedWithDetail": "Smart switched to {{targetLabel}}; {{detail}}",
+    "smartSwitchFailed": "Smart switched to {{targetLabel}}, but local changes were not restored automatically",
+    "smartSwitchRestored": "Smart switched to {{targetLabel}} and restored local changes",
+    "smartSwitchDone": "Smart switched to {{targetLabel}}",
+    "operation": {
+      "reset": "Reset",
+      "checkout": "Checkout",
+      "cherryPick": "Cherry-pick",
+      "merge": "Merge"
+    },
+    "mergeConflict": "A conflict occurred during Merge",
+    "resolveMergeConflictFirst": "Please resolve the current Merge conflict and finish or abort the merge before continuing.",
+    "untrackedOverwritten": "Untracked files will be overwritten by {{operationLabel}}",
+    "localChangesOverwritten": "Local changes will be overwritten by {{operationLabel}}",
+    "untrackedOverwrittenDescription": "Please handle these untracked files before continuing this {{operationLabel}}.",
+    "localChangesOverwrittenDescription": "Please handle these local changes before continuing this {{operationLabel}}.",
+    "pushRejected": {
+      "staleInfo": "The remote reference has changed and the current lease is stale. If you still want to overwrite the remote, continue with a normal force push.",
+      "other": "The remote rejected the push. Please resolve remote policy or server hook restrictions first and try again.",
+      "noFastForward": "The remote is ahead of the current branch. Update first or use a force push.",
+      "title": "Push rejected",
+      "retrySuccessWithMethod": "Updated ({{method}}) and retried push automatically",
+      "retrySuccess": "Updated and retried push automatically"
+    },
+    "saveChanges": {
+      "shelve": "Shelve",
+      "stash": "Stash"
+    },
+    "remoteUpdated": "Updated remote \"{{name}}\"",
+    "remoteAdded": "Added remote \"{{name}}\"",
+    "remoteRemoved": "Removed remote \"{{name}}\""
+  },
+  "commitPanel": {
+    "conflictMergeThreeWay": {
+      "source": "Source",
+      "result": "Result",
+      "controls": {
+        "acceptLeft": "Accept left changes",
+        "appendLeft": "Append left changes",
+        "ignoreLeft": "Ignore left changes",
+        "acceptRight": "Accept right changes",
+        "appendRight": "Append right changes",
+        "ignoreRight": "Ignore right changes",
+        "resolveCurrent": "Auto-resolve current conflict"
+      }
+    }
+  },
+  "branchFilter": {
+    "currentBranch": "Current branch",
+    "currentRepository": "Current repository",
+    "noRemote": "No remote available"
+  },
+  "commitOptions": {
+    "empty": "No commit options",
+    "open": "Open options",
+    "toggle": "Toggle options",
+    "title": "Advanced Commit Options",
+    "description": "Saved live into the current commit flow.",
+    "close": "Close",
+    "signOff": "Append sign-off after commit (`--signoff`)",
+    "runHooks": "Run Git hooks",
+    "runHooksDisabled": "Global hook disabling is enabled, so this commit will automatically append `--no-verify`.",
+    "cleanupMessage": "Clean commit message comments and blank lines (`--cleanup=strip`)",
+    "commitRenamesSeparately": "Commit file moves separately (split rename/move changes before the main commit)",
+    "authorLabel": "Author",
+    "authorPlaceholder": "Name <email@example.com>",
+    "authorHint": "Matches Git `--author`; enter the full author signature.",
+    "authorDateLabel": "Author date (optional, Git `--date`)",
+    "authorDateEmpty": "Low-frequency option. Leave blank for normal commits.",
+    "lowFrequencyBadge": "Low frequency",
+    "authorDatePlaceholder": "For example: 2026-03-12 21:11:00",
+    "authorDateInvalid": "Enter a valid timestamp, for example 2026-03-12 21:11:00.",
+    "authorDateHint": "Only changes the author date, not the committer date. Usually used when preserving the original author timestamp.",
+    "payloadHint": "Fields left blank are omitted from the commit payload.",
+    "reset": "Reset",
+    "summary": {
+      "signOff": "Sign-off",
+      "hooksDisabled": "Hooks disabled globally",
+      "hooksDisabledLocal": "Do not run hooks",
+      "author": "Author: {{value}}",
+      "authorDate": "Author date",
+      "cleanupMessage": "Clean message",
+      "commitRenamesSeparately": "Commit renames separately"
+    }
+  },
+  "commitTree": {
+    "searchPlaceholder": "Search",
+    "loading": "Refreshing change tree",
+    "empty": "There are no changes ready to commit",
+    "frozenReason": "The current repository is in {{state}}",
+    "actions": {
+      "collapseGroup": "Collapse group",
+      "expandGroup": "Expand group",
+      "resolve": "Resolve",
+      "browse": "Browse"
+    },
+    "badges": {
+      "active": "Active",
+      "frozen": "Frozen",
+      "outdatedFiles": "{{count}} outdated files"
+    },
+    "conflictActions": {
+      "unstage": {
+        "icon": "Reset",
+        "tooltip": "Remove from staging area"
+      },
+      "stage": {
+        "icon": "Stage",
+        "tooltip": "Stage changes"
+      },
+      "merge": {
+        "icon": "Merge",
+        "tooltip": "Open Merge tool"
+      },
+      "rollbackResolved": {
+        "icon": "Rollback",
+        "tooltip": "Rollback resolved conflict"
+      }
+    },
+    "groups": {
+      "conflict": "Conflicts",
+      "resolvedConflict": "Resolved conflicts",
+      "staged": "Staged",
+      "unstaged": "Unstaged",
+      "localChanges": "Changes",
+      "unversioned": "Untracked files",
+      "ignored": "Ignored files"
+    },
+    "tree": {
+      "expand": "Expand",
+      "collapse": "Collapse",
+      "nodeFileCount": "{{count}} files"
+    }
+  },
+  "errors": {
+    "openFileFailed": "Failed to open file",
+    "openProjectContinueUpdates": "Opened {{rootName}} in the app; you can continue viewing updates for this repository",
+    "openProjectFailed": "Failed to open the project in the app",
+    "openProjectOpened": "Opened {{rootName}}",
+    "readIgnoredFilesFailed": "Failed to read ignored files",
+    "saveCommitPushPreferencesFailed": "Failed to save commit and push preferences",
+    "backend": {
+      "missingRepoPath": "Missing repository path",
+      "readTargetParentCommitFailed": "Failed to read the target commit's parent",
+      "readParentCommitFailed": "Failed to read the parent commit",
+      "writeReplayCommitFailed": "Failed to write the replay commit",
+      "writeExtractCommitFailed": "Failed to write the extracted commit",
+      "fixupCommitFailed": "Failed to create the fixup commit",
+      "squashCommitFailed": "Failed to create the squash commit",
+      "cherryPickCommitFailed": "Failed to cherry-pick the commit",
+      "revertCommitFailed": "Failed to revert the commit",
+      "deleteCommitFailed": "Failed to delete the commit",
+      "undoCommitFailed": "Failed to undo the commit",
+      "skipEmptyCherryPickFailed": "Failed to skip the empty cherry-pick commit",
+      "unresolvedConflictsBeforeCommit": "There are unresolved conflict files. Resolve them before committing.",
+      "mergeChangesExcludedFromCommit": "Some Merge changes are still excluded from this commit. Review them and try again.",
+      "renameCommitPartialFailure": "The file-move commit was created separately, but the main commit failed: {{detail}}",
+      "multiRepoCommitPartialFailure": "Some repositories were committed, but the commit for '{{repoRoot}}' failed: {{detail}}"
+    }
+  },
+  "stageThreeWay": {
+    "head": "HEAD",
+    "headUnavailable": "{{label}} snapshot unavailable",
+    "headTooLarge": "{{label}} is too large to preview in the app",
+    "headBinary": "{{label}} is binary and cannot be previewed inline",
+    "index": "Index",
+    "indexUnavailable": "{{label}} snapshot unavailable",
+    "indexTooLarge": "{{label}} is too large to preview in the app",
+    "indexBinary": "{{label}} is binary and cannot be previewed inline",
+    "loading": "Loading HEAD / Index / Working Tree snapshots...",
+    "workingTree": "Working Tree",
+    "workingTreeUnavailable": "{{label}} snapshot unavailable",
+    "workingTreeTooLarge": "{{label}} is too large to preview in the app",
+    "workingTreeBinary": "{{label}} is binary and cannot be previewed inline"
+  },
+  "stash": {
+    "applyConfirm": "Apply",
+    "applyDescription": "Apply the selected stash",
+    "applyTitle": "Apply stash",
+    "branchConfirm": "Restore as Branch",
+    "branchDescription": "Create and switch to a new branch based on {{ref}}. This matches `git stash branch`.",
+    "branchNameLabel": "New branch name",
+    "branchNamePlaceholder": "feature/xxx",
+    "branchNameRequired": "Branch name cannot be empty",
+    "branchTitle": "Restore stash as branch",
+    "popConfirm": "Pop",
+    "popDescription": "Pop the selected stash",
+    "popTitle": "Pop stash",
+    "reinstateIndex": "Also restore index contents",
+    "reinstateIndexDescription": "Matches `git stash apply/pop --index` and restores both working tree and index content."
+  },
+  "statusCodes": {
+    "added": "Added",
+    "modified": "Modified",
+    "deleted": "Deleted",
+    "renamed": "Renamed",
+    "copied": "Copied",
+    "typeChanged": "Type changed",
+    "conflicted": "Conflict"
+  },
+  "worktrees": {
+    "current": "Current",
+    "mainRepository": "Main repository",
+    "mainWorktree": "Main worktree"
+  }
+}

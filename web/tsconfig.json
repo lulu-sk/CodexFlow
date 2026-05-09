@@ -5,7 +5,8 @@
   "compilerOptions": {
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["src/*"],
+      "@git-merge-shared/*": ["../electron/git/commitPanel/*"]
     },
     "jsx": "react-jsx",
     "module": "ESNext",

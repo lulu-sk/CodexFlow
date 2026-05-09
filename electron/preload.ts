@@ -10,13 +10,13 @@ type PtyDataPayload = { id: string; data: string };
 type PtyExitPayload = { id: string; exitCode?: number };
 
 // ---- PTY 事件分发（关键性能修复）----
-// 中文说明：
+//
 // - 旧实现：每次 `window.host.pty.onData(id, cb)` 都会 `ipcRenderer.on('pty:data', ...)` 注册一个监听器；
 //   当存在多个终端/多个订阅（例如 xterm 渲染 + 完成通知解析）时，会导致每条输出被重复分发 N 次，
 //   在高频输出场景下会显著放大 CPU 开销，并最终表现为页面白屏/渲染进程崩溃（但主进程 PTY 仍在跑）。
 // - 新实现：preload 仅注册 **一个** `ipcRenderer` 监听器，然后按 ptyId 分发给订阅者集合，避免 O(N) 放大。
 
-// 中文说明：
+//
 // - Electron 渲染进程发生 reload/HMR 时，preload 可能会再次执行；若仍使用“模块级布尔值”防重，容易导致重复安装 ipcRenderer 监听器；
 // - 这里将“单例监听器与 handler 容器”挂到 renderer process 的 `process` 上（Symbol.for），确保跨 reload 仍然是单例；
 // - 同时在每次 preload 执行时清空旧 handler，避免旧页面闭包被持有导致内存泄漏与重复分发。
@@ -36,7 +36,7 @@ gProc[SYM_PTY_EXIT_HANDLERS] = ptyExitHandlers;
 try { ptyExitHandlers.clear(); } catch {}
 
 /**
- * 中文说明：安装 PTY data 分发器（全局仅一次）。
+ * 安装 PTY data 分发器（全局仅一次）。
  */
 function ensurePtyDataDispatcher(): void {
   const existing = (gProc as any)[SYM_PTY_DATA_LISTENER];
@@ -49,7 +49,7 @@ function ensurePtyDataDispatcher(): void {
       const set = map.get(id);
       if (!set || set.size === 0) return;
       const data = typeof payload?.data === 'string' ? payload.data : String(payload?.data ?? '');
-      // 中文说明：对 Set 做快照迭代，避免回调内部增删订阅导致迭代语义不稳定。
+      // 对 Set 做快照迭代，避免回调内部增删订阅导致迭代语义不稳定。
       for (const cb of Array.from(set)) {
         try { cb(data); } catch {}
       }
@@ -60,7 +60,7 @@ function ensurePtyDataDispatcher(): void {
 }
 
 /**
- * 中文说明：安装 PTY exit 分发器（全局仅一次）。
+ * 安装 PTY exit 分发器（全局仅一次）。
  */
 function ensurePtyExitDispatcher(): void {
   const existing = (gProc as any)[SYM_PTY_EXIT_LISTENER];
@@ -69,12 +69,12 @@ function ensurePtyExitDispatcher(): void {
     try {
       const evt: PtyExitPayload = { id: String(payload?.id || ''), exitCode: (payload as any)?.exitCode };
       if (!evt.id) return;
-      // 中文说明：收到 exit 后，自动清理该 PTY 的 data handlers，避免泄漏（即便业务侧忘记 unsubscribe）。
+      // 收到 exit 后，自动清理该 PTY 的 data handlers，避免泄漏（即便业务侧忘记 unsubscribe）。
       try {
         const map: Map<string, Set<(data: string) => void>> = (gProc as any)[SYM_PTY_DATA_HANDLERS] || ptyDataHandlersById;
         map.delete(evt.id);
       } catch {}
-      // 中文说明：对 Set 做快照迭代，避免回调内部增删订阅导致迭代语义不稳定。
+      // 对 Set 做快照迭代，避免回调内部增删订阅导致迭代语义不稳定。
       const set: Set<(payload: PtyExitPayload) => void> = (gProc as any)[SYM_PTY_EXIT_HANDLERS] || ptyExitHandlers;
       for (const cb of Array.from(set)) {
         try { cb(evt); } catch {}
@@ -86,7 +86,7 @@ function ensurePtyExitDispatcher(): void {
 }
 
 /**
- * 中文说明：从主进程继承的本次启动 bootId。
+ * 从主进程继承的本次启动 bootId。
  * - 主进程在启动时写入 `process.env.CODEXFLOW_APP_BOOT_ID`
  * - preload 在每次 document load/reload 时都会重新执行，因此必须读取一个“跨 reload 稳定”的值
  */
@@ -172,7 +172,7 @@ contextBridge.exposeInMainWorld('host', {
       return await ipcRenderer.invoke('pty:open', args);
     },
     /**
-     * 中文说明：读取指定 PTY 的尾部输出缓存（用于渲染进程 reload/HMR 后恢复滚动区）。
+     * 读取指定 PTY 的尾部输出缓存（用于渲染进程 reload/HMR 后恢复滚动区）。
      */
     backlog: async (id: string, args?: { maxChars?: number }): Promise<{ ok: boolean; data?: string; error?: string }> => {
       try { return await ipcRenderer.invoke('pty:backlog', { id, maxChars: args?.maxChars }); } catch (e) { return { ok: false, error: String(e) } as any; }
@@ -225,7 +225,7 @@ contextBridge.exposeInMainWorld('host', {
       return await ipcRenderer.invoke('fileIndex.candidates', { root });
     },
     /**
-     * 中文说明：主进程侧 @ 搜索（仅返回 topN，避免全量候选跨进程搬运）。
+     * 主进程侧 @ 搜索（仅返回 topN，避免全量候选跨进程搬运）。
      */
     searchAt: async (args: { root: string; query: string; scope?: 'all' | 'files' | 'rule'; limit?: number; excludes?: string[] }) => {
       return await ipcRenderer.invoke('fileIndex.searchAt', args);
@@ -238,6 +238,22 @@ contextBridge.exposeInMainWorld('host', {
       const listener = (_: unknown, payload: any) => handler(payload);
       ipcRenderer.on('fileIndex:changed', listener);
       return () => ipcRenderer.removeListener('fileIndex:changed', listener);
+    },
+  },
+  gitRepoWatch: {
+    /**
+     * 声明当前窗口活跃的 Git 仓库根集合，主进程会合并后统一管理 `.git` 元数据 watcher。
+     */
+    setActiveRoots: async (roots: string[]) => {
+      return await ipcRenderer.invoke('gitRepoWatch.activeRoots', { roots });
+    },
+    /**
+     * 订阅 `.git` 元数据变更事件，供 Git 工作台触发统一自动刷新。
+     */
+    onChanged: (handler: (payload: { repoRoot: string; reason: string; paths: string[] }) => void) => {
+      const listener = (_: unknown, payload: any) => handler(payload);
+      ipcRenderer.on('gitRepoWatch:changed', listener);
+      return () => ipcRenderer.removeListener('gitRepoWatch:changed', listener);
     },
   },
   projects: {
@@ -362,6 +378,56 @@ contextBridge.exposeInMainWorld('host', {
     /** 在该目录打开终端（Windows 优先 Git Bash）。 */
     openTerminal: async (dir: string) => {
       return await ipcRenderer.invoke("gitWorktree.openTerminal", { dir });
+    },
+  },
+  gitFeature: {
+    /** Git 功能统一调用入口。 */
+    call: async (args: { action: string; payload?: any; requestId?: number }) => {
+      return await ipcRenderer.invoke("gitFeature.call", args);
+    },
+    /** Git 长操作过程消息（fetch/update/push 等）。 */
+    onProgress: (handler: (payload: { requestId: number; action: string; repoRoot?: string; message: string; detail?: string; updateSession?: any }) => void) => {
+      const listener = (_: unknown, payload: { requestId: number; action: string; repoRoot?: string; message: string; detail?: string; updateSession?: any }) => handler(payload);
+      ipcRenderer.on("gitFeature.progress", listener);
+      return () => ipcRenderer.removeListener("gitFeature.progress", listener);
+    },
+  },
+  gitWorkbench: {
+    /** 请求宿主打开 Git 工作台，并可按公共 actionId 触发提交、提交并推送、更新、拉取、获取、推送、冲突解决与搁置入口。 */
+    show: async (args: {
+      actionId?: string;
+      projectId?: string;
+      projectPath?: string;
+      prefillCommitMessage?: string;
+      focusCommitMessage?: boolean;
+      selectCommitMessage?: boolean;
+      requestId?: number;
+    }) => {
+      return await ipcRenderer.invoke("gitWorkbench.show", args);
+    },
+    /** 监听主进程转发的 Git 工作台打开请求。 */
+    onShowRequest: (handler: (payload: {
+      actionId?: string;
+      projectId?: string;
+      projectPath?: string;
+      prefillCommitMessage?: string;
+      focusCommitMessage?: boolean;
+      selectCommitMessage?: boolean;
+      requestId?: number;
+      receivedAt?: number;
+    }) => void) => {
+      const listener = (_: unknown, payload: {
+        actionId?: string;
+        projectId?: string;
+        projectPath?: string;
+        prefillCommitMessage?: string;
+        focusCommitMessage?: boolean;
+        selectCommitMessage?: boolean;
+        requestId?: number;
+        receivedAt?: number;
+      }) => handler(payload);
+      ipcRenderer.on("gitWorkbench:show", listener);
+      return () => ipcRenderer.removeListener("gitWorkbench:show", listener);
     },
   },
   history: {
@@ -494,7 +560,7 @@ contextBridge.exposeInMainWorld('host', {
     showAgentCompletion: (payload: { tabId: string; tabName?: string; projectName?: string; preview?: string; title: string; body: string; appTitle?: string }) => {
       ipcRenderer.send('notifications:agentComplete', payload);
     },
-    // 中文说明：监听主进程转发的外部完成通知（Codex/Gemini/Claude hook -> JSONL 桥接）。
+    // 监听主进程转发的外部完成通知（Codex/Gemini/Claude hook -> JSONL 桥接）。
     onExternalAgentComplete: (handler: (payload: any) => void) => {
       const listener = (_: unknown, payload: any) => handler(payload);
       ipcRenderer.on('notifications:externalAgentComplete', listener);
@@ -537,7 +603,7 @@ contextBridge.exposeInMainWorld('host', {
       return await ipcRenderer.invoke('utils.copyText', { text });
     },
     /**
-     * 中文说明：将路径转换为当前系统可直接使用的格式（如 Windows 盘符路径）。
+     * 将路径转换为当前系统可直接使用的格式（如 Windows 盘符路径）。
      */
     normalizePathForClipboard: async (p: string) => {
       return await ipcRenderer.invoke('utils.normalizePathForClipboard', { path: p });
@@ -617,11 +683,11 @@ contextBridge.exposeInMainWorld('host', {
     openPathAtPosition: async (p: string, pos?: { line?: number; column?: number; projectPath?: string }) => {
       return await ipcRenderer.invoke('utils.openPathAtPosition', { path: p, line: pos?.line, column: pos?.column, projectPath: pos?.projectPath });
     },
-    // 中文说明：读取项目绑定的 IDE（用于“按项目复用已打开 IDE”跳转策略）。
+    // 读取项目绑定的 IDE（用于“按项目复用已打开 IDE”跳转策略）。
     getProjectPreferredIde: async (projectPath: string) => {
       return await ipcRenderer.invoke("utils.projectIde.get", { projectPath });
     },
-    // 中文说明：设置或清除项目绑定的 IDE（兼容旧版 ideId 字符串与新版结构化 config）。
+    // 设置或清除项目绑定的 IDE（兼容旧版 ideId 字符串与新版结构化 config）。
     // - 清除绑定请显式传入 null，避免遗漏参数导致误清除。
     setProjectPreferredIde: async (
       projectPath: string,
@@ -651,6 +717,9 @@ contextBridge.exposeInMainWorld('host', {
     }
     , chooseFolder: async () => {
       return await ipcRenderer.invoke('utils.chooseFolder');
+    }
+    , chooseFiles: async (args?: { title?: string; defaultPath?: string; multiSelections?: boolean; filters?: Array<{ name: string; extensions: string[] }> }) => {
+      return await ipcRenderer.invoke('utils.chooseFiles', args || {});
     }
     , listFonts: async (): Promise<string[]> => {
       try { const res = await ipcRenderer.invoke('utils.listFonts'); if (res && res.ok && Array.isArray(res.fonts)) return res.fonts as string[]; return []; } catch { return []; }

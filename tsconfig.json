@@ -13,7 +13,8 @@
     "resolveJsonModule": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["web/src/*"]
+      "@/*": ["web/src/*"],
+      "@git-merge-shared/*": ["electron/git/commitPanel/*"]
     }
   },
   "include": [

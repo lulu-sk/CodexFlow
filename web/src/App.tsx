@@ -151,6 +151,11 @@ import {
   saveWorktreeDeletePrefs,
 } from "@/lib/worktree-delete-prefs";
 import { resolveWorktreeDeleteResetTargetBranch } from "@/lib/worktree-delete";
+import {
+  createGitWorkbenchHostRequest,
+  isGitWorkbenchCommitLikeActionId,
+  publishGitWorkbenchHostRequest,
+} from "@/features/git/git-workbench-bridge";
 import type {
   AppSettings,
   BuiltinIdeId,
@@ -277,6 +282,8 @@ import type {
   WorktreeRecycleDialogState,
   WorktreeRecycleProgressState,
 } from "@/app/app-shared";
+
+const GitWorkbench = React.lazy(async () => await import("@/features/git/git-workbench"));
 
 type HistorySearchScope = "current_project" | "project_group" | "all_sessions";
 
@@ -561,7 +568,9 @@ function normalizeIdeOpenPrefs(value: unknown): IdeOpenPrefs {
 }
 
 export default function CodexFlowManagerUI() {
-  const { t, i18n } = useTranslation(["projects", "history", "terminal", "settings", "common", "about"]);
+  const { t, i18n } = useTranslation(["projects", "history", "terminal", "settings", "common", "about", "git"]);
+  const GIT_GRAPH_RUNTIME_PROBE_PROJECT_PATH = String((import.meta as any)?.env?.VITE_GIT_GRAPH_RUNTIME_PROBE_PROJECT_PATH || "").trim();
+  const gitGraphProbeAutoOpenRef = useRef(false);
   const localeForI18n = useMemo(() => {
     const raw = String(i18n.language || "").toLowerCase();
     const base = raw.split("-")[0] || raw;
@@ -1395,6 +1404,7 @@ export default function CodexFlowManagerUI() {
       out[projectId] = list.map((tab) => ({
         id: tab.id,
         name: tab.name,
+        kind: tab.kind === "git" ? "git" : "terminal",
         providerId: tab.providerId,
         createdAt: tab.createdAt,
         logs: [],
@@ -1403,6 +1413,7 @@ export default function CodexFlowManagerUI() {
     return out;
   });
   const tabs = tabsByProject[selectedProjectId] || [];
+  const hasGitWorkbenchTab = tabs.some((tab) => tab.kind === "git");
   const [activeTabId, setActiveTabId] = useState<string | null>(() => restoredConsoleSession?.activeTabByProject?.[selectedProjectId] || null);
   const activeTabIdRef = useRef<string | null>(null);
   // 记录每个项目的活跃 tab，切换项目时恢复对应的活跃 tab，避免切换关闭控制台
@@ -1573,6 +1584,7 @@ export default function CodexFlowManagerUI() {
           compactTabsByProject[projectId] = list.map((tab) => ({
             id: tab.id,
             name: tab.name,
+            kind: tab.kind === "git" ? "git" : "terminal",
             providerId: tab.providerId,
             createdAt: tab.createdAt,
           }));
@@ -4849,6 +4861,253 @@ export default function CodexFlowManagerUI() {
     try { window.host.projects.touch(selectedProject.id); } catch {}
     // 同步更新内存，触发排序刷新；并抑制历史面板自动切换
     markProjectUsed(selectedProject.id);
+  }
+
+  /**
+   * 按路径解析项目；若当前列表不存在则尝试自动加入项目列表。
+   */
+  const resolveProjectByPathAsync = useCallback(async (projectPath: string): Promise<Project | null> => {
+    const rawPath = String(projectPath || "").trim();
+    if (!rawPath) return null;
+    const norm = rawPath.replace(/\\/g, "/").toLowerCase();
+    let target = projectsRef.current.find((one) => String(one.winPath || "").replace(/\\/g, "/").toLowerCase() === norm) || null;
+    if (!target) {
+      try {
+        const addRes: any = await window.host.projects.add({ winPath: rawPath });
+        if (addRes && addRes.ok && addRes.project) {
+          target = addRes.project as Project;
+          upsertProjectInList(target);
+        }
+      } catch {}
+    }
+    return target;
+  }, [upsertProjectInList]);
+
+  /**
+   * 为指定项目打开（或激活）Git 工作台标签。
+   */
+  const openGitWorkbenchTabForProjectId = useCallback((projectId: string): void => {
+    const id = String(projectId || "").trim();
+    if (!id) return;
+    const projectTabs = tabsByProjectRef.current[id] || [];
+    const existing = projectTabs.find((tab) => tab.kind === "git");
+    if (existing) {
+      setActiveTab(existing.id, { focusMode: "immediate", allowDuringRename: true, delay: 0 });
+      try { setCenterMode("console"); } catch {}
+      markProjectUsed(id);
+      return;
+    }
+    const tab: ConsoleTab = {
+      id: uid(),
+      name: String(t("git:workbench.misc.bottomTabs.git", "Git")),
+      kind: "git",
+      providerId: "git",
+      logs: [],
+      createdAt: Date.now(),
+    };
+    registerTabProject(tab.id, id);
+    setTabsByProject((m) => ({ ...m, [id]: [tab, ...(m[id] || [])] }));
+    setActiveTab(tab.id, { focusMode: "immediate", allowDuringRename: true, delay: 0 });
+    try { setCenterMode("console"); } catch {}
+    markProjectUsed(id);
+  }, [markProjectUsed, t]);
+
+  /**
+   * 统一处理 Git 工作台打开请求，先切换项目/标签，再把意图广播给具体工作台实例。
+   */
+  const openGitWorkbenchWithRequestAsync = useCallback(async (
+    payload: {
+      actionId?: string;
+      projectId?: string;
+      projectPath?: string;
+      prefillCommitMessage?: string;
+      focusCommitMessage?: boolean;
+      selectCommitMessage?: boolean;
+      requestId?: number;
+      receivedAt?: number;
+    },
+    options?: { publishRequest?: boolean },
+  ): Promise<boolean> => {
+    const requestedProjectId = String(payload?.projectId || "").trim();
+    const requestedProjectPath = String(payload?.projectPath || "").trim();
+    let target = requestedProjectId
+      ? (projectsRef.current.find((one) => String(one.id || "").trim() === requestedProjectId) || null)
+      : null;
+    if (!target && requestedProjectPath)
+      target = await resolveProjectByPathAsync(requestedProjectPath);
+    if (!target) return false;
+    if (hiddenProjectIdSet.has(target.id))
+      setHiddenProjectIds((prev) => prev.filter((id) => id !== target.id));
+    try { suppressAutoSelectRef.current = true; } catch {}
+    setSelectedProjectId(target.id);
+    openGitWorkbenchTabForProjectId(target.id);
+    if (options?.publishRequest === false) return true;
+    publishGitWorkbenchHostRequest(createGitWorkbenchHostRequest(
+      isGitWorkbenchCommitLikeActionId(payload?.actionId)
+        || payload?.focusCommitMessage === true
+        || payload?.selectCommitMessage === true
+        ? "commit"
+        : "show",
+      {
+        actionId: payload?.actionId,
+        projectId: target.id,
+        projectPath: String(target.winPath || requestedProjectPath || "").trim() || undefined,
+        prefillCommitMessage: payload?.prefillCommitMessage,
+        focusCommitMessage: payload?.focusCommitMessage === true,
+        selectCommitMessage: payload?.selectCommitMessage === true,
+        requestId: payload?.requestId,
+        receivedAt: payload?.receivedAt,
+      },
+    ));
+    return true;
+  }, [hiddenProjectIdSet, openGitWorkbenchTabForProjectId, resolveProjectByPathAsync]);
+
+  /**
+   * 按路径在应用内打开目标项目并切换到 Git 标签。
+   */
+  const openGitWorkbenchForPathAsync = useCallback(async (projectPath: string): Promise<boolean> => {
+    return await openGitWorkbenchWithRequestAsync({ projectPath }, { publishRequest: false });
+  }, [openGitWorkbenchWithRequestAsync]);
+
+  useEffect(() => {
+    if (gitGraphProbeAutoOpenRef.current) return;
+    if (!projectsHydrated || !isDevEnvironment) return;
+    if (!GIT_GRAPH_RUNTIME_PROBE_PROJECT_PATH) return;
+    const targetPathKey = GIT_GRAPH_RUNTIME_PROBE_PROJECT_PATH.replace(/\\/g, "/").trim().toLowerCase();
+    const hasTargetProject = projects.some((project) => String(project.winPath || "").replace(/\\/g, "/").trim().toLowerCase() === targetPathKey);
+    if (!hasTargetProject) return;
+
+    let cancelled = false;
+    gitGraphProbeAutoOpenRef.current = true;
+    void (async () => {
+      try {
+        const debugConfig = await window.host?.debug?.get?.();
+        if (cancelled) return;
+        if (!debugConfig?.global?.diagLog) return;
+        try { await window.host?.utils?.perfLog?.(`[git-graph-probe] auto-open target=${GIT_GRAPH_RUNTIME_PROBE_PROJECT_PATH}`); } catch {}
+        const opened = await openGitWorkbenchWithRequestAsync({ projectPath: GIT_GRAPH_RUNTIME_PROBE_PROJECT_PATH }, { publishRequest: false });
+        if (cancelled) return;
+        try { await window.host?.utils?.perfLog?.(`[git-graph-probe] auto-open result=${opened ? "ok" : "miss"} target=${GIT_GRAPH_RUNTIME_PROBE_PROJECT_PATH}`); } catch {}
+      } catch (error) {
+        if (cancelled) return;
+        try { await window.host?.utils?.perfLog?.(`[git-graph-probe] auto-open error=${String((error as any)?.message || error || "")}`); } catch {}
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [GIT_GRAPH_RUNTIME_PROBE_PROJECT_PATH, isDevEnvironment, openGitWorkbenchWithRequestAsync, projects, projectsHydrated]);
+
+  useEffect(() => {
+    let off: (() => void) | undefined;
+    try {
+      off = window.host.gitWorkbench?.onShowRequest?.((payload: {
+        actionId?: string;
+        projectId?: string;
+        projectPath?: string;
+        prefillCommitMessage?: string;
+        focusCommitMessage?: boolean;
+        selectCommitMessage?: boolean;
+        requestId?: number;
+        receivedAt?: number;
+      }) => {
+        void openGitWorkbenchWithRequestAsync(payload);
+      });
+    } catch {}
+    return () => { try { off && off(); } catch {} };
+  }, [openGitWorkbenchWithRequestAsync]);
+
+  /**
+   * 按路径在应用内打开一个普通终端标签，并执行指定启动命令。
+   */
+  const openInternalTerminalForPathAsync = useCallback(async (args: {
+    projectPath: string;
+    startupCmd: string;
+    title?: string;
+  }): Promise<boolean> => {
+    const startupCmd = String(args?.startupCmd || "").trim();
+    if (!startupCmd) return false;
+    const target = await resolveProjectByPathAsync(String(args?.projectPath || ""));
+    if (!target) return false;
+
+    if (hiddenProjectIdSet.has(target.id)) setHiddenProjectIds((prev) => prev.filter((id) => id !== target.id));
+    try { suppressAutoSelectRef.current = true; } catch {}
+    setSelectedProjectId(target.id);
+
+    const env = getProviderEnv(activeProviderId);
+    const defaultTitle = isWindowsLike(env.terminal)
+      ? toShellLabel(env.terminal)
+      : (env.distro || `Console ${((tabsByProjectRef.current[target.id] || []).length + 1).toString()}`);
+    const tab: ConsoleTab = {
+      id: uid(),
+      name: String(args?.title || "").trim() || defaultTitle,
+      kind: "terminal",
+      providerId: activeProviderId,
+      logs: [],
+      createdAt: Date.now(),
+    };
+
+    let ptyId: string | undefined;
+    try {
+      const launchEnv = await buildProviderLaunchEnv(tab.id, tab.providerId, tab.name, env);
+      const { id } = await window.host.pty.openWSLConsole({
+        terminal: env.terminal,
+        distro: env.distro,
+        wslPath: target.wslPath,
+        winPath: target.winPath,
+        cols: 80,
+        rows: 24,
+        startupCmd,
+        env: launchEnv.env,
+      });
+      tabExecEnvByTabRef.current[tab.id] = env;
+      geminiWindowsEditorReadyByTabRef.current[tab.id] = launchEnv.geminiWindowsEditorReady;
+      geminiWslEditorReadyByTabRef.current[tab.id] = launchEnv.geminiWslEditorReady;
+      ptyId = id;
+    } catch {
+      return false;
+    }
+
+    if (isBuiltInSessionProviderId(activeProviderId))
+      markProjectHasBuiltInSessions(target.id);
+    else
+      void recordCustomProviderDirIfNeeded(target, activeProviderId);
+    registerTabProject(tab.id, target.id);
+    setTabsByProject((m) => ({ ...m, [target.id]: [...(m[target.id] || []), tab] }));
+    setActiveTab(tab.id, { focusMode: "immediate", allowDuringRename: true, delay: 0 });
+
+    if (ptyId) {
+      ptyByTabRef.current[tab.id] = ptyId;
+      setPtyByTab((m) => ({ ...m, [tab.id]: ptyId }));
+      ptyAliveRef.current[tab.id] = true;
+      setPtyAlive((m) => ({ ...m, [tab.id]: true }));
+      registerPtyForTab(tab.id, ptyId);
+      try { tm.setPty(tab.id, ptyId); } catch {}
+    }
+
+    try { window.host.projects.touch(target.id); } catch {}
+    try { setCenterMode("console"); } catch {}
+    markProjectUsed(target.id);
+    return true;
+  }, [
+    activeProviderId,
+    buildProviderLaunchEnv,
+    getProviderEnv,
+    hiddenProjectIdSet,
+    markProjectHasBuiltInSessions,
+    markProjectUsed,
+    recordCustomProviderDirIfNeeded,
+    resolveProjectByPathAsync,
+    tm,
+  ]);
+
+  /**
+   * 打开（或激活）当前项目的 Git 工具标签页。
+   */
+  function openGitWorkbenchTab() {
+    if (!selectedProject) return;
+    openGitWorkbenchTabForProjectId(selectedProject.id);
   }
 
   // 当历史范围或项目上下文变更时，加载对应范围的历史记录
@@ -8470,6 +8729,19 @@ export default function CodexFlowManagerUI() {
       <Tabs value={activeTabId || undefined} onValueChange={(v) => setActiveTab(v ?? null)} className="flex w-full flex-1 min-h-0 flex-col">
         <div className="rounded-md bg-white/90 border border-slate-100 px-2 py-1 dark:border-slate-700 dark:bg-slate-900/90">
           <TabsList ref={tabsListRef} className="w-full h-8 flex items-center justify-start overflow-x-auto no-scrollbar whitespace-nowrap">
+            {(selectedProject && !hasGitWorkbenchTab && !(tabs.length === 0 && projPathExists === false)) ? (
+              <div className="relative z-10 flex shrink-0 items-center pr-[2px]">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="relative h-[25px] w-[25px] shrink-0 rounded-full border border-black/5 bg-white p-0 text-slate-700 shadow-apple-sm hover:bg-white hover:text-slate-900 dark:border-white/10 dark:bg-[var(--cf-surface-solid)] dark:text-slate-100 dark:hover:bg-[#36363a] dark:hover:text-white"
+                  onClick={openGitWorkbenchTab}
+                  title={t("git:workbench.misc.bottomTabs.git", "Git") as string}
+                >
+                  <GitBranch className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            ) : null}
             {tabs.length === 0 ? (
               projPathExists === false ? (
                 <Badge variant="outline" className="mx-2">{t('terminal:dirMissing')}</Badge>
@@ -8493,7 +8765,8 @@ export default function CodexFlowManagerUI() {
               const hasPending = pendingCount > 0;
               const isWorking = agentTurnTimerByTab[tab.id]?.status === "working";
               const isActiveTab = activeTabId === tab.id;
-              const providerIconSrc = getProviderIconSrc(tab.providerId, providerItemById, themeMode);
+              const isGitTab = tab.kind === "git";
+              const providerIconSrc = isGitTab ? "" : getProviderIconSrc(tab.providerId, providerItemById, themeMode);
               return (
                 <div
                   key={tab.id}
@@ -8508,7 +8781,9 @@ export default function CodexFlowManagerUI() {
                     onDoubleClick={(e) => { e.preventDefault(); e.stopPropagation(); startEditTab(tab.id, tab.name); }}
                     onContextMenu={(e) => openTabContextMenu(e, tab.id, "tab-trigger")}
                   >
-                    {providerIconSrc ? (
+                    {isGitTab ? (
+                      <GitBranch className="mr-1.5 h-3.5 w-3.5 text-[var(--cf-text-secondary)] group-data-[state=active]/tab:text-[var(--cf-text-primary)]" />
+                    ) : providerIconSrc ? (
                       <img
                         src={providerIconSrc}
                         className="mr-1.5 h-3.5 w-3.5 shrink-0 object-contain"
@@ -8599,6 +8874,27 @@ export default function CodexFlowManagerUI() {
           </TabsList>
         </div>
           {tabs.map((tab) => {
+            if (tab.kind === "git") {
+              return (
+                <TabsContent
+                  key={tab.id}
+                  value={tab.id}
+                  className="mt-1 flex flex-1 min-h-0 flex-col space-y-1"
+                  onContextMenu={(e: React.MouseEvent) => openTabContextMenu(e, tab.id, "tab-content")}
+                >
+                  <Card className="relative flex flex-1 min-h-0 flex-col overflow-hidden">
+                    <React.Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-[var(--cf-text-secondary)]">{t("projects:gitModuleLoading", "正在加载 Git 模块...") as string}</div>}>
+                      <GitWorkbench
+                        repoPath={selectedProject?.winPath || ""}
+                        active={activeTabId === tab.id && !!selectedProject}
+                        onOpenProjectInApp={openGitWorkbenchForPathAsync}
+                        onOpenTerminalInApp={openInternalTerminalForPathAsync}
+                      />
+                    </React.Suspense>
+                  </Card>
+                </TabsContent>
+              );
+            }
             const isInputFullscreen = !!inputFullscreenByTab[tab.id];
             const isInputClosing = !!inputFullscreenClosingTabs[tab.id];
             const showFullscreenInput = isInputFullscreen || isInputClosing;

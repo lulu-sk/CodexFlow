@@ -50,8 +50,10 @@ import { applyInstanceProfile, normalizeProfileId, resolveProfileUserDataDir } f
 import { getBaseUserDataDir, getFeatureFlags, updateFeatureFlags } from "./featureFlags";
 import { readDebugConfig, getDebugConfig, onDebugChanged, watchDebugConfig, updateDebugConfig, resetDebugConfig, unwatchDebugConfig } from "./debugConfig";
 import { getGitDirInfoBatchAsync, invalidateGitDirInfoCache } from "./git/status";
+import * as repoWatch from "./git/repoWatch";
 import { initGitRepositoryAsync } from "./git/repoInit";
 import { activateWindowPreservingState } from "./windowActivation";
+import { dispatchGitFeatureAction } from "./git/featureService";
 import { autoCommitWorktreeIfDirtyAsync, createWorktreesAsync, listLocalBranchesAsync, recycleWorktreeAsync, removeWorktreeAsync } from "./git/worktreeOps";
 import { isWorktreeAlignedToMainAsync, resetWorktreeAsync } from "./git/worktreeReset";
 import { resolveWorktreeForkPointAsync, searchForkPointCommitsAsync, validateForkPointRefAsync } from "./git/worktreeForkPoint";
@@ -197,6 +199,8 @@ try { registerQuitConfirmIPC(); } catch {}
 // 记录每个渲染进程声明的活跃根集合，统一合并后再驱动 fileIndex，避免多窗口互相清空 watcher
 const activeRootsBySender = new Map<number, Set<string>>();
 const activeRootsSenderHooked = new Set<number>();
+const activeRepoRootsBySender = new Map<number, Set<string>>();
+const activeRepoRootsSenderHooked = new Set<number>();
 
 function applyMergedActiveRoots(): { closed: number; remain: number; trimmed: number } {
   const merged = new Set<string>();
@@ -205,6 +209,17 @@ function applyMergedActiveRoots(): { closed: number; remain: number; trimmed: nu
   }
   const mergedList = Array.from(merged);
   return (fileIndex as any).setActiveRoots ? (fileIndex as any).setActiveRoots(mergedList) : { closed: 0, remain: 0, trimmed: 0 };
+}
+
+/**
+ * 合并所有渲染进程声明的活跃 Git 仓库根，并同步 repo watcher。
+ */
+async function applyMergedGitRepoRootsAsync(): Promise<{ opened: number; closed: number; remain: number }> {
+  const merged = new Set<string>();
+  for (const roots of activeRepoRootsBySender.values()) {
+    for (const root of roots) merged.add(root);
+  }
+  return await repoWatch.setActiveRepoRootsAsync(Array.from(merged));
 }
 
 /**
@@ -2228,6 +2243,31 @@ ipcMain.handle('fileIndex.activeRoots', async (event, { roots }: { roots: string
   }
 });
 
+ipcMain.handle('gitRepoWatch.activeRoots', async (event, { roots }: { roots: string[] }) => {
+  try {
+    const list = Array.isArray(roots) ? roots.filter((x) => typeof x === 'string') : [];
+    const senderId = (event as any)?.sender?.id;
+    if (typeof senderId !== 'number')
+      return { ok: true, ...(await applyMergedGitRepoRootsAsync()) };
+
+    activeRepoRootsBySender.set(senderId, new Set(list));
+    if (!activeRepoRootsSenderHooked.has(senderId)) {
+      activeRepoRootsSenderHooked.add(senderId);
+      try {
+        (event as any)?.sender?.once?.('destroyed', () => {
+          activeRepoRootsBySender.delete(senderId);
+          activeRepoRootsSenderHooked.delete(senderId);
+          void applyMergedGitRepoRootsAsync();
+        });
+      } catch {}
+    }
+
+    return { ok: true, ...(await applyMergedGitRepoRootsAsync()) };
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+});
+
 // Projects API
 /** 快速读取项目缓存列表（不触发扫描） */
 ipcMain.handle('projects.list', async () => {
@@ -2545,6 +2585,104 @@ ipcMain.handle("gitWorktree.statusBatch", async (_e, args: { dirs: string[] }) =
     return { ok: true, items };
   } catch (e: any) {
     return { ok: false, error: String(e?.message || e) };
+  }
+});
+
+/**
+ * Git：统一功能入口（提交/日志/分支/差异/搁置/worktree 等）。
+ */
+ipcMain.handle("gitFeature.call", async (event, args: { action: string; payload?: any; requestId?: number }) => {
+  try {
+    const action = String(args?.action || "").trim();
+    if (!action) return { ok: false, error: "missing action" };
+    const cfg = settings.getSettings() as any;
+    const gitPath = String(cfg?.gitWorktree?.gitPath || "").trim() || "git";
+    return await dispatchGitFeatureAction({
+      action,
+      payload: args?.payload,
+      gitPath,
+      userDataPath: app.getPath("userData"),
+      requestId: Math.max(0, Math.floor(Number(args?.requestId) || 0)),
+      emitProgress: (payload) => {
+        try {
+          event.sender.send("gitFeature.progress", payload);
+        } catch {}
+      },
+    });
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+});
+
+/**
+ * 把 Git 工作台打开请求投递到目标窗口；窗口加载中时延后到页面就绪后再发送。
+ */
+function dispatchGitWorkbenchShowRequest(target: BrowserWindow, payload: {
+  actionId?: string;
+  projectId?: string;
+  projectPath?: string;
+  prefillCommitMessage?: string;
+  focusCommitMessage?: boolean;
+  selectCommitMessage?: boolean;
+  requestId?: number;
+  receivedAt?: number;
+}): void {
+  if (target.isMinimized()) {
+    try { target.restore(); } catch {}
+  }
+  try { target.show(); target.focus(); } catch {}
+  const wc = target.webContents;
+  const dispatch = () => {
+    try {
+      wc.send("gitWorkbench:show", {
+        ...payload,
+        actionId: String(payload?.actionId || "").trim() || "Git.Show.Stage",
+        projectId: String(payload?.projectId || "").trim() || undefined,
+        projectPath: String(payload?.projectPath || "").trim() || undefined,
+        prefillCommitMessage: typeof payload?.prefillCommitMessage === "string"
+          ? payload.prefillCommitMessage.replace(/\r\n?/g, "\n")
+          : undefined,
+        focusCommitMessage: payload?.focusCommitMessage === true,
+        selectCommitMessage: payload?.selectCommitMessage === true,
+        requestId: Math.max(1, Math.floor(Number(payload?.requestId) || Date.now())),
+        receivedAt: Number(payload?.receivedAt) > 0 ? Number(payload?.receivedAt) : Date.now(),
+      });
+    } catch {}
+  };
+  if (wc.isDestroyed()) return;
+  if (wc.isLoading())
+    wc.once("did-finish-load", dispatch);
+  else
+    dispatch();
+}
+
+/**
+ * Git 工作台：统一打开 Git 公共动作入口。
+ */
+ipcMain.handle("gitWorkbench.show", async (event, args: {
+  actionId?: string;
+  projectId?: string;
+  projectPath?: string;
+  prefillCommitMessage?: string;
+  focusCommitMessage?: boolean;
+  selectCommitMessage?: boolean;
+  requestId?: number;
+}) => {
+  try {
+    const target = BrowserWindow.fromWebContents(event.sender) || mainWindow;
+    if (!target) return { ok: false, error: "窗口不可用" };
+    dispatchGitWorkbenchShowRequest(target, {
+      actionId: args?.actionId,
+      projectId: args?.projectId,
+      projectPath: args?.projectPath,
+      prefillCommitMessage: args?.prefillCommitMessage,
+      focusCommitMessage: args?.focusCommitMessage === true,
+      selectCommitMessage: args?.selectCommitMessage === true,
+      requestId: args?.requestId,
+    });
+    return { ok: true };
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e || "gitWorkbench.show failed") };
   }
 });
 

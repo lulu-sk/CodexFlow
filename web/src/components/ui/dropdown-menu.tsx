@@ -114,6 +114,7 @@ export function DropdownMenuContent({ align = 'start', className, children }: { 
   const body = (
     <div
       ref={contentRef}
+      data-dropdown-menu-content="true"
       style={style}
       className={cn(
         "min-w-[180px] rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple p-1.5 shadow-apple-lg text-[var(--cf-text-primary)] dark:shadow-apple-dark-lg",
@@ -142,7 +143,10 @@ export function DropdownMenuItem({ className, onClick, ...props }: React.HTMLAtt
 export function DropdownMenuLabel({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
   return <div className={cn('px-3 py-2 text-xs font-apple-semibold text-[var(--cf-text-muted)] uppercase tracking-wider', className)} {...props} />;
 }
-export function DropdownMenuSeparator() {
-  return <div className="my-1.5 h-px bg-[var(--cf-border)]" />;
+/**
+ * 下拉菜单分隔线，支持调用方追加局部样式与无障碍属性。
+ */
+export function DropdownMenuSeparator({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
+  return <div className={cn("my-1.5 h-px bg-[var(--cf-border)]", className)} {...props} />;
 }
 

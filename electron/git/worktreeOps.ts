@@ -29,13 +29,13 @@ export type CreateWorktreesRequest = {
   instances: Array<{ providerId: "codex" | "claude" | "gemini"; count: number }>;
   gitPath?: string;
   copyRules?: boolean;
-  /** 中文说明：创建过程日志回调（用于渲染层进度 UI 展示）。 */
+  /** 创建过程日志回调（用于渲染层进度 UI 展示）。 */
   onLog?: (text: string) => void;
-  /** 中文说明：可选取消信号；触发后将尽快停止创建并返回 aborted。 */
+  /** 可选取消信号；触发后将尽快停止创建并返回 aborted。 */
   signal?: AbortSignal;
-  /** 中文说明：每成功创建一个 worktree 后回调（用于任务取消时的回滚清理）。 */
+  /** 每成功创建一个 worktree 后回调（用于任务取消时的回滚清理）。 */
   onItemCreated?: (item: CreatedWorktree) => void;
-  /** 中文说明：单个 worktree 创建失败时回调（用于 UI 逐项标记失败）。 */
+  /** 单个 worktree 创建失败时回调（用于 UI 逐项标记失败）。 */
   onItemFailed?: (args: {
     providerId: "codex" | "claude" | "gemini";
     repoMainPath: string;
@@ -45,7 +45,7 @@ export type CreateWorktreesRequest = {
     index: number;
     error: string;
   }) => void;
-  /** 中文说明：在尝试创建某个 worktree 前回调（用于捕获“中断时的目标目录/分支”）。 */
+  /** 在尝试创建某个 worktree 前回调（用于捕获“中断时的目标目录/分支”）。 */
   onWorktreePlanned?: (args: { providerId: "codex" | "claude" | "gemini"; repoMainPath: string; worktreePath: string; baseBranch: string; wtBranch: string; index: number }) => void;
 };
 
@@ -81,7 +81,7 @@ export type RecycleWorktreeRequest = {
   gitPath?: string;
   commitMessage?: string;
   /**
-   * 中文说明：当回收目标 worktree（通常为基分支当前所在 worktree）不干净时，是否允许自动暂存并在回收后恢复。
+   * 当回收目标 worktree（通常为基分支当前所在 worktree）不干净时，是否允许自动暂存并在回收后恢复。
    * - true：使用“事务化快照”策略，最大化保持目标 worktree 原本的三态不被打乱：
    *   - 1) Working Tree：用单个 `git stash push -u` 保存内容级快照（tracked + untracked）
    *   - 2) Index：对 `.git/index` 做字节级快照（这是 staged 语义的权威来源）
@@ -89,7 +89,7 @@ export type RecycleWorktreeRequest = {
    * - false/未传：直接返回 BASE_WORKTREE_DIRTY，由 UI 决定下一步。
    */
   autoStashBaseWorktree?: boolean;
-  /** 中文说明：回收过程日志回调（用于渲染层进度 UI 展示）。 */
+  /** 回收过程日志回调（用于渲染层进度 UI 展示）。 */
   onLog?: (text: string) => void;
 };
 
@@ -132,7 +132,7 @@ export type RecycleWorktreeDetails = {
   stashes?: RecycleBaseWorktreeStash[];
   /** 建议的手动恢复命令（用于失败兜底引导）。 */
   suggestedRestoreCommand?: string;
-  /** 中文说明：未知错误兜底展示用的原始输出（避免后端拼英文）。 */
+  /** 未知错误兜底展示用的原始输出（避免后端拼英文）。 */
   stderr?: string;
   stdout?: string;
   error?: string;
@@ -165,20 +165,20 @@ export type RemoveWorktreeResult = {
 };
 
 /**
- * 中文说明：删除 worktree 的并发锁（按 worktreePath 归一化 key 去重）。
+ * 删除 worktree 的并发锁（按 worktreePath 归一化 key 去重）。
  * - 目的：避免用户重复点击触发多个并发的 `git worktree remove`，导致锁冲突/未知状态。
  * - 行为：同一路径的重复调用会复用同一个 Promise，并返回相同结果。
  */
 const removeWorktreeTaskByPathKey = new Map<string, Promise<RemoveWorktreeResult>>();
 
 /**
- * 中文说明：仓库维度互斥锁（按 repoMainPath 归一化 key 串行化）。
+ * 仓库维度互斥锁（按 repoMainPath 归一化 key 串行化）。
  * - 目的：避免并发 stash/checkout/merge 导致状态漂移或互相踩 `index.lock`。
  */
 const repoTaskByRepoKey = new Map<string, Promise<void>>();
 
 /**
- * 中文说明：在同一仓库维度串行执行任务（互斥）。
+ * 在同一仓库维度串行执行任务（互斥）。
  * - 说明：同一 repoKey 的任务会按提交顺序排队执行；无论成功/失败都会释放锁。
  */
 async function runExclusiveInRepoAsync<T>(repoKey: string, task: () => Promise<T>): Promise<T> {
@@ -196,7 +196,7 @@ async function runExclusiveInRepoAsync<T>(repoKey: string, task: () => Promise<T
 }
 
 /**
- * 中文说明：best-effort 删除 worktree 目录（避免 `git worktree remove` 在文件占用/权限问题下残留目录）。
+ * best-effort 删除 worktree 目录（避免 `git worktree remove` 在文件占用/权限问题下残留目录）。
  * - 仅作为兜底：失败不抛错。
  */
 async function removeWorktreeDirBestEffortAsync(worktreePath: string): Promise<void> {
@@ -208,7 +208,7 @@ async function removeWorktreeDirBestEffortAsync(worktreePath: string): Promise<v
 }
 
 /**
- * 中文说明：删除前检查 worktree 是否存在未提交修改或未跟踪文件。
+ * 删除前检查 worktree 是否存在未提交修改或未跟踪文件。
  * - 用途：在真正执行 `git worktree remove` 之前，将“需要强制删除”的风险一次性返回给前端；
  * - 判定：只要 `git status --porcelain` 有输出，就视为需要 `--force`。
  */
@@ -234,7 +234,7 @@ async function hasDirtyWorktreeForRemoveAsync(args: {
 }
 
 /**
- * 中文说明：检查指定路径是否仍登记在 `git worktree list` 中。
+ * 检查指定路径是否仍登记在 `git worktree list` 中。
  * - 用途：兼容 `git worktree remove` 已完成解绑，但目录清理因“Directory not empty”失败的场景；
  * - 返回 `registered=false` 时，可继续执行分支删除与兜底目录清理，而不再把该错误视为整体失败。
  */
@@ -261,7 +261,7 @@ async function isWorktreeRegisteredAsync(args: {
 }
 
 /**
- * 中文说明：在已完成合并安全检查后删除 worktree 对应分支。
+ * 在已完成合并安全检查后删除 worktree 对应分支。
  * - 未合并且未强制时，返回 `needsForceDeleteBranch` 让上层二次确认；
  * - 已合并时优先尝试 `git branch -d`，保持与 Git 常规删除语义一致；
  * - 若 `-d` 因当前 `HEAD/上游` 与创建基分支不同而拒绝删除，则回退到 `-D`；
@@ -287,7 +287,7 @@ async function deleteCheckedWorktreeBranchAsync(args: {
   }
 
   /**
-   * 中文说明：执行一次分支删除，并统一抽取可读错误文本。
+   * 执行一次分支删除，并统一抽取可读错误文本。
    */
   const runDeleteAsync = async (mode: "-d" | "-D"): Promise<{ ok: true } | { ok: false; error: string }> => {
     const del = await execGitAsync({
@@ -340,13 +340,13 @@ export async function listLocalBranchesAsync(args: { repoDir: string; gitPath?: 
   const detached = !(cur.ok && current);
   const headSha = detached
     ? (() => {
-        // detached 时给一个短 sha 兜底，便于 UI 提示
+        // detached 时给一个完整 HEAD hash 兜底，展示层再决定是否缩写
         // 注意：失败不影响主流程
         return "";
       })()
     : "";
 
-  const sha = detached ? await execGitAsync({ gitPath, argv: ["-C", repoRoot, "rev-parse", "--short", "HEAD"], timeoutMs }) : null;
+  const sha = detached ? await execGitAsync({ gitPath, argv: ["-C", repoRoot, "rev-parse", "HEAD"], timeoutMs }) : null;
   const resolvedSha = sha && sha.ok ? String(sha.stdout || "").trim() : headSha;
 
   return { ok: true, repoRoot, branches, current: current || undefined, detached, headSha: resolvedSha || undefined };
@@ -365,14 +365,14 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
   let abortLogged = false;
 
   /**
-   * 中文说明：安全写日志，避免日志回调抛错影响主流程。
+   * 安全写日志，避免日志回调抛错影响主流程。
    */
   const log = (text: string) => {
     try { req.onLog?.(String(text ?? "")); } catch {}
   };
 
   /**
-   * 中文说明：检查是否已取消；若已取消则返回一个统一的失败结果。
+   * 检查是否已取消；若已取消则返回一个统一的失败结果。
    */
   const checkAborted = (): { ok: false; error: string } | null => {
     if (!signal?.aborted) return null;
@@ -384,7 +384,7 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
   };
 
   /**
-   * 中文说明：将一次 git 执行失败拼成更可读的错误文本（优先 stderr，其次 stdout）。
+   * 将一次 git 执行失败拼成更可读的错误文本（优先 stderr，其次 stdout）。
    */
   const formatGitFailure = (res: { error?: string; stderr?: string; stdout?: string; exitCode?: number }, fallback: string): string => {
     const parts: string[] = [];
@@ -415,7 +415,7 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
   const baseBranch = String(req.baseBranch || "").trim();
 
   /**
-   * 中文说明：记录“创建时基分支 HEAD（提交号）”作为后续回收的默认分叉点边界。
+   * 记录“创建时基分支 HEAD（提交号）”作为后续回收的默认分叉点边界。
    * - 失败不影响创建主流程（回收时会回退到 merge-base 推断）。
    */
   const baseRefAtCreate = await execGitAsync({ gitPath, argv: ["-C", repoRoot, "rev-parse", baseBranch], timeoutMs: 8000 });
@@ -537,7 +537,7 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
   };
 
   /**
-   * 中文说明：创建计划项（每一项对应一个目标 worktree）。
+   * 创建计划项（每一项对应一个目标 worktree）。
    */
   type WorktreeCreatePlan = {
     providerId: "codex" | "claude" | "gemini";
@@ -580,7 +580,7 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
   }
 
   /**
-   * 中文说明：判断 `git worktree add` 失败是否属于并发可重试的锁冲突。
+   * 判断 `git worktree add` 失败是否属于并发可重试的锁冲突。
    */
   const isRetryableWorktreeAddError = (msg: string): boolean => {
     const text = String(msg || "");
@@ -595,7 +595,7 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
   };
 
   /**
-   * 中文说明：按尝试次数计算重试退避时间（毫秒）。
+   * 按尝试次数计算重试退避时间（毫秒）。
    */
   const computeRetryDelayMs = (attempt: number): number => {
     const normalizedAttempt = Math.max(1, Math.floor(Number(attempt) || 1));
@@ -603,7 +603,7 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
   };
 
   /**
-   * 中文说明：异步等待指定毫秒。
+   * 异步等待指定毫秒。
    */
   const sleepAsync = async (delayMs: number): Promise<void> => {
     const safeDelay = Math.max(0, Math.floor(Number(delayMs) || 0));
@@ -612,7 +612,7 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
   };
 
   /**
-   * 中文说明：执行单项 `git worktree add`，并在锁冲突时进行有限重试。
+   * 执行单项 `git worktree add`，并在锁冲突时进行有限重试。
    */
   const runWorktreeAddWithRetryAsync = async (plan: WorktreeCreatePlan): Promise<{ ok: boolean; error?: string }> => {
     const maxAttempts = 6;
@@ -650,7 +650,7 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
   let planCursor = 0;
 
   /**
-   * 中文说明：从计划队列中提取下一项（无项时返回 null）。
+   * 从计划队列中提取下一项（无项时返回 null）。
    */
   const takeNextPlan = (): WorktreeCreatePlan | null => {
     if (planCursor >= plans.length) return null;
@@ -660,7 +660,7 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
   };
 
   /**
-   * 中文说明：执行单个创建计划，并汇总成功项或失败项。
+   * 执行单个创建计划，并汇总成功项或失败项。
    */
   const executePlanAsync = async (plan: WorktreeCreatePlan): Promise<void> => {
     try {
@@ -825,7 +825,7 @@ export async function autoCommitWorktreeIfDirtyAsync(args: {
 }
 
 /**
- * 中文说明：判断一次 git 执行失败是否属于“仓库被锁”场景（常见：`.git/index.lock`）。
+ * 判断一次 git 执行失败是否属于“仓库被锁”场景（常见：`.git/index.lock`）。
  */
 function isGitLockedFailure(res: { error?: string; stderr?: string; stdout?: string }): boolean {
   const msg = `${String(res?.error || "")}\n${String(res?.stderr || "")}\n${String(res?.stdout || "")}`;
@@ -833,7 +833,7 @@ function isGitLockedFailure(res: { error?: string; stderr?: string; stdout?: str
 }
 
 /**
- * 中文说明：将 git 失败结果提炼为“尽量可读”的文本（用于 UNKNOWN 错误兜底）。
+ * 将 git 失败结果提炼为“尽量可读”的文本（用于 UNKNOWN 错误兜底）。
  */
 function pickGitFailureText(res: { error?: string; stderr?: string; stdout?: string }): string {
   const err = String(res?.stderr || "").trim();
@@ -844,7 +844,7 @@ function pickGitFailureText(res: { error?: string; stderr?: string; stdout?: str
 }
 
 /**
- * 中文说明：解析 `git rev-parse --git-path <name>` 为绝对路径。
+ * 解析 `git rev-parse --git-path <name>` 为绝对路径。
  */
 async function resolveGitPathAbsAsync(args: {
   repoMainPath: string;
@@ -874,7 +874,7 @@ type BaseWorktreeProgressMarker = {
 };
 
 /**
- * 中文说明：检查指定 Git 标记是否存在，并按需校验目录类型。
+ * 检查指定 Git 标记是否存在，并按需校验目录类型。
  */
 async function checkGitProgressMarkerAsync(args: {
   repoMainPath: string;
@@ -898,7 +898,7 @@ async function checkGitProgressMarkerAsync(args: {
 }
 
 /**
- * 中文说明：为过期标记生成可读、可追溯的归档文件名（保留原始文件名语义）。
+ * 为过期标记生成可读、可追溯的归档文件名（保留原始文件名语义）。
  */
 function buildStaleMarkerBackupPath(absPath: string): string {
   const dir = path.dirname(absPath);
@@ -909,7 +909,7 @@ function buildStaleMarkerBackupPath(absPath: string): string {
 }
 
 /**
- * 中文说明：将疑似“残留中的 Git 标记”改名归档，避免直接删除导致不可追溯。
+ * 将疑似“残留中的 Git 标记”改名归档，避免直接删除导致不可追溯。
  */
 async function archiveStaleGitMarkerAsync(absPath: string): Promise<{ ok: true; backupPath?: string } | { ok: false; error: string }> {
   const src = String(absPath || "").trim();
@@ -925,14 +925,14 @@ async function archiveStaleGitMarkerAsync(absPath: string): Promise<{ ok: true; 
 }
 
 /**
- * 中文说明：将标记数组格式化为紧凑日志文本（便于进度窗口直观排障）。
+ * 将标记数组格式化为紧凑日志文本（便于进度窗口直观排障）。
  */
 function formatProgressMarkers(markers: BaseWorktreeProgressMarker[]): string {
   return markers.map((item) => item.name).filter(Boolean).join(", ");
 }
 
 /**
- * 中文说明：检测主 worktree 是否处于“中断/冲突态”，用于拒绝自动化流程（stash/回收/恢复）。
+ * 检测主 worktree 是否处于“中断/冲突态”，用于拒绝自动化流程（stash/回收/恢复）。
  * - 强阻断：merge/rebase/cherry-pick/revert 进行中，以及存在 unmerged files。
  * - 软修复：仅发现 REBASE_HEAD（且无真实 rebase 目录/冲突）时，自动归档后继续。
  */
@@ -1013,7 +1013,7 @@ async function detectBaseWorktreeInProgressAsync(args: {
 }
 
 /**
- * 中文说明：检测当前仓库是否存在 unmerged files（用于区分 stash apply 冲突与其它失败）。
+ * 检测当前仓库是否存在 unmerged files（用于区分 stash apply 冲突与其它失败）。
  */
 async function hasUnmergedFilesAsync(args: { repoMainPath: string; gitPath?: string }): Promise<{ ok: boolean; has: boolean; locked: boolean; stderr: string; stdout: string; error?: string }> {
   const repoMainPath = toFsPathAbs(args.repoMainPath);
@@ -1024,7 +1024,7 @@ async function hasUnmergedFilesAsync(args: { repoMainPath: string; gitPath?: str
 }
 
 /**
- * 中文说明：记录主 worktree 的“原始位置”。
+ * 记录主 worktree 的“原始位置”。
  * - 优先分支名；detached 时记录 commit sha。
  */
 async function readBaseOriginalRefAsync(args: { repoMainPath: string; gitPath?: string }): Promise<
@@ -1047,7 +1047,7 @@ async function readBaseOriginalRefAsync(args: { repoMainPath: string; gitPath?: 
 }
 
 /**
- * 中文说明：将主 worktree 切回到指定“原始位置”（分支或 detached sha）。
+ * 将主 worktree 切回到指定“原始位置”（分支或 detached sha）。
  */
 async function switchBaseToOriginalRefAsync(args: {
   repoMainPath: string;
@@ -1067,7 +1067,7 @@ async function switchBaseToOriginalRefAsync(args: {
 }
 
 /**
- * 中文说明：读取 `refs/stash` 的 sha（无 stash 时返回空字符串）。
+ * 读取 `refs/stash` 的 sha（无 stash 时返回空字符串）。
  */
 async function readStashTopShaAsync(args: { repoMainPath: string; gitPath?: string }): Promise<{ ok: boolean; sha: string; locked: boolean; stderr: string; stdout: string; error?: string }> {
   const repoMainPath = toFsPathAbs(args.repoMainPath);
@@ -1080,7 +1080,7 @@ async function readStashTopShaAsync(args: { repoMainPath: string; gitPath?: stri
 }
 
 /**
- * 中文说明：解析 `git status --porcelain` 输出，用于区分“已暂存/未暂存/未跟踪”三类状态。
+ * 解析 `git status --porcelain` 输出，用于区分“已暂存/未暂存/未跟踪”三类状态。
  */
 function analyzePorcelainStatus(porcelain: string): { hasAny: boolean; hasStaged: boolean; hasUnstagedOrUntracked: boolean } {
   const lines = String(porcelain || "")
@@ -1104,7 +1104,7 @@ function analyzePorcelainStatus(porcelain: string): { hasAny: boolean; hasStaged
 }
 
 /**
- * 中文说明：生成“手动恢复 stash”的命令（按顺序执行，尽量保持原有暂存状态）。
+ * 生成“手动恢复 stash”的命令（按顺序执行，尽量保持原有暂存状态）。
  */
 function buildRestoreCommandsForStashes(stashes: RecycleBaseWorktreeStash[] | null | undefined): string {
   const list = Array.isArray(stashes) ? stashes : [];
@@ -1120,7 +1120,7 @@ function buildRestoreCommandsForStashes(stashes: RecycleBaseWorktreeStash[] | nu
 }
 
 /**
- * 中文说明：按 sha 删除 stash（优先直接 drop sha；失败时回退到按列表索引 drop）。
+ * 按 sha 删除 stash（优先直接 drop sha；失败时回退到按列表索引 drop）。
  */
 async function dropStashByShaAsync(args: { repoMainPath: string; gitPath?: string; sha: string }): Promise<{ ok: boolean; locked: boolean; stderr: string; stdout: string; error?: string }> {
   const repoMainPath = toFsPathAbs(args.repoMainPath);
@@ -1148,7 +1148,7 @@ async function dropStashByShaAsync(args: { repoMainPath: string; gitPath?: strin
 }
 
 /**
- * 中文说明：将“已暂存 stash”中的索引差异恢复到当前索引（不触碰工作区文件），以最大化保留原本的“未暂存”内容。
+ * 将“已暂存 stash”中的索引差异恢复到当前索引（不触碰工作区文件），以最大化保留原本的“未暂存”内容。
  *
  * 设计要点：
  * - 传统 `git stash apply --index` 会同时改动索引与工作区；若工作区随后还需要恢复未暂存内容，容易引入冲突或状态漂移。
@@ -1213,7 +1213,7 @@ async function restoreIndexFromStagedStashAsync(args: {
 }
 
 /**
- * 中文说明：将 git 命令的 stdout 流式写入文件，避免大补丁占用内存（适用于大仓库回收）。
+ * 将 git 命令的 stdout 流式写入文件，避免大补丁占用内存（适用于大仓库回收）。
  */
 async function spawnGitStdoutToFileAsync(opts: {
   gitPath?: string;
@@ -1312,7 +1312,7 @@ async function spawnGitStdoutToFileAsync(opts: {
 }
 
 /**
- * 中文说明：解析并校验“分叉点边界”的提交号（优先使用创建时记录的 baseRefAtCreate）。
+ * 解析并校验“分叉点边界”的提交号（优先使用创建时记录的 baseRefAtCreate）。
  */
 async function resolveForkBaseShaAsync(args: {
   repoMainPath: string;
@@ -1320,7 +1320,7 @@ async function resolveForkBaseShaAsync(args: {
   baseBranch: string;
   wtBranch: string;
   meta: WorktreeMeta | null;
-  /** 中文说明：日志回调（用于进度 UI 展示）。 */
+  /** 日志回调（用于进度 UI 展示）。 */
   onLog?: (text: string) => void;
 }): Promise<{ ok: true; sha: string; source: "meta" | "merge-base" } | { ok: false; error: string }> {
   const repoMainPath = toFsPathAbs(args.repoMainPath);
@@ -1373,7 +1373,7 @@ async function resolveForkBaseShaAsync(args: {
 }
 
 /**
- * 中文说明：执行实际的回收逻辑（假设目标 worktree 已处于可操作状态）。
+ * 执行实际的回收逻辑（假设目标 worktree 已处于可操作状态）。
  * - 该方法不负责处理“目标 worktree 脏”的策略；由外层决定是提示用户还是自动 stash。
  */
 async function recycleWorktreeCoreAsync(args: {
@@ -1382,12 +1382,12 @@ async function recycleWorktreeCoreAsync(args: {
   baseBranch: string;
   wtBranch: string;
   range: "since_fork" | "full";
-  /** 中文说明：仅在 range=since_fork 时使用的分叉点边界提交号。 */
+  /** 仅在 range=since_fork 时使用的分叉点边界提交号。 */
   forkBaseSha?: string;
   mode: RecycleMode;
   gitPath?: string;
   commitMessage?: string;
-  /** 中文说明：回收过程日志回调（用于进度 UI 展示）。 */
+  /** 回收过程日志回调（用于进度 UI 展示）。 */
   onLog?: (text: string) => void;
 }): Promise<{ ok: true } | { ok: false; errorCode?: RecycleWorktreeErrorCode; stderr: string; stdout: string; error?: string }> {
   const wt = toFsPathAbs(args.wt);
@@ -1402,7 +1402,7 @@ async function recycleWorktreeCoreAsync(args: {
     log(`\n$ git ${argv.join(" ")}\n`);
     return await spawnGitAsync({ gitPath, argv, timeoutMs, onStdout: log, onStderr: log });
   };
-  // 中文说明：回收的 merge/rebase 在大仓库上可能较慢，超时需要比普通命令更宽松。
+  // 回收的 merge/rebase 在大仓库上可能较慢，超时需要比普通命令更宽松。
   const mergeTimeoutMs = 10 * 60_000;
   const commitTimeoutMs = 60_000;
   const rebaseTimeoutMs = 30 * 60_000;
@@ -1542,7 +1542,7 @@ export async function recycleWorktreeAsync(req: RecycleWorktreeRequest): Promise
   const wt = toFsPathAbs(req.worktreePath);
 
   /**
-   * 中文说明：安全写日志，避免日志回调抛错影响主流程。
+   * 安全写日志，避免日志回调抛错影响主流程。
    */
   const log = (text: string) => {
     try { req.onLog?.(String(text ?? "")); } catch {}
@@ -1671,7 +1671,7 @@ export async function recycleWorktreeAsync(req: RecycleWorktreeRequest): Promise
     }
 
     // D) 执行回收（复用既有 squash/rebase 流程）
-    // 中文说明：当选择“仅分叉点之后”时，不做“失败即自动回退完整回收”，避免误扩大回收范围。
+    // 当选择“仅分叉点之后”时，不做“失败即自动回退完整回收”，避免误扩大回收范围。
     const requestedRange = req.range === "full" ? "full" : "since_fork";
     let forkBaseSha: string | undefined = undefined;
 
@@ -1850,7 +1850,7 @@ export async function removeWorktreeAsync(req: RemoveWorktreeRequest): Promise<R
       repoMainPath = inferred.repoMainPath;
     }
 
-    // 中文说明：deleteBranch=true 时需要的关键信息尽量在 remove 之前解析（避免目录被移除后无法读取）。
+    // deleteBranch=true 时需要的关键信息尽量在 remove 之前解析（避免目录被移除后无法读取）。
     // - 优先读取 worktree 当前真实分支，兼容用户在创建后手动改名导致元数据过期的场景；
     // - 若当前为 detached HEAD 或解析失败，再回退到创建记录中的 wtBranch。
     let resolvedWtBranch = String(meta?.wtBranch || "").trim();
@@ -1897,7 +1897,7 @@ export async function removeWorktreeAsync(req: RemoveWorktreeRequest): Promise<R
         needsForceDeleteBranch,
       };
     }
-    // 中文说明：大仓库/大工作区删除可能很慢（主要耗时在目录移除），需要更长超时避免误判失败。
+    // 大仓库/大工作区删除可能很慢（主要耗时在目录移除），需要更长超时避免误判失败。
     const removeTimeoutMs = 15 * 60_000;
 
     // 1) 先移除 worktree
