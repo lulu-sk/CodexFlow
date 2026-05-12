@@ -557,6 +557,10 @@ contextBridge.exposeInMainWorld('host', {
     setBadgeCount: (count: number) => {
       ipcRenderer.send('notifications:setBadge', { count });
     },
+    // 同步任务栏角标状态，完成数量优先于运行中提示。
+    setTaskbarBadgeState: (state: { completedCount?: number; runningCount?: number; hasRunningTask?: boolean }) => {
+      ipcRenderer.send('notifications:setBadge', state);
+    },
     showAgentCompletion: (payload: { tabId: string; tabName?: string; projectName?: string; preview?: string; title: string; body: string; appTitle?: string }) => {
       ipcRenderer.send('notifications:agentComplete', payload);
     },
