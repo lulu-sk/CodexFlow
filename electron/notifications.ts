@@ -9,7 +9,12 @@ import settings from './settings';
 import { perfLogger } from './log';
 import { activateWindowPreservingState } from './windowActivation';
 
-type BadgePayload = { count?: number };
+type BadgePayload = {
+  count?: number;
+  completedCount?: number;
+  runningCount?: number;
+  hasRunningTask?: boolean;
+};
 
 type CompletionPayload = {
   tabId: string;
@@ -21,6 +26,7 @@ type CompletionPayload = {
   appTitle?: string;
 };
 
+const RUNNING_OVERLAY_LABEL = 'running';
 const OVERLAY_CACHE = new Map<string, Electron.NativeImage>();
 const BADGE_CANVAS_SIZE = 32;
 const GLYPH_WIDTH = 5;
@@ -289,6 +295,26 @@ function renderBadgeBitmap(text: string): Buffer {
   return buffer;
 }
 
+/**
+ * 渲染运行中任务使用的蓝色圆点覆盖图位图。
+ */
+function renderRunningBitmap(): Buffer {
+  const buffer = Buffer.alloc(BADGE_CANVAS_SIZE * BADGE_CANVAS_SIZE * 4, 0);
+  const radius = 9;
+  const cx = BADGE_CANVAS_SIZE / 2 - 0.5;
+  const cy = BADGE_CANVAS_SIZE / 2 - 0.5;
+  for (let y = 0; y < BADGE_CANVAS_SIZE; y += 1) {
+    for (let x = 0; x < BADGE_CANVAS_SIZE; x += 1) {
+      const dx = x - cx;
+      const dy = y - cy;
+      if (dx * dx + dy * dy <= radius * radius) {
+        setPixel(buffer, x, y, 37, 99, 235, 255);
+      }
+    }
+  }
+  return buffer;
+}
+
 function logNotification(message: string) {
   try { perfLogger.log(`[notifications] ${message}`); } catch {}
 }
@@ -307,7 +333,7 @@ function createOverlayIcon(label: string): Electron.NativeImage {
   const cached = OVERLAY_CACHE.get(label);
   if (cached) return cached;
   const text = label.length > 3 ? label.slice(0, 3) : label;
-  const bitmap = renderBadgeBitmap(text);
+  const bitmap = label === RUNNING_OVERLAY_LABEL ? renderRunningBitmap() : renderBadgeBitmap(text);
   let image = nativeImage.createFromBitmap(bitmap, {
     width: BADGE_CANVAS_SIZE,
     height: BADGE_CANVAS_SIZE,
@@ -380,22 +406,34 @@ export function registerNotificationIPC(getWindow: () => BrowserWindow | null, o
     return p;
   })();
   logNotification(`register IPC appUserModelId=${appUserModelId || 'none'}`);
-  const updateBadge = (count: number) => {
+  /**
+   * 按完成数优先、运行中次之的规则同步系统任务栏角标。
+   */
+  const updateBadge = (completedCount: number, runningCount: number) => {
     const enabled = shouldEnableBadge();
-    const safe = enabled ? count : 0;
-    logNotification(`updateBadge count=${count} effective=${safe} enabled=${enabled} platform=${process.platform}`);
-    try { app.setBadgeCount(safe); } catch {}
+    const safeCompleted = enabled ? completedCount : 0;
+    const safeRunning = enabled && safeCompleted <= 0 ? runningCount : 0;
+    logNotification(`updateBadge completed=${completedCount} running=${runningCount} effectiveCompleted=${safeCompleted} effectiveRunning=${safeRunning} enabled=${enabled} platform=${process.platform}`);
+    try { app.setBadgeCount(safeCompleted); } catch {}
     if (process.platform === 'win32') {
       const win = getWindow();
       if (!win) return;
-      if (safe > 0) {
-        const label = labelForCount(safe);
+      if (safeCompleted > 0) {
+        const label = labelForCount(safeCompleted);
         const icon = createOverlayIcon(label);
         try {
           win.setOverlayIcon(icon, `${label}`);
           logNotification(`setOverlayIcon label=${label}`);
         } catch (error) {
           logNotification(`setOverlayIcon failed: ${String(error)}`);
+        }
+      } else if (safeRunning > 0) {
+        const icon = createOverlayIcon(RUNNING_OVERLAY_LABEL);
+        try {
+          win.setOverlayIcon(icon, 'running');
+          logNotification('setOverlayIcon label=running');
+        } catch (error) {
+          logNotification(`setOverlayIcon running failed: ${String(error)}`);
         }
       } else {
         try {
@@ -408,10 +446,14 @@ export function registerNotificationIPC(getWindow: () => BrowserWindow | null, o
     }
   };
 
+  /**
+   * 接收渲染进程推送的任务栏角标状态。
+   */
   const onSetBadge = (_event: Electron.IpcMainEvent, payload: BadgePayload) => {
-    const count = coerceCount(payload?.count);
-    logNotification(`setBadge IPC count=${count}`);
-    updateBadge(count);
+    const completedCount = coerceCount(typeof payload?.completedCount === 'number' ? payload.completedCount : payload?.count);
+    const runningCount = payload?.hasRunningTask ? Math.max(1, coerceCount(payload?.runningCount)) : coerceCount(payload?.runningCount);
+    logNotification(`setBadge IPC completed=${completedCount} running=${runningCount}`);
+    updateBadge(completedCount, runningCount);
   };
 
   const onAgentComplete = (_event: Electron.IpcMainEvent, payload: CompletionPayload) => {

@@ -2122,13 +2122,33 @@ export default function CodexFlowManagerUI() {
     return total;
   }
 
+  /**
+   * 统计当前仍处于工作中的任务数量，用于驱动系统任务栏运行中角标。
+   */
+  function computeRunningTaskTotal(map: Record<string, AgentTurnTimerState>): number {
+    let total = 0;
+    for (const state of Object.values(map)) {
+      if (state?.status === "working") total += 1;
+    }
+    return total;
+  }
+
+  /**
+   * 同步任务栏角标状态：完成任务数量优先，未完成数量为 0 时才显示运行中角标。
+   */
   function syncTaskbarBadge(map: Record<string, number>, prefs?: CompletionPreferences) {
     try {
       const effective = prefs ?? notificationPrefsRef.current;
       const rawTotal = computePendingTotal(map);
       const total = effective.badge ? rawTotal : 0;
-      notifyLog(`syncTaskbarBadge raw=${rawTotal} effective=${total} enabled=${effective.badge}`);
-      window.host.notifications?.setBadgeCount?.(total);
+      const rawRunning = computeRunningTaskTotal(agentTurnTimerByTabRef.current);
+      const running = effective.badge && total <= 0 ? rawRunning : 0;
+      notifyLog(`syncTaskbarBadge raw=${rawTotal} runningRaw=${rawRunning} effective=${total} running=${running} enabled=${effective.badge}`);
+      if (window.host.notifications?.setTaskbarBadgeState) {
+        window.host.notifications.setTaskbarBadgeState({ completedCount: total, runningCount: running, hasRunningTask: running > 0 });
+      } else {
+        window.host.notifications?.setBadgeCount?.(total);
+      }
     } catch {}
   }
 
@@ -4220,6 +4240,10 @@ export default function CodexFlowManagerUI() {
   useEffect(() => {
     syncTaskbarBadge(pendingCompletionsRef.current, notificationPrefs);
   }, [notificationPrefs]);
+
+  useEffect(() => {
+    syncTaskbarBadge(pendingCompletionsRef.current);
+  }, [agentTurnTimerByTab]);
 
   useEffect(() => {
     const aliveTabs = new Set<string>();
