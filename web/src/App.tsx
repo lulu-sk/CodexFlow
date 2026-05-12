@@ -45,6 +45,8 @@ import {
   Maximize2,
   Minimize2,
   ArrowDownAZ,
+  ArrowDown,
+  ArrowUp,
   Check,
   Search,
   SlidersHorizontal,
@@ -13138,6 +13140,14 @@ function buildHistoryMessageKey(sessionId: string, originalIndex: number): strin
 }
 
 /**
+ * 中文说明：判断某条历史消息是否属于 USER Input 锚点。
+ * 约定：以 role === "user" 作为详情页中的用户输入定位基准。
+ */
+function isHistoryUserInputMessage(message: HistoryMessage): boolean {
+  return String(message?.role || "").trim().toLowerCase() === "user";
+}
+
+/**
  * 中文说明：对高频输入做轻量防抖，避免每次按键都立即触发重型搜索与高亮计算。
  */
 function useDebouncedValue<TValue>(value: TValue, delayMs: number): TValue {
@@ -13183,7 +13193,7 @@ function HistoryMessageCard({ view, options }: { view: HistoryMessageView; optio
     <div
       ref={(node) => options?.registerMessageRef?.(messageKey, node)}
       data-history-message-key={messageKey}
-      className={`min-w-0 overflow-hidden rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple p-2 shadow-apple-sm text-[var(--cf-text-primary)] transition-all duration-apple hover:shadow-apple dark:shadow-apple-dark-sm dark:hover:shadow-apple-dark ${isActive ? 'ring-1 ring-[var(--cf-accent)]/70 shadow-apple dark:ring-[var(--cf-accent)]/40' : ''}`}
+      className={`min-w-0 overflow-hidden rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple p-2 shadow-apple-sm text-[var(--cf-text-primary)] transition-all duration-apple hover:shadow-apple dark:shadow-apple-dark-sm dark:hover:shadow-apple-dark ${isActive ? 'border-[var(--cf-accent)]/70 bg-[var(--cf-accent)]/5 ring-2 ring-[var(--cf-accent)]/85 shadow-apple dark:bg-[var(--cf-accent)]/10 dark:ring-[var(--cf-accent)]/55' : ''}`}
     >
       <div data-history-search-scope className="mb-1 truncate text-xs uppercase tracking-wider font-apple-semibold text-[var(--cf-text-secondary)]">{message.role}</div>
       <ContentRenderer
@@ -13605,6 +13615,32 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
 
   const normalizedMatchIndex = matches.length === 0 ? 0 : Math.min(activeMatchIndex, matches.length - 1);
   const activeMatch = matches[normalizedMatchIndex] || null;
+  const userInputMessageKeys = useMemo(
+    () => filteredMessages.filter((view) => isHistoryUserInputMessage(view.message)).map((view) => view.messageKey),
+    [filteredMessages],
+  );
+  const userInputMessageKeySignature = userInputMessageKeys.join("|");
+  const [activeUserInputIndex, setActiveUserInputIndex] = useState<number | null>(null);
+
+  useEffect(() => {
+    setActiveUserInputIndex(null);
+  }, [selectedHistoryId, userInputMessageKeySignature]);
+
+  useEffect(() => {
+    if (activeUserInputIndex === null) return;
+    if (userInputMessageKeys.length === 0) {
+      setActiveUserInputIndex(null);
+      return;
+    }
+    if (activeUserInputIndex >= userInputMessageKeys.length) {
+      setActiveUserInputIndex(userInputMessageKeys.length - 1);
+    }
+  }, [activeUserInputIndex, userInputMessageKeys.length]);
+
+  const normalizedUserInputIndex = activeUserInputIndex === null || userInputMessageKeys.length === 0
+    ? -1
+    : Math.min(activeUserInputIndex, userInputMessageKeys.length - 1);
+  const activeUserInputMessageKey = normalizedUserInputIndex < 0 ? null : userInputMessageKeys[normalizedUserInputIndex] || null;
 
   useEffect(() => {
     const root = historyFindRootRef.current;
@@ -13666,22 +13702,83 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
     };
   }, [detailSearchActive, activeMatch, messageIndexByKey]);
 
+  useEffect(() => {
+    if (!activeUserInputMessageKey) return;
+    const matchIndex = messageIndexByKey.get(activeUserInputMessageKey);
+    if (typeof matchIndex === "number") {
+      historyVirtualListRef.current?.scrollToIndex(matchIndex, { align: "start", behavior: "smooth" });
+    }
+
+    let cancelled = false;
+    let attempts = 0;
+
+    /**
+     * 中文说明：等待虚拟列表完成挂载后，再将当前 USER Input 锚点滚到靠近视口顶部但保留少量上边距的位置。
+     */
+    const tryActivateUserInput = () => {
+      if (cancelled) return;
+
+      const viewport = detailScrollAreaRef.current;
+      const messageNode = messageRefs.current[activeUserInputMessageKey];
+      if (viewport && messageNode) {
+        try {
+          const viewportRect = viewport.getBoundingClientRect();
+          const nodeRect = messageNode.getBoundingClientRect();
+          // 第一条用户输入上方要给日期预留更多空间，后续条目只保留最小安全边距即可。
+          const topPadding = matchIndex === 0 ? 28 : 8;
+          const nextTop = Math.max(0, viewport.scrollTop + (nodeRect.top - viewportRect.top) - topPadding);
+          viewport.scrollTo({ top: nextTop, behavior: "smooth" });
+        } catch {}
+        return;
+      }
+
+      attempts += 1;
+      if (attempts < 6) requestAnimationFrame(tryActivateUserInput);
+    };
+
+    const rafId = requestAnimationFrame(tryActivateUserInput);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(rafId);
+    };
+  }, [activeUserInputMessageKey, messageIndexByKey]);
+
   const goToNextMatch = useCallback(() => {
     if (!matches.length) return;
+    setActiveUserInputIndex(null);
     setActiveMatchIndex((prev) => (prev + 1) % matches.length);
   }, [matches.length]);
-
   const goToPrevMatch = useCallback(() => {
     if (!matches.length) return;
+    setActiveUserInputIndex(null);
     setActiveMatchIndex((prev) => (prev - 1 + matches.length) % matches.length);
   }, [matches.length]);
 
+  /**
+   * 中文说明：在当前可见的 USER Input 锚点之间循环切换。
+   */
+  const goToNextUserInput = useCallback(() => {
+    if (!userInputMessageKeys.length) return;
+    setActiveUserInputIndex((prev) => (prev === null ? 0 : (prev + 1) % userInputMessageKeys.length));
+  }, [userInputMessageKeys.length]);
+
+  /**
+   * 中文说明：在当前可见的 USER Input 锚点之间反向循环切换。
+   */
+  const goToPrevUserInput = useCallback(() => {
+    if (!userInputMessageKeys.length) return;
+    setActiveUserInputIndex((prev) => (prev === null ? userInputMessageKeys.length - 1 : (prev - 1 + userInputMessageKeys.length) % userInputMessageKeys.length));
+  }, [userInputMessageKeys.length]);
+
+  const activeDetailMessageKey = activeUserInputIndex !== null
+    ? activeUserInputMessageKey || undefined
+    : (detailSearchActive ? activeMatch?.messageKey : undefined);
   const detailRenderOptions = useMemo<HistoryRenderOptions>(() => ({
-    activeMessageKey: detailSearchActive ? activeMatch?.messageKey : undefined,
+    activeMessageKey: activeDetailMessageKey,
     registerMessageRef,
     projectWinPath,
     inlineImageState,
-  }), [detailSearchActive, activeMatch?.messageKey, registerMessageRef, projectWinPath, inlineImageState]);
+  }), [activeDetailMessageKey, registerMessageRef, projectWinPath, inlineImageState]);
 
   /**
    * 中文说明：将历史详情滚动区滚动到顶部。
@@ -13892,57 +13989,89 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
 
       {/* 紧凑的过滤和搜索区域 */}
       <div className="flex flex-col gap-1.5 px-3 py-1.5 text-xs text-[var(--cf-text-secondary)] bg-[var(--cf-bg-secondary)]">
-        {/* 第一行：搜索框和过滤器切换 */}
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <div className="relative min-w-0 max-w-xs flex-1 basis-[14rem]">
-            <Input
-              value={detailSearchInput}
-              onChange={(e) => setDetailSearchInput((e.target as HTMLInputElement).value)}
-              placeholder={t('history:detailSearchPlaceholder') as string}
-              title={t('history:detailSearchHint') as string}
-              aria-label={t('history:detailSearchHint') as string}
-              className="pl-8 h-8 text-xs"
-            />
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--cf-text-muted)]" />
+        {/* 第一行：搜索、USER 输入导航和过滤器 */}
+        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2">
+          <div className="flex min-w-0 items-center gap-2 justify-self-start">
+            <div className="relative min-w-0 max-w-xs flex-1 basis-[14rem]">
+              <Input
+                value={detailSearchInput}
+                onChange={(e) => setDetailSearchInput((e.target as HTMLInputElement).value)}
+                placeholder={t('history:detailSearchPlaceholder') as string}
+                title={t('history:detailSearchHint') as string}
+                aria-label={t('history:detailSearchHint') as string}
+                className="pl-8 h-8 text-xs"
+              />
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--cf-text-muted)]" />
+            </div>
+
+            {detailSearchActive && matches.length > 0 ? (
+              <div className="flex shrink-0 items-center gap-1.5">
+                <div className="text-[0.65rem] text-[var(--cf-text-muted)] font-apple-medium whitespace-nowrap">
+                  {normalizedMatchIndex + 1} / {matches.length}
+                </div>
+                <div className="flex items-center gap-0.5">
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    onClick={goToPrevMatch}
+                    disabled={matches.length === 0}
+                    className="h-6 w-6"
+                    title="上一个 (Shift+F3 / Ctrl+Shift+G)"
+                  >
+                    <ChevronUp className="h-3.5 w-3.5" />
+                  </Button>
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    onClick={goToNextMatch}
+                    disabled={matches.length === 0}
+                    className="h-6 w-6"
+                    title="下一个 (F3 / Ctrl+G)"
+                  >
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              </div>
+            ) : detailSearchActive ? (
+              <div className="text-[0.65rem] text-[var(--cf-text-muted)] font-apple-regular whitespace-nowrap">
+                {t('history:detailSearchMatches', { count: 0 })}
+              </div>
+            ) : null}
           </div>
 
-          {detailSearchActive && matches.length > 0 && (
-            <div className="flex shrink-0 items-center gap-1.5">
-              <div className="text-[0.65rem] text-[var(--cf-text-muted)] font-apple-medium whitespace-nowrap">
-                {normalizedMatchIndex + 1} / {matches.length}
-              </div>
-              <div className="flex items-center gap-0.5">
-                <Button
-                  size="icon-sm"
-                  variant="ghost"
-                  onClick={goToPrevMatch}
-                  disabled={matches.length === 0}
-                  className="h-6 w-6"
-                  title="上一个 (Shift+F3 / Ctrl+Shift+G)"
+          {userInputMessageKeys.length > 0 ? (
+            <div className="flex items-center justify-self-center">
+              <div className="flex items-center gap-1">
+                {activeUserInputIndex !== null && (
+                  <div className="mr-0.5 whitespace-nowrap text-[0.65rem] font-apple-medium text-[var(--cf-text-muted)]">
+                    {normalizedUserInputIndex + 1} / {userInputMessageKeys.length}
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={goToPrevUserInput}
+                  disabled={userInputMessageKeys.length === 0}
+                  className="inline-flex h-5 w-5 appearance-none items-center justify-center border-0 bg-transparent p-0 text-[var(--cf-text-muted)] transition-colors hover:text-[var(--cf-text-primary)] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40"
+                  title={t('history:detailUserInputPrev') as string}
+                  aria-label={t('history:detailUserInputPrev') as string}
                 >
-                  <ChevronUp className="h-3.5 w-3.5" />
-                </Button>
-                <Button
-                  size="icon-sm"
-                  variant="ghost"
-                  onClick={goToNextMatch}
-                  disabled={matches.length === 0}
-                  className="h-6 w-6"
-                  title="下一个 (F3 / Ctrl+G)"
+                  <ArrowUp className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={goToNextUserInput}
+                  disabled={userInputMessageKeys.length === 0}
+                  className="inline-flex h-5 w-5 appearance-none items-center justify-center border-0 bg-transparent p-0 text-[var(--cf-text-muted)] transition-colors hover:text-[var(--cf-text-primary)] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40"
+                  title={t('history:detailUserInputNext') as string}
+                  aria-label={t('history:detailUserInputNext') as string}
                 >
-                  <ChevronDown className="h-3.5 w-3.5" />
-                </Button>
+                  <ArrowDown className="h-3.5 w-3.5" />
+                </button>
               </div>
             </div>
-          )}
+          ) : <div className="justify-self-center" />}
 
-          {detailSearchActive && matches.length === 0 && (
-            <div className="text-[0.65rem] text-[var(--cf-text-muted)] font-apple-regular whitespace-nowrap">
-              {t('history:detailSearchMatches', { count: 0 })}
-            </div>
-          )}
-
-          <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          <div className="flex shrink-0 items-center justify-self-end gap-1.5">
             <span className="text-[var(--cf-text-muted)] font-apple-medium whitespace-nowrap">{Object.values(typeFilter).filter(Boolean).length}/{Object.keys(typeFilter).length}</span>
             <Button
               size="sm"

@@ -73,6 +73,8 @@
   "detailSearchPlaceholder": "Search within this session…",
   "detailSearchHint": "Search message text, role, or type; use F3 / Shift+F3 to move between hits.",
   "detailSearchMatches": "{count} matches · F3/Shift+F3 to navigate",
+  "detailUserInputPrev": "Previous user input",
+  "detailUserInputNext": "Next user input",
   "ungrouped": "Ungrouped",
   "groupToday": "Today",
   "groupYesterday": "Yesterday",

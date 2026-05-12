@@ -73,6 +73,8 @@
   "detailSearchPlaceholder": "在当前会话中搜索…",
   "detailSearchHint": "在消息文本、角色或类型中搜索，按 F3/Shift+F3 跳转匹配项。",
   "detailSearchMatches": "共 {count} 处匹配，按 F3/Shift+F3 跳转匹配项",
+  "detailUserInputPrev": "上一个 USER Input",
+  "detailUserInputNext": "下一个 USER Input",
   "ungrouped": "未归类会话",
   "groupToday": "今天",
   "groupYesterday": "昨天",
