@@ -202,6 +202,15 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* 无边框独立窗口依赖该区域拖动窗口，交互控件需显式排除。 */
+.cf-window-drag {
+  -webkit-app-region: drag;
+}
+
+.cf-window-no-drag {
+  -webkit-app-region: no-drag;
+}
+
 /* 文本选区样式 */
 ::selection {
   background-color: var(--cf-accent-light);

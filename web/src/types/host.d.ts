@@ -134,6 +134,55 @@ export type Project = {
   lastOpenedAt?: number;
 };
 
+export type AppWindowMode = "main" | "detached-tab";
+
+export type AppWindowMeta = {
+  id: string;
+  mode: AppWindowMode;
+};
+
+export type AppWindowClosedPayload = {
+  windowId: string;
+  mode: AppWindowMode;
+};
+
+export type AppWindowStatePayload = {
+  isMaximized?: boolean;
+};
+
+export type AppWindowControlAction = "minimize" | "toggleMaximize" | "close";
+
+export type AppBrandAssets = {
+  title?: string;
+  iconDataUrl?: string;
+};
+
+export type DetachedTabWindowPlacement = {
+  x?: number;
+  y?: number;
+};
+
+export type CreateDetachedTabWindowOptions = DetachedTabWindowPlacement & {
+  windowId?: string;
+};
+
+export type TabDragPreviewWindowState = {
+  windowId?: string;
+  tabId?: string;
+  tabName?: string;
+  providerIconSrc?: string;
+  isGitTab?: boolean;
+  detachCandidate?: boolean;
+};
+
+export type CreateTabDragPreviewWindowOptions = TabDragPreviewWindowState;
+export type UpdateTabDragPreviewWindowOptions = TabDragPreviewWindowState & {
+  windowId: string;
+};
+export type CloseTabDragPreviewWindowOptions = {
+  windowId?: string;
+};
+
 export type GitUpdateExecutionPhase =
   | "repository-graph"
   | "preflight"
@@ -975,14 +1024,39 @@ export interface AppAPI {
    * 用途：渲染层区分“渲染 reload/HMR”与“应用重启”，避免重启后恢复失效的控制台绑定。
    */
   bootId: string;
+  /** 当前渲染窗口的身份信息。 */
+  window: AppWindowMeta;
   getVersion(): Promise<string>;
   getPaths(): Promise<{ licensePath?: string; noticePath?: string }>;
+  /** 应用品牌资源，用于自绘标题栏。 */
+  getBrandAssets?(): Promise<{ ok: boolean; error?: string } & AppBrandAssets>;
   /** 仅 Windows：设置原生标题栏主题（light/dark） */
   setTitleBarTheme?(theme: { mode: 'light' | 'dark'; source?: ThemeSetting } | 'light' | 'dark'): Promise<{ ok: boolean; error?: string }>;
+  /** 控制当前窗口。 */
+  controlWindow?(action: AppWindowControlAction): Promise<{ ok: boolean; isMaximized?: boolean; error?: string }>;
+  /** 读取当前窗口状态。 */
+  getWindowState?(): Promise<{ ok: boolean; isMaximized?: boolean; error?: string }>;
+  /** 监听当前窗口状态变化。 */
+  onWindowStateChanged?(handler: (payload: AppWindowStatePayload) => void): () => void;
   /** 主进程发起的“退出确认”请求（用于渲染进程自定义弹窗样式） */
   onQuitConfirm?(handler: (payload: { token: string; count: number }) => void): () => void;
   /** 回复主进程的“退出确认”结果 */
   respondQuitConfirm?(token: string, ok: boolean): Promise<{ ok: boolean; error?: string }>;
+  /** 创建一个用于承载独立标签页的新窗口。 */
+  createDetachedTabWindow?(options?: CreateDetachedTabWindowOptions): Promise<{ ok: boolean; windowId?: string; error?: string }>;
+  /** 创建桌面级标签拖拽预览浮层。 */
+  createTabDragPreviewWindow?(options?: CreateTabDragPreviewWindowOptions): Promise<{ ok: boolean; windowId?: string; error?: string }>;
+  /** 更新桌面级标签拖拽预览浮层。 */
+  updateTabDragPreviewWindow?(options: UpdateTabDragPreviewWindowOptions): Promise<{ ok: boolean; error?: string }>;
+  /** 关闭桌面级标签拖拽预览浮层。 */
+  closeTabDragPreviewWindow?(options?: CloseTabDragPreviewWindowOptions): Promise<{ ok: boolean; closed?: boolean; error?: string }>;
+  /** 监听应用窗口关闭事件。 */
+  onWindowClosed?(handler: (payload: AppWindowClosedPayload) => void): () => void;
+}
+
+export interface TabDragPreviewAPI {
+  /** 监听主进程推送的拖拽预览状态。 */
+  onUpdate(handler: (payload: TabDragPreviewWindowState) => void): () => void;
 }
 
 export interface EnvAPI {
@@ -1025,6 +1099,7 @@ declare global {
       fileIndex?: FileIndexAPI;
       gitRepoWatch?: GitRepoWatchAPI;
       images?: ImagesAPI;
+      tabDragPreview?: TabDragPreviewAPI;
       debug?: {
         get(): Promise<any>;
         update(partial: any): Promise<any>;

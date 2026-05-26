@@ -179,10 +179,10 @@ export class PTYManager {
   private sessions = new Map<string, IPty>();
   private backlogs = new Map<string, PtyBacklogBuffer>();
   private ipcPendingById = new Map<string, PtyIpcPendingState>();
-  private getWindow: () => BrowserWindow | null;
+  private getWindows: () => BrowserWindow[];
 
-  constructor(getWindow: () => BrowserWindow | null) {
-    this.getWindow = getWindow;
+  constructor(getWindows: () => BrowserWindow[]) {
+    this.getWindows = getWindows;
   }
 
   /**
@@ -193,11 +193,14 @@ export class PTYManager {
    * @param payload - 发送负载
    */
   private sendToRenderer(channel: string, payload: unknown): void {
-    safeWindowSend(this.getWindow(), channel, payload, {
-      tag: 'pty',
-      suppressMs: 800,
-      logger: TERM_DEBUG ? dlog : undefined,
-    });
+    const windows = this.getWindows();
+    for (const win of windows) {
+      safeWindowSend(win, channel, payload, {
+        tag: 'pty',
+        suppressMs: 800,
+        logger: TERM_DEBUG ? dlog : undefined,
+      });
+    }
   }
 
   /**

@@ -39,6 +39,7 @@ import {
   EyeOff,
   Trash2,
   X,
+  Minus,
   Copy as CopyIcon,
   FilePenLine,
   Info as InfoIcon,
@@ -118,7 +119,25 @@ import {
 } from "@/lib/terminal-appearance";
 import { getCachedThemeSetting, useThemeController, writeThemeSettingCache, type ThemeMode, type ThemeSetting } from "@/lib/theme";
 import { loadHiddenProjectIds, loadShowHiddenProjects, saveHiddenProjectIds, saveShowHiddenProjects } from "@/lib/projects-hidden";
-import { loadConsoleSession, saveConsoleSession, type PersistedConsoleTab } from "@/lib/console-session";
+import {
+  loadConsoleSession,
+  saveConsoleSession,
+  type PersistedConsoleTab,
+  type PersistedWindowUiState,
+} from "@/lib/console-session";
+import {
+  countWindowOwnedTabs,
+  findFirstProjectIdForWindowTabs,
+  isTabOwnedByWindow,
+  MAIN_APP_WINDOW_ID,
+  moveTabBetweenWindows,
+  moveWindowOwnedTabs,
+  parseAppWindowContext,
+  reorderTabsWithinWindowByInsertIndex,
+  resolveTabWindowId,
+} from "@/lib/tab-window";
+
+const CONSOLE_SESSION_STORAGE_KEY = "codexflow.consoleSession.v1";
 import {
   clearRendererDraftRecovery,
   loadRendererDraftRecovery,
@@ -169,6 +188,7 @@ import type {
   Project,
   ProviderItem,
   ProviderEnv,
+  TabDragPreviewWindowState,
   WorktreeCreateTaskItemSnapshot,
   WorktreeCreateTaskItemStatus,
   WorktreeCreateTaskSnapshot,
@@ -342,6 +362,20 @@ type CompletionSnapshot = {
   source: CompletionEventSource;
 };
 
+type TabPointerDragState = {
+  pointerId: number;
+  tabId: string;
+  tabName: string;
+  providerIconSrc: string;
+  isGitTab: boolean;
+  started: boolean;
+  startClientX: number;
+  startClientY: number;
+  lastClientX: number;
+  lastClientY: number;
+  lastInsertIndex: number | null;
+};
+
 type GitRepoInitStatus = "running" | "success" | "error";
 
 type GitRepoInitDialogState = {
@@ -443,7 +477,16 @@ function isEditableContextMenuTarget(node: EventTarget | null | undefined): bool
 }
 
 /**
- * 中文说明：归一化 worktree 备注基名（去首尾空白，并压缩连续空白为单个空格）。
+ * 判断标签指针拖拽是否应被忽略，避免关闭按钮、输入框等交互控件误触发拖拽。
+ */
+function shouldIgnoreTabPointerDragStart(node: EventTarget | null | undefined): boolean {
+  const el = node && typeof (node as any).closest === "function" ? (node as HTMLElement) : null;
+  if (!el) return false;
+  return !!el.closest("input, textarea, select, a, [contenteditable='true'], [data-cf-no-tab-drag='true']");
+}
+
+/**
+ * 归一化 worktree 备注基名（去首尾空白，并压缩连续空白为单个空格）。
  */
 function normalizeWorktreeRemarkBaseName(value: unknown): string {
   return String(value ?? "").replace(/\s+/g, " ").trim();
@@ -695,6 +738,57 @@ export default function CodexFlowManagerUI() {
   const appBootId = useMemo(() => {
     try { return String(window.host?.app?.bootId || "").trim(); } catch { return ""; }
   }, []);
+  const appWindowContext = useMemo(() => {
+    try {
+      const hostWindow = window.host?.app?.window;
+      const id = String(hostWindow?.id || "").trim();
+      const mode = hostWindow?.mode === "detached-tab" ? "detached-tab" : "main";
+      if (id)
+        return {
+          windowId: id,
+          mode,
+          isDetachedTabWindow: mode === "detached-tab" && id !== MAIN_APP_WINDOW_ID,
+        };
+    } catch {}
+    return parseAppWindowContext();
+  }, []);
+  const currentWindowId = appWindowContext.windowId;
+  const isDetachedTabWindow = appWindowContext.isDetachedTabWindow;
+  const [appBrandIconSrc, setAppBrandIconSrc] = useState("");
+  const [detachedWindowMaximized, setDetachedWindowMaximized] = useState(false);
+  useEffect(() => {
+    if (!isDetachedTabWindow) return;
+    let disposed = false;
+    void (async () => {
+      try {
+        const res = await window.host?.app?.getBrandAssets?.();
+        const iconSrc = res?.ok ? String(res.iconDataUrl || "").trim() : "";
+        if (!disposed && iconSrc) setAppBrandIconSrc(iconSrc);
+      } catch {}
+    })();
+    return () => {
+      disposed = true;
+    };
+  }, [isDetachedTabWindow]);
+  useEffect(() => {
+    if (!isDetachedTabWindow) return;
+    let disposed = false;
+    const applyWindowState = (payload?: { isMaximized?: boolean }) => {
+      if (!disposed && typeof payload?.isMaximized === "boolean")
+        setDetachedWindowMaximized(payload.isMaximized);
+    };
+    void (async () => {
+      try {
+        const res = await window.host?.app?.getWindowState?.();
+        if (res?.ok) applyWindowState(res);
+      } catch {}
+    })();
+    const off = window.host?.app?.onWindowStateChanged?.(applyWindowState);
+    return () => {
+      disposed = true;
+      try { off?.(); } catch {}
+    };
+  }, [isDetachedTabWindow]);
   const restoredConsoleSession = useMemo(() => {
     // 若无法获取 bootId，则不做会话恢复，避免跨重启残留无效控制台
     if (!appBootId) return null;
@@ -1158,7 +1252,10 @@ export default function CodexFlowManagerUI() {
   const [hiddenProjectIds, setHiddenProjectIds] = useState<string[]>(() => loadHiddenProjectIds());
   const [showHiddenProjects, setShowHiddenProjects] = useState<boolean>(() => loadShowHiddenProjects());
   const [query, setQuery] = useState("");
-  const [selectedProjectId, setSelectedProjectId] = useState<string>(() => restoredConsoleSession?.selectedProjectId || "");
+  const [selectedProjectId, setSelectedProjectId] = useState<string>(() => {
+    const state = restoredConsoleSession?.windowUiStateById?.[currentWindowId];
+    return String(state?.selectedProjectId || "").trim();
+  });
   const hiddenProjectIdSet = useMemo(() => new Set(hiddenProjectIds), [hiddenProjectIds]);
   const visibleProjects = useMemo(() => {
     if (showHiddenProjects) return projects;
@@ -1376,6 +1473,7 @@ export default function CodexFlowManagerUI() {
   ]);
 
   useEffect(() => {
+    if (!projectsHydrated) return;
     // 如果没有可见项目，清空选择
     if (visibleProjects.length === 0) {
       if (selectedProjectId !== "") setSelectedProjectId("");
@@ -1385,7 +1483,7 @@ export default function CodexFlowManagerUI() {
     if (selectedProjectId && !visibleProjects.some((p) => p.id === selectedProjectId)) {
       setSelectedProjectId("");
     }
-  }, [visibleProjects, selectedProjectId]);
+  }, [projectsHydrated, visibleProjects, selectedProjectId]);
 
   // 切换项目时：确保/加载文件索引并推送至前端 Worker
   useEffect(() => {
@@ -1408,18 +1506,30 @@ export default function CodexFlowManagerUI() {
         name: tab.name,
         kind: tab.kind === "git" ? "git" : "terminal",
         providerId: tab.providerId,
+        windowId: resolveTabWindowId(tab),
         createdAt: tab.createdAt,
         logs: [],
       }));
     }
     return out;
   });
-  const tabs = tabsByProject[selectedProjectId] || [];
+  const allProjectTabs = tabsByProject[selectedProjectId] || [];
+  const tabs = useMemo(() => allProjectTabs.filter((tab) => isTabOwnedByWindow(tab, currentWindowId)), [allProjectTabs, currentWindowId]);
   const hasGitWorkbenchTab = tabs.some((tab) => tab.kind === "git");
-  const [activeTabId, setActiveTabId] = useState<string | null>(() => restoredConsoleSession?.activeTabByProject?.[selectedProjectId] || null);
+  const [activeTabId, setActiveTabId] = useState<string | null>(() => {
+    const state = restoredConsoleSession?.windowUiStateById?.[currentWindowId];
+    return state?.activeTabIdByProject?.[selectedProjectId] || null;
+  });
   const activeTabIdRef = useRef<string | null>(null);
   // 记录每个项目的活跃 tab，切换项目时恢复对应的活跃 tab，避免切换关闭控制台
-  const [activeTabByProject, setActiveTabByProject] = useState<Record<string, string | null>>(() => restoredConsoleSession?.activeTabByProject || {});
+  const [activeTabByProject, setActiveTabByProject] = useState<Record<string, string | null>>(() => {
+    const state = restoredConsoleSession?.windowUiStateById?.[currentWindowId];
+    return state?.activeTabIdByProject || {};
+  });
+  const [showHistoryPanel, setShowHistoryPanel] = useState<boolean>(() => {
+    const state = restoredConsoleSession?.windowUiStateById?.[currentWindowId];
+    return typeof state?.showHistoryPanel === "boolean" ? state.showHistoryPanel : true;
+  });
   // 编辑标签名状态
   const [editingTabId, setEditingTabId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState<string>("");
@@ -1428,14 +1538,8 @@ export default function CodexFlowManagerUI() {
   const tabFocusTimerRef = useRef<number | null>(null);
   const tabFocusNextRef = useRef<{ immediate: boolean; allowDuringRename: boolean; delay?: number }>({ immediate: false, allowDuringRename: false });
   const editingTabIdRef = useRef<string | null>(null);
-  // 调试：标签页右键测试菜单（仅开发或显式开启）
+  // 标签页右键菜单（正式功能始终可见，调试能力按开关附加）
   const [tabCtxMenu, setTabCtxMenu] = useState<{ show: boolean; x: number; y: number; tabId?: string | null }>({ show: false, x: 0, y: 0, tabId: null });
-  useEffect(() => {
-    if (!showNotifDebugMenu && tabCtxMenu.show) {
-      notifyLog("ctx.menu.forceClose reason=disabled");
-      setTabCtxMenu({ show: false, x: 0, y: 0, tabId: null });
-    }
-  }, [notifyLog, showNotifDebugMenu, tabCtxMenu.show]);
   const closeTabContextMenu = React.useCallback((source: string, targetTabId?: string | null) => {
     const id = targetTabId ?? tabCtxMenu.tabId ?? activeTabId ?? null;
     notifyLog(`ctx.menu.close source=${source} tab=${id || 'none'}`);
@@ -1450,10 +1554,6 @@ export default function CodexFlowManagerUI() {
     }
     event.preventDefault();
     event.stopPropagation();
-    if (!showNotifDebugMenu) {
-      notifyLog(`ctx.menu.blocked source=${source} tab=${id}`);
-      return;
-    }
     setTabCtxMenu({ show: true, x: event.clientX, y: event.clientY, tabId });
     notifyLog(`ctx.menu.open source=${source} tab=${id} x=${Math.round(event.clientX)} y=${Math.round(event.clientY)}`);
   }, [notifyLog, setTabCtxMenu, showNotifDebugMenu]);
@@ -1474,6 +1574,18 @@ export default function CodexFlowManagerUI() {
   const ptyAliveRef = useRef<Record<string, boolean>>(initialPtyAlive);
   const [ptyAlive, setPtyAlive] = useState<Record<string, boolean>>(() => initialPtyAlive);
   const tabExecEnvByTabRef = useRef<Record<string, Required<ProviderEnv>>>({});
+  useEffect(() => {
+    const snapshot = restoredConsoleSession?.tabEnvByTab || {};
+    const next: Record<string, Required<ProviderEnv>> = {};
+    for (const [tabId, item] of Object.entries(snapshot)) {
+      const terminal = item?.terminal === "windows" || item?.terminal === "pwsh" ? item.terminal : "wsl";
+      next[tabId] = {
+        terminal,
+        distro: String(item?.distro || ""),
+      };
+    }
+    tabExecEnvByTabRef.current = next;
+  }, [restoredConsoleSession]);
   const geminiWindowsEditorReadyByTabRef = useRef<Record<string, boolean>>({});
   const geminiWslEditorReadyByTabRef = useRef<Record<string, boolean>>({});
   const terminalManagerRef = useRef<TerminalManager | null>(null);
@@ -1511,6 +1623,8 @@ export default function CodexFlowManagerUI() {
   const ptyToTabRef = useRef<Record<string, string>>({});
   const tabProjectRef = useRef<Record<string, string>>({});
   const tabsByProjectRef = useRef<Record<string, ConsoleTab[]>>(tabsByProject);
+  const detachedWindowHasOwnedTabsRef = useRef(false);
+  const detachedWindowClosingAfterEmptyRef = useRef(false);
   const projectsRef = useRef<Project[]>(projects);
   const audioContextRef = useRef<AudioContext | null>(null);
   const userInputCountByTabIdRef = useRef<Record<string, number>>({});
@@ -1560,7 +1674,10 @@ export default function CodexFlowManagerUI() {
     try {
       const knownTabs = new Set<string>();
       for (const list of Object.values(snapshot.tabsByProject || {})) {
-        for (const tab of list || []) knownTabs.add(tab.id);
+        for (const tab of list || []) {
+          if (!isTabOwnedByWindow(tab, currentWindowId)) continue;
+          knownTabs.add(tab.id);
+        }
       }
       for (const [tabId, ptyId] of Object.entries(snapshot.ptyByTab || {})) {
         if (!knownTabs.has(tabId)) continue;
@@ -1568,7 +1685,126 @@ export default function CodexFlowManagerUI() {
         try { tm.setPty(tabId, ptyId, { hydrateBacklog: true }); } catch {}
       }
     } catch {}
-  }, [restoredConsoleSession, tm]);
+  }, [restoredConsoleSession, tm, currentWindowId]);
+
+  useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key !== CONSOLE_SESSION_STORAGE_KEY || !event.newValue) return;
+      try {
+        const nextSnapshot = loadConsoleSession({ currentBootId: appBootId });
+        if (!nextSnapshot) return;
+        const nextTabsByProject: Record<string, ConsoleTab[]> = {};
+        for (const [projectId, list] of Object.entries(nextSnapshot.tabsByProject || {})) {
+          nextTabsByProject[projectId] = (list || []).map((tab) => ({
+            id: tab.id,
+            name: tab.name,
+            kind: tab.kind === "git" ? "git" : "terminal",
+            providerId: tab.providerId,
+            windowId: resolveTabWindowId(tab),
+            createdAt: tab.createdAt,
+            logs: [],
+          }));
+        }
+        setTabsByProject(nextTabsByProject);
+        setPtyByTab(nextSnapshot.ptyByTab || {});
+        ptyByTabRef.current = nextSnapshot.ptyByTab || {};
+        const uiState = nextSnapshot.windowUiStateById?.[currentWindowId];
+        if (uiState) {
+          setActiveTabByProject(uiState.activeTabIdByProject || {});
+          setSelectedProjectId(String(uiState.selectedProjectId || "").trim());
+          if (typeof uiState.showHistoryPanel === "boolean")
+            setShowHistoryPanel(uiState.showHistoryPanel);
+        }
+        const nextEnvByTab: Record<string, Required<ProviderEnv>> = {};
+        for (const [tabId, item] of Object.entries(nextSnapshot.tabEnvByTab || {})) {
+          nextEnvByTab[tabId] = {
+            terminal: item?.terminal === "windows" || item?.terminal === "pwsh" ? item.terminal : "wsl",
+            distro: String(item?.distro || ""),
+          };
+        }
+        tabExecEnvByTabRef.current = nextEnvByTab;
+      } catch {}
+    };
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, [appBootId, currentWindowId]);
+
+  useEffect(() => {
+    const off = window.host.app.onWindowClosed?.((payload) => {
+      try {
+        const closedWindowId = String(payload?.windowId || "").trim();
+        if (!closedWindowId || closedWindowId === MAIN_APP_WINDOW_ID) return;
+        if (closedWindowId === currentWindowId && detachedWindowClosingAfterEmptyRef.current) return;
+        const latestSnapshot = loadConsoleSession({ currentBootId: appBootId });
+        if (latestSnapshot && countWindowOwnedTabs(latestSnapshot.tabsByProject, closedWindowId) <= 0) {
+          const nextTabsByProject: Record<string, ConsoleTab[]> = {};
+          for (const [projectId, list] of Object.entries(latestSnapshot.tabsByProject || {})) {
+            nextTabsByProject[projectId] = (list || []).map((tab) => ({
+              id: tab.id,
+              name: tab.name,
+              kind: tab.kind === "git" ? "git" : "terminal",
+              providerId: tab.providerId,
+              windowId: resolveTabWindowId(tab),
+              createdAt: tab.createdAt,
+              logs: [],
+            }));
+          }
+          tabsByProjectRef.current = nextTabsByProject;
+          setTabsByProject(nextTabsByProject);
+          ptyByTabRef.current = latestSnapshot.ptyByTab || {};
+          setPtyByTab(latestSnapshot.ptyByTab || {});
+          const nextWindowUiStateById = {
+            ...(latestSnapshot.windowUiStateById || {}),
+          };
+          delete nextWindowUiStateById[closedWindowId];
+          saveConsoleSession({
+            version: 1,
+            savedAt: Date.now(),
+            bootId: appBootId,
+            tabsByProject: latestSnapshot.tabsByProject,
+            ptyByTab: latestSnapshot.ptyByTab,
+            tabEnvByTab: latestSnapshot.tabEnvByTab,
+            windowUiStateById: nextWindowUiStateById,
+          });
+          return;
+        }
+        const moved = moveWindowOwnedTabs(tabsByProjectRef.current, closedWindowId, MAIN_APP_WINDOW_ID);
+        if (!moved.changed) return;
+        setTabsByProject(moved.nextTabsByProject);
+        const nextWindowUiStateById = {
+          ...(latestSnapshot?.windowUiStateById || {}),
+        };
+        delete nextWindowUiStateById[closedWindowId];
+        saveConsoleSession({
+          version: 1,
+          savedAt: Date.now(),
+          bootId: appBootId,
+          tabsByProject: serializeConsoleTabsByProject(moved.nextTabsByProject),
+          ptyByTab: ptyByTabRef.current,
+          tabEnvByTab: serializeConsoleTabEnvByTab(tabExecEnvByTabRef.current),
+          windowUiStateById: nextWindowUiStateById,
+        });
+      } catch {}
+    });
+    return () => {
+      try { off && off(); } catch {}
+    };
+  }, [appBootId, currentWindowId]);
+
+  useEffect(() => {
+    if (!isDetachedTabWindow) return;
+    const ownedCount = countWindowOwnedTabs(tabsByProject, currentWindowId);
+    if (ownedCount > 0) {
+      detachedWindowHasOwnedTabsRef.current = true;
+      return;
+    }
+    if (!detachedWindowHasOwnedTabsRef.current) return;
+    detachedWindowClosingAfterEmptyRef.current = true;
+    const timer = window.setTimeout(() => {
+      try { window.close(); } catch {}
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [currentWindowId, isDetachedTabWindow, tabsByProject]);
 
   // 将当前控制台会话写入本地，支持 reload/HMR 后恢复
   const consoleSessionSaveTimerRef = useRef<number | null>(null);
@@ -1580,25 +1816,24 @@ export default function CodexFlowManagerUI() {
     }
     consoleSessionSaveTimerRef.current = window.setTimeout(() => {
       try {
-        const compactTabsByProject: Record<string, PersistedConsoleTab[]> = {};
-        for (const [projectId, list] of Object.entries(tabsByProject || {})) {
-          if (!Array.isArray(list) || list.length === 0) continue;
-          compactTabsByProject[projectId] = list.map((tab) => ({
-            id: tab.id,
-            name: tab.name,
-            kind: tab.kind === "git" ? "git" : "terminal",
-            providerId: tab.providerId,
-            createdAt: tab.createdAt,
-          }));
-        }
+        const latestSnapshot = loadConsoleSession({ currentBootId: appBootId });
+        const nextWindowUiStateById = {
+          ...(latestSnapshot?.windowUiStateById || {}),
+          [currentWindowId]: {
+            selectedProjectId,
+            selectedProjectName: projectsRef.current.find((project) => project.id === selectedProjectId)?.name || "",
+            activeTabIdByProject: activeTabByProject,
+            showHistoryPanel,
+          },
+        };
         saveConsoleSession({
           version: 1,
           savedAt: Date.now(),
           bootId: appBootId,
-          selectedProjectId,
-          tabsByProject: compactTabsByProject,
-          activeTabByProject,
+          tabsByProject: serializeConsoleTabsByProject(tabsByProject),
           ptyByTab,
+          tabEnvByTab: serializeConsoleTabEnvByTab(tabExecEnvByTabRef.current),
+          windowUiStateById: nextWindowUiStateById,
         });
       } catch {}
     }, 250);
@@ -1608,7 +1843,7 @@ export default function CodexFlowManagerUI() {
         consoleSessionSaveTimerRef.current = null;
       }
     };
-  }, [selectedProjectId, tabsByProject, activeTabByProject, ptyByTab, appBootId]);
+  }, [selectedProjectId, tabsByProject, activeTabByProject, ptyByTab, appBootId, currentWindowId, showHistoryPanel]);
   useEffect(() => {
     if (!terminalManagerRef.current) return;
     try { terminalManagerRef.current.setAppearance({ fontFamily: terminalFontFamily, theme: terminalTheme }); } catch {}
@@ -1721,9 +1956,442 @@ export default function CodexFlowManagerUI() {
   }
   const tabsListRef = useRef<HTMLDivElement | null>(null);
   const [centerMode, setCenterMode] = useState<'console' | 'history'>('console');
+  const tabPointerDragStateRef = useRef<TabPointerDragState | null>(null);
+  const tabDragPreviewRef = useRef<HTMLDivElement | null>(null);
+  const tabDragPreviewFrameRef = useRef<number | null>(null);
+  const tabDragPreviewWindowIdRef = useRef<string | null>(null);
+  const tabDragPreviewSessionRef = useRef(0);
+  const tabDragPreviewDetachCandidateRef = useRef<boolean | null>(null);
+  const tabPointerClickSuppressUntilRef = useRef(0);
+  const [draggingTabId, setDraggingTabId] = useState<string | null>(null);
+  const [tabDragPreview, setTabDragPreview] = useState<{
+    tabId: string;
+    tabName: string;
+    providerIconSrc: string;
+    isGitTab: boolean;
+  } | null>(null);
 
   /**
-   * 中文说明：按标签页 id 反查当前 providerId（用于判断是否允许启用计时功能）。
+   * 构造单个窗口的轻量 UI 状态快照，供会话持久化与跨窗口同步复用。
+   */
+  const buildWindowUiStateSnapshot = useCallback((
+    selectedProjectIdValue: string,
+    activeTabByProjectValue: Record<string, string | null>,
+    showHistoryPanelValue: boolean,
+    selectedProjectNameValue?: string,
+  ): PersistedWindowUiState => ({
+    selectedProjectId: String(selectedProjectIdValue || "").trim(),
+    selectedProjectName: String(selectedProjectNameValue || "").trim(),
+    activeTabIdByProject: { ...(activeTabByProjectValue || {}) },
+    showHistoryPanel: !!showHistoryPanelValue,
+  }), []);
+
+  /**
+   * 立即写入控制台会话快照，确保独立窗口首次加载时就能读到最新标签与窗口状态。
+   */
+  const persistConsoleSessionSnapshot = useCallback((
+    nextTabsByProject: Record<string, ConsoleTab[]>,
+    options?: {
+      windowUiStateById?: Record<string, PersistedWindowUiState>;
+    },
+  ) => {
+    try {
+      const latestSnapshot = loadConsoleSession({ currentBootId: appBootId });
+      const currentProjectName = projectsRef.current.find((project) => project.id === selectedProjectId)?.name || "";
+      const nextWindowUiStateById = options?.windowUiStateById
+        ? { ...options.windowUiStateById }
+        : {
+            ...(latestSnapshot?.windowUiStateById || {}),
+            [currentWindowId]: buildWindowUiStateSnapshot(selectedProjectId, activeTabByProject, showHistoryPanel, currentProjectName),
+          };
+      saveConsoleSession({
+        version: 1,
+        savedAt: Date.now(),
+        bootId: appBootId,
+        tabsByProject: serializeConsoleTabsByProject(nextTabsByProject),
+        ptyByTab: ptyByTabRef.current,
+        tabEnvByTab: serializeConsoleTabEnvByTab(tabExecEnvByTabRef.current),
+        windowUiStateById: nextWindowUiStateById,
+      });
+    } catch {}
+  }, [activeTabByProject, appBootId, buildWindowUiStateSnapshot, currentWindowId, selectedProjectId, showHistoryPanel]);
+
+  /**
+   * 把指定标签页迁移到目标窗口宿主，并同步更新当前窗口的激活标签。
+   */
+  const moveTabToWindow = useCallback((tabId: string, targetWindowId: string) => {
+    const safeTabId = String(tabId || "").trim();
+    const safeWindowId = String(targetWindowId || "").trim() || MAIN_APP_WINDOW_ID;
+    if (!safeTabId) return;
+    const previousTabsByProject = tabsByProjectRef.current;
+    const moved = moveTabBetweenWindows(previousTabsByProject, safeTabId, safeWindowId);
+    if (!moved.changed || !moved.movedProjectId) return;
+
+    const previousActiveTabId = activeTabIdRef.current;
+    const nextActiveTabByProject = { ...activeTabByProject };
+    if (previousActiveTabId === safeTabId && safeWindowId !== currentWindowId) {
+      const remainingTabs = (moved.nextTabsByProject[moved.movedProjectId] || []).filter(
+        (tab) => tab.id !== safeTabId && isTabOwnedByWindow(tab, currentWindowId),
+      );
+      nextActiveTabByProject[moved.movedProjectId] = remainingTabs[0]?.id || null;
+    }
+
+    tabsByProjectRef.current = moved.nextTabsByProject;
+    setTabsByProject(moved.nextTabsByProject);
+
+    if (safeWindowId === currentWindowId) {
+      const nextSelectedProjectId = selectedProjectId || moved.movedProjectId;
+      const targetProjectName = projectsRef.current.find((project) => project.id === nextSelectedProjectId)?.name || "";
+      setSelectedProjectId((prev) => prev || moved.movedProjectId);
+      setActiveTab(safeTabId, { projectId: moved.movedProjectId, focusMode: "immediate", allowDuringRename: true, delay: 0 });
+      const latestSnapshot = loadConsoleSession({ currentBootId: appBootId });
+      persistConsoleSessionSnapshot(moved.nextTabsByProject, {
+        windowUiStateById: {
+          ...(latestSnapshot?.windowUiStateById || {}),
+          [currentWindowId]: buildWindowUiStateSnapshot(
+            nextSelectedProjectId,
+            { ...activeTabByProject, [moved.movedProjectId]: safeTabId },
+            showHistoryPanel,
+            targetProjectName,
+          ),
+        },
+      });
+      return;
+    }
+
+    if (previousActiveTabId === safeTabId)
+      setActiveTab(nextActiveTabByProject[moved.movedProjectId] || null, { projectId: moved.movedProjectId, focusMode: "immediate", allowDuringRename: true, delay: 0 });
+    const latestSnapshot = loadConsoleSession({ currentBootId: appBootId });
+    const currentProjectName = projectsRef.current.find((project) => project.id === selectedProjectId)?.name || "";
+    const targetWindowUiState = latestSnapshot?.windowUiStateById?.[safeWindowId];
+    const targetProjectName = projectsRef.current.find((project) => project.id === moved.movedProjectId)?.name || "";
+    persistConsoleSessionSnapshot(moved.nextTabsByProject, {
+      windowUiStateById: {
+        ...(latestSnapshot?.windowUiStateById || {}),
+        [currentWindowId]: buildWindowUiStateSnapshot(
+          selectedProjectId,
+          nextActiveTabByProject,
+          showHistoryPanel,
+          currentProjectName,
+        ),
+        [safeWindowId]: buildWindowUiStateSnapshot(
+          moved.movedProjectId,
+          {
+            ...(targetWindowUiState?.activeTabIdByProject || {}),
+            [moved.movedProjectId]: safeTabId,
+          },
+          targetWindowUiState?.showHistoryPanel ?? showHistoryPanel,
+          targetProjectName,
+        ),
+      },
+    });
+  }, [
+    activeTabByProject,
+    appBootId,
+    buildWindowUiStateSnapshot,
+    currentWindowId,
+    persistConsoleSessionSnapshot,
+    selectedProjectId,
+    showHistoryPanel,
+  ]);
+
+  /**
+   * 计算拖拽分离窗口的建议屏幕坐标，使新窗口尽量出现在鼠标释放点附近。
+   */
+  const resolveDetachedWindowPlacementFromPoint = useCallback((clientX: number, clientY: number): { x: number; y: number } | null => {
+    if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return null;
+    if (clientX <= 0 && clientY <= 0) return null;
+    const screenX = Number(window.screenX ?? (window as any).screenLeft ?? 0);
+    const screenY = Number(window.screenY ?? (window as any).screenTop ?? 0);
+    return {
+      x: Math.round(screenX + clientX - 180),
+      y: Math.round(screenY + Math.max(0, clientY - 18)),
+    };
+  }, []);
+
+  /**
+   * 判断当前拖拽指针是否已离开标签条，离开后释放即可按浏览器常见行为分离为新窗口。
+   */
+  const shouldDetachDraggedTabFromPoint = useCallback((clientX: number, clientY: number): boolean => {
+    if (isDetachedTabWindow) return false;
+    const listEl = tabsListRef.current;
+    if (!listEl) return false;
+    if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return false;
+    const rect = listEl.getBoundingClientRect();
+    const horizontalPadding = 36;
+    const verticalPadding = 20;
+    const insideHorizontal = clientX >= rect.left - horizontalPadding && clientX <= rect.right + horizontalPadding;
+    const insideVertical = clientY >= rect.top - verticalPadding && clientY <= rect.bottom + verticalPadding;
+    return !(insideHorizontal && insideVertical);
+  }, [isDetachedTabWindow]);
+
+  /**
+   * 根据当前拖拽状态构造桌面级预览浮层状态；窗口位置由主进程按系统光标轮询。
+   */
+  const buildTabDragPreviewWindowState = useCallback((state: TabPointerDragState): TabDragPreviewWindowState => ({
+    tabId: state.tabId,
+    tabName: state.tabName,
+    providerIconSrc: state.providerIconSrc,
+    isGitTab: state.isGitTab,
+    detachCandidate: shouldDetachDraggedTabFromPoint(state.lastClientX, state.lastClientY),
+  }), [shouldDetachDraggedTabFromPoint]);
+
+  /**
+   * 将分离候选状态同步给主进程预览浮层；内容不随 pointermove 重复传输。
+   */
+  const updateTabDragPreviewWindowForState = useCallback((state: TabPointerDragState, options?: { force?: boolean }) => {
+    const previewWindowId = tabDragPreviewWindowIdRef.current;
+    const updatePreviewWindow = window.host.app.updateTabDragPreviewWindow;
+    if (!previewWindowId || !updatePreviewWindow)
+      return;
+    const payload = buildTabDragPreviewWindowState(state);
+    const detachCandidate = payload.detachCandidate === true;
+    if (options?.force !== true && tabDragPreviewDetachCandidateRef.current === detachCandidate)
+      return;
+    tabDragPreviewDetachCandidateRef.current = detachCandidate;
+    void updatePreviewWindow({
+      windowId: previewWindowId,
+      detachCandidate,
+    });
+  }, [buildTabDragPreviewWindowState]);
+
+  /**
+   * 打开跨窗口标签拖拽预览浮层；若拖拽已结束，异步创建完成后立即关闭。
+   */
+  const openTabDragPreviewWindowForState = useCallback((state: TabPointerDragState) => {
+    const createPreviewWindow = window.host.app.createTabDragPreviewWindow;
+    if (!createPreviewWindow)
+      return;
+    const sessionId = ++tabDragPreviewSessionRef.current;
+    const initialPayload = buildTabDragPreviewWindowState(state);
+    tabDragPreviewWindowIdRef.current = null;
+    tabDragPreviewDetachCandidateRef.current = initialPayload.detachCandidate === true;
+    void (async () => {
+      try {
+        const res = await createPreviewWindow(initialPayload);
+        const previewWindowId = String(res?.windowId || "").trim();
+        if (!res?.ok || !previewWindowId)
+          return;
+        const currentState = tabPointerDragStateRef.current;
+        if (sessionId !== tabDragPreviewSessionRef.current || !currentState?.started || currentState.tabId !== initialPayload.tabId) {
+          void window.host.app.closeTabDragPreviewWindow?.({ windowId: previewWindowId });
+          return;
+        }
+        tabDragPreviewWindowIdRef.current = previewWindowId;
+        tabDragPreviewDetachCandidateRef.current = null;
+        updateTabDragPreviewWindowForState(currentState, { force: true });
+      } catch {}
+    })();
+  }, [buildTabDragPreviewWindowState, updateTabDragPreviewWindowForState]);
+
+  /**
+   * 关闭跨窗口标签拖拽预览浮层，并清理本地预览状态缓存。
+   */
+  const closeTabDragPreviewWindow = useCallback(() => {
+    const previewWindowId = tabDragPreviewWindowIdRef.current;
+    tabDragPreviewWindowIdRef.current = null;
+    tabDragPreviewDetachCandidateRef.current = null;
+    const closePreviewWindow = window.host.app.closeTabDragPreviewWindow;
+    if (!closePreviewWindow)
+      return;
+    void closePreviewWindow(previewWindowId ? { windowId: previewWindowId } : undefined);
+  }, []);
+
+  /**
+   * 依据指针横坐标计算当前窗口标签的目标插入索引，支持拖到末尾时稳定落位。
+   */
+  const resolveTabInsertIndexFromPoint = useCallback((clientX: number, draggedTabId: string): number | null => {
+    const listEl = tabsListRef.current;
+    const safeTabId = String(draggedTabId || "").trim();
+    if (!listEl || !safeTabId || !Number.isFinite(clientX))
+      return null;
+    const tabElements = Array.from(listEl.querySelectorAll<HTMLElement>("[data-cf-tab-id]"))
+      .filter((element) => String(element.dataset.cfTabId || "").trim().length > 0);
+    if (tabElements.length <= 1)
+      return 0;
+    const otherTabElements = tabElements.filter((element) => String(element.dataset.cfTabId || "").trim() !== safeTabId);
+    if (otherTabElements.length <= 0)
+      return 0;
+    for (let index = 0; index < otherTabElements.length; index += 1) {
+      const rect = otherTabElements[index].getBoundingClientRect();
+      const centerX = rect.left + (rect.width / 2);
+      if (clientX < centerX)
+        return index;
+    }
+    return otherTabElements.length;
+  }, []);
+
+  /**
+   * 按插入索引重排当前项目里属于当前窗口的标签顺序，仅在索引变化时触发更新。
+   */
+  const reorderDraggedTabWithinCurrentWindow = useCallback((draggedTabId: string, insertIndex: number) => {
+    if (!selectedProjectId)
+      return;
+    setTabsByProject((prev) => {
+      const projectTabs = prev[selectedProjectId] || [];
+      const reordered = reorderTabsWithinWindowByInsertIndex(projectTabs, currentWindowId, draggedTabId, insertIndex);
+      if (reordered === projectTabs)
+        return prev;
+      return { ...prev, [selectedProjectId]: reordered };
+    });
+  }, [currentWindowId, selectedProjectId]);
+
+  /**
+   * 同步浮动拖拽预览的位置，避免高频 pointermove 触发整棵 React 树重渲染。
+   */
+  const syncTabDragPreviewPosition = useCallback(() => {
+    if (tabDragPreviewFrameRef.current != null)
+      return;
+    tabDragPreviewFrameRef.current = window.requestAnimationFrame(() => {
+      tabDragPreviewFrameRef.current = null;
+      const state = tabPointerDragStateRef.current;
+      const previewEl = tabDragPreviewRef.current;
+      if (!state || !state.started)
+        return;
+      const isDetachCandidate = shouldDetachDraggedTabFromPoint(state.lastClientX, state.lastClientY);
+      if (previewEl) {
+        previewEl.style.transform = `translate3d(${Math.round(state.lastClientX + 14)}px, ${Math.round(state.lastClientY + 12)}px, 0) scale(${isDetachCandidate ? 1.04 : 1})`;
+        previewEl.style.opacity = isDetachCandidate ? "0.92" : "1";
+      }
+      updateTabDragPreviewWindowForState(state);
+    });
+  }, [shouldDetachDraggedTabFromPoint, updateTabDragPreviewWindowForState]);
+
+  /**
+   * 初始化一次标签指针拖拽候选，仅记录起点信息，真正进入拖拽态要等移动超过阈值。
+   */
+  const beginTabPointerDrag = useCallback((
+    event: React.PointerEvent,
+    payload: {
+      tabId: string;
+      tabName: string;
+      providerIconSrc: string;
+      isGitTab: boolean;
+    },
+  ) => {
+    if (event.button !== 0) return;
+    if (editingTabId === payload.tabId) return;
+    if (shouldIgnoreTabPointerDragStart(event.target)) return;
+    try {
+      (event.currentTarget as HTMLElement | null)?.setPointerCapture?.(event.pointerId);
+    } catch {}
+    tabPointerDragStateRef.current = {
+      pointerId: event.pointerId,
+      tabId: payload.tabId,
+      tabName: payload.tabName,
+      providerIconSrc: payload.providerIconSrc,
+      isGitTab: payload.isGitTab,
+      started: false,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      lastClientX: event.clientX,
+      lastClientY: event.clientY,
+      lastInsertIndex: null,
+    };
+  }, [editingTabId]);
+
+  /**
+   * 清理一次标签拖拽过程中的临时状态，避免后续拖拽继承上一次的结果。
+   */
+  const resetTabDragState = useCallback(() => {
+    tabDragPreviewSessionRef.current += 1;
+    closeTabDragPreviewWindow();
+    tabPointerDragStateRef.current = null;
+    if (tabDragPreviewFrameRef.current != null) {
+      window.cancelAnimationFrame(tabDragPreviewFrameRef.current);
+      tabDragPreviewFrameRef.current = null;
+    }
+    setDraggingTabId(null);
+    setTabDragPreview(null);
+  }, [closeTabDragPreviewWindow]);
+
+  /**
+   * 将标签页分离到新窗口中；先写入快照再开窗，避免新窗口首帧读到“空标签”状态。
+   */
+  const detachTabToNewWindow = useCallback(async (
+    tabId: string,
+    placement?: { x?: number; y?: number } | null,
+  ) => {
+    const safeTabId = String(tabId || "").trim();
+    if (!safeTabId || isDetachedTabWindow) return;
+    const nextWindowId = `detached-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const previousTabsByProject = tabsByProjectRef.current;
+    const previousSelectedProjectId = selectedProjectId;
+    const previousActiveTabByProject = activeTabByProject;
+    const previousShowHistoryPanel = showHistoryPanel;
+    const previousActiveTabId = activeTabIdRef.current;
+    const moved = moveTabBetweenWindows(previousTabsByProject, safeTabId, nextWindowId);
+    if (!moved.changed || !moved.movedProjectId) return;
+
+    const remainingTabs = (moved.nextTabsByProject[moved.movedProjectId] || []).filter((tab) => isTabOwnedByWindow(tab, currentWindowId));
+    const nextCurrentActiveTabId = previousActiveTabId === safeTabId ? (remainingTabs[0]?.id || null) : previousActiveTabId;
+    const nextCurrentActiveTabByProject = previousActiveTabId === safeTabId
+      ? { ...previousActiveTabByProject, [moved.movedProjectId]: nextCurrentActiveTabId }
+      : { ...previousActiveTabByProject };
+    const latestSnapshot = loadConsoleSession({ currentBootId: appBootId });
+    const movedProjectName = projectsRef.current.find((project) => project.id === moved.movedProjectId)?.name || "";
+    const previousProjectName = projectsRef.current.find((project) => project.id === previousSelectedProjectId)?.name || "";
+    const nextWindowUiStateById = {
+      ...(latestSnapshot?.windowUiStateById || {}),
+      [currentWindowId]: buildWindowUiStateSnapshot(previousSelectedProjectId, nextCurrentActiveTabByProject, previousShowHistoryPanel, previousProjectName),
+      [nextWindowId]: buildWindowUiStateSnapshot(moved.movedProjectId, { [moved.movedProjectId]: safeTabId }, previousShowHistoryPanel, movedProjectName),
+    };
+
+    persistConsoleSessionSnapshot(moved.nextTabsByProject, { windowUiStateById: nextWindowUiStateById });
+    setTabsByProject(moved.nextTabsByProject);
+    if (previousActiveTabId === safeTabId) {
+      setActiveTab(nextCurrentActiveTabId, {
+        projectId: moved.movedProjectId,
+        focusMode: "immediate",
+        allowDuringRename: true,
+        delay: 0,
+      });
+    }
+
+    const res = await window.host.app.createDetachedTabWindow?.({
+      windowId: nextWindowId,
+      ...(placement || {}),
+    });
+    const createdWindowId = String(res?.windowId || "").trim();
+    if (res && res.ok && createdWindowId === nextWindowId) return;
+
+    const rollbackWindowUiStateById = {
+      ...(latestSnapshot?.windowUiStateById || {}),
+      [currentWindowId]: buildWindowUiStateSnapshot(previousSelectedProjectId, previousActiveTabByProject, previousShowHistoryPanel, previousProjectName),
+    };
+    delete rollbackWindowUiStateById[nextWindowId];
+    persistConsoleSessionSnapshot(previousTabsByProject, { windowUiStateById: rollbackWindowUiStateById });
+    setTabsByProject(previousTabsByProject);
+    setActiveTabByProject(previousActiveTabByProject);
+    setSelectedProjectId(previousSelectedProjectId);
+    if (previousActiveTabId === safeTabId) {
+      setActiveTab(safeTabId, {
+        projectId: moved.movedProjectId,
+        focusMode: "immediate",
+        allowDuringRename: true,
+        delay: 0,
+      });
+    }
+  }, [
+    activeTabByProject,
+    appBootId,
+    buildWindowUiStateSnapshot,
+    currentWindowId,
+    isDetachedTabWindow,
+    persistConsoleSessionSnapshot,
+    selectedProjectId,
+    showHistoryPanel,
+  ]);
+
+  /**
+   * 将标签页移回主窗口承载。
+   */
+  const attachTabBackToMainWindow = useCallback((tabId: string) => {
+    moveTabToWindow(tabId, MAIN_APP_WINDOW_ID);
+  }, [moveTabToWindow]);
+
+  /**
+   * 按标签页 id 反查当前 providerId（用于判断是否允许启用计时功能）。
    */
   const resolveTabProviderId = useCallback((tabId: string): string => {
     const id = String(tabId || "").trim();
@@ -2506,21 +3174,133 @@ export default function CodexFlowManagerUI() {
     } catch {}
   }
 
-  // 右键菜单：测试通知/徽标/铃声/整链路（仅开发/显式开关）
+  /**
+   * 拖拽预览挂载后立刻同步位置，避免首帧出现在左上角造成额外闪动。
+   */
+  useLayoutEffect(() => {
+    if (!tabDragPreview) return;
+    syncTabDragPreviewPosition();
+  }, [syncTabDragPreviewPosition, tabDragPreview]);
+
+  /**
+   * 标签拖拽期间临时禁止文本选中并统一光标样式，结束后恢复页面原状。
+   */
+  useEffect(() => {
+    if (!draggingTabId) return;
+    const prevUserSelect = document.body.style.userSelect;
+    const prevCursor = document.body.style.cursor;
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "grabbing";
+    return () => {
+      document.body.style.userSelect = prevUserSelect;
+      document.body.style.cursor = prevCursor;
+    };
+  }, [draggingTabId]);
+
+  /**
+   * 在窗口级别接管标签拖拽生命周期，统一处理开始阈值、排序、分离与取消。
+   */
+  useEffect(() => {
+    const DRAG_THRESHOLD_PX = 6;
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const state = tabPointerDragStateRef.current;
+      if (!state || event.pointerId !== state.pointerId) return;
+      state.lastClientX = event.clientX;
+      state.lastClientY = event.clientY;
+
+      if (!state.started) {
+        const deltaX = event.clientX - state.startClientX;
+        const deltaY = event.clientY - state.startClientY;
+        const distance = Math.hypot(deltaX, deltaY);
+        if (distance < DRAG_THRESHOLD_PX) return;
+        state.started = true;
+        state.lastInsertIndex = resolveTabInsertIndexFromPoint(event.clientX, state.tabId);
+        tabPointerClickSuppressUntilRef.current = Date.now() + 250;
+        setDraggingTabId(state.tabId);
+        setTabDragPreview({
+          tabId: state.tabId,
+          tabName: state.tabName,
+          providerIconSrc: state.providerIconSrc,
+          isGitTab: state.isGitTab,
+        });
+        openTabDragPreviewWindowForState(state);
+        closeTabContextMenu("tab-drag-start", state.tabId);
+      }
+
+      syncTabDragPreviewPosition();
+      const insertIndex = resolveTabInsertIndexFromPoint(event.clientX, state.tabId);
+      if (insertIndex == null || insertIndex === state.lastInsertIndex) return;
+      state.lastInsertIndex = insertIndex;
+      reorderDraggedTabWithinCurrentWindow(state.tabId, insertIndex);
+    };
+
+    const handlePointerUp = (event: PointerEvent) => {
+      const state = tabPointerDragStateRef.current;
+      if (!state || event.pointerId !== state.pointerId) return;
+      const shouldDetach = state.started && shouldDetachDraggedTabFromPoint(event.clientX, event.clientY);
+      const placement = shouldDetach ? resolveDetachedWindowPlacementFromPoint(event.clientX, event.clientY) : null;
+      if (state.started)
+        tabPointerClickSuppressUntilRef.current = Date.now() + 250;
+      resetTabDragState();
+      if (!shouldDetach) return;
+      void detachTabToNewWindow(state.tabId, placement);
+    };
+
+    const handlePointerCancel = () => {
+      const state = tabPointerDragStateRef.current;
+      if (!state) return;
+      if (state.started)
+        tabPointerClickSuppressUntilRef.current = Date.now() + 250;
+      resetTabDragState();
+    };
+
+    window.addEventListener("pointermove", handlePointerMove, true);
+    window.addEventListener("pointerup", handlePointerUp, true);
+    window.addEventListener("pointercancel", handlePointerCancel, true);
+    window.addEventListener("blur", handlePointerCancel);
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove, true);
+      window.removeEventListener("pointerup", handlePointerUp, true);
+      window.removeEventListener("pointercancel", handlePointerCancel, true);
+      window.removeEventListener("blur", handlePointerCancel);
+    };
+  }, [
+    closeTabContextMenu,
+    detachTabToNewWindow,
+    openTabDragPreviewWindowForState,
+    reorderDraggedTabWithinCurrentWindow,
+    resetTabDragState,
+    resolveDetachedWindowPlacementFromPoint,
+    resolveTabInsertIndexFromPoint,
+    shouldDetachDraggedTabFromPoint,
+    syncTabDragPreviewPosition,
+  ]);
+
+  /**
+   * 渲染标签页右键菜单；正式功能始终可见，调试能力仅在显式开关下附加展示。
+   */
   function renderTabContextMenu() {
-    if (!tabCtxMenu.show || !showNotifDebugMenu) return null;
+    if (!tabCtxMenu.show) return null;
     const tabId = tabCtxMenu.tabId || activeTabId || null;
     const close = (reason: string = "menu-close") => closeTabContextMenu(reason, tabId);
+    const currentTab = tabId
+      ? Object.values(tabsByProjectRef.current || {}).flat().find((tab) => tab.id === tabId) || null
+      : null;
+    const canDetach = !!tabId && !isDetachedTabWindow;
+    const canAttachBack = !!tabId && currentTab && resolveTabWindowId(currentTab) !== MAIN_APP_WINDOW_ID;
+    const menuItemClass = "flex w-full items-center gap-2 rounded-apple-sm px-2.5 py-1.5 text-left text-[12px] leading-tight text-[var(--cf-text-primary)] transition-colors hover:bg-[var(--cf-surface-hover)]";
+    const dangerMenuItemClass = cn(menuItemClass, "text-[var(--cf-red)] hover:bg-[var(--cf-red-light)]");
     const doTestSystemNotification = () => {
       if (!tabId) { close("system-notification-missing-tab"); return; }
-      const preview = '这是一条模拟的完成内容片段（mock preview）';
+      const preview = "这是一条模拟的完成内容片段（mock preview）";
       showCompletionNotification(tabId, preview);
       notifyLog(`ctx.testSystemNotification tab=${tabId}`);
       close("system-notification");
     };
     const doTestBadgePlus = () => {
       const current = { ...pendingCompletionsRef.current };
-      const id = tabId || 'mock';
+      const id = tabId || "mock";
       current[id] = (current[id] ?? 0) + 1;
       applyPending(current);
       notifyLog(`ctx.badge.plus id=${id} val=${current[id]}`);
@@ -2528,7 +3308,7 @@ export default function CodexFlowManagerUI() {
     };
     const doBadgeClear = () => {
       applyPending({});
-      notifyLog('ctx.badge.clear');
+      notifyLog("ctx.badge.clear");
       close("badge-clear");
     };
     const doTestChime = () => {
@@ -2536,36 +3316,65 @@ export default function CodexFlowManagerUI() {
       (notificationPrefsRef as any).current = { ...prev, sound: true };
       void playCompletionChime();
       (notificationPrefsRef as any).current = prev;
-      notifyLog('ctx.chime');
+      notifyLog("ctx.chime");
       close("chime");
     };
     const doTestOSCChain = () => {
-      const id = tabId || activeTabId || '';
+      const id = tabId || activeTabId || "";
       if (!id) { close("osc-chain-missing-tab"); return; }
       const ptyId = ptyByTabRef.current[id];
-      const payload = 'agent-turn-complete: mock via OSC';
+      const payload = "agent-turn-complete: mock via OSC";
       const chunk = `${OSC_NOTIFICATION_PREFIX}${payload}${OSC_TERMINATOR_BEL}`;
       if (ptyId) {
         try { processPtyNotificationChunk(ptyId, chunk); notifyLog(`ctx.osc.inject pty=${ptyId}`); } catch {}
       } else {
-        try { handleAgentCompletion(id, payload, "manual"); notifyLog('ctx.osc.fallback.handle'); } catch {}
+        try { handleAgentCompletion(id, payload, "manual"); notifyLog("ctx.osc.fallback.handle"); } catch {}
       }
       close("osc-chain");
     };
     return (
       <div
-        style={{ position: 'fixed', left: tabCtxMenu.x, top: tabCtxMenu.y, zIndex: 10000 }}
-          className="min-w-[220px] rounded-md border border-slate-200 bg-white/95 shadow-lg dark:border-slate-700 dark:bg-slate-900/95"
+        style={{ position: "fixed", left: tabCtxMenu.x, top: tabCtxMenu.y, zIndex: 10000 }}
+        className="min-w-[184px] overflow-hidden rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface-solid)] text-[var(--cf-text-primary)] shadow-apple-lg dark:shadow-apple-dark-lg"
         onClick={(e) => { e.stopPropagation(); e.preventDefault(); }}
       >
-        <div className="px-3 py-2 text-xs text-slate-400">通知调试菜单（仅开发/显式开启）</div>
-        <button className="w-full px-3 py-2 text-left hover:bg-slate-50" onClick={doTestSystemNotification}>测试系统通知</button>
-        <button className="w-full px-3 py-2 text-left hover:bg-slate-50" onClick={doTestOSCChain}>测试整链路（OSC 9;）</button>
-        <div className="h-px bg-slate-200" />
-        <button className="w-full px-3 py-2 text-left hover:bg-slate-50" onClick={doTestBadgePlus}>徽标+1</button>
-        <button className="w-full px-3 py-2 text-left hover:bg-slate-50" onClick={doBadgeClear}>清空徽标</button>
-        <div className="h-px bg-slate-200" />
-        <button className="w-full px-3 py-2 text-left hover:bg-slate-50" onClick={doTestChime}>测试完成铃声</button>
+        <div className="px-3 py-2 text-[11px] font-apple-medium uppercase tracking-[0.12em] text-[var(--cf-text-muted)]">
+          {t("terminal:tabActions", "标签页操作") as string}
+        </div>
+        <div className="px-1.5 pb-1.5">
+          {canDetach ? (
+            <button className={menuItemClass} onClick={() => { void detachTabToNewWindow(tabId!); close("detach-tab"); }}>
+              <ExternalLink className="h-4 w-4 text-[var(--cf-text-muted)]" />
+              {t("terminal:detachTab", "在新窗口中打开") as string}
+            </button>
+          ) : null}
+          {canAttachBack ? (
+            <button className={menuItemClass} onClick={() => { attachTabBackToMainWindow(tabId!); close("attach-tab"); }}>
+              <Minimize2 className="h-4 w-4 text-[var(--cf-text-muted)]" />
+              {t("terminal:attachTabBack", "移回主窗口") as string}
+            </button>
+          ) : null}
+          {tabId ? (
+            <button className={dangerMenuItemClass} onClick={() => { requestCloseTab(tabId, "manual"); close("close-tab"); }}>
+              <X className="h-4 w-4" />
+              {closeTabLabel}
+            </button>
+          ) : null}
+        </div>
+        {showNotifDebugMenu ? (
+          <>
+            <div className="border-t border-[var(--cf-border)] px-3 pt-2 text-[11px] font-apple-medium uppercase tracking-[0.12em] text-[var(--cf-text-muted)]">
+              调试菜单
+            </div>
+            <div className="px-1.5 pb-1.5">
+              <button className={menuItemClass} onClick={doTestSystemNotification}>测试系统通知</button>
+              <button className={menuItemClass} onClick={doTestOSCChain}>测试整链路（OSC 9;）</button>
+              <button className={menuItemClass} onClick={doTestBadgePlus}>徽标 +1</button>
+              <button className={menuItemClass} onClick={doBadgeClear}>清空徽标</button>
+              <button className={menuItemClass} onClick={doTestChime}>测试完成铃声</button>
+            </div>
+          </>
+        ) : null}
       </div>
     );
   }
@@ -2985,7 +3794,6 @@ export default function CodexFlowManagerUI() {
     setActiveTab(tabId, { focusMode: 'immediate', allowDuringRename: true, delay: 0, projectId });
   }, [revealProjectRowInSidebar, selectedProjectId, setActiveTab, setCenterMode, setSelectedHistoryDir, setSelectedHistoryId, setSelectedProjectId]);
 
-  const [showHistoryPanel, setShowHistoryPanel] = useState(true);
   const [historyQuery, setHistoryQuery] = useState("");
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   const [historyCtxMenu, setHistoryCtxMenu] = useState<{ show: boolean; x: number; y: number; item: HistorySession | null; groupKey: string | null }>({ show: false, x: 0, y: 0, item: null, groupKey: null });
@@ -4188,7 +4996,7 @@ export default function CodexFlowManagerUI() {
   // Ensure an active tab exists when tabs change
   useEffect(() => {
     // 当切换项目或 tabsByProject 变化时，恢复该项目的活跃 tab（若存在），否则选第一个
-    const projectTabs = tabsByProject[selectedProjectId] || [];
+    const projectTabs = (tabsByProject[selectedProjectId] || []).filter((tab) => isTabOwnedByWindow(tab, currentWindowId));
     if (activeTabId && projectTabs.some((tab) => tab.id === activeTabId)) return;
     const stored = activeTabByProject[selectedProjectId];
     if (stored && projectTabs.some((tab) => tab.id === stored)) {
@@ -4197,7 +5005,15 @@ export default function CodexFlowManagerUI() {
     }
     if (projectTabs.length > 0) setActiveTab(projectTabs[0].id, { focusMode: 'immediate', allowDuringRename: true, delay: 0 });
     else setActiveTab(null, { focusMode: 'immediate', allowDuringRename: true, delay: 0 });
-  }, [selectedProjectId, tabsByProject, activeTabByProject, activeTabId]);
+  }, [selectedProjectId, tabsByProject, activeTabByProject, activeTabId, currentWindowId]);
+
+  useEffect(() => {
+    if (!isDetachedTabWindow) return;
+    const visibleProjectId = findFirstProjectIdForWindowTabs(tabsByProject, currentWindowId);
+    if (!visibleProjectId) return;
+    if (selectedProjectId === visibleProjectId) return;
+    setSelectedProjectId(visibleProjectId);
+  }, [currentWindowId, isDetachedTabWindow, selectedProjectId, tabsByProject]);
 
   // 关键修复：当 activeTabId 通过"程序方式"变化（例如切换项目时恢复活跃 tab）时，
   // 需要显式通知 TerminalManager，触发暂停/恢复数据流、精确度量与聚焦。
@@ -4226,6 +5042,26 @@ export default function CodexFlowManagerUI() {
     delete next[activeTabId];
     applyPending(next);
   }, [activeTabId]);
+
+  useEffect(() => {
+    const visibleTabIds = new Set<string>();
+    for (const list of Object.values(tabsByProject || {})) {
+      for (const tab of list || []) {
+        if (!isTabOwnedByWindow(tab, currentWindowId)) continue;
+        visibleTabIds.add(tab.id);
+        const ptyId = ptyByTabRef.current[tab.id];
+        if (!ptyId) continue;
+        try { registerPtyForTab(tab.id, ptyId); } catch {}
+        try { tm.setPty(tab.id, ptyId, { hydrateBacklog: true }); } catch {}
+      }
+    }
+    for (const tabId of Object.keys(ptyByTabRef.current || {})) {
+      if (visibleTabIds.has(tabId)) continue;
+      const ptyId = ptyByTabRef.current[tabId];
+      try { unregisterPtyListener(ptyId); } catch {}
+      try { tm.disposeTab(tabId, false); } catch {}
+    }
+  }, [tabsByProject, currentWindowId, tm]);
 
   useEffect(() => {
     const handleFocus = () => {
@@ -4730,6 +5566,7 @@ export default function CodexFlowManagerUI() {
       id: uid(),
       name: String(tabName),
       providerId: activeProviderId,
+      windowId: currentWindowId,
       logs: [],
       createdAt: Date.now(),
     };
@@ -4832,6 +5669,7 @@ export default function CodexFlowManagerUI() {
       // 默认使用当前设置中的终端名称
       name: String(tabName),
       providerId: activeProviderId,
+      windowId: currentWindowId,
       logs: [],
       createdAt: Date.now(),
     };
@@ -4916,7 +5754,7 @@ export default function CodexFlowManagerUI() {
     const id = String(projectId || "").trim();
     if (!id) return;
     const projectTabs = tabsByProjectRef.current[id] || [];
-    const existing = projectTabs.find((tab) => tab.kind === "git");
+    const existing = projectTabs.find((tab) => tab.kind === "git" && isTabOwnedByWindow(tab, currentWindowId));
     if (existing) {
       setActiveTab(existing.id, { focusMode: "immediate", allowDuringRename: true, delay: 0 });
       try { setCenterMode("console"); } catch {}
@@ -4928,6 +5766,7 @@ export default function CodexFlowManagerUI() {
       name: String(t("git:workbench.misc.bottomTabs.git", "Git")),
       kind: "git",
       providerId: "git",
+      windowId: currentWindowId,
       logs: [],
       createdAt: Date.now(),
     };
@@ -4936,7 +5775,7 @@ export default function CodexFlowManagerUI() {
     setActiveTab(tab.id, { focusMode: "immediate", allowDuringRename: true, delay: 0 });
     try { setCenterMode("console"); } catch {}
     markProjectUsed(id);
-  }, [markProjectUsed, t]);
+  }, [currentWindowId, markProjectUsed, t]);
 
   /**
    * 统一处理 Git 工作台打开请求，先切换项目/标签，再把意图广播给具体工作台实例。
@@ -5070,6 +5909,7 @@ export default function CodexFlowManagerUI() {
       name: String(args?.title || "").trim() || defaultTitle,
       kind: "terminal",
       providerId: activeProviderId,
+      windowId: currentWindowId,
       logs: [],
       createdAt: Date.now(),
     };
@@ -5119,6 +5959,7 @@ export default function CodexFlowManagerUI() {
   }, [
     activeProviderId,
     buildProviderLaunchEnv,
+    currentWindowId,
     getProviderEnv,
     hiddenProjectIdSet,
     markProjectHasBuiltInSessions,
@@ -5603,9 +6444,17 @@ export default function CodexFlowManagerUI() {
     try { delete ptyAliveRef.current[tabId]; setPtyAlive((m) => { const n = { ...m }; delete n[tabId]; return n; }); } catch {}
     // let manager dispose the tab (adapter/container and optionally close PTY)
     try { tm.disposeTab(tabId, true); } catch (err) { console.warn('tm.disposeTab failed', err); }
-    setTabsByProject((m) => {
-      const next = (m[projectId] || []).filter((tab) => tab.id !== tabId);
-      return { ...m, [projectId]: next };
+    const nextTabsByProject = {
+      ...tabsByProjectRef.current,
+      [projectId]: (tabsByProjectRef.current[projectId] || []).filter((tab) => tab.id !== tabId),
+    };
+    tabsByProjectRef.current = nextTabsByProject;
+    setTabsByProject(nextTabsByProject);
+    setPtyByTab((m) => {
+      if (!(tabId in m)) return m;
+      const next = { ...m };
+      delete next[tabId];
+      return next;
     });
     clearPendingForTab(tabId);
     cancelAgentTurnTimer(tabId, "close-tab");
@@ -5617,7 +6466,18 @@ export default function CodexFlowManagerUI() {
       delete next[tabId];
       return next;
     });
+    const nextActiveTabByProject = activeTabId === tabId
+      ? { ...activeTabByProject, [projectId]: null }
+      : activeTabByProject;
     if (activeTabId === tabId) setActiveTab(null, { projectId, focusMode: "immediate", allowDuringRename: true });
+    const latestSnapshot = loadConsoleSession({ currentBootId: appBootId });
+    const currentProjectName = projectsRef.current.find((project) => project.id === selectedProjectId)?.name || "";
+    persistConsoleSessionSnapshot(nextTabsByProject, {
+      windowUiStateById: {
+        ...(latestSnapshot?.windowUiStateById || {}),
+        [currentWindowId]: buildWindowUiStateSnapshot(selectedProjectId, nextActiveTabByProject, showHistoryPanel, currentProjectName),
+      },
+    });
   }
 
   /**
@@ -6292,6 +7152,7 @@ export default function CodexFlowManagerUI() {
       id: uid(),
       name: String(tabName),
       providerId,
+      windowId: currentWindowId,
       logs: [],
       createdAt: Date.now(),
     };
@@ -6339,7 +7200,7 @@ export default function CodexFlowManagerUI() {
     try { window.host.projects.touch(project.id); } catch {}
     markProjectUsed(project.id);
     return { ok: true, tabId: tab.id };
-  }, [buildProviderLaunchEnv, getProviderEnv, markProjectHasBuiltInSessions, recordCustomProviderDirIfNeeded, tm, markProjectUsed]);
+  }, [buildProviderLaunchEnv, currentWindowId, getProviderEnv, markProjectHasBuiltInSessions, recordCustomProviderDirIfNeeded, tm, markProjectUsed]);
 
   /**
    * 在指定项目中启动某个引擎实例，并注入初始提示词（worktree 新建/复用共用）。
@@ -8743,49 +9604,145 @@ export default function CodexFlowManagerUI() {
     </div>
   );
 
+  const detachedWindowSnapshotState = restoredConsoleSession?.windowUiStateById?.[currentWindowId];
+  const detachedWindowProjectName = selectedProject?.name
+    || String(detachedWindowSnapshotState?.selectedProjectName || "").trim()
+    || String(detachedWindowSnapshotState?.selectedProjectId || "").trim()
+    || (t("terminal:detachedWindowTitle", "独立标签页") as string);
+  const detachedWindowTabName = tabs.find((tab) => tab.id === activeTabId)?.name || (t("terminal:detachedWindowHint", "该窗口仅承载一个标签页") as string);
+  const attachTabBackLabel = t("terminal:attachTabBack", "移回主窗口") as string;
+  const windowMinimizeLabel = t("terminal:windowMinimize", "最小化") as string;
+  const windowToggleMaximizeLabel = t("terminal:windowToggleMaximize", "最大化 / 还原") as string;
+  const detachedWindowControlButtonClass = "cf-window-no-drag inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-transparent text-[var(--cf-text-secondary)] transition-all duration-apple ease-apple hover:bg-black/[0.055] hover:text-[var(--cf-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cf-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--cf-app-bg)] active:scale-[0.96] dark:hover:bg-white/10";
+  /**
+   * 处理无边框独立窗口的基础窗口控制。
+   */
+  const controlDetachedWindow = useCallback((action: "minimize" | "toggleMaximize") => {
+    void (async () => {
+      try {
+        const res = await window.host?.app?.controlWindow?.(action);
+        if (res?.ok && typeof res.isMaximized === "boolean")
+          setDetachedWindowMaximized(res.isMaximized);
+      } catch {}
+    })();
+  }, []);
+  const DetachedWindowTopBar = (
+    <div className="cf-window-drag relative z-40 flex min-h-[44px] items-center justify-between gap-3 border-b border-black/[0.06] bg-white/82 px-3 py-1.5 shadow-[0_1px_0_rgba(15,23,42,0.035)] backdrop-blur-xl dark:border-white/10 dark:bg-slate-950/72">
+      <div className="flex min-w-0 flex-1 items-center gap-2.5">
+        <div className="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-white/60 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.08),0_1px_2px_rgba(15,23,42,0.06)] dark:bg-white/10 dark:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.12)]">
+          {appBrandIconSrc ? (
+            <img src={appBrandIconSrc} className="h-5 w-5 object-contain" alt="CodexFlow" />
+          ) : (
+            <span className="text-[11px] font-semibold text-[var(--cf-accent)]">C</span>
+          )}
+        </div>
+        <div className="flex min-w-0 flex-1 items-baseline gap-2 overflow-hidden">
+          <span className="min-w-0 truncate text-sm font-semibold text-[var(--cf-text-primary)]" title={detachedWindowProjectName}>
+            {detachedWindowProjectName}
+          </span>
+          <span className="h-1 w-1 shrink-0 rounded-full bg-[var(--cf-text-muted)]/50" />
+          <span className="min-w-0 truncate text-xs font-apple-medium text-[var(--cf-text-secondary)]" title={detachedWindowTabName}>
+            {detachedWindowTabName}
+          </span>
+        </div>
+      </div>
+      <div className="cf-window-no-drag flex shrink-0 items-center gap-1">
+        <button
+          type="button"
+          className={detachedWindowControlButtonClass}
+          title={windowMinimizeLabel}
+          aria-label={windowMinimizeLabel}
+          onClick={() => controlDetachedWindow("minimize")}
+        >
+          <Minus className="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
+          className={detachedWindowControlButtonClass}
+          title={windowToggleMaximizeLabel}
+          aria-label={windowToggleMaximizeLabel}
+          onClick={() => controlDetachedWindow("toggleMaximize")}
+        >
+          {detachedWindowMaximized ? (
+            <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M6.25 4.25h4.9c.6 0 1.1.5 1.1 1.1v4.9" />
+              <rect x="3.75" y="6.25" width="6" height="6" rx="0.9" />
+            </svg>
+          ) : (
+            <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.55" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <rect x="3.75" y="3.75" width="8.5" height="8.5" rx="1" />
+            </svg>
+          )}
+        </button>
+        {activeTabId ? (
+          <button
+            type="button"
+            className={detachedWindowControlButtonClass}
+            title={attachTabBackLabel}
+            aria-label={attachTabBackLabel}
+            onClick={() => attachTabBackToMainWindow(activeTabId)}
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+
+
+  const shouldShowGitWorkbenchTabButton = !!selectedProject
+    && !isDetachedTabWindow
+    && !hasGitWorkbenchTab
+    && !(tabs.length === 0 && projPathExists === false);
+
+  const GitWorkbenchTabButton = shouldShowGitWorkbenchTabButton ? (
+    <div className="relative z-10 flex shrink-0 items-center pr-[2px]">
+      <Button
+        variant="ghost"
+        size="icon"
+        className="relative h-[25px] w-[25px] shrink-0 rounded-full border border-black/5 bg-white p-0 text-slate-700 shadow-apple-sm hover:bg-white hover:text-slate-900 dark:border-white/10 dark:bg-[var(--cf-surface-solid)] dark:text-slate-100 dark:hover:bg-[#36363a] dark:hover:text-white"
+        onClick={openGitWorkbenchTab}
+        title={t("git:workbench.misc.bottomTabs.git", "Git") as string}
+      >
+        <GitBranch className="h-3.5 w-3.5" />
+      </Button>
+    </div>
+  ) : null;
 
   const ConsoleArea = (
-    <div className="flex h-full min-h-0 flex-col gap-0 p-0">
+    <div className="flex h-full min-h-0 min-w-0 flex-col gap-0 p-0">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           {/* 新建代理按钮已移至标签区域（与 Chrome 标签页行为类似） */}
         </div>
       </div>
 
-      <Tabs value={activeTabId || undefined} onValueChange={(v) => setActiveTab(v ?? null)} className="flex w-full flex-1 min-h-0 flex-col">
-        <div className="rounded-md bg-white/90 border border-slate-100 px-2 py-1 dark:border-slate-700 dark:bg-slate-900/90">
-          <TabsList ref={tabsListRef} className="w-full h-8 flex items-center justify-start overflow-x-auto no-scrollbar whitespace-nowrap">
-            {(selectedProject && !hasGitWorkbenchTab && !(tabs.length === 0 && projPathExists === false)) ? (
-              <div className="relative z-10 flex shrink-0 items-center pr-[2px]">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="relative h-[25px] w-[25px] shrink-0 rounded-full border border-black/5 bg-white p-0 text-slate-700 shadow-apple-sm hover:bg-white hover:text-slate-900 dark:border-white/10 dark:bg-[var(--cf-surface-solid)] dark:text-slate-100 dark:hover:bg-[#36363a] dark:hover:text-white"
-                  onClick={openGitWorkbenchTab}
-                  title={t("git:workbench.misc.bottomTabs.git", "Git") as string}
-                >
-                  <GitBranch className="h-3.5 w-3.5" />
-                </Button>
-              </div>
-            ) : null}
+      <Tabs value={activeTabId || undefined} onValueChange={(v) => setActiveTab(v ?? null)} className="flex w-full flex-1 min-h-0 min-w-0 flex-col">
+        <div className="min-w-0 rounded-md bg-white/90 border border-slate-100 px-2 py-1 dark:border-slate-700 dark:bg-slate-900/90">
+          <TabsList ref={tabsListRef} className="w-full min-w-0 h-8 flex items-center justify-start overflow-visible whitespace-nowrap">
             {tabs.length === 0 ? (
-              projPathExists === false ? (
-                <Badge variant="outline" className="mx-2">{t('terminal:dirMissing')}</Badge>
-              ) : (
-                <div className="px-1">
-                  <Button
-                    size="sm"
-                    variant="default"
-                    className="h-[25px] px-2.5 gap-1.5 text-sm font-apple-medium shadow-apple hover:shadow-apple-md transition-all duration-apple opacity-90 hover:opacity-100"
-                    onClick={openNewConsole}
-                  >
-                    <Plus className="h-3.5 w-3.5" />
-                    <span>{t('terminal:newConsole')}</span>
-                  </Button>
-                </div>
-              )
+              <>
+                {GitWorkbenchTabButton}
+                {projPathExists === false ? (
+                  <Badge variant="outline" className="mx-2">{t('terminal:dirMissing')}</Badge>
+                ) : (
+                  <div className="px-1">
+                    <Button
+                      size="sm"
+                      variant="default"
+                      className="h-[25px] px-2.5 gap-1.5 text-sm font-apple-medium shadow-apple hover:shadow-apple-md transition-all duration-apple opacity-90 hover:opacity-100"
+                      onClick={openNewConsole}
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      <span>{t('terminal:newConsole')}</span>
+                    </Button>
+                  </div>
+                )}
+              </>
             ) : (
               <>
+                <div className="flex min-w-0 flex-[0_1_auto] items-center gap-1 overflow-visible">
+                  {GitWorkbenchTabButton}
             {tabs.map((tab) => {
               const pendingCount = pendingCompletions[tab.id] ?? 0;
               const hasPending = pendingCount > 0;
@@ -8796,14 +9753,31 @@ export default function CodexFlowManagerUI() {
               return (
                 <div
                   key={tab.id}
-                  className="group/tab relative flex items-center shrink-0 h-6"
+                  className={cn(
+                    "group/tab relative flex h-6 min-w-[44px] max-w-[10rem] flex-[0_1_10rem] items-center select-none",
+                    draggingTabId === tab.id ? "opacity-35" : "",
+                  )}
                   data-state={isActiveTab ? 'active' : 'inactive'}
+                  data-cf-tab-id={tab.id}
+                  onClickCapture={(e) => {
+                    if (Date.now() < tabPointerClickSuppressUntilRef.current) {
+                      e.preventDefault();
+                      e.stopPropagation();
+                    }
+                  }}
+                  onPointerDown={(event) => beginTabPointerDrag(event, {
+                    tabId: tab.id,
+                    tabName: tab.name,
+                    providerIconSrc,
+                    isGitTab,
+                  })}
                   onDoubleClick={(e) => { e.preventDefault(); e.stopPropagation(); startEditTab(tab.id, tab.name); }}
                   onContextMenu={(e) => openTabContextMenu(e, tab.id, "tabs-header")}
                 >
                   <TabsTrigger
                     value={tab.id}
-                    className="flex-1 min-w-0"
+                    compact
+                    className="flex-1 min-w-0 items-center gap-2 px-2 pr-6"
                     onDoubleClick={(e) => { e.preventDefault(); e.stopPropagation(); startEditTab(tab.id, tab.name); }}
                     onContextMenu={(e) => openTabContextMenu(e, tab.id, "tab-trigger")}
                   >
@@ -8814,6 +9788,7 @@ export default function CodexFlowManagerUI() {
                         src={providerIconSrc}
                         className="mr-1.5 h-3.5 w-3.5 shrink-0 object-contain"
                         alt={tab.providerId}
+                        draggable={false}
                       />
                     ) : (
                       <TerminalSquare className="mr-1.5 h-3.5 w-3.5 text-[var(--cf-text-secondary)] group-data-[state=active]/tab:text-[var(--cf-text-primary)]" />
@@ -8880,6 +9855,7 @@ export default function CodexFlowManagerUI() {
                     type="button"
                     aria-label={closeTabLabel}
                     title={closeTabLabel}
+                    data-cf-no-tab-drag="true"
                     className={`pointer-events-auto absolute right-1 top-1/2 inline-flex h-[18px] w-[18px] -translate-y-1/2 items-center justify-center rounded-full border border-transparent text-[var(--cf-text-secondary)] transition-all duration-apple ease-apple opacity-0 scale-90 group-hover/tab:opacity-100 group-hover/tab:scale-100 group-focus-within/tab:opacity-100 group-focus-within/tab:scale-100 hover:bg-[var(--cf-tab-pill-hover)] hover:text-[var(--cf-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cf-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--cf-app-bg)] ${isActiveTab ? 'opacity-100 scale-100 bg-[var(--cf-tab-pill-hover)] text-[var(--cf-text-primary)]' : ''}`}
                     onMouseDown={(e) => { e.stopPropagation(); }}
                     onClick={(e) => { e.stopPropagation(); requestCloseTab(tab.id, "manual"); }}
@@ -8889,16 +9865,42 @@ export default function CodexFlowManagerUI() {
                 </div>
               );
             })}
-                {/* Tabs 区右侧的紧凑新建按钮 */}
-                <div className="flex items-center pl-2">
-                  <Button variant="default" size="icon" className="p-0" onClick={openNewConsole} title={t('terminal:newConsole') as string} style={{ height: 24, width: 24, borderRadius: 12, padding: 0 }}>
-                    <Plus className="h-4 w-4" />
-                  </Button>
                 </div>
+                {/* Tabs 区右侧的紧凑新建按钮 */}
+                {!isDetachedTabWindow ? (
+                  <div className="flex shrink-0 items-center pl-2">
+                    <Button variant="default" size="icon" className="p-0" onClick={openNewConsole} title={t('terminal:newConsole') as string} style={{ height: 24, width: 24, borderRadius: 12, padding: 0 }}>
+                      <Plus className="h-4 w-4" />
+                    </Button>
+                  </div>
+                ) : null}
               </>
             )}
           </TabsList>
         </div>
+        {tabDragPreview ? (
+          <div
+            ref={tabDragPreviewRef}
+            className="pointer-events-none fixed left-0 top-0 z-[10020] max-w-[18rem] rounded-full border border-[var(--cf-border)] bg-[var(--cf-surface)]/96 px-3 py-1.5 text-[12px] text-[var(--cf-text-primary)] shadow-apple-xl backdrop-blur-apple-lg will-change-transform dark:shadow-apple-dark-xl"
+            style={{ transform: "translate3d(-9999px,-9999px,0)", opacity: 0 }}
+          >
+            <div className="flex min-w-0 items-center gap-2">
+              {tabDragPreview.isGitTab ? (
+                <GitBranch className="h-3.5 w-3.5 shrink-0 text-[var(--cf-text-secondary)]" />
+              ) : tabDragPreview.providerIconSrc ? (
+                <img
+                  src={tabDragPreview.providerIconSrc}
+                  alt={tabDragPreview.tabId}
+                  draggable={false}
+                  className="h-3.5 w-3.5 shrink-0 object-contain"
+                />
+              ) : (
+                <TerminalSquare className="h-3.5 w-3.5 shrink-0 text-[var(--cf-text-secondary)]" />
+              )}
+              <span className="truncate font-apple-medium">{tabDragPreview.tabName}</span>
+            </div>
+          </div>
+        ) : null}
           {tabs.map((tab) => {
             if (tab.kind === "git") {
               return (
@@ -9218,6 +10220,7 @@ export default function CodexFlowManagerUI() {
           id: uid(),
           name: String(tabName),
           providerId,
+          windowId: currentWindowId,
           logs: [],
           createdAt: Date.now(),
         };
@@ -9839,16 +10842,25 @@ export default function CodexFlowManagerUI() {
 
   return (
     <TooltipProvider>
-      <div className={`grid h-screen min-h-0 grid-rows-[minmax(0,1fr)] overflow-hidden ${showHistoryPanel ? 'grid-cols-[222px_1fr_240px]' : 'grid-cols-[222px_1fr]'}`}>
-        {Sidebar}
-        <div className="grid h-full min-w-0 grid-rows-[auto_1fr] bg-white/60 min-h-0 overflow-hidden dark:bg-slate-900/40 dark:text-slate-100">
-          {TopBar}
-          {selectedProject || centerMode === 'history' ? (
-            <div className="min-h-0 h-full">
-              {centerMode === 'console' ? (
-                ConsoleArea
-              ) : (
-                <HistoryDetail sessions={historySessions} selectedHistoryId={selectedHistoryId} projectWinPath={selectedHistoryDetailProject?.winPath} onBack={() => {
+      {isDetachedTabWindow ? (
+        <div className="grid h-screen min-h-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden bg-white/60 dark:bg-slate-900/40 dark:text-slate-100">
+          {DetachedWindowTopBar}
+          <div className="min-h-0 h-full">
+            {ConsoleArea}
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className={`grid h-screen min-h-0 grid-rows-[minmax(0,1fr)] overflow-hidden ${showHistoryPanel ? 'grid-cols-[222px_minmax(0,1fr)_240px]' : 'grid-cols-[222px_minmax(0,1fr)]'}`}>
+            {Sidebar}
+            <div className="grid h-full min-w-0 grid-rows-[auto_1fr] bg-white/60 min-h-0 overflow-hidden dark:bg-slate-900/40 dark:text-slate-100">
+              {TopBar}
+              {selectedProject || centerMode === 'history' ? (
+                <div className="min-h-0 min-w-0 h-full">
+                  {centerMode === 'console' ? (
+                    ConsoleArea
+                  ) : (
+                    <HistoryDetail sessions={historySessions} selectedHistoryId={selectedHistoryId} projectWinPath={selectedHistoryDetailProject?.winPath} onBack={() => {
                   dumpOverlayDiagnostics('onBack.enter');
                   // 返回控制台：先关闭任意可能遗留的全屏遮罩，避免拦截点击/键盘事件
                   try { setHistoryCtxMenu((m) => ({ ...m, show: false })); } catch {}
@@ -9879,23 +10891,25 @@ export default function CodexFlowManagerUI() {
 	                  } catch (e) {
 	                    console.warn('resume external panel failed', e);
                   }
-                }} />
+                    }} />
+                  )}
+                </div>
+              ) : (
+                <EmptyState onCreate={() => { try { openProjectPicker(); } catch {} }} />
               )}
             </div>
-          ) : (
-            <EmptyState onCreate={() => { try { openProjectPicker(); } catch {} }} />
-          )}
-        </div>
-        {showHistoryPanel && HistorySidebar}
-      </div>
+            {showHistoryPanel && HistorySidebar}
+          </div>
 
-      <div className="fixed right-4 top-3 z-40">
-        <HistoryPanelToggleButton
-          expanded={showHistoryPanel}
-          label={String(showHistoryPanel ? t("history:hidePanel") : t("history:showPanel"))}
-          onToggle={() => setShowHistoryPanel((v) => !v)}
-        />
-      </div>
+          <div className="fixed right-4 top-3 z-40">
+            <HistoryPanelToggleButton
+              expanded={showHistoryPanel}
+              label={String(showHistoryPanel ? t("history:hidePanel") : t("history:showPanel"))}
+              onToggle={() => setShowHistoryPanel((v) => !v)}
+            />
+          </div>
+        </>
+      )}
 
       {historyCtxMenu.show && (
         <div
@@ -12456,7 +13470,7 @@ export default function CodexFlowManagerUI() {
         </DialogContent>
       </Dialog>
 
-      {tabCtxMenu.show && showNotifDebugMenu && (
+      {tabCtxMenu.show && (
         <div
           className="fixed inset-0 z-50"
           onClick={() => closeTabContextMenu("backdrop-click")}
@@ -13363,7 +14377,45 @@ function normalizeHistoryReadMessages(res: any): HistoryMessage[] {
 }
 
 /**
- * 中文说明：从历史消息内容中构造筛选项状态，默认只展示主对话文本与图片。
+ * 将运行时标签页状态压缩为可持久化的轻量结构。
+ */
+function serializeConsoleTabsByProject(
+  tabsByProject: Record<string, ConsoleTab[]>,
+): Record<string, PersistedConsoleTab[]> {
+  const compactTabsByProject: Record<string, PersistedConsoleTab[]> = {};
+  for (const [projectId, list] of Object.entries(tabsByProject || {})) {
+    if (!Array.isArray(list) || list.length === 0) continue;
+    compactTabsByProject[projectId] = list.map((tab) => ({
+      id: tab.id,
+      name: tab.name,
+      kind: tab.kind === "git" ? "git" : "terminal",
+      providerId: tab.providerId,
+      windowId: resolveTabWindowId(tab),
+      createdAt: tab.createdAt,
+    }));
+  }
+  return compactTabsByProject;
+}
+
+/**
+ * 将标签运行环境压缩为可持久化结构。
+ */
+function serializeConsoleTabEnvByTab(
+  tabEnvByTab: Record<string, Required<ProviderEnv>>,
+): Record<string, { terminal?: "wsl" | "windows" | "pwsh"; distro?: string }> {
+  return Object.fromEntries(
+    Object.entries(tabEnvByTab || {}).map(([tabId, env]) => [
+      tabId,
+      {
+        terminal: env?.terminal,
+        distro: String(env?.distro || ""),
+      },
+    ]),
+  );
+}
+
+/**
+ * 从历史消息内容中构造筛选项状态，默认只展示主对话文本与图片。
  */
 function buildHistoryTypeFilter(messages: HistoryMessage[]): Record<string, boolean> {
   const allKeys = new Set<string>();
