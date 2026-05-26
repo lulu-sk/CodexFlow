@@ -116,6 +116,8 @@ type ConsoleTab = {
   kind?: "terminal" | "git";
   /** 创建该标签页时使用的引擎（Provider）id，用于标签图标等展示。 */
   providerId: string;
+  /** 当前标签页归属的窗口标识；未指定时默认归属主窗口。 */
+  windowId?: string;
   logs: string[]; // kept for visual compatibility; no longer used once terminal mounts
   createdAt: number;
 };

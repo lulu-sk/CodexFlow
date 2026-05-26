@@ -18,7 +18,15 @@ export type PersistedConsoleTab = {
   name: string;
   providerId: string;
   kind?: "terminal" | "git";
+  windowId?: string;
   createdAt: number;
+};
+
+export type PersistedWindowUiState = {
+  selectedProjectId: string;
+  selectedProjectName?: string;
+  activeTabIdByProject: Record<string, string | null>;
+  showHistoryPanel?: boolean;
 };
 
 export type PersistedConsoleSession = {
@@ -26,10 +34,10 @@ export type PersistedConsoleSession = {
   savedAt: number;
   /** 用于区分“同一主进程生命周期内的 reload/HMR”与“应用重启”。 */
   bootId?: string;
-  selectedProjectId: string;
   tabsByProject: Record<string, PersistedConsoleTab[]>;
-  activeTabByProject: Record<string, string | null>;
   ptyByTab: Record<string, string>;
+  tabEnvByTab?: Record<string, { terminal?: "wsl" | "windows" | "pwsh"; distro?: string }>;
+  windowUiStateById?: Record<string, PersistedWindowUiState>;
 };
 
 /**
@@ -53,6 +61,68 @@ function toNonEmptyString(value: unknown): string {
 }
 
 /**
+ * 归一化 tab 运行环境快照；仅保留当前渲染层真正依赖的字段。
+ */
+function normalizeTabEnvByTab(input: unknown): Record<string, { terminal?: "wsl" | "windows" | "pwsh"; distro?: string }> {
+  const out: Record<string, { terminal?: "wsl" | "windows" | "pwsh"; distro?: string }> = {};
+  if (!input || typeof input !== "object") return out;
+  for (const [tabIdRaw, itemRaw] of Object.entries(input as Record<string, unknown>)) {
+    const tabId = toNonEmptyString(tabIdRaw);
+    if (!tabId || !itemRaw || typeof itemRaw !== "object") continue;
+    const item = itemRaw as Record<string, unknown>;
+    const terminalRaw = toNonEmptyString(item.terminal).toLowerCase();
+    const terminal = terminalRaw === "windows" || terminalRaw === "pwsh" || terminalRaw === "wsl"
+      ? (terminalRaw as "wsl" | "windows" | "pwsh")
+      : undefined;
+    const distro = toNonEmptyString(item.distro);
+    out[tabId] = {
+      terminal,
+      distro: distro || undefined,
+    };
+  }
+  return out;
+}
+
+/**
+ * 归一化单个窗口的 UI 状态。
+ */
+function normalizeWindowUiState(input: unknown): PersistedWindowUiState {
+  if (!input || typeof input !== "object") {
+    return {
+      selectedProjectId: "",
+      selectedProjectName: "",
+      activeTabIdByProject: {},
+      showHistoryPanel: true,
+    };
+  }
+  const obj = input as Record<string, unknown>;
+  const selectedProjectId = toNonEmptyString(obj.selectedProjectId);
+  const selectedProjectName = toNonEmptyString(obj.selectedProjectName);
+  const activeTabIdByProject = normalizeActiveTabByProject(obj.activeTabIdByProject);
+  const showHistoryPanel = typeof obj.showHistoryPanel === "boolean" ? obj.showHistoryPanel : true;
+  return {
+    selectedProjectId,
+    selectedProjectName,
+    activeTabIdByProject,
+    showHistoryPanel,
+  };
+}
+
+/**
+ * 归一化全部窗口 UI 状态。
+ */
+function normalizeWindowUiStateById(input: unknown): Record<string, PersistedWindowUiState> {
+  const out: Record<string, PersistedWindowUiState> = {};
+  if (!input || typeof input !== "object") return out;
+  for (const [windowIdRaw, stateRaw] of Object.entries(input as Record<string, unknown>)) {
+    const windowId = toNonEmptyString(windowIdRaw);
+    if (!windowId) continue;
+    out[windowId] = normalizeWindowUiState(stateRaw);
+  }
+  return out;
+}
+
+/**
  * 对 tabsByProject 做最小校验与归一化，避免脏数据导致 UI 崩溃。
  */
 function normalizeTabsByProject(input: unknown): Record<string, PersistedConsoleTab[]> {
@@ -72,9 +142,10 @@ function normalizeTabsByProject(input: unknown): Record<string, PersistedConsole
       const providerId = toNonEmptyString(obj.providerId) || "codex";
       const kindRaw = toNonEmptyString(obj.kind).toLowerCase();
       const kind = kindRaw === "git" ? "git" : "terminal";
+      const windowId = toNonEmptyString(obj.windowId) || undefined;
       const createdAtNum = Number(obj.createdAt);
       const createdAt = Number.isFinite(createdAtNum) ? createdAtNum : Date.now();
-      tabs.push({ id, name, providerId, kind, createdAt });
+      tabs.push({ id, name, providerId, kind, windowId, createdAt });
     }
     out[projectId] = tabs;
   }
@@ -134,11 +205,20 @@ export function loadConsoleSession(options?: { currentBootId?: string }): Persis
     }
     const selectedProjectId = toNonEmptyString(parsed?.selectedProjectId);
     const tabsByProject = normalizeTabsByProject(parsed?.tabsByProject);
-    const activeTabByProject = normalizeActiveTabByProject(parsed?.activeTabByProject);
     const ptyByTab = normalizePtyByTab(parsed?.ptyByTab);
+    const tabEnvByTab = normalizeTabEnvByTab(parsed?.tabEnvByTab);
+    const windowUiStateById = normalizeWindowUiStateById(parsed?.windowUiStateById);
     const savedAtNum = Number(parsed?.savedAt);
     const savedAt = Number.isFinite(savedAtNum) ? savedAtNum : Date.now();
-    return { version: CONSOLE_SESSION_VERSION, savedAt, bootId, selectedProjectId, tabsByProject, activeTabByProject, ptyByTab };
+    if (!windowUiStateById.main) {
+      windowUiStateById.main = {
+        selectedProjectId,
+        selectedProjectName: "",
+        activeTabIdByProject: normalizeActiveTabByProject(parsed?.activeTabByProject),
+        showHistoryPanel: true,
+      };
+    }
+    return { version: CONSOLE_SESSION_VERSION, savedAt, bootId, tabsByProject, ptyByTab, tabEnvByTab, windowUiStateById };
   } catch {
     return null;
   }
@@ -155,10 +235,10 @@ export function saveConsoleSession(session: PersistedConsoleSession): void {
       version: CONSOLE_SESSION_VERSION,
       savedAt: Date.now(),
       bootId: toNonEmptyString(session?.bootId),
-      selectedProjectId: toNonEmptyString(session?.selectedProjectId),
       tabsByProject: normalizeTabsByProject(session?.tabsByProject),
-      activeTabByProject: normalizeActiveTabByProject(session?.activeTabByProject),
       ptyByTab: normalizePtyByTab(session?.ptyByTab),
+      tabEnvByTab: normalizeTabEnvByTab(session?.tabEnvByTab),
+      windowUiStateById: normalizeWindowUiStateById(session?.windowUiStateById),
     };
     const text = JSON.stringify(payload);
     // 轻量保护：避免异常情况下写入过大导致卡顿（上限约 256KB）

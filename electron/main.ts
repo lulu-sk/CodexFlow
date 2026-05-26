@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
-import { app, BrowserWindow, ipcMain, dialog, clipboard, shell, Menu, screen, session, nativeTheme } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, clipboard, shell, Menu, screen, session, nativeTheme, nativeImage } from 'electron';
 import os from 'node:os';
 import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -94,6 +94,28 @@ let DIAG = false;
 let quitConfirmed = false;
 let quitConfirming = false;
 let gpuFallbackActive = false;
+const MAIN_APP_WINDOW_ID = "main";
+const appWindowMetaByWindow = new WeakMap<BrowserWindow, { windowId: string; windowMode: AppWindowMode }>();
+
+type AppWindowMode = "main" | "detached-tab";
+
+type TabDragPreviewWindowPayload = {
+  tabId?: string;
+  tabName?: string;
+  providerIconSrc?: string;
+  isGitTab?: boolean;
+  detachCandidate?: boolean;
+};
+
+type TabDragPreviewWindowEntry = {
+  windowId: string;
+  ownerWindowId: string;
+  win: BrowserWindow;
+  payload: TabDragPreviewWindowPayload;
+  loaded: boolean;
+  cursorTimer: ReturnType<typeof setInterval> | null;
+  lastBounds: Electron.Rectangle | null;
+};
 
 type RendererRecoveryReason = "render-process-gone" | "did-fail-load" | "unresponsive-timeout" | "gpu-process-gone";
 type RendererRecoveryAction = "reload" | "recreate";
@@ -103,12 +125,315 @@ type RendererRecoveryState = {
   recoverInFlight: boolean;
 };
 
+const TAB_DRAG_PREVIEW_MIN_WIDTH = 144;
+const TAB_DRAG_PREVIEW_MAX_WIDTH = 228;
+const TAB_DRAG_PREVIEW_HEIGHT = 36;
+const TAB_DRAG_PREVIEW_CURSOR_OFFSET_X = 12;
+const TAB_DRAG_PREVIEW_CURSOR_OFFSET_Y = 10;
+const tabDragPreviewWindowsById = new Map<string, TabDragPreviewWindowEntry>();
+const tabDragPreviewWindowIdByOwner = new Map<string, string>();
+let cachedAppBrandIconDataUrl: string | null | undefined;
+
 type CreateWindowOptions = {
   restoreBounds?: Electron.Rectangle;
   startMaximized?: boolean;
   startFullScreen?: boolean;
   recoveryReason?: string;
+  windowId?: string;
+  windowMode?: AppWindowMode;
 };
+
+/**
+ * 读取窗口元信息；未登记时回退为主窗口上下文。
+ */
+function getAppWindowMeta(win: BrowserWindow): { windowId: string; windowMode: AppWindowMode } {
+  return appWindowMetaByWindow.get(win) || { windowId: MAIN_APP_WINDOW_ID, windowMode: "main" };
+}
+
+/**
+ * 向其余存活窗口广播“某窗口已关闭”，用于渲染层回收独立标签页。
+ */
+function broadcastWindowClosed(sourceWin: BrowserWindow, payload: { windowId: string; mode: AppWindowMode }): void {
+  try {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win === sourceWin || win.isDestroyed()) continue;
+      try { win.webContents.send("app:windowClosed", payload); } catch {}
+    }
+  } catch {}
+}
+
+/**
+ * 向指定窗口同步当前窗口状态，供无边框窗口切换控制按钮图标。
+ */
+function sendWindowStateChanged(win: BrowserWindow): void {
+  try {
+    if (!win || win.isDestroyed()) return;
+    win.webContents.send("app:windowStateChanged", { isMaximized: win.isMaximized() });
+  } catch {}
+}
+
+/**
+ * 将拖拽预览文本压缩到安全长度，避免异常 payload 撑大 IPC 与浮层渲染。
+ */
+function normalizeTabDragPreviewString(value: unknown, fallback: string, maxLength: number): string {
+  const text = String(value ?? fallback ?? "").trim();
+  const safe = text || fallback || "";
+  return safe.length > maxLength ? safe.slice(0, maxLength) : safe;
+}
+
+/**
+ * 归一化标签拖拽预览 payload；缺省字段沿用上一次状态。
+ */
+function normalizeTabDragPreviewPayload(input: unknown, fallback: TabDragPreviewWindowPayload = {}): TabDragPreviewWindowPayload {
+  const obj = input && typeof input === "object" ? input as Record<string, unknown> : {};
+  return {
+    tabId: normalizeTabDragPreviewString(obj.tabId, fallback.tabId || "", 160),
+    tabName: normalizeTabDragPreviewString(obj.tabName, fallback.tabName || "Tab", 160),
+    providerIconSrc: normalizeTabDragPreviewString(obj.providerIconSrc, fallback.providerIconSrc || "", 65536),
+    isGitTab: typeof obj.isGitTab === "boolean" ? obj.isGitTab : fallback.isGitTab === true,
+    detachCandidate: typeof obj.detachCandidate === "boolean" ? obj.detachCandidate : fallback.detachCandidate === true,
+  };
+}
+
+/**
+ * 生成拖拽预览浮层的轻量 HTML，避免为一个小预览加载完整 React 应用。
+ */
+function buildTabDragPreviewHtml(): string {
+  return [
+    "<!doctype html>",
+    "<html>",
+    "<head>",
+    "<meta charset='utf-8'>",
+    "<meta name='viewport' content='width=device-width, initial-scale=1'>",
+    "<style>",
+    "html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent;color-scheme:light dark;}",
+    "body{font-family:'Segoe UI Variable','Segoe UI','Microsoft YaHei UI',sans-serif;user-select:none;-webkit-user-select:none;-webkit-font-smoothing:antialiased;}",
+    ".card{position:absolute;inset:1px;display:flex;align-items:center;gap:6px;box-sizing:border-box;border-radius:999px;padding:0 9px;border:1px solid rgba(25,33,44,.12);background:rgba(255,255,255,.98);box-shadow:0 8px 16px rgba(15,23,42,.1);color:#1f2937;transform:scale(1);transition:transform 90ms ease,border-color 90ms ease,background 90ms ease,box-shadow 90ms ease;overflow:hidden;}",
+    ".card[data-detach='true']{transform:scale(1.015);border-color:rgba(50,116,214,.38);box-shadow:0 10px 18px rgba(37,99,235,.12);}",
+    ".icon{width:16px;height:16px;border-radius:999px;display:flex;align-items:center;justify-content:center;flex:0 0 auto;background:rgba(30,41,59,.06);color:#334155;font-size:8.5px;font-weight:700;letter-spacing:-.02em;overflow:hidden;}",
+    ".icon img{width:12px;height:12px;object-fit:contain;display:block;}",
+    ".title{min-width:0;flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-weight:600;line-height:1.1;letter-spacing:-.01em;}",
+    "@media (prefers-color-scheme: dark){.card{border-color:rgba(255,255,255,.1);background:rgba(28,34,44,.97);box-shadow:0 10px 18px rgba(0,0,0,.26);color:#f3f6fb}.card[data-detach='true']{border-color:rgba(105,156,255,.48);box-shadow:0 10px 20px rgba(0,0,0,.34)}.icon{background:rgba(255,255,255,.08);color:#d8dee9}}",
+    "</style>",
+    "</head>",
+    "<body>",
+    "<div id='card' class='card' data-detach='false'>",
+    "<div id='icon' class='icon'><span id='fallbackIcon'>&gt;</span><img id='providerIcon' alt='' hidden></div>",
+    "<div id='title' class='title'>Tab</div>",
+    "</div>",
+    "<script>",
+    "(() => {",
+    "  const card = document.getElementById('card');",
+    "  const title = document.getElementById('title');",
+    "  const icon = document.getElementById('providerIcon');",
+    "  const fallbackIcon = document.getElementById('fallbackIcon');",
+    "  const normalizeText = (value, fallback) => {",
+    "    const text = String(value || '').trim();",
+    "    return text || fallback;",
+    "  };",
+    "  const showFallbackIcon = (text) => {",
+    "    icon.hidden = true;",
+    "    icon.removeAttribute('src');",
+    "    fallbackIcon.hidden = false;",
+    "    fallbackIcon.textContent = text;",
+    "  };",
+    "  const apply = (payload) => {",
+    "    const next = payload || {};",
+    "    title.textContent = normalizeText(next.tabName, 'Tab');",
+    "    card.dataset.detach = next.detachCandidate ? 'true' : 'false';",
+    "    const src = normalizeText(next.providerIconSrc, '');",
+    "    if (next.isGitTab) {",
+    "      showFallbackIcon('G');",
+    "    } else if (src) {",
+    "      fallbackIcon.hidden = true;",
+    "      icon.hidden = false;",
+    "      if (icon.getAttribute('src') !== src) icon.src = src;",
+    "    } else {",
+    "      showFallbackIcon('>');",
+    "    }",
+    "  };",
+    "  icon.addEventListener('error', () => showFallbackIcon('>'));",
+    "  window.host?.tabDragPreview?.onUpdate?.(apply);",
+    "})();",
+    "</script>",
+    "</body>",
+    "</html>",
+  ].join("");
+}
+
+/**
+ * 计算拖拽预览浮层窗口的屏幕边界，并约束在当前显示器工作区内。
+ */
+function resolveTabDragPreviewBounds(payload: TabDragPreviewWindowPayload = {}): Electron.Rectangle {
+  const cursor = screen.getCursorScreenPoint();
+  const rawX = cursor.x + TAB_DRAG_PREVIEW_CURSOR_OFFSET_X;
+  const rawY = cursor.y + TAB_DRAG_PREVIEW_CURSOR_OFFSET_Y;
+  const display = screen.getDisplayNearestPoint({ x: Math.round(rawX), y: Math.round(rawY) });
+  const workArea = display.workArea;
+  const margin = 6;
+  const tabName = normalizeTabDragPreviewString(payload.tabName, "Tab", 160).trim() || "Tab";
+  const visibleCharCount = Math.min(Array.from(tabName).length, 24);
+  const textWidth = Math.max(56, Math.round(visibleCharCount * 7));
+  const width = Math.max(TAB_DRAG_PREVIEW_MIN_WIDTH, Math.min(TAB_DRAG_PREVIEW_MAX_WIDTH, textWidth + 42));
+  const minX = workArea.x + margin;
+  const minY = workArea.y + margin;
+  const maxX = Math.max(minX, workArea.x + workArea.width - width - margin);
+  const maxY = Math.max(minY, workArea.y + workArea.height - TAB_DRAG_PREVIEW_HEIGHT - margin);
+  return {
+    x: Math.min(Math.max(Math.round(rawX), minX), maxX),
+    y: Math.min(Math.max(Math.round(rawY), minY), maxY),
+    width,
+    height: TAB_DRAG_PREVIEW_HEIGHT,
+  };
+}
+
+/**
+ * 将最新状态推送给拖拽预览浮层页面。
+ */
+function sendTabDragPreviewPayload(entry: TabDragPreviewWindowEntry): void {
+  if (!entry.loaded || entry.win.isDestroyed()) return;
+  try { entry.win.webContents.send("app:tabDragPreviewUpdate", { windowId: entry.windowId, ...entry.payload }); } catch {}
+}
+
+/**
+ * 根据系统光标位置更新预览浮层窗口位置；相同边界不重复调用原生窗口移动。
+ */
+function syncTabDragPreviewWindowBounds(entry: TabDragPreviewWindowEntry): void {
+  if (entry.win.isDestroyed()) return;
+  const bounds = resolveTabDragPreviewBounds(entry.payload);
+  const prev = entry.lastBounds;
+  if (prev && prev.x === bounds.x && prev.y === bounds.y && prev.width === bounds.width && prev.height === bounds.height)
+    return;
+  entry.lastBounds = bounds;
+  try { entry.win.setBounds(bounds, false); } catch {}
+}
+
+/**
+ * 清理拖拽预览浮层引用与轮询计时器。
+ */
+function disposeTabDragPreviewWindowEntry(entry: TabDragPreviewWindowEntry): void {
+  if (entry.cursorTimer) {
+    clearInterval(entry.cursorTimer);
+    entry.cursorTimer = null;
+  }
+  if (tabDragPreviewWindowsById.get(entry.windowId) === entry)
+    tabDragPreviewWindowsById.delete(entry.windowId);
+  if (tabDragPreviewWindowIdByOwner.get(entry.ownerWindowId) === entry.windowId)
+    tabDragPreviewWindowIdByOwner.delete(entry.ownerWindowId);
+}
+
+/**
+ * 按预览窗口标识关闭桌面级拖拽预览浮层。
+ */
+function closeTabDragPreviewWindowById(windowId: string): boolean {
+  const safeWindowId = String(windowId || "").trim();
+  if (!safeWindowId) return false;
+  const entry = tabDragPreviewWindowsById.get(safeWindowId);
+  if (!entry) return false;
+  disposeTabDragPreviewWindowEntry(entry);
+  try {
+    if (!entry.win.isDestroyed()) entry.win.close();
+  } catch {}
+  return true;
+}
+
+/**
+ * 按源应用窗口关闭其当前拖拽预览浮层。
+ */
+function closeTabDragPreviewWindowByOwner(ownerWindowId: string): boolean {
+  const safeOwnerWindowId = String(ownerWindowId || "").trim();
+  if (!safeOwnerWindowId) return false;
+  const windowId = tabDragPreviewWindowIdByOwner.get(safeOwnerWindowId);
+  return windowId ? closeTabDragPreviewWindowById(windowId) : false;
+}
+
+/**
+ * 更新预览浮层状态，并把内容变更同步到轻量页面。
+ */
+function updateTabDragPreviewWindowEntry(entry: TabDragPreviewWindowEntry, payload: unknown): void {
+  entry.payload = normalizeTabDragPreviewPayload(payload, entry.payload);
+  syncTabDragPreviewWindowBounds(entry);
+  sendTabDragPreviewPayload(entry);
+}
+
+/**
+ * 创建桌面级标签拖拽预览浮层；主进程轮询系统光标以保证窗口外仍能跟随。
+ */
+function createTabDragPreviewWindow(ownerWindow: BrowserWindow | null, ownerWindowId: string, payload: unknown): { ok: true; windowId: string } {
+  const safeOwnerWindowId = String(ownerWindowId || "").trim() || MAIN_APP_WINDOW_ID;
+  closeTabDragPreviewWindowByOwner(safeOwnerWindowId);
+
+  const windowId = `tab-drag-preview-${safeOwnerWindowId.replace(/[^a-zA-Z0-9_-]+/g, "-")}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const initialPayload = normalizeTabDragPreviewPayload(payload);
+  const initialBounds = resolveTabDragPreviewBounds(initialPayload);
+  const parentWindow = ownerWindow && !ownerWindow.isDestroyed() ? ownerWindow : undefined;
+  const win = new BrowserWindow({
+    x: initialBounds.x,
+    y: initialBounds.y,
+    width: initialBounds.width,
+    height: initialBounds.height,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    focusable: false,
+    skipTaskbar: true,
+    show: false,
+    hasShadow: false,
+    parent: parentWindow,
+    backgroundColor: "#00000000",
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, "preload.js"),
+      backgroundThrottling: false,
+      devTools: false,
+    },
+  });
+  const entry: TabDragPreviewWindowEntry = {
+    windowId,
+    ownerWindowId: safeOwnerWindowId,
+    win,
+    payload: initialPayload,
+    loaded: false,
+    cursorTimer: null,
+    lastBounds: initialBounds,
+  };
+  tabDragPreviewWindowsById.set(windowId, entry);
+  tabDragPreviewWindowIdByOwner.set(safeOwnerWindowId, windowId);
+
+  try { win.setIgnoreMouseEvents(true, { forward: true }); } catch {}
+  try { win.setAlwaysOnTop(true); } catch {}
+  win.on("closed", () => disposeTabDragPreviewWindowEntry(entry));
+  if (parentWindow) {
+    parentWindow.once("closed", () => {
+      closeTabDragPreviewWindowById(windowId);
+    });
+  }
+  win.webContents.once("did-finish-load", () => {
+    entry.loaded = true;
+    syncTabDragPreviewWindowBounds(entry);
+    sendTabDragPreviewPayload(entry);
+    try { win.showInactive(); } catch { try { win.show(); } catch {} }
+  });
+  entry.cursorTimer = setInterval(() => {
+    if (win.isDestroyed()) {
+      disposeTabDragPreviewWindowEntry(entry);
+      return;
+    }
+    syncTabDragPreviewWindowBounds(entry);
+  }, 16);
+  try { (entry.cursorTimer as any).unref?.(); } catch {}
+
+  const html = buildTabDragPreviewHtml();
+  void win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).catch(() => {
+    closeTabDragPreviewWindowById(windowId);
+  });
+  return { ok: true, windowId };
+}
 
 type GpuRecoverySnapshot = {
   lastCrashAt: number;
@@ -184,7 +509,7 @@ function setCursorPreferredStrategy(next: CursorOpenStrategy): void {
 const APP_USER_MODEL_ID = 'com.codexflow.app';
 const DEV_APP_USER_MODEL_ID = 'com.codexflow.app.dev';
 const PROTOCOL_SCHEME = 'codexflow';
-const ptyManager = new PTYManager(() => mainWindow);
+const ptyManager = new PTYManager(() => BrowserWindow.getAllWindows().filter((win) => !win.isDestroyed()));
 // worktree 创建后台任务：用于“创建中”进度 UI（可关闭/可重新打开查看输出）
 const worktreeCreateTasks = new WorktreeCreateTaskManager();
 // worktree 回收后台任务：用于“回收中”进度 UI（可查看实时日志）
@@ -988,7 +1313,7 @@ function recordRendererRecoveryAttempt(state: RendererRecoveryState, now: number
  * - 前几次优先 reload（保留 PTY 与当前主进程会话）
  * - 连续失败后重建窗口（处理可能的渲染进程僵死态）
  */
-function recoverMainWindowRenderer(win: BrowserWindow, reason: RendererRecoveryReason, detail?: string): void {
+function recoverWindowRenderer(win: BrowserWindow, reason: RendererRecoveryReason, detail?: string): void {
   try {
     if (quitConfirmed) return;
     if (win.isDestroyed()) return;
@@ -1008,7 +1333,7 @@ function recoverMainWindowRenderer(win: BrowserWindow, reason: RendererRecoveryR
     state.recoverInFlight = true;
     if (action === "recreate") {
       try {
-        recreateMainWindowForRecovery(win, reason);
+        recreateWindowForRecovery(win, reason);
       } finally {
         state.recoverInFlight = false;
       }
@@ -1030,26 +1355,27 @@ function recoverMainWindowRenderer(win: BrowserWindow, reason: RendererRecoveryR
 
     try { wc.reload(); } catch {
       release();
-      recreateMainWindowForRecovery(win, `${reason}:reload-failed`);
+      recreateWindowForRecovery(win, `${reason}:reload-failed`);
     }
   } catch {}
 }
 
 /**
- * 中文说明：在恢复失败时重建主窗口，并尽量保留原窗口的几何状态。
+ * 在恢复失败时重建窗口，并尽量保留原窗口的几何状态与宿主身份。
  */
-function recreateMainWindowForRecovery(win: BrowserWindow, reason: string): void {
+function recreateWindowForRecovery(win: BrowserWindow, reason: string): void {
   try {
     const restoreBounds = (() => { try { return win.getBounds(); } catch { return undefined; } })();
     const startMaximized = (() => { try { return win.isMaximized(); } catch { return false; } })();
     const startFullScreen = (() => { try { return win.isFullScreen(); } catch { return false; } })();
+    const { windowId, windowMode } = getAppWindowMeta(win);
     logWhiteScreenDiagnostic(`[RECOVERY] recreate reason=${reason}`);
     clearRendererRecoveryState(win);
     try { win.removeAllListeners("close"); } catch {}
     try { win.removeAllListeners("closed"); } catch {}
     try { win.destroy(); } catch {}
     if (mainWindow === win) mainWindow = null;
-    createWindow({ restoreBounds, startMaximized, startFullScreen, recoveryReason: reason });
+    createWindow({ restoreBounds, startMaximized, startFullScreen, recoveryReason: reason, windowId, windowMode });
   } catch (e) {
     logWhiteScreenDiagnostic(`[RECOVERY] recreate failed reason=${reason} err=${String(e)}`);
   }
@@ -1068,7 +1394,7 @@ function installMainWindowSelfHealHooks(win: BrowserWindow): void {
       const exitCode = Number(d?.exitCode ?? 0);
       logWhiteScreenDiagnostic(`[WC] render-process-gone reason=${crashReason} exitCode=${exitCode}`);
       if (crashReason === "clean-exit") return;
-      recoverMainWindowRenderer(win, "render-process-gone", `reason=${crashReason} exit=${exitCode}`);
+      recoverWindowRenderer(win, "render-process-gone", `reason=${crashReason} exit=${exitCode}`);
     });
     wc.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
       const mainFrame = typeof isMainFrame === "boolean" ? isMainFrame : true;
@@ -1078,7 +1404,7 @@ function installMainWindowSelfHealHooks(win: BrowserWindow): void {
       if (isDevServerMode) return;
       const url = String(validatedURL || "");
       if (url.startsWith("devtools://")) return;
-      recoverMainWindowRenderer(win, "did-fail-load", `code=${errorCode} desc=${errorDescription}`);
+      recoverWindowRenderer(win, "did-fail-load", `code=${errorCode} desc=${errorDescription}`);
     });
     wc.on("unresponsive", () => {
       logWhiteScreenDiagnostic("[WC] unresponsive");
@@ -1086,7 +1412,7 @@ function installMainWindowSelfHealHooks(win: BrowserWindow): void {
       if (state.unresponsiveTimer) return;
       state.unresponsiveTimer = setTimeout(() => {
         state.unresponsiveTimer = null;
-        recoverMainWindowRenderer(win, "unresponsive-timeout");
+        recoverWindowRenderer(win, "unresponsive-timeout");
       }, RENDERER_UNRESPONSIVE_TIMEOUT_MS);
       try { (state.unresponsiveTimer as any).unref?.(); } catch {}
     });
@@ -1158,6 +1484,24 @@ function resolveAppIcon(): string | undefined {
     if (!app.isPackaged && fs.existsSync(devFallback)) return devFallback;
   } catch {}
   return undefined;
+}
+
+/**
+ * 读取应用图标并转为渲染层可直接展示的数据地址。
+ */
+function resolveAppBrandIconDataUrl(): string | undefined {
+  if (cachedAppBrandIconDataUrl !== undefined) return cachedAppBrandIconDataUrl || undefined;
+  let dataUrl = "";
+  try {
+    const iconPath = resolveAppIcon();
+    if (iconPath) {
+      const image = nativeImage.createFromPath(iconPath);
+      const sized = image.isEmpty() ? image : image.resize({ width: 32, height: 32 });
+      dataUrl = sized.isEmpty() ? "" : sized.toDataURL();
+    }
+  } catch {}
+  cachedAppBrandIconDataUrl = dataUrl || null;
+  return dataUrl || undefined;
 }
 
 function resolveRendererEntry(): string {
@@ -1335,6 +1679,11 @@ function createWindow(options?: CreateWindowOptions): void {
   const windowIcon = resolveAppIcon();
   const restored = normalizeRestoreBounds(options?.restoreBounds);
   const restoreTag = options?.recoveryReason ? ` recovery=${clampLogValue(options.recoveryReason, 80)}` : "";
+  const windowId = String(options?.windowId || "").trim() || MAIN_APP_WINDOW_ID;
+  const windowMode: AppWindowMode = options?.windowMode === "detached-tab" ? "detached-tab" : "main";
+  const isMainAppWindow = windowMode === "main" || windowId === MAIN_APP_WINDOW_ID;
+  const useNativeWindowFrame = isMainAppWindow;
+  const deferShowUntilReady = !isMainAppWindow;
   try { perfLogger.log(`[WIN] create pid=${process.pid} userData=${app.getPath('userData')}${restoreTag}`); } catch {}
 
   const win = new BrowserWindow({
@@ -1345,19 +1694,32 @@ function createWindow(options?: CreateWindowOptions): void {
     minWidth: 1216,
     minHeight: 760,
     icon: windowIcon,
-    // 恢复系统默认标题栏/菜单栏布局
-    autoHideMenuBar: false,
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#22272e' : '#ffffff',
+    // 主窗口保留系统标题栏；独立标签页由页面顶部栏承载拖动区域。
+    frame: useNativeWindowFrame,
+    autoHideMenuBar: !useNativeWindowFrame,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.js'),
       backgroundThrottling: false,
+      additionalArguments: [
+        `--codexflow-app-window-id=${windowId}`,
+        `--codexflow-app-window-mode=${windowMode}`,
+      ],
       // 显式允许开发者工具（默认即为 true，此处明确写出以避免歧义）
       devTools: true
     },
-    show: true
+    show: !deferShowUntilReady
   });
-  mainWindow = win;
+  appWindowMetaByWindow.set(win, { windowId, windowMode });
+  if (isMainAppWindow) mainWindow = win;
+  try {
+    win.on("maximize", () => sendWindowStateChanged(win));
+    win.on("unmaximize", () => sendWindowStateChanged(win));
+    win.on("enter-full-screen", () => sendWindowStateChanged(win));
+    win.on("leave-full-screen", () => sendWindowStateChanged(win));
+  } catch {}
 
   try {
     if (options?.startMaximized) win.maximize();
@@ -1381,11 +1743,16 @@ function createWindow(options?: CreateWindowOptions): void {
     win.once('ready-to-show', () => {
       try { ensureWindowInView(win); } catch {}
       try { forceShowWindow(win, 'ready-to-show'); } catch {}
+      try { sendWindowStateChanged(win); } catch {}
     });
     const t = setTimeout(() => {
+      if (deferShowUntilReady) {
+        try { forceShowWindow(win, 'delayed-timeout'); } catch {}
+        return;
+      }
       try { ensureWindowInView(win); } catch {}
       try { forceShowWindow(win, 'timeout'); } catch {}
-    }, 800);
+    }, deferShowUntilReady ? 3000 : 800);
     try { (t as any).unref?.(); } catch {}
   } catch {}
 
@@ -1396,21 +1763,34 @@ function createWindow(options?: CreateWindowOptions): void {
   } catch {}
 
   const devUrl = resolveDevServerUrl(process.argv);
+  const rendererUrl = (() => {
+    try {
+      if (devUrl) {
+        const url = new URL(devUrl);
+        url.searchParams.set("windowId", windowId);
+        url.searchParams.set("windowMode", windowMode);
+        return url.toString();
+      }
+      return undefined;
+    } catch {
+      return devUrl;
+    }
+  })();
   if (DIAG) { try { perfLogger.log(`[WIN] create BrowserWindow devUrl=${devUrl || ''}`); } catch {} }
-  if (devUrl) {
-    if (DIAG) { try { perfLogger.log(`[WIN] loadURL ${devUrl}`); } catch {} }
-    win.loadURL(devUrl);
-    win.webContents.openDevTools({ mode: 'detach' });
+  if (rendererUrl) {
+    if (DIAG) { try { perfLogger.log(`[WIN] loadURL ${rendererUrl}`); } catch {} }
+    win.loadURL(rendererUrl);
   } else {
     const entryFile = resolveRendererEntry();
-    if (DIAG) { try { perfLogger.log(`[WIN] loadFile ${entryFile}`); } catch {} }
-    win.loadFile(entryFile);
-    // 支持通过统一调试配置强制打开 DevTools（无论是否走本地文件或打包产物）
-    try {
-      const cfg = getDebugConfig();
-      if (cfg?.global?.openDevtools) win.webContents.openDevTools({ mode: 'detach' });
-    } catch {}
+    const search = `windowId=${encodeURIComponent(windowId)}&windowMode=${encodeURIComponent(windowMode)}`;
+    if (DIAG) { try { perfLogger.log(`[WIN] loadFile ${entryFile}?${search}`); } catch {} }
+    win.loadFile(entryFile, { search: `?${search}` });
   }
+  try {
+    const cfg = getDebugConfig();
+    if (isMainAppWindow && (!!devUrl || cfg?.global?.openDevtools))
+      win.webContents.openDevTools({ mode: 'detach' });
+  } catch {}
 
   // 渲染进程白屏/刷新诊断钩子：默认开启，保证问题发生后 perf.log 可查
   try {
@@ -1441,6 +1821,7 @@ function createWindow(options?: CreateWindowOptions): void {
   // 关闭窗口/退出应用前：若仍有终端会话未关闭，弹窗确认（避免误关导致任务中断）
   win.on("close", (event) => {
     try {
+      if (!isMainAppWindow) return;
       if (quitConfirmed) return;
       const count = ptyManager.getActiveSessionCount();
       if (count <= 0) return;
@@ -1461,6 +1842,11 @@ function createWindow(options?: CreateWindowOptions): void {
   });
 
   win.on('closed', () => {
+    const meta = getAppWindowMeta(win);
+    appWindowMetaByWindow.delete(win);
+    if (!quitConfirmed && meta.windowMode === "detached-tab" && meta.windowId !== MAIN_APP_WINDOW_ID) {
+      broadcastWindowClosed(win, { windowId: meta.windowId, mode: meta.windowMode });
+    }
     if (mainWindow === win) mainWindow = null;
   });
 }
@@ -1468,7 +1854,8 @@ function createWindow(options?: CreateWindowOptions): void {
 // 统一应用标题栏主题色（Windows）
 function applyTitleBarTheme(mode: 'light' | 'dark', source?: SettingsThemeSetting) {
   try {
-    if (!mainWindow) return;
+    const windows = BrowserWindow.getAllWindows().filter((win) => !win.isDestroyed());
+    if (windows.length <= 0) return;
     const themeSource: SettingsThemeSetting | undefined = (source === 'light' || source === 'dark' || source === 'system') ? source : undefined;
     if (themeSource) {
       try { nativeTheme.themeSource = themeSource; } catch {}
@@ -1488,10 +1875,12 @@ function applyTitleBarTheme(mode: 'light' | 'dark', source?: SettingsThemeSettin
     if (!themeSource) {
       try { nativeTheme.themeSource = isDark ? 'dark' : 'light'; } catch {}
     }
-    // 2) 若启用了 overlay（未来可能切换），也同步覆盖色
-    try { (mainWindow as any).setTitleBarOverlay?.({ color: bar, symbolColor: symbols, height: 32 }); } catch {}
-    // 3) 背景色尽量保持一致（对默认框架影响有限，但无副作用）
-    try { mainWindow.setBackgroundColor(bar); } catch {}
+    for (const win of windows) {
+      // 2) 若启用了 overlay（未来可能切换），也同步覆盖色
+      try { (win as any).setTitleBarOverlay?.({ color: bar, symbolColor: symbols, height: 32 }); } catch {}
+      // 3) 背景色尽量保持一致（对默认框架影响有限，但无副作用）
+      try { win.setBackgroundColor(bar); } catch {}
+    }
   } catch {}
 }
 
@@ -1512,6 +1901,74 @@ ipcMain.handle('app.setTitleBarTheme', async (_e, payload: { mode?: string; sour
     return { ok: true } as any;
   } catch (e: any) {
     return { ok: false, error: String(e) } as any;
+  }
+});
+
+/**
+ * 创建一个用于承载独立标签页的新窗口，并返回其窗口标识。
+ */
+ipcMain.handle("app.createDetachedTabWindow", async (_event, placement?: { x?: number; y?: number } | null) => {
+  try {
+    const requestedWindowId = String((placement as any)?.windowId || "").trim();
+    const windowId = requestedWindowId || `detached-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const x = Number((placement as any)?.x);
+    const y = Number((placement as any)?.y);
+    const restoreBounds = Number.isFinite(x) && Number.isFinite(y)
+      ? { x: Math.round(x), y: Math.round(y), width: 1376, height: 860 }
+      : undefined;
+    createWindow({ windowId, windowMode: "detached-tab", restoreBounds });
+    return { ok: true, windowId } as const;
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) } as const;
+  }
+});
+
+/**
+ * 创建桌面级标签拖拽预览浮层，用于跨出当前应用窗口后继续显示拖拽反馈。
+ */
+ipcMain.handle("app.createTabDragPreviewWindow", async (event, payload?: unknown) => {
+  try {
+    const ownerWindow = BrowserWindow.fromWebContents(event.sender);
+    const ownerWindowId = ownerWindow ? getAppWindowMeta(ownerWindow).windowId : MAIN_APP_WINDOW_ID;
+    return createTabDragPreviewWindow(ownerWindow, ownerWindowId, payload);
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) } as const;
+  }
+});
+
+/**
+ * 更新桌面级标签拖拽预览浮层状态。
+ */
+ipcMain.handle("app.updateTabDragPreviewWindow", async (event, payload?: unknown) => {
+  try {
+    const obj = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
+    const requestedWindowId = String(obj.windowId || "").trim();
+    const ownerWindow = BrowserWindow.fromWebContents(event.sender);
+    const ownerWindowId = ownerWindow ? getAppWindowMeta(ownerWindow).windowId : MAIN_APP_WINDOW_ID;
+    const fallbackWindowId = tabDragPreviewWindowIdByOwner.get(ownerWindowId) || "";
+    const entry = tabDragPreviewWindowsById.get(requestedWindowId || fallbackWindowId);
+    if (!entry) return { ok: false, error: "preview-not-found" } as const;
+    updateTabDragPreviewWindowEntry(entry, payload);
+    return { ok: true } as const;
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) } as const;
+  }
+});
+
+/**
+ * 关闭桌面级标签拖拽预览浮层。
+ */
+ipcMain.handle("app.closeTabDragPreviewWindow", async (event, payload?: unknown) => {
+  try {
+    const obj = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
+    const requestedWindowId = String(obj.windowId || "").trim();
+    if (requestedWindowId)
+      return { ok: true, closed: closeTabDragPreviewWindowById(requestedWindowId) } as const;
+    const ownerWindow = BrowserWindow.fromWebContents(event.sender);
+    const ownerWindowId = ownerWindow ? getAppWindowMeta(ownerWindow).windowId : MAIN_APP_WINDOW_ID;
+    return { ok: true, closed: closeTabDragPreviewWindowByOwner(ownerWindowId) } as const;
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) } as const;
   }
 });
 
@@ -1611,7 +2068,7 @@ function installGpuProcessRecoveryHooks(userDataDir: string): void {
         try { perfLogger.log(`[GPU] fallback armed until=${snap.disableUntil}`); } catch {}
       }
       if (mainWindow && !mainWindow.isDestroyed()) {
-        recoverMainWindowRenderer(mainWindow, "gpu-process-gone", `reason=${reason} exit=${exitCode}`);
+        recoverWindowRenderer(mainWindow, "gpu-process-gone", `reason=${reason} exit=${exitCode}`);
       }
     } catch {}
   });
@@ -1718,7 +2175,7 @@ if (!gotLock) {
         try { setTermDebug(!!getDebugConfig().terminal.pty.debug); } catch {}
         // 广播给所有窗口
         try { for (const win of BrowserWindow.getAllWindows()) { win.webContents.send('debug:changed'); } } catch {}
-        // DevTools 强制打开（仅当配置为 true 且窗口已存在）
+        // 仅主窗口响应调试配置自动打开 DevTools，避免独立标签页被调试窗打断。
         try { const cfg = getDebugConfig(); if (cfg?.global?.openDevtools) mainWindow?.webContents.openDevTools({ mode: 'detach' }); } catch {}
       });
     } catch {}
@@ -5202,6 +5659,55 @@ ipcMain.handle('app.getPaths', async () => {
     return { ok: true, licensePath, noticePath } as const;
   } catch (e: any) {
     return { ok: false, error: String(e) } as const;
+  }
+});
+
+// 应用品牌资源，供无边框窗口自绘顶栏使用
+ipcMain.handle("app.getBrandAssets", async () => {
+  try {
+    return {
+      ok: true,
+      title: app.getName() || "CodexFlow",
+      iconDataUrl: resolveAppBrandIconDataUrl(),
+    } as const;
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) } as const;
+  }
+});
+
+// 当前窗口状态，供无边框窗口初始化控制按钮图标
+ipcMain.handle("app.getWindowState", async (event) => {
+  try {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || win.isDestroyed()) return { ok: false, error: "window_unavailable" } as const;
+    return { ok: true, isMaximized: win.isMaximized() } as const;
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) } as const;
+  }
+});
+
+// 当前窗口控制，仅作用于发起请求的 BrowserWindow
+ipcMain.handle("app.controlWindow", async (event, action?: string) => {
+  try {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || win.isDestroyed()) return { ok: false, error: "window_unavailable" } as const;
+    const safeAction = String(action || "").trim();
+    if (safeAction === "minimize") {
+      win.minimize();
+      return { ok: true, isMaximized: win.isMaximized() } as const;
+    }
+    if (safeAction === "toggleMaximize") {
+      if (win.isMaximized()) win.unmaximize();
+      else win.maximize();
+      return { ok: true, isMaximized: win.isMaximized() } as const;
+    }
+    if (safeAction === "close") {
+      win.close();
+      return { ok: true } as const;
+    }
+    return { ok: false, error: "unsupported_action" } as const;
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) } as const;
   }
 });
 

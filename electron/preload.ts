@@ -92,20 +92,67 @@ function ensurePtyExitDispatcher(): void {
  */
 const APP_BOOT_ID = String(process.env.CODEXFLOW_APP_BOOT_ID || "");
 
+/**
+ * 从 preload 启动参数中读取窗口级上下文。
+ */
+function readArgValue(prefix: string): string {
+  try {
+    const hit = process.argv.find((arg) => typeof arg === "string" && arg.startsWith(prefix));
+    return hit ? String(hit.slice(prefix.length) || "").trim() : "";
+  } catch {
+    return "";
+  }
+}
+
+const APP_WINDOW_ID = readArgValue("--codexflow-app-window-id=");
+const APP_WINDOW_MODE = readArgValue("--codexflow-app-window-mode=").toLowerCase() === "detached-tab"
+  ? "detached-tab"
+  : "main";
+
 contextBridge.exposeInMainWorld('host', {
   app: {
     bootId: APP_BOOT_ID,
+    window: {
+      id: APP_WINDOW_ID || "main",
+      mode: APP_WINDOW_MODE,
+    },
     getVersion: async (): Promise<string> => {
       try { const res = await ipcRenderer.invoke('app.getVersion'); return (res && res.ok) ? String(res.version || '') : ''; } catch { return ''; }
     },
     getPaths: async (): Promise<{ licensePath?: string; noticePath?: string }> => {
       try { const res = await ipcRenderer.invoke('app.getPaths'); if (res && res.ok) return { licensePath: res.licensePath, noticePath: res.noticePath }; return {}; } catch { return {}; }
     },
+    /**
+     * 读取应用品牌资源，供自绘标题栏展示。
+     */
+    getBrandAssets: async (): Promise<{ ok: boolean; title?: string; iconDataUrl?: string; error?: string }> => {
+      try { return await ipcRenderer.invoke("app.getBrandAssets"); } catch (e) { return { ok: false, error: String(e) } as any; }
+    },
     setTitleBarTheme: async (theme: { mode: 'light' | 'dark'; source?: 'light' | 'dark' | 'system' } | 'light' | 'dark'): Promise<{ ok: boolean; error?: string }> => {
       try {
         const payload = typeof theme === 'string' ? { mode: theme } : theme;
         return await ipcRenderer.invoke('app.setTitleBarTheme', payload);
       } catch (e) { return { ok: false, error: String(e) } as any; }
+    },
+    /**
+     * 控制当前渲染进程所属窗口。
+     */
+    controlWindow: async (action: "minimize" | "toggleMaximize" | "close"): Promise<{ ok: boolean; isMaximized?: boolean; error?: string }> => {
+      try { return await ipcRenderer.invoke("app.controlWindow", action); } catch (e) { return { ok: false, error: String(e) } as any; }
+    },
+    /**
+     * 读取当前窗口状态。
+     */
+    getWindowState: async (): Promise<{ ok: boolean; isMaximized?: boolean; error?: string }> => {
+      try { return await ipcRenderer.invoke("app.getWindowState"); } catch (e) { return { ok: false, error: String(e) } as any; }
+    },
+    /**
+     * 监听当前窗口状态变化。
+     */
+    onWindowStateChanged: (handler: (payload: { isMaximized?: boolean }) => void) => {
+      const listener = (_: unknown, payload: { isMaximized?: boolean }) => handler(payload);
+      ipcRenderer.on("app:windowStateChanged", listener);
+      return () => ipcRenderer.removeListener("app:windowStateChanged", listener);
     },
     /**
      * 监听主进程发起的“退出确认”请求（用于渲染进程自定义弹窗样式）。
@@ -116,10 +163,49 @@ contextBridge.exposeInMainWorld('host', {
       return () => ipcRenderer.removeListener('app:quitConfirm', listener);
     },
     /**
+     * 监听任意应用窗口关闭事件。
+     */
+    onWindowClosed: (handler: (payload: { windowId: string; mode: "main" | "detached-tab" }) => void) => {
+      const listener = (_: unknown, payload: { windowId: string; mode: "main" | "detached-tab" }) => handler(payload);
+      ipcRenderer.on("app:windowClosed", listener);
+      return () => ipcRenderer.removeListener("app:windowClosed", listener);
+    },
+    /**
      * 回复主进程的“退出确认”结果。
      */
     respondQuitConfirm: async (token: string, ok: boolean): Promise<{ ok: boolean; error?: string }> => {
       try { return await ipcRenderer.invoke('app.quitConfirm.respond', { token, ok }); } catch (e) { return { ok: false, error: String(e) } as any; }
+    },
+    createDetachedTabWindow: async (options?: { windowId?: string; x?: number; y?: number }): Promise<{ ok: boolean; windowId?: string; error?: string }> => {
+      try { return await ipcRenderer.invoke("app.createDetachedTabWindow", options || null); } catch (e) { return { ok: false, error: String(e) } as any; }
+    },
+    /**
+     * 创建桌面级标签拖拽预览浮层。
+     */
+    createTabDragPreviewWindow: async (options?: { windowId?: string; tabId?: string; tabName?: string; providerIconSrc?: string; isGitTab?: boolean; detachCandidate?: boolean }): Promise<{ ok: boolean; windowId?: string; error?: string }> => {
+      try { return await ipcRenderer.invoke("app.createTabDragPreviewWindow", options || null); } catch (e) { return { ok: false, error: String(e) } as any; }
+    },
+    /**
+     * 更新桌面级标签拖拽预览浮层。
+     */
+    updateTabDragPreviewWindow: async (options: { windowId?: string; tabId?: string; tabName?: string; providerIconSrc?: string; isGitTab?: boolean; detachCandidate?: boolean }): Promise<{ ok: boolean; error?: string }> => {
+      try { return await ipcRenderer.invoke("app.updateTabDragPreviewWindow", options || null); } catch (e) { return { ok: false, error: String(e) } as any; }
+    },
+    /**
+     * 关闭桌面级标签拖拽预览浮层。
+     */
+    closeTabDragPreviewWindow: async (options?: { windowId?: string }): Promise<{ ok: boolean; closed?: boolean; error?: string }> => {
+      try { return await ipcRenderer.invoke("app.closeTabDragPreviewWindow", options || null); } catch (e) { return { ok: false, error: String(e) } as any; }
+    },
+  },
+  tabDragPreview: {
+    /**
+     * 监听主进程推送的拖拽预览状态。
+     */
+    onUpdate: (handler: (payload: { windowId?: string; tabId?: string; tabName?: string; providerIconSrc?: string; isGitTab?: boolean; detachCandidate?: boolean }) => void) => {
+      const listener = (_: unknown, payload: { windowId?: string; tabId?: string; tabName?: string; providerIconSrc?: string; isGitTab?: boolean; detachCandidate?: boolean }) => handler(payload);
+      ipcRenderer.on("app:tabDragPreviewUpdate", listener);
+      return () => ipcRenderer.removeListener("app:tabDragPreviewUpdate", listener);
     },
   },
   debug: {
