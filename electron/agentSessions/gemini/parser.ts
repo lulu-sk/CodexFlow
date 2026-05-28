@@ -142,6 +142,10 @@ export async function parseGeminiSessionFile(filePath: string, stat: Stats, opts
     messages.push(msg);
   };
 
+  if (isGeminiJsonlSessionFile(filePath)) {
+    return await parseGeminiJsonlSessionFile(filePath, stat, opts);
+  }
+
   if (sizeBytes > maxBytes) {
     // 文件过大时不做完整 JSON.parse；但索引列表仍需要 preview/title。
     try {
@@ -249,14 +253,15 @@ export async function parseGeminiSessionFile(filePath: string, stat: Stats, opts
       const text = extractGeminiText(it);
       const imageItems = extractGeminiImageContents(it);
       if (role === "user") {
-        if (!preview && text) {
+        const isSessionContext = isGeminiSessionContextText(text);
+        if (!preview && text && !isSessionContext) {
           const filtered = filterHistoryPreviewText(text);
           if (filtered) preview = clampPreview(filtered);
         }
         const content: Message["content"] = [];
-        if (text) content.push({ type: "input_text", text });
+        if (text) content.push({ type: isSessionContext ? "meta" : "input_text", text });
         if (imageItems.length > 0) content.push(...imageItems);
-        if (content.length > 0) pushMessage({ role: "user", content });
+        if (content.length > 0) pushMessage({ role: isSessionContext ? "system" : "user", content });
       } else if (role === "assistant") {
         const content: Message["content"] = [];
         if (text) content.push({ type: "output_text", text });
@@ -304,6 +309,366 @@ export async function parseGeminiSessionFile(filePath: string, stat: Stats, opts
 
 type GeminiExtractedMeta = { startTime?: unknown; lastUpdated?: unknown; firstTS?: unknown; lastTS?: unknown };
 type GeminiPrefixExtracted = { rawDate?: string; cwd?: string; preview?: string; resumeId?: string; projectHash?: string };
+type GeminiJsonlMessageRecord = {
+  id?: string;
+  type?: string;
+  timestamp?: string;
+  content?: unknown;
+  displayContent?: unknown;
+  toolCalls?: unknown;
+  model?: string;
+};
+
+/**
+ * 判断文件是否为新版 Gemini CLI 的 JSONL 会话文件。
+ *
+ * @param filePath 会话文件路径
+ * @returns 是否 JSONL 会话文件
+ */
+function isGeminiJsonlSessionFile(filePath: string): boolean {
+  return path.basename(String(filePath || "")).toLowerCase().endsWith(".jsonl");
+}
+
+/**
+ * 解析新版 Gemini CLI JSONL 会话文件。
+ *
+ * @param filePath 会话文件路径
+ * @param stat 文件状态
+ * @param opts 解析选项
+ * @returns 统一后的 Gemini 会话详情
+ */
+async function parseGeminiJsonlSessionFile(filePath: string, stat: Stats, opts?: GeminiParseOptions): Promise<GeminiSessionDetails> {
+  const summaryOnly = !!opts?.summaryOnly;
+  const maxBytes = Math.max(64 * 1024, Math.min(64 * 1024 * 1024, Number(opts?.maxBytes ?? (summaryOnly ? 2 * 1024 * 1024 : 32 * 1024 * 1024))));
+  const date = Number(stat?.mtimeMs || 0);
+  const sizeBytes = Number((stat as any)?.size ?? 0);
+  const id = `gemini:${sha256Hex(filePath)}`;
+  let runtimeShell: RuntimeShell = detectRuntimeShell(filePath);
+  let projectHash = extractGeminiProjectHashFromPath(filePath) || undefined;
+  let rawDate: string | undefined = undefined;
+  let cwd: string | undefined = undefined;
+  let resumeId: string | undefined = undefined;
+  let preview: string | undefined = undefined;
+  let skippedLines = 0;
+  const messages: Message[] = [];
+
+  const metadata: Record<string, unknown> = {};
+  const messageOrder: string[] = [];
+  const messagesById = new Map<string, GeminiJsonlMessageRecord>();
+
+  const readWholeFile = sizeBytes <= maxBytes;
+  const text = readWholeFile
+    ? await fs.readFile(filePath, { encoding: "utf8" }).catch(() => "")
+    : await readUtf8Prefix(filePath, maxBytes);
+  const lines = String(text || "").split(/\r?\n/);
+  if (!readWholeFile && lines.length > 0) lines.pop();
+
+  /**
+   * 合并 JSONL 元信息记录，并同步常用摘要字段。
+   *
+   * @param value 元信息对象或 `$set` 补丁
+   */
+  const mergeMetadata = (value: any) => {
+    if (!value || typeof value !== "object") return;
+    for (const [key, val] of Object.entries(value)) metadata[key] = val;
+    const nextResumeId = pickFirstStringOrNumberAsString(value.sessionId ?? value.session_id ?? value.session);
+    if (nextResumeId) resumeId = nextResumeId;
+    const nextRawDate = pickFirstStringOrNumberAsString(value.lastUpdated ?? value.updatedAt ?? value.last_updated ?? value.startTime ?? value.startedAt ?? value.start_time);
+    if (nextRawDate) rawDate = nextRawDate;
+    const nextHash = normalizeGeminiProjectHash(value.projectHash ?? value.project_hash);
+    if (nextHash) projectHash = nextHash;
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    let record: any = null;
+    try {
+      record = JSON.parse(trimmed);
+    } catch {
+      skippedLines++;
+      continue;
+    }
+    if (!record || typeof record !== "object") continue;
+
+    if (typeof record.$rewindTo === "string") {
+      rewindGeminiJsonlMessages(messagesById, messageOrder, record.$rewindTo);
+      continue;
+    }
+
+    if (record.$set && typeof record.$set === "object") {
+      const patch = record.$set as Record<string, unknown>;
+      if (Array.isArray(patch.messages)) {
+        messagesById.clear();
+        messageOrder.length = 0;
+        for (const msg of patch.messages) {
+          if (isGeminiJsonlMessageRecord(msg)) upsertGeminiJsonlMessage(messagesById, messageOrder, msg);
+        }
+      }
+      mergeMetadata(patch);
+      continue;
+    }
+
+    if (isGeminiJsonlMessageRecord(record)) {
+      upsertGeminiJsonlMessage(messagesById, messageOrder, record);
+      continue;
+    }
+
+    mergeMetadata(record);
+    if (Array.isArray(record.messages)) {
+      for (const msg of record.messages) {
+        if (isGeminiJsonlMessageRecord(msg)) upsertGeminiJsonlMessage(messagesById, messageOrder, msg);
+      }
+    }
+  }
+
+  const rawMessages = messageOrder.map((messageId) => messagesById.get(messageId)).filter(Boolean) as GeminiJsonlMessageRecord[];
+  cwd = tryExtractGeminiCwdFromJsonl(metadata, rawMessages) || undefined;
+  if (cwd && projectHash) {
+    try {
+      const want = projectHash.toLowerCase();
+      const cands = deriveGeminiProjectHashCandidatesFromPath(cwd);
+      if (!cands.includes(want)) cwd = undefined;
+    } catch {
+      cwd = undefined;
+    }
+  }
+  if (runtimeShell === "unknown" && cwd) {
+    try {
+      const hint = detectRuntimeShell(cwd);
+      if (hint !== "unknown") runtimeShell = hint;
+    } catch {}
+  }
+
+  for (const msg of rawMessages) {
+    const text = extractGeminiText(msg);
+    if (!preview && normalizeGeminiJsonlRole(msg.type) === "user" && !isGeminiSessionContextText(text)) {
+      const filtered = filterHistoryPreviewText(text);
+      if (filtered) preview = clampPreview(filtered);
+    }
+    if (!summaryOnly) {
+      const converted = convertGeminiJsonlMessageToHistoryMessages(msg);
+      for (const item of converted) messages.push(item);
+    }
+    if (summaryOnly && preview && (cwd || projectHash)) break;
+  }
+
+  const dirKey = cwd ? dirKeyFromCwd(cwd) : dirKeyOfFilePath(filePath);
+  const title = preview ? preview : path.basename(filePath);
+  return {
+    providerId: "gemini",
+    id,
+    title,
+    date,
+    filePath,
+    messages,
+    skippedLines,
+    rawDate,
+    cwd,
+    dirKey,
+    preview,
+    projectHash,
+    resumeId,
+    runtimeShell,
+  };
+}
+
+/**
+ * 判断对象是否为新版 Gemini JSONL 的消息记录。
+ *
+ * @param value 原始对象
+ * @returns 是否消息记录
+ */
+function isGeminiJsonlMessageRecord(value: unknown): value is GeminiJsonlMessageRecord {
+  if (!value || typeof value !== "object") return false;
+  const any = value as any;
+  return typeof any.id === "string" && typeof any.type === "string";
+}
+
+/**
+ * 将 Gemini JSONL 消息写入有序 Map，重复 id 代表同一消息的后续补丁。
+ *
+ * @param messagesById 消息 Map
+ * @param messageOrder 消息顺序
+ * @param message 消息记录
+ */
+function upsertGeminiJsonlMessage(
+  messagesById: Map<string, GeminiJsonlMessageRecord>,
+  messageOrder: string[],
+  message: GeminiJsonlMessageRecord,
+): void {
+  const messageId = String(message.id || "").trim();
+  if (!messageId) return;
+  if (!messagesById.has(messageId)) messageOrder.push(messageId);
+  const previous = messagesById.get(messageId);
+  messagesById.set(messageId, previous ? { ...previous, ...message } : message);
+}
+
+/**
+ * 按 Gemini JSONL 的 rewind 记录回退消息列表。
+ *
+ * @param messagesById 消息 Map
+ * @param messageOrder 消息顺序
+ * @param rewindTo 需要移除的起始消息 id
+ */
+function rewindGeminiJsonlMessages(
+  messagesById: Map<string, GeminiJsonlMessageRecord>,
+  messageOrder: string[],
+  rewindTo: string,
+): void {
+  const rewindId = String(rewindTo || "").trim();
+  const start = rewindId ? messageOrder.indexOf(rewindId) : -1;
+  const removed = messageOrder.splice(start >= 0 ? start : 0);
+  for (const messageId of removed) messagesById.delete(messageId);
+}
+
+/**
+ * 将 Gemini JSONL 的消息类型映射到历史角色。
+ *
+ * @param raw 原始消息类型
+ * @returns 历史角色
+ */
+function normalizeGeminiJsonlRole(raw: unknown): "user" | "assistant" | "system" | "tool" | "" {
+  const t = String(raw || "").trim().toLowerCase();
+  if (t === "gemini") return "assistant";
+  if (t === "info" || t === "warning" || t === "error") return "system";
+  return normalizeGeminiRole(t);
+}
+
+/**
+ * 判断文本是否为 Gemini CLI 自动注入的会话上下文。
+ *
+ * @param text 候选消息文本
+ * @returns 是否自动会话上下文
+ */
+function isGeminiSessionContextText(text: unknown): boolean {
+  const value = String(text || "").trimStart().toLowerCase();
+  return value.startsWith("<session_context>");
+}
+
+/**
+ * 从 Gemini JSONL 元信息或消息中推断工作目录。
+ *
+ * @param metadata JSONL 累积元信息
+ * @param messages 消息列表
+ * @returns 推断出的工作目录
+ */
+function tryExtractGeminiCwdFromJsonl(metadata: Record<string, unknown>, messages: GeminiJsonlMessageRecord[]): string | null {
+  try {
+    const direct = tryExtractGeminiCwdFromAny(metadata, null);
+    if (direct) return direct;
+    const directories = metadata.directories;
+    if (Array.isArray(directories)) {
+      for (const dir of directories) {
+        if (typeof dir !== "string") continue;
+        const candidate = tidyPathCandidate(dir);
+        if (candidate) return candidate;
+      }
+    }
+    return tryExtractGeminiCwdFromAny({}, messages as any[]) || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 将一条 Gemini JSONL 消息转换为 CodexFlow 历史消息。
+ *
+ * @param message Gemini JSONL 消息
+ * @returns 历史消息列表
+ */
+function convertGeminiJsonlMessageToHistoryMessages(message: GeminiJsonlMessageRecord): Message[] {
+  try {
+    const role = normalizeGeminiJsonlRole(message.type);
+    const content: Message["content"] = [];
+    const text = extractGeminiText(message);
+    const imageItems = extractGeminiImageContents(message);
+    const outputRole = role === "user" && isGeminiSessionContextText(text) ? "system" : role;
+
+    if (text) {
+      if (outputRole === "user") content.push({ type: "input_text", text });
+      else if (outputRole === "assistant") content.push({ type: "output_text", text });
+      else if (outputRole === "tool") content.push({ type: "tool_result", text });
+      else if (outputRole === "system") content.push({ type: "meta", text });
+      else content.push({ type: "text", text });
+    }
+    if (imageItems.length > 0) content.push(...imageItems);
+    const out: Message[] = [];
+    if (content.length > 0) out.push({ role: outputRole || "assistant", content });
+
+    if (Array.isArray(message.toolCalls)) {
+      for (const toolCall of message.toolCalls) {
+        const toolText = buildGeminiJsonlToolCallText(toolCall);
+        if (toolText) out.push({ role: "assistant", content: [{ type: "tool_call", text: toolText }] });
+        const resultText = buildGeminiJsonlToolResultText(toolCall);
+        if (resultText) out.push({ role: "tool", content: [{ type: "tool_result", text: resultText }] });
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 格式化 Gemini JSONL 工具调用，便于历史详情展示。
+ *
+ * @param toolCall 工具调用记录
+ * @returns 工具调用文本
+ */
+function buildGeminiJsonlToolCallText(toolCall: unknown): string {
+  try {
+    if (!toolCall || typeof toolCall !== "object") return "";
+    const any = toolCall as any;
+    const name = typeof any.name === "string" ? any.name : "";
+    const args = any.args && typeof any.args === "object" ? safeJsonStringify(any.args) : "";
+    const status = typeof any.status === "string" ? any.status : "";
+    return [name, args, status ? `status: ${status}` : ""].filter(Boolean).join("\n").trim();
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * 格式化 Gemini JSONL 工具结果。
+ *
+ * @param toolCall 工具调用记录
+ * @returns 工具结果文本
+ */
+function buildGeminiJsonlToolResultText(toolCall: unknown): string {
+  try {
+    if (!toolCall || typeof toolCall !== "object") return "";
+    const any = toolCall as any;
+    if (!Object.prototype.hasOwnProperty.call(any, "result") || any.result == null) return "";
+    if (typeof any.result === "string") return any.result.trim();
+    if (Array.isArray(any.result)) {
+      const parts = any.result.map((part: unknown) => {
+        if (typeof part === "string") return part;
+        if (part && typeof part === "object" && typeof (part as any).text === "string") return (part as any).text;
+        return safeJsonStringify(part);
+      }).filter((part: unknown) => String(part || "").trim());
+      return parts.join("\n").trim();
+    }
+    return safeJsonStringify(any.result).trim();
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * 将未知值安全转换为 JSON 文本。
+ *
+ * @param value 原始值
+ * @returns JSON 文本或 String 回退
+ */
+function safeJsonStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value ?? "");
+  }
+}
 
 /**
  * 在不读取完整文件的情况下，从 Gemini 会话 JSON 的“前缀内容”中提取摘要信息：

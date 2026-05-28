@@ -122,7 +122,7 @@ describe("TerminalManager（长文本发送策略）", () => {
     tm.disposeAll(false);
   });
 
-  it("Gemini 在 Windows/Pwsh 下会优先走 Ctrl+X 外部编辑器桥接后再发送 Enter", async () => {
+  it("Gemini 在 Windows/Pwsh 下会优先走 Ctrl+G 外部编辑器桥接后再发送 Enter", async () => {
     vi.useFakeTimers();
     const adapter: any = createAdapterStub();
     const hostPty = createHostPtyStub();
@@ -160,7 +160,7 @@ describe("TerminalManager（长文本发送策略）", () => {
 
     expect(writeSource).toHaveBeenCalledWith({ tabId: "tab-gemini-win", content: text });
     expect(adapter.paste).not.toHaveBeenCalled();
-    expect(hostPty.write).toHaveBeenCalledWith("pty-gemini-win", "\x18");
+    expect(hostPty.write).toHaveBeenCalledWith("pty-gemini-win", "\x07");
     expect(hostPty.write).not.toHaveBeenCalledWith("pty-gemini-win", "\r");
 
     await vi.advanceTimersByTimeAsync(40);
@@ -173,7 +173,7 @@ describe("TerminalManager（长文本发送策略）", () => {
     tm.disposeAll(false);
   });
 
-  it("Gemini 在 WSL 超长文本命中阈值时会优先走 Ctrl+X 外部编辑器桥接后再发送 Enter", async () => {
+  it("Gemini 在 WSL 超长文本命中阈值时会优先走 Ctrl+G 外部编辑器桥接后再发送 Enter", async () => {
     vi.useFakeTimers();
     const adapter: any = createAdapterStub();
     const hostPty = createHostPtyStub();
@@ -216,7 +216,7 @@ describe("TerminalManager（长文本发送策略）", () => {
       content: text,
     });
     expect(adapter.paste).not.toHaveBeenCalled();
-    expect(hostPty.write).toHaveBeenCalledWith("pty-gemini-wsl", "\x18");
+    expect(hostPty.write).toHaveBeenCalledWith("pty-gemini-wsl", "\x07");
     expect(hostPty.write).not.toHaveBeenCalledWith("pty-gemini-wsl", "\r");
 
     await vi.advanceTimersByTimeAsync(40);
@@ -259,6 +259,98 @@ describe("TerminalManager（长文本发送策略）", () => {
     expect(writeSource).not.toHaveBeenCalled();
     expect(readStatus).not.toHaveBeenCalled();
     expect(adapter.paste).toHaveBeenCalledWith("短文本");
+
+    tm.disposeAll(false);
+  });
+
+  it("Gemini 旧版本策略会只发送 Ctrl+X 打开外部编辑器", async () => {
+    vi.useFakeTimers();
+    const adapter: any = createAdapterStub();
+    const hostPty = createHostPtyStub();
+    createTerminalAdapterMock.mockReturnValue(adapter);
+
+    const readStatus = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: { state: "pending", requestId: "req-old-1" } })
+      .mockResolvedValue({ ok: true, status: { state: "done", requestId: "req-old-1" } });
+    const writeSource = vi.fn().mockResolvedValue({
+      ok: true,
+      requestId: "req-old-1",
+      sourcePath: "C:\\temp\\source.txt",
+      statusPath: "C:\\temp\\status.json",
+    });
+    (window as any).host = {
+      utils: {
+        writeGeminiWindowsEditorSource: writeSource,
+        readGeminiWindowsEditorStatus: readStatus,
+      },
+    };
+
+    const ptyByTab: Record<string, string> = { "tab-gemini-old": "pty-gemini-old" };
+    const tm = new TerminalManager((tabId) => ptyByTab[tabId], hostPty as any, {});
+    tm.ensurePersistentContainer("tab-gemini-old");
+    tm.setPty("tab-gemini-old", "pty-gemini-old");
+
+    await tm.sendTextAndEnter("tab-gemini-old", `${"旧版".repeat(800)}尾巴`, {
+      providerId: "gemini",
+      terminalMode: "pwsh" as any,
+      geminiWindowsEditorReady: true,
+      geminiExternalEditorShortcut: "ctrlX",
+    });
+
+    await Promise.resolve();
+    expect(hostPty.write).toHaveBeenCalledWith("pty-gemini-old", "\x18");
+    expect(hostPty.write).not.toHaveBeenCalledWith("pty-gemini-old", "\x07");
+
+    await vi.advanceTimersByTimeAsync(40 + GEMINI_PASTE_ENTER_DELAY_MS);
+    expect(hostPty.write).toHaveBeenCalledWith("pty-gemini-old", "\r");
+
+    tm.disposeAll(false);
+  });
+
+  it("Gemini 版本未知时 Ctrl+G 超时后会回退 Ctrl+X", async () => {
+    vi.useFakeTimers();
+    const adapter: any = createAdapterStub();
+    const hostPty = createHostPtyStub();
+    createTerminalAdapterMock.mockReturnValue(adapter);
+
+    const readStatus = vi.fn().mockImplementation(() => {
+      const usedCtrlX = hostPty.write.mock.calls.some((call) => call[0] === "pty-gemini-auto" && call[1] === "\x18");
+      return Promise.resolve({ ok: true, status: { state: usedCtrlX ? "done" : "pending", requestId: "req-auto-1" } });
+    });
+    const writeSource = vi.fn().mockResolvedValue({
+      ok: true,
+      requestId: "req-auto-1",
+      sourcePath: "C:\\temp\\source.txt",
+      statusPath: "C:\\temp\\status.json",
+    });
+    (window as any).host = {
+      utils: {
+        writeGeminiWindowsEditorSource: writeSource,
+        readGeminiWindowsEditorStatus: readStatus,
+      },
+    };
+
+    const ptyByTab: Record<string, string> = { "tab-gemini-auto": "pty-gemini-auto" };
+    const tm = new TerminalManager((tabId) => ptyByTab[tabId], hostPty as any, {});
+    tm.ensurePersistentContainer("tab-gemini-auto");
+    tm.setPty("tab-gemini-auto", "pty-gemini-auto");
+
+    await tm.sendTextAndEnter("tab-gemini-auto", `${"未知版本".repeat(800)}尾巴`, {
+      providerId: "gemini",
+      terminalMode: "pwsh" as any,
+      geminiWindowsEditorReady: true,
+      geminiExternalEditorShortcut: "auto",
+    });
+
+    await Promise.resolve();
+    expect(hostPty.write).toHaveBeenCalledWith("pty-gemini-auto", "\x07");
+    expect(hostPty.write).not.toHaveBeenCalledWith("pty-gemini-auto", "\x18");
+
+    await vi.advanceTimersByTimeAsync(3040);
+    expect(hostPty.write).toHaveBeenCalledWith("pty-gemini-auto", "\x18");
+
+    await vi.advanceTimersByTimeAsync(GEMINI_PASTE_ENTER_DELAY_MS);
+    expect(hostPty.write).toHaveBeenCalledWith("pty-gemini-auto", "\r");
 
     tm.disposeAll(false);
   });

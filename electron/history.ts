@@ -585,7 +585,7 @@ type HistoryListCacheEntry = {
 };
 
 // 中文说明：历史归属语义变更后提升版本，强制失效旧的列表缓存，避免继续复用错误归属结果。
-const PARSER_VERSION = 'v12';
+const PARSER_VERSION = 'v13';
 const CACHE_SCHEMA_VERSION = '2';
 
 /**
@@ -598,7 +598,7 @@ function inferHistoryProviderIdFromPath(filePath: string): ProviderId {
     if (fp.includes('/.claude/')) return 'claude';
     if (fp.includes('/.gemini/')) return 'gemini';
     if (base.endsWith('.ndjson')) return 'claude';
-    if (base.startsWith('session-') && base.endsWith('.json')) return 'gemini';
+    if (base.startsWith('session-') && (base.endsWith('.jsonl') || base.endsWith('.json'))) return 'gemini';
   } catch {}
   return 'codex';
 }
