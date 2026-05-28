@@ -78,8 +78,8 @@ export async function getGeminiRootCandidatesFastAsync(): Promise<SessionsRootCa
 
 /**
  * 扫描 Gemini CLI 会话文件：
- * - 目录结构：`root/<projectKey>/chats/session-*.json`（优先）
- * - 兼容：`root/<projectKey>/session-*.json`
+ * - 新版目录结构：`root/<projectKey>/chats/session-*.jsonl`（优先）
+ * - 旧版兼容：`root/<projectKey>/chats/session-*.json` 与 `root/<projectKey>/session-*.json`
  *
  * 说明：
  * - `projectKey` 既可能是旧版 `projectHash`（32~64 hex），也可能是新版可读目录名（如项目名）。
@@ -98,26 +98,37 @@ export async function discoverGeminiSessionFiles(root: string): Promise<string[]
       if (!name) continue;
       const projDir = path.join(baseRoot, name);
 
-      // chats/session-*.json
+      // chats/session-*.jsonl / session-*.json
       const chatsDir = path.join(projDir, "chats");
       if (await directoryExists(chatsDir)) {
         const files = await fsp.readdir(chatsDir, { withFileTypes: true }).catch(() => [] as import("node:fs").Dirent[]);
         for (const f of files) {
           if (!f.isFile()) continue;
           const fn = f.name.toLowerCase();
-          if (fn.startsWith("session-") && fn.endsWith(".json")) out.push(path.join(chatsDir, f.name));
+          if (isGeminiSessionFileName(fn)) out.push(path.join(chatsDir, f.name));
         }
       }
 
-      // fallback: project dir session-*.json
+      // fallback: project dir session-*.jsonl / session-*.json
       const files2 = await fsp.readdir(projDir, { withFileTypes: true }).catch(() => [] as import("node:fs").Dirent[]);
       for (const f of files2) {
         if (!f.isFile()) continue;
         const fn = f.name.toLowerCase();
-        if (fn.startsWith("session-") && fn.endsWith(".json")) out.push(path.join(projDir, f.name));
+        if (isGeminiSessionFileName(fn)) out.push(path.join(projDir, f.name));
       }
     }
   } catch {}
   return out;
+}
+
+/**
+ * 判断文件名是否为 Gemini CLI 会话文件。
+ *
+ * @param fileName 小写或原始文件名
+ * @returns 是否为 Gemini 会话文件
+ */
+function isGeminiSessionFileName(fileName: string): boolean {
+  const fn = String(fileName || "").toLowerCase();
+  return fn.startsWith("session-") && (fn.endsWith(".jsonl") || fn.endsWith(".json"));
 }
 

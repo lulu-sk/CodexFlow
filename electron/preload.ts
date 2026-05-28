@@ -732,6 +732,16 @@ contextBridge.exposeInMainWorld('host', {
       return await ipcRenderer.invoke('utils.geminiWindowsEditor.readStatus', args);
     },
     /**
+     * 中文说明：探测当前 Gemini CLI 版本对应的外部编辑器快捷键策略。
+     */
+    resolveGeminiExternalEditorShortcut: async (args: {
+      terminal?: 'wsl' | 'windows' | 'pwsh';
+      distro?: string;
+      startupCmd?: string;
+    }) => {
+      return await ipcRenderer.invoke('utils.gemini.versionShortcut', args);
+    },
+    /**
      * 中文说明：为 WSL 下的 Gemini 会话准备专用外部编辑器 env。
      * - 仅影响 CodexFlow 打开的当前 PTY；
      * - 仅在超长文本命中阈值时由渲染层启用。

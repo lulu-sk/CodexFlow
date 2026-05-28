@@ -43,6 +43,7 @@ import { getClaudeUsageSnapshotAsync } from "./claude/usage";
 import { ensureAllGeminiNotifications, startGeminiNotificationBridge, stopGeminiNotificationBridge } from "./gemini/notifications";
 import geminiWindowsEditor from "./gemini/windowsEditor";
 import geminiWslEditor from "./gemini/wslEditor";
+import { resolveGeminiExternalEditorShortcut } from "./gemini/version";
 import { getGeminiQuotaSnapshotAsync } from "./gemini/usage";
 import storage from "./storage";
 import { registerNotificationIPC, unregisterNotificationIPC } from "./notifications";
@@ -3929,7 +3930,7 @@ function inferHistoryReadProviderFromPath(filePath?: string): HistoryReadProvide
   if (fp.includes("/.claude/")) return "claude";
   if (fp.includes("/.gemini/")) return "gemini";
   if (base.endsWith(".ndjson")) return "claude";
-  if (base.startsWith("session-") && base.endsWith(".json")) return "gemini";
+  if (base.startsWith("session-") && (base.endsWith(".jsonl") || base.endsWith(".json"))) return "gemini";
   return null;
 }
 
@@ -4097,7 +4098,7 @@ ipcMain.handle('history.findEmptySessions', async () => {
         if (fp.includes("/.claude/")) return "claude";
         if (fp.includes("/.gemini/")) return "gemini";
         if (base.endsWith(".ndjson")) return "claude";
-        if (base.startsWith("session-") && base.endsWith(".json")) return "gemini";
+        if (base.startsWith("session-") && (base.endsWith(".jsonl") || base.endsWith(".json"))) return "gemini";
       } catch {}
       return "codex";
     };
@@ -4488,6 +4489,25 @@ ipcMain.handle('utils.geminiWindowsEditor.readStatus', async (_e, args: {
     });
   } catch (e: any) {
     return { ok: false, error: String(e) };
+  }
+});
+
+/**
+ * 中文说明：探测当前 Gemini CLI 版本，并返回外部编辑器快捷键策略。
+ */
+ipcMain.handle('utils.gemini.versionShortcut', async (_e, args: {
+  terminal?: 'wsl' | 'windows' | 'pwsh';
+  distro?: string;
+  startupCmd?: string;
+}) => {
+  try {
+    return await resolveGeminiExternalEditorShortcut({
+      terminal: args?.terminal,
+      distro: String(args?.distro || ""),
+      startupCmd: String(args?.startupCmd || "gemini"),
+    });
+  } catch (e: any) {
+    return { ok: false, shortcut: "auto", error: String(e) };
   }
 });
 

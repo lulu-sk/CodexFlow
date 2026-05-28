@@ -20,15 +20,17 @@ describe("discoverGeminiSessionFiles", () => {
   it("supports both hash and non-hash project directories", async () => {
     const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "codexflow-gemini-discovery-"));
 
-    await touch(root, "codexflow/chats/session-2026-03-04T17-09-cc28c19a.json");
+    await touch(root, "codexflow/chats/session-2026-03-04T17-09-cc28c19a.jsonl");
     await touch(root, "567266847957ce43ba0e98d21b65cf333047f193f52e511da7be4fcbf53e53ba/chats/session-2026-03-04T17-10-aabbccdd.json");
+    await touch(root, "codexflow/session-2026-03-04T17-11-eeff0011.jsonl");
     await touch(root, "codexflow/chats/ignore.txt");
 
     const files = await discoverGeminiSessionFiles(root);
     const rel = files.map((f) => path.relative(root, f).replace(/\\/g, "/")).sort();
 
-    expect(rel).toContain("codexflow/chats/session-2026-03-04T17-09-cc28c19a.json");
+    expect(rel).toContain("codexflow/chats/session-2026-03-04T17-09-cc28c19a.jsonl");
     expect(rel).toContain("567266847957ce43ba0e98d21b65cf333047f193f52e511da7be4fcbf53e53ba/chats/session-2026-03-04T17-10-aabbccdd.json");
+    expect(rel).toContain("codexflow/session-2026-03-04T17-11-eeff0011.jsonl");
     expect(rel.find((x) => x.endsWith("ignore.txt"))).toBeUndefined();
   });
 });

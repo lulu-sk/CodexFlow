@@ -246,7 +246,7 @@ function stripDetailsForPersist(details: Details): Details {
 }
 
 // 中文说明：历史索引语义调整后提升版本，强制丢弃旧的 index/details 缓存，避免继续沿用错误 dirKey。
-const VERSION = "v12";
+const VERSION = "v13";
 
 /**
  * 读取 Claude Code 的 Agent 历史开关（默认 false）。
@@ -469,7 +469,7 @@ function shouldIndexProviderFile(providerId: ProviderId, filePath: string): bool
       if (!getIndexedClaudeAgentHistorySetting() && base.startsWith("agent-") && base.endsWith(".jsonl")) return false;
       return base.endsWith(".jsonl") || base.endsWith(".ndjson");
     }
-    if (providerId === "gemini") return base.endsWith(".json") && base.startsWith("session-");
+    if (providerId === "gemini") return base.startsWith("session-") && (base.endsWith(".jsonl") || base.endsWith(".json"));
     return false;
   } catch {
     return false;
@@ -1585,7 +1585,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
           if (!claudeCodeReadAgentHistory && base.startsWith("agent-") && base.endsWith(".jsonl")) return false;
           return base.endsWith(".jsonl") || base.endsWith(".ndjson");
         }
-        if (providerId === "gemini") return base.endsWith(".json") && base.startsWith("session-");
+        if (providerId === "gemini") return base.startsWith("session-") && (base.endsWith(".jsonl") || base.endsWith(".json"));
         return false;
       } catch {
         return false;
@@ -1968,7 +1968,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
         const patternsForProvider = (providerId: ProviderId): string[] => {
           if (providerId === "codex") return ["*.jsonl"];
           if (providerId === "claude") return ["*.jsonl", "*.ndjson"];
-          if (providerId === "gemini") return ["session-*.json"];
+          if (providerId === "gemini") return ["session-*.jsonl", "session-*.json"];
           return ["*.jsonl"];
         };
 

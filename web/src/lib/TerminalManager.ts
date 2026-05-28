@@ -42,6 +42,7 @@ type GeminiPasteChunkPlan = {
 };
 
 type GeminiExternalEditorKind = "windows" | "wsl";
+type GeminiExternalEditorShortcut = "ctrlG" | "ctrlX" | "auto";
 
 type GeminiExternalEditorTransport = {
   kind: GeminiExternalEditorKind;
@@ -58,6 +59,7 @@ type TerminalSendOptions = {
   distro?: string;
   geminiWindowsEditorReady?: boolean;
   geminiWslEditorReady?: boolean;
+  geminiExternalEditorShortcut?: GeminiExternalEditorShortcut;
 };
 
 const TERMINAL_SEND_SCREEN_ACK_POLL_MS = 40;
@@ -77,6 +79,7 @@ const GEMINI_HUGE_PASTE_CHUNK_YIELD_EVERY = 4;
 const GEMINI_HUGE_PASTE_CHUNK_YIELD_MS = 384;
 const GEMINI_WINDOWS_EDITOR_STATUS_POLL_MS = 40;
 const GEMINI_WINDOWS_EDITOR_STATUS_TIMEOUT_MS = 15000;
+const GEMINI_EXTERNAL_EDITOR_AUTO_PROBE_TIMEOUT_MS = 3000;
 const GEMINI_WSL_EDITOR_TRIGGER_CHAR_THRESHOLD = 12000;
 const GEMINI_WSL_EDITOR_TRIGGER_DISPATCH_THRESHOLD_MS = 2500;
 
@@ -983,6 +986,7 @@ export default class TerminalManager {
    * @param tabId 标签页 id
    * @param requestId 本次发送 requestId
    * @param traceId 诊断 trace id
+   * @param timeoutMs 本次等待超时时间
    * @returns 命中的状态；超时时返回 `timeout`
    */
   private async waitForGeminiExternalEditorStatus(
@@ -990,9 +994,11 @@ export default class TerminalManager {
     tabId: string,
     requestId: string,
     traceId?: string | null,
+    timeoutMs = GEMINI_WINDOWS_EDITOR_STATUS_TIMEOUT_MS,
   ): Promise<{ state: "done" | "error" | "timeout"; message?: string }> {
     const startedAt = Date.now();
-    while (Date.now() - startedAt < GEMINI_WINDOWS_EDITOR_STATUS_TIMEOUT_MS) {
+    const waitTimeoutMs = Math.max(GEMINI_WINDOWS_EDITOR_STATUS_POLL_MS, Number(timeoutMs) || GEMINI_WINDOWS_EDITOR_STATUS_TIMEOUT_MS);
+    while (Date.now() - startedAt < waitTimeoutMs) {
       try {
         const res = await transport.readStatus({ tabId });
         if (res && res.ok) {
@@ -1020,13 +1026,52 @@ export default class TerminalManager {
 
     this.logSendDiagnostic(
       traceId,
-      `gemini.editor.status timeout kind=${transport.kind} requestId=${requestId} timeoutMs=${GEMINI_WINDOWS_EDITOR_STATUS_TIMEOUT_MS}`,
+      `gemini.editor.status timeout kind=${transport.kind} requestId=${requestId} timeoutMs=${waitTimeoutMs}`,
     );
     return { state: "timeout" };
   }
 
   /**
-   * 中文说明：Gemini 通过 `Ctrl+X + 外部编辑器` 发送正文。
+   * 中文说明：按版本策略选择外部编辑器快捷键序列。
+   * @param shortcut 已解析的快捷键策略
+   * @returns 需要依次尝试的快捷键序列
+   */
+  private getGeminiExternalEditorShortcutSequence(shortcut?: GeminiExternalEditorShortcut | null): GeminiExternalEditorShortcut[] {
+    if (shortcut === "ctrlX") return ["ctrlX"];
+    if (shortcut === "auto") return ["ctrlG", "ctrlX"];
+    return ["ctrlG"];
+  }
+
+  /**
+   * 中文说明：向 PTY 写入指定的 Gemini 外部编辑器快捷键。
+   * @param ptyId 当前 PTY id
+   * @param transport 已绑定参数的桥接读写通道
+   * @param shortcut 快捷键类型
+   * @param traceId 诊断 trace id
+   * @returns 是否写入成功
+   */
+  private triggerGeminiExternalEditorShortcut(
+    ptyId: string,
+    transport: GeminiExternalEditorTransport,
+    shortcut: Exclude<GeminiExternalEditorShortcut, "auto">,
+    traceId?: string | null,
+  ): boolean {
+    try {
+      const data = shortcut === "ctrlX" ? "\x18" : "\x07";
+      this.hostPty.write(ptyId, data);
+      this.logSendDiagnostic(traceId, `trigger.mode=host.write ${shortcut}=1 kind=${transport.kind}`);
+      return true;
+    } catch (error: any) {
+      this.logSendDiagnostic(
+        traceId,
+        `gemini.editor.${shortcut}.failed kind=${transport.kind} error=${String(error?.message || error)}`,
+      );
+      return false;
+    }
+  }
+
+  /**
+   * 中文说明：Gemini 通过版本匹配的快捷键打开外部编辑器后发送正文。
    * - Windows 下用于彻底绕开 PowerShell/ConPTY 的超长 paste 链路；
    * - WSL 下仅在超长文本命中阈值时启用，用于降低超大分块 paste 的等待成本；
    * - 失败时统一自动回退到当前的 paste 策略。
@@ -1067,19 +1112,22 @@ export default class TerminalManager {
           `gemini.editor.writeSource.ok kind=${transport.kind} requestId=${requestId} chars=${text.length}`,
         );
 
-        try {
-          this.hostPty.write(ptyId, "\x18");
-          this.logSendDiagnostic(traceId, `trigger.mode=host.write ctrlX=1 kind=${transport.kind}`);
-        } catch (error: any) {
-          this.logSendDiagnostic(
-            traceId,
-            `gemini.editor.ctrlX.failed kind=${transport.kind} error=${String(error?.message || error)}`,
-          );
-          await this.sendGeminiTextAndEnter(ptyId, text, adapter, options, traceId);
-          return;
+        let status: { state: "done" | "error" | "timeout"; message?: string } = { state: "timeout" };
+        const shortcutSequence = this.getGeminiExternalEditorShortcutSequence(options?.geminiExternalEditorShortcut);
+        for (let index = 0; index < shortcutSequence.length; index++) {
+          const shortcut = shortcutSequence[index] as Exclude<GeminiExternalEditorShortcut, "auto">;
+          if (!this.triggerGeminiExternalEditorShortcut(ptyId, transport, shortcut, traceId)) {
+            await this.sendGeminiTextAndEnter(ptyId, text, adapter, options, traceId);
+            return;
+          }
+          const timeoutMs = shortcutSequence.length > 1 && index === 0
+            ? GEMINI_EXTERNAL_EDITOR_AUTO_PROBE_TIMEOUT_MS
+            : GEMINI_WINDOWS_EDITOR_STATUS_TIMEOUT_MS;
+          status = await this.waitForGeminiExternalEditorStatus(transport, tabId, requestId, traceId, timeoutMs);
+          if (status.state === "done" || status.state === "error")
+            break;
+          this.logSendDiagnostic(traceId, `gemini.editor.shortcut.timeout kind=${transport.kind} shortcut=${shortcut}`);
         }
-
-        const status = await this.waitForGeminiExternalEditorStatus(transport, tabId, requestId, traceId);
         if (status.state === "error") {
           this.logSendDiagnostic(
             traceId,
@@ -1088,8 +1136,10 @@ export default class TerminalManager {
           await this.sendGeminiTextAndEnter(ptyId, text, adapter, options, traceId);
           return;
         }
-        if (status.state !== "done")
+        if (status.state !== "done") {
+          await this.sendGeminiTextAndEnter(ptyId, text, adapter, options, traceId);
           return;
+        }
 
         const settleMs = Math.max(16, getPasteEnterDelayMs(options?.providerId));
         await this.sleep(settleMs);
@@ -1228,7 +1278,7 @@ export default class TerminalManager {
    * @param providerId providerId
    * @param terminalMode 当前标签页运行终端类型
    * @param geminiWindowsEditorReady 当前 tab 是否已成功注入专用 `EDITOR/VISUAL`
-   * @returns 是否启用 `Ctrl+X + 外部编辑器` 发送
+   * @returns 是否启用 `Ctrl+G + 外部编辑器` 发送
    */
   private shouldUseGeminiWindowsEditorStrategy(
     providerId?: string | null,
@@ -1249,7 +1299,7 @@ export default class TerminalManager {
    * @param terminalMode 当前标签页运行终端类型
    * @param geminiWslEditorReady 当前 tab 是否已成功注入专用 `EDITOR/VISUAL`
    * @param text 待发送正文
-   * @returns 是否启用 `Ctrl+X + 外部编辑器` 发送
+   * @returns 是否启用 `Ctrl+G + 外部编辑器` 发送
    */
   private shouldUseGeminiWslEditorStrategy(
     providerId?: string | null,

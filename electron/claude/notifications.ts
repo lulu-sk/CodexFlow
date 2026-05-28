@@ -235,6 +235,39 @@ function extractPreviewFromTranscript(transcriptPath) {
 }
 
 /**
+ * 中文说明：同步等待指定毫秒，供 hook 在 transcript 落盘稍慢时短暂重试。
+ */
+function sleepSync(ms) {
+  const waitMs = Math.max(0, Number(ms) || 0);
+  if (waitMs <= 0) return;
+  try {
+    if (typeof Atomics === "object" && typeof SharedArrayBuffer === "function") {
+      const buf = new SharedArrayBuffer(4);
+      const arr = new Int32Array(buf);
+      Atomics.wait(arr, 0, 0, waitMs);
+      return;
+    }
+  } catch {}
+  const end = Date.now() + waitMs;
+  while (Date.now() < end) {}
+}
+
+/**
+ * 中文说明：从 transcript 中读取回复；若首次为空，短暂重试等待 Claude 写完 JSONL。
+ */
+function extractPreviewFromTranscriptWithRetry(transcriptPath) {
+  const first = extractPreviewFromTranscript(transcriptPath);
+  if (first && String(first).trim()) return first;
+  const deadline = Date.now() + 1600;
+  while (Date.now() < deadline) {
+    sleepSync(160);
+    const next = extractPreviewFromTranscript(transcriptPath);
+    if (next && String(next).trim()) return next;
+  }
+  return "";
+}
+
+/**
  * 中文说明：尝试将 OSC 序列写入真实终端（而非 stdout/stderr）。
  */
 function writeOscToControllingTty(oscText) {
@@ -270,7 +303,7 @@ const directResponse =
   (typeof data.response === "string" ? data.response : "") ||
   (typeof data.output === "string" ? data.output : "");
 const transcriptPath = typeof data.transcript_path === "string" ? data.transcript_path : "";
-const fromTranscript = directResponse ? "" : extractPreviewFromTranscript(transcriptPath);
+const fromTranscript = directResponse ? "" : extractPreviewFromTranscriptWithRetry(transcriptPath);
 const previewSource = directResponse || fromTranscript;
 const preview = clip(stripControlChars(previewSource), 240);
 

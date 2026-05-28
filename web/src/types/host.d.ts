@@ -869,6 +869,18 @@ export interface NotificationsAPI {
 }
 
 export interface UtilsAPI {
+  /** 探测当前 Gemini CLI 版本对应的外部编辑器快捷键策略。 */
+  resolveGeminiExternalEditorShortcut(args: {
+    terminal?: "wsl" | "windows" | "pwsh";
+    distro?: string;
+    startupCmd?: string;
+  }): Promise<{
+    ok: boolean;
+    shortcut?: "ctrlG" | "ctrlX" | "auto";
+    version?: string;
+    command?: string;
+    error?: string;
+  }>;
   /**
    * 中文说明：为当前 tab 预创建 Gemini Windows 外部编辑器所需 env 与会话文件。
    * - 仅影响 CodexFlow 打开的当前 PTY；

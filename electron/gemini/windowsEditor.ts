@@ -326,7 +326,7 @@ export async function prepareGeminiWindowsEditorEnv(
 }
 
 /**
- * 中文说明：为下一次 `Ctrl+X` 外部编辑器发送写入 source/status 文件。
+ * 中文说明：为下一次 `Ctrl+G` 外部编辑器发送写入 source/status 文件。
  * - source 文件承载本次完整正文；
  * - status 文件会先被置为 `pending`，helper 完成后再改为 `done/error`。
  *

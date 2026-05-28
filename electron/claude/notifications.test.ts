@@ -52,6 +52,9 @@ describe("electron/claude/notifications（多行预览保真）", () => {
 
     const script = fs.readFileSync(path.join(root, "hooks", "codexflow_stop_notify.js"), "utf8");
     expect(script).toContain("function collapsePreviewForOsc(input)");
+    expect(script).toContain("function extractPreviewFromTranscriptWithRetry(transcriptPath)");
+    expect(script).toContain("const deadline = Date.now() + 1600;");
+    expect(script).toContain("sleepSync(160);");
     expect(script).toContain('const payload = collapsePreviewForOsc(preview) || "agent-turn-complete";');
     expect(script).toContain('return s.replace(/[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f-\\u009f]/g, " ");');
     expect(script).not.toContain("function collapseWs(input)");

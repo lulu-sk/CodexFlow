@@ -36,6 +36,21 @@ async function writeTempJsonAtRelPath(obj: unknown, relPath: string): Promise<st
 }
 
 /**
+ * 在临时目录写入 Gemini JSONL 会话文件并返回路径。
+ *
+ * @param records JSONL 记录列表
+ * @param relPath 相对临时目录的目标路径
+ * @returns 临时文件路径
+ */
+async function writeTempJsonlAtRelPath(records: unknown[], relPath: string): Promise<string> {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "codexflow-gemini-jsonl-"));
+  const fp = path.join(dir, relPath);
+  await fs.promises.mkdir(path.dirname(fp), { recursive: true });
+  await fs.promises.writeFile(fp, records.map((item) => JSON.stringify(item)).join("\n") + "\n", "utf8");
+  return fp;
+}
+
+/**
  * 创建临时图片文件占位，供 Gemini 图片路径优先逻辑测试使用。
  *
  * @param fileName 文件名
@@ -143,6 +158,178 @@ describe("parseGeminiSessionFile（超大文件 summaryOnly 预览兜底）", ()
     expect(imageItem?.localPath).toBe(localImagePath);
     expect(String(imageItem?.src || "")).toBe("data:image/png;base64,aGVsbG8=");
     expect(String(imageItem?.fallbackSrc || "")).toMatch(/^file:\/\//);
+  });
+
+  it("支持新版 Gemini JSONL 会话格式并保留助手回复", async () => {
+    const projectHash = "567266847957ce43ba0e98d21b65cf333047f193f52e511da7be4fcbf53e53ba";
+    const sessionId = "cc28c19a-73b0-470a-b8cf-738ec6a547a8";
+    const fp = await writeTempJsonlAtRelPath(
+      [
+        {
+          sessionId,
+          projectHash,
+          startTime: "2026-05-28T04:50:00.000Z",
+          lastUpdated: "2026-05-28T04:50:00.000Z",
+          directories: ["G:\\Projects\\CodexFlow"],
+        },
+        {
+          id: "user-1",
+          timestamp: "2026-05-28T04:50:01.000Z",
+          type: "user",
+          content: [{ text: "test" }],
+        },
+        {
+          id: "gemini-1",
+          timestamp: "2026-05-28T04:50:02.000Z",
+          type: "gemini",
+          content: [{ text: "你好，请问有什么我可以帮您的？" }],
+          model: "gemini-3.5-flash",
+        },
+        {
+          $set: {
+            lastUpdated: "2026-05-28T04:50:03.000Z",
+          },
+        },
+      ],
+      `${projectHash}/chats/session-2026-05-28T04-50-${sessionId.slice(0, 8)}.jsonl`,
+    );
+    const stat = await fs.promises.stat(fp);
+
+    const summary = await parseGeminiSessionFile(fp, stat, { summaryOnly: true, maxBytes: 128 * 1024 });
+    expect(summary.preview).toBe("test");
+    expect(summary.title).toBe("test");
+    expect(summary.resumeId).toBe(sessionId);
+    expect(summary.projectHash).toBe(projectHash);
+    expect(summary.cwd).toBe("G:\\Projects\\CodexFlow");
+    expect(summary.rawDate).toBe("2026-05-28T04:50:03.000Z");
+
+    const details = await parseGeminiSessionFile(fp, stat, { summaryOnly: false, maxBytes: 128 * 1024 });
+    expect(details.messages).toHaveLength(2);
+    expect(details.messages[0]).toEqual({
+      role: "user",
+      content: [{ type: "input_text", text: "test" }],
+    });
+    expect(details.messages[1]).toEqual({
+      role: "assistant",
+      content: [{ type: "output_text", text: "你好，请问有什么我可以帮您的？" }],
+    });
+  });
+
+  it("新版 Gemini JSONL 会跳过自动 session_context 预览并归类为 meta", async () => {
+    const fp = await writeTempJsonlAtRelPath(
+      [
+        {
+          sessionId: "session-context-case",
+          projectHash: "567266847957ce43ba0e98d21b65cf333047f193f52e511da7be4fcbf53e53ba",
+          startTime: "2026-05-28T05:10:00.000Z",
+          directories: ["G:\\Projects\\CodexFlow"],
+        },
+        {
+          id: "context-1",
+          type: "user",
+          content: [{ text: "<session_context>\nThis is the Gemini CLI. We are setting up the context for our chat." }],
+        },
+        {
+          id: "user-1",
+          type: "user",
+          content: [{ text: "真实问题" }],
+        },
+      ],
+      "project/chats/session-2026-05-28T05-10-context.jsonl",
+    );
+    const stat = await fs.promises.stat(fp);
+
+    const summary = await parseGeminiSessionFile(fp, stat, { summaryOnly: true, maxBytes: 128 * 1024 });
+    expect(summary.preview).toBe("真实问题");
+    expect(summary.title).toBe("真实问题");
+
+    const details = await parseGeminiSessionFile(fp, stat, { summaryOnly: false, maxBytes: 128 * 1024 });
+    expect(details.messages[0]).toEqual({
+      role: "system",
+      content: [{ type: "meta", text: "<session_context>\nThis is the Gemini CLI. We are setting up the context for our chat." }],
+    });
+    expect(details.messages[1]).toEqual({
+      role: "user",
+      content: [{ type: "input_text", text: "真实问题" }],
+    });
+  });
+
+  it("新版 Gemini JSONL 优先使用 metadata directories 推断项目目录", async () => {
+    const projectHash = "567266847957ce43ba0e98d21b65cf333047f193f52e511da7be4fcbf53e53ba";
+    const fp = await writeTempJsonlAtRelPath(
+      [
+        {
+          sessionId: "directory-priority-case",
+          projectHash,
+          startTime: "2026-05-28T05:20:00.000Z",
+          directories: ["G:\\Projects\\CodexFlow"],
+        },
+        {
+          id: "user-1",
+          type: "user",
+          content: [{ text: "请查看 C:\\Temp\\other-project\\note.txt 并继续" }],
+        },
+      ],
+      `${projectHash}/chats/session-2026-05-28T05-20-directory.jsonl`,
+    );
+    const stat = await fs.promises.stat(fp);
+
+    const summary = await parseGeminiSessionFile(fp, stat, { summaryOnly: true, maxBytes: 128 * 1024 });
+    expect(summary.cwd).toBe("G:\\Projects\\CodexFlow");
+    expect(summary.dirKey).toBe("/mnt/g/projects/codexflow");
+  });
+
+  it("支持新版 Gemini JSONL 的消息更新与工具结果展示", async () => {
+    const fp = await writeTempJsonlAtRelPath(
+      [
+        {
+          sessionId: "tool-session",
+          projectHash: "2c076481a534981f1d988b55053bccf053f1bec6932623a652d533211c63c763",
+          startTime: "2026-05-28T05:00:00.000Z",
+        },
+        {
+          id: "user-1",
+          type: "user",
+          content: [{ text: "列出文件" }],
+        },
+        {
+          id: "gemini-1",
+          type: "gemini",
+          content: "",
+          toolCalls: [
+            {
+              id: "call-1",
+              name: "ReadFolder",
+              args: { path: "." },
+              status: "executing",
+            },
+          ],
+        },
+        {
+          id: "gemini-1",
+          type: "gemini",
+          content: [{ text: "已经列出文件。" }],
+          toolCalls: [
+            {
+              id: "call-1",
+              name: "ReadFolder",
+              args: { path: "." },
+              status: "success",
+              result: [{ text: "package.json\nREADME.md" }],
+            },
+          ],
+        },
+      ],
+      "project/chats/session-2026-05-28T05-00-tool.jsonl",
+    );
+    const stat = await fs.promises.stat(fp);
+    const details = await parseGeminiSessionFile(fp, stat, { summaryOnly: false, maxBytes: 128 * 1024 });
+
+    expect(details.messages.map((message) => message.role)).toEqual(["user", "assistant", "assistant", "tool"]);
+    expect(details.messages[1].content[0]).toEqual({ type: "output_text", text: "已经列出文件。" });
+    expect(details.messages[2].content[0].type).toBe("tool_call");
+    expect(details.messages[2].content[0].text).toContain("ReadFolder");
+    expect(details.messages[3].content[0]).toEqual({ type: "tool_result", text: "package.json\nREADME.md" });
   });
 });
 
