@@ -208,6 +208,52 @@ export function moveTabBetweenWindows<T extends WindowScopedTabLike>(
 }
 
 /**
+ * 将单个标签页迁移到目标项目，并保留标签自身内容与窗口归属。
+ */
+export function moveTabBetweenProjects<T extends WindowScopedTabLike>(
+  tabsByProject: Record<string, T[]>,
+  tabId: string,
+  targetProjectId: string,
+  options?: { insertIndex?: number },
+): { nextTabsByProject: Record<string, T[]>; sourceProjectId: string; changed: boolean } {
+  const safeTabId = String(tabId || "").trim();
+  const safeTargetProjectId = String(targetProjectId || "").trim();
+  if (!safeTabId || !safeTargetProjectId) {
+    return { nextTabsByProject: tabsByProject, sourceProjectId: "", changed: false };
+  }
+
+  let sourceProjectId = "";
+  let movedTab: T | null = null;
+  const nextTabsByProject: Record<string, T[]> = { ...tabsByProject };
+  for (const [projectId, tabs] of Object.entries(tabsByProject || {})) {
+    if (!Array.isArray(tabs) || tabs.length <= 0) continue;
+    const tabIndex = tabs.findIndex((tab) => String(tab.id || "").trim() === safeTabId);
+    if (tabIndex < 0) continue;
+    sourceProjectId = projectId;
+    if (projectId === safeTargetProjectId) {
+      return { nextTabsByProject: tabsByProject, sourceProjectId, changed: false };
+    }
+    movedTab = tabs[tabIndex] || null;
+    nextTabsByProject[projectId] = tabs.filter((tab) => String(tab.id || "").trim() !== safeTabId);
+    break;
+  }
+
+  if (!sourceProjectId || !movedTab) {
+    return { nextTabsByProject: tabsByProject, sourceProjectId: "", changed: false };
+  }
+
+  const currentTargetTabs = Array.isArray(nextTabsByProject[safeTargetProjectId])
+    ? [...nextTabsByProject[safeTargetProjectId]]
+    : [];
+  const normalizedInsertIndex = Number.isFinite(options?.insertIndex)
+    ? Math.max(0, Math.min(currentTargetTabs.length, Math.trunc(Number(options?.insertIndex))))
+    : 0;
+  currentTargetTabs.splice(normalizedInsertIndex, 0, movedTab);
+  nextTabsByProject[safeTargetProjectId] = currentTargetTabs;
+  return { nextTabsByProject, sourceProjectId, changed: true };
+}
+
+/**
  * 将指定窗口承载的全部标签页迁移到另一个窗口；未命中的项目数组保持引用不变。
  */
 export function moveWindowOwnedTabs<T extends WindowScopedTabLike>(
