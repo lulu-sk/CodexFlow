@@ -130,6 +130,7 @@ import {
   findFirstProjectIdForWindowTabs,
   isTabOwnedByWindow,
   MAIN_APP_WINDOW_ID,
+  moveTabBetweenProjects,
   moveTabBetweenWindows,
   moveWindowOwnedTabs,
   parseAppWindowContext,
@@ -1516,7 +1517,7 @@ export default function CodexFlowManagerUI() {
   });
   const allProjectTabs = tabsByProject[selectedProjectId] || [];
   const tabs = useMemo(() => allProjectTabs.filter((tab) => isTabOwnedByWindow(tab, currentWindowId)), [allProjectTabs, currentWindowId]);
-  const hasGitWorkbenchTab = tabs.some((tab) => tab.kind === "git");
+  const hasProjectGitWorkbenchTab = allProjectTabs.some((tab) => tab.kind === "git");
   const [activeTabId, setActiveTabId] = useState<string | null>(() => {
     const state = restoredConsoleSession?.windowUiStateById?.[currentWindowId];
     return state?.activeTabIdByProject?.[selectedProjectId] || null;
@@ -1627,6 +1628,7 @@ export default function CodexFlowManagerUI() {
   const tabsByProjectRef = useRef<Record<string, ConsoleTab[]>>(tabsByProject);
   const detachedWindowHasOwnedTabsRef = useRef(false);
   const detachedWindowClosingAfterEmptyRef = useRef(false);
+  const skipConsoleSessionSaveRef = useRef(false);
   const projectsRef = useRef<Project[]>(projects);
   const audioContextRef = useRef<AudioContext | null>(null);
   const userInputCountByTabIdRef = useRef<Record<string, number>>({});
@@ -1695,6 +1697,7 @@ export default function CodexFlowManagerUI() {
       try {
         const nextSnapshot = loadConsoleSession({ currentBootId: appBootId });
         if (!nextSnapshot) return;
+        skipConsoleSessionSaveRef.current = true;
         const nextTabsByProject: Record<string, ConsoleTab[]> = {};
         for (const [projectId, list] of Object.entries(nextSnapshot.tabsByProject || {})) {
           nextTabsByProject[projectId] = (list || []).map((tab) => ({
@@ -1815,6 +1818,10 @@ export default function CodexFlowManagerUI() {
     if (consoleSessionSaveTimerRef.current) {
       window.clearTimeout(consoleSessionSaveTimerRef.current);
       consoleSessionSaveTimerRef.current = null;
+    }
+    if (skipConsoleSessionSaveRef.current) {
+      skipConsoleSessionSaveRef.current = false;
+      return;
     }
     consoleSessionSaveTimerRef.current = window.setTimeout(() => {
       try {
@@ -5036,6 +5043,8 @@ export default function CodexFlowManagerUI() {
 
   useEffect(() => {
     if (!isDetachedTabWindow) return;
+    const selectedOwnedTabs = (tabsByProject[selectedProjectId] || []).filter((tab) => isTabOwnedByWindow(tab, currentWindowId));
+    if (selectedProjectId && selectedOwnedTabs.length > 0) return;
     const visibleProjectId = findFirstProjectIdForWindowTabs(tabsByProject, currentWindowId);
     if (!visibleProjectId) return;
     if (selectedProjectId === visibleProjectId) return;
@@ -5783,11 +5792,71 @@ export default function CodexFlowManagerUI() {
   const openGitWorkbenchTabForProjectId = useCallback((projectId: string): void => {
     const id = String(projectId || "").trim();
     if (!id) return;
-    const projectTabs = tabsByProjectRef.current[id] || [];
+    const currentTabsByProject = tabsByProjectRef.current;
+    const projectTabs = currentTabsByProject[id] || [];
     const existing = projectTabs.find((tab) => tab.kind === "git" && isTabOwnedByWindow(tab, currentWindowId));
     if (existing) {
-      setActiveTab(existing.id, { focusMode: "immediate", allowDuringRename: true, delay: 0 });
+      setActiveTab(existing.id, { projectId: id, focusMode: "immediate", allowDuringRename: true, delay: 0 });
       try { setCenterMode("console"); } catch {}
+      markProjectUsed(id);
+      return;
+    }
+    const existingAnyWindow = projectTabs.find((tab) => tab.kind === "git") || null;
+    const detachedOwnedGitEntry = isDetachedTabWindow
+      ? Object.entries(currentTabsByProject).flatMap(([ownedProjectId, list]) => {
+          if (!Array.isArray(list) || list.length <= 0) return [];
+          return list
+            .filter((tab) => tab.kind === "git" && isTabOwnedByWindow(tab, currentWindowId))
+            .map((tab) => ({ projectId: ownedProjectId, tab }));
+        })[0] || null
+      : null;
+    if (isDetachedTabWindow && existingAnyWindow && !isTabOwnedByWindow(existingAnyWindow, currentWindowId)) {
+      const returned = detachedOwnedGitEntry
+        ? moveTabBetweenWindows(currentTabsByProject, detachedOwnedGitEntry.tab.id, MAIN_APP_WINDOW_ID)
+        : { nextTabsByProject: currentTabsByProject, movedProjectId: "", changed: false };
+      const moved = moveTabBetweenWindows(returned.nextTabsByProject, existingAnyWindow.id, currentWindowId);
+      if (moved.changed) {
+        tabsByProjectRef.current = moved.nextTabsByProject;
+        setTabsByProject(moved.nextTabsByProject);
+        setActiveTabByProject((prev) => {
+          const next = { ...prev, [id]: existingAnyWindow.id };
+          if (detachedOwnedGitEntry?.projectId && detachedOwnedGitEntry.projectId !== id) {
+            const remainingSourceTabs = (moved.nextTabsByProject[detachedOwnedGitEntry.projectId] || []).filter(
+              (tab) => isTabOwnedByWindow(tab, currentWindowId),
+            );
+            next[detachedOwnedGitEntry.projectId] = remainingSourceTabs[0]?.id || null;
+          }
+          return next;
+        });
+        setActiveTab(existingAnyWindow.id, { projectId: id, focusMode: "immediate", allowDuringRename: true, delay: 0 });
+        try { setCenterMode("console"); } catch {}
+        markProjectUsed(id);
+        return;
+      }
+    }
+    if (isDetachedTabWindow && detachedOwnedGitEntry) {
+      const moved = moveTabBetweenProjects(currentTabsByProject, detachedOwnedGitEntry.tab.id, id);
+      if (moved.changed) {
+        tabsByProjectRef.current = moved.nextTabsByProject;
+        registerTabProject(detachedOwnedGitEntry.tab.id, id);
+        setTabsByProject(moved.nextTabsByProject);
+        setActiveTabByProject((prev) => {
+          const next = { ...prev, [id]: detachedOwnedGitEntry.tab.id };
+          if (moved.sourceProjectId && moved.sourceProjectId !== id) {
+            const remainingSourceTabs = (moved.nextTabsByProject[moved.sourceProjectId] || []).filter(
+              (tab) => isTabOwnedByWindow(tab, currentWindowId),
+            );
+            next[moved.sourceProjectId] = remainingSourceTabs[0]?.id || null;
+          }
+          return next;
+        });
+        setActiveTab(detachedOwnedGitEntry.tab.id, { projectId: id, focusMode: "immediate", allowDuringRename: true, delay: 0 });
+        try { setCenterMode("console"); } catch {}
+        markProjectUsed(id);
+        return;
+      }
+    }
+    if (existingAnyWindow) {
       markProjectUsed(id);
       return;
     }
@@ -5802,10 +5871,10 @@ export default function CodexFlowManagerUI() {
     };
     registerTabProject(tab.id, id);
     setTabsByProject((m) => ({ ...m, [id]: [tab, ...(m[id] || [])] }));
-    setActiveTab(tab.id, { focusMode: "immediate", allowDuringRename: true, delay: 0 });
+    setActiveTab(tab.id, { projectId: id, focusMode: "immediate", allowDuringRename: true, delay: 0 });
     try { setCenterMode("console"); } catch {}
     markProjectUsed(id);
-  }, [currentWindowId, markProjectUsed, t]);
+  }, [currentWindowId, isDetachedTabWindow, markProjectUsed, t]);
 
   /**
    * 统一处理 Git 工作台打开请求，先切换项目/标签，再把意图广播给具体工作台实例。
@@ -9359,6 +9428,8 @@ export default function CodexFlowManagerUI() {
                   // 点击项目时默认进入控制台，并清除历史选择（避免自动跳到历史详情）
                   suppressAutoSelectRef.current = true;
                   setSelectedProjectId(p.id);
+                  if (isDetachedTabWindow)
+                    openGitWorkbenchTabForProjectId(p.id);
                   setCenterMode("console");
                   setSelectedHistoryDir(null);
                   setSelectedHistoryId(null);
@@ -9726,7 +9797,7 @@ export default function CodexFlowManagerUI() {
 
   const shouldShowGitWorkbenchTabButton = !!selectedProject
     && !isDetachedTabWindow
-    && !hasGitWorkbenchTab
+    && !hasProjectGitWorkbenchTab
     && !(tabs.length === 0 && projPathExists === false);
 
   const GitWorkbenchTabButton = shouldShowGitWorkbenchTabButton ? (
@@ -9792,7 +9863,7 @@ export default function CodexFlowManagerUI() {
                 <div
                   key={tab.id}
                   className={cn(
-                    "group/tab relative flex h-6 min-w-[44px] max-w-[10rem] flex-[0_1_10rem] items-center select-none",
+                    "group/tab relative flex h-6 min-w-[44px] max-w-[10rem] flex-[0_1_auto] items-center select-none",
                     draggingTabId === tab.id ? "opacity-35" : "",
                   )}
                   data-state={isActiveTab ? 'active' : 'inactive'}
