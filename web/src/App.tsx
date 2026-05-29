@@ -14485,6 +14485,20 @@ function buildHistoryTypeFilter(messages: HistoryMessage[]): Record<string, bool
   return next;
 }
 
+/**
+ * 合并历史详情类型筛选项：保留用户对既有类型的选择，同时为新增类型应用默认可见性。
+ */
+function mergeHistoryTypeFilterSelection(current: Record<string, boolean>, defaults: Record<string, boolean>): Record<string, boolean> {
+  const currentKeys = Object.keys(current || {});
+  if (currentKeys.length === 0) return defaults;
+
+  const next: Record<string, boolean> = {};
+  for (const key of Object.keys(defaults || {})) {
+    next[key] = Object.prototype.hasOwnProperty.call(current, key) ? !!current[key] : !!defaults[key];
+  }
+  return next;
+}
+
 function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, onResume, onResumeExternal, getResumeShellLabel }: { sessions: HistorySession[]; selectedHistoryId: string | null; projectWinPath?: string; onBack?: () => void; onResume?: (filePath?: string) => void; onResumeExternal?: (filePath?: string) => void; getResumeShellLabel: (filePath?: string) => ShellLabel }) {
   const { t } = useTranslation(['history', 'common']);
   const MAX_HISTORY_MESSAGE_CACHE = 5;
@@ -14509,6 +14523,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
   const [detailSearchInput, setDetailSearchInput] = useState("");
   const reqSeq = useRef(0);
   const lastLoadedFingerprintRef = useRef<string>("");
+  const lastLoadedHistoryIdRef = useRef<string>("");
   const selectedSession = useMemo(() => sessions.find((x) => x.id === selectedHistoryId) || null, [sessions, selectedHistoryId]);
   const selectedLocalSession = useMemo(
     () => localSessions.find((x) => x.id === selectedHistoryId) || null,
@@ -14970,8 +14985,11 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
     const signature = selectedSessionFingerprint;
     const hasMessages = !!(selectedLocalSession && Array.isArray(selectedLocalSession.messages) && selectedLocalSession.messages.length > 0);
     if (lastLoadedFingerprintRef.current === signature && (hasMessages || loaded)) return;
-    setLoaded(false);
-    setTypeFilter({});
+    const preserveCurrentDetail = lastLoadedHistoryIdRef.current === selectedHistoryId && hasMessages;
+    if (!preserveCurrentDetail) {
+      setLoaded(false);
+      setTypeFilter({});
+    }
     const seq = ++reqSeq.current;
     (async () => {
       try {
@@ -14995,10 +15013,12 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
           setSkipped(res.skippedLines || 0);
           setLoaded(true);
           lastLoadedFingerprintRef.current = signature;
+          lastLoadedHistoryIdRef.current = selectedHistoryId;
         }
         try {
           const next = buildHistoryTypeFilter(msgs);
-          if (seq === reqSeq.current) setTypeFilter(next);
+          if (seq === reqSeq.current)
+            setTypeFilter((current) => (preserveCurrentDetail ? mergeHistoryTypeFilterSelection(current, next) : next));
         } catch {}
       } catch (e) {
         console.warn('history.read failed', e);
