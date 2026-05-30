@@ -1476,6 +1476,7 @@ type CompletionPreferences = {
   badge: boolean;
   system: boolean;
   sound: boolean;
+  subagent: boolean;
 };
 
 // 网络代理偏好（与设置对话框保持一致）
@@ -1490,6 +1491,7 @@ const DEFAULT_COMPLETION_PREFS: CompletionPreferences = {
   badge: true,
   system: true,
   sound: true,
+  subagent: false,
 };
 
 const normalizeThemeSetting = (value: any): ThemeSetting => {
@@ -1511,6 +1513,7 @@ function normalizeCompletionPrefs(raw?: Partial<CompletionPreferences> | null): 
     badge: raw?.badge ?? DEFAULT_COMPLETION_PREFS.badge,
     system: raw?.system ?? DEFAULT_COMPLETION_PREFS.system,
     sound: raw?.sound ?? DEFAULT_COMPLETION_PREFS.sound,
+    subagent: raw?.subagent ?? DEFAULT_COMPLETION_PREFS.subagent,
   };
 }
 

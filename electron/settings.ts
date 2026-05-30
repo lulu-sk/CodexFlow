@@ -18,6 +18,8 @@ export type NotificationSettings = {
   system?: boolean;
   /** 任务完成时是否播放提示音 */
   sound?: boolean;
+  /** 子代理完成时是否也发送提醒（默认关闭） */
+  subagent?: boolean;
 };
 
 export type NetworkSettings = {
@@ -174,6 +176,7 @@ const DEFAULT_NOTIFICATIONS: NotificationSettings = {
   badge: true,
   system: true,
   sound: true,
+  subagent: false,
 };
 const DEFAULT_NETWORK: NetworkSettings = {
   proxyEnabled: true,

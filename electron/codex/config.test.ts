@@ -94,13 +94,37 @@ function expectNotifyScriptFileName(body: string): void {
 }
 
 /**
- * 中文说明：加载 config.ts，并 mock 掉 getCodexRootsFastAsync，避免测试访问真实环境。
+ * 中文说明：加载 config.ts，并 mock 掉外部命令/WSL/设置，避免测试访问真实环境。
  */
-async function loadConfigModule(): Promise<{ ensureAllCodexNotifications: () => Promise<void> }> {
+async function loadConfigModule(versionOutput = "codex 0.115.0"): Promise<{ ensureAllCodexNotifications: () => Promise<void> }> {
   vi.resetModules();
+  vi.doMock("node:child_process", async () => {
+    const actual = await vi.importActual<any>("node:child_process");
+    return {
+      ...actual,
+      execFile: vi.fn((_file: string, _args: string[], _opts: any, cb: any) => {
+        cb(null, versionOutput, "");
+        return {} as any;
+      }),
+    };
+  });
   vi.doMock("../wsl", () => ({
     getCodexRootsFastAsync: vi.fn(async () => ({ wsl: [], windowsCodex: null })),
     uncToWsl: vi.fn(() => null),
+    execInWslAsync: vi.fn(async () => versionOutput),
+  }));
+  vi.doMock("../settings", () => ({
+    getSettings: vi.fn(() => ({
+      terminal: "windows",
+      distro: "",
+      codexCmd: "codex",
+      providers: {
+        activeId: "codex",
+        items: [{ id: "codex", startupCmd: "codex" }],
+        env: { codex: { terminal: "windows" } },
+      },
+      historyRoot: "",
+    })),
   }));
   return await import("./config");
 }
@@ -126,6 +150,170 @@ afterEach(() => {
 });
 
 describe("electron/codex/config（tui 通知配置修复）", () => {
+  it("新版 Codex：使用 Stop/SubagentStop hooks 并移除 CodexFlow 旧 notify", async () => {
+    const { home, cleanup } = createTempHome();
+    try {
+      writeCodexConfigToml(home, [
+        'notify = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "codexflow_after_agent_notify.ps1"]',
+        "",
+        "[tui]",
+        'notifications = ["agent-turn-complete"]',
+        'notification_method = "osc9"',
+        "",
+      ].join("\n"));
+      const mod = await loadConfigModule("codex 0.133.0");
+      await mod.ensureAllCodexNotifications();
+      const body = readCodexConfigToml(home);
+      expect(body).toContain("[[hooks.Stop]]");
+      expect(body).toContain("[[hooks.SubagentStop]]");
+      expect(body).toContain("codexflow_lifecycle_notify.cjs");
+      expect(body).toContain("[hooks.state.");
+      expect(body).toContain("trusted_hash = \"sha256:");
+      expect(body).not.toContain("codexflow_after_agent_notify.ps1");
+      const hookScript = readCodexNotifyScriptByName(home, "codexflow_lifecycle_notify.cjs");
+      expect(hookScript).toContain("SubagentStop");
+      expect(hookScript).toContain("completionKind");
+      expect(hookScript).toContain("agentType");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("新版 Codex：清理重复 lifecycle hook state，避免重复表头破坏 config.toml", async () => {
+    const { home, cleanup } = createTempHome();
+    try {
+      const configPath = path.join(home, ".codex", "config.toml");
+      const stopState = `[hooks.state.${JSON.stringify(`${configPath}:stop:0:0`)}]`;
+      const subagentState = `[hooks.state.${JSON.stringify(`${configPath}:subagent_stop:0:0`)}]`;
+      writeCodexConfigToml(home, [
+        "[tui]",
+        'notifications = ["agent-turn-complete"]',
+        "",
+        "[[hooks.Stop]]",
+        "[[hooks.Stop.hooks]]",
+        'type = "command"',
+        'command = "node codexflow_lifecycle_notify.cjs"',
+        "",
+        stopState,
+        'trusted_hash = "sha256:old"',
+        "",
+        stopState,
+        'trusted_hash = "sha256:duplicate"',
+        "",
+        subagentState,
+        'trusted_hash = "sha256:old"',
+        "",
+      ].join("\n"));
+
+      const mod = await loadConfigModule("codex 0.133.0");
+      await mod.ensureAllCodexNotifications();
+      await mod.ensureAllCodexNotifications();
+
+      const body = readCodexConfigToml(home);
+      expect((body.match(/\[hooks\.state\./g) || []).length).toBe(2);
+      expect((body.match(/:stop:0:0"/g) || []).length).toBe(1);
+      expect((body.match(/:subagent_stop:0:0"/g) || []).length).toBe(1);
+      expect(body).not.toContain("sha256:duplicate");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("新版 Codex：清理 lifecycle hook state 时保留用户自定义 hook state", async () => {
+    const { home, cleanup } = createTempHome();
+    try {
+      const configPath = path.join(home, ".codex", "config.toml");
+      const userStopState = `[hooks.state.${JSON.stringify(`${configPath}:stop:0:0`)}]`;
+      const codexFlowStopState = `[hooks.state.${JSON.stringify(`${configPath}:stop:1:0`)}]`;
+      writeCodexConfigToml(home, [
+        "[[hooks.Stop]]",
+        "[[hooks.Stop.hooks]]",
+        'type = "command"',
+        'command = "node user_stop.js"',
+        "",
+        "[[hooks.Stop]]",
+        "[[hooks.Stop.hooks]]",
+        'type = "command"',
+        'command = "node codexflow_lifecycle_notify.cjs"',
+        "",
+        userStopState,
+        'trusted_hash = "sha256:user"',
+        "",
+        codexFlowStopState,
+        'trusted_hash = "sha256:old-codexflow"',
+        "",
+      ].join("\n"));
+
+      const mod = await loadConfigModule("codex 0.116.0");
+      await mod.ensureAllCodexNotifications();
+
+      const body = readCodexConfigToml(home);
+      expect(body).toContain('command = "node user_stop.js"');
+      expect(body).toContain(userStopState);
+      expect(body).toContain('trusted_hash = "sha256:user"');
+      expect(body).not.toContain("sha256:old-codexflow");
+      expect((body.match(/\[\[hooks\.Stop\]\]/g) || []).length).toBe(2);
+      expect((body.match(/\[hooks\.state\./g) || []).length).toBe(2);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("新版 Codex：删除旧 lifecycle hook 后同步重排用户 hook state 索引", async () => {
+    const { home, cleanup } = createTempHome();
+    try {
+      const configPath = path.join(home, ".codex", "config.toml");
+      const codexFlowStopState = `[hooks.state.${JSON.stringify(`${configPath}:stop:0:0`)}]`;
+      const userStopState = `[hooks.state.${JSON.stringify(`${configPath}:stop:1:0`)}]`;
+      const remappedUserStopState = `[hooks.state.${JSON.stringify(`${configPath}:stop:0:0`)}]`;
+      writeCodexConfigToml(home, [
+        "[[hooks.Stop]]",
+        "[[hooks.Stop.hooks]]",
+        'type = "command"',
+        'command = "node codexflow_lifecycle_notify.cjs"',
+        "",
+        "[[hooks.Stop]]",
+        "[[hooks.Stop.hooks]]",
+        'type = "command"',
+        'command = "node user_stop.js"',
+        "",
+        codexFlowStopState,
+        'trusted_hash = "sha256:old-codexflow"',
+        "",
+        userStopState,
+        'trusted_hash = "sha256:user"',
+        "",
+      ].join("\n"));
+
+      const mod = await loadConfigModule("codex 0.116.0");
+      await mod.ensureAllCodexNotifications();
+
+      const body = readCodexConfigToml(home);
+      expect(body).toContain('command = "node user_stop.js"');
+      expect(body).toContain(remappedUserStopState);
+      expect(body).toContain('trusted_hash = "sha256:user"');
+      expect(body).not.toContain("sha256:old-codexflow");
+      expect((body.match(/\[hooks\.state\./g) || []).length).toBe(2);
+      expect((body.match(/:stop:1:0"/g) || []).length).toBe(1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("新版 Codex 但未到 SubagentStop 版本：仅写 Stop hook", async () => {
+    const { home, cleanup } = createTempHome();
+    try {
+      const mod = await loadConfigModule("codex 0.116.0");
+      await mod.ensureAllCodexNotifications();
+      const body = readCodexConfigToml(home);
+      expect(body).toContain("[[hooks.Stop]]");
+      expect(body).not.toContain("[[hooks.SubagentStop]]");
+      expect(body).not.toContain("notify = ");
+    } finally {
+      cleanup();
+    }
+  });
+
   it("空配置：补齐 [tui] notifications + notification_method=osc9", async () => {
     const { home, cleanup } = createTempHome();
     try {

@@ -73,6 +73,7 @@ type NotificationPrefs = {
   badge: boolean;
   system: boolean;
   sound: boolean;
+  subagent: boolean;
 };
 type ExternalGitToolId = "rider" | "sourcetree" | "fork" | "gitkraken" | "custom";
 type GitWorktreePrefs = {
@@ -127,6 +128,18 @@ function normalizeIdeOpenPrefs(value: unknown): IdeOpenPrefs {
     builtinId: normalizeBuiltinIdeId(raw.builtinId),
     customName: String(raw.customName || ""),
     customCommand: String(raw.customCommand || ""),
+  };
+}
+
+/**
+ * 归一化通知偏好，保证新增字段有稳定默认值。
+ */
+function normalizeNotificationPrefs(value: Partial<NotificationPrefs> | null | undefined): NotificationPrefs {
+  return {
+    badge: value?.badge ?? true,
+    system: value?.system ?? true,
+    sound: value?.sound ?? true,
+    subagent: value?.subagent ?? false,
   };
 }
 
@@ -567,7 +580,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   const [sendMode, setSendMode] = useState<SendMode>(values.sendMode);
   const [pathStyle, setPathStyle] = useState<PathStyle>(values.projectPathStyle || "absolute");
   const [dragDropWarnOutsideProject, setDragDropWarnOutsideProject] = useState<boolean>(values.dragDropWarnOutsideProject ?? true);
-  const [notifications, setNotifications] = useState<NotificationPrefs>(values.notifications);
+  const [notifications, setNotifications] = useState<NotificationPrefs>(() => normalizeNotificationPrefs(values.notifications));
   const [network, setNetwork] = useState<NetworkPrefs>({
     proxyEnabled: values.network?.proxyEnabled ?? true,
     proxyMode: values.network?.proxyMode ?? "system",
@@ -2150,6 +2163,25 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                       </div>
                       <p className="text-xs text-slate-500 dark:text-[var(--cf-text-secondary)]">
                         {t("settings:notifications.sound.desc")}
+                      </p>
+                    </div>
+                  </label>
+                  <label className="flex items-start gap-3 rounded-lg border border-slate-200/70 bg-white/60 px-3 py-3 shadow-sm dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:text-[var(--cf-text-primary)]">
+                    <input
+                      type="checkbox"
+                      className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)] dark:checked:bg-[var(--cf-accent)] dark:focus-visible:ring-[var(--cf-accent)]/40"
+                      checked={notifications.subagent}
+                      onChange={(event) => {
+                        const next = { ...notifications, subagent: event.target.checked };
+                        setNotifications(next);
+                      }}
+                    />
+                    <div>
+                      <div className="text-sm font-medium text-slate-800 dark:text-[var(--cf-text-primary)]">
+                        {t("settings:notifications.subagent.label")}
+                      </div>
+                      <p className="text-xs text-slate-500 dark:text-[var(--cf-text-secondary)]">
+                        {t("settings:notifications.subagent.desc")}
                       </p>
                     </div>
                   </label>

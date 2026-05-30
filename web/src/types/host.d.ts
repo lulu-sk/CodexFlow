@@ -74,6 +74,7 @@ export type AppSettings = {
     badge?: boolean;
     system?: boolean;
     sound?: boolean;
+    subagent?: boolean;
   };
   /** 网络代理设置 */
   network?: {
@@ -864,7 +865,7 @@ export interface NotificationsAPI {
   setTaskbarBadgeState?(state: { completedCount?: number; runningCount?: number; hasRunningTask?: boolean }): void;
   showAgentCompletion(payload: { tabId: string; tabName?: string; projectName?: string; preview?: string; title: string; body: string; appTitle?: string }): void;
   /** 监听主进程转发的外部完成通知（如 Codex/Gemini/Claude hook -> JSONL 桥接）。 */
-  onExternalAgentComplete?(handler: (payload: { providerId?: "codex" | "gemini" | "claude"; tabId?: string; envLabel?: string; preview?: string; previewEscapedWhitespace?: boolean; timestamp?: string; eventId?: string }) => void): () => void;
+  onExternalAgentComplete?(handler: (payload: { providerId?: "codex" | "gemini" | "claude"; tabId?: string; envLabel?: string; preview?: string; previewEscapedWhitespace?: boolean; timestamp?: string; eventId?: string; hookEventName?: string; completionKind?: "agent" | "subagent"; agentType?: string; agentId?: string }) => void): () => void;
   onFocusTab?(handler: (payload: { tabId: string }) => void): () => void;
 }
 

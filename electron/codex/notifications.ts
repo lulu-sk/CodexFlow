@@ -21,6 +21,10 @@ type CodexNotifyEntry = {
   preview?: string;
   previewEscapedWhitespace?: boolean;
   timestamp?: string;
+  hookEventName?: string;
+  completionKind?: string;
+  agentType?: string;
+  agentId?: string;
 };
 
 type CodexNotifySource = {
@@ -188,6 +192,10 @@ function emitCodexNotify(entry: CodexNotifyEntry, sourcePath?: string): void {
     previewEscapedWhitespace?: boolean;
     timestamp: string;
     eventId: string;
+    hookEventName?: string;
+    completionKind?: "agent" | "subagent";
+    agentType?: string;
+    agentId?: string;
   } = {
     providerId: "codex" as const,
     tabId: entry.tabId ? String(entry.tabId) : "",
@@ -198,9 +206,20 @@ function emitCodexNotify(entry: CodexNotifyEntry, sourcePath?: string): void {
   };
   if (typeof entry.previewEscapedWhitespace === "boolean")
     payload.previewEscapedWhitespace = entry.previewEscapedWhitespace;
+  const hookEventName = String(entry.hookEventName || "").trim();
+  const completionKind = String(entry.completionKind || "").trim().toLowerCase();
+  const agentType = String(entry.agentType || "").trim();
+  const agentId = String(entry.agentId || "").trim();
+  if (hookEventName) payload.hookEventName = hookEventName;
+  if (completionKind === "subagent" || hookEventName === "SubagentStop")
+    payload.completionKind = "subagent";
+  else if (completionKind === "agent" || hookEventName === "Stop")
+    payload.completionKind = "agent";
+  if (agentType) payload.agentType = agentType;
+  if (agentId) payload.agentId = agentId;
   try {
     win.webContents.send("notifications:externalAgentComplete", payload);
-    logCodexNotification(`notify event tab=${payload.tabId || "n/a"} previewLen=${payload.preview.length}`);
+    logCodexNotification(`notify event tab=${payload.tabId || "n/a"} kind=${payload.completionKind || "agent"} agentType=${payload.agentType || "n/a"} agentId=${payload.agentId || "n/a"} previewLen=${payload.preview.length}`);
   } catch (error) {
     logCodexNotification(`emit notify failed: ${String(error)}`);
   }

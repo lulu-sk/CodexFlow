@@ -276,6 +276,10 @@
     "sound": {
       "label": "Play chime",
       "desc": "Play a short sound when a task completes."
+    },
+    "subagent": {
+      "label": "Subagent completion alerts",
+      "desc": "Also notify when a subagent finishes. Off by default; the alert clearly marks it as a subagent."
     }
   },
   "codexAccount": {
