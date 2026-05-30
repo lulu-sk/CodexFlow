@@ -358,6 +358,20 @@ type CompletionPreviewNormalizeOptions = {
   previewEscapedWhitespace?: boolean;
 };
 
+type ExternalAgentCompletePayload = {
+  providerId?: string;
+  tabId?: string;
+  envLabel?: string;
+  preview?: string;
+  previewEscapedWhitespace?: boolean;
+  timestamp?: string;
+  eventId?: string;
+  hookEventName?: string;
+  completionKind?: "agent" | "subagent" | string;
+  agentType?: string;
+  agentId?: string;
+};
+
 type CompletionSnapshot = {
   preview: string;
   ts: number;
@@ -3441,6 +3455,33 @@ export default function CodexFlowManagerUI() {
     } catch {}
   }
 
+  /**
+   * 中文说明：处理子代理完成通知，只提醒用户，不结束主任务计时、不增加主任务徽标、不触发自动提交。
+   */
+  function handleSubagentCompletion(
+    tabId: string,
+    preview: string,
+    agentType?: string,
+    agentId?: string,
+    normalizeOptions?: CompletionPreviewNormalizeOptions,
+  ) {
+    if (!tabId) return;
+    if (!notificationPrefsRef.current.subagent) {
+      notifyLog(`subagentCompletion skip tab=${tabId} reason=prefDisabled agentType=${agentType || "n/a"} agentId=${agentId || "n/a"}`);
+      return;
+    }
+    const cleanedPreview = normalizeCompletionPreview(preview, normalizeOptions);
+    const agentLabelParts = [String(agentType || "").trim(), String(agentId || "").trim()].filter(Boolean);
+    const agentLabel = agentLabelParts.length > 0 ? `（${agentLabelParts.join(" · ")}）` : "";
+    const displayPreview = cleanedPreview
+      ? `子代理完成${agentLabel}\n${cleanedPreview}`
+      : `子代理完成${agentLabel}`;
+    clearPendingOscCompletion(tabId, "subagent-external-arrived");
+    notifyLog(`subagentCompletion notify tab=${tabId} agentType=${agentType || "n/a"} agentId=${agentId || "n/a"} previewLen=${cleanedPreview.length}`);
+    showCompletionNotification(tabId, displayPreview);
+    void playCompletionChime();
+  }
+
   function processPtyNotificationChunk(ptyId: string, chunk: string) {
     if (!ptyId || typeof chunk !== 'string' || chunk.length === 0) return;
     const hasOsc = chunk.includes(OSC_NOTIFICATION_PREFIX);
@@ -5311,7 +5352,7 @@ export default function CodexFlowManagerUI() {
   useEffect(() => {
     let off: (() => void) | undefined;
     try {
-      off = window.host.notifications?.onExternalAgentComplete?.((payload: { providerId?: string; tabId?: string; envLabel?: string; preview?: string; previewEscapedWhitespace?: boolean; timestamp?: string; eventId?: string }) => {
+      off = window.host.notifications?.onExternalAgentComplete?.((payload: ExternalAgentCompletePayload) => {
         const providerId = String(payload?.providerId || "").trim().toLowerCase();
         if (providerId && providerId !== "codex" && providerId !== "gemini" && providerId !== "claude") return;
         const preview = String(payload?.preview || "");
@@ -5328,13 +5369,21 @@ export default function CodexFlowManagerUI() {
           return;
         }
         const cleanedPreview = normalizeCompletionPreview(preview, normalizeOptions);
+        const hookEventName = String(payload?.hookEventName || "").trim();
+        const completionKind = String(payload?.completionKind || "").trim().toLowerCase();
+        const isSubagentCompletion = completionKind === "subagent" || hookEventName === "SubagentStop";
+        if (isSubagentCompletion) {
+          notifyLog(`externalCompletion subagent tab=${resolvedTabId} previewLen=${cleanedPreview.length} agentType=${payload?.agentType || "n/a"} agentId=${payload?.agentId || "n/a"}`);
+          handleSubagentCompletion(resolvedTabId, preview, payload?.agentType, payload?.agentId, normalizeOptions);
+          return;
+        }
         clearPendingOscCompletion(resolvedTabId, "external-arrived");
         notifyLog(`externalCompletion ok tab=${resolvedTabId} previewLen=${cleanedPreview.length}`);
         handleAgentCompletion(resolvedTabId, preview, "external", normalizeOptions);
       });
     } catch {}
     return () => { try { off && off(); } catch {} };
-  }, [handleAgentCompletion, notifyLog, resolveExternalTabId]);
+  }, [handleAgentCompletion, handleSubagentCompletion, notifyLog, resolveExternalTabId]);
 
   // 监听主进程“退出确认”请求：用应用内 Dialog 替代原生对话框，保持 UI 风格一致
   useEffect(() => {

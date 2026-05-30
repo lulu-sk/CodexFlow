@@ -11,6 +11,7 @@ import {
   normalizeCompletionPreviewForDedupe,
   shouldDedupeCrossSourceCompletion,
   shouldDelayOscCompletionForExternalFallback,
+  normalizeCompletionPrefs,
 } from "./app-shared";
 
 describe("app-shared（完成通知：识别与环境变量注入）", () => {
@@ -135,5 +136,10 @@ describe("app-shared（完成通知：识别与环境变量注入）", () => {
 
   it("buildProviderNotifyEnv：其它 provider 不注入", () => {
     expect(buildProviderNotifyEnv("tab-3", "terminal", "Ubuntu-24.04")).toEqual({});
+  });
+
+  it("normalizeCompletionPrefs：子代理完成提醒默认关闭", () => {
+    expect(normalizeCompletionPrefs({}).subagent).toBe(false);
+    expect(normalizeCompletionPrefs({ subagent: true }).subagent).toBe(true);
   });
 });
