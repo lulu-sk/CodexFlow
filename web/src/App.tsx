@@ -217,6 +217,7 @@ import {
   TAB_FOCUS_DELAY,
   TerminalView,
   WorktreeControlPad,
+  areEquivalentCompletionPreviews,
   areStringArraysEqual,
   buildAutoCommitMessage,
   buildProviderNotifyEnv,
@@ -244,7 +245,6 @@ import {
   normDir,
   normalizeCompletionPrefs,
   normalizeCompletionPreview,
-  normalizeDisplayedCompletionPreviewForDedupe,
   normalizeDirTreeStore,
   normalizeMsToIso,
   normalizeResumeMode,
@@ -256,6 +256,7 @@ import {
   pickUuidFromString,
   resolveHistoryTimelineMeta,
   shouldDedupeCrossSourceCompletion,
+  shouldDedupeRepeatedExternalCompletion,
   shouldDelayOscCompletionForExternalFallback,
   startOfLocalDay,
   summarizeForCommitMessage,
@@ -3043,15 +3044,7 @@ export default function CodexFlowManagerUI() {
    * - 兼容“一个是另一个前缀”的截断差异（例如 OSC 截断 vs hook 完整预览）。
    */
   function isEquivalentCompletionPreview(leftRaw: string, rightRaw: string): boolean {
-    const left = normalizeDisplayedCompletionPreviewForDedupe(leftRaw);
-    const right = normalizeDisplayedCompletionPreviewForDedupe(rightRaw);
-    if (!left && !right) return true;
-    if (!left || !right) return false;
-    if (left === right) return true;
-    const shorter = left.length <= right.length ? left : right;
-    const longer = shorter === left ? right : left;
-    if (shorter.length < 8) return false;
-    return longer.startsWith(shorter);
+    return areEquivalentCompletionPreviews(leftRaw, rightRaw);
   }
 
   /**
@@ -3070,11 +3063,20 @@ export default function CodexFlowManagerUI() {
     if (!last) return false;
     const delta = Date.now() - last.ts;
     if (delta < 0) return false;
+    if (hasWorkingTimer) return false;
     if (
       delta <= windowMs &&
       isEquivalentCompletionPreview(String(last.preview || ""), String(preview || ""))
     ) return true;
     const currentSource = source || "unknown";
+    if (last.source === "external" && currentSource === "external")
+      return shouldDedupeRepeatedExternalCompletion(
+        String(last.preview || ""),
+        String(preview || ""),
+        delta,
+        COMPLETION_CROSS_SOURCE_WINDOW_MS,
+        hasWorkingTimer,
+      );
     const crossSource =
       (last.source === "osc" && currentSource === "external") ||
       (last.source === "external" && currentSource === "osc");

@@ -1264,6 +1264,39 @@ function isCodexFlowLifecycleHookBlock(block: string): boolean {
 }
 
 /**
+ * 中文说明：探测现有配置中 CodexFlow lifecycle hook 的安装状态。
+ */
+function detectCodexFlowLifecycleHookSupport(normalized: string): Pick<CodexCliHookSupport, "supportsStop" | "supportsSubagentStop"> {
+  const lines = normalized.length > 0 ? normalized.split("\n") : [];
+  let supportsStop = false;
+  let supportsSubagentStop = false;
+  for (let i = 0; i < lines.length;) {
+    const line = String(lines[i] || "");
+    const match = line.match(/^\s*\[\[hooks\.(Stop|SubagentStop)\]\]\s*(?:#.*)?$/);
+    if (!match) {
+      i += 1;
+      continue;
+    }
+
+    let end = i + 1;
+    while (end < lines.length) {
+      const probe = String(lines[end] || "");
+      if (/^\s*\[\[hooks\.[A-Za-z0-9_]+\]\]\s*(?:#.*)?$/.test(probe)) break;
+      if (/^\s*\[hooks(?:\.|])/.test(probe) && !/^\s*\[\[hooks\.(Stop|SubagentStop)\.hooks\]\]\s*(?:#.*)?$/.test(probe)) break;
+      end += 1;
+    }
+
+    const block = lines.slice(i, end).join("\n");
+    if (isCodexFlowLifecycleHookBlock(block)) {
+      if (match[1] === "Stop") supportsStop = true;
+      else supportsSubagentStop = true;
+    }
+    i = end;
+  }
+  return { supportsStop, supportsSubagentStop };
+}
+
+/**
  * 中文说明：移除 CodexFlow 自己写入的 Stop/SubagentStop hook 块，保留用户其它 hooks。
  */
 function removeCodexFlowLifecycleHookBlocks(lines: string[]): { lines: string[]; changed: boolean; stateRefs: CodexLifecycleHookStateRef[] } {
@@ -1554,15 +1587,26 @@ async function ensureNotificationsAtConfigTarget(target: CodexConfigTarget): Pro
   const support = await probeCodexCliHookSupport(target);
   let updated = normalized;
   let changed = false;
+  let configMode = support.supportsStop ? "hooks" : "legacy";
 
-  if (support.supportsStop) {
+  const installedLifecycleSupport = detectCodexFlowLifecycleHookSupport(updated);
+  const shouldUseLifecycleHooks = support.supportsStop || (!support.version && installedLifecycleSupport.supportsStop);
+  if (shouldUseLifecycleHooks) {
+    configMode = support.supportsStop ? "hooks" : "hooks-existing";
+    const effectiveSupport: CodexCliHookSupport = support.supportsStop
+      ? support
+      : {
+        ...support,
+        supportsStop: true,
+        supportsSubagentStop: installedLifecycleSupport.supportsSubagentStop,
+      };
     const hookSpec = resolveCodexHookCommandSpec(configPath);
     const hookScriptReady = hookSpec ? ensureCodexHookScript(hookSpec, source) : false;
     const notifyCleanup = removeCodexFlowRootNotifyCommand(updated);
     updated = notifyCleanup.updated;
     changed = changed || notifyCleanup.changed;
     if (hookSpec && hookScriptReady) {
-      const hookResult = appendCodexLifecycleHookBlocks(updated, configPath, hookSpec, support);
+      const hookResult = appendCodexLifecycleHookBlocks(updated, configPath, hookSpec, effectiveSupport);
       updated = hookResult.updated;
       changed = changed || hookResult.changed;
     }
@@ -1590,7 +1634,7 @@ async function ensureNotificationsAtConfigTarget(target: CodexConfigTarget): Pro
   try {
     fs.writeFileSync(configPath, serialized, "utf8");
     try {
-      perfLogger.log(`[codex.config] ensure notifications path=${configPath} source=${source || "n/a"} mode=${support.supportsStop ? "hooks" : "legacy"} version=${support.version || "n/a"} changed=${changed ? "1" : "0"}`);
+      perfLogger.log(`[codex.config] ensure notifications path=${configPath} source=${source || "n/a"} mode=${configMode} version=${support.version || "n/a"} changed=${changed ? "1" : "0"}`);
     } catch {}
     return true;
   } catch (error) {
