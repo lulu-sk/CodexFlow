@@ -442,6 +442,8 @@ type CloseWorkingTabConfirmState = {
   tabId: string | null;
   projectId: string | null;
   tabName: string;
+  isWorking: boolean;
+  hasPromptInput: boolean;
 };
 
 const STARTUP_GIT_STATUS_BATCH_SIZE = 8;
@@ -3853,12 +3855,14 @@ export default function CodexFlowManagerUI() {
   const historyCtxMenuRef = useRef<HTMLDivElement | null>(null);
   // 历史删除确认（应用内对话框，替代 window.confirm，避免同步阻塞导致的焦点/指针异常）
   const [confirmDelete, setConfirmDelete] = useState<{ open: boolean; item: HistorySession | null; groupKey: string | null }>({ open: false, item: null, groupKey: null });
-  // 标签关闭确认：仅当手动关闭且标签处于 working 状态时弹出。
+  // 标签关闭确认：手动关闭 working 标签页或带未发送输入内容的标签页时弹出。
   const [closeWorkingTabConfirm, setCloseWorkingTabConfirm] = useState<CloseWorkingTabConfirmState>({
     open: false,
     tabId: null,
     projectId: null,
     tabName: "",
+    isWorking: false,
+    hasPromptInput: false,
   });
   // 退出确认（主进程发起，渲染层展示以保持 UI 风格一致）
   const [quitConfirm, setQuitConfirm] = useState<{ open: boolean; token: string | null; count: number }>(() => ({ open: false, token: null, count: 0 }));
@@ -6573,7 +6577,16 @@ export default function CodexFlowManagerUI() {
    * 中文说明：关闭“进行中标签页关闭确认”弹窗并清空上下文。
    */
   function dismissCloseWorkingTabConfirm() {
-    setCloseWorkingTabConfirm({ open: false, tabId: null, projectId: null, tabName: "" });
+    setCloseWorkingTabConfirm({ open: false, tabId: null, projectId: null, tabName: "", isWorking: false, hasPromptInput: false });
+  }
+
+  /**
+   * 中文说明：判断标签页输入框是否仍有未发送文本或任意 Chip。
+   */
+  function hasPendingPromptInputForTab(tabId: string): boolean {
+    const draft = String(draftByTab[tabId] || "").trim();
+    const chips = chipsByTab[tabId] || [];
+    return draft.length > 0 || chips.length > 0;
   }
 
   /**
@@ -6609,6 +6622,18 @@ export default function CodexFlowManagerUI() {
       delete next[tabId];
       return next;
     });
+    setChipsByTab((m) => {
+      if (!(tabId in m)) return m;
+      const next = { ...m };
+      delete next[tabId];
+      return next;
+    });
+    setDraftByTab((m) => {
+      if (!(tabId in m)) return m;
+      const next = { ...m };
+      delete next[tabId];
+      return next;
+    });
     clearPendingForTab(tabId);
     cancelAgentTurnTimer(tabId, "close-tab");
     unregisterTabProject(tabId);
@@ -6634,7 +6659,7 @@ export default function CodexFlowManagerUI() {
   }
 
   /**
-   * 中文说明：请求关闭标签页；若为手动关闭且标签处于 working 状态，则先弹出确认框。
+   * 中文说明：请求关闭标签页；若为手动关闭且标签处于 working 状态或输入框有未发送内容，则先弹出确认框。
    */
   function requestCloseTab(id: string, source: "manual" | "auto" = "manual") {
     const tabId = String(id || "").trim();
@@ -6646,7 +6671,9 @@ export default function CodexFlowManagerUI() {
       return;
     }
     const timerState = agentTurnTimerByTabRef.current[tabId];
-    if (timerState?.status !== "working") {
+    const isWorking = timerState?.status === "working";
+    const hasPromptInput = hasPendingPromptInputForTab(tabId);
+    if (!isWorking && !hasPromptInput) {
       closeTab(tabId, projectId);
       return;
     }
@@ -6656,11 +6683,13 @@ export default function CodexFlowManagerUI() {
       tabId,
       projectId,
       tabName,
+      isWorking,
+      hasPromptInput,
     });
   }
 
   /**
-   * 中文说明：确认关闭处于 working 状态的标签页。
+   * 中文说明：确认关闭需要二次确认的标签页。
    */
   function confirmCloseWorkingTab() {
     const tabId = String(closeWorkingTabConfirm.tabId || "").trim();
@@ -9723,6 +9752,30 @@ export default function CodexFlowManagerUI() {
     }
   }, [t, updateErrorDialog.reason, updateErrorDialog.show]);
   const closeTabLabel = t('common:close') as string;
+  const closeTabConfirmKind = closeWorkingTabConfirm.isWorking
+    ? (closeWorkingTabConfirm.hasPromptInput ? "workingInput" : "working")
+    : "input";
+  const closeTabConfirmTitle = closeTabConfirmKind === "workingInput"
+    ? (t("terminal:closeWorkingInputConfirm.title", "确认关闭进行中的标签页？") as string)
+    : closeTabConfirmKind === "working"
+      ? (t("terminal:closeWorkingConfirm.title", "确认关闭进行中的标签页？") as string)
+      : (t("terminal:closeInputConfirm.title", "关闭带未发送内容的标签页？") as string);
+  const closeTabConfirmDescription = closeWorkingTabConfirm.tabName
+    ? closeTabConfirmKind === "workingInput"
+      ? (t("terminal:closeWorkingInputConfirm.desc", { name: closeWorkingTabConfirm.tabName }) as string)
+      : closeTabConfirmKind === "working"
+        ? (t("terminal:closeWorkingConfirm.desc", { name: closeWorkingTabConfirm.tabName }) as string)
+        : (t("terminal:closeInputConfirm.desc", { name: closeWorkingTabConfirm.tabName }) as string)
+    : closeTabConfirmKind === "workingInput"
+      ? (t("terminal:closeWorkingInputConfirm.descNoName", "该终端标签页仍在进行中，且还有未发送的输入内容或附件。关闭后将中断当前任务/进程，并丢弃这些内容，是否继续？") as string)
+      : closeTabConfirmKind === "working"
+        ? (t("terminal:closeWorkingConfirm.descNoName", "该终端标签页仍在进行中。关闭后将中断当前任务/进程，是否继续？") as string)
+        : (t("terminal:closeInputConfirm.descNoName", "该终端标签页还有未发送的输入内容或附件。关闭后将丢弃这些内容，是否继续？") as string);
+  const closeTabConfirmActionLabel = closeTabConfirmKind === "input"
+    ? (t("terminal:closeInputConfirm.confirm", "关闭并丢弃") as string)
+    : closeTabConfirmKind === "workingInput"
+      ? (t("terminal:closeWorkingInputConfirm.confirm", "仍然关闭") as string)
+      : (t("terminal:closeWorkingConfirm.confirm", "仍然关闭") as string);
   useEffect(() => {
     (async () => {
       try {
@@ -13578,11 +13631,9 @@ export default function CodexFlowManagerUI() {
       >
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle>{t("terminal:closeWorkingConfirm.title", "确认关闭进行中的标签页？") as string}</DialogTitle>
+            <DialogTitle>{closeTabConfirmTitle}</DialogTitle>
             <DialogDescription>
-              {closeWorkingTabConfirm.tabName
-                ? (t("terminal:closeWorkingConfirm.desc", { name: closeWorkingTabConfirm.tabName }) as string)
-                : (t("terminal:closeWorkingConfirm.descNoName", "该终端标签页仍在进行中。关闭后将中断当前任务/进程，是否继续？") as string)}
+              {closeTabConfirmDescription}
             </DialogDescription>
           </DialogHeader>
           <div className="flex justify-end gap-2 pt-2">
@@ -13590,7 +13641,7 @@ export default function CodexFlowManagerUI() {
               {t("common:cancel", "取消") as string}
             </Button>
             <Button variant="danger" data-cf-dialog-primary="true" onClick={confirmCloseWorkingTab}>
-              {t("terminal:closeWorkingConfirm.confirm", "仍然关闭") as string}
+              {closeTabConfirmActionLabel}
             </Button>
           </div>
         </DialogContent>

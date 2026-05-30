@@ -32,6 +32,18 @@
     "descNoName": "This terminal tab is still working. Closing it will interrupt the current task/process. Continue?",
     "confirm": "Close anyway"
   },
+  "closeInputConfirm": {
+    "title": "Close tab with unsent input?",
+    "desc": "Terminal tab \"{name}\" still has unsent input or attachments. Closing it will discard them. Continue?",
+    "descNoName": "This terminal tab still has unsent input or attachments. Closing it will discard them. Continue?",
+    "confirm": "Close and discard"
+  },
+  "closeWorkingInputConfirm": {
+    "title": "Close active tab?",
+    "desc": "Terminal tab \"{name}\" is still working and has unsent input or attachments. Closing it will interrupt the current task/process and discard them. Continue?",
+    "descNoName": "This terminal tab is still working and has unsent input or attachments. Closing it will interrupt the current task/process and discard them. Continue?",
+    "confirm": "Close anyway"
+  },
   "ctx": {
     "copy": "Copy",
     "copyLine": "Copy Line",
