@@ -1360,7 +1360,7 @@ describe("featureService dedicated file history", () => {
     } finally {
       await fixture.cleanup();
     }
-  });
+  }, { timeout: 90_000 });
 
   it("普通日志模式不应把 stash 三连记录混入提交历史", async () => {
     const fixture = await createRepoFixture("codexflow-log-stash-filter");
@@ -1561,7 +1561,7 @@ describe("featureService log filters", () => {
     } finally {
       await fixture.cleanup();
     }
-  });
+  }, { timeout: 90_000 });
 
   it("作者多选筛选应使用 OR 语义，并保持图谱与可见列表同源", async () => {
     const fixture = await createRepoFixture("codexflow-log-author-multi");

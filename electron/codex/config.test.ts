@@ -314,6 +314,38 @@ describe("electron/codex/config（tui 通知配置修复）", () => {
     }
   });
 
+  it("版本探测失败但已有 lifecycle hook：保留 hooks 并移除旧 notify", async () => {
+    const { home, cleanup } = createTempHome();
+    try {
+      writeCodexConfigToml(home, [
+        'notify = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "C:\\\\Users\\\\example\\\\.codex\\\\codexflow_after_agent_notify.ps1"]',
+        "",
+        "[[hooks.Stop]]",
+        "[[hooks.Stop.hooks]]",
+        'type = "command"',
+        'command = "node C:\\\\Users\\\\example\\\\.codex\\\\codexflow_lifecycle_notify.cjs"',
+        "",
+        "[[hooks.SubagentStop]]",
+        "[[hooks.SubagentStop.hooks]]",
+        'type = "command"',
+        'command = "node C:\\\\Users\\\\example\\\\.codex\\\\codexflow_lifecycle_notify.cjs"',
+        "",
+      ].join("\n"));
+
+      const mod = await loadConfigModule("codex unknown");
+      await mod.ensureAllCodexNotifications();
+
+      const body = readCodexConfigToml(home);
+      expect(body).toContain("[[hooks.Stop]]");
+      expect(body).toContain("[[hooks.SubagentStop]]");
+      expect(body).toContain("codexflow_lifecycle_notify.cjs");
+      expect(body).not.toContain("codexflow_after_agent_notify.ps1");
+      expect(body).not.toContain("notify = ");
+    } finally {
+      cleanup();
+    }
+  });
+
   it("空配置：补齐 [tui] notifications + notification_method=osc9", async () => {
     const { home, cleanup } = createTempHome();
     try {

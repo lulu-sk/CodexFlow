@@ -4,12 +4,14 @@ import {
   CLAUDE_NOTIFY_ENV_KEYS,
   GEMINI_NOTIFY_ENV_KEYS,
   buildProviderNotifyEnv,
+  areEquivalentCompletionPreviews,
   hasMeaningfulCompletionPreview,
   isAgentCompletionMessage,
   normalizeCompletionPreview,
   normalizeDisplayedCompletionPreviewForDedupe,
   normalizeCompletionPreviewForDedupe,
   shouldDedupeCrossSourceCompletion,
+  shouldDedupeRepeatedExternalCompletion,
   shouldDelayOscCompletionForExternalFallback,
   normalizeCompletionPrefs,
 } from "./app-shared";
@@ -82,6 +84,12 @@ describe("app-shared（完成通知：识别与环境变量注入）", () => {
     expect(normalizeDisplayedCompletionPreviewForDedupe("第一行\n  第二行  \\n 第三段")).toBe("第一行 第二行 \\n 第三段");
   });
 
+  it("areEquivalentCompletionPreviews：识别 hook 与 legacy notify 解码后的同一预览", () => {
+    const hookPreview = "已改好。\n\n当前分支：`fix/codex-subagent-notification-completion`";
+    const legacyPreview = "已改好。\n\n当前分支：`fix/codex-subagent-notification-completion`";
+    expect(areEquivalentCompletionPreviews(hookPreview, legacyPreview)).toBe(true);
+  });
+
   it("hasMeaningfulCompletionPreview：区分通用完成信号与真实摘要", () => {
     expect(hasMeaningfulCompletionPreview("")).toBe(false);
     expect(hasMeaningfulCompletionPreview("   ")).toBe(false);
@@ -98,6 +106,16 @@ describe("app-shared（完成通知：识别与环境变量注入）", () => {
 
   it("shouldDedupeCrossSourceCompletion：重新进入 working 后不吞掉新一轮完成事件", () => {
     expect(shouldDedupeCrossSourceCompletion("", "已处理 README", 1200, 5000, true)).toBe(false);
+  });
+
+  it("shouldDedupeRepeatedExternalCompletion：去重新版 Stop hook 与旧 notify 的延迟双写", () => {
+    const hookPreview = "测试正常。";
+    const legacyPreview = "测试正常。";
+    expect(shouldDedupeRepeatedExternalCompletion(hookPreview, legacyPreview, 2600, 5000, false)).toBe(true);
+  });
+
+  it("shouldDedupeRepeatedExternalCompletion：重新 working 后不吞掉新一轮同文案回复", () => {
+    expect(shouldDedupeRepeatedExternalCompletion("测试正常。", "测试正常。", 2600, 5000, true)).toBe(false);
   });
 
   it("shouldDelayOscCompletionForExternalFallback：仅 Codex 需要优先等待 external 预览", () => {

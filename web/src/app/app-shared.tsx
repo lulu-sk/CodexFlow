@@ -1729,6 +1729,21 @@ function normalizeDisplayedCompletionPreviewForDedupe(raw: string): string {
 }
 
 /**
+ * 中文说明：判断两条完成预览是否可视为同一次完成事件。
+ */
+function areEquivalentCompletionPreviews(leftRaw: string, rightRaw: string): boolean {
+  const left = normalizeDisplayedCompletionPreviewForDedupe(leftRaw);
+  const right = normalizeDisplayedCompletionPreviewForDedupe(rightRaw);
+  if (!left && !right) return true;
+  if (!left || !right) return false;
+  if (left === right) return true;
+  const shorter = left.length <= right.length ? left : right;
+  const longer = shorter === left ? right : left;
+  if (shorter.length < 8) return false;
+  return longer.startsWith(shorter);
+}
+
+/**
  * 中文说明：判断归一化后的完成预览是否包含真实细节。
  * - 空串或纯空白视为“仅完成信号”，不应压制后续更完整的 external 预览；
  * - 供完成事件跨来源去重逻辑复用，避免新版 Codex 的通用完成文案吞掉真实摘要。
@@ -1757,6 +1772,22 @@ function shouldDedupeCrossSourceCompletion(
   const nextHasDetail = hasMeaningfulCompletionPreview(nextPreview);
   if (!lastHasDetail && nextHasDetail) return false;
   return true;
+}
+
+/**
+ * 中文说明：判断同为 external 的延迟重复完成事件是否应去重。
+ * 典型场景是新版 Codex Stop hook 与遗留 notify 同时写入 JSONL，第二条可能晚到数秒。
+ */
+function shouldDedupeRepeatedExternalCompletion(
+  lastPreview: string,
+  nextPreview: string,
+  deltaMs: number,
+  windowMs: number,
+  hasWorkingTimer: boolean,
+): boolean {
+  if (hasWorkingTimer) return false;
+  if (deltaMs < 0 || deltaMs > windowMs) return false;
+  return areEquivalentCompletionPreviews(lastPreview, nextPreview);
 }
 
 /**
@@ -2064,8 +2095,10 @@ export {
   normalizeCompletionPreview,
   normalizeCompletionPreviewForDedupe,
   normalizeDisplayedCompletionPreviewForDedupe,
+  areEquivalentCompletionPreviews,
   hasMeaningfulCompletionPreview,
   shouldDedupeCrossSourceCompletion,
+  shouldDedupeRepeatedExternalCompletion,
   shouldDelayOscCompletionForExternalFallback,
   canonicalFilterKey,
   keysOfItemCanonical,
