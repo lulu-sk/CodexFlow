@@ -11,6 +11,8 @@ import { requestHistoryFastRefresh } from "../indexer";
 const CODEX_NOTIFY_FILENAME = "codexflow_after_agent_notify.jsonl";
 const CODEX_NOTIFY_POLL_INTERVAL_MS = 250;
 const CODEX_NOTIFY_READ_LIMIT_BYTES = 128 * 1024;
+const CODEX_SUBAGENT_DUPLICATE_WINDOW_MS = 8_000;
+const CODEX_RECENT_SUBAGENT_MAX = 32;
 
 type CodexNotifyEntry = {
   v?: number;
@@ -33,7 +35,30 @@ type CodexNotifySource = {
   remainder: string;
 };
 
+type CodexNotifyPayload = {
+  providerId: "codex";
+  tabId: string;
+  envLabel: string;
+  preview: string;
+  previewEscapedWhitespace?: boolean;
+  timestamp: string;
+  eventId: string;
+  hookEventName?: string;
+  completionKind?: "agent" | "subagent";
+  agentType?: string;
+  agentId?: string;
+};
+
+type RecentCodexSubagentNotify = {
+  tabId: string;
+  envLabel: string;
+  preview: string;
+  previewKey: string;
+  at: number;
+};
+
 const codexNotifySources = new Map<string, CodexNotifySource>();
+const recentCodexSubagentNotifies: RecentCodexSubagentNotify[] = [];
 let codexNotifyTimer: NodeJS.Timeout | null = null;
 let codexNotifyPolling = false;
 let codexNotifyWindowGetter: (() => BrowserWindow | null) | null = null;
@@ -129,6 +154,138 @@ function parseCodexNotifyLine(line: string): CodexNotifyEntry | null {
 }
 
 /**
+ * 中文说明：把 legacy notify 与 lifecycle hook 的预览规整为可比较文本。
+ */
+function normalizeCodexNotifyPreviewForDedupe(preview: string): string {
+  return String(preview || "")
+    .replace(/\\r\\n/g, "\n")
+    .replace(/\\n/g, "\n")
+    .replace(/\\r/g, "\n")
+    .replace(/\r\n/g, "\n")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * 中文说明：判断两条 Codex notify 预览是否可视作同一次完成事件。
+ */
+function areCodexNotifyPreviewsEquivalent(leftRaw: string, rightRaw: string): boolean {
+  const left = normalizeCodexNotifyPreviewForDedupe(leftRaw);
+  const right = normalizeCodexNotifyPreviewForDedupe(rightRaw);
+  if (!left && !right) return true;
+  if (!left || !right) return false;
+  if (left === right) return true;
+  const shorter = left.length <= right.length ? left : right;
+  const longer = shorter === left ? right : left;
+  if (shorter.length < 24) return false;
+  return longer.includes(shorter) || longer.startsWith(shorter);
+}
+
+/**
+ * 中文说明：识别没有 completionKind 的旧 notify 中明显属于子代理完成的文案。
+ */
+function isLegacySubagentCompletionPreview(preview: string): boolean {
+  const text = String(preview || "").trim();
+  if (!text) return false;
+  const normalized = normalizeCodexNotifyPreviewForDedupe(text);
+  if (normalized.startsWith("<subagent_notification")) return true;
+  if (/^子代理\s+\S{1,48}\s+(已|已经|完成|结束|通过|修复|检查|验收)/u.test(text)) return true;
+  if (/^子代理完成/u.test(text)) return true;
+  if (/^subagent\s+\S{1,64}\s+(completed|finished|done|passed|fixed|checked)\b/i.test(text)) return true;
+  if (/^subagent\s+(turn\s+)?complete(?:d)?\b/i.test(text)) return true;
+  return false;
+}
+
+/**
+ * 中文说明：清理过期的近期子代理完成记录，避免内存无界增长。
+ */
+function pruneRecentCodexSubagentNotifies(now: number): void {
+  for (let i = recentCodexSubagentNotifies.length - 1; i >= 0; i -= 1) {
+    const item = recentCodexSubagentNotifies[i];
+    if (!item || now - item.at > CODEX_SUBAGENT_DUPLICATE_WINDOW_MS)
+      recentCodexSubagentNotifies.splice(i, 1);
+  }
+  while (recentCodexSubagentNotifies.length > CODEX_RECENT_SUBAGENT_MAX)
+    recentCodexSubagentNotifies.shift();
+}
+
+/**
+ * 中文说明：记录已转发的子代理完成事件，用于吞掉紧随其后的 legacy notify 回放。
+ */
+function rememberCodexSubagentNotify(payload: CodexNotifyPayload, now: number): void {
+  const preview = String(payload.preview || "");
+  const previewKey = normalizeCodexNotifyPreviewForDedupe(preview);
+  recentCodexSubagentNotifies.push({
+    tabId: String(payload.tabId || ""),
+    envLabel: String(payload.envLabel || ""),
+    preview,
+    previewKey,
+    at: now,
+  });
+  pruneRecentCodexSubagentNotifies(now);
+}
+
+/**
+ * 中文说明：判断当前事件是否为刚刚已通过 SubagentStop 转发过的 legacy 重复回放。
+ */
+function isDuplicateRecentCodexSubagentNotify(payload: CodexNotifyPayload, now: number): boolean {
+  pruneRecentCodexSubagentNotifies(now);
+  const tabId = String(payload.tabId || "");
+  const envLabel = String(payload.envLabel || "");
+  const preview = String(payload.preview || "");
+  const previewKey = normalizeCodexNotifyPreviewForDedupe(preview);
+  for (const item of recentCodexSubagentNotifies) {
+    if (!item) continue;
+    if (tabId && item.tabId && tabId !== item.tabId) continue;
+    if (envLabel && item.envLabel && envLabel !== item.envLabel) continue;
+    if (previewKey && item.previewKey && (previewKey === item.previewKey || areCodexNotifyPreviewsEquivalent(preview, item.preview))) return true;
+  }
+  return false;
+}
+
+/**
+ * 中文说明：从 Codex notify entry 构造发送给渲染进程的 payload，并处理旧 notify 的子代理归类。
+ */
+function buildCodexNotifyDispatch(entry: CodexNotifyEntry, now = Date.now()): { payload: CodexNotifyPayload; dropReason?: string } {
+  const payload: CodexNotifyPayload = {
+    providerId: "codex" as const,
+    tabId: entry.tabId ? String(entry.tabId) : "",
+    envLabel: entry.envLabel ? String(entry.envLabel) : "",
+    preview: entry.preview ? String(entry.preview) : "",
+    timestamp: entry.timestamp ? String(entry.timestamp) : "",
+    eventId: entry.eventId ? String(entry.eventId) : "",
+  };
+  if (typeof entry.previewEscapedWhitespace === "boolean")
+    payload.previewEscapedWhitespace = entry.previewEscapedWhitespace;
+  const hookEventName = String(entry.hookEventName || "").trim();
+  const completionKind = String(entry.completionKind || "").trim().toLowerCase();
+  const agentType = String(entry.agentType || "").trim();
+  const agentId = String(entry.agentId || "").trim();
+  const explicitSubagent = completionKind === "subagent" || hookEventName === "SubagentStop";
+  const explicitAgent = completionKind === "agent" || hookEventName === "Stop";
+  const isLegacyNotify = !hookEventName && !completionKind;
+  const legacySubagentPreview = isLegacySubagentCompletionPreview(payload.preview);
+
+  if (hookEventName) payload.hookEventName = hookEventName;
+  if (explicitSubagent || legacySubagentPreview)
+    payload.completionKind = "subagent";
+  else if (explicitAgent)
+    payload.completionKind = "agent";
+  if (agentType) payload.agentType = agentType;
+  if (agentId) payload.agentId = agentId;
+
+  if (isLegacyNotify && isDuplicateRecentCodexSubagentNotify(payload, now))
+    return { payload, dropReason: "duplicate-subagent-legacy" };
+
+  if (payload.completionKind === "subagent")
+    rememberCodexSubagentNotify(payload, now);
+
+  return { payload };
+}
+
+/**
  * 中文说明：从通知文件读取新增内容并解析为事件列表。
  */
 function readCodexNotifyEntries(source: CodexNotifySource): CodexNotifyEntry[] {
@@ -184,39 +341,11 @@ function emitCodexNotify(entry: CodexNotifyEntry, sourcePath?: string): void {
   if (!win) return;
   const providerId = String(entry.providerId || "codex").toLowerCase();
   if (providerId && providerId !== "codex") return;
-  const payload: {
-    providerId: "codex";
-    tabId: string;
-    envLabel: string;
-    preview: string;
-    previewEscapedWhitespace?: boolean;
-    timestamp: string;
-    eventId: string;
-    hookEventName?: string;
-    completionKind?: "agent" | "subagent";
-    agentType?: string;
-    agentId?: string;
-  } = {
-    providerId: "codex" as const,
-    tabId: entry.tabId ? String(entry.tabId) : "",
-    envLabel: entry.envLabel ? String(entry.envLabel) : "",
-    preview: entry.preview ? String(entry.preview) : "",
-    timestamp: entry.timestamp ? String(entry.timestamp) : "",
-    eventId: entry.eventId ? String(entry.eventId) : "",
-  };
-  if (typeof entry.previewEscapedWhitespace === "boolean")
-    payload.previewEscapedWhitespace = entry.previewEscapedWhitespace;
-  const hookEventName = String(entry.hookEventName || "").trim();
-  const completionKind = String(entry.completionKind || "").trim().toLowerCase();
-  const agentType = String(entry.agentType || "").trim();
-  const agentId = String(entry.agentId || "").trim();
-  if (hookEventName) payload.hookEventName = hookEventName;
-  if (completionKind === "subagent" || hookEventName === "SubagentStop")
-    payload.completionKind = "subagent";
-  else if (completionKind === "agent" || hookEventName === "Stop")
-    payload.completionKind = "agent";
-  if (agentType) payload.agentType = agentType;
-  if (agentId) payload.agentId = agentId;
+  const { payload, dropReason } = buildCodexNotifyDispatch(entry);
+  if (dropReason) {
+    logCodexNotification(`notify event dropped reason=${dropReason} tab=${payload.tabId || "n/a"} kind=${payload.completionKind || "agent"} previewLen=${payload.preview.length}`);
+    return;
+  }
   try {
     win.webContents.send("notifications:externalAgentComplete", payload);
     logCodexNotification(`notify event tab=${payload.tabId || "n/a"} kind=${payload.completionKind || "agent"} agentType=${payload.agentType || "n/a"} agentId=${payload.agentId || "n/a"} previewLen=${payload.preview.length}`);
@@ -271,5 +400,19 @@ export function stopCodexNotificationBridge(): void {
   codexNotifyPolling = false;
   codexNotifyWindowGetter = null;
   codexNotifySources.clear();
+  recentCodexSubagentNotifies.length = 0;
 }
+
+export const __testing = {
+  areCodexNotifyPreviewsEquivalent,
+  buildCodexNotifyDispatch,
+  isLegacySubagentCompletionPreview,
+  normalizeCodexNotifyPreviewForDedupe,
+  /**
+   * 中文说明：重置 Codex notify 去重状态，避免测试用例之间互相污染。
+   */
+  resetCodexNotifyDedupeState() {
+    recentCodexSubagentNotifies.length = 0;
+  },
+};
 
