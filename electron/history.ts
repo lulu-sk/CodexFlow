@@ -15,6 +15,7 @@ import settings from './settings';
 import { extractTaggedPrefix } from './agentSessions/shared/taggedPrefix';
 import { createHistoryImageContent, extractImagePathCandidatesFromText } from './agentSessions/shared/historyImage';
 import { deriveGeminiProjectHashCandidatesFromPath, extractGeminiProjectHashFromPath } from './agentSessions/gemini/parser';
+import { filterCodexHistoryPreviewText } from './agentSessions/shared/preview';
 import { pathMatchesDirKeyScope, tidyPathCandidate } from "./agentSessions/shared/path";
 
 /**
@@ -358,6 +359,7 @@ function isSyntheticCodexContextText(value: string): boolean {
   if (!text) return true;
   if (/^#\s*AGENTS\.md instructions\b/i.test(text)) return true;
   if (/^<environment_context>/i.test(text)) return true;
+  if (/^<turn_aborted>/i.test(text)) return true;
   if (/^Another language model started to solve this problem\b/i.test(text)) return true;
   if (/^#\s*Files mentioned by the user:/i.test(text) && !/^##\s*My request for Codex:?\s*$/im.test(text)) return true;
   return false;
@@ -368,13 +370,9 @@ function isSyntheticCodexContextText(value: string): boolean {
  */
 function extractCodexRequestText(value: string): string {
   const raw = String(value || '').replace(/\r\n/g, '\n');
-  const marker = raw.match(/^##\s*My request for Codex:?\s*$/im);
-  if (marker && typeof marker.index === 'number') {
-    const request = raw.slice(marker.index + marker[0].length);
-    return normalizeHistoryPreviewText(request);
-  }
-  if (isSyntheticCodexContextText(raw)) return '';
-  return normalizeHistoryPreviewText(raw);
+  const filtered = filterCodexHistoryPreviewText(raw);
+  if (!filtered || isSyntheticCodexContextText(filtered)) return '';
+  return normalizeHistoryPreviewText(filtered);
 }
 
 /**
@@ -585,7 +583,7 @@ type HistoryListCacheEntry = {
 };
 
 // 中文说明：历史归属语义变更后提升版本，强制失效旧的列表缓存，避免继续复用错误归属结果。
-const PARSER_VERSION = 'v13';
+const PARSER_VERSION = 'v15';
 const CACHE_SCHEMA_VERSION = '2';
 
 /**
@@ -1864,6 +1862,24 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
   }
 
   /**
+   * 中文说明：判断消息内容是否只包含子代理通知，避免把通知当成真实用户输入。
+   */
+  function isSubagentNotificationOnlyContent(contentArr: MessageContent[] | null | undefined): boolean {
+    const items = Array.isArray(contentArr) ? contentArr : [];
+    if (items.length === 0) return false;
+    return items.every((item) => String(item?.type || '').trim().toLowerCase() === 'subagent_notification');
+  }
+
+  /**
+   * 中文说明：将纯子代理通知的历史角色规整为 notification，避免详情页和锚点逻辑误判为用户输入。
+   */
+  function normalizeHistoryMessageRoleForContent(role: unknown, contentArr: MessageContent[]): string {
+    const rawRole = String(role || '').trim() || 'user';
+    if (rawRole.toLowerCase() === 'user' && isSubagentNotificationOnlyContent(contentArr)) return 'notification';
+    return rawRole;
+  }
+
+  /**
    * 中文说明：将 `event_msg.user_message` 恢复出的图片并入上一条等价 user 消息，避免详情页重复显示同一块输入。
    * - 仅匹配“最后一条消息就是同文本 user”的近邻场景，保持判定简单且不误伤真实重复提问；
    * - 若上一条已存在同签名图片，则仅抑制重复块，不重复附加图片项。
@@ -2118,7 +2134,7 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
             }
           }
         } catch {}
-        if (contentArr.length > 0) messages.push({ role, content: contentArr });
+        if (contentArr.length > 0) messages.push({ role: normalizeHistoryMessageRoleForContent(role, contentArr), content: contentArr });
       } else if (userMessageEventContent) {
         try {
           rememberImagePathsFromText(typeof obj.payload?.message === 'string' ? obj.payload.message : '');

@@ -80,6 +80,39 @@ export function filterHistoryPreviewText(raw: string): string {
   }
 }
 
+type CodexInternalContextParts = {
+  rest: string;
+  objective: string;
+};
+
+/**
+ * 从 Codex goal 内部上下文中提取用户目标摘要。
+ */
+function extractCodexGoalObjectiveText(inner: string): string {
+  try {
+    const matched = String(inner || "").match(/<objective>\s*([\s\S]*?)(?:<\/objective>|$)/i);
+    if (!matched?.[1]) return "";
+    return filterHistoryPreviewText(matched[1]);
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * 拆分 Codex goal 模式注入的内部上下文前缀，保留后续真实用户内容并记录 objective 兜底摘要。
+ */
+function extractLeadingCodexInternalContext(raw: string): CodexInternalContextParts {
+  const text = String(raw || "").replace(/\r\n/g, "\n");
+  const trimmed = text.trimStart();
+  if (!/^<codex_internal_context\b/i.test(trimmed)) return { rest: text, objective: "" };
+  const matched = trimmed.match(/^<codex_internal_context\b[^>]*>([\s\S]*?)<\/codex_internal_context>\s*/i);
+  if (!matched) return { rest: "", objective: "" };
+  return {
+    rest: trimmed.slice(matched[0].length),
+    objective: extractCodexGoalObjectiveText(matched[1] || ""),
+  };
+}
+
 /**
  * 过滤 Codex 历史预览文本：
  * - 优先提取官方 Codex “Files mentioned” 模板里的真实请求段；
@@ -87,7 +120,8 @@ export function filterHistoryPreviewText(raw: string): string {
  */
 export function filterCodexHistoryPreviewText(raw: string): string {
   try {
-    const text = String(raw || "").replace(/\r\n/g, "\n");
+    const internalContext = extractLeadingCodexInternalContext(String(raw || "").replace(/\r\n/g, "\n"));
+    const text = internalContext.rest.trim() ? internalContext.rest : internalContext.objective;
     const marker = text.match(/^##\s*My request for Codex:?\s*$/im);
     if (marker && typeof marker.index === "number") {
       const request = text.slice(marker.index + marker[0].length).trim();
@@ -97,7 +131,9 @@ export function filterCodexHistoryPreviewText(raw: string): string {
     if (/^#\s*Files mentioned by the user:/i.test(text.trim())) return "";
     if (/^#\s*AGENTS\.md instructions\b/i.test(text.trim())) return "";
     if (/^<environment_context>/i.test(text.trim())) return "";
-    return filterHistoryPreviewText(text);
+    if (/^<turn_aborted>/i.test(text.trim())) return "";
+    if (/^Another language model started to solve this problem\b/i.test(text.trim())) return "";
+    return filterHistoryPreviewText(text) || internalContext.objective;
   } catch {
     return filterHistoryPreviewText(String(raw || ""));
   }

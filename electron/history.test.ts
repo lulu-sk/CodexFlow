@@ -200,9 +200,158 @@ describe("electron/history.listHistory", () => {
     expect(sessions[0].preview).toBe("工作流包 alp-auto-current-ops 节点的位置调整优化，重叠的地方调整间距");
     expect(sessions[0].preview || "").not.toContain("# Files mentioned by the user");
   });
+
+  it("goal 内部上下文不会被当成标题，并继续跳过前置路径行", async () => {
+    await createHistoryListJsonlFile([
+      {
+        timestamp: "2026-04-29T03:35:01.000Z",
+        type: "session_meta",
+        payload: {
+          id: "session-goal-context",
+          cwd: "/workspace/project",
+        },
+      },
+      {
+        timestamp: "2026-04-29T03:35:02.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: [
+                "<codex_internal_context source=\"goal\">",
+                "内部目标上下文不应作为标题",
+                "</codex_internal_context>",
+                "src/features/history/detail.ts",
+                "修复历史详情标题提取",
+              ].join("\n"),
+            },
+          ],
+        },
+      },
+    ]);
+
+    const sessions = await listHistory({});
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].title).toBe("修复历史详情标题提取");
+    expect(sessions[0].preview).toBe("修复历史详情标题提取");
+  });
+
+  it("goal objective 可作为首条标题候选且 turn_aborted 不会抢占标题", async () => {
+    await createHistoryListJsonlFile([
+      {
+        timestamp: "2026-04-29T03:35:01.000Z",
+        type: "session_meta",
+        payload: {
+          id: "session-goal-objective",
+          cwd: "/workspace/project",
+        },
+      },
+      {
+        timestamp: "2026-04-29T03:35:02.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: [
+                "<codex_internal_context source=\"goal\">",
+                "Continue working toward the active thread goal.",
+                "<objective>",
+                "你作为调度者，最终目标是完整推进测试与验收工作",
+                "`alp-auto-v3-lan-three-task-test.zh-CN.md`",
+                "</objective>",
+                "</codex_internal_context>",
+              ].join("\n"),
+            },
+          ],
+        },
+      },
+      {
+        timestamp: "2026-04-29T03:35:03.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: [
+                "<turn_aborted>",
+                "The user interrupted the previous turn on purpose.",
+                "</turn_aborted>",
+              ].join("\n"),
+            },
+          ],
+        },
+      },
+      {
+        timestamp: "2026-04-29T03:35:04.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "预检我不是提醒你了吗，只执行一个任务就行" }],
+        },
+      },
+    ]);
+
+    const sessions = await listHistory({});
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].title).toBe("你作为调度者，最终目标是完整推进测试与验收工作");
+    expect(sessions[0].preview).toBe("你作为调度者，最终目标是完整推进测试与验收工作");
+  });
 });
 
 describe("electron/history.readHistoryFile", () => {
+  it("将 subagent_notification 解析为通知消息并格式化换行", async () => {
+    const filePath = await createHistoryJsonlFile([
+      {
+        timestamp: "2026-03-06T00:00:00.000Z",
+        type: "session_meta",
+        payload: {
+          id: "session-subagent-notification",
+          cwd: "/workspace/project",
+        },
+      },
+      {
+        timestamp: "2026-03-06T00:00:01.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: [
+                "<subagent_notification>",
+                "{\"agent_path\":\"agent-1\",\"status\":{\"completed\":\"第一行\\n\\n第二行\"}}",
+                "</subagent_notification>",
+              ].join("\n"),
+            },
+          ],
+        },
+      },
+    ]);
+
+    const parsed = await readHistoryFile(filePath, { maxLines: 0 });
+    const notification = parsed.messages.find((message) => message.content?.some((item) => item.type === "subagent_notification"));
+    const text = notification?.content?.find((item) => item.type === "subagent_notification")?.text || "";
+
+    expect(notification?.role).toBe("notification");
+    expect(text).toContain("agent_path: agent-1");
+    expect(text).toContain("completed:");
+    expect(text).toContain("第一行");
+    expect(text).toContain("第二行");
+    expect(text).not.toContain("\\n");
+  });
+
   it("maxLines<=0 时会读取 5000 行之后的 response_item.output_text", async () => {
     const filePath = await createHistoryJsonlFile([
       {

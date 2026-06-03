@@ -85,6 +85,7 @@ import {
   type HistoryInlineImageRenderState,
 } from "@/features/history/history-inline-images";
 import { VirtualizedList, type VirtualizedListHandle } from "@/features/history/virtualized-list";
+import { buildHistoryUserInputMessageKeys } from "@/features/history/user-input-anchors";
 import { applyHistoryFindHighlights, clearHistoryFindHighlights, setActiveHistoryFindMatch } from "@/features/history/find/history-find";
 import { toWSLForInsert } from "@/lib/wsl";
 import { extractGeminiProjectHashFromPath, deriveGeminiProjectHashCandidatesFromPath } from "@/lib/gemini-hash";
@@ -14024,6 +14025,13 @@ const HISTORY_DETAIL_VIRTUAL_OVERSCAN = 1600;
 const HISTORY_DETAIL_SEARCH_DEBOUNCE_MS = 120;
 const HISTORY_DETAIL_PRE_CLASS_NAME = "mt-2 max-w-full overflow-x-auto whitespace-pre-wrap font-apple-regular";
 
+type HistoryUserInputScrollRequest = {
+  id: number;
+  messageKey: string;
+  messageIndex: number;
+  userInputIndex: number;
+};
+
 /**
  * 中文说明：渲染历史详情中的图片块。
  * - 主视图改为“路径 + 小图”紧凑排布，避免历史详情被大图撑开；
@@ -14228,6 +14236,19 @@ function ContentRenderer({
             </div>
           );
         }
+        if (ty === 'subagent_notification') {
+          return (
+            <div key={`${kprefix || 'itm'}-subagent-${i}`} className="min-w-0 rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-muted)] p-2 text-xs text-[var(--cf-text-primary)]">
+              <div className="flex min-w-0 items-center justify-between gap-2 text-[var(--cf-text-secondary)] font-apple-semibold">
+                <div>subagent_notification</div>
+                <HistoryCopyButton text={text} />
+              </div>
+              <pre className={HISTORY_DETAIL_PRE_CLASS_NAME}>
+                <code data-history-search-scope>{text}</code>
+              </pre>
+            </div>
+          );
+        }
         if (ty === 'summary') {
           return (
             <div key={`${kprefix || 'itm'}-sum-${i}`} className="relative min-w-0 rounded-apple border border-[var(--cf-border)] bg-[var(--cf-purple-light)] p-2 text-xs text-[var(--cf-text-primary)] font-apple-regular">
@@ -14367,14 +14388,6 @@ type HistoryRenderOptions = {
  */
 function buildHistoryMessageKey(sessionId: string, originalIndex: number): string {
   return `${sessionId}-${originalIndex}`;
-}
-
-/**
- * 中文说明：判断某条历史消息是否属于 USER Input 锚点。
- * 约定：以 role === "user" 作为详情页中的用户输入定位基准。
- */
-function isHistoryUserInputMessage(message: HistoryMessage): boolean {
-  return String(message?.role || "").trim().toLowerCase() === "user";
 }
 
 /**
@@ -14654,7 +14667,7 @@ function buildHistoryTypeFilter(messages: HistoryMessage[]): Record<string, bool
   filtered.sort();
 
   const next: Record<string, boolean> = {};
-  for (const key of filtered) next[key] = (key === 'input_text' || key === 'output_text' || key === 'image');
+  for (const key of filtered) next[key] = (key === 'input_text' || key === 'output_text' || key === 'image' || key === 'subagent_notification');
   return next;
 }
 
@@ -14834,8 +14847,15 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
   }, []);
 
   useEffect(() => {
-    messageRefs.current = {};
-  }, [detailSession, filteredMessages.length]);
+    const aliveKeys = new Set<string>();
+    for (const view of filteredMessages) {
+      const key = String(view?.messageKey || "");
+      if (key) aliveKeys.add(key);
+    }
+    for (const key of Object.keys(messageRefs.current)) {
+      if (!aliveKeys.has(key)) delete messageRefs.current[key];
+    }
+  }, [detailSession, filteredMessages]);
 
   useEffect(() => {
     const root = historyFindRootRef.current;
@@ -14899,26 +14919,36 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
   const normalizedMatchIndex = matches.length === 0 ? 0 : Math.min(activeMatchIndex, matches.length - 1);
   const activeMatch = matches[normalizedMatchIndex] || null;
   const userInputMessageKeys = useMemo(
-    () => filteredMessages.filter((view) => isHistoryUserInputMessage(view.message)).map((view) => view.messageKey),
+    () => buildHistoryUserInputMessageKeys(filteredMessages),
     [filteredMessages],
   );
   const userInputMessageKeySignature = userInputMessageKeys.join("|");
   const [activeUserInputIndex, setActiveUserInputIndex] = useState<number | null>(null);
+  const activeUserInputIndexRef = useRef<number | null>(null);
+  const userInputScrollRequestIdRef = useRef(0);
+  const [activeUserInputScrollRequest, setActiveUserInputScrollRequest] = useState<HistoryUserInputScrollRequest | null>(null);
 
   useEffect(() => {
+    activeUserInputIndexRef.current = null;
     setActiveUserInputIndex(null);
   }, [selectedHistoryId, userInputMessageKeySignature]);
 
   useEffect(() => {
     if (activeUserInputIndex === null) return;
     if (userInputMessageKeys.length === 0) {
+      activeUserInputIndexRef.current = null;
       setActiveUserInputIndex(null);
       return;
     }
     if (activeUserInputIndex >= userInputMessageKeys.length) {
+      activeUserInputIndexRef.current = userInputMessageKeys.length - 1;
       setActiveUserInputIndex(userInputMessageKeys.length - 1);
     }
   }, [activeUserInputIndex, userInputMessageKeys.length]);
+
+  useEffect(() => {
+    activeUserInputIndexRef.current = activeUserInputIndex;
+  }, [activeUserInputIndex]);
 
   const normalizedUserInputIndex = activeUserInputIndex === null || userInputMessageKeys.length === 0
     ? -1
@@ -14986,45 +15016,101 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
   }, [detailSearchActive, activeMatch, messageIndexByKey]);
 
   useEffect(() => {
-    if (!activeUserInputMessageKey) return;
-    const matchIndex = messageIndexByKey.get(activeUserInputMessageKey);
-    if (typeof matchIndex === "number") {
-      historyVirtualListRef.current?.scrollToIndex(matchIndex, { align: "start", behavior: "smooth" });
-    }
+    const request = activeUserInputScrollRequest;
+    if (!request) return;
+    const { messageKey, messageIndex, userInputIndex } = request;
+    historyVirtualListRef.current?.scrollToIndex(messageIndex, { align: "start", behavior: "auto" });
 
     let cancelled = false;
+    let rafId = 0;
     let attempts = 0;
+    let resizeVersion = 0;
+    let lastResizeVersion = -1;
+    let lastDelta: number | null = null;
+    let stableFrames = 0;
+    const maxAttempts = 120;
+    const topPadding = userInputIndex === 0 ? 28 : 8;
+    let observedMessageNode: HTMLDivElement | null = null;
+
+    const scheduleCalibration = () => {
+      if (cancelled || rafId || attempts >= maxAttempts) return;
+      rafId = requestAnimationFrame(calibrateUserInputAnchor);
+    };
+
+    const resizeObserver = typeof ResizeObserver !== "undefined"
+      ? new ResizeObserver(() => {
+        resizeVersion += 1;
+        stableFrames = 0;
+        scheduleCalibration();
+      })
+      : null;
+
+    const cleanupTimer = window.setTimeout(() => {
+      cancelled = true;
+      if (rafId) cancelAnimationFrame(rafId);
+      try { resizeObserver?.disconnect(); } catch {}
+    }, 2500);
+
+    try {
+      const viewport = detailScrollAreaRef.current;
+      const root = historyFindRootRef.current;
+      if (resizeObserver && viewport) resizeObserver.observe(viewport);
+      if (resizeObserver && root) resizeObserver.observe(root);
+    } catch {}
 
     /**
-     * 中文说明：等待虚拟列表完成挂载后，再将当前 USER Input 锚点滚到靠近视口顶部但保留少量上边距的位置。
+     * 持续校准当前 USER Input 锚点，直到目标 DOM 和上方内容高度连续稳定。
      */
-    const tryActivateUserInput = () => {
+    function calibrateUserInputAnchor() {
+      rafId = 0;
       if (cancelled) return;
+      attempts += 1;
 
       const viewport = detailScrollAreaRef.current;
-      const messageNode = messageRefs.current[activeUserInputMessageKey];
+      const messageNode = messageRefs.current[messageKey];
       if (viewport && messageNode) {
         try {
+          if (resizeObserver && observedMessageNode !== messageNode) {
+            if (observedMessageNode) {
+              try { resizeObserver.unobserve(observedMessageNode); } catch {}
+            }
+            resizeObserver.observe(messageNode);
+            observedMessageNode = messageNode;
+          }
           const viewportRect = viewport.getBoundingClientRect();
           const nodeRect = messageNode.getBoundingClientRect();
-          // 第一条用户输入上方要给日期预留更多空间，后续条目只保留最小安全边距即可。
-          const topPadding = matchIndex === 0 ? 28 : 8;
-          const nextTop = Math.max(0, viewport.scrollTop + (nodeRect.top - viewportRect.top) - topPadding);
-          viewport.scrollTo({ top: nextTop, behavior: "smooth" });
+          const delta = (nodeRect.top - viewportRect.top) - topPadding;
+          const roundedDelta = Math.round(delta * 10) / 10;
+          if (Math.abs(delta) > 2) {
+            stableFrames = 0;
+            lastDelta = roundedDelta;
+            lastResizeVersion = resizeVersion;
+            const nextTop = Math.max(0, viewport.scrollTop + delta);
+            viewport.scrollTo({ top: nextTop, behavior: "auto" });
+          } else {
+            const deltaStable = lastDelta !== null && Math.abs(roundedDelta - lastDelta) <= 0.5;
+            const resizeStable = lastResizeVersion === resizeVersion;
+            stableFrames = deltaStable && resizeStable ? stableFrames + 1 : 0;
+            lastDelta = roundedDelta;
+            lastResizeVersion = resizeVersion;
+            if (stableFrames >= 2) return;
+          }
         } catch {}
-        return;
+      } else if (attempts % 3 === 0) {
+        historyVirtualListRef.current?.scrollToIndex(messageIndex, { align: "start", behavior: "auto" });
       }
 
-      attempts += 1;
-      if (attempts < 6) requestAnimationFrame(tryActivateUserInput);
-    };
+      scheduleCalibration();
+    }
 
-    const rafId = requestAnimationFrame(tryActivateUserInput);
+    scheduleCalibration();
     return () => {
       cancelled = true;
-      cancelAnimationFrame(rafId);
+      window.clearTimeout(cleanupTimer);
+      if (rafId) cancelAnimationFrame(rafId);
+      try { resizeObserver?.disconnect(); } catch {}
     };
-  }, [activeUserInputMessageKey, messageIndexByKey]);
+  }, [activeUserInputScrollRequest]);
 
   const goToNextMatch = useCallback(() => {
     if (!matches.length) return;
@@ -15038,20 +15124,47 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
   }, [matches.length]);
 
   /**
+   * 激活指定 USER Input，并把滚动目标快照写入请求，避免滚动 effect 再读取可能滞后的派生状态。
+   */
+  const activateUserInputIndex = useCallback((nextIndex: number) => {
+    const messageKey = userInputMessageKeys[nextIndex];
+    if (!messageKey) return;
+    const messageIndex = messageIndexByKey.get(messageKey);
+    if (typeof messageIndex !== "number") return;
+    activeUserInputIndexRef.current = nextIndex;
+    userInputScrollRequestIdRef.current += 1;
+    setActiveUserInputIndex(nextIndex);
+    setActiveUserInputScrollRequest({
+      id: userInputScrollRequestIdRef.current,
+      messageKey,
+      messageIndex,
+      userInputIndex: nextIndex,
+    });
+  }, [messageIndexByKey, userInputMessageKeys]);
+
+  /**
    * 中文说明：在当前可见的 USER Input 锚点之间循环切换。
    */
   const goToNextUserInput = useCallback(() => {
     if (!userInputMessageKeys.length) return;
-    setActiveUserInputIndex((prev) => (prev === null ? 0 : (prev + 1) % userInputMessageKeys.length));
-  }, [userInputMessageKeys.length]);
+    const currentIndex = activeUserInputIndexRef.current;
+    const nextIndex = currentIndex === null || currentIndex < 0 || currentIndex >= userInputMessageKeys.length
+      ? 0
+      : (currentIndex + 1) % userInputMessageKeys.length;
+    activateUserInputIndex(nextIndex);
+  }, [activateUserInputIndex, userInputMessageKeys.length]);
 
   /**
    * 中文说明：在当前可见的 USER Input 锚点之间反向循环切换。
    */
   const goToPrevUserInput = useCallback(() => {
     if (!userInputMessageKeys.length) return;
-    setActiveUserInputIndex((prev) => (prev === null ? userInputMessageKeys.length - 1 : (prev - 1 + userInputMessageKeys.length) % userInputMessageKeys.length));
-  }, [userInputMessageKeys.length]);
+    const currentIndex = activeUserInputIndexRef.current;
+    const nextIndex = currentIndex === null || currentIndex < 0 || currentIndex >= userInputMessageKeys.length
+      ? userInputMessageKeys.length - 1
+      : (currentIndex - 1 + userInputMessageKeys.length) % userInputMessageKeys.length;
+    activateUserInputIndex(nextIndex);
+  }, [activateUserInputIndex, userInputMessageKeys.length]);
 
   const activeDetailMessageKey = activeUserInputIndex !== null
     ? activeUserInputMessageKey || undefined
@@ -15329,12 +15442,16 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
 
           {userInputMessageKeys.length > 0 ? (
             <div className="flex items-center justify-self-center">
-              <div className="flex items-center gap-1">
-                {activeUserInputIndex !== null && (
-                  <div className="mr-0.5 whitespace-nowrap text-[0.65rem] font-apple-medium text-[var(--cf-text-muted)]">
-                    {normalizedUserInputIndex + 1} / {userInputMessageKeys.length}
-                  </div>
-                )}
+              <div className="grid grid-cols-[3.75rem_1.25rem_1.25rem] items-center gap-1">
+                <div
+                  className={cn(
+                    "whitespace-nowrap text-right text-[0.65rem] font-apple-medium tabular-nums text-[var(--cf-text-muted)]",
+                    activeUserInputIndex === null && "invisible",
+                  )}
+                  aria-hidden={activeUserInputIndex === null}
+                >
+                  {normalizedUserInputIndex + 1} / {userInputMessageKeys.length}
+                </div>
                 <button
                   type="button"
                   onClick={goToPrevUserInput}
@@ -15506,6 +15623,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
                         items={filteredMessages}
                         scrollContainerRef={detailScrollAreaRef}
                         estimateItemHeight={HISTORY_DETAIL_VIRTUAL_ESTIMATED_HEIGHT}
+                        getEstimatedItemHeight={estimateHistoryMessageHeight}
                         overscan={HISTORY_DETAIL_VIRTUAL_OVERSCAN}
                         getItemKey={(view) => view.messageKey}
                         renderItem={(view) => <HistoryMessageCard view={view} options={detailRenderOptions} />}
