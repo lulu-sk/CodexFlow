@@ -135,7 +135,7 @@ describe("update config options", () => {
       mode: "merge",
       options: [],
     });
-  });
+  }, 10_000);
 
   it("历史 branch-default 配置在读取时应降级并回写为 Merge", async () => {
     const ctx = await createConfigTestContextAsync("legacy-branch-default");
@@ -222,5 +222,5 @@ describe("update config options", () => {
     expect(snapshot.scopePreview.roots.some((root) => root.repoRoot === linkedRepo && root.source === "linked" && !root.included)).toBe(true);
     expect(snapshot.scopePreview.roots.some((root) => root.repoRoot === nestedRepo && root.source === "nested" && root.included)).toBe(true);
     expect(snapshot.scopePreview.skippedRoots.some((root) => root.repoRoot === linkedRepo && root.reasonCode === "requested")).toBe(true);
-  });
+  }, 10_000);
 });

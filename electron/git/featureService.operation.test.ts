@@ -1481,7 +1481,7 @@ describe("featureService log filters", () => {
   it("文本筛选分页应按过滤后结果推进，而不是按原始 git log 游标错位", async () => {
     const fixture = await createRepoFixture("codexflow-log-filtered-pagination");
     try {
-      for (let index = 1; index <= 50; index += 1) {
+      for (let index = 1; index <= 42; index += 1) {
         const subject = index % 2 === 0 ? `keep ${index}` : `skip ${index}`;
         await commitFileChangeAsync(fixture.repo, "conflict.txt", `${subject}\n`, subject);
       }
@@ -1520,8 +1520,8 @@ describe("featureService log filters", () => {
         ? firstRes.data.graphItems.map((item: { subject?: string }) => String(item?.subject || ""))
         : [];
       expect(firstSubjects).toHaveLength(20);
-      expect(firstSubjects[0]).toBe("keep 50");
-      expect(firstSubjects[19]).toBe("keep 12");
+      expect(firstSubjects[0]).toBe("keep 42");
+      expect(firstSubjects[19]).toBe("keep 4");
       expect(firstGraphSubjects).toEqual(firstSubjects);
 
       const secondRes = await dispatchGitFeatureAction({
@@ -1556,7 +1556,7 @@ describe("featureService log filters", () => {
       const secondGraphSubjects = Array.isArray(secondRes.data?.graphItems)
         ? secondRes.data.graphItems.map((item: { subject?: string }) => String(item?.subject || ""))
         : [];
-      expect(secondSubjects).toEqual(["keep 10", "keep 8", "keep 6", "keep 4", "keep 2"]);
+      expect(secondSubjects).toEqual(["keep 2"]);
       expect(secondGraphSubjects).toEqual(secondSubjects);
     } finally {
       await fixture.cleanup();

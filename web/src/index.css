@@ -451,6 +451,11 @@ body {
   --cf-terminal-scrollbar-border: rgba(255, 255, 255, 0.4);
   --cf-terminal-scrollbar-glow: rgba(15, 23, 42, 0.28);
 }
+.cf-terminal-chrome > div,
+.cf-terminal-chrome .xterm {
+  min-width: 0;
+  max-width: 100%;
+}
 .cf-terminal-chrome .xterm-viewport {
   background-color: var(--cf-terminal-bg, transparent) !important;
   scrollbar-width: thin;
