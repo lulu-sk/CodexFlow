@@ -18,6 +18,8 @@
   "noMatch": "No matching history",
   "copyImage": "Copy Image",
   "copyPath": "Copy Path",
+  "referenceInSession": "Reference in Session",
+  "referenceNoActiveInput": "No terminal input is available to receive this reference.",
   "linkMenuSetProjectIde": "Set IDE for This Project",
   "linkMenuUseVsCode": "Use VS Code",
   "linkMenuUseCursor": "Use Cursor",

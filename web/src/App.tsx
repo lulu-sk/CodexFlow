@@ -6,7 +6,7 @@ import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Combobox } from "@/components/ui/combobox";
-import PathChipsInput, { type PathChip } from "@/components/ui/path-chips-input";
+import PathChipsInput, { buildPathChipFromPath, mergePathChips, type PathChip } from "@/components/ui/path-chips-input";
 import InteractiveImagePreview from "@/components/ui/interactive-image-preview";
 import { retainPreviewUrl, releasePreviewUrl } from "@/lib/previewUrlRegistry";
 import { retainPastedImage, releasePastedImage, requestTrashWinPath } from "@/lib/imageResourceRegistry";
@@ -30,6 +30,7 @@ import {
   CheckCircle2,
   MoreVertical,
   FileClock,
+  FileText,
   ChevronDown,
   ChevronUp,
   ChevronRight,
@@ -88,6 +89,7 @@ import { VirtualizedList, type VirtualizedListHandle } from "@/features/history/
 import { buildHistoryUserInputMessageKeys } from "@/features/history/user-input-anchors";
 import { applyHistoryFindHighlights, clearHistoryFindHighlights, setActiveHistoryFindMatch } from "@/features/history/find/history-find";
 import { toWSLForInsert } from "@/lib/wsl";
+import { probeWinPathKind, type WinPathProbeResult } from "@/lib/dragDrop";
 import { extractGeminiProjectHashFromPath, deriveGeminiProjectHashCandidatesFromPath } from "@/lib/gemini-hash";
 import { buildGeminiImageAttachmentToken, isGeminiImageChip } from "@/lib/gemini-attachments";
 import {
@@ -6442,6 +6444,53 @@ export default function CodexFlowManagerUI() {
     return parts.join("\n");
   }
 
+  /**
+   * 将历史会话文件作为输入附件追加到当前普通终端标签页，等价于把该文件拖入输入框。
+   */
+  const referenceHistorySessionInActiveInput = useCallback(async (session?: HistorySession | null): Promise<boolean> => {
+    const filePath = String(session?.filePath || "").trim();
+    if (!filePath) return false;
+    const targetTab = (activeTab && activeTab.kind !== "git")
+      ? activeTab
+      : (tabsForProject.find((tab) => tab.kind !== "git") || null);
+    if (!targetTab) {
+      setNoticeDialog({
+        open: true,
+        title: String(t("history:referenceInSession")),
+        message: String(t("history:referenceNoActiveInput")),
+      });
+      return false;
+    }
+
+    let probe: WinPathProbeResult | null = null;
+    try {
+      probe = await probeWinPathKind(filePath);
+    } catch {}
+    const execEnv = getTabExecEnv(targetTab.id, targetTab.providerId);
+    const chip = buildPathChipFromPath({
+      rawPath: filePath,
+      probe,
+      runEnv: execEnv.terminal as any,
+      winRoot: selectedProject?.winPath,
+      projectPathStyle,
+      fileNameFallback: session?.title || session?.id || "",
+    });
+    if (!chip) return false;
+
+    setChipsByTab((prev) => ({
+      ...prev,
+      [targetTab.id]: mergePathChips(prev[targetTab.id] || [], [chip]),
+    }));
+    try { setCenterMode("console"); } catch {}
+    setActiveTab(targetTab.id, { projectId: selectedProjectId, focusMode: "immediate", allowDuringRename: true, delay: 0 });
+    try {
+      requestAnimationFrame(() => {
+        try { scheduleFocusForTab(targetTab.id, { immediate: true, allowDuringRename: true }); } catch {}
+      });
+    } catch {}
+    return true;
+  }, [activeTab, getTabExecEnv, projectPathStyle, scheduleFocusForTab, selectedProject?.winPath, selectedProjectId, setActiveTab, tabsForProject, t]);
+
   const requestInputFullscreenOpen = useCallback((tabId: string) => {
     if (!tabId) return;
     const isClosing = !!inputFullscreenClosingTabs[tabId];
@@ -11199,6 +11248,19 @@ export default function CodexFlowManagerUI() {
 	                >
 	                  <ExternalLink className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('history:continueExternalWith', { env: resolveResumeShellLabel(historyCtxMenu.item?.filePath, historyCtxMenu.item) })}
 	                </button>
+                <button
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
+                  onClick={async () => {
+                    try {
+                      await referenceHistorySessionInActiveInput(historyCtxMenu.item);
+                    } catch (err) {
+                      console.warn("reference history session failed", err);
+                    }
+                    setHistoryCtxMenu((m) => ({ ...m, show: false }));
+                  }}
+                >
+                  <FileText className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t("history:referenceInSession")}
+                </button>
 	              </>
 	            ) : null}
                 <button

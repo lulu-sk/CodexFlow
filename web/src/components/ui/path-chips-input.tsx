@@ -68,6 +68,15 @@ export interface PathChipsInputProps extends Omit<React.InputHTMLAttributes<HTML
   onWarnOutsideProjectDropChange?: (enabled: boolean) => void | Promise<void>;
 }
 
+export type BuildPathChipFromPathOptions = {
+  rawPath: string;
+  probe?: WinPathProbeResult | null;
+  runEnv?: PathChipsInputProps["runEnv"];
+  winRoot?: string;
+  projectPathStyle?: "absolute" | "relative";
+  fileNameFallback?: string;
+};
+
 /**
  * 中文说明：读取终端前端诊断日志开关，默认关闭。
  */
@@ -209,7 +218,7 @@ function buildChipPaths(args: {
 /**
  * 中文说明：按路径候选推断 Chip 类型，统一保证图片文件在 Gemini 场景下能走图片附件语义。
  */
-function resolvePathChipKind(args: { fileName?: string; isImage?: boolean; chipKind?: PathChip["chipKind"] }): PathChip["chipKind"] {
+export function resolvePathChipKind(args: { fileName?: string; isImage?: boolean; chipKind?: PathChip["chipKind"] }): PathChip["chipKind"] {
   if (args.chipKind === "rule") return "rule";
   if (args.isImage) return "image";
   if (isImageFileName(args.fileName)) return "image";
@@ -290,7 +299,10 @@ function normalizeWslPathForDedupe(p: string): string {
   } catch { return String(p || ""); }
 }
 
-function buildChipDedupeKey(chip: Partial<PathChip>): string {
+/**
+ * 生成用于 PathChip 去重的稳定键，优先使用 Windows 路径，其次使用 WSL 路径。
+ */
+export function buildPathChipDedupeKey(chip: Partial<PathChip>): string {
   try {
     const wp = String((chip as any)?.winPath || "").trim();
     const wsl = String((chip as any)?.wslPath || "").trim();
@@ -299,6 +311,61 @@ function buildChipDedupeKey(chip: Partial<PathChip>): string {
     const name = String((chip as any)?.fileName || "").trim();
     return name ? `name:${name}` : "";
   } catch { return ""; }
+}
+
+/**
+ * 将单个路径转换为输入框可展示/发送的 PathChip，供拖拽与外部菜单入口复用。
+ */
+export function buildPathChipFromPath(args: BuildPathChipFromPathOptions): PathChip | null {
+  const rawPath = String(args.rawPath || "").trim();
+  if (!rawPath) return null;
+  const paths = buildChipPaths({
+    rawPath,
+    runEnv: args.runEnv,
+    winRoot: args.winRoot,
+    projectPathStyle: args.projectPathStyle,
+  });
+  const probe = args.probe || null;
+  const isDir = probe?.kind === "directory";
+  const isImage = !isDir && isImageFileName(rawPath);
+  const labelBase = (paths.pathText === ".")
+    ? (rawPath.split(/[/\\]/).pop() || ".")
+    : ((paths.pathText || rawPath).split(/[/\\]/).pop() || "");
+  const fallbackName = String(args.fileNameFallback || "").trim();
+  return {
+    id: uid(),
+    blob: new Blob(),
+    previewUrl: "",
+    type: "text/path",
+    size: 0,
+    saved: true,
+    winPath: paths.winPath,
+    wslPath: paths.wslPath,
+    fileName: labelBase || fallbackName || "path",
+    fromPaste: false,
+    isDir,
+    chipKind: resolvePathChipKind({ fileName: labelBase || fallbackName, isImage }),
+  } as any;
+}
+
+/**
+ * 合并 Chip 列表并按路径稳定键去重，确保菜单引用与拖拽追加行为一致。
+ */
+export function mergePathChips(current: PathChip[], incoming: PathChip[]): PathChip[] {
+  const merged = [
+    ...(Array.isArray(current) ? current : []),
+    ...(Array.isArray(incoming) ? incoming.map((chip) => ({ ...(chip as any) })) : []),
+  ];
+  const seen = new Set<string>();
+  const unique: PathChip[] = [];
+  for (const chip of merged) {
+    const key = buildPathChipDedupeKey(chip) || buildChipStableKey(chip, String(unique.length));
+    const sig = `k:${key}`;
+    if (seen.has(sig)) continue;
+    seen.add(sig);
+    unique.push(chip);
+  }
+  return unique;
 }
 
 const MAX_INPUT_HISTORY_ENTRIES = 120;
@@ -683,18 +750,7 @@ export default function PathChipsInput({
    */
   const buildMergedChips = useCallback((items: SavedImage[]): PathChip[] => {
     const current = readCurrentValueState();
-    const merged = [...current.chips, ...items.map((it) => ({ ...it }))];
-    const seen = new Set<string>();
-    const unique: PathChip[] = [];
-    for (const chip of merged) {
-      const k = buildChipDedupeKey(chip);
-      const key = k || buildChipStableKey(chip, String(unique.length));
-      const sig = `k:${key}`;
-      if (seen.has(sig)) continue;
-      seen.add(sig);
-      unique.push(chip);
-    }
-    return unique;
+    return mergePathChips(current.chips, items as PathChip[]);
   }, [readCurrentValueState]);
 
   /**
@@ -938,7 +994,7 @@ export default function PathChipsInput({
       const current = readCurrentValueState();
       const existingKeys = new Set<string>();
       for (const chip of current.chips) {
-        const k = buildChipDedupeKey(chip);
+        const k = buildPathChipDedupeKey(chip);
         if (k) existingKeys.add(k);
       }
       const localKeys = new Set<string>();
@@ -956,7 +1012,7 @@ export default function PathChipsInput({
         const labelBase = (paths.pathText === ".")
           ? (String(wp).split(/[/\\]/).pop() || ".")
           : ((paths.pathText || wp).split(/[/\\]/).pop() || "");
-        const key = buildChipDedupeKey({
+        const key = buildPathChipDedupeKey({
           winPath: paths.winPath,
           wslPath: paths.wslPath,
           fileName: labelBase,
