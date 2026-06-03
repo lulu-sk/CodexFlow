@@ -3,7 +3,7 @@
 import React, { act, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRoot, type Root } from "react-dom/client";
-import PathChipsInput, { type PathChip } from "./path-chips-input";
+import PathChipsInput, { buildPathChipFromPath, mergePathChips, type PathChip } from "./path-chips-input";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -262,6 +262,41 @@ async function dispatchContextMenu(target: HTMLElement): Promise<{ allowed: bool
   });
   return { allowed, defaultPrevented: event.defaultPrevented };
 }
+
+describe("PathChipsInput 路径 Chip 构造", () => {
+  it("可将历史会话文件路径构造成目标终端可发送的文件 Chip", () => {
+    const chip = buildPathChipFromPath({
+      rawPath: "C:\\Example\\History\\session.jsonl",
+      probe: { kind: "file", exists: true, isDirectory: false, isFile: true },
+      runEnv: "pwsh",
+      winRoot: "C:\\Example\\Repo",
+      projectPathStyle: "relative",
+      fileNameFallback: "fallback",
+    });
+
+    expect(chip).not.toBeNull();
+    expect(chip?.chipKind).toBe("file");
+    expect((chip as any)?.isDir).toBe(false);
+    expect(chip?.fileName).toBe("session.jsonl");
+    expect(chip?.winPath).toBe("C:\\Example\\History\\session.jsonl");
+    expect(chip?.wslPath).toBe("/mnt/c/Example/History/session.jsonl");
+  });
+
+  it("合并路径 Chip 时应按稳定路径键去重", () => {
+    const first = buildPathChipFromPath({
+      rawPath: "C:\\Example\\History\\session.jsonl",
+      runEnv: "pwsh",
+    });
+    const duplicated = first ? { ...first, id: "duplicated-id" } : null;
+
+    expect(first).not.toBeNull();
+    expect(duplicated).not.toBeNull();
+    const merged = mergePathChips([first as PathChip], [duplicated as PathChip]);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0].id).toBe(first?.id);
+  });
+});
 
 describe("PathChipsInput（复制名称按钮）", () => {
   let cleanup: (() => void) | null = null;

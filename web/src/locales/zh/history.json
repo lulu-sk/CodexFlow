@@ -18,6 +18,8 @@
   "noMatch": "无匹配历史",
   "copyImage": "复制图片",
   "copyPath": "复制路径",
+  "referenceInSession": "在会话中引用",
+  "referenceNoActiveInput": "当前没有可接收引用的终端输入框",
   "linkMenuSetProjectIde": "设置当前项目 IDE",
   "linkMenuUseVsCode": "使用 VS Code",
   "linkMenuUseCursor": "使用 Cursor",
