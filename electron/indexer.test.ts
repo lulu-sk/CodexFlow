@@ -178,7 +178,117 @@ describe("electron/indexer Codex preview", () => {
     const summaries = getIndexedSummaries().filter((item) => item.filePath === filePath);
 
     expect(summaries).toHaveLength(1);
+    expect(summaries[0].title).toBe("工作流包 alp-auto-current-ops 节点的位置调整优化，重叠的地方调整间距");
     expect(summaries[0].preview).toBe("工作流包 alp-auto-current-ops 节点的位置调整优化，重叠的地方调整间距");
     expect(summaries[0].preview || "").not.toContain("# Files mentioned by the user");
+  });
+
+  it("索引摘要会跳过 goal 内部上下文和前置路径行生成标题", async () => {
+    const filePath = await createCodexSessionFile([
+      {
+        timestamp: "2026-04-29T03:35:01.000Z",
+        type: "session_meta",
+        payload: {
+          id: "session-index-goal-context",
+          cwd: "/workspace/project",
+        },
+      },
+      {
+        timestamp: "2026-04-29T03:35:02.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: [
+                "<codex_internal_context source=\"goal\">",
+                "内部目标上下文不应作为标题",
+                "</codex_internal_context>",
+                "src/features/history/detail.ts",
+                "修复历史详情标题提取",
+              ].join("\n"),
+            },
+          ],
+        },
+      },
+    ]);
+
+    await startHistoryIndexer(() => null);
+    const summaries = getIndexedSummaries().filter((item) => item.filePath === filePath);
+
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0].title).toBe("修复历史详情标题提取");
+    expect(summaries[0].preview).toBe("修复历史详情标题提取");
+  });
+
+  it("索引摘要会使用首条 goal objective 且忽略 turn_aborted", async () => {
+    const filePath = await createCodexSessionFile([
+      {
+        timestamp: "2026-04-29T03:35:01.000Z",
+        type: "session_meta",
+        payload: {
+          id: "session-index-goal-objective",
+          cwd: "/workspace/project",
+        },
+      },
+      {
+        timestamp: "2026-04-29T03:35:02.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: [
+                "<codex_internal_context source=\"goal\">",
+                "Continue working toward the active thread goal.",
+                "<objective>",
+                "你作为调度者，最终目标是完整推进测试与验收工作",
+                "`alp-auto-v3-lan-three-task-test.zh-CN.md`",
+                "</objective>",
+                "</codex_internal_context>",
+              ].join("\n"),
+            },
+          ],
+        },
+      },
+      {
+        timestamp: "2026-04-29T03:35:03.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: [
+                "<turn_aborted>",
+                "The user interrupted the previous turn on purpose.",
+                "</turn_aborted>",
+              ].join("\n"),
+            },
+          ],
+        },
+      },
+      {
+        timestamp: "2026-04-29T03:35:04.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "预检我不是提醒你了吗，只执行一个任务就行" }],
+        },
+      },
+    ]);
+
+    await startHistoryIndexer(() => null);
+    const summaries = getIndexedSummaries().filter((item) => item.filePath === filePath);
+
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0].title).toBe("你作为调度者，最终目标是完整推进测试与验收工作");
+    expect(summaries[0].preview).toBe("你作为调度者，最终目标是完整推进测试与验收工作");
   });
 });

@@ -4,6 +4,7 @@ type VirtualizedListProps<TItem> = {
   items: TItem[];
   scrollContainerRef: React.RefObject<HTMLDivElement | null>;
   estimateItemHeight?: number;
+  getEstimatedItemHeight?: (item: TItem, index: number) => number;
   overscan?: number;
   getItemKey: (item: TItem, index: number) => string;
   renderItem: (item: TItem, index: number) => React.ReactNode;
@@ -20,6 +21,12 @@ type VirtualizedViewportState = {
   height: number;
 };
 
+export type VirtualizedLayout = {
+  tops: number[];
+  heights: number[];
+  totalHeight: number;
+};
+
 type VirtualizedMeasuredRowProps = {
   itemKey: string;
   top: number;
@@ -32,6 +39,33 @@ type VirtualizedMeasuredRowProps = {
  */
 function normalizeMeasuredHeight(height: number): number {
   return Math.max(1, Math.ceil(Number(height) || 0));
+}
+
+/**
+ * 为虚拟列表构建稳定的 top/height 位移表；已测量高度优先，未测量项可使用逐项估算。
+ */
+export function buildVirtualizedLayout<TItem>(
+  items: TItem[],
+  getItemKey: (item: TItem, index: number) => string,
+  measuredHeights: Record<string, number>,
+  estimateItemHeight: number,
+  getEstimatedItemHeight?: (item: TItem, index: number) => number,
+): VirtualizedLayout {
+  const tops: number[] = new Array(items.length);
+  const heights: number[] = new Array(items.length);
+  let totalHeight = 0;
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    const itemKey = getItemKey(item, index);
+    const fallbackHeight = getEstimatedItemHeight
+      ? getEstimatedItemHeight(item, index)
+      : estimateItemHeight;
+    const itemHeight = measuredHeights[itemKey] ?? normalizeMeasuredHeight(fallbackHeight);
+    tops[index] = totalHeight;
+    heights[index] = itemHeight;
+    totalHeight += itemHeight;
+  }
+  return { tops, heights, totalHeight };
 }
 
 /**
@@ -204,6 +238,7 @@ function VirtualizedListInner<TItem>({
   items,
   scrollContainerRef,
   estimateItemHeight = 240,
+  getEstimatedItemHeight,
   overscan,
   getItemKey,
   renderItem,
@@ -230,20 +265,10 @@ function VirtualizedListInner<TItem>({
     setLayoutVersion((value) => value + 1);
   }, []);
 
-  const layout = useMemo(() => {
-    const tops: number[] = new Array(items.length);
-    const heights: number[] = new Array(items.length);
-    let totalHeight = 0;
-    for (let index = 0; index < items.length; index += 1) {
-      const item = items[index];
-      const itemKey = getItemKey(item, index);
-      const itemHeight = heightsRef.current[itemKey] ?? estimateItemHeight;
-      tops[index] = totalHeight;
-      heights[index] = itemHeight;
-      totalHeight += itemHeight;
-    }
-    return { tops, heights, totalHeight };
-  }, [items, estimateItemHeight, getItemKey, layoutVersion]);
+  const layout = useMemo(
+    () => buildVirtualizedLayout(items, getItemKey, heightsRef.current, estimateItemHeight, getEstimatedItemHeight),
+    [items, estimateItemHeight, getEstimatedItemHeight, getItemKey, layoutVersion],
+  );
 
   useLayoutEffect(() => {
     const container = scrollContainerRef.current;

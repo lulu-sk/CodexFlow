@@ -22,5 +22,23 @@ describe("extractTaggedPrefix", () => {
     expect(res.rest).toBe("NEXT");
     expect(res.picked).toEqual([{ type: "instructions", text: "AAA" }]);
   });
+
+  it("识别 subagent_notification 并格式化 JSON 字符串换行", () => {
+    const src = [
+      "<subagent_notification>",
+      "{\"agent_path\":\"agent-1\",\"status\":{\"completed\":\"第一行\\n\\n第二行\"}}",
+      "</subagent_notification>",
+    ].join("\n");
+    const res = extractTaggedPrefix(src);
+
+    expect(res.rest).toBe("");
+    expect(res.picked[0]?.type).toBe("subagent_notification");
+    expect(res.picked[0]?.tags).toEqual(["subagent_notification"]);
+    expect(res.picked[0]?.text).toContain("agent_path: agent-1");
+    expect(res.picked[0]?.text).toContain("completed:");
+    expect(res.picked[0]?.text).toContain("第一行");
+    expect(res.picked[0]?.text).toContain("第二行");
+    expect(res.picked[0]?.text).not.toContain("\\n");
+  });
 });
 

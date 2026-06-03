@@ -10,13 +10,14 @@ import { getDebugConfig } from "./debugConfig";
 import { getSessionsRootCandidatesFastAsync, isUNCPath, uncToWsl, wslToUNC } from "./wsl";
 import { safeWindowSend } from "./ipcSafe";
 import { detectResumeInfo, detectRuntimeShell, detectRuntimeShellFromContent } from "./history";
-import type { HistorySummary, Message, RuntimeShell } from "./history";
+import type { HistorySummary, Message, MessageContent, RuntimeShell } from "./history";
 import settings from "./settings";
 import { getClaudeRootCandidatesFastAsync, discoverClaudeSessionFiles } from "./agentSessions/claude/discovery";
 import { getGeminiRootCandidatesFastAsync, discoverGeminiSessionFiles } from "./agentSessions/gemini/discovery";
 import { parseClaudeSessionFile } from "./agentSessions/claude/parser";
 import { parseGeminiSessionFile, deriveGeminiProjectHashCandidatesFromPath } from "./agentSessions/gemini/parser";
 import { filterCodexHistoryPreviewText } from "./agentSessions/shared/preview";
+import { extractTaggedPrefix } from "./agentSessions/shared/taggedPrefix";
 import {
   dirKeyFromCwd as dirKeyFromCwdShared,
   dirKeyOfFilePath as dirKeyOfFilePathShared,
@@ -246,7 +247,7 @@ function stripDetailsForPersist(details: Details): Details {
 }
 
 // 中文说明：历史索引语义调整后提升版本，强制丢弃旧的 index/details 缓存，避免继续沿用错误 dirKey。
-const VERSION = "v13";
+const VERSION = "v15";
 
 /**
  * 读取 Claude Code 的 Agent 历史开关（默认 false）。
@@ -987,6 +988,32 @@ async function parseCodexDetails(fp: string, stat: fs.Stats, opts?: { summaryOnl
   const pushMessage = (msg: Message) => {
     if (!summaryOnly) messages.push(msg);
   };
+  /**
+   * 生成 Codex 详情标题：没有线程名或显式标题时，用已过滤的首条用户预览替代文件名。
+   */
+  const resolveCodexDetailsTitle = (): string => {
+    const fallbackTitle = titleFromFilename(fp);
+    if (preview && (!title || title === fallbackTitle)) {
+      return preview.length > 96 ? `${preview.slice(0, 95)}…` : preview;
+    }
+    return title;
+  };
+  /**
+   * 判断消息内容是否只包含子代理通知。
+   */
+  const isSubagentNotificationOnlyContent = (contentArr: MessageContent[] | null | undefined): boolean => {
+    const items = Array.isArray(contentArr) ? contentArr : [];
+    if (items.length === 0) return false;
+    return items.every((item) => String(item?.type || "").trim().toLowerCase() === "subagent_notification");
+  };
+  /**
+   * 将纯子代理通知的 Codex 历史角色规整为 notification。
+   */
+  const normalizeCodexDetailsRoleForContent = (role: unknown, contentArr: MessageContent[]): string => {
+    const rawRole = String(role || "").trim() || "user";
+    if (rawRole.toLowerCase() === "user" && isSubagentNotificationOnlyContent(contentArr)) return "notification";
+    return rawRole;
+  };
   return await new Promise<Details>((resolve) => {
     try {
       const rs = fs.createReadStream(fp, { encoding: "utf8", highWaterMark: chunk });
@@ -994,76 +1021,6 @@ async function parseCodexDetails(fp: string, stat: fs.Stats, opts?: { summaryOnl
       let buf = "";
 
       const pretty = (v: any) => { try { return JSON.stringify(v, null, 2); } catch { return String(v); } };
-	      const extractTaggedPrefix = (s: string) => {
-	        const src = String(s || '');
-	        const picked: { type: string; text: string; tags?: string[] }[] = [];
-	        const leading = (src.match(/^\s*/) || [''])[0].length;
-	        const s2 = src.slice(leading);
-	        const lower = s2.toLowerCase();
-	        const openU = '<user_instructions>';
-	        const closeU = '</user_instructions>';
-	        const openP = '<permissions instructions>';
-	        const closeP = '</permissions instructions>';
-	        const openE = '<environment_context>';
-	        const closeE = '</environment_context>';
-	        if (lower.startsWith(openU)) {
-	          const idx = lower.indexOf(closeU);
-	          if (idx >= 0) {
-	            const inner = s2.slice(openU.length, idx);
-	            picked.push({ type: 'instructions', text: inner });
-	            const rest = s2.slice(idx + closeU.length);
-	            return { rest: rest.trim(), picked };
-	          }
-	          picked.push({ type: 'instructions', text: s2.slice(openU.length) });
-	          return { rest: '', picked };
-	        }
-	        // 匹配 permissions instructions 前缀（用于沙盒/审批策略等运行权限说明）
-	        if (lower.startsWith(openP)) {
-	          const idx = lower.indexOf(closeP);
-	          if (idx >= 0) {
-	            const inner = s2.slice(openP.length, idx);
-	            picked.push({ type: 'instructions', text: inner });
-	            const rest = s2.slice(idx + closeP.length);
-	            return { rest: rest.trim(), picked };
-	          }
-	          picked.push({ type: 'instructions', text: s2.slice(openP.length) });
-	          return { rest: '', picked };
-	        }
-	        if (lower.startsWith(openE)) {
-	          const idx = lower.indexOf(closeE);
-	          if (idx >= 0) {
-	            const inner = s2.slice(openE.length, idx);
-	            picked.push({ type: 'environment_context', text: inner });
-            const rest = s2.slice(idx + closeE.length);
-            return { rest: rest.trim(), picked };
-          }
-          picked.push({ type: 'environment_context', text: s2.slice(openE.length) });
-          return { rest: '', picked };
-        }
-        const agentsPrefix = '# agents.md instructions for';
-        if (lower.startsWith(agentsPrefix)) {
-          const openTag = '<instructions>';
-          const closeTag = '</instructions>';
-          const openIdx = lower.indexOf(openTag);
-          if (openIdx >= 0) {
-            const closeIdx = lower.indexOf(closeTag, openIdx + openTag.length);
-            if (closeIdx >= 0) {
-              const inner = s2.slice(openIdx + openTag.length, closeIdx);
-              picked.push({ type: 'instructions', text: inner });
-              const rest = s2.slice(closeIdx + closeTag.length);
-              return { rest: rest.trim(), picked };
-            }
-          }
-          const afterHeader = s2.split(/\r?\n/).slice(1).join('\n').trim();
-          if (afterHeader) {
-            picked.push({ type: 'instructions', text: afterHeader });
-            return { rest: '', picked };
-          }
-          picked.push({ type: 'instructions', text: s2 });
-          return { rest: '', picked };
-        }
-        return { rest: src, picked };
-      };
       const flushLines = (text: string) => {
         const lines = text.split(/\r?\n/);
         for (const line of lines) {
@@ -1238,7 +1195,7 @@ async function parseCodexDetails(fp: string, stat: fs.Stats, opts?: { summaryOnl
                     }
                   } catch {}
                 }
-                pushMessage({ role, content: items });
+                pushMessage({ role: normalizeCodexDetailsRoleForContent(role, items), content: items });
               }
             } else if (obj.type === 'function_call' || obj.record_type === 'tool_call' || ((obj as any).type === 'response_item' && (obj as any).payload && (((obj as any).payload.type === 'function_call') || ((obj as any).payload.record_type === 'tool_call')))) {
               const src: any = ((obj as any).type === 'response_item' && (obj as any).payload) ? (obj as any).payload : obj;
@@ -1347,17 +1304,17 @@ async function parseCodexDetails(fp: string, stat: fs.Stats, opts?: { summaryOnl
         if (cwd) dirKey = dirKeyFromCwd(cwd); else dirKey = dirKeyOf(fp);
         if (runtimeShell === 'unknown') runtimeShell = detectRuntimeShell(fp);
         const finalResumeId = resumeId || id;
-        resolve({ providerId: "codex", id, title, date, filePath: fp, messages, skippedLines: skipped, rawDate, cwd, dirKey, preview, resumeMode, resumeId: finalResumeId, runtimeShell });
+        resolve({ providerId: "codex", id, title: resolveCodexDetailsTitle(), date, filePath: fp, messages, skippedLines: skipped, rawDate, cwd, dirKey, preview, resumeMode, resumeId: finalResumeId, runtimeShell });
       });
       rs.on('error', () => {
         if (runtimeShell === 'unknown') runtimeShell = detectRuntimeShell(fp);
         const finalResumeId = resumeId || id;
-        resolve({ providerId: "codex", id, title, date, filePath: fp, messages, skippedLines: skipped, rawDate, cwd, dirKey, preview, resumeMode, resumeId: finalResumeId, runtimeShell });
+        resolve({ providerId: "codex", id, title: resolveCodexDetailsTitle(), date, filePath: fp, messages, skippedLines: skipped, rawDate, cwd, dirKey, preview, resumeMode, resumeId: finalResumeId, runtimeShell });
       });
     } catch {
       if (runtimeShell === 'unknown') runtimeShell = detectRuntimeShell(fp);
       const finalResumeId = resumeId || id;
-      resolve({ providerId: "codex", id, title, date, filePath: fp, messages, skippedLines: skipped, resumeMode, resumeId: finalResumeId, runtimeShell });
+      resolve({ providerId: "codex", id, title: resolveCodexDetailsTitle(), date, filePath: fp, messages, skippedLines: skipped, resumeMode, resumeId: finalResumeId, runtimeShell });
     }
   });
 }
