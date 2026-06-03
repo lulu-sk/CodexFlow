@@ -447,6 +447,13 @@ type CloseWorkingTabConfirmState = {
   hasPromptInput: boolean;
 };
 
+/**
+ * 中文说明：读取终端前端诊断日志开关，默认关闭。
+ */
+function isTerminalFrontendDebugEnabled(): boolean {
+  try { return !!(globalThis as any).__cf_term_debug__; } catch { return false; }
+}
+
 const STARTUP_GIT_STATUS_BATCH_SIZE = 8;
 
 /**
@@ -6525,6 +6532,13 @@ export default function CodexFlowManagerUI() {
     const pid = ptyByTabRef.current[activeTab.id];
     if (!pid) return;
     const activeEnv = tabExecEnvByTabRef.current[activeTab.id] || getProviderEnv(activeTab.providerId);
+    if (isTerminalFrontendDebugEnabled()) {
+      try {
+        await (window as any).host?.utils?.perfLogCritical?.(
+          `[terminal.scroll-debug app] send.start tab=${activeTab.id} provider=${activeTab.providerId} mode=${sendMode} textLen=${text.length} chips=${(chipsByTab[activeTab.id] || []).length} draftLen=${String(draftByTab[activeTab.id] || "").length}`,
+        );
+      } catch {}
+    }
     // 用户开始新一轮输入后，立即取消恢复期守卫，避免影响真实完成通知。
     delete resumeCompletionGuardByTabRef.current[activeTab.id];
     if (shouldEnableAgentTimerForProvider(activeTab.providerId)) startAgentTurnTimer(activeTab.id);
@@ -6561,6 +6575,13 @@ export default function CodexFlowManagerUI() {
     setChipsByTab((m) => ({ ...m, [activeTab.id]: [] }));
     setDraftByTab((m) => ({ ...m, [activeTab.id]: "" }));
     setInputFullscreenState(activeTab.id, false);
+    if (isTerminalFrontendDebugEnabled()) {
+      try {
+        await (window as any).host?.utils?.perfLogCritical?.(
+          `[terminal.scroll-debug app] send.cleared tab=${activeTab.id} provider=${activeTab.providerId} mode=${sendMode}`,
+        );
+      } catch {}
+    }
 
     // worktree 自动提交：用户第 2 条输入开始，每次输入后若有变更则提交一次
     try {
@@ -10155,12 +10176,12 @@ export default function CodexFlowManagerUI() {
               <TabsContent
                 key={tab.id}
                 value={tab.id}
-                className="mt-1 flex flex-1 min-h-0 flex-col space-y-1"
+                className="mt-1 flex flex-1 min-h-0 min-w-0 flex-col overflow-hidden space-y-1"
                 onContextMenu={(e: React.MouseEvent) => openTabContextMenu(e, tab.id, "tab-content")}
               >
-                <Card className="flex flex-1 min-h-0 flex-col">
-                  <CardContent className="relative flex flex-1 min-h-0 flex-col p-0">
-                    <div className={`relative flex-1 min-h-0 transition-opacity ${isInputFullscreen ? 'pointer-events-none select-none opacity-35' : ''}`}>
+                <Card className="flex flex-1 min-h-0 min-w-0 flex-col overflow-hidden">
+                  <CardContent className="relative flex flex-1 min-h-0 min-w-0 flex-col overflow-hidden p-0">
+                    <div className={`relative flex-1 min-h-0 min-w-0 overflow-hidden transition-opacity ${isInputFullscreen ? 'pointer-events-none select-none opacity-35' : ''}`}>
                       <TerminalView
                         logs={tab.logs}
                         tabId={tab.id}

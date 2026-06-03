@@ -68,6 +68,13 @@ export interface PathChipsInputProps extends Omit<React.InputHTMLAttributes<HTML
   onWarnOutsideProjectDropChange?: (enabled: boolean) => void | Promise<void>;
 }
 
+/**
+ * 中文说明：读取终端前端诊断日志开关，默认关闭。
+ */
+function isTerminalFrontendDebugEnabled(): boolean {
+  try { return !!(globalThis as any).__cf_term_debug__; } catch { return false; }
+}
+
 function uid(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -505,6 +512,10 @@ export default function PathChipsInput({
     draft: String(draft || ""),
     chips: cloneChipsForHistory(chips),
   });
+  const layoutStateRef = useRef<PathChipsValueState>({
+    draft: String(draft || ""),
+    chips: cloneChipsForHistory(chips),
+  });
   const historyRef = useRef<{
     past: PathChipsHistorySnapshot[];
     current: PathChipsHistorySnapshot | null;
@@ -550,7 +561,61 @@ export default function PathChipsInput({
   );
 
   // 由于 Chips 改为常规布局，不再依赖动态 padding-top；仅保留 ref 以备后用。
+  const rootRef = useRef<HTMLDivElement | null>(null);
   const chipsRef = useRef<HTMLDivElement | null>(null);
+  const lastLayoutLogRef = useRef<{ chipsSignature: string; draftLen: number; width: number; height: number; chipsHeight: number; inputHeight: number } | null>(null);
+
+  /**
+   * 中文说明：写入输入区布局诊断日志，记录 chip 与草稿变化是否伴随容器尺寸变化。
+   */
+  const logLayoutDiagnostic = useCallback((source: string) => {
+    try {
+      if (!isTerminalFrontendDebugEnabled()) return;
+      const root = rootRef.current;
+      if (!root) return;
+      const chipsNode = chipsRef.current;
+      const inputNode = inputRef.current;
+      const rootRect = root.getBoundingClientRect();
+      const chipsRect = chipsNode?.getBoundingClientRect() || null;
+      const inputRect = inputNode?.getBoundingClientRect() || null;
+      const currentState = layoutStateRef.current;
+      const nextState = {
+        chipsSignature: buildChipsStateSignature(currentState.chips),
+        draftLen: String(currentState.draft || "").length,
+        width: Math.round(rootRect.width),
+        height: Math.round(rootRect.height),
+        chipsHeight: Math.round(chipsRect?.height || 0),
+        inputHeight: Math.round(inputRect?.height || 0),
+      };
+      const prev = lastLayoutLogRef.current;
+      const shouldLog = !prev
+        || prev.chipsSignature !== nextState.chipsSignature
+        || (prev.draftLen > 0 && nextState.draftLen === 0)
+        || Math.abs(prev.width - nextState.width) > 1
+        || Math.abs(prev.height - nextState.height) > 1
+        || Math.abs(prev.chipsHeight - nextState.chipsHeight) > 1
+        || Math.abs(prev.inputHeight - nextState.inputHeight) > 1;
+      if (!shouldLog && source !== "resize-observer") return;
+      lastLayoutLogRef.current = nextState;
+      void (window as any).host?.utils?.perfLogCritical?.(
+        `[terminal.scroll-debug chips] ${source} chips=${currentState.chips.length} draftLen=${nextState.draftLen} root=${nextState.width}x${nextState.height} chipsH=${nextState.chipsHeight} inputH=${nextState.inputHeight}`,
+      );
+    } catch {}
+  }, []);
+
+  useLayoutEffect(() => {
+    logLayoutDiagnostic("render");
+  }, [chips, draft, logLayoutDiagnostic]);
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      logLayoutDiagnostic("resize-observer");
+    });
+    observer.observe(root);
+    return () => observer.disconnect();
+  }, [logLayoutDiagnostic]);
 
   // 右键菜单（打开所在文件夹 / 复制路径）
   const [ctxMenu, setCtxMenu] = useState<{ show: boolean; x: number; y: number; chip?: PathChip | null }>({ show: false, x: 0, y: 0, chip: null });
@@ -694,6 +759,7 @@ export default function PathChipsInput({
       chips: cloneChipsForHistory(chips),
     };
     valueStateRef.current = nextState;
+    layoutStateRef.current = nextState;
 
     const hist = historyRef.current;
     const nextSignature = buildValueStateSignature(nextState);
@@ -949,8 +1015,9 @@ export default function PathChipsInput({
       });
       const nextChips = buildMergedChips(items);
       applyValueChange({ chips: nextChips });
+      logLayoutDiagnostic("drop.paths");
     } catch {}
-  }, [applyValueChange, buildMergedChips, projectPathStyle, readCurrentValueState, runEnv, t, winRoot]);
+  }, [applyValueChange, buildMergedChips, logLayoutDiagnostic, projectPathStyle, readCurrentValueState, runEnv, t, winRoot]);
 
   /**
    * 打开“目录外资源提醒”弹窗，并缓存待处理的拖拽数据。
@@ -1161,12 +1228,14 @@ export default function PathChipsInput({
       } as any;
     });
     const nextChips = buildMergedChips(items);
-    return applyValueChange({
+    const ok = applyValueChange({
       chips: nextChips,
       draft: "",
       selection: createCollapsedSelection(0),
     });
-  }, [applyValueChange, buildMergedChips, projectPathStyle, readCurrentValueState, runEnv, t, winRoot]);
+    if (ok) logLayoutDiagnostic("draft.commit");
+    return ok;
+  }, [applyValueChange, buildMergedChips, logLayoutDiagnostic, projectPathStyle, readCurrentValueState, runEnv, t, winRoot]);
 
   const onKeyDown = (e: React.KeyboardEvent<any>) => {
     try { externalOnKeyDown && externalOnKeyDown(e); } catch {}
@@ -1262,6 +1331,7 @@ export default function PathChipsInput({
         chips: nextChips,
         selection: captureSelectionSnapshot(inputRef.current, latest.draft),
       });
+      logLayoutDiagnostic("paste.images");
     } catch {}
   };
 
@@ -1304,6 +1374,7 @@ export default function PathChipsInput({
           draft: next,
           selection: createCollapsedSelection(nextCaret),
         });
+        logLayoutDiagnostic("pick.file");
         // 关闭面板
         dismissedAtIndexRef.current = atIndexRef.current;
         atIndexRef.current = null;
@@ -1344,6 +1415,7 @@ export default function PathChipsInput({
           draft: next,
           selection: createCollapsedSelection(nextCaret),
         });
+        logLayoutDiagnostic("pick.rule");
         dismissedAtIndexRef.current = atIndexRef.current;
         atIndexRef.current = null;
         setQ("");
@@ -1372,6 +1444,7 @@ export default function PathChipsInput({
   return (
     <>
       <div
+        ref={rootRef}
         className={containerClass}
         onClick={() => { try { inputRef.current?.focus(); } catch {} }}
 	        onDragOver={(e) => { try { e.preventDefault(); e.dataTransfer!.dropEffect = 'copy'; } catch {} }}
@@ -1520,6 +1593,7 @@ export default function PathChipsInput({
                       chips: next,
                       selection: captureSelectionSnapshot(inputRef.current, current.draft),
                     });
+                    logLayoutDiagnostic("chip.delete");
                   }}
                 >
                   <span className="text-xs">×</span>

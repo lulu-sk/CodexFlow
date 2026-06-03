@@ -1971,7 +1971,7 @@ function TerminalView({
   }, [mounted, triggerScrollChrome]);
   return (
     <div
-      className="relative h-full min-h-0 group/terminal"
+      className="relative h-full min-h-0 min-w-0 overflow-hidden group/terminal"
       onContextMenu={(event) => {
         if (onContextMenuDebug) {
           onContextMenuDebug(event);
@@ -1981,13 +1981,13 @@ function TerminalView({
       {/* 外层容器负责视觉（圆角/背景/阴影），并裁剪内部，保证四角对称 */}
       <div
         ref={chromeRef}
-        className="cf-terminal-chrome h-full min-h-[320px] w-full rounded-lg overflow-hidden border [background-clip:padding-box]"
+        className="cf-terminal-chrome h-full min-h-[320px] min-w-0 w-full rounded-lg overflow-hidden border [background-clip:padding-box]"
         style={frameStyle}
         onMouseEnter={() => triggerScrollChrome(1400)}
         onMouseLeave={deactivateScrollChrome}
       >
         {/* 纯净宿主：无 padding/滚动，避免 fit 计算偏差；xterm 内部自带滚动 */}
-        <div ref={hostRef} className="h-full w-full overflow-hidden" />
+        <div ref={hostRef} className="h-full min-w-0 w-full overflow-hidden" />
         {/* 初始占位：终端挂载后隐藏，避免与 xterm 重叠 */}
         <pre className={`whitespace-pre-wrap font-mono text-sm leading-6 p-3 opacity-70 ${mounted ? 'hidden' : ''}`} style={{ color: placeholderColor }}>
           {logs.length === 0 ? (

@@ -82,6 +82,18 @@ const GEMINI_WINDOWS_EDITOR_STATUS_TIMEOUT_MS = 15000;
 const GEMINI_EXTERNAL_EDITOR_AUTO_PROBE_TIMEOUT_MS = 3000;
 const GEMINI_WSL_EDITOR_TRIGGER_CHAR_THRESHOLD = 12000;
 const GEMINI_WSL_EDITOR_TRIGGER_DISPATCH_THRESHOLD_MS = 2500;
+const TERMINAL_PTY_RESIZE_STABLE_DELAY_MS = 220;
+const TERMINAL_PTY_RESIZE_MIN_INTERVAL_MS = 320;
+const TERMINAL_PTY_RESIZE_MAX_DEFER_MS = 1200;
+const TERMINAL_RESIZE_DEBOUNCE_MS = 150;
+const TERMINAL_WINDOW_RESIZE_FAST_DEBOUNCE_MS = 220;
+const TERMINAL_WINDOW_RESIZE_STABLE_DEBOUNCE_MS = 1280;
+const TERMINAL_WINDOW_RESIZE_STABLE_QUIET_MS = 1600;
+const TERMINAL_WINDOW_RESIZE_STABLE_RETRY_MS = 180;
+const TERMINAL_WINDOW_RESIZE_STABLE_SAMPLE_COUNT = 2;
+const TERMINAL_WINDOW_RESIZE_SESSION_IDLE_MS = 1800;
+const TERMINAL_WINDOW_RESIZE_SESSION_MAX_MS = 9000;
+const TERMINAL_HOST_LAYOUT_ANCESTOR_LIMIT = 12;
 
 /**
  * 渲染进程侧的 PTY 接口抽象，便于将 TerminalManager 从具体的 window.host.pty 解耦以实现复用。
@@ -100,6 +112,37 @@ export interface HostPtyAPI {
   onExit?: (handler: (payload: { id: string; exitCode?: number }) => void) => (() => void);
 }
 
+type ResizePtyPauseState = {
+  ptyId: string;
+  source: string;
+  since: number;
+  resumeRaf?: number;
+};
+
+type TerminalHostRectSnapshot = {
+  width: number;
+  height: number;
+  parentWidth: number;
+  parentHeight: number;
+};
+
+type WindowResizeDirection = "expand" | "shrink" | "mixed" | "unknown";
+
+type WindowResizeSessionState = {
+  startedAt: number;
+  lastActivityAt: number;
+  source: string;
+  lastRect?: TerminalHostRectSnapshot;
+  rectChangeCount: number;
+  direction: WindowResizeDirection;
+};
+
+type WindowResizeStableSample = {
+  size?: { cols: number; rows: number };
+  rect?: TerminalHostRectSnapshot;
+  count: number;
+};
+
 /**
  * TerminalManager 负责：
  * - 为每个 tab 创建并持有一个持久化的 DOM container（避免因 React 卸载而销毁 xterm 实例）
@@ -112,6 +155,30 @@ export default class TerminalManager {
   // 调试辅助：统一配置
   private dbgEnabled(): boolean { try { return !!(globalThis as any).__cf_term_debug__; } catch { return false; } }
   private dlog(msg: string): void { if (this.dbgEnabled()) { try { (window as any).host?.utils?.perfLog?.(`[tm] ${msg}`); } catch {} } }
+  /**
+   * 中文说明：写入终端滚动链路诊断日志；默认关闭，仅在终端前端调试开关开启时进入 perf.log。
+   */
+  private logScrollDiagnostic(message: string): void {
+    if (!this.dbgEnabled()) return;
+    try { void (window as any).host?.utils?.perfLogCritical?.(`[terminal.scroll-debug tm] ${message}`); } catch {}
+  }
+
+  /**
+   * 中文说明：格式化当前 tab 的宿主尺寸，辅助判断输入区高度变化是否触发终端 resize。
+   */
+  private formatHostRect(tabId: string): string {
+    try {
+      const host = this.hostElByTab[tabId];
+      if (!host) return "host=n/a";
+      const r = host.getBoundingClientRect();
+      const pr = host.parentElement ? host.parentElement.getBoundingClientRect() : null;
+      const style = window.getComputedStyle(host);
+      const hidden = style.display === "none" || style.visibility === "hidden";
+      return `host=${Math.round(r.width)}x${Math.round(r.height)} parent=${pr ? `${Math.round(pr.width)}x${Math.round(pr.height)}` : "n/a"} hidden=${hidden ? "1" : "0"}`;
+    } catch {
+      return "host=error";
+    }
+  }
   private sendTraceSeq = 0;
   private adapters: Record<string, TerminalAdapterAPI | null> = {};
   private containers: Record<string, HTMLDivElement | null> = {};
@@ -124,13 +191,487 @@ export default class TerminalManager {
   private lastSentSizeByTab: Record<string, { cols: number; rows: number } | undefined> = {};
   private pendingTimerByTab: Record<string, number | undefined> = {};
   private pendingSizeByTab: Record<string, { cols: number; rows: number } | undefined> = {};
+  private pendingPtyResizeTimerByTab: Record<string, number | undefined> = {};
+  private pendingPtyResizeSinceByTab: Record<string, number | undefined> = {};
+  private resizePtyPauseByTab: Record<string, ResizePtyPauseState | undefined> = {};
+  private lastPtyResizeAtByTab: Record<string, number | undefined> = {};
+  private windowResizeSessionByTab: Record<string, WindowResizeSessionState | undefined> = {};
+  private lastHostRectByTab: Record<string, TerminalHostRectSnapshot | undefined> = {};
   private isAnimatingByTab: Record<string, boolean> = {};
+  private resizeScheduleSeqByTab: Record<string, number | undefined> = {};
+  private resizeFlushSeqByTab: Record<string, number | undefined> = {};
+  private resizePtySeqByTab: Record<string, number | undefined> = {};
+  private adapterResizeReadyUnsubByTab: Record<string, (() => void) | null> = {};
   private hostElByTab: Record<string, HTMLElement | null> = {};
   private backlogHydratedPtyByTab: Record<string, string | undefined> = {};
+  private windowResizeStableSampleByTab: Record<string, WindowResizeStableSample | undefined> = {};
   private getPtyId: (tabId: string) => string | undefined;
   private hostPty: HostPtyAPI;
   private appearance: TerminalAppearance = normalizeTerminalAppearance();
   private lastFocusedTabId: string | null = null;
+
+  /**
+   * 生成 tab 内递增的 resize 调度序号。
+   */
+  private nextResizeScheduleSeq(tabId: string): number {
+    const next = (this.resizeScheduleSeqByTab[tabId] || 0) + 1;
+    this.resizeScheduleSeqByTab[tabId] = next;
+    return next;
+  }
+
+  /**
+   * 生成 tab 内递增的 resize flush 序号。
+   */
+  private nextResizeFlushSeq(tabId: string): number {
+    const next = (this.resizeFlushSeqByTab[tabId] || 0) + 1;
+    this.resizeFlushSeqByTab[tabId] = next;
+    return next;
+  }
+
+  /**
+   * 生成 tab 内递增的 PTY resize 序号。
+   */
+  private nextResizePtySeq(tabId: string): number {
+    const next = (this.resizePtySeqByTab[tabId] || 0) + 1;
+    this.resizePtySeqByTab[tabId] = next;
+    return next;
+  }
+
+  /**
+   * 获取当前高精度时间戳，用于 resize 防抖与日志。
+   */
+  private nowMs(): number {
+    return typeof performance !== "undefined" ? performance.now() : Date.now();
+  }
+
+  /**
+   * 格式化 resize 调度状态，用于串联 debounce、flush 与 PTY resize。
+   */
+  private formatResizeDebugState(tabId: string): string {
+    const last = this.lastSentSizeByTab[tabId];
+    const pending = this.pendingSizeByTab[tabId];
+    const pause = this.resizePtyPauseByTab[tabId];
+    const now = this.nowMs();
+    const lastPtyAt = this.lastPtyResizeAtByTab[tabId];
+    const windowSession = this.windowResizeSessionByTab[tabId];
+    const pendingPtySince = this.pendingPtyResizeSinceByTab[tabId];
+    const lastPtyAgo = typeof lastPtyAt === "number" ? Math.round(now - lastPtyAt) : "n/a";
+    const windowResizeAgo = windowSession ? Math.round(now - windowSession.lastActivityAt) : "n/a";
+    const windowSessionFor = windowSession ? Math.round(now - windowSession.startedAt) : "n/a";
+    const windowRectChanges = windowSession ? windowSession.rectChangeCount : "n/a";
+    const windowDirection = windowSession ? windowSession.direction : "n/a";
+    const pendingPtyFor = typeof pendingPtySince === "number" ? Math.round(now - pendingPtySince) : "n/a";
+    const pauseFor = pause ? Math.round(now - pause.since) : "n/a";
+    return `schedSeq=${this.resizeScheduleSeqByTab[tabId] || 0} flushSeq=${this.resizeFlushSeqByTab[tabId] || 0} ptySeq=${this.resizePtySeqByTab[tabId] || 0} pendingTimer=${typeof this.pendingTimerByTab[tabId] === "number" ? "1" : "0"} ptyDefer=${typeof this.pendingPtyResizeTimerByTab[tabId] === "number" ? "1" : "0"} ptyPaused=${pause ? "1" : "0"} ptyPausedFor=${pauseFor} lastSent=${last ? `${last.cols}x${last.rows}` : "n/a"} pending=${pending ? `${pending.cols}x${pending.rows}` : "n/a"} anim=${this.isAnimatingByTab[tabId] ? "1" : "0"} lastPtyAgo=${lastPtyAgo} winResizeAgo=${windowResizeAgo} winSessionFor=${windowSessionFor} winRectChanges=${windowRectChanges} winDir=${windowDirection} ptyDeferFor=${pendingPtyFor}`;
+  }
+
+  /**
+   * 判断两个终端尺寸是否完全一致。
+   * @param a 第一个尺寸
+   * @param b 第二个尺寸
+   */
+  private isSameTerminalSize(
+    a: { cols: number; rows: number } | undefined,
+    b: { cols: number; rows: number } | undefined,
+  ): boolean {
+    return !!a && !!b && a.cols === b.cols && a.rows === b.rows;
+  }
+
+  /**
+   * 读取宿主元素和父容器的当前布局尺寸，用于判断窗口 resize 会话是否仍在变化。
+   * @param tabId tab 标识
+   */
+  private readHostRectSnapshot(tabId: string): TerminalHostRectSnapshot | undefined {
+    try {
+      const host = this.hostElByTab[tabId];
+      if (!host) return undefined;
+      const r = host.getBoundingClientRect();
+      const pr = host.parentElement ? host.parentElement.getBoundingClientRect() : null;
+      return {
+        width: Math.round(r.width),
+        height: Math.round(r.height),
+        parentWidth: pr ? Math.round(pr.width) : -1,
+        parentHeight: pr ? Math.round(pr.height) : -1,
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * 判断两个宿主布局快照是否相同。
+   * @param a 第一个宿主布局快照
+   * @param b 第二个宿主布局快照
+   */
+  private isSameHostRectSnapshot(
+    a: TerminalHostRectSnapshot | undefined,
+    b: TerminalHostRectSnapshot | undefined,
+  ): boolean {
+    return !!a
+      && !!b
+      && a.width === b.width
+      && a.height === b.height
+      && a.parentWidth === b.parentWidth
+      && a.parentHeight === b.parentHeight;
+  }
+
+  /**
+   * 根据前后宿主尺寸判断窗口 resize 的主方向。
+   * @param previous 前一个宿主布局快照
+   * @param next 下一个宿主布局快照
+   */
+  private resolveWindowResizeDirection(
+    previous: TerminalHostRectSnapshot | undefined,
+    next: TerminalHostRectSnapshot | undefined,
+  ): WindowResizeDirection {
+    if (!previous || !next) return "unknown";
+    const widthDelta = next.width - previous.width;
+    const heightDelta = next.height - previous.height;
+    const meaningfulWidth = Math.abs(widthDelta) > 2;
+    const meaningfulHeight = Math.abs(heightDelta) > 2;
+    if (!meaningfulWidth && !meaningfulHeight) return "unknown";
+    if (widthDelta >= 0 && heightDelta >= 0 && (meaningfulWidth || meaningfulHeight)) return "expand";
+    if (widthDelta <= 0 && heightDelta <= 0 && (meaningfulWidth || meaningfulHeight)) return "shrink";
+    return "mixed";
+  }
+
+  /**
+   * 合并窗口 resize 方向，保留多段过程中出现的混合变化信号。
+   * @param previous 既有方向
+   * @param next 本次方向
+   */
+  private mergeWindowResizeDirection(
+    previous: WindowResizeDirection | undefined,
+    next: WindowResizeDirection,
+  ): WindowResizeDirection {
+    if (!previous || previous === "unknown") return next;
+    if (next === "unknown" || next === previous) return previous;
+    return "mixed";
+  }
+
+  /**
+   * 通知 Adapter 宿主布局 resize 已开始，用于提前保存底部跟随锚点。
+   * @param tabId tab 标识
+   * @param source 触发来源
+   */
+  private notifyAdapterLayoutResizeStart(tabId: string, source: string): void {
+    try {
+      this.adapters[tabId]?.notifyLayoutResizeStart?.(source);
+    } catch {}
+  }
+
+  /**
+   * 记录窗口 resize 会话活动，用于把 maximize/restore 及其后续 RO 布局反馈合并到最终尺寸。
+   * @param tabId tab 标识
+   * @param source 触发来源
+   */
+  private markWindowResizeActivity(tabId: string, source: string): void {
+    const now = this.nowMs();
+    const existing = this.getActiveWindowResizeSession(tabId);
+    const nextRect = this.readHostRectSnapshot(tabId);
+    const previousRect = existing?.lastRect ?? this.lastHostRectByTab[tabId];
+    if (source !== "window" && existing && this.isSameHostRectSnapshot(existing.lastRect, nextRect)) {
+      if (nextRect) this.lastHostRectByTab[tabId] = nextRect;
+      this.notifyAdapterLayoutResizeStart(tabId, source);
+      return;
+    }
+    const rectChanged = !this.isSameHostRectSnapshot(previousRect, nextRect);
+    const direction = this.mergeWindowResizeDirection(
+      existing?.direction,
+      this.resolveWindowResizeDirection(previousRect, nextRect),
+    );
+    if (rectChanged) {
+      delete this.windowResizeStableSampleByTab[tabId];
+    }
+    this.windowResizeSessionByTab[tabId] = {
+      startedAt: existing?.startedAt ?? now,
+      lastActivityAt: now,
+      source,
+      lastRect: nextRect ?? existing?.lastRect,
+      rectChangeCount: (existing?.rectChangeCount ?? 0) + (rectChanged ? 1 : 0),
+      direction,
+    };
+    if (nextRect) this.lastHostRectByTab[tabId] = nextRect;
+    this.notifyAdapterLayoutResizeStart(tabId, source);
+    this.logScrollDiagnostic(`window.resize tab=${tabId} source=${source} ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
+  }
+
+  /**
+   * 获取仍有效的窗口 resize 会话；超出空闲或最大持有时间后自动过期。
+   * @param tabId tab 标识
+   */
+  private getActiveWindowResizeSession(tabId: string): WindowResizeSessionState | undefined {
+    const session = this.windowResizeSessionByTab[tabId];
+    if (!session) return undefined;
+    const now = this.nowMs();
+    const sessionAge = now - session.startedAt;
+    const idleAge = now - session.lastActivityAt;
+    if (
+      sessionAge > TERMINAL_WINDOW_RESIZE_SESSION_MAX_MS
+      || idleAge > TERMINAL_WINDOW_RESIZE_SESSION_IDLE_MS
+    ) {
+      delete this.windowResizeSessionByTab[tabId];
+      delete this.windowResizeStableSampleByTab[tabId];
+      return undefined;
+    }
+    return session;
+  }
+
+  /**
+   * 判断当前是否仍处在窗口 resize 会话内。
+   * @param tabId tab 标识
+   */
+  private isWindowResizeSessionActive(tabId: string): boolean {
+    return !!this.getActiveWindowResizeSession(tabId);
+  }
+
+  /**
+   * 判断窗口 resize 会话是否需要等待稳定样本，避免 restore/shrink 中间尺寸逐段下发。
+   * @param session 窗口 resize 会话
+   */
+  private shouldWaitForWindowResizeStability(session: WindowResizeSessionState): boolean {
+    return session.direction !== "expand" || session.rectChangeCount > 1;
+  }
+
+  /**
+   * 获取本轮 resize 测量防抖延迟；窗口 maximize/restore 会话内使用更长窗口合并中间尺寸。
+   * @param tabId tab 标识
+   */
+  private getResizeDebounceDelay(tabId: string): number {
+    const session = this.getActiveWindowResizeSession(tabId);
+    if (!session) return TERMINAL_RESIZE_DEBOUNCE_MS;
+    const shouldWaitForStableRect = this.shouldWaitForWindowResizeStability(session);
+    return shouldWaitForStableRect
+      ? TERMINAL_WINDOW_RESIZE_STABLE_DEBOUNCE_MS
+      : TERMINAL_WINDOW_RESIZE_FAST_DEBOUNCE_MS;
+  }
+
+  /**
+   * 判断窗口 resize 会话中的 immediate 请求是否应保留既有防抖等待。
+   * @param tabId tab 标识
+   */
+  private shouldKeepPendingDebounceForWindowResizeImmediate(tabId: string): boolean {
+    if (typeof this.pendingTimerByTab[tabId] !== "number") return false;
+    const session = this.getActiveWindowResizeSession(tabId);
+    if (!session) return false;
+    return this.shouldWaitForWindowResizeStability(session);
+  }
+
+  /**
+   * 记录一次窗口 resize 稳定采样，返回连续一致次数。
+   * @param tabId tab 标识
+   * @param size 当前候选终端行列
+   * @param rect 当前宿主布局快照
+   */
+  private updateWindowResizeStableSample(
+    tabId: string,
+    size: { cols: number; rows: number } | undefined,
+    rect: TerminalHostRectSnapshot | undefined,
+  ): number {
+    const previous = this.windowResizeStableSampleByTab[tabId];
+    const same = this.isSameTerminalSize(previous?.size, size)
+      && this.isSameHostRectSnapshot(previous?.rect, rect);
+    const next: WindowResizeStableSample = {
+      size,
+      rect,
+      count: same ? (previous?.count || 0) + 1 : 1,
+    };
+    this.windowResizeStableSampleByTab[tabId] = next;
+    return next.count;
+  }
+
+  /**
+   * 在窗口 resize timer 触发时确认是否可以提交 PTY resize。
+   * @param tabId tab 标识
+   * @param adapter 终端适配器
+   * @param scheduleSeq 关联调度序号
+   */
+  private canFlushWindowResizeNow(
+    tabId: string,
+    adapter: TerminalAdapterAPI,
+    scheduleSeq: number,
+  ): { ok: boolean; reason: string; retryDelay: number } {
+    const session = this.getActiveWindowResizeSession(tabId);
+    if (!session || !this.shouldWaitForWindowResizeStability(session)) {
+      return { ok: true, reason: "not-window-stable-session", retryDelay: 0 };
+    }
+
+    const now = this.nowMs();
+    const rect = this.readHostRectSnapshot(tabId);
+    if (!rect) {
+      return { ok: true, reason: "no-host-rect", retryDelay: 0 };
+    }
+    const rectChanged = !this.isSameHostRectSnapshot(session.lastRect, rect);
+    if (rectChanged) {
+      const direction = this.mergeWindowResizeDirection(
+        session.direction,
+        this.resolveWindowResizeDirection(session.lastRect, rect),
+      );
+      this.windowResizeSessionByTab[tabId] = {
+        ...session,
+        lastActivityAt: now,
+        lastRect: rect ?? session.lastRect,
+        rectChangeCount: session.rectChangeCount + 1,
+        direction,
+      };
+      if (rect) this.lastHostRectByTab[tabId] = rect;
+      delete this.windowResizeStableSampleByTab[tabId];
+      return { ok: false, reason: "rect-changed", retryDelay: TERMINAL_WINDOW_RESIZE_STABLE_RETRY_MS };
+    }
+
+    const measured = this.measureAdapterResize(tabId, adapter, `stable-check#${scheduleSeq}`);
+    if (measured && measured.cols && measured.rows) {
+      this.pendingSizeByTab[tabId] = measured;
+    }
+    const pendingSize = this.pendingSizeByTab[tabId];
+    const sampleCount = this.updateWindowResizeStableSample(tabId, pendingSize, rect);
+    const sessionAge = Math.max(0, now - session.startedAt);
+    if (sessionAge >= TERMINAL_WINDOW_RESIZE_SESSION_MAX_MS) {
+      return { ok: true, reason: "session-max", retryDelay: 0 };
+    }
+
+    const idleAge = Math.max(0, now - session.lastActivityAt);
+    if (idleAge < TERMINAL_WINDOW_RESIZE_STABLE_QUIET_MS) {
+      const remaining = TERMINAL_WINDOW_RESIZE_STABLE_QUIET_MS - idleAge;
+      return {
+        ok: false,
+        reason: `quiet-${Math.round(idleAge)}`,
+        retryDelay: Math.max(TERMINAL_WINDOW_RESIZE_STABLE_RETRY_MS, Math.min(remaining, TERMINAL_WINDOW_RESIZE_STABLE_DEBOUNCE_MS)),
+      };
+    }
+
+    if (sampleCount < TERMINAL_WINDOW_RESIZE_STABLE_SAMPLE_COUNT) {
+      return { ok: false, reason: `sample-${sampleCount}`, retryDelay: TERMINAL_WINDOW_RESIZE_STABLE_RETRY_MS };
+    }
+
+    if (this.adapterHasPendingWriteWork(tabId)) {
+      return { ok: false, reason: "write-pending", retryDelay: Math.min(48, TERMINAL_WINDOW_RESIZE_STABLE_RETRY_MS) };
+    }
+
+    if (typeof this.pendingPtyResizeTimerByTab[tabId] === "number") {
+      return { ok: false, reason: "pty-defer-pending", retryDelay: Math.min(48, TERMINAL_WINDOW_RESIZE_STABLE_RETRY_MS) };
+    }
+
+    return { ok: true, reason: `stable-${sampleCount}`, retryDelay: 0 };
+  }
+
+  /**
+   * 设置 resize 防抖 timer；触发时先走窗口稳定门槛，未稳定则重排检查。
+   * @param tabId tab 标识
+   * @param scheduleSeq 关联调度序号
+   * @param delay 延迟毫秒
+   * @param reason 设置原因
+   */
+  private setResizeDebounceTimer(tabId: string, scheduleSeq: number, delay: number, reason: string): void {
+    const timerId = window.setTimeout(() => {
+      if (
+        typeof this.pendingTimerByTab[tabId] === "number"
+        && this.pendingTimerByTab[tabId] !== timerId
+      ) {
+        return;
+      }
+      this.pendingTimerByTab[tabId] = undefined;
+      this.logScrollDiagnostic(`schedule.timer.fire tab=${tabId} seq=${scheduleSeq} reason=${reason} ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
+      const adapter = this.adapters[tabId];
+      if (!adapter) return;
+      const stable = this.canFlushWindowResizeNow(tabId, adapter, scheduleSeq);
+      if (!stable.ok) {
+        this.logScrollDiagnostic(`schedule.stable.defer tab=${tabId} seq=${scheduleSeq} reason=${stable.reason} retry=${Math.round(stable.retryDelay)} ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
+        this.setResizeDebounceTimer(tabId, scheduleSeq, stable.retryDelay, `stable.${stable.reason}`);
+        return;
+      }
+      this.logScrollDiagnostic(`schedule.stable.ok tab=${tabId} seq=${scheduleSeq} reason=${stable.reason} ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
+      this.flushResizeIfNeeded(tabId, true);
+    }, delay);
+    this.pendingTimerByTab[tabId] = timerId;
+    this.logScrollDiagnostic(`schedule.timer.set tab=${tabId} seq=${scheduleSeq} delay=${Math.round(delay)} reason=${reason} ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
+  }
+
+  /**
+   * 归一化终端宿主链路的横向约束，避免 xterm 内容最小宽度反向挤压父级布局。
+   * @param hostEl 当前可见终端宿主元素
+   */
+  private normalizeTerminalHostLayout(hostEl: HTMLElement): void {
+    try {
+      const targets: HTMLElement[] = [];
+      let current: HTMLElement | null = hostEl;
+      while (current && targets.length < TERMINAL_HOST_LAYOUT_ANCESTOR_LIMIT) {
+        targets.push(current);
+        current = current.parentElement;
+      }
+      for (const el of targets) {
+        try {
+          el.style.minWidth = "0";
+          el.style.maxWidth = "100%";
+          el.style.boxSizing = "border-box";
+        } catch {}
+      }
+    } catch {}
+  }
+
+  /**
+   * 只测量 Adapter 当前候选行列，不提交本地 xterm resize。
+   * @param tabId tab 标识
+   * @param adapter 终端适配器
+   * @param source 测量来源
+   */
+  private measureAdapterResize(
+    tabId: string,
+    adapter: TerminalAdapterAPI,
+    source: string,
+  ): { cols: number; rows: number } | undefined {
+    try {
+      const measured = typeof adapter.measureResize === "function"
+        ? adapter.measureResize()
+        : adapter.resize();
+      if (measured && measured.cols && measured.rows) {
+        this.logScrollDiagnostic(`adapter.measure tab=${tabId} source=${source} size=${measured.cols}x${measured.rows} ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
+      }
+      return measured;
+    } catch {
+      this.logScrollDiagnostic(`adapter.measure.error tab=${tabId} source=${source} ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
+      return undefined;
+    }
+  }
+
+  /**
+   * 在 PTY resize 已发送或确认无需发送后，按同一行列提交本地 xterm resize。
+   * @param tabId tab 标识
+   * @param size 已提交给 PTY 的行列
+   * @param source 提交来源
+   * @param flushSeq 关联的 flush 序号
+   */
+  private commitAdapterResize(
+    tabId: string,
+    size: { cols: number; rows: number },
+    source: string,
+    flushSeq: number,
+  ): { cols: number; rows: number } | undefined {
+    const adapter = this.adapters[tabId];
+    if (!adapter) return undefined;
+    try {
+      const committed = typeof adapter.resizeTo === "function"
+        ? adapter.resizeTo(size, `pty.${source}#${flushSeq}`)
+        : adapter.resize();
+      this.logScrollDiagnostic(`adapter.commit tab=${tabId} seq=${flushSeq} source=${source} target=${size.cols}x${size.rows} actual=${committed?.cols || 0}x${committed?.rows || 0} ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
+      return committed;
+    } catch {
+      this.logScrollDiagnostic(`adapter.commit.error tab=${tabId} seq=${flushSeq} source=${source} target=${size.cols}x${size.rows} ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
+      return undefined;
+    }
+  }
+
+  /**
+   * 判断 Adapter 是否仍有旧 PTY 输出尚未写入本地 xterm。
+   * @param tabId tab 标识
+   */
+  private adapterHasPendingWriteWork(tabId: string): boolean {
+    try {
+      return !!this.adapters[tabId]?.hasPendingWriteWork?.();
+    } catch {
+      return false;
+    }
+  }
 
   /**
    * 中文说明：保存指定 tab 的滚动快照。
@@ -144,6 +685,7 @@ export default class TerminalManager {
       if (snapshot) {
         this.scrollSnapshotByTab[tabId] = snapshot;
         this.dlog(`scroll.save tab=${tabId} source=${source} y=${snapshot.viewportY}/${snapshot.baseY} bottom=${snapshot.isAtBottom ? '1' : '0'}`);
+        this.logScrollDiagnostic(`scroll.save tab=${tabId} source=${source} y=${Math.round(snapshot.viewportY)}/${Math.round(snapshot.baseY)} bottom=${snapshot.isAtBottom ? "1" : "0"} ${this.formatHostRect(tabId)}`);
       }
     } catch {}
   }
@@ -158,14 +700,15 @@ export default class TerminalManager {
     try {
       adapter.restoreScrollSnapshot?.(snapshot);
       this.dlog(`scroll.restore tab=${tabId} source=${source} has=${snapshot ? '1' : '0'}`);
+      this.logScrollDiagnostic(`scroll.restore tab=${tabId} source=${source} has=${snapshot ? "1" : "0"} y=${snapshot ? `${Math.round(snapshot.viewportY)}/${Math.round(snapshot.baseY)}` : "n/a"} ${this.formatHostRect(tabId)}`);
     } catch {}
   }
 
   /**
-   * 中文说明：判断当前发送是否需要输出强制诊断日志。
-   * 说明：仅对已知有“长文本发送时序问题”的 Provider 开启，避免 perf.log 噪音过大。
+   * 中文说明：判断当前发送是否需要生成诊断 traceId；实际写入还受终端前端调试开关控制。
+   * 说明：仅对已知有“长文本发送时序问题”的 Provider 开启，避免无关路径产生额外状态。
    * @param providerId providerId
-   * @returns 是否输出强制诊断日志
+   * @returns 是否生成发送诊断 traceId
    */
   private shouldTraceSendDiagnostics(providerId?: string | null): boolean {
     const normalized = String(providerId || "").trim().toLowerCase();
@@ -184,13 +727,13 @@ export default class TerminalManager {
   }
 
   /**
-   * 中文说明：写入单次发送的强制诊断日志。
-   * 说明：走 `perfLogCritical`，默认会写入 `perf.log`，无需依赖普通终端调试开关。
+   * 中文说明：写入单次发送诊断日志；默认关闭，仅在终端前端调试开关开启时进入 perf.log。
    * @param traceId 单次发送 traceId
    * @param message 诊断消息
    */
   private logSendDiagnostic(traceId: string | null | undefined, message: string): void {
     if (!traceId) return;
+    if (!this.dbgEnabled()) return;
     try { (window as any).host?.utils?.perfLogCritical?.(`[tm.send ${traceId}] ${message}`); } catch {}
   }
 
@@ -1388,24 +1931,296 @@ export default class TerminalManager {
     const t = this.pendingTimerByTab[tabId];
     if (typeof t === 'number') {
       try { clearTimeout(t); } catch {}
+      this.logScrollDiagnostic(`schedule.timer.clear tab=${tabId} ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
     }
     this.pendingTimerByTab[tabId] = undefined;
   }
 
   /**
-   * 立即尝试下发尺寸（若可下发）。
-   * 与 ConPTY 做最小握手：暂停数据 -> 前端 fit -> 发送 resize -> 下一帧恢复。
+   * 清理某 tab 延迟下发 PTY resize 的定时器。
+   * @param tabId tab 标识
+   * @param source 清理来源
+   */
+  private clearPendingPtyResizeTimer(tabId: string, source: string): void {
+    const timer = this.pendingPtyResizeTimerByTab[tabId];
+    if (typeof timer === "number") {
+      try { clearTimeout(timer); } catch {}
+      this.logScrollDiagnostic(`flush.resize-pty.defer.clear tab=${tabId} source=${source} ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
+    }
+    this.pendingPtyResizeTimerByTab[tabId] = undefined;
+  }
+
+  /**
+   * 在真实 PTY resize 待稳定期间暂停 PTY 数据流，避免输出按旧尺寸生成后写入已 resize 的 xterm。
+   * @param tabId tab 标识
+   * @param ptyId PTY 标识
+   * @param source 触发来源
+   * @param flushSeq 关联的 flush 序号
+   */
+  private pausePtyForResizeSettle(tabId: string, ptyId: string, source: string, flushSeq: number): void {
+    const existing = this.resizePtyPauseByTab[tabId];
+    if (existing?.ptyId === ptyId) {
+      if (typeof existing.resumeRaf === "number") {
+        try { cancelAnimationFrame(existing.resumeRaf); } catch {}
+        existing.resumeRaf = undefined;
+      }
+      this.logScrollDiagnostic(`flush.pause.keep tab=${tabId} seq=${flushSeq} source=${source} reason=resize-settle pty=${ptyId} ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
+      return;
+    }
+    if (existing) {
+      this.resumePtyForResizeSettle(tabId, existing.ptyId, source, flushSeq, "pty-changed", true);
+    }
+    this.resizePtyPauseByTab[tabId] = {
+      ptyId,
+      source,
+      since: this.nowMs(),
+    };
+    try { this.hostPty.pause?.(ptyId); } catch {}
+    this.dlog(`pause pty=${ptyId} tab=${tabId} reason=resize-settle`);
+    this.logScrollDiagnostic(`flush.pause tab=${tabId} seq=${flushSeq} source=${source} reason=resize-settle pty=${ptyId} ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
+  }
+
+  /**
+   * 释放 resize 稳定窗口持有的 PTY 暂停；默认延后一帧恢复，让 xterm resize/refresh 先落到浏览器渲染队列。
+   * @param tabId tab 标识
+   * @param ptyId PTY 标识
+   * @param source 触发来源
+   * @param flushSeq 关联的 flush 序号
+   * @param reason 恢复原因
+   * @param immediate 是否立即恢复
+   */
+  private resumePtyForResizeSettle(
+    tabId: string,
+    ptyId: string,
+    source: string,
+    flushSeq: number,
+    reason: string,
+    immediate = false,
+  ): void {
+    const paused = this.resizePtyPauseByTab[tabId];
+    if (!paused || paused.ptyId !== ptyId) return;
+    if (typeof paused.resumeRaf === "number") {
+      try { cancelAnimationFrame(paused.resumeRaf); } catch {}
+      paused.resumeRaf = undefined;
+    }
+    const resume = () => {
+      if (this.resizePtyPauseByTab[tabId] !== paused) return;
+      const heldMs = Math.round(this.nowMs() - paused.since);
+      delete this.resizePtyPauseByTab[tabId];
+      try { this.hostPty.resume?.(ptyId); } catch {}
+      this.dlog(`resume pty=${ptyId} tab=${tabId} reason=${reason}`);
+      this.logScrollDiagnostic(`flush.resume tab=${tabId} seq=${flushSeq} source=${source} reason=${reason} held=${heldMs} pty=${ptyId} ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
+    };
+    if (immediate) {
+      resume();
+      return;
+    }
+    try {
+      paused.resumeRaf = requestAnimationFrame(resume);
+    } catch {
+      resume();
+    }
+  }
+
+  /**
+   * 通知适配器真实 PTY resize 已进入待下发窗口。
+   * @param tabId tab 标识
+   * @param size 目标行列
+   * @param source 触发来源
+   * @param flushSeq 关联的 flush 序号
+   */
+  private notifyAdapterPtyResizePending(
+    tabId: string,
+    size: { cols: number; rows: number },
+    source: string,
+    flushSeq: number,
+  ): void {
+    try {
+      this.adapters[tabId]?.notifyPtyResizePending?.(size, `${source}#${flushSeq}`);
+    } catch {}
+  }
+
+  /**
+   * 通知适配器真实 PTY resize 待下发窗口已经结束。
+   * @param tabId tab 标识
+   * @param size 目标行列
+   * @param source 触发来源
+   * @param flushSeq 关联的 flush 序号
+   * @param result 下发结果
+   */
+  private notifyAdapterPtyResizeComplete(
+    tabId: string,
+    size: { cols: number; rows: number },
+    source: string,
+    flushSeq: number,
+    result: "sent" | "skipped" | "failed",
+  ): void {
+    try {
+      this.adapters[tabId]?.notifyPtyResizeComplete?.(size, `${source}#${flushSeq}`, result);
+    } catch {}
+  }
+
+  /**
+   * 立即向 PTY 下发稳定后的终端尺寸，并在下发窗口内短暂停止数据流。
+   * @param tabId tab 标识
+   * @param ptyId PTY 标识
+   * @param size 目标行列
+   * @param source 下发来源
+   * @param flushSeq 关联的 flush 序号
+   */
+  private sendPtyResizeNow(
+    tabId: string,
+    ptyId: string,
+    size: { cols: number; rows: number },
+    source: string,
+    flushSeq: number,
+  ): void {
+    let resizeSent = false;
+    this.pausePtyForResizeSettle(tabId, ptyId, source, flushSeq);
+
+    try {
+      const ptySeq = this.nextResizePtySeq(tabId);
+      this.hostPty.resize(ptyId, size.cols, size.rows);
+      resizeSent = true;
+      this.dlog(`resize->pty tab=${tabId} ${size.cols}x${size.rows}`);
+      this.lastSentSizeByTab[tabId] = size;
+      this.lastPtyResizeAtByTab[tabId] = this.nowMs();
+      this.logScrollDiagnostic(`flush.resize-pty tab=${tabId} seq=${flushSeq} source=${source} ptySeq=${ptySeq} size=${size.cols}x${size.rows} ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
+      this.commitAdapterResize(tabId, size, source, flushSeq);
+    } catch {
+      // 即便失败也尝试恢复数据流。
+    } finally {
+      this.notifyAdapterPtyResizeComplete(tabId, size, source, flushSeq, resizeSent ? "sent" : "failed");
+      this.resumePtyForResizeSettle(tabId, ptyId, source, flushSeq, resizeSent ? "resize-sent" : "resize-failed");
+    }
+  }
+
+  /**
+   * 请求向 PTY 下发 resize；快速布局抖动期间只保留最终稳定尺寸。
+   * @param tabId tab 标识
+   * @param size 候选行列
+   * @param source 请求来源
+   * @param flushSeq 关联的 flush 序号
+   * @param force 是否按最终同步规则判定
+   */
+  private requestPtyResize(
+    tabId: string,
+    size: { cols: number; rows: number },
+    source: string,
+    flushSeq: number,
+    force: boolean,
+  ): void {
+    const ptyId = this.getPtyId(tabId);
+    if (!ptyId) return;
+    const previousPendingSize = this.pendingSizeByTab[tabId];
+    const hasActivePtyDefer = typeof this.pendingPtyResizeTimerByTab[tabId] === "number";
+    const sameActivePendingSize = hasActivePtyDefer && this.isSameTerminalSize(previousPendingSize, size);
+    this.pendingSizeByTab[tabId] = size;
+
+    if (!this.shouldSendResize(tabId, size, force)) {
+      this.clearPendingPtyResizeTimer(tabId, `${source}.same-size`);
+      delete this.pendingPtyResizeSinceByTab[tabId];
+      this.commitAdapterResize(tabId, size, source, flushSeq);
+      this.notifyAdapterPtyResizeComplete(tabId, size, source, flushSeq, "skipped");
+      this.resumePtyForResizeSettle(tabId, ptyId, source, flushSeq, "resize-skipped");
+      this.logScrollDiagnostic(`flush.resize-pty.defer.skip tab=${tabId} seq=${flushSeq} source=${source} force=${force ? "1" : "0"} reason=same-size size=${size.cols}x${size.rows} ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
+      return;
+    }
+
+    if (sameActivePendingSize) {
+      this.logScrollDiagnostic(`flush.resize-pty.defer.keep tab=${tabId} seq=${flushSeq} source=${source} force=${force ? "1" : "0"} reason=same-pending size=${size.cols}x${size.rows} ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
+      return;
+    }
+
+    this.notifyAdapterPtyResizePending(tabId, size, source, flushSeq);
+    this.pausePtyForResizeSettle(tabId, ptyId, source, flushSeq);
+
+    if (!this.lastSentSizeByTab[tabId]) {
+      this.clearPendingPtyResizeTimer(tabId, `${source}.initial`);
+      delete this.pendingPtyResizeSinceByTab[tabId];
+      this.sendPtyResizeNow(tabId, ptyId, size, source, flushSeq);
+      return;
+    }
+
+    const now = this.nowMs();
+    if (typeof this.pendingPtyResizeSinceByTab[tabId] !== "number") {
+      this.pendingPtyResizeSinceByTab[tabId] = now;
+    }
+    const pendingSince = this.pendingPtyResizeSinceByTab[tabId] || now;
+    const deferFor = Math.max(0, now - pendingSince);
+    const lastPtyAt = this.lastPtyResizeAtByTab[tabId];
+    const lastPtyAgo = typeof lastPtyAt === "number" ? Math.max(0, now - lastPtyAt) : TERMINAL_PTY_RESIZE_MIN_INTERVAL_MS;
+    const stableDelay = Math.max(
+      TERMINAL_PTY_RESIZE_STABLE_DELAY_MS,
+      TERMINAL_PTY_RESIZE_MIN_INTERVAL_MS - lastPtyAgo,
+      0,
+    );
+    const remainingMaxDelay = Math.max(0, TERMINAL_PTY_RESIZE_MAX_DEFER_MS - deferFor);
+    const delay = Math.min(stableDelay, remainingMaxDelay);
+
+    this.clearPendingPtyResizeTimer(tabId, `${source}.reschedule`);
+    this.logScrollDiagnostic(`flush.resize-pty.defer tab=${tabId} seq=${flushSeq} source=${source} force=${force ? "1" : "0"} delay=${Math.round(delay)} size=${size.cols}x${size.rows} ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
+    const fireDeferredResize = () => {
+      this.pendingPtyResizeTimerByTab[tabId] = undefined;
+      const adapter = this.adapters[tabId];
+      if (adapter) {
+        const measuredNow = this.measureAdapterResize(tabId, adapter, `defer.fire.${source}`);
+        if (measuredNow && measuredNow.cols && measuredNow.rows) {
+          this.pendingSizeByTab[tabId] = measuredNow;
+        }
+      }
+      const finalSize = this.pendingSizeByTab[tabId];
+      const currentPtyId = this.getPtyId(tabId);
+      if (!finalSize || !currentPtyId) {
+        delete this.pendingPtyResizeSinceByTab[tabId];
+        this.notifyAdapterPtyResizeComplete(tabId, finalSize || size, source, flushSeq, "skipped");
+        this.resumePtyForResizeSettle(tabId, ptyId, source, flushSeq, "resize-missing-final");
+        return;
+      }
+      const pendingSinceNow = this.pendingPtyResizeSinceByTab[tabId] || this.nowMs();
+      const deferForNow = Math.max(0, this.nowMs() - pendingSinceNow);
+      if (this.adapterHasPendingWriteWork(tabId) && deferForNow < TERMINAL_PTY_RESIZE_MAX_DEFER_MS) {
+        const waitDelay = Math.max(16, Math.min(48, TERMINAL_PTY_RESIZE_MAX_DEFER_MS - deferForNow));
+        this.logScrollDiagnostic(`flush.resize-pty.defer.wait-writes tab=${tabId} seq=${flushSeq} source=${source} delay=${Math.round(waitDelay)} size=${finalSize.cols}x${finalSize.rows} ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
+        this.pendingPtyResizeTimerByTab[tabId] = window.setTimeout(fireDeferredResize, waitDelay);
+        return;
+      }
+      this.logScrollDiagnostic(`flush.resize-pty.defer.fire tab=${tabId} seq=${flushSeq} source=${source} size=${finalSize.cols}x${finalSize.rows} ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
+      if (this.isHostInactive(tabId)) {
+        delete this.pendingPtyResizeSinceByTab[tabId];
+        this.notifyAdapterPtyResizeComplete(tabId, finalSize, source, flushSeq, "skipped");
+        this.resumePtyForResizeSettle(tabId, currentPtyId, source, flushSeq, "resize-host-inactive");
+        this.logScrollDiagnostic(`flush.resize-pty.defer.skip tab=${tabId} seq=${flushSeq} source=${source} reason=host-inactive size=${finalSize.cols}x${finalSize.rows} ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
+        return;
+      }
+      if (!this.shouldSendResize(tabId, finalSize, force)) {
+        delete this.pendingPtyResizeSinceByTab[tabId];
+        this.commitAdapterResize(tabId, finalSize, source, flushSeq);
+        this.notifyAdapterPtyResizeComplete(tabId, finalSize, source, flushSeq, "skipped");
+        this.resumePtyForResizeSettle(tabId, currentPtyId, source, flushSeq, "resize-same-size-final");
+        this.logScrollDiagnostic(`flush.resize-pty.defer.skip tab=${tabId} seq=${flushSeq} source=${source} force=${force ? "1" : "0"} reason=same-size-final size=${finalSize.cols}x${finalSize.rows} ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
+        return;
+      }
+      delete this.pendingPtyResizeSinceByTab[tabId];
+      this.sendPtyResizeNow(tabId, currentPtyId, finalSize, `deferred.${source}`, flushSeq);
+    };
+    this.pendingPtyResizeTimerByTab[tabId] = window.setTimeout(fireDeferredResize, delay);
+  }
+
+  /**
+   * 测量终端尺寸，并把真实 PTY resize 合并到稳定窗口后下发。
+   * @param tabId tab 标识
+   * @param force 是否由强制同步触发
    */
   private flushResizeIfNeeded(tabId: string, force = false): void {
     const adapter = this.adapters[tabId];
     if (!adapter) return;
     const ptyId = this.getPtyId(tabId);
     if (!ptyId) return;
+    const flushSeq = this.nextResizeFlushSeq(tabId);
+    this.logScrollDiagnostic(`flush.start tab=${tabId} seq=${flushSeq} force=${force ? "1" : "0"} pty=${ptyId} ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
 
-    // 1) 暂停数据，避免旧尺寸数据在重排期间灌入 UI
-    try { this.hostPty.pause?.(ptyId); this.dlog(`pause pty=${ptyId} tab=${tabId}`); } catch {}
-
-    // 2) 记录宿主与父容器尺寸，并在 0/隐藏 时直接恢复退出（避免 11x6 抖动）
+    // 记录宿主与父容器尺寸，并在 0/隐藏 时直接退出，避免 11x6 抖动。
     try {
       const host = this.hostElByTab[tabId];
       if (host) {
@@ -1416,56 +2231,47 @@ export default class TerminalManager {
         const hidden = style.display === 'none' || style.visibility === 'hidden';
         if (hidden || r.height <= 1 || r.width <= 1) {
           this.dlog(`flush.skip tab=${tabId} hidden=${hidden} rect=${Math.round(r.width)}x${Math.round(r.height)}`);
-          try { this.hostPty.resume?.(ptyId); } catch {}
+          this.logScrollDiagnostic(`flush.skip tab=${tabId} seq=${flushSeq} reason=hidden-or-zero ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
           return;
         }
       }
     } catch {}
-    // 2b) 前端先精确 fit（内部可能 pin 整数行），拿到当前网格
+    // 先只测量候选行列，不提交本地 xterm resize；本地提交必须等 PTY resize 同步完成。
     let measured: { cols: number; rows: number } | undefined;
-    try {
-      measured = adapter.resize();
-    } catch {
-      // 防御：度量异常时确保恢复数据流，避免 PTY 长时间处于暂停状态
-      try { this.hostPty.resume?.(ptyId); } catch {}
+    measured = this.measureAdapterResize(tabId, adapter, `flush#${flushSeq}`);
+    if (!measured) {
+      this.logScrollDiagnostic(`flush.skip tab=${tabId} seq=${flushSeq} reason=measure-error ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
       return;
     }
     this.dlog(`measure tab=${tabId} size=${measured?.cols || 0}x${measured?.rows || 0} force=${force}`);
-    if (!measured || !measured.cols || !measured.rows) { try { this.hostPty.resume?.(ptyId); } catch {} return; }
-    // 记录最新一次测量，供后续判重
-    this.pendingSizeByTab[tabId] = measured;
-
-    // 若处于不可下发阶段，则不调用 PTY，等待后续 flush 时机
-    if (this.isHostInactive(tabId)) { this.dlog(`hostInactive tab=${tabId}`); try { this.hostPty.resume?.(ptyId); } catch {}; return; }
-
-    if (!this.shouldSendResize(tabId, measured, force)) { this.dlog(`skipResize tab=${tabId}`); try { this.hostPty.resume?.(ptyId); } catch {}; return; }
-    try {
-      this.hostPty.resize(ptyId, measured.cols, measured.rows);
-      this.dlog(`resize->pty tab=${tabId} ${measured.cols}x${measured.rows}`);
-      this.lastSentSizeByTab[tabId] = measured;
-    } catch {
-      // 即便失败也尝试恢复
-    } finally {
-      // 4) 让布局/ConPTY 重绘落地后再恢复
-      try {
-        requestAnimationFrame(() => { try { this.hostPty.resume?.(ptyId); this.dlog(`resume pty=${ptyId}`); } catch {} });
-      } catch { try { this.hostPty.resume?.(ptyId); this.dlog(`resume pty=${ptyId}`); } catch {} }
-
-      // 5) 尾帧校验：下一帧再次测量，如行列仍有差异，再下发一次 resize，确保最终一致
-      try {
-        requestAnimationFrame(() => {
-          try {
-            const again = adapter.resize();
-            this.dlog(`tail-measure tab=${tabId} size=${again?.cols || 0}x${again?.rows || 0}`);
-            if (again && again.cols && again.rows && this.shouldSendResize(tabId, again, true)) {
-              this.hostPty.resize(ptyId, again.cols, again.rows);
-              this.dlog(`tail-resize->pty tab=${tabId} ${again.cols}x${again.rows}`);
-              this.lastSentSizeByTab[tabId] = again;
-            }
-          } catch {}
-        });
-      } catch {}
+    this.logScrollDiagnostic(`flush.measure tab=${tabId} seq=${flushSeq} size=${measured?.cols || 0}x${measured?.rows || 0} force=${force ? "1" : "0"} ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
+    if (!measured || !measured.cols || !measured.rows) {
+      this.logScrollDiagnostic(`flush.skip tab=${tabId} seq=${flushSeq} reason=invalid-measure ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
+      return;
     }
+
+    // 若处于不可下发阶段，则不调用 PTY，等待后续 flush 时机。
+    if (this.isHostInactive(tabId)) {
+      this.dlog(`hostInactive tab=${tabId}`);
+      this.logScrollDiagnostic(`flush.skip tab=${tabId} seq=${flushSeq} reason=host-inactive ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
+      return;
+    }
+
+    this.requestPtyResize(tabId, measured, force ? "flush.force" : "flush", flushSeq, force);
+
+    // 尾帧校验只更新候选最终尺寸，不在同一帧直接反向下发 PTY resize。
+    try {
+      requestAnimationFrame(() => {
+        try {
+          const again = this.measureAdapterResize(tabId, adapter, `tail-measure#${flushSeq}`);
+          this.dlog(`tail-measure tab=${tabId} size=${again?.cols || 0}x${again?.rows || 0}`);
+          this.logScrollDiagnostic(`flush.tail-measure tab=${tabId} seq=${flushSeq} size=${again?.cols || 0}x${again?.rows || 0} ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
+          if (again && again.cols && again.rows) {
+            this.requestPtyResize(tabId, again, "tail-measure", flushSeq, true);
+          }
+        } catch {}
+      });
+    } catch {}
   }
 
   private blurTab(tabId: string, reason: string): void {
@@ -1496,11 +2302,15 @@ export default class TerminalManager {
    * 调度一次 resize 同步：
    * - immediate=true: 立刻尝试 flush。
    * - immediate=false: 150ms 防抖后 flush。
-   * 始终会优先更新前端画布（adapter.resize）。
+   * 这里只测量候选尺寸；本地 xterm resize 由 PTY resize 提交点统一触发。
    */
   private scheduleResizeSync(tabId: string, immediate: boolean): void {
     const adapter = this.adapters[tabId];
     if (!adapter) return;
+    const keepPendingWindowDebounce = immediate && this.shouldKeepPendingDebounceForWindowResizeImmediate(tabId);
+    const effectiveImmediate = immediate && !keepPendingWindowDebounce;
+    const scheduleSeq = this.nextResizeScheduleSeq(tabId);
+    this.logScrollDiagnostic(`schedule.start tab=${tabId} seq=${scheduleSeq} mode=${effectiveImmediate ? "immediate" : "debounce"} requested=${immediate ? "immediate" : "debounce"} ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
     // 先判断宿主是否可测量；若为 0 或隐藏，则跳过本轮（避免 11x6 抖动）
     try {
       const host = this.hostElByTab[tabId];
@@ -1510,27 +2320,33 @@ export default class TerminalManager {
         const hidden = style.display === 'none' || style.visibility === 'hidden';
         if (hidden || rect.height <= 1 || rect.width <= 1) {
           this.dlog(`schedule.skip tab=${tabId} hidden=${hidden} rect=${Math.round(rect.width)}x${Math.round(rect.height)}`);
+          this.logScrollDiagnostic(`schedule.skip tab=${tabId} seq=${scheduleSeq} reason=hidden-or-zero ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
           return;
         }
       }
     } catch {}
-    // 可测量时，更新画布并记录测量
-    try {
-      const s = adapter.resize();
-      if (s && s.cols && s.rows) { this.pendingSizeByTab[tabId] = s; this.dlog(`schedule(${immediate ? 'immediate' : 'debounce'}) tab=${tabId} measure=${s.cols}x${s.rows}`); }
-    } catch {}
+    const s = this.measureAdapterResize(tabId, adapter, `schedule#${scheduleSeq}`);
+    if (s && s.cols && s.rows) {
+      this.pendingSizeByTab[tabId] = s;
+      this.dlog(`schedule(${effectiveImmediate ? 'immediate' : 'debounce'}) tab=${tabId} measure=${s.cols}x${s.rows}`);
+      this.logScrollDiagnostic(`schedule.measure tab=${tabId} seq=${scheduleSeq} mode=${effectiveImmediate ? "immediate" : "debounce"} requested=${immediate ? "immediate" : "debounce"} size=${s.cols}x${s.rows} ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
+    }
 
-    if (immediate) {
+    if (effectiveImmediate) {
       this.clearPendingTimer(tabId);
+      this.logScrollDiagnostic(`schedule.flush-now tab=${tabId} seq=${scheduleSeq} ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
       this.flushResizeIfNeeded(tabId, true);
       return;
     }
 
+    if (keepPendingWindowDebounce) {
+      this.logScrollDiagnostic(`schedule.immediate-defer.keep tab=${tabId} seq=${scheduleSeq} reason=window-resize-pending ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
+      return;
+    }
+
     this.clearPendingTimer(tabId);
-    this.pendingTimerByTab[tabId] = window.setTimeout(() => {
-      // 尾触发一次“精确同步”，避免最终只有 1 列/1 行差异时前后端网格不一致
-      this.flushResizeIfNeeded(tabId, true);
-    }, 150);
+    const delay = this.getResizeDebounceDelay(tabId);
+    this.setResizeDebounceTimer(tabId, scheduleSeq, delay, "schedule");
   }
 
   /**
@@ -1539,8 +2355,15 @@ export default class TerminalManager {
   private installHostEventHandlers(tabId: string, hostEl: HTMLElement): () => void {
     const onUp = () => { try { this.scheduleResizeSync(tabId, true); } catch {} };
     const onVisibility = () => { if (!document.hidden) { try { this.scheduleResizeSync(tabId, true); } catch {} } };
-    const onAnimStart = () => { this.isAnimatingByTab[tabId] = true; };
-    const onAnimEnd = () => { this.isAnimatingByTab[tabId] = false; try { this.scheduleResizeSync(tabId, true); } catch {} };
+    const onAnimStart = (event: Event) => {
+      if (event.target !== hostEl) return;
+      this.isAnimatingByTab[tabId] = true;
+    };
+    const onAnimEnd = (event: Event) => {
+      if (event.target !== hostEl) return;
+      this.isAnimatingByTab[tabId] = false;
+      try { this.scheduleResizeSync(tabId, true); } catch {}
+    };
 
     window.addEventListener('mouseup', onUp);
     window.addEventListener('pointerup', onUp);
@@ -1576,7 +2399,10 @@ export default class TerminalManager {
       container = document.createElement('div');
       container.style.height = '100%';
       container.style.width = '100%';
+      container.style.minWidth = '0';
+      container.style.maxWidth = '100%';
       container.style.boxSizing = 'border-box';
+      container.style.contain = 'inline-size';
       // 终端宿主不应产生滚动条，否则会干扰 xterm 内部滚动度量
       container.style.overflow = 'hidden';
       this.containers[tabId] = container;
@@ -1586,6 +2412,12 @@ export default class TerminalManager {
       if (!adapter) {
         adapter = createTerminalAdapter({ appearance: this.appearance });
         this.adapters[tabId] = adapter;
+      }
+      if (!this.adapterResizeReadyUnsubByTab[tabId]) {
+        this.adapterResizeReadyUnsubByTab[tabId] = adapter.onDeferredResizeReady?.(() => {
+          this.logScrollDiagnostic(`adapter.resize.defer.ready tab=${tabId} ${this.formatResizeDebugState(tabId)} ${this.formatHostRect(tabId)}`);
+          try { this.scheduleResizeSync(tabId, true); } catch {}
+        }) ?? null;
       }
       try { adapter.setAppearance(this.appearance); } catch {}
       try { adapter.mount(container); } catch (err) { console.warn('adapter.mount failed', err); }
@@ -1597,6 +2429,7 @@ export default class TerminalManager {
 
     if (!this.windowResizeCleanupByTab[tabId]) {
       const onResize = () => {
+        try { this.markWindowResizeActivity(tabId, "window"); } catch {}
         try { this.scheduleResizeSync(tabId, false); } catch {}
       };
       window.addEventListener('resize', onResize);
@@ -1903,6 +2736,7 @@ export default class TerminalManager {
    */
   onTabActivated(tabId: string): void {
     this.dlog(`tabActivated tab=${tabId}`);
+    this.logScrollDiagnostic(`tab.activate tab=${tabId} ${this.formatHostRect(tabId)}`);
     if (this.lastFocusedTabId && this.lastFocusedTabId !== tabId) {
       this.blurTab(this.lastFocusedTabId, "switch");
     }
@@ -1935,6 +2769,7 @@ export default class TerminalManager {
   onTabDeactivated(tabId: string | null | undefined): void {
     if (!tabId) return;
     this.dlog(`tabDeactivated tab=${tabId}`);
+    this.logScrollDiagnostic(`tab.deactivate tab=${tabId} ${this.formatHostRect(tabId)}`);
     if (this.lastFocusedTabId === tabId) {
       this.lastFocusedTabId = null;
     }
@@ -1948,6 +2783,7 @@ export default class TerminalManager {
    */
   attachToHost(tabId: string, hostEl: HTMLElement): void {
     this.dlog(`attachToHost tab=${tabId}`);
+    this.logScrollDiagnostic(`attach.start tab=${tabId} ${this.formatHostRect(tabId)}`);
     // 关键修复：重复挂载时需先清理旧的宿主事件，避免全局监听器累积导致内存泄漏。
     const existingCleanup = this.resizeUnsubByTab[tabId];
     if (typeof existingCleanup === 'function') {
@@ -1965,6 +2801,10 @@ export default class TerminalManager {
     } catch (err) { console.warn('attachToHost failed', err); }
     // 记录 hostEl，安装事件以感知动画/可见性变化
     this.hostElByTab[tabId] = hostEl;
+    this.normalizeTerminalHostLayout(hostEl);
+    this.lastHostRectByTab[tabId] = this.readHostRectSnapshot(tabId);
+    delete this.windowResizeStableSampleByTab[tabId];
+    this.logScrollDiagnostic(`attach.host-set tab=${tabId} ${this.formatHostRect(tabId)}`);
     const removeHostHandlers = this.installHostEventHandlers(tabId, hostEl);
 
     // 触发一次同步（立即 flush）
@@ -1990,6 +2830,10 @@ export default class TerminalManager {
             const r = host.getBoundingClientRect();
             const pr = host.parentElement ? host.parentElement.getBoundingClientRect() : null;
             this.dlog(`ro.cb tab=${tabId} host=${Math.round(r.width)}x${Math.round(r.height)} parent=${pr ? `${Math.round(pr.width)}x${Math.round(pr.height)}` : 'n/a'}`);
+            this.logScrollDiagnostic(`ro.cb tab=${tabId} host=${Math.round(r.width)}x${Math.round(r.height)} parent=${pr ? `${Math.round(pr.width)}x${Math.round(pr.height)}` : 'n/a'} ${this.formatHostRect(tabId)}`);
+            if (this.isWindowResizeSessionActive(tabId)) {
+              this.markWindowResizeActivity(tabId, "ro");
+            }
           }
         } catch {}
         try {
@@ -2008,8 +2852,10 @@ export default class TerminalManager {
         try { removeHostHandlers(); } catch {}
         this.hostResizeObserverByTab[tabId] = null;
       };
+      this.logScrollDiagnostic(`attach.ro-ready tab=${tabId} ${this.formatHostRect(tabId)}`);
     } catch (err) {
       // If ResizeObserver is not available or errors, fall back to window resize (already registered)
+      this.logScrollDiagnostic(`attach.ro-fallback tab=${tabId} err=${String((err as Error)?.message || err)} ${this.formatHostRect(tabId)}`);
     }
   }
 
@@ -2027,9 +2873,25 @@ export default class TerminalManager {
     delete this.windowResizeCleanupByTab[tabId];
     // 清理定时器与状态
     try { this.clearPendingTimer(tabId); } catch {}
+    try { this.clearPendingPtyResizeTimer(tabId, "dispose"); } catch {}
+    const paused = this.resizePtyPauseByTab[tabId];
+    if (paused) {
+      try { this.resumePtyForResizeSettle(tabId, paused.ptyId, "dispose", this.resizeFlushSeqByTab[tabId] || 0, "dispose", true); } catch {}
+    }
     delete this.pendingSizeByTab[tabId];
+    delete this.pendingPtyResizeSinceByTab[tabId];
+    delete this.resizePtyPauseByTab[tabId];
+    delete this.lastPtyResizeAtByTab[tabId];
+    delete this.windowResizeSessionByTab[tabId];
     delete this.lastSentSizeByTab[tabId];
+    delete this.lastHostRectByTab[tabId];
     delete this.isAnimatingByTab[tabId];
+    delete this.resizeScheduleSeqByTab[tabId];
+    delete this.resizeFlushSeqByTab[tabId];
+    delete this.resizePtySeqByTab[tabId];
+    delete this.windowResizeStableSampleByTab[tabId];
+    try { this.adapterResizeReadyUnsubByTab[tabId]?.(); } catch {}
+    delete this.adapterResizeReadyUnsubByTab[tabId];
     delete this.hostElByTab[tabId];
     try { this.unsubByTab[tabId]?.(); } catch {}
     delete this.unsubByTab[tabId];
