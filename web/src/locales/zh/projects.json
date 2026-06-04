@@ -2,6 +2,7 @@
   "searchPlaceholder": "搜索项目…",
   "openProject": "打开项目",
   "ctxShowInExplorer": "在文件管理器中显示",
+  "ctxReferenceInSession": "在会话中引用",
   "ctxOpenExternalConsole": "通过外部控制台打开{provider}",
   "cannotOpenExternalConsole": "无法打开外部控制台",
   "ctxOpenExternalConsoleWith": "通过外部{env}控制台打开{provider}",
