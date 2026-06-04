@@ -2,6 +2,7 @@
   "searchPlaceholder": "Search projects…",
   "openProject": "Open Project",
   "ctxShowInExplorer": "Show in File Manager",
+  "ctxReferenceInSession": "Reference in Session",
   "ctxOpenExternalConsole": "Open {provider} in external console",
   "cannotOpenExternalConsole": "Unable to open external console",
   "ctxOpenExternalConsoleWith": "Open {provider} in external {env} console",

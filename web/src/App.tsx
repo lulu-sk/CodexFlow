@@ -6445,18 +6445,22 @@ export default function CodexFlowManagerUI() {
   }
 
   /**
-   * 将历史会话文件作为输入附件追加到当前普通终端标签页，等价于把该文件拖入输入框。
+   * 将指定路径作为输入附件追加到当前普通终端标签页，等价于把该路径拖入输入框。
    */
-  const referenceHistorySessionInActiveInput = useCallback(async (session?: HistorySession | null): Promise<boolean> => {
-    const filePath = String(session?.filePath || "").trim();
-    if (!filePath) return false;
+  const referencePathInActiveInput = useCallback(async (args: {
+    path?: string | null;
+    fileNameFallback?: string;
+    noticeTitle?: string;
+  }): Promise<boolean> => {
+    const rawPath = String(args.path || "").trim();
+    if (!rawPath) return false;
     const targetTab = (activeTab && activeTab.kind !== "git")
       ? activeTab
       : (tabsForProject.find((tab) => tab.kind !== "git") || null);
     if (!targetTab) {
       setNoticeDialog({
         open: true,
-        title: String(t("history:referenceInSession")),
+        title: String(args.noticeTitle || t("history:referenceInSession")),
         message: String(t("history:referenceNoActiveInput")),
       });
       return false;
@@ -6464,16 +6468,16 @@ export default function CodexFlowManagerUI() {
 
     let probe: WinPathProbeResult | null = null;
     try {
-      probe = await probeWinPathKind(filePath);
+      probe = await probeWinPathKind(rawPath);
     } catch {}
     const execEnv = getTabExecEnv(targetTab.id, targetTab.providerId);
     const chip = buildPathChipFromPath({
-      rawPath: filePath,
+      rawPath,
       probe,
       runEnv: execEnv.terminal as any,
       winRoot: selectedProject?.winPath,
       projectPathStyle,
-      fileNameFallback: session?.title || session?.id || "",
+      fileNameFallback: args.fileNameFallback || "",
     });
     if (!chip) return false;
 
@@ -6490,6 +6494,28 @@ export default function CodexFlowManagerUI() {
     } catch {}
     return true;
   }, [activeTab, getTabExecEnv, projectPathStyle, scheduleFocusForTab, selectedProject?.winPath, selectedProjectId, setActiveTab, tabsForProject, t]);
+
+  /**
+   * 将历史会话文件作为输入附件追加到当前普通终端标签页。
+   */
+  const referenceHistorySessionInActiveInput = useCallback(async (session?: HistorySession | null): Promise<boolean> => {
+    return referencePathInActiveInput({
+      path: session?.filePath,
+      fileNameFallback: session?.title || session?.id || "",
+      noticeTitle: String(t("history:referenceInSession")),
+    });
+  }, [referencePathInActiveInput, t]);
+
+  /**
+   * 将项目目录作为输入附件追加到当前普通终端标签页。
+   */
+  const referenceProjectInActiveInput = useCallback(async (project?: Project | null): Promise<boolean> => {
+    return referencePathInActiveInput({
+      path: project?.winPath || project?.wslPath,
+      fileNameFallback: project?.name || project?.id || "",
+      noticeTitle: String(t("projects:ctxReferenceInSession")),
+    });
+  }, [referencePathInActiveInput, t]);
 
   const requestInputFullscreenOpen = useCallback((tabId: string) => {
     if (!tabId) return;
@@ -11355,6 +11381,23 @@ export default function CodexFlowManagerUI() {
                 }}
               >
                 <FolderOpen className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('projects:ctxShowInExplorer')}
+              </button>
+            );
+            menuItems.push(
+              <button
+                key="reference-in-session"
+                disabled={!proj || !dirExists}
+                className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast ${dirRequiredBtnCls}`}
+                onClick={async () => {
+                  try {
+                    await referenceProjectInActiveInput(proj);
+                  } catch (err) {
+                    console.warn("reference project failed", err);
+                  }
+                  setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
+                }}
+              >
+                <FileText className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t("projects:ctxReferenceInSession")}
               </button>
             );
             menuItems.push(
