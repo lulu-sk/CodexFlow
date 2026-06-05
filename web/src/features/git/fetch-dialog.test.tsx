@@ -46,6 +46,43 @@ afterEach(() => {
 });
 
 describe("FetchDialog", () => {
+  it("从关闭态打开时应保持 Hook 调用顺序稳定", async () => {
+    const mounted = createMountedRoot();
+    const props = {
+      repositories: [{
+        repoRoot: "/repo/app",
+        label: "/repo/app",
+        defaultRemote: "origin",
+        remotes: [{ name: "origin" }],
+      }],
+      value: {
+        repoRoot: "/repo/app",
+        mode: "default-remote" as const,
+        remote: "origin",
+        refspec: "",
+        unshallow: false,
+        tagMode: "auto" as const,
+      },
+      submitting: false,
+      onClose: () => {},
+      onChange: () => {},
+      onSubmit: () => {},
+    };
+    try {
+      await act(async () => {
+        mounted.root.render(<FetchDialog open={false} {...props} />);
+      });
+      await act(async () => {
+        mounted.root.render(<FetchDialog open={true} {...props} />);
+      });
+
+      expect(document.body.textContent).toContain("获取远端变更");
+      expect(document.body.textContent).toContain("git fetch origin");
+    } finally {
+      mounted.unmount();
+    }
+  });
+
   it("应渲染多 root fetch 参数，并显示具体命令预览", async () => {
     const mounted = createMountedRoot();
     const onClose = vi.fn();
