@@ -100,11 +100,11 @@ export function FetchDialog(props: GitFetchDialogProps): JSX.Element | null {
     onChange,
     onSubmit,
   } = props;
-  if (!open) return null;
 
   const gt = React.useCallback((key: string, fallback: string, values?: Record<string, unknown>): string => {
     return resolveGitTextWith(t, key, fallback, values);
   }, [t]);
+  if (!open) return null;
 
   const selectedRepository = resolveSelectedRepository(repositories, value.repoRoot);
   const selectedRemote = String(value.remote || "").trim();
