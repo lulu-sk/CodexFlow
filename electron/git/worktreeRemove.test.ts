@@ -20,6 +20,7 @@ vi.mock("./exec", async () => {
 
 import { execGitAsync, spawnGitAsync } from "./exec";
 import { removeWorktreeAsync } from "./worktreeOps";
+import { setWorktreeMeta } from "../stores/worktreeMetaStore";
 
 /**
  * 中文说明：在临时仓库中执行 git 命令，并对失败给出明确断言信息。
@@ -115,6 +116,54 @@ describe("removeWorktreeAsync（删除预检与兜底）", () => {
           worktreePath: fixture.wtDir,
           deleteBranch: true,
           forceRemoveWorktree: true,
+          forceDeleteBranch: true,
+        });
+
+        expect(removeRes.ok).toBe(true);
+        if (removeRes.ok) {
+          expect(removeRes.removedWorktree).toBe(true);
+          expect(removeRes.removedBranch).toBe(true);
+        }
+
+        const ref = await gitTry(fixture.repo, ["show-ref", "--verify", "refs/heads/wt"]);
+        expect(ref.ok).toBe(false);
+      } finally {
+        await cleanupFixtureAsync(fixture);
+      }
+    },
+    { timeout: 120_000 }
+  );
+
+  it(
+    "当记录的基线分支已失效时，应转为分支强制删除确认",
+    async () => {
+      const fixture = await createWorktreeFixtureAsync("codexflow-wt-remove-missing-base-");
+
+      try {
+        await fsp.writeFile(path.join(fixture.wtDir, "feature.txt"), "feature\n", "utf8");
+        await git(fixture.wtDir, ["add", "feature.txt"]);
+        await git(fixture.wtDir, ["commit", "-m", "wt: feature"]);
+        setWorktreeMeta(fixture.wtDir, {
+          repoMainPath: fixture.repo,
+          baseBranch: "missing-base",
+          wtBranch: "wt",
+          createdAt: Date.now(),
+        });
+
+        const previewRes = await removeWorktreeAsync({
+          worktreePath: fixture.wtDir,
+          deleteBranch: true,
+        });
+
+        expect(previewRes.ok).toBe(false);
+        expect(previewRes.removedWorktree).toBe(false);
+        expect(previewRes.removedBranch).toBe(false);
+        expect(previewRes.needsForceDeleteBranch).toBe(true);
+        expect(previewRes.error).toBeUndefined();
+
+        const removeRes = await removeWorktreeAsync({
+          worktreePath: fixture.wtDir,
+          deleteBranch: true,
           forceDeleteBranch: true,
         });
 

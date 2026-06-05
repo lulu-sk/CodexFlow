@@ -234,6 +234,35 @@ async function hasDirtyWorktreeForRemoveAsync(args: {
 }
 
 /**
+ * 校验 Git 引用是否能解析到提交对象。
+ * - 用途：删除 worktree 前的合并检查只需要知道目标基线是否可验证；
+ * - 引用不存在时返回 valid=false，不把它当成阻塞删除流程的 fatal 错误。
+ */
+async function verifyGitCommitRefForRemoveAsync(args: {
+  repoDir: string;
+  ref: string;
+  gitPath?: string;
+  timeoutMs?: number;
+}): Promise<{ ok: true; valid: boolean } | { ok: false; error: string }> {
+  const repoDir = toFsPathAbs(args.repoDir);
+  const ref = String(args.ref || "").trim();
+  if (!repoDir || !ref) return { ok: false, error: "missing args" };
+
+  const verified = await execGitAsync({
+    gitPath: args.gitPath,
+    argv: ["-C", repoDir, "rev-parse", "-q", "--verify", `${ref}^{commit}`],
+    timeoutMs: Math.max(200, Math.min(30_000, Number(args.timeoutMs ?? 8000))),
+  });
+  if (verified.ok) return { ok: true, valid: true };
+  if (verified.exitCode === 1) return { ok: true, valid: false };
+
+  return {
+    ok: false,
+    error: String(verified.error || verified.stderr || verified.stdout || "git rev-parse failed").trim() || "git rev-parse failed",
+  };
+}
+
+/**
  * 检查指定路径是否仍登记在 `git worktree list` 中。
  * - 用途：兼容 `git worktree remove` 已完成解绑，但目录清理因“Directory not empty”失败的场景；
  * - 返回 `registered=false` 时，可继续执行分支删除与兜底目录清理，而不再把该错误视为整体失败。
@@ -1872,12 +1901,20 @@ export async function removeWorktreeAsync(req: RemoveWorktreeRequest): Promise<R
     const wtBranchForDelete = String(resolvedWtBranch || "").trim();
     const baseRef = String(baseRefForMergedCheck || "").trim() || "HEAD";
     if (req.deleteBranch && wtBranchForDelete) {
-      const merged = await execGitAsync({ gitPath, argv: ["-C", repoMainPath, "merge-base", "--is-ancestor", wtBranchForDelete, baseRef], timeoutMs: 10_000 });
-      // merge-base --is-ancestor：0=是祖先（已合并），1=否，其它=错误
-      if (merged.exitCode !== 0 && merged.exitCode !== 1) {
-        return { ok: false, removedWorktree: false, removedBranch: false, error: merged.error || merged.stderr.trim() || "git merge-base failed" };
+      const baseRefValid = await verifyGitCommitRefForRemoveAsync({ repoDir: repoMainPath, ref: baseRef, gitPath, timeoutMs: 8000 });
+      if (!baseRefValid.ok) {
+        return { ok: false, removedWorktree: false, removedBranch: false, error: baseRefValid.error };
       }
-      isMergedWithBaseRef = merged.exitCode === 0;
+      if (!baseRefValid.valid) {
+        isMergedWithBaseRef = false;
+      } else {
+        const merged = await execGitAsync({ gitPath, argv: ["-C", repoMainPath, "merge-base", "--is-ancestor", wtBranchForDelete, baseRef], timeoutMs: 10_000 });
+        // merge-base --is-ancestor：0=是祖先（已合并），1=否，其它=错误
+        if (merged.exitCode !== 0 && merged.exitCode !== 1) {
+          return { ok: false, removedWorktree: false, removedBranch: false, error: merged.error || merged.stderr.trim() || "git merge-base failed" };
+        }
+        isMergedWithBaseRef = merged.exitCode === 0;
+      }
     }
 
     let needsForceRemoveWorktree = false;
