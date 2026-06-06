@@ -581,6 +581,14 @@ contextBridge.exposeInMainWorld('host', {
       return [] as string[];
     },
   },
+  onboarding: {
+    get: async () => {
+      return await ipcRenderer.invoke("onboarding.get");
+    },
+    update: async (partial: { yoloPromptHandled?: boolean }) => {
+      return await ipcRenderer.invoke("onboarding.update", partial);
+    },
+  },
   storage: {
     getAppDataInfo: async () => {
       return await ipcRenderer.invoke('storage.appData.info');

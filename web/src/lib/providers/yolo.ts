@@ -3,6 +3,13 @@
 
 export type YoloProviderId = "codex" | "claude" | "gemini";
 
+export const BUILT_IN_YOLO_PROVIDER_IDS: readonly YoloProviderId[] = ["codex", "claude", "gemini"];
+
+type ProviderStartupItem = {
+  id?: string;
+  startupCmd?: string;
+};
+
 /**
  * 判断指定 Provider 是否支持 YOLO 预设命令。
  */
@@ -52,6 +59,43 @@ export function isYoloPresetEnabled(providerId: string, startupCmd: string | nul
   if (!preset) return false;
   const cur = normalizeCliCommandForCompare(String(startupCmd || ""));
   return cur.length > 0 && cur === normalizeCliCommandForCompare(preset);
+}
+
+/**
+ * 判断内置三引擎中是否已有任意一个启用 YOLO 预设。
+ */
+export function isAnyBuiltInYoloPresetEnabled(items: readonly ProviderStartupItem[] | null | undefined): boolean {
+  const list = Array.isArray(items) ? items : [];
+  return BUILT_IN_YOLO_PROVIDER_IDS.some((providerId) => {
+    const item = list.find((it) => String(it?.id || "").trim() === providerId);
+    return isYoloPresetEnabled(providerId, item?.startupCmd);
+  });
+}
+
+/**
+ * 将内置三引擎的启动命令统一切换为 YOLO 预设，同时保留其它 Provider 配置。
+ */
+export function enableBuiltInYoloPresetItems<T extends ProviderStartupItem>(items: readonly T[] | null | undefined): T[] {
+  const source = Array.isArray(items) ? items : [];
+  const next = source.map((item) => ({ ...item })) as T[];
+  const byId = new Map<string, T>();
+  for (const item of next) {
+    const id = String(item?.id || "").trim();
+    if (id && !byId.has(id)) byId.set(id, item);
+  }
+
+  for (const providerId of BUILT_IN_YOLO_PROVIDER_IDS) {
+    const preset = getYoloPresetStartupCmd(providerId);
+    if (!preset) continue;
+    const existing = byId.get(providerId);
+    if (existing) {
+      existing.startupCmd = preset;
+      continue;
+    }
+    next.push({ id: providerId, startupCmd: preset } as T);
+  }
+
+  return next;
 }
 
 /**
