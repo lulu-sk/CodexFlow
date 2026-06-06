@@ -50,10 +50,20 @@ function hasNonAsciiOrControl(text: string): boolean {
 }
 
 /**
- * 判断是否为 Windows 系终端（PowerShell / PowerShell 7）。
+ * 判断是否为 Windows 系终端（PowerShell / PowerShell 7 / CMD）。
  */
 export function isWindowsLikeTerminal(mode: TerminalMode): boolean {
   return mode !== "wsl";
+}
+
+/**
+ * 判断是否为 CMD 终端。
+ *
+ * @param mode 终端模式
+ * @returns 是否 CMD
+ */
+export function isCmdTerminal(mode: TerminalMode): boolean {
+  return mode === "cmd";
 }
 
 /**
@@ -166,6 +176,35 @@ export function powerShellArgToken(value: string): string {
 }
 
 /**
+ * 将字符串转换为 cmd.exe 参数 token。
+ *
+ * @param value 参数值
+ * @returns 可拼接到 CMD 命令行中的参数文本
+ */
+export function cmdArgToken(value: string): string {
+  const raw = String(value ?? "").replace(/\r\n/g, " ").replace(/\r/g, " ").replace(/\n/g, " ");
+  if (raw.length === 0) return "\"\"";
+  if (!/[\s"&<>|^()%!]/.test(raw)) return raw;
+  const rendered: string[] = [];
+  let quotedPart = "";
+  const flushQuotedPart = () => {
+    if (!quotedPart) return;
+    rendered.push(`"${quotedPart.replace(/"/g, "\"\"")}"`);
+    quotedPart = "";
+  };
+  for (const ch of raw) {
+    if (ch === "%") {
+      flushQuotedPart();
+      rendered.push("^%");
+      continue;
+    }
+    quotedPart += ch;
+  }
+  flushQuotedPart();
+  return rendered.join("") || "\"\"";
+}
+
+/**
  * 基于 argv 构造 PowerShell 调用表达式（使用 call operator `&`）。
  * - 命令与参数会被转换为可安全粘贴/执行的 token（默认单引号；包含换行或非 ASCII 的参数自动 Base64 编码还原）。
  */
@@ -176,4 +215,16 @@ export function buildPowerShellCall(argv: string[]): string {
   const rendered = [`& ${powerShellArgToken(cmd)}`];
   for (const a of args) rendered.push(powerShellArgToken(a));
   return rendered.join(" ");
+}
+
+/**
+ * 基于 argv 构造 CMD 调用表达式。
+ *
+ * @param argv 命令与参数列表
+ * @returns 可直接在 cmd.exe 中执行的命令行
+ */
+export function buildCmdCall(argv: string[]): string {
+  const parts = (argv || []).map((x) => String(x || "")).filter((x) => x.length > 0);
+  if (parts.length === 0) return "";
+  return parts.map(cmdArgToken).join(" ");
 }

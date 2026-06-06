@@ -80,6 +80,7 @@ function clampPercent0To100(value: number): number {
 function resolveGeminiEnvKey(terminalMode?: TerminalMode, distro?: string): string {
   if (terminalMode === "wsl") return `wsl:${distro ?? ""}`;
   if (terminalMode === "pwsh") return "windows-pwsh";
+  if (terminalMode === "cmd") return "windows-cmd";
   if (terminalMode === "windows") return "windows";
   return "default";
 }

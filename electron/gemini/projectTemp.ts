@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { getDistroHomeSubPathUNCAsync } from "../wsl";
 
-export type GeminiRuntimeEnv = "wsl" | "windows" | "pwsh";
+export type GeminiRuntimeEnv = "wsl" | "windows" | "pwsh" | "cmd";
 
 export type ResolveGeminiProjectTempOptions = {
   projectWinRoot?: string;
@@ -258,7 +258,7 @@ async function claimGeminiProjectId(
 /**
  * 中文说明：根据运行环境选择当前 Gemini 项目的“真实项目根路径”。
  * - WSL 优先使用 WSL 根路径
- * - Windows/Pwsh 优先使用 Windows 根路径
+ * - Windows/Pwsh/CMD 优先使用 Windows 根路径
  */
 function resolveGeminiProjectRoot(options: ResolveGeminiProjectTempOptions): string {
   const runtimeEnv = options.runtimeEnv || "windows";
@@ -322,7 +322,7 @@ async function resolveConfiguredGeminiHomeForWindowsWsl(
  * - Windows 主进程 + WSL 运行时若 `GEMINI_CLI_HOME` 为 POSIX 路径，则转成 UNC
  * - WSL on Windows 返回 UNC 路径
  * - WSL 单元测试/非 Windows 环境优先使用 `GEMINI_CLI_HOME`，否则返回 POSIX `~/.gemini`
- * - Windows/Pwsh 返回本机 `%USERPROFILE%\\.gemini`
+ * - Windows/Pwsh/CMD 返回本机 `%USERPROFILE%\\.gemini`
  */
 async function resolveGeminiHomePath(
   options: ResolveGeminiProjectTempOptions,

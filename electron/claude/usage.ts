@@ -36,7 +36,7 @@ export type ClaudeUsageSnapshot = {
   };
 };
 
-type ProviderRuntimeEnv = { terminal: "wsl" | "windows" | "pwsh"; distro?: string };
+type ProviderRuntimeEnv = { terminal: "wsl" | "windows" | "pwsh" | "cmd"; distro?: string };
 
 type ClaudeApiUsageCache = {
   five_hour_utilization?: number;
@@ -246,7 +246,7 @@ export async function getClaudeUsageSnapshotAsync(env: ProviderRuntimeEnv): Prom
       throw new Error("Claude 用量信息不可用（未找到缓存，且 WSL 抓取失败）");
     }
 
-    if (terminal === "windows" || terminal === "pwsh") {
+    if (terminal === "windows" || terminal === "pwsh" || terminal === "cmd") {
       const cache = await readClaudeCacheFileWindowsAsync();
       const parsed = cache ? parseClaudeCclineCache(cache) : null;
       if (parsed) return parsed;

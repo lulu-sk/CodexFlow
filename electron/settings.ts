@@ -685,7 +685,7 @@ export async function ensureFirstRunTerminalSelection(): Promise<AppSettings> {
     const hasStore = fs.existsSync(storePath);
     const current = getSettings();
     // 若已有设置且包含明确的 terminal，视为非首次，无需更改
-    if (hasStore && (current.terminal === 'wsl' || current.terminal === 'windows' || current.terminal === 'pwsh')) {
+    if (hasStore && (current.terminal === 'wsl' || current.terminal === 'windows' || current.terminal === 'pwsh' || current.terminal === 'cmd')) {
       return current;
     }
 

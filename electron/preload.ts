@@ -4,7 +4,8 @@
 const { contextBridge, ipcRenderer } = require('electron');
 // preload 层：集中做 IPC 分发与安全封装
 
-type OpenArgs = { terminal?: 'wsl' | 'windows' | 'pwsh'; distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string; env?: Record<string, string> };
+type TerminalMode = 'wsl' | 'windows' | 'pwsh' | 'cmd';
+type OpenArgs = { terminal?: TerminalMode; distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string; env?: Record<string, string> };
 
 type PtyDataPayload = { id: string; data: string };
 type PtyExitPayload = { id: string; exitCode?: number };
@@ -743,7 +744,7 @@ contextBridge.exposeInMainWorld('host', {
      * 中文说明：探测当前 Gemini CLI 版本对应的外部编辑器快捷键策略。
      */
     resolveGeminiExternalEditorShortcut: async (args: {
-      terminal?: 'wsl' | 'windows' | 'pwsh';
+      terminal?: TerminalMode;
       distro?: string;
       startupCmd?: string;
     }) => {
@@ -809,11 +810,11 @@ contextBridge.exposeInMainWorld('host', {
     openExternalUrl: async (url: string) => {
       return await ipcRenderer.invoke('utils.openExternalUrl', { url });
     },
-    openExternalConsole: async (args: { terminal?: 'wsl' | 'windows' | 'pwsh'; wslPath?: string; winPath?: string; distro?: string; startupCmd?: string; title?: string }) => {
+    openExternalConsole: async (args: { terminal?: TerminalMode; wslPath?: string; winPath?: string; distro?: string; startupCmd?: string; title?: string }) => {
       return await ipcRenderer.invoke('utils.openExternalConsole', args);
     },
     // 兼容旧调用名
-    openExternalWSLConsole: async (args: { terminal?: 'wsl' | 'windows' | 'pwsh'; wslPath?: string; winPath?: string; distro?: string; startupCmd?: string; title?: string }) => {
+    openExternalWSLConsole: async (args: { terminal?: TerminalMode; wslPath?: string; winPath?: string; distro?: string; startupCmd?: string; title?: string }) => {
       return await ipcRenderer.invoke('utils.openExternalConsole', args);
     },
     pathExists: async (p: string, dirOnly?: boolean) => {
@@ -844,13 +845,13 @@ contextBridge.exposeInMainWorld('host', {
     }
   }
   , images: {
-    saveDataURL: async (args: { dataURL: string; projectWinRoot?: string; projectWslRoot?: string; projectName?: string; ext?: string; prefix?: string; providerId?: string; runtimeEnv?: 'wsl' | 'windows' | 'pwsh'; distro?: string }) => {
+    saveDataURL: async (args: { dataURL: string; projectWinRoot?: string; projectWslRoot?: string; projectName?: string; ext?: string; prefix?: string; providerId?: string; runtimeEnv?: TerminalMode; distro?: string }) => {
       return await ipcRenderer.invoke('images.saveDataURL', args);
     },
     clipboardHasImage: async () => {
       return await ipcRenderer.invoke('images.clipboardHasImage');
     },
-    saveFromClipboard: async (args: { projectWinRoot?: string; projectWslRoot?: string; projectName?: string; prefix?: string; providerId?: string; runtimeEnv?: 'wsl' | 'windows' | 'pwsh'; distro?: string }) => {
+    saveFromClipboard: async (args: { projectWinRoot?: string; projectWslRoot?: string; projectName?: string; prefix?: string; providerId?: string; runtimeEnv?: TerminalMode; distro?: string }) => {
       return await ipcRenderer.invoke('images.saveFromClipboard', args);
     },
     copyToClipboard: async (args: { localPath?: string; src?: string; fallbackSrc?: string }) => {

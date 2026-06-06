@@ -7,7 +7,7 @@ type GeminiAttachmentChipLike = {
   fileName?: string;
 };
 
-type GeminiTerminalMode = "wsl" | "windows" | "pwsh";
+type GeminiTerminalMode = "wsl" | "windows" | "pwsh" | "cmd";
 
 /**
  * 中文说明：判断当前 Chip 是否应按 Gemini 图片附件语义发送。
@@ -24,7 +24,7 @@ export function isGeminiImageChip(chip: GeminiAttachmentChipLike | null | undefi
 export function escapeGeminiAttachmentPath(pathText: string, terminalMode: GeminiTerminalMode): string {
   const raw = String(pathText || "");
   if (!raw) return "";
-  if (terminalMode === "windows" || terminalMode === "pwsh") {
+  if (terminalMode === "windows" || terminalMode === "pwsh" || terminalMode === "cmd") {
     if (/[\s&()[\]{}^=;!'+,`~%$@#]/.test(raw)) return `"${raw}"`;
     return raw;
   }

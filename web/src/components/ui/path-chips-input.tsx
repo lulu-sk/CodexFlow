@@ -53,7 +53,7 @@ export interface PathChipsInputProps extends Omit<React.InputHTMLAttributes<HTML
   /** 是否渲染为“多行区域”的外观与高度（保持原 UI 习惯） */
   multiline?: boolean;
   /** 运行环境：决定鼠标悬停时 title 显示路径风格（默认 windows） */
-  runEnv?: 'wsl' | 'windows' | 'pwsh';
+  runEnv?: 'wsl' | 'windows' | 'pwsh' | 'cmd';
   /** 当前输入框所属 Provider；仅 Gemini 会启用专用图片保存策略 */
   providerId?: string;
   /** 当前 WSL 发行版名称；仅 Gemini + WSL 时需要 */
@@ -124,7 +124,7 @@ function isLikelyRelativePath(s: string): boolean {
  * 中文说明：判断当前运行环境是否属于 Windows 原生终端。
  */
 function isWindowsLikeRunEnv(runEnv?: PathChipsInputProps["runEnv"]): boolean {
-  return runEnv === "windows" || runEnv === "pwsh";
+  return runEnv === "windows" || runEnv === "pwsh" || runEnv === "cmd";
 }
 
 /**
@@ -152,7 +152,7 @@ function toWindowsPathText(pathText: string): string {
 /**
  * 中文说明：根据当前终端环境与路径风格，生成应写入 Chip 的路径字段。
  * - `wsl`：保留 WSL 路径用于发送，同时尽量补充 Windows 路径便于预览与系统操作。
- * - `windows/pwsh`：优先保留 Windows 路径，避免把 Chip 文本转换成 WSL 风格。
+ * - `windows/pwsh/cmd`：优先保留 Windows 路径，避免把 Chip 文本转换成 WSL 风格。
  */
 function buildChipPaths(args: {
   rawPath: string;

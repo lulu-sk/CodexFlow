@@ -257,7 +257,7 @@ function normalizeProviderEnvMap(
     const key = String(id || "").trim();
     if (!key) continue;
     const terminal: TerminalMode =
-      v?.terminal === "wsl" || v?.terminal === "windows" || v?.terminal === "pwsh"
+      v?.terminal === "wsl" || v?.terminal === "windows" || v?.terminal === "pwsh" || v?.terminal === "cmd"
         ? v.terminal
         : fallback.terminal;
     const distro = String(v?.distro || fallback.distro).trim() || fallback.distro;
@@ -382,7 +382,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
       const cur = prev[id] || prev[providersActiveId] || { terminal: "wsl" as TerminalMode, distro: "Ubuntu-24.04" };
       const next: ProviderEnvMap = { ...prev };
       next[id] = {
-        terminal: (patch.terminal === "wsl" || patch.terminal === "windows" || patch.terminal === "pwsh") ? patch.terminal : cur.terminal,
+        terminal: (patch.terminal === "wsl" || patch.terminal === "windows" || patch.terminal === "pwsh" || patch.terminal === "cmd") ? patch.terminal : cur.terminal,
         distro: typeof patch.distro === "string" && patch.distro.trim().length > 0 ? patch.distro.trim() : cur.distro,
       };
       return next;
@@ -1859,6 +1859,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                               <SelectItem value="wsl">{t("settings:terminalMode.wsl")}</SelectItem>
                               <SelectItem value="pwsh" disabled={pwshAvailable === false}>{t("settings:terminalMode.pwsh")}</SelectItem>
                               <SelectItem value="windows">{t("settings:terminalMode.windows")}</SelectItem>
+                              <SelectItem value="cmd">{t("settings:terminalMode.cmd")}</SelectItem>
                             </SelectContent>
                           </Select>
                         </div>

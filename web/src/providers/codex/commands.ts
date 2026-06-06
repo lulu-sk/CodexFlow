@@ -17,6 +17,13 @@ export function injectCodexTraceEnv(args: {
   const base = raw.length > 0 ? raw : "codex";
   if (!args.traceEnabled) return base;
 
+  if (args.terminalMode === "cmd") {
+    if (/RUST_LOG\s*=/.test(base)) {
+      return base;
+    }
+    return `set "RUST_LOG=codex_tui=trace" && ${base}`;
+  }
+
   const isWindowsLike = args.terminalMode !== "wsl";
   if (isWindowsLike) {
     if (/RUST_LOG\s*=/.test(base) || base.includes("$env:RUST_LOG")) {
