@@ -357,11 +357,11 @@ export class PTYManager {
         cwd: undefined,
         env
       });
-    } else if (termMode === 'windows' || termMode === 'pwsh') {
-      // Windows 本地终端（PowerShell / PowerShell 7）
-      const resolved = resolveWindowsShell(termMode === 'pwsh' ? 'pwsh' : 'windows');
+    } else if (termMode === 'windows' || termMode === 'pwsh' || termMode === 'cmd') {
+      // Windows 本地终端（Windows PowerShell / PowerShell 7 / CMD）
+      const resolved = resolveWindowsShell(termMode === 'pwsh' ? 'pwsh' : termMode === 'cmd' ? 'cmd' : 'windows');
       const shell = resolved.command;
-      const args: string[] = ['-NoLogo'];
+      const args: string[] = termMode === 'cmd' ? ['/d', '/v:off'] : ['-NoLogo'];
       const cwd = winPath && winPath.trim().length > 0 ? winPath : undefined;
       proc = pty.spawn(shell, args, {
         name: 'xterm-256color',
@@ -428,12 +428,12 @@ export class PTYManager {
     if (startupCmd) {
       const isWin = os.platform() === 'win32';
       const mode = isWin ? (termMode || 'wsl') : 'posix';
-      const isWinShell = mode === 'windows' || mode === 'pwsh';
+      const isWinShell = mode === 'windows' || mode === 'pwsh' || mode === 'cmd';
       setImmediate(() => {
         const p = this.sessions.get(id);
         if (!p) return; // PTY 可能已关闭
         if (isWinShell) {
-          // PowerShell / PowerShell 7 中直接执行命令（cwd 已设置）
+          // Windows 本地 shell 中直接执行命令（cwd 已设置）
           p.write(`${startupCmd}\r`);
           dlog(`[pty] startupCmd executed (windows) id=${id} shell=${mode}`);
         } else if (isWin) {

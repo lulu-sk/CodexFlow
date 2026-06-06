@@ -63,7 +63,7 @@ export function normalizeProvidersSettings(
   for (const [id, v] of Object.entries(envInput || {})) {
     const key = String(id || "").trim();
     if (!key) continue;
-    const terminal = (v?.terminal === "pwsh" || v?.terminal === "windows" || v?.terminal === "wsl") ? v.terminal : legacy.terminal;
+    const terminal = (v?.terminal === "pwsh" || v?.terminal === "windows" || v?.terminal === "wsl" || v?.terminal === "cmd") ? v.terminal : legacy.terminal;
     const distro = String(v?.distro || legacy.distro).trim() || legacy.distro;
     env[key] = { terminal, distro };
   }

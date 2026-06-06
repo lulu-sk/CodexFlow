@@ -36,7 +36,7 @@ export type PersistedConsoleSession = {
   bootId?: string;
   tabsByProject: Record<string, PersistedConsoleTab[]>;
   ptyByTab: Record<string, string>;
-  tabEnvByTab?: Record<string, { terminal?: "wsl" | "windows" | "pwsh"; distro?: string }>;
+  tabEnvByTab?: Record<string, { terminal?: "wsl" | "windows" | "pwsh" | "cmd"; distro?: string }>;
   windowUiStateById?: Record<string, PersistedWindowUiState>;
 };
 
@@ -63,16 +63,16 @@ function toNonEmptyString(value: unknown): string {
 /**
  * 归一化 tab 运行环境快照；仅保留当前渲染层真正依赖的字段。
  */
-function normalizeTabEnvByTab(input: unknown): Record<string, { terminal?: "wsl" | "windows" | "pwsh"; distro?: string }> {
-  const out: Record<string, { terminal?: "wsl" | "windows" | "pwsh"; distro?: string }> = {};
+function normalizeTabEnvByTab(input: unknown): Record<string, { terminal?: "wsl" | "windows" | "pwsh" | "cmd"; distro?: string }> {
+  const out: Record<string, { terminal?: "wsl" | "windows" | "pwsh" | "cmd"; distro?: string }> = {};
   if (!input || typeof input !== "object") return out;
   for (const [tabIdRaw, itemRaw] of Object.entries(input as Record<string, unknown>)) {
     const tabId = toNonEmptyString(tabIdRaw);
     if (!tabId || !itemRaw || typeof itemRaw !== "object") continue;
     const item = itemRaw as Record<string, unknown>;
     const terminalRaw = toNonEmptyString(item.terminal).toLowerCase();
-    const terminal = terminalRaw === "windows" || terminalRaw === "pwsh" || terminalRaw === "wsl"
-      ? (terminalRaw as "wsl" | "windows" | "pwsh")
+    const terminal = terminalRaw === "windows" || terminalRaw === "pwsh" || terminalRaw === "wsl" || terminalRaw === "cmd"
+      ? (terminalRaw as "wsl" | "windows" | "pwsh" | "cmd")
       : undefined;
     const distro = toNonEmptyString(item.distro);
     out[tabId] = {

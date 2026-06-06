@@ -23,7 +23,7 @@ export type GeminiQuotaSnapshot = {
   buckets: GeminiQuotaBucket[];
 };
 
-type ProviderRuntimeEnv = { terminal: "wsl" | "windows" | "pwsh"; distro?: string };
+type ProviderRuntimeEnv = { terminal: "wsl" | "windows" | "pwsh" | "cmd"; distro?: string };
 
 type GeminiOauthCredsFile = {
   access_token?: string;
@@ -233,7 +233,7 @@ async function readGeminiOauthCredsWslAsync(distro?: string): Promise<GeminiOaut
 async function resolveGeminiOauthCredsAsync(env: ProviderRuntimeEnv): Promise<GeminiOauthCredsFile | null> {
   // 说明：不做跨环境回退，严格按当前 Provider 运行环境读取对应路径。
   // - terminal=wsl：读取 WSL 内 `~/.gemini/oauth_creds.json`
-  // - terminal=windows/pwsh：读取 Windows 内 `%USERPROFILE%\\.gemini\\oauth_creds.json`
+  // - terminal=windows/pwsh/cmd：读取 Windows 内 `%USERPROFILE%\\.gemini\\oauth_creds.json`
   if (env.terminal === "wsl") return readGeminiOauthCredsWslAsync(env.distro);
   return readGeminiOauthCredsWindowsAsync();
 }

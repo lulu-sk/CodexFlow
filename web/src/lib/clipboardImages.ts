@@ -37,7 +37,7 @@ export type PersistImagesOptions = {
   projectName?: string;
   prefix?: string;
   providerId?: string;
-  runtimeEnv?: "wsl" | "windows" | "pwsh";
+  runtimeEnv?: "wsl" | "windows" | "pwsh" | "cmd";
   distro?: string;
 };
 

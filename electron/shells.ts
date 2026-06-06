@@ -4,9 +4,9 @@
 import fs from "node:fs";
 import { execFile } from "node:child_process";
 
-export type TerminalMode = "wsl" | "windows" | "pwsh";
+export type TerminalMode = "wsl" | "windows" | "pwsh" | "cmd";
 
-export type WindowsShellKind = "powershell" | "pwsh";
+export type WindowsShellKind = "powershell" | "pwsh" | "cmd";
 
 export type WindowsShellResolution = {
   command: string;
@@ -16,6 +16,7 @@ export type WindowsShellResolution = {
 export function normalizeTerminal(raw: unknown): TerminalMode {
   const v = typeof raw === "string" ? raw.trim().toLowerCase() : "";
   if (v === "pwsh") return "pwsh";
+  if (v === "cmd") return "cmd";
   if (v === "windows") return "windows";
   return "wsl";
 }
@@ -100,7 +101,10 @@ export async function hasPwsh(): Promise<boolean> {
   return !!hit;
 }
 
-export function resolveWindowsShell(mode: "windows" | "pwsh"): WindowsShellResolution {
+export function resolveWindowsShell(mode: "windows" | "pwsh" | "cmd"): WindowsShellResolution {
+  if (mode === "cmd") {
+    return { command: "cmd.exe", kind: "cmd" };
+  }
   if (mode === "pwsh") {
     const fast = cacheFresh() ? cachedPwsh : tryFastLocalPwsh();
     if (fast) return { command: fast, kind: "pwsh" };

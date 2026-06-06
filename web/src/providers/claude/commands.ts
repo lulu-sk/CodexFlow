@@ -2,7 +2,7 @@
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
 import type { AppSettings } from "@/types/host";
-import { bashSingleQuote, buildPowerShellCall, isWindowsLikeTerminal, splitCommandLineToArgv } from "@/lib/shell";
+import { bashSingleQuote, buildCmdCall, buildPowerShellCall, isCmdTerminal, isWindowsLikeTerminal, splitCommandLineToArgv } from "@/lib/shell";
 
 type TerminalMode = NonNullable<AppSettings["terminal"]>;
 
@@ -17,7 +17,7 @@ export function resolveClaudeStartupCmd(cmd: string | null | undefined): string 
 /**
  * 构造 Claude 的“继续对话”启动命令：
  * - 优先 `--resume <sessionId>`（若可用），失败时回退 `--continue`
- * - 适配 WSL（bash）与 Windows（PowerShell）两种执行环境
+ * - 适配 WSL（bash）、PowerShell 与 CMD 执行环境
  */
 export function buildClaudeResumeStartupCmd(args: {
   cmd: string | null | undefined;
@@ -27,6 +27,15 @@ export function buildClaudeResumeStartupCmd(args: {
   const baseCmdRaw = resolveClaudeStartupCmd(args.cmd);
   const sessionId = String(args.sessionId || "").trim();
   const hasSessionId = sessionId.length > 0;
+
+  if (isCmdTerminal(args.terminalMode)) {
+    const baseArgv = splitCommandLineToArgv(baseCmdRaw);
+    const base = baseArgv.length > 0 ? baseArgv : ["claude"];
+    const cont = buildCmdCall([...base, "--continue"]);
+    if (!hasSessionId) return cont;
+    const resume = buildCmdCall([...base, "--resume", sessionId]);
+    return `${resume} || ${cont}`;
+  }
 
   if (isWindowsLikeTerminal(args.terminalMode)) {
     const baseArgv = splitCommandLineToArgv(baseCmdRaw);

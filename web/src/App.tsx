@@ -109,7 +109,7 @@ import {
   getProviderRuleFileName,
   type BuiltInRuleProviderId,
 } from "@/lib/engine-rules";
-import { bashSingleQuote, buildPowerShellCall, powerShellArgToken, splitCommandLineToArgv } from "@/lib/shell";
+import { bashSingleQuote, buildCmdCall, buildPowerShellCall, isCmdTerminal, powerShellArgToken, splitCommandLineToArgv } from "@/lib/shell";
 import SettingsDialog from "@/features/settings/settings-dialog";
 import {
   DEFAULT_TERMINAL_FONT_FAMILY,
@@ -1613,7 +1613,7 @@ export default function CodexFlowManagerUI() {
     const snapshot = restoredConsoleSession?.tabEnvByTab || {};
     const next: Record<string, Required<ProviderEnv>> = {};
     for (const [tabId, item] of Object.entries(snapshot)) {
-      const terminal = item?.terminal === "windows" || item?.terminal === "pwsh" ? item.terminal : "wsl";
+      const terminal = normalizeTerminalMode(item?.terminal);
       next[tabId] = {
         terminal,
         distro: String(item?.distro || ""),
@@ -1756,7 +1756,7 @@ export default function CodexFlowManagerUI() {
         const nextEnvByTab: Record<string, Required<ProviderEnv>> = {};
         for (const [tabId, item] of Object.entries(nextSnapshot.tabEnvByTab || {})) {
           nextEnvByTab[tabId] = {
-            terminal: item?.terminal === "windows" || item?.terminal === "pwsh" ? item.terminal : "wsl",
+            terminal: normalizeTerminalMode(item?.terminal),
             distro: String(item?.distro || ""),
           };
         }
@@ -9471,6 +9471,19 @@ export default function CodexFlowManagerUI() {
               <span>{t("settings:terminalMode.pwsh")}</span>
               {terminalMode === "pwsh" ? <Check className="h-4 w-4 text-slate-600" /> : null}
             </DropdownMenuItem>
+            <DropdownMenuItem
+              className="flex items-center justify-between gap-2"
+              onClick={async () => {
+                const nextEnv: Required<ProviderEnv> = { ...getProviderEnv(activeProviderId), terminal: "cmd" };
+                const nextMap = { ...providerEnvById, [activeProviderId]: nextEnv };
+                setProviderEnvById(nextMap);
+                setTerminalMode("cmd" as any);
+                await persistProviders({ activeId: activeProviderId, items: providerItems, env: nextMap });
+              }}
+            >
+              <span>{t("settings:terminalMode.cmd")}</span>
+              {terminalMode === "cmd" ? <Check className="h-4 w-4 text-slate-600" /> : null}
+            </DropdownMenuItem>
 
             {terminalMode === "wsl" ? (
               <>
@@ -10590,6 +10603,18 @@ export default function CodexFlowManagerUI() {
 	      const resumeArg = `experimental_resume="${resumePath.replace(/"/g, '\\"')}"`;
 	      const baseArgv = splitCommandLineToArgv(baseCmd);
 	      const base = baseArgv.length > 0 ? baseArgv : ["codex"];
+	      if (isCmdTerminal(mode)) {
+	        const fallbackCall = buildCmdCall([...base, "-c", resumeArg]);
+	        const fallbackCmd = injectTrace(fallbackCall);
+	        if (!preferLegacyOnly && resumeSessionId) {
+	          const resumeCall = buildCmdCall([...base, "resume", resumeSessionId]);
+	          const resumeCmd = injectTrace(resumeCall);
+	          const startupCmd = `${resumeCmd} || ${fallbackCmd}`;
+	          return { providerId: "codex", startupCmd, session, resumeLabel: resumePath, sessionId: resumeSessionId, strategy: 'resume+fallback', resumeHint: resumeModeHint, forceLegacyCli: false };
+	        }
+	        const strategy = preferLegacyOnly ? 'legacy-only' : 'experimental_resume';
+	        return { providerId: "codex", startupCmd: fallbackCmd, session, resumeLabel: resumePath, sessionId: resumeSessionId, strategy, resumeHint: resumeModeHint, forceLegacyCli: false };
+	      }
 	      const fallbackCall = buildPowerShellCall([...base, "-c", resumeArg]);
 	      const fallbackCmd = injectTrace(fallbackCall);
 	      if (!preferLegacyOnly && resumeSessionId) {
@@ -14916,7 +14941,7 @@ function serializeConsoleTabsByProject(
  */
 function serializeConsoleTabEnvByTab(
   tabEnvByTab: Record<string, Required<ProviderEnv>>,
-): Record<string, { terminal?: "wsl" | "windows" | "pwsh"; distro?: string }> {
+): Record<string, { terminal?: "wsl" | "windows" | "pwsh" | "cmd"; distro?: string }> {
   return Object.fromEntries(
     Object.entries(tabEnvByTab || {}).map(([tabId, env]) => [
       tabId,

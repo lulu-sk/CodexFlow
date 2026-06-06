@@ -74,7 +74,7 @@ import { resolveProvider } from "@/lib/providers/resolve";
 import { injectCodexTraceEnv } from "@/providers/codex/commands";
 import { buildClaudeResumeStartupCmd } from "@/providers/claude/commands";
 import { buildGeminiResumeStartupCmd } from "@/providers/gemini/commands";
-import { bashSingleQuote, buildPowerShellCall, powerShellArgToken, splitCommandLineToArgv } from "@/lib/shell";
+import { bashSingleQuote, buildCmdCall, buildPowerShellCall, cmdArgToken, isCmdTerminal, powerShellArgToken, splitCommandLineToArgv } from "@/lib/shell";
 import SettingsDialog from "@/features/settings/settings-dialog";
 import {
   DEFAULT_TERMINAL_FONT_FAMILY,
@@ -455,7 +455,7 @@ type HistoryTimelineGroup = {
 
 type ResumeExecutionMode = 'internal' | 'external';
 type LegacyResumePrompt = { filePath: string; mode: ResumeExecutionMode };
-type ShellLabel = 'PowerShell' | 'PowerShell 7' | 'WSL';
+type ShellLabel = 'PowerShell' | 'PowerShell 7' | 'CMD' | 'WSL';
 type BlockingNotice =
   | { type: 'shell-mismatch'; expected: ShellLabel; current: ShellLabel }
   | { type: 'external-console'; env: ShellLabel };
@@ -1056,7 +1056,7 @@ function areStringArraysEqual(a: string[] | null | undefined, b: string[] | null
  */
 function resolveWorktreePromptChipPath(args: { chip: PathChip; terminalMode?: TerminalMode }): string {
   const chipAny = args.chip as any;
-  const preferWindows = args.terminalMode === "windows" || args.terminalMode === "pwsh";
+  const preferWindows = args.terminalMode === "windows" || args.terminalMode === "pwsh" || args.terminalMode === "cmd";
   const candidates = preferWindows
     ? [chipAny?.winPath, chipAny?.wslPath, chipAny?.fileName]
     : [chipAny?.wslPath, chipAny?.winPath, chipAny?.fileName];
@@ -1164,6 +1164,23 @@ function buildProviderStartupCmdWithInitialPrompt(args: {
   const prompt = String(args.prompt || "");
   if (!base) return "";
   if (!prompt.trim()) return base;
+
+  if (isCmdTerminal(args.terminalMode)) {
+    const flattenedPrompt = prompt.replace(/\r\n/g, " ").replace(/\r/g, " ").replace(/\n/g, " ").trim();
+    if (!flattenedPrompt) return base;
+    if (args.providerId === "claude") {
+      const baseArgv = splitCommandLineToArgv(base);
+      const argv = baseArgv.length > 0 ? baseArgv : ["claude"];
+      return buildCmdCall([...argv, flattenedPrompt]);
+    }
+    if (args.providerId === "gemini") {
+      const baseArgv = splitCommandLineToArgv(base);
+      const argv = baseArgv.length > 0 ? baseArgv : ["gemini"];
+      const hasI = argv.includes("-i") || argv.includes("--interactive");
+      return buildCmdCall(hasI ? [...argv, flattenedPrompt] : [...argv, "-i", flattenedPrompt]);
+    }
+    return `${base} ${cmdArgToken(flattenedPrompt)}`.trim();
+  }
 
   if (args.terminalMode !== "wsl") {
     if (args.providerId === "claude") {
@@ -1282,6 +1299,7 @@ function buildAutoCommitMessage(source: "user" | "agent", text: string): string 
 	 */
 	const toShellLabel = (mode: TerminalMode): ShellLabel => {
 	  if (mode === "pwsh") return "PowerShell 7";
+	  if (mode === "cmd") return "CMD";
 	  if (mode === "windows") return "PowerShell";
 	  return "WSL";
 	};
@@ -1292,12 +1310,13 @@ function buildAutoCommitMessage(source: "user" | "agent", text: string): string 
 	const normalizeTerminalMode = (raw: any): TerminalMode => {
 	  const v = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
 	  if (v === 'pwsh') return 'pwsh';
+	  if (v === 'cmd') return 'cmd';
 	  if (v === 'windows') return 'windows';
 	  return 'wsl';
 	};
 
 	/**
-	 * 中文说明：判断当前终端是否属于 Windows 家族（PowerShell / PowerShell 7）。
+	 * 中文说明：判断当前终端是否属于 Windows 家族（PowerShell / PowerShell 7 / CMD）。
 	 */
 	const isWindowsLike = (mode: TerminalMode): boolean => mode !== 'wsl';
 

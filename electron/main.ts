@@ -24,7 +24,7 @@ import { historyItemBelongsToScope } from "./historyScope";
 import { perfLogger } from "./log";
 import settings, { ensureSettingsAutodetect, ensureFirstRunTerminalSelection, type ThemeSetting as SettingsThemeSetting, type AppSettings, type IdeOpenSettings } from "./settings";
 import { getOnboardingState, updateOnboardingState } from "./onboarding";
-import { normalizeTerminal, resolveWindowsShell, detectPwshExecutable } from "./shells";
+import { normalizeTerminal, resolveWindowsShell, detectPwshExecutable, type TerminalMode } from "./shells";
 import { resolveActiveProviderId, resolveProviderRuntimeEnvFromSettings, resolveProviderStartupCmdFromSettings } from "./providers/runtime";
 import i18n from "./i18n";
 import wsl from "./wsl";
@@ -2363,7 +2363,7 @@ function setupAppMenu() {
 
 // -------- IPC: PTY bridge (I/O only) --------
 ipcMain.handle('pty:open', async (_event, args: {
-  terminal?: 'wsl' | 'windows' | 'pwsh'; distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string; env?: Record<string, string>;
+  terminal?: TerminalMode; distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string; env?: Record<string, string>;
 }) => {
   const id = ptyManager.openWSLConsole({
     terminal: args?.terminal as any,
@@ -2431,7 +2431,7 @@ ipcMain.handle('fileIndex.ensure', async (_e, { root, excludes }: { root: string
 });
 
 // 打开外部控制台（根据设置选择 WSL 或 Windows 终端）
-ipcMain.handle('utils.openExternalConsole', async (_e, args: { terminal?: 'wsl' | 'windows' | 'pwsh'; wslPath?: string; winPath?: string; distro?: string; startupCmd?: string; title?: string }) => {
+ipcMain.handle('utils.openExternalConsole', async (_e, args: { terminal?: TerminalMode; wslPath?: string; winPath?: string; distro?: string; startupCmd?: string; title?: string }) => {
   try {
     const platform = process.platform;
     const cfg = settings.getSettings();
@@ -2479,7 +2479,7 @@ ipcMain.handle('utils.openExternalConsole', async (_e, args: { terminal?: 'wsl' 
     ].join("|");
     if (shouldSkipExternalConsoleLaunch(guardKey)) return { ok: true, skipped: true } as const;
 
-    if (platform === 'win32' && (terminal === 'windows' || terminal === 'pwsh')) {
+    if (platform === 'win32' && (terminal === 'windows' || terminal === 'pwsh' || terminal === 'cmd')) {
       // 计算工作目录：优先使用 winPath，其次从 wslPath 推导
       let cwd = String(args?.winPath || '').trim();
       const wslPathRaw = String(args?.wslPath || '').trim();
@@ -2491,6 +2491,30 @@ ipcMain.handle('utils.openExternalConsole', async (_e, args: { terminal?: 'wsl' 
       try { cwd = wsl.normalizeWinPath(cwd); } catch {}
       if (!cwd) { try { cwd = require('node:os').homedir(); } catch { cwd = process.cwd(); } }
       extLog(`[external] windows-shell cwd='${cwd}'`);
+
+      if (terminal === 'cmd') {
+        const resolvedShell = resolveWindowsShell('cmd');
+        const hasStartupCmd = startupCmd.trim().length > 0;
+        const cmdArgs = hasStartupCmd ? ['/d', '/v:off', '/k', startupCmd] : ['/d', '/v:off'];
+        const wtArgs = ['-w', '0', 'new-tab', '--title', title, '--startingDirectory', cwd, '--', resolvedShell.command, ...cmdArgs];
+        {
+          const ok = await spawnDetachedSafe('wt.exe', wtArgs, WT_VISIBLE_SPAWN_OPTS);
+          extLog(`[external] launch wt.exe(cmd) ok=${ok ? 1 : 0}`);
+          if (ok) return { ok: true } as const;
+        }
+        {
+          const ok = await spawnDetachedSafe('WindowsTerminal.exe', wtArgs, WT_VISIBLE_SPAWN_OPTS);
+          extLog(`[external] launch WindowsTerminal.exe(cmd) ok=${ok ? 1 : 0}`);
+          if (ok) return { ok: true } as const;
+        }
+        {
+          const cmdExe = resolveSystemBinary('cmd.exe');
+          const ok = await spawnDetachedSafe(cmdExe, ['/c', 'start', '', resolvedShell.command, ...cmdArgs], { windowsHide: false, cwd });
+          extLog(`[external] launch cmd.exe(start cmd.exe) ok=${ok ? 1 : 0}`);
+          if (ok) return { ok: true } as const;
+        }
+        return { ok: false, error: 'failed to launch external CMD console' } as const;
+      }
 
       // 优先 Windows Terminal
       const resolvedShell = resolveWindowsShell(terminal === 'pwsh' ? 'pwsh' : 'windows');
@@ -4497,7 +4521,7 @@ ipcMain.handle('utils.geminiWindowsEditor.readStatus', async (_e, args: {
  * 中文说明：探测当前 Gemini CLI 版本，并返回外部编辑器快捷键策略。
  */
 ipcMain.handle('utils.gemini.versionShortcut', async (_e, args: {
-  terminal?: 'wsl' | 'windows' | 'pwsh';
+  terminal?: TerminalMode;
   distro?: string;
   startupCmd?: string;
 }) => {
@@ -4610,7 +4634,7 @@ ipcMain.handle('images.saveDataURL', async (_e, {
   ext?: string;
   prefix?: string;
   providerId?: string;
-  runtimeEnv?: "wsl" | "windows" | "pwsh";
+  runtimeEnv?: TerminalMode;
   distro?: string;
 }) => {
   try {
@@ -4649,7 +4673,7 @@ ipcMain.handle('images.saveFromClipboard', async (_e, {
   projectName?: string;
   prefix?: string;
   providerId?: string;
-  runtimeEnv?: "wsl" | "windows" | "pwsh";
+  runtimeEnv?: TerminalMode;
   distro?: string;
 }) => {
   try {
@@ -6024,7 +6048,7 @@ ipcMain.handle("codex.rateLimit", async () => {
 /**
  * 读取设置中的 Provider 环境（若缺失则回退到全局 terminal/distro）。
  */
-function resolveProviderRuntimeEnv(providerId: "claude" | "gemini"): { terminal: "wsl" | "windows" | "pwsh"; distro?: string } {
+function resolveProviderRuntimeEnv(providerId: "claude" | "gemini"): { terminal: TerminalMode; distro?: string } {
   const cfg = settings.getSettings();
   return resolveProviderRuntimeEnvFromSettings(cfg, providerId);
 }

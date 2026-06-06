@@ -10,6 +10,8 @@ export type ThemeSetting = 'light' | 'dark' | 'system';
 
 export type ProviderId = string;
 
+export type TerminalMode = 'wsl' | 'windows' | 'pwsh' | 'cmd';
+
 export type ProviderItem = {
   id: ProviderId;
   displayName?: string;
@@ -19,7 +21,7 @@ export type ProviderItem = {
 };
 
 export type ProviderEnv = {
-  terminal?: 'wsl' | 'windows' | 'pwsh';
+  terminal?: TerminalMode;
   distro?: string;
 };
 
@@ -63,7 +65,7 @@ export type ProvidersSettings = {
 };
 
 export type AppSettings = {
-  terminal?: 'wsl' | 'windows' | 'pwsh';
+  terminal?: TerminalMode;
   terminalTheme?: TerminalThemeId;
   distro: string;
   codexCmd: string;
@@ -337,7 +339,7 @@ export type HistoryMessage = { role: string; content: MessageContent[] };
 
 // ---- Host API 声明 ----
 export interface PtyAPI {
-  openWSLConsole(args: { terminal?: 'wsl' | 'windows' | 'pwsh'; distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string; env?: Record<string, string> }): Promise<{ id: string }>;
+  openWSLConsole(args: { terminal?: TerminalMode; distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string; env?: Record<string, string> }): Promise<{ id: string }>;
   /** 读取 PTY 的尾部输出缓存（用于渲染进程 reload/HMR 后恢复终端滚动区）。 */
   backlog?: (id: string, args?: { maxChars?: number }) => Promise<{ ok: boolean; data?: string; error?: string }>;
   write(id: string, data: string): void;
@@ -884,7 +886,7 @@ export interface NotificationsAPI {
 export interface UtilsAPI {
   /** 探测当前 Gemini CLI 版本对应的外部编辑器快捷键策略。 */
   resolveGeminiExternalEditorShortcut(args: {
-    terminal?: "wsl" | "windows" | "pwsh";
+    terminal?: TerminalMode;
     distro?: string;
     startupCmd?: string;
   }): Promise<{
@@ -971,7 +973,7 @@ export interface UtilsAPI {
   /** 设置或清除指定项目根目录的 IDE 绑定（清除时需显式传入 null）。 */
   setProjectPreferredIde(projectPath: string, config: ProjectIdePreference | ProjectPreferredIde | null): Promise<{ ok: boolean; error?: string }>;
   openExternalUrl(url: string): Promise<{ ok: boolean; error?: string }>;
-  openExternalConsole(args: { terminal?: 'wsl' | 'windows' | 'pwsh'; wslPath?: string; winPath?: string; distro?: string; startupCmd?: string; title?: string }): Promise<{ ok: boolean; error?: string }>;
+  openExternalConsole(args: { terminal?: TerminalMode; wslPath?: string; winPath?: string; distro?: string; startupCmd?: string; title?: string }): Promise<{ ok: boolean; error?: string }>;
   // 兼容旧名
   openExternalWSLConsole?(args: { wslPath?: string; winPath?: string; distro?: string; startupCmd?: string }): Promise<{ ok: boolean; error?: string }>;
   pathExists(p: string, dirOnly?: boolean): Promise<{ ok: boolean; exists?: boolean; isDirectory?: boolean; isFile?: boolean; error?: string }>;
@@ -1035,9 +1037,9 @@ export interface GitRepoWatchAPI {
 }
 
 export interface ImagesAPI {
-  saveDataURL(args: { dataURL: string; projectWinRoot?: string; projectWslRoot?: string; projectName?: string; ext?: string; prefix?: string; providerId?: string; runtimeEnv?: "wsl" | "windows" | "pwsh"; distro?: string }): Promise<{ ok: boolean; winPath?: string; wslPath?: string; fileName?: string; error?: string }>;
+  saveDataURL(args: { dataURL: string; projectWinRoot?: string; projectWslRoot?: string; projectName?: string; ext?: string; prefix?: string; providerId?: string; runtimeEnv?: TerminalMode; distro?: string }): Promise<{ ok: boolean; winPath?: string; wslPath?: string; fileName?: string; error?: string }>;
   clipboardHasImage(): Promise<{ ok: boolean; has?: boolean; error?: string }>;
-  saveFromClipboard(args: { projectWinRoot?: string; projectWslRoot?: string; projectName?: string; prefix?: string; providerId?: string; runtimeEnv?: "wsl" | "windows" | "pwsh"; distro?: string }): Promise<{ ok: boolean; winPath?: string; wslPath?: string; fileName?: string; error?: string }>;
+  saveFromClipboard(args: { projectWinRoot?: string; projectWslRoot?: string; projectName?: string; prefix?: string; providerId?: string; runtimeEnv?: TerminalMode; distro?: string }): Promise<{ ok: boolean; winPath?: string; wslPath?: string; fileName?: string; error?: string }>;
   copyToClipboard(args: { localPath?: string; src?: string; fallbackSrc?: string }): Promise<{ ok: boolean; error?: string }>;
   materializePreviewURL(args: { src?: string }): Promise<{ ok: boolean; src?: string; mimeType?: string; error?: string }>;
   trash(args: { winPath: string }): Promise<{ ok: boolean; error?: string }>;

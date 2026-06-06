@@ -195,7 +195,8 @@
     "wsl": "WSL 终端",
     "pwsh": "Windows（PowerShell 7）",
     "windows": "Windows（PowerShell）",
-    "help": "在 WSL、PowerShell 7 与传统 PowerShell 之间切换命令执行环境。",
+    "cmd": "Windows（CMD）",
+    "help": "在 WSL、PowerShell 7、传统 PowerShell 与 CMD 之间切换命令执行环境。",
     "pwshDetecting": "正在检测 PowerShell 7 可用性…",
     "pwshDetected": "已检测到 PowerShell 7：",
     "pwshUnavailable": "未检测到 PowerShell 7，已回退到传统 PowerShell。"
