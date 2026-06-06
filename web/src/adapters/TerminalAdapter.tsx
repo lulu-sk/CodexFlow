@@ -170,12 +170,15 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
   let lastCtrlKeydownAt = 0; // 最近一次 Ctrl 键按下（ms）
   let lastViewportScrollLogAt = 0;
   let lastViewportScrollTop: number | null = null;
+  let lastViewportScrollMaxTop: number | null = null;
   let lastViewportUserScrollLogAt = 0;
   let lastBufferScrollLogAt = 0;
   let lastBufferViewportY: number | null = null;
   let lastViewportBottomSnapshot: TerminalScrollSnapshot | null = null;
   let lastViewportBottomDom: TerminalDomScrollState | null = null;
   let lastViewportBottomObservedAt = 0;
+  let viewportPointerDragActive = false;
+  let viewportPointerDragUntil = 0;
   // 低版本 Windows（ConPTY < 21376）降级重排开关与状态
   let legacyWinNeedsReflowHack = false;
   let legacyWinBuild = 0;
@@ -183,6 +186,8 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
   let appearance: TerminalAppearance = normalizeTerminalAppearance(options?.appearance);
   let lastScrollSnapshot: TerminalScrollSnapshot | null = null;
   const VIEWPORT_SCROLL_INTENT_WINDOW_MS = 700;
+  const VIEWPORT_SCROLLBAR_DRAG_INTENT_WINDOW_MS = 1800;
+  const VIEWPORT_POINTER_DRAG_MAX_MS = 8000;
   const VIEWPORT_RECONCILE_FRAMES = 4;
   const VIEWPORT_ROW_TOLERANCE = 1;
   const VIEWPORT_BOTTOM_STRICT_TOLERANCE = 0;
@@ -581,7 +586,7 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
     dom?: TerminalDomScrollState | null,
   ): void {
     if (!snapshot || snapshot.baseY <= 0 || !snapshot.isAtBottom) return;
-    if (nowMs() <= userViewportScrollUntil) return;
+    if (isViewportUserScrollActive()) return;
     if (dom && !isDomViewportAtBottom(dom)) return;
     lastViewportBottomSnapshot = {
       viewportY: snapshot.baseY,
@@ -611,7 +616,7 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
     if (!snapshot || snapshot.baseY <= 0 || !dom || !lastViewportBottomSnapshot) return false;
     if (!isDomViewportAtBottom(dom)) return false;
     if (nowMs() - lastViewportBottomObservedAt > VIEWPORT_RESIZE_BOTTOM_INTENT_GRACE_MS) return false;
-    if (nowMs() <= userViewportScrollUntil) return false;
+    if (isViewportUserScrollActive()) return false;
 
     const distanceFromBottom = Math.max(0, snapshot.baseY - snapshot.viewportY);
     const lineHeight = readTerminalLineHeightPx();
@@ -673,7 +678,7 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
    * 判断当前是否应接受 DOM scroll 事件回写 xterm buffer 视口。
    */
   function canAcceptViewportDomScroll(): boolean {
-    if (nowMs() <= userViewportScrollUntil) return true;
+    if (isViewportUserScrollActive()) return true;
     if (programmaticViewportScrollAllowance > 0 && nowMs() <= programmaticViewportScrollAllowanceUntil) {
       programmaticViewportScrollAllowance -= 1;
       return true;
@@ -682,12 +687,87 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
   }
 
   /**
-   * 标记一次由用户输入触发的 viewport 滚动窗口。
+   * 判断当前是否仍处在用户主动滚动窗口内。
+   */
+  function isViewportUserScrollActive(): boolean {
+    const now = nowMs();
+    return now <= userViewportScrollUntil || isViewportPointerDragActive(now);
+  }
+
+  /**
+   * 判断终端 viewport 是否仍处在有效的指针拖拽窗口内。
+   * @param now 当前时间戳
+   */
+  function isViewportPointerDragActive(now = nowMs()): boolean {
+    if (!viewportPointerDragActive) return false;
+    if (now <= viewportPointerDragUntil) return true;
+    viewportPointerDragActive = false;
+    viewportPointerDragUntil = 0;
+    return false;
+  }
+
+  /**
+   * 标记终端 viewport 指针拖拽已经开始。
    * @param source 触发来源
    */
-  function markViewportUserScroll(source: string): void {
+  function markViewportPointerDragStart(source: string): void {
     const now = nowMs();
-    userViewportScrollUntil = now + VIEWPORT_SCROLL_INTENT_WINDOW_MS;
+    viewportPointerDragActive = true;
+    viewportPointerDragUntil = now + VIEWPORT_POINTER_DRAG_MAX_MS;
+    markViewportUserScroll(source, VIEWPORT_SCROLLBAR_DRAG_INTENT_WINDOW_MS);
+  }
+
+  /**
+   * 标记终端 viewport 指针拖拽已经结束。
+   * @param source 触发来源
+   */
+  function markViewportPointerDragEnd(source: string): void {
+    if (!viewportPointerDragActive) return;
+    viewportPointerDragActive = false;
+    viewportPointerDragUntil = 0;
+    userViewportScrollUntil = Math.max(userViewportScrollUntil, nowMs() + VIEWPORT_SCROLL_INTENT_WINDOW_MS);
+    logScrollDiagnostic(`viewport.pointer-drag.end source=${source} ${formatScrollSnapshot(readScrollSnapshot())} ${formatDomScrollState(readDomScrollState())}`);
+  }
+
+  /**
+   * 判断 DOM viewport 的 scroll 事件是否应被推断为用户拖动滚动条。
+   * @param snapshot 当前 xterm buffer 滚动快照
+   * @param state 当前 DOM viewport 滚动度量
+   * @param changed 本次 scrollTop 是否有可观测变化
+   * @param accepted 是否已经由显式用户意图或程序性豁免接受
+   * @param previousTop 上一次 DOM scrollTop
+   * @param previousMaxTop 上一次 DOM 最大 scrollTop
+   */
+  function shouldInferViewportUserScrollFromDom(
+    snapshot: TerminalScrollSnapshot | null,
+    state: TerminalDomScrollState,
+    changed: boolean,
+    accepted: boolean,
+    previousTop: number | null,
+    previousMaxTop: number | null,
+  ): boolean {
+    if (accepted || !changed) return false;
+    if (viewportResizeTransaction) return false;
+    if (state.maxScrollTop <= 0) return false;
+    if (!hasViewportMismatch(snapshot, state)) return false;
+    if (snapshot?.isAtBottom) return false;
+    if (
+      isDomViewportAtBottom(state)
+      && previousTop !== null
+      && previousMaxTop !== null
+      && Math.max(0, previousMaxTop - previousTop) <= VIEWPORT_DOM_BOTTOM_TOLERANCE_PX
+    ) return false;
+    return true;
+  }
+
+  /**
+   * 标记一次由用户输入触发的 viewport 滚动窗口。
+   * @param source 触发来源
+   * @param durationMs 用户滚动意图保留时长
+   */
+  function markViewportUserScroll(source: string, durationMs = VIEWPORT_SCROLL_INTENT_WINDOW_MS): void {
+    const now = nowMs();
+    userViewportScrollUntil = Math.max(userViewportScrollUntil, now + durationMs);
     viewportReadAnchor = null;
     lastViewportBottomSnapshot = null;
     lastViewportBottomDom = null;
@@ -1281,7 +1361,7 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
    */
   function notifyViewportLayoutResizeStart(source: string): void {
     if (!term) return;
-    if (nowMs() <= userViewportScrollUntil) return;
+    if (isViewportUserScrollActive()) return;
     const snapshot = readScrollSnapshot();
     const dom = readDomScrollState();
     rememberViewportBottomEvidence(snapshot, dom);
@@ -1534,7 +1614,7 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
     const anchor = viewportReadAnchor || viewportResizeTransaction?.anchor || null;
     if (!anchor || !term) return false;
     if (viewportResizeTransaction?.anchor === anchor && viewportReadAnchor !== anchor) viewportReadAnchor = anchor;
-    if (nowMs() <= userViewportScrollUntil) return false;
+    if (isViewportUserScrollActive()) return false;
     const tx = viewportResizeTransaction && viewportResizeTransaction.anchor === anchor ? viewportResizeTransaction : null;
     const txExpired = !!tx && nowMs() - tx.startedAt > VIEWPORT_RESIZE_ANCHOR_TTL_MS;
     const txCanExpire = !!tx && canExpireViewportResizeTransaction(tx);
@@ -1676,7 +1756,7 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
     const run = () => {
       viewportReconcileRaf = null;
       if (!term || !container || viewportReconcilePendingFrames <= 0) return;
-      if (nowMs() <= userViewportScrollUntil) {
+      if (isViewportUserScrollActive()) {
         if (!viewportReadAnchor) {
           viewportReconcilePendingFrames = 0;
           return;
@@ -1744,25 +1824,43 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
         try { markViewportUserScroll("viewport.input"); } catch {}
         viewportReadAnchor = null;
       };
-      const onWheelIntent = (event: WheelEvent) => {
+      const onWheelIntent = (_event: WheelEvent) => {
         try { markViewportUserScroll("wheel"); } catch {}
         viewportReadAnchor = null;
+      };
+      const onPointerDownIntent = () => {
+        try { markViewportPointerDragStart("pointerdown"); } catch {}
+        viewportReadAnchor = null;
+      };
+      const onPointerEndIntent = () => {
+        try { markViewportPointerDragEnd("pointerup"); } catch {}
+      };
+      const onPointerCancelIntent = () => {
+        try { markViewportPointerDragEnd("pointercancel"); } catch {}
       };
       const onViewportScroll = () => {
         const state = readDomScrollState();
         if (!state) return;
         const now = nowMs();
         const previousTop = lastViewportScrollTop;
+        const previousMaxTop = lastViewportScrollMaxTop;
         const changed = previousTop === null || Math.abs(state.scrollTop - previousTop) > 1;
         if (!changed && now - lastViewportScrollLogAt < 160) return;
         lastViewportScrollLogAt = now;
         lastViewportScrollTop = state.scrollTop;
+        lastViewportScrollMaxTop = state.maxScrollTop;
         const snapshot = readScrollSnapshot();
         if (viewportResizeTransaction && hasViewportMismatch(snapshot, state)) {
           logScrollDiagnostic(`dom.scroll.ignored prevTop=${previousTop === null ? "n/a" : Math.round(previousTop)} reason=resize-transaction ${formatViewportResizeTransaction(viewportResizeTransaction)} ${formatScrollSnapshot(snapshot)} ${formatDomScrollState(state)}`);
           return;
         }
-        if (!canAcceptViewportDomScroll() && hasViewportMismatch(snapshot, state)) {
+        const accepted = canAcceptViewportDomScroll();
+        if (!accepted && shouldInferViewportUserScrollFromDom(snapshot, state, changed, accepted, previousTop, previousMaxTop)) {
+          markViewportUserScroll("dom.scroll", VIEWPORT_SCROLLBAR_DRAG_INTENT_WINDOW_MS);
+          logScrollDiagnostic(`dom.scroll.infer-user prevTop=${previousTop === null ? "n/a" : Math.round(previousTop)} ${formatScrollSnapshot(snapshot)} ${formatDomScrollState(state)}`);
+          return;
+        }
+        if (!accepted && hasViewportMismatch(snapshot, state)) {
           logScrollDiagnostic(`dom.scroll.ignored prevTop=${previousTop === null ? "n/a" : Math.round(previousTop)} ${formatScrollSnapshot(snapshot)} ${formatDomScrollState(state)}`);
           return;
         }
@@ -1770,13 +1868,19 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
       };
       try { host.addEventListener("wheel", onWheelIntent, { passive: true, capture: true }); } catch {}
       viewport.addEventListener("wheel", onUserScrollIntent, { passive: true });
-      viewport.addEventListener("pointerdown", onUserScrollIntent, true);
+      viewport.addEventListener("pointerdown", onPointerDownIntent, true);
+      window.addEventListener("pointerup", onPointerEndIntent, true);
+      window.addEventListener("pointercancel", onPointerCancelIntent, true);
+      window.addEventListener("blur", onPointerCancelIntent, true);
       viewport.addEventListener("touchstart", onUserScrollIntent, { passive: true });
       viewport.addEventListener("scroll", onViewportScroll, { passive: true });
       removeViewportScrollDebugListener = () => {
         try { host.removeEventListener("wheel", onWheelIntent, true); } catch {}
         try { viewport.removeEventListener("wheel", onUserScrollIntent); } catch {}
-        try { viewport.removeEventListener("pointerdown", onUserScrollIntent, true); } catch {}
+        try { viewport.removeEventListener("pointerdown", onPointerDownIntent, true); } catch {}
+        try { window.removeEventListener("pointerup", onPointerEndIntent, true); } catch {}
+        try { window.removeEventListener("pointercancel", onPointerCancelIntent, true); } catch {}
+        try { window.removeEventListener("blur", onPointerCancelIntent, true); } catch {}
         try { viewport.removeEventListener("touchstart", onUserScrollIntent); } catch {}
         try { viewport.removeEventListener("scroll", onViewportScroll); } catch {}
       };
@@ -2929,6 +3033,9 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
       viewportReconcileRaf = null;
       deferredResizeNotifyRaf = null;
       deferredResizeStartedAt = null;
+      viewportPointerDragActive = false;
+      viewportPointerDragUntil = 0;
+      userViewportScrollUntil = 0;
       deferredResizeListeners.clear();
       viewportReconcilePendingFrames = 0;
       programmaticViewportScrollAllowance = 0;
@@ -2977,6 +3084,7 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
       lastScrollSnapshot = null;
       lastViewportScrollLogAt = 0;
       lastViewportScrollTop = null;
+      lastViewportScrollMaxTop = null;
       lastBufferScrollLogAt = 0;
       lastBufferViewportY = null;
     }
