@@ -23,6 +23,7 @@ import { hasNonEmptyIOFromMessages } from "./agentSessions/shared/empty";
 import { historyItemBelongsToScope } from "./historyScope";
 import { perfLogger } from "./log";
 import settings, { ensureSettingsAutodetect, ensureFirstRunTerminalSelection, type ThemeSetting as SettingsThemeSetting, type AppSettings, type IdeOpenSettings } from "./settings";
+import { getOnboardingState, updateOnboardingState } from "./onboarding";
 import { normalizeTerminal, resolveWindowsShell, detectPwshExecutable } from "./shells";
 import { resolveActiveProviderId, resolveProviderRuntimeEnvFromSettings, resolveProviderStartupCmdFromSettings } from "./providers/runtime";
 import i18n from "./i18n";
@@ -6063,6 +6064,25 @@ ipcMain.handle('settings.get', async () => {
     cfg.experimental = { ...(cfg.experimental || {}), multiInstanceEnabled: !!flags.multiInstanceEnabled };
   } catch {}
   return cfg;
+});
+
+ipcMain.handle("onboarding.get", async () => {
+  try {
+    return { ok: true, state: getOnboardingState() };
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+ipcMain.handle("onboarding.update", async (_e, partial: any) => {
+  try {
+    const next = updateOnboardingState({
+      yoloPromptHandled: partial?.yoloPromptHandled === true,
+    });
+    return { ok: true, state: next };
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
+  }
 });
 
 ipcMain.handle('settings.update', async (_e, partial: any) => {

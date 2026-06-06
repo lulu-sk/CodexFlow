@@ -51,6 +51,11 @@ export type ClaudeCodeSettings = {
   readAgentHistory?: boolean;
 };
 
+export type OnboardingSettings = {
+  /** 是否已经处理过启动时 YOLO 权限模式推荐提示。 */
+  yoloPromptHandled?: boolean;
+};
+
 export type ProvidersSettings = {
   activeId: ProviderId;
   items: ProviderItem[];
@@ -88,6 +93,8 @@ export type AppSettings = {
     /** 拖拽添加的资源不在当前项目目录时提醒（默认开启） */
     warnOutsideProject?: boolean;
   };
+  /** 一次性引导提示状态。 */
+  onboarding?: OnboardingSettings;
   /** ChatGPT/Codex 账号相关设置（记录账号、切换备份等） */
   codexAccount?: {
     recordEnabled?: boolean;
@@ -678,6 +685,11 @@ export interface SettingsAPI {
   sessionRoots?(args: { providerId: "codex" | "claude" | "gemini" }): Promise<string[]>;
 }
 
+export interface OnboardingAPI {
+  get(): Promise<{ ok: boolean; state?: { yoloPromptHandled?: boolean }; error?: string }>;
+  update(partial: { yoloPromptHandled?: boolean }): Promise<{ ok: boolean; state?: { yoloPromptHandled?: boolean }; error?: string }>;
+}
+
 export interface StorageAPI {
   getAppDataInfo(): Promise<{
     ok: boolean;
@@ -1101,6 +1113,7 @@ declare global {
       gitWorkbench?: GitWorkbenchAPI;
       history: HistoryAPI;
       settings: SettingsAPI;
+      onboarding: OnboardingAPI;
       storage: StorageAPI;
       utils: UtilsAPI;
       i18n: I18nAPI;

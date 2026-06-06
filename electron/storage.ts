@@ -766,6 +766,7 @@ async function clearAppData(options: ClearOptions = {}): Promise<ClearResult> {
   preserveNames.add('debug.config.jsonc');
   if (options.preserveSettings !== false) {
     preserveNames.add(SETTINGS_FILE);
+    preserveNames.add('onboarding.json');
     // 账号记录：Codex 登录备份（用于“记录账号/切换账号”等场景）
     preserveNames.add('codex-auth-backups');
   }

@@ -97,6 +97,12 @@
       "startupCmdHelpTerminal": "Terminal 不支持启动命令（始终仅打开 shell）。",
       "yolo": "YOLO",
       "yoloHelp": "启用后将锁定启动命令为预设（危险）；取消则恢复默认命令。",
+      "yoloPrompt": {
+        "title": "开启 YOLO 权限模式？",
+        "desc": "推荐开启后再使用 agent，可以更顺畅地运行而不被权限询问打断。请注意，这会降低安全边界，存在误操作与越权风险。我们会同时为 Codex、Claude、Gemini 开启 YOLO，并且仅提醒一次，后续可在设置中修改。",
+        "primary": "开启并继续",
+        "secondary": "暂不启用"
+      },
       "icon": "图标",
       "iconLight": "亮色图标",
       "iconDark": "暗色图标",

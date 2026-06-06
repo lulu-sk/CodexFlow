@@ -97,6 +97,12 @@
       "startupCmdHelpTerminal": "Terminal does not support a startup command (always opens a shell).",
       "yolo": "YOLO",
       "yoloHelp": "When enabled, the startup command is locked to a preset (dangerous); disabling restores the default command.",
+      "yoloPrompt": {
+        "title": "Enable YOLO permission mode?",
+        "desc": "We recommend enabling this before using agents so they can run smoothly without permission prompts. This lowers the safety boundary and carries a risk of mistakes or overreach. We will enable YOLO for Codex, Claude, and Gemini, ask only once, and you can change it later in Settings.",
+        "primary": "Enable and continue",
+        "secondary": "Not now"
+      },
       "icon": "Icon",
       "iconLight": "Light icon",
       "iconDark": "Dark icon",

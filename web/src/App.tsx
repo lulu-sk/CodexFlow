@@ -99,7 +99,7 @@ import {
 import { normalizeProvidersSettings } from "@/lib/providers/normalize";
 import { isBuiltInSessionProviderId, openaiIconUrl, openaiDarkIconUrl, claudeIconUrl, geminiIconUrl } from "@/lib/providers/builtins";
 import { resolveProvider } from "@/lib/providers/resolve";
-import { resolveStartupCmdWithYolo } from "@/lib/providers/yolo";
+import { enableBuiltInYoloPresetItems, isAnyBuiltInYoloPresetEnabled, resolveStartupCmdWithYolo } from "@/lib/providers/yolo";
 import { injectCodexTraceEnv } from "@/providers/codex/commands";
 import { buildClaudeResumeStartupCmd } from "@/providers/claude/commands";
 import { buildGeminiResumeStartupCmd } from "@/providers/gemini/commands";
@@ -380,6 +380,12 @@ type CompletionSnapshot = {
   preview: string;
   ts: number;
   source: CompletionEventSource;
+};
+
+type YoloPromptDialogState = {
+  open: boolean;
+  loading: boolean;
+  handled: boolean;
 };
 
 type TabPointerDragState = {
@@ -4619,6 +4625,8 @@ export default function CodexFlowManagerUI() {
   const [legacyResumePrompt, setLegacyResumePrompt] = useState<LegacyResumePrompt | null>(null);
   const [legacyResumeLoading, setLegacyResumeLoading] = useState(false);
   const [blockingNotice, setBlockingNotice] = useState<BlockingNotice | null>(null);
+  const [yoloPromptDialog, setYoloPromptDialog] = useState<YoloPromptDialogState>(() => ({ open: false, loading: false, handled: false }));
+  const [startupChecksComplete, setStartupChecksComplete] = useState(false);
 
   const themeMode = useThemeController(themeSetting);
 
@@ -4634,6 +4642,48 @@ export default function CodexFlowManagerUI() {
     try {
       await window.host.settings.update({ dragDrop: { warnOutsideProject: !!enabled } } as any);
     } catch {}
+  }, []);
+
+  /**
+   * 统一写入 YOLO 启用结果：将内置三引擎切换到预设命令，并持久化“一次性提示”状态。
+   */
+  const applyBuiltInYoloPresetAndPersist = useCallback(async (): Promise<boolean> => {
+    try {
+      const nextItems = enableBuiltInYoloPresetItems(providerItems);
+      const codexItem = nextItems.find((x) => x.id === "codex");
+      const codexResolved = resolveProvider(codexItem ?? { id: "codex" });
+      const codexEnv = providerEnvById.codex || { terminal: "wsl", distro: wslDistro };
+      const nextEnvById = { ...providerEnvById };
+      if (!nextEnvById.codex) nextEnvById.codex = { terminal: codexEnv.terminal, distro: codexEnv.distro };
+      if (!nextEnvById.claude) nextEnvById.claude = { terminal: codexEnv.terminal, distro: codexEnv.distro };
+      if (!nextEnvById.gemini) nextEnvById.gemini = { terminal: codexEnv.terminal, distro: codexEnv.distro };
+      const nextProviders = { activeId: activeProviderId, items: nextItems, env: nextEnvById };
+      await window.host.settings.update({
+        providers: nextProviders as any,
+        terminal: codexEnv.terminal,
+        distro: codexEnv.distro,
+        codexCmd: codexResolved.startupCmd || "codex",
+      } as any);
+      setProviderItems(nextItems);
+      setProviderEnvById(nextEnvById);
+      setCodexCmd(codexResolved.startupCmd || "codex");
+      await window.host.onboarding.update({ yoloPromptHandled: true });
+      setYoloPromptDialog({ open: false, loading: false, handled: true });
+      return true;
+    } catch (e) {
+      console.warn("applyBuiltInYoloPresetAndPersist failed", e);
+      return false;
+    }
+  }, [activeProviderId, providerEnvById, providerItems, wslDistro]);
+
+  /**
+   * 记录 YOLO 引导已被处理；用于用户手动选择“暂不启用”时避免重复打扰。
+   */
+  const dismissYoloPrompt = useCallback(async (): Promise<void> => {
+    try {
+      await window.host.onboarding.update({ yoloPromptHandled: true });
+    } catch {}
+    setYoloPromptDialog({ open: false, loading: false, handled: true });
   }, []);
 
   /**
@@ -5321,24 +5371,27 @@ export default function CodexFlowManagerUI() {
         setAppVersion(cur);
         const skip = String((globalThis as any).__cf_updates_skip__ || '').trim();
         const res = await checkForUpdate(cur, { force: false });
-	        if (res.status === "update" && res.latest && res.latest.version !== skip) {
-	          setUpdateDialog({
-	            show: true,
-	            current: cur,
-	            latest: {
-	              version: res.latest.version,
-	              notes: res.latest.notes,
-	              notesLocales: res.latest.notesLocales,
-	              url: res.latest.url
-	            }
-	          });
-	        } else if (res.status === "failed" || res.source !== "network") {
-	          // 中文说明：静默更新检查的降级路径属于“正常可用但无网络结果”的场景，避免在未开启调试时污染控制台。
-	          uiLog(`Silent update check fallback: ${String(res.error || res.source || "")}`);
-	        }
-	      } catch {}
-	    })();
-	  }, [uiLog]);
+        if (res.status === "update" && res.latest && res.latest.version !== skip) {
+          setUpdateDialog({
+            show: true,
+            current: cur,
+            latest: {
+              version: res.latest.version,
+              notes: res.latest.notes,
+              notesLocales: res.latest.notesLocales,
+              url: res.latest.url,
+            },
+          });
+        } else if (res.status === "failed" || res.source !== "network") {
+          // 中文说明：静默更新检查的降级路径属于“正常可用但无网络结果”的场景，避免在未开启调试时污染控制台。
+          uiLog(`Silent update check fallback: ${String(res.error || res.source || "")}`);
+        }
+      } catch {}
+      finally {
+        setStartupChecksComplete(true);
+      }
+    })();
+  }, [uiLog]);
 
   // 监听主进程语言变更事件，保持本地 locale 状态同步（用于设置面板默认值等）
   useEffect(() => {
@@ -9848,6 +9901,65 @@ export default function CodexFlowManagerUI() {
         return t("about:updateError.unknown");
     }
   }, [t, updateErrorDialog.reason, updateErrorDialog.show]);
+  const yoloPromptTitle = t("settings:providers.fields.yoloPrompt.title", "开启 YOLO 权限模式？");
+  const yoloPromptDescription = t(
+    "settings:providers.fields.yoloPrompt.desc",
+    "推荐开启后再使用 agent，可以更顺畅地运行而不被权限询问打断。请注意，这会降低安全边界，存在误操作与越权风险。我们会同时为 Codex、Claude、Gemini 开启 YOLO，并且仅提醒一次，后续可在设置中修改。",
+  );
+  const yoloPromptPrimary = t("settings:providers.fields.yoloPrompt.primary", "开启并继续");
+  const yoloPromptSecondary = t("settings:providers.fields.yoloPrompt.secondary", "暂不启用");
+
+  /**
+   * 启动后一次性展示 YOLO 推荐提示：
+   * - 仅在未被询问过、且内置三引擎都未开启 YOLO 时出现；
+   * - 避开 detached-tab 窗口，防止多窗口重复提示；
+   * - 不与更新提示同时抢位。
+   */
+  useEffect(() => {
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          if (cancelled) return;
+          if (isDetachedTabWindow) return;
+          if (!startupChecksComplete) return;
+          if (updateDialog.show || noUpdateDialog || updateErrorDialog.show || legacyResumePrompt || blockingNotice) return;
+          if (yoloPromptDialog.open || yoloPromptDialog.loading || yoloPromptDialog.handled) return;
+          const stateRes = await window.host.onboarding.get();
+          if (!stateRes?.ok) return;
+          if (cancelled) return;
+          if (stateRes.state?.yoloPromptHandled) {
+            setYoloPromptDialog({ open: false, loading: false, handled: true });
+            return;
+          }
+          const items = Array.isArray(providerItems) ? providerItems : [];
+          if (isAnyBuiltInYoloPresetEnabled(items)) {
+            await window.host.onboarding.update({ yoloPromptHandled: true });
+            setYoloPromptDialog({ open: false, loading: false, handled: true });
+            return;
+          }
+          setYoloPromptDialog({ open: true, loading: false, handled: false });
+        } catch {}
+      })();
+    }, 1800);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [
+    blockingNotice,
+    isDetachedTabWindow,
+    legacyResumePrompt,
+    noUpdateDialog,
+    startupChecksComplete,
+    providerItems,
+    updateDialog.show,
+    updateErrorDialog.show,
+    yoloPromptDialog.handled,
+    yoloPromptDialog.loading,
+    yoloPromptDialog.open,
+  ]);
+
   const closeTabLabel = t('common:close') as string;
   const closeTabConfirmKind = closeWorkingTabConfirm.isWorking
     ? (closeWorkingTabConfirm.hasPromptInput ? "workingInput" : "working")
@@ -14047,6 +14159,53 @@ export default function CodexFlowManagerUI() {
           </div>
           <div className="flex justify-end border-t border-slate-200 bg-slate-50 px-4 py-3">
             <Button onClick={() => setUpdateErrorDialog({ show: false, reason: "unknown" })}>{t('about:updateError.confirm')}</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={yoloPromptDialog.open}
+        onOpenChange={(open) => {
+          if (open) return;
+          if (yoloPromptDialog.loading) return;
+          void dismissYoloPrompt();
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{yoloPromptTitle}</DialogTitle>
+            <DialogDescription>{yoloPromptDescription}</DialogDescription>
+          </DialogHeader>
+          <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-slate-700 dark:border-amber-400/30 dark:bg-amber-500/10 dark:text-amber-50">
+            <div className="flex items-start gap-2">
+              <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-300" />
+              <span>{t("settings:providers.fields.yoloHelp", "启用后将锁定启动命令为预设（危险）；取消则恢复默认命令。")}</span>
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button
+              variant="outline"
+              data-cf-dialog-cancel="true"
+              onClick={() => void dismissYoloPrompt()}
+              disabled={yoloPromptDialog.loading}
+            >
+              {yoloPromptSecondary}
+            </Button>
+            <Button
+              data-cf-dialog-primary="true"
+              disabled={yoloPromptDialog.loading}
+              onClick={async () => {
+                setYoloPromptDialog((prev) => ({ ...prev, loading: true }));
+                const ok = await applyBuiltInYoloPresetAndPersist();
+                if (!ok)
+                  setYoloPromptDialog((prev) => ({ ...prev, loading: false }));
+              }}
+            >
+              {yoloPromptDialog.loading ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : null}
+              {yoloPromptPrimary}
+            </Button>
           </div>
         </DialogContent>
       </Dialog>
