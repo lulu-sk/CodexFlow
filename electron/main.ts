@@ -39,6 +39,7 @@ import { CodexBridge, type CodexBridgeOptions } from "./codex/bridge";
 import { applyCodexAuthBackupAsync, deleteCodexAuthBackupAsync, isSafeAuthBackupId, listCodexAuthBackupsAsync, readCodexAuthBackupMetaAsync, resolveCodexAccountSignature, resolveCodexAuthJsonPathAsync, upsertCodexAuthBackupAsync, upsertCodexAuthBackupMetaOnlyAsync } from "./codex/authBackups";
 import { ensureAllCodexNotifications } from "./codex/config";
 import { startCodexNotificationBridge, stopCodexNotificationBridge } from "./codex/notifications";
+import { cleanupCodexStateForDeletedHistoryFiles, repairMissingCodexRolloutRows, type CodexStateCleanupResult } from "./codexStateCleanup";
 import { ensureAllClaudeNotifications, startClaudeNotificationBridge, stopClaudeNotificationBridge } from "./claude/notifications";
 import { getClaudeUsageSnapshotAsync } from "./claude/usage";
 import { ensureAllGeminiNotifications, startGeminiNotificationBridge, stopGeminiNotificationBridge } from "./gemini/notifications";
@@ -75,6 +76,68 @@ import {
 } from "./stores/projectIdeStore";
 
 // 使用 CommonJS 编译输出时，运行时环境会提供 `__dirname`，直接使用即可
+
+let codexStateRepairStarted = false;
+
+/**
+ * 汇总 Codex sqlite 清理结果，便于主进程日志快速定位问题。
+ */
+function summarizeCodexStateCleanup(result: CodexStateCleanupResult): string {
+  return [
+    `ok=${result.ok}`,
+    `sqlite=${result.sqliteAvailable}`,
+    `dbs=${result.scannedDbPaths.length}`,
+    `threads=${result.deletedThreadRows}`,
+    `aux=${result.deletedAuxRows}`,
+    `stale=${result.repairedStaleRows}`,
+    `errors=${result.errors.length}`,
+  ].join(" ");
+}
+
+/**
+ * 记录 Codex sqlite 清理结果；成功且无变更时保持安静。
+ */
+function logCodexStateCleanupResult(reason: string, result: CodexStateCleanupResult): void {
+  const changed = result.deletedThreadRows > 0 || result.deletedAuxRows > 0 || result.repairedStaleRows > 0;
+  if (changed || !result.ok) {
+    try { perfLogger.log(`[CODEX_STATE_CLEANUP] ${reason} ${summarizeCodexStateCleanup(result)}`); } catch {}
+  }
+  if (result.errors.length > 0) {
+    try { console.warn(`codex state cleanup ${reason} had errors`, result.errors.slice(0, 5)); } catch {}
+  }
+}
+
+/**
+ * 安全清理本次已删除历史路径对应的 Codex sqlite 状态。
+ */
+async function cleanupCodexStateForDeletedPathsSafely(filePaths: string[], reason: string): Promise<void> {
+  const paths = Array.from(new Set(filePaths.filter((item) => typeof item === "string" && item.trim())));
+  if (paths.length === 0) return;
+  try {
+    const result = await cleanupCodexStateForDeletedHistoryFiles(paths, {
+      repairMissingRollouts: false,
+    });
+    logCodexStateCleanupResult(reason, result);
+  } catch (error) {
+    try { console.warn(`codex state cleanup ${reason} failed`, error); } catch {}
+  }
+}
+
+/**
+ * 启动一次独立的 Codex sqlite 残留修复任务，避免要求用户手动跑 SQL。
+ */
+function startCodexStateRepairOnce(reason: string): void {
+  if (codexStateRepairStarted) return;
+  codexStateRepairStarted = true;
+  const timer = setTimeout(() => {
+    void repairMissingCodexRolloutRows()
+      .then((result) => logCodexStateCleanupResult(reason, result))
+      .catch((error) => {
+        try { console.warn(`codex state repair ${reason} failed`, error); } catch {}
+      });
+  }, 10_000);
+  try { (timer as any).unref?.(); } catch {}
+}
 
 /**
  * 中文说明：本次主进程启动的唯一标识，用于让渲染层区分：
@@ -2227,6 +2290,7 @@ if (!gotLock) {
       // 启动历史索引器：后台并发解析、缓存、监听变更
       try { purgeHistoryCacheIfOutdated(); } catch {}
       try { await startHistoryIndexer(() => mainWindow); } catch (e) { console.warn('indexer start failed', e); }
+      try { startCodexStateRepairOnce('boot'); } catch {}
       // 启动后立刻触发一次 UI 强制刷新，确保首次 ready 后显示索引内容
       try { mainWindow?.webContents.send('history:index:add', { items: [] }); } catch {}
       try { perfLogger.log(`[BOOT] background init done`); } catch {}
@@ -4212,6 +4276,7 @@ ipcMain.handle('history.findEmptySessions', async () => {
 ipcMain.handle('history.trashMany', async (_e, { filePaths }: { filePaths: string[] }) => {
   try {
     const results: { filePath: string; ok: boolean; notFound?: boolean; error?: string }[] = [];
+    const codexStateCleanupPaths = new Set<string>();
     let okCount = 0; let notFoundCount = 0; let failCount = 0;
     const list = Array.isArray(filePaths) ? filePaths.slice() : [];
     // 并发限制器：避免一次性对大量文件触发过多 I/O / shell 调用
@@ -4229,6 +4294,11 @@ ipcMain.handle('history.trashMany', async (_e, { filePaths }: { filePaths: strin
       };
     };
     const limit = pLimitLocal(6);
+    const rememberCodexStateCleanupPaths = (paths: string[]) => {
+      for (const item of paths) {
+        if (item && typeof item === 'string') codexStateCleanupPaths.add(item);
+      }
+    };
 
     // 单个文件删除逻辑（保持原候选顺序）：彻底删除
     const handleOne = async (filePath: string) => {
@@ -4246,7 +4316,10 @@ ipcMain.handle('history.trashMany', async (_e, { filePaths }: { filePaths: strin
       }
       push(normSlashes(p0));
       const anyExists = candidates.some((c) => { try { return fs.existsSync(c); } catch { return false; } });
-      if (!anyExists) return { filePath: p0, ok: true, notFound: true };
+      if (!anyExists) {
+        rememberCodexStateCleanupPaths([p0, ...candidates]);
+        return { filePath: p0, ok: true, notFound: true };
+      }
       let deleted = false; const failed: { cand: string; err: any }[] = [];
       for (const cand of candidates) {
         try {
@@ -4256,6 +4329,7 @@ ipcMain.handle('history.trashMany', async (_e, { filePaths }: { filePaths: strin
             try { const idx = require('./indexer'); if (typeof idx.removeFromIndex === 'function') idx.removeFromIndex(cand); } catch {}
             try { const hist = require('./history').default; await hist.removePathFromCache(cand); } catch {}
             try { const win = BrowserWindow.getFocusedWindow(); win?.webContents.send('history:index:remove', { filePath: cand }); } catch {}
+            rememberCodexStateCleanupPaths([p0, cand, ...candidates]);
             deleted = true; break;
           } catch (e1: any) {
             failed.push({ cand, err: e1 });
@@ -4282,6 +4356,7 @@ ipcMain.handle('history.trashMany', async (_e, { filePaths }: { filePaths: strin
         if ((r as any).notFound) notFoundCount++; else okCount++;
       } else failCount++;
     }
+    await cleanupCodexStateForDeletedPathsSafely(Array.from(codexStateCleanupPaths), 'history.trashMany');
 
     return { ok: true, results, summary: { ok: okCount, notFound: notFoundCount, failed: failCount } } as any;
   } catch (e: any) {
@@ -4311,7 +4386,10 @@ ipcMain.handle('history.trash', async (_e, { filePath }: { filePath: string }) =
     push(normSlashes(p0));
     // 候选均不存在则视为成功（无需删除）
     const anyExists = candidates.some((c) => { try { return fs.existsSync(c); } catch { return false; } });
-    if (!anyExists) return { ok: true, notFound: true } as any;
+    if (!anyExists) {
+      await cleanupCodexStateForDeletedPathsSafely([p0, ...candidates], 'history.trash.notFound');
+      return { ok: true, notFound: true } as any;
+    }
     // 依次尝试候选：永久删除
     const failed: { cand: string; err: any }[] = [];
     for (const cand of candidates) {
@@ -4323,6 +4401,7 @@ ipcMain.handle('history.trash', async (_e, { filePath }: { filePath: string }) =
           try { const idx = require('./indexer'); if (typeof idx.removeFromIndex === 'function') idx.removeFromIndex(cand); } catch {}
           try { const hist = require('./history').default; await hist.removePathFromCache(cand); } catch {}
           try { const win = BrowserWindow.getFocusedWindow(); win?.webContents.send('history:index:remove', { filePath: cand }); } catch {}
+          await cleanupCodexStateForDeletedPathsSafely([p0, cand, ...candidates], 'history.trash');
           return { ok: true };
         } catch (e1: any) {
           failed.push({ cand, err: e1 });
