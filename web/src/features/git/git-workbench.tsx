@@ -17136,11 +17136,11 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
         showAddToVcs: showAddToVcsAction,
         showDelete: shouldShowCommitTreeSharedDeleteAction({
           exactlySelectedFileCount: selectionContext.exactlySelectedFiles.length,
+          selectedDeleteTargetCount: menuCommitSelectionSnapshot.selectedDeleteTargets.length,
           singleSelection: singleTreeSelection,
           selectedNodeKind: menuCommitSelectionSnapshot.selectedSingleNode?.kind,
-          selectedNodeDisplayPath: menuCommitSelectionSnapshot.selectedSingleNode?.textPresentation || menuCommitSelectionSnapshot.selectedSingleNode?.name,
         }),
-        showEditSource: selectionContext.exactlySelectedFiles.length === 1,
+        showEditSource: selectionContext.navigatablePaths.length > 0,
       });
       /**
        * 把提交树共享菜单模型渲染成具体菜单项，统一承接 IDEA 提交工具窗口层级与当前产品豁免映射。

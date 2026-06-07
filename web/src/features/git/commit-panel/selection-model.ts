@@ -554,7 +554,7 @@ export function deriveCommitSelectionContext(args: {
     canCompareStagedToLocal: canCompareWithStaged,
     canCompareStagedToHead: canCompareWithHead,
     canCompareThreeVersions: canCompareWithHead && canShowLocal,
-    canOpenSource: args.selectedPaths.length === 1,
+    canOpenSource: selectedVirtualPaths.length > 0,
     canDelete: actionableEntries.length > 0,
     canShowHistory,
     changeListsEnabled,
