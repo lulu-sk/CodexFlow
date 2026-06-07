@@ -36,15 +36,6 @@ export type CommitTreeSharedMenuNode =
     children: CommitTreeSharedMenuNode[];
   };
 
-/**
- * 判断当前目录节点是否是“折叠后的多级路径展示”。
- * IDEA 会把连续单子目录折叠成展示文案，但这类节点的菜单能力不能简单等同于普通目录。
- */
-function isCollapsedDirectoryDisplayPath(pathText: string | undefined): boolean {
-  const normalized = String(pathText || "").trim();
-  return normalized.includes("\\") || normalized.includes("/");
-}
-
 type CommitTreeSharedSelectionSnapshot = Pick<
   CommitSelectionContext,
   | "canCommit"
@@ -61,19 +52,17 @@ type CommitTreeSharedSelectionSnapshot = Pick<
 
 /**
  * 对齐 IDEA 提交树共享菜单的删除入口显示规则。
- * 单文件精确选择始终显示；目录 / 模块 / 仓库节点单选时也保留删除入口。
+ * 只要当前冻结选区能解析出真实删除目标，就等价于 IDEA DataContext 中存在 VIRTUAL_FILE_ARRAY。
  */
 export function shouldShowCommitTreeSharedDeleteAction(args: {
   exactlySelectedFileCount: number;
+  selectedDeleteTargetCount?: number;
   singleSelection: boolean;
   selectedNodeKind?: string;
-  selectedNodeDisplayPath?: string;
 }): boolean {
   if (args.exactlySelectedFileCount > 0) return true;
+  if ((args.selectedDeleteTargetCount || 0) > 0) return true;
   if (!args.singleSelection) return false;
-  if (args.selectedNodeKind === "directory") {
-    return !isCollapsedDirectoryDisplayPath(args.selectedNodeDisplayPath);
-  }
   return args.selectedNodeKind === "directory"
     || args.selectedNodeKind === "module"
     || args.selectedNodeKind === "repository";
@@ -144,7 +133,7 @@ export function buildCommitTreeSharedMenuSections(args: {
       createActionNode("showDiff", { disabled: !selection.canShowDiff, shortcut: "Ctrl+D" }),
       createActionNode("showStandaloneDiff", { disabled: !selection.canShowDiff }),
       ...(showEditSource
-        ? [createActionNode("editSource", { disabled: !selection.canOpenSource || !singleSelection, shortcut: "F4" })]
+        ? [createActionNode("editSource", { disabled: !selection.canOpenSource, shortcut: "F4" })]
         : []),
     ],
     [

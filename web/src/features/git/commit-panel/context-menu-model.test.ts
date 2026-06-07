@@ -61,6 +61,27 @@ describe("commit tree context menu model", () => {
     expect(localHistory?.disabled).toBe(true);
   });
 
+  it("多选可导航目录时应保留跳转到源入口", () => {
+    const sections = buildCommitTreeSharedMenuSections({
+      selection: {
+        canCommit: false,
+        canRollback: true,
+        canMoveToList: true,
+        canShowDiff: true,
+        canOpenSource: true,
+        canDelete: true,
+        canAddToVcs: true,
+        canIgnore: true,
+        canShowHistory: false,
+        canShelve: true,
+      },
+      singleSelection: false,
+    });
+
+    expect(sections[0].map((node) => node.id)).toContain("editSource");
+    expect(sections[0].find((node) => node.id === "editSource")).toMatchObject({ disabled: false });
+  });
+
   it("目录类单选应保留删除入口，并隐藏 edit-source", () => {
     const sections = buildCommitTreeSharedMenuSections({
       selection: {
@@ -89,12 +110,12 @@ describe("commit tree context menu model", () => {
     ]);
   });
 
-  it("删除入口显示规则应对目录类单选对齐 IDEA", () => {
+  it("删除入口显示规则应对可解析删除目标的目录选择对齐 IDEA", () => {
     expect(shouldShowCommitTreeSharedDeleteAction({
       exactlySelectedFileCount: 0,
+      selectedDeleteTargetCount: 1,
       singleSelection: true,
       selectedNodeKind: "directory",
-      selectedNodeDisplayPath: ".serena",
     })).toBe(true);
     expect(shouldShowCommitTreeSharedDeleteAction({
       exactlySelectedFileCount: 0,
@@ -103,17 +124,27 @@ describe("commit tree context menu model", () => {
     })).toBe(true);
     expect(shouldShowCommitTreeSharedDeleteAction({
       exactlySelectedFileCount: 0,
+      selectedDeleteTargetCount: 2,
       singleSelection: false,
       selectedNodeKind: "directory",
-    })).toBe(false);
+    })).toBe(true);
   });
 
-  it("折叠后的多级目录展示节点不应显示删除入口", () => {
+  it("折叠后的多级目录只要有真实删除目标就应显示删除入口", () => {
     expect(shouldShowCommitTreeSharedDeleteAction({
       exactlySelectedFileCount: 0,
+      selectedDeleteTargetCount: 1,
       singleSelection: true,
       selectedNodeKind: "directory",
-      selectedNodeDisplayPath: ".claude\\skills\\gitnexus",
+    })).toBe(true);
+  });
+
+  it("没有文件或删除目标的多选仍应隐藏删除入口", () => {
+    expect(shouldShowCommitTreeSharedDeleteAction({
+      exactlySelectedFileCount: 0,
+      selectedDeleteTargetCount: 0,
+      singleSelection: false,
+      selectedNodeKind: "directory",
     })).toBe(false);
   });
 
