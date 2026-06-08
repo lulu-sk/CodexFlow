@@ -15341,6 +15341,8 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
     const maxAttempts = 120;
     const topPadding = userInputIndex === 0 ? 28 : 8;
     let observedMessageNode: HTMLDivElement | null = null;
+    let cleanupTimer = 0;
+    let scrollIntentViewport: HTMLDivElement | null = null;
 
     const scheduleCalibration = () => {
       if (cancelled || rafId || attempts >= maxAttempts) return;
@@ -15355,10 +15357,40 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
       })
       : null;
 
-    const cleanupTimer = window.setTimeout(() => {
+    /**
+     * 移除本次校准期间用于感知用户主动滚动的监听器。
+     */
+    function detachUserScrollIntentListeners() {
+      if (!scrollIntentViewport) return;
+      try {
+        scrollIntentViewport.removeEventListener("wheel", stopCalibrationForUserScrollIntent, true);
+        scrollIntentViewport.removeEventListener("touchstart", stopCalibrationForUserScrollIntent, true);
+      } catch {}
+      scrollIntentViewport = null;
+    }
+
+    /**
+     * 停止当前用户输入锚点校准，并清理后续帧与尺寸观察。
+     */
+    function stopUserInputAnchorCalibration() {
+      if (cancelled) return;
       cancelled = true;
       if (rafId) cancelAnimationFrame(rafId);
+      rafId = 0;
+      window.clearTimeout(cleanupTimer);
       try { resizeObserver?.disconnect(); } catch {}
+      detachUserScrollIntentListeners();
+    }
+
+    /**
+     * 用户开始主动滚动历史详情时停止校准，避免跳转后继续抢回滚动位置。
+     */
+    function stopCalibrationForUserScrollIntent() {
+      stopUserInputAnchorCalibration();
+    }
+
+    cleanupTimer = window.setTimeout(() => {
+      stopUserInputAnchorCalibration();
     }, 2500);
 
     try {
@@ -15366,6 +15398,15 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
       const root = historyFindRootRef.current;
       if (resizeObserver && viewport) resizeObserver.observe(viewport);
       if (resizeObserver && root) resizeObserver.observe(root);
+    } catch {}
+
+    try {
+      const viewport = detailScrollAreaRef.current;
+      if (viewport) {
+        scrollIntentViewport = viewport;
+        viewport.addEventListener("wheel", stopCalibrationForUserScrollIntent, { passive: true, capture: true });
+        viewport.addEventListener("touchstart", stopCalibrationForUserScrollIntent, { passive: true, capture: true });
+      }
     } catch {}
 
     /**
@@ -15415,10 +15456,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
 
     scheduleCalibration();
     return () => {
-      cancelled = true;
-      window.clearTimeout(cleanupTimer);
-      if (rafId) cancelAnimationFrame(rafId);
-      try { resizeObserver?.disconnect(); } catch {}
+      stopUserInputAnchorCalibration();
     };
   }, [activeUserInputScrollRequest]);
 
