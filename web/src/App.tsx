@@ -15133,6 +15133,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
   // DOM 级高亮（用于适配 Markdown 渲染后文本结构变化），并保持与现有“过滤/跳转”能力兼容
   const historyFindRootRef = useRef<HTMLDivElement | null>(null);
   const historyVirtualListRef = useRef<VirtualizedListHandle | null>(null);
+  const historyDetailBottomScrollCleanupRef = useRef<(() => void) | null>(null);
   const matches = useMemo(() => {
     if (!detailSearchActive || !detailSession) return [];
     return visibleFilteredHistory.matches;
@@ -15238,6 +15239,23 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
   const userInputScrollRequestIdRef = useRef(0);
   const [activeUserInputScrollRequest, setActiveUserInputScrollRequest] = useState<HistoryUserInputScrollRequest | null>(null);
 
+  /**
+   * 取消历史详情底部贴靠校准任务。
+   */
+  const cancelHistoryDetailBottomScroll = useCallback(() => {
+    const cleanup = historyDetailBottomScrollCleanupRef.current;
+    historyDetailBottomScrollCleanupRef.current = null;
+    if (cleanup) cleanup();
+  }, []);
+
+  useEffect(() => () => {
+    cancelHistoryDetailBottomScroll();
+  }, [cancelHistoryDetailBottomScroll]);
+
+  useEffect(() => {
+    cancelHistoryDetailBottomScroll();
+  }, [cancelHistoryDetailBottomScroll, selectedHistoryId]);
+
   useEffect(() => {
     activeUserInputIndexRef.current = null;
     setActiveUserInputIndex(null);
@@ -15277,6 +15295,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
 
   useEffect(() => {
     if (!detailSearchActive || !activeMatch) return;
+    cancelHistoryDetailBottomScroll();
     const matchIndex = messageIndexByKey.get(activeMatch.messageKey);
     if (typeof matchIndex === "number") {
       historyVirtualListRef.current?.scrollToIndex(matchIndex, { align: "center", behavior: "smooth" });
@@ -15323,11 +15342,12 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
       cancelled = true;
       cancelAnimationFrame(rafId);
     };
-  }, [detailSearchActive, activeMatch, messageIndexByKey]);
+  }, [cancelHistoryDetailBottomScroll, detailSearchActive, activeMatch, messageIndexByKey]);
 
   useEffect(() => {
     const request = activeUserInputScrollRequest;
     if (!request) return;
+    cancelHistoryDetailBottomScroll();
     const { messageKey, messageIndex, userInputIndex } = request;
     historyVirtualListRef.current?.scrollToIndex(messageIndex, { align: "start", behavior: "auto" });
 
@@ -15458,7 +15478,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
     return () => {
       stopUserInputAnchorCalibration();
     };
-  }, [activeUserInputScrollRequest]);
+  }, [activeUserInputScrollRequest, cancelHistoryDetailBottomScroll]);
 
   const goToNextMatch = useCallback(() => {
     if (!matches.length) return;
@@ -15479,6 +15499,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
     if (!messageKey) return;
     const messageIndex = messageIndexByKey.get(messageKey);
     if (typeof messageIndex !== "number") return;
+    cancelHistoryDetailBottomScroll();
     activeUserInputIndexRef.current = nextIndex;
     userInputScrollRequestIdRef.current += 1;
     setActiveUserInputIndex(nextIndex);
@@ -15488,7 +15509,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
       messageIndex,
       userInputIndex: nextIndex,
     });
-  }, [messageIndexByKey, userInputMessageKeys]);
+  }, [cancelHistoryDetailBottomScroll, messageIndexByKey, userInputMessageKeys]);
 
   /**
    * 中文说明：在当前可见的 USER Input 锚点之间循环切换。
@@ -15528,26 +15549,124 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
    * 中文说明：将历史详情滚动区滚动到顶部。
    */
   const scrollHistoryDetailToTop = useCallback(() => {
+    cancelHistoryDetailBottomScroll();
     const viewport = detailScrollAreaRef.current;
     if (!viewport || viewport.scrollTop <= 0) return;
     viewport.scrollTop = 0;
-  }, []);
+  }, [cancelHistoryDetailBottomScroll]);
 
   /**
    * 中文说明：将历史详情滚动区滚动到底部。
    */
   const scrollHistoryDetailToBottom = useCallback(() => {
+    cancelHistoryDetailBottomScroll();
     const viewport = detailScrollAreaRef.current;
     if (!viewport) return;
-    const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
-    if (maxScrollTop <= 0 || viewport.scrollTop >= maxScrollTop - 1) return;
-    viewport.scrollTop = viewport.scrollHeight;
-  }, []);
+    const viewportElement = viewport;
+    const lastMessageIndex = filteredMessages.length - 1;
+    const shouldPrimeVirtualEnd = useVirtualizedHistory && lastMessageIndex >= 0;
+    let cancelled = false;
+    let rafId = 0;
+    let attempts = 0;
+    let stableFrames = 0;
+    let lastMaxScrollTop = -1;
+    let resizeVersion = 0;
+    let lastResizeVersion = -1;
+    let resizeObserver: ResizeObserver | null = null;
+    const startedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+    const minHoldMs = shouldPrimeVirtualEnd ? 900 : 450;
+    const maxHoldMs = 2500;
+    const maxAttempts = 150;
+
+    /**
+     * 滚动到当前 DOM 已知的最大底部位置。
+     */
+    function scrollToCurrentBottom(): number {
+      const maxScrollTop = Math.max(0, viewportElement.scrollHeight - viewportElement.clientHeight);
+      if (maxScrollTop > 0 && viewportElement.scrollTop < maxScrollTop - 1) {
+        viewportElement.scrollTop = maxScrollTop;
+      }
+      return maxScrollTop;
+    }
+
+    /**
+     * 结束底部贴靠校准并释放监听。
+     */
+    function cleanupBottomScroll() {
+      cancelled = true;
+      if (rafId) {
+        cancelAnimationFrame(rafId);
+        rafId = 0;
+      }
+      try { resizeObserver?.disconnect(); } catch {}
+      resizeObserver = null;
+      if (historyDetailBottomScrollCleanupRef.current === cleanupBottomScroll) {
+        historyDetailBottomScrollCleanupRef.current = null;
+      }
+    }
+
+    /**
+     * 排队执行下一帧底部校准。
+     */
+    function scheduleBottomCalibration() {
+      if (cancelled || rafId || attempts >= maxAttempts) return;
+      rafId = requestAnimationFrame(calibrateBottomScroll);
+    }
+
+    /**
+     * 持续贴靠底部，覆盖虚拟列表测量和图片加载带来的 scrollHeight 延迟变化。
+     */
+    function calibrateBottomScroll() {
+      rafId = 0;
+      if (cancelled) return;
+      attempts += 1;
+      if (shouldPrimeVirtualEnd && attempts <= 4) {
+        historyVirtualListRef.current?.scrollToIndex(lastMessageIndex, { align: "end", behavior: "auto" });
+      }
+
+      const maxScrollTop = scrollToCurrentBottom();
+      const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+      const elapsed = now - startedAt;
+      const atBottom = viewportElement.scrollTop >= maxScrollTop - 1;
+      const bottomStable = lastMaxScrollTop >= 0 && Math.abs(maxScrollTop - lastMaxScrollTop) <= 0.5;
+      const resizeStable = lastResizeVersion === resizeVersion;
+      stableFrames = atBottom && bottomStable && resizeStable ? stableFrames + 1 : 0;
+      lastMaxScrollTop = maxScrollTop;
+      lastResizeVersion = resizeVersion;
+
+      if ((elapsed >= minHoldMs && stableFrames >= 3) || elapsed >= maxHoldMs || attempts >= maxAttempts) {
+        cleanupBottomScroll();
+        return;
+      }
+      scheduleBottomCalibration();
+    }
+
+    historyDetailBottomScrollCleanupRef.current = cleanupBottomScroll;
+    try {
+      if (typeof ResizeObserver !== "undefined") {
+        resizeObserver = new ResizeObserver(() => {
+          resizeVersion += 1;
+          stableFrames = 0;
+          scheduleBottomCalibration();
+        });
+        resizeObserver.observe(viewportElement);
+        const root = historyFindRootRef.current;
+        if (root) resizeObserver.observe(root);
+      }
+    } catch {}
+
+    if (shouldPrimeVirtualEnd) {
+      historyVirtualListRef.current?.scrollToIndex(lastMessageIndex, { align: "end", behavior: "auto" });
+    }
+    scrollToCurrentBottom();
+    scheduleBottomCalibration();
+  }, [cancelHistoryDetailBottomScroll, filteredMessages.length, useVirtualizedHistory]);
 
   /**
    * 中文说明：点击历史详情正文时让滚动区获得焦点，以便接收快捷键。
    */
   const focusHistoryDetailViewport = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    cancelHistoryDetailBottomScroll();
     const viewport = detailScrollAreaRef.current;
     if (!viewport) return;
     const target = event.target as HTMLElement | null;
@@ -15557,7 +15676,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
     } catch {
       viewport.focus();
     }
-  }, []);
+  }, [cancelHistoryDetailBottomScroll]);
 
   /**
    * 中文说明：在历史详情滚动区内处理 Ctrl + Home / Ctrl + End 快捷键。
@@ -15566,8 +15685,20 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
     const viewport = detailScrollAreaRef.current;
     if (!viewport) return;
     const nativeEvent = event.nativeEvent as KeyboardEvent | undefined;
-    if (!event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || nativeEvent?.isComposing) return;
     const key = String(event.key || "").toLowerCase();
+    if (
+      key === "arrowup"
+      || key === "arrowdown"
+      || key === "pageup"
+      || key === "pagedown"
+      || key === "home"
+      || key === "end"
+      || key === " "
+      || key === "spacebar"
+    ) {
+      cancelHistoryDetailBottomScroll();
+    }
+    if (!event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || nativeEvent?.isComposing) return;
     if (key === "home") {
       if (viewport.scrollTop <= 0) return;
       event.preventDefault();
@@ -15582,7 +15713,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
       event.stopPropagation();
       scrollHistoryDetailToBottom();
     }
-  }, [scrollHistoryDetailToBottom, scrollHistoryDetailToTop]);
+  }, [cancelHistoryDetailBottomScroll, scrollHistoryDetailToBottom, scrollHistoryDetailToTop]);
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
@@ -15954,6 +16085,8 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
           className="h-full min-h-0 min-w-0 p-2 focus-visible:outline-none"
           tabIndex={0}
           onPointerDownCapture={focusHistoryDetailViewport}
+          onTouchMoveCapture={() => cancelHistoryDetailBottomScroll()}
+          onWheelCapture={() => cancelHistoryDetailBottomScroll()}
           onKeyDownCapture={handleHistoryDetailBoundaryShortcut}
         >
           {selectedHistoryId ? (
