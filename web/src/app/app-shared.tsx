@@ -289,6 +289,7 @@ type WorktreeCreateProgressState = {
   failedCount: number;
   allCompleted: boolean;
   worktreeStates: WorktreeCreateTaskItemSnapshot[];
+  estimatedTaskTimeoutMs?: number;
   postStateByKey: Record<string, { status: "idle" | "running" | "success" | "error"; error?: string; projectId?: string; tabId?: string }>;
   updatedAt: number;
   error?: string;

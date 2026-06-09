@@ -11,6 +11,7 @@ import { toFsPathAbs, toFsPathKey } from "./pathKey";
 import { parseWorktreeListPorcelain } from "./worktreeList";
 import { pickRepoMainPathFromSnapshot, readWorktreeListSnapshotAsync, resolveRepoMainPathForBranchAsync, resolveRepoMainPathFromWorktreeAsync, resolveWorktreeBranchNameAsync } from "./worktreeMetaResolve";
 import { buildRestoreCommandsForWorktreeStateSnapshot, cleanupWorktreeStateSnapshotAsync, createWorktreeStateSnapshotAsync, restoreWorktreeStateSnapshotAsync, type WorktreeStateSnapshot } from "./worktreeStateSnapshot";
+import { estimateWorktreeTimeoutAsync, formatWorktreeTimeoutEstimate, type WorktreeTimeoutEstimate } from "./worktreeTimeout";
 import { buildNextWorktreeMeta, deleteWorktreeMeta, getWorktreeMeta, setWorktreeMeta, type WorktreeMeta } from "../stores/worktreeMetaStore";
 
 export type GitWorktreeBranchInfo = {
@@ -47,6 +48,8 @@ export type CreateWorktreesRequest = {
   }) => void;
   /** 在尝试创建某个 worktree 前回调（用于捕获“中断时的目标目录/分支”）。 */
   onWorktreePlanned?: (args: { providerId: "codex" | "claude" | "gemini"; repoMainPath: string; worktreePath: string; baseBranch: string; wtBranch: string; index: number }) => void;
+  /** 创建超时估算完成后回调，供后台任务快照和 UI 等待兜底复用。 */
+  onTimeoutEstimated?: (estimate: WorktreeTimeoutEstimate) => void;
 };
 
 export type CreatedWorktree = {
@@ -389,7 +392,6 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
   const gitPath = req.gitPath;
   const timeoutMs = 15_000;
   const listTimeoutMs = 30_000;
-  const worktreeAddTimeoutMs = 15 * 60_000;
   const signal = req.signal;
   let abortLogged = false;
 
@@ -608,6 +610,18 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
     }
   }
 
+  const maxParallel = Math.max(1, Math.min(4, plans.length));
+  const timeoutEstimate = await estimateWorktreeTimeoutAsync({
+    repoRoot,
+    gitPath,
+    ref: baseBranch,
+    worktreeCount: plans.length,
+    maxParallel,
+  });
+  try { req.onTimeoutEstimated?.(timeoutEstimate); } catch {}
+  log(`${formatWorktreeTimeoutEstimate(timeoutEstimate)}\n\n`);
+  const worktreeAddTimeoutMs = timeoutEstimate.perWorktreeAddTimeoutMs;
+
   /**
    * 判断 `git worktree add` 失败是否属于并发可重试的锁冲突。
    */
@@ -654,6 +668,7 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
         gitPath,
         argv: ["-C", repoRoot, "worktree", "add", "-b", plan.wtBranch, plan.targetDir, req.baseBranch],
         timeoutMs: worktreeAddTimeoutMs,
+        allowLongTimeout: true,
         onStdout: (chunk) => log(`[${plan.providerId}#${plan.index}] ${chunk}`),
         onStderr: (chunk) => log(`[${plan.providerId}#${plan.index}] ${chunk}`),
         signal,
@@ -745,7 +760,6 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
     try { req.onItemCreated?.(item); } catch {}
   };
 
-  const maxParallel = Math.max(1, Math.min(4, plans.length));
   const workers = Array.from({ length: maxParallel }, async () => {
     while (true) {
       const aborted = checkAborted();

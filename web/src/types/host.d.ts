@@ -508,6 +508,22 @@ export type WorktreeCreateTaskItemSnapshot = {
   warnings?: string[];
 };
 
+export type WorktreeTimeoutEstimate = {
+  worktreeCount: number;
+  maxParallel: number;
+  perWorktreeAddTimeoutMs: number;
+  taskTimeoutMs: number;
+  metrics: {
+    trackedFileCount: number;
+    checkoutFileCount: number;
+    checkoutBytes: number;
+    indexBytes: number;
+    looseObjectBytes: number;
+    packedObjectBytes: number;
+    objectBytes: number;
+  };
+};
+
 export type WorktreeCreateTaskSnapshot = {
   taskId: string;
   repoDir: string;
@@ -524,6 +540,7 @@ export type WorktreeCreateTaskSnapshot = {
   failedCount: number;
   allCompleted: boolean;
   worktreeStates: WorktreeCreateTaskItemSnapshot[];
+  timeoutEstimate?: WorktreeTimeoutEstimate;
   error?: string;
   items?: CreatedWorktree[];
 };

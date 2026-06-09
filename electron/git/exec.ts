@@ -5,6 +5,17 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
+const DEFAULT_MAX_GIT_COMMAND_TIMEOUT_MS = 30 * 60_000;
+const LONG_MAX_GIT_COMMAND_TIMEOUT_MS = 6 * 60 * 60_000;
+
+/**
+ * 归一化 Git 子进程超时，默认保留常规命令上限，避免后台命令长时间悬挂拖慢 UI。
+ */
+export function normalizeGitCommandTimeoutMs(timeoutMs?: number, allowLongTimeout?: boolean): number {
+  const timeoutCapMs = allowLongTimeout === true ? LONG_MAX_GIT_COMMAND_TIMEOUT_MS : DEFAULT_MAX_GIT_COMMAND_TIMEOUT_MS;
+  return Math.max(200, Math.min(timeoutCapMs, Number(timeoutMs ?? 8000)));
+}
+
 export type GitExecResult = {
   ok: boolean;
   stdout: string;
@@ -28,6 +39,8 @@ export type GitExecOptions = {
   envPatch?: NodeJS.ProcessEnv;
   /** 可选标准输入内容；用于 `update-index --index-info` 这类需要通过 stdin 传参的 Git 命令。 */
   stdin?: string | Buffer;
+  /** 是否允许超过常规 30 分钟上限；仅用于 worktree 创建/清理等明确的大任务。 */
+  allowLongTimeout?: boolean;
 };
 
 /**
@@ -70,6 +83,7 @@ export async function execGitAsync(opts: GitExecOptions): Promise<GitExecResult>
     timeoutMs: opts?.timeoutMs,
     envPatch: opts?.envPatch,
     stdin: opts?.stdin,
+    allowLongTimeout: opts?.allowLongTimeout,
   });
 }
 
@@ -155,7 +169,7 @@ export async function spawnGitAsync(opts: GitSpawnOptions): Promise<GitExecResul
   const gitPath = String(opts?.gitPath || "").trim() || "git";
   const argv = Array.isArray(opts?.argv) ? opts.argv.map((x) => String(x)) : [];
   const cwd = typeof opts?.cwd === "string" && opts.cwd.trim().length > 0 ? opts.cwd : undefined;
-  const timeoutMs = Math.max(200, Math.min(30 * 60_000, Number(opts?.timeoutMs ?? 8000)));
+  const timeoutMs = normalizeGitCommandTimeoutMs(opts?.timeoutMs, opts?.allowLongTimeout);
 
   return await new Promise<GitExecResult>((resolve) => {
     let stdout = "";
@@ -317,7 +331,7 @@ export async function spawnGitStdoutToFileAsync(opts: GitSpawnStdoutToFileOption
   const argv = Array.isArray(opts?.argv) ? opts.argv.map((x) => String(x)) : [];
   const cwd = typeof opts?.cwd === "string" && opts.cwd.trim().length > 0 ? opts.cwd : undefined;
   const outFile = String(opts?.outFile || "").trim();
-  const timeoutMs = Math.max(200, Math.min(30 * 60_000, Number(opts?.timeoutMs ?? 8000)));
+  const timeoutMs = normalizeGitCommandTimeoutMs(opts?.timeoutMs, opts?.allowLongTimeout);
   const signal = opts?.signal;
   if (!outFile) {
     return { ok: false, stdout: "", stderr: "", exitCode: -1, error: "missing outFile" };
