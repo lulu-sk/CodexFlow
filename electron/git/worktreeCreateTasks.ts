@@ -5,6 +5,7 @@ import { promises as fsp } from "node:fs";
 import { toFsPathAbs, toFsPathKey } from "./pathKey";
 import { execGitAsync, spawnGitAsync } from "./exec";
 import { createWorktreesAsync, type CreatedWorktree } from "./worktreeOps";
+import { estimateWorktreeTimeoutAsync, type WorktreeTimeoutEstimate } from "./worktreeTimeout";
 import { deleteWorktreeMeta } from "../stores/worktreeMetaStore";
 
 export type WorktreeCreateTaskStatus = "running" | "canceling" | "canceled" | "success" | "error";
@@ -41,6 +42,7 @@ export type WorktreeCreateTaskSnapshot = {
   failedCount: number;
   allCompleted: boolean;
   worktreeStates: WorktreeCreateTaskItemSnapshot[];
+  timeoutEstimate?: WorktreeTimeoutEstimate;
   error?: string;
   items?: CreatedWorktree[];
 };
@@ -127,6 +129,7 @@ export class WorktreeCreateTaskManager {
       failedCount: 0,
       allCompleted: totalCount <= 0,
       worktreeStates: [],
+      timeoutEstimate: undefined,
       log: "",
       cancelRequested: false,
       abortController: new AbortController(),
@@ -305,6 +308,11 @@ export class WorktreeCreateTaskManager {
         copyRules: args.copyRules === true,
         onLog: append,
         signal: t.abortController.signal,
+        onTimeoutEstimated: (estimate) => {
+          t.timeoutEstimate = estimate;
+          t.updatedAt = Date.now();
+          this.refreshTaskProgress(taskId);
+        },
         onItemCreated: (item) => {
           try { t.createdSoFar.push(item); } catch {}
           t.items = [...t.createdSoFar];
@@ -480,6 +488,13 @@ export class WorktreeCreateTaskManager {
 
     const failures: string[] = [];
     log(`\n开始清理（共 ${targets.size} 项）…\n`);
+    const cleanupTimeoutEstimate = await estimateWorktreeTimeoutAsync({
+      repoRoot: repoDirAbs,
+      gitPath,
+      worktreeCount: targets.size,
+      maxParallel: 1,
+    });
+    const removeTimeoutMs = cleanupTimeoutEstimate.perWorktreeAddTimeoutMs;
 
     for (const { worktreePath, wtBranch } of targets.values()) {
       const wt = toFsPathAbs(worktreePath);
@@ -490,7 +505,8 @@ export class WorktreeCreateTaskManager {
         let rm = await spawnGitAsync({
           gitPath,
           argv: buildWorktreeRemoveArgv(wt, 1),
-          timeoutMs: 15 * 60_000,
+          timeoutMs: removeTimeoutMs,
+          allowLongTimeout: true,
           onStdout: log,
           onStderr: log,
         });
@@ -503,7 +519,8 @@ export class WorktreeCreateTaskManager {
             rm = await spawnGitAsync({
               gitPath,
               argv: buildWorktreeRemoveArgv(wt, 2),
-              timeoutMs: 15 * 60_000,
+              timeoutMs: removeTimeoutMs,
+              allowLongTimeout: true,
               onStdout: log,
               onStderr: log,
             });
@@ -599,6 +616,7 @@ export class WorktreeCreateTaskManager {
       failedCount: t.failedCount,
       allCompleted: t.allCompleted,
       worktreeStates: Array.isArray(t.worktreeStates) ? [...t.worktreeStates] : [],
+      timeoutEstimate: t.timeoutEstimate,
       error: t.error,
       items: t.items,
     };

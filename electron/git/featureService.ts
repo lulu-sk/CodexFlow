@@ -59,6 +59,7 @@ import * as gitExec from "./exec";
 import type { GitExecResult } from "./exec";
 import { parseGitUnifiedPatch } from "./diffHunks";
 import { parseWorktreeListPorcelain } from "./worktreeList";
+import { estimateWorktreeTimeoutAsync } from "./worktreeTimeout";
 import { toFsPathAbs, toFsPathKey } from "./pathKey";
 import { buildGitCapabilityState, type GitCapabilityState } from "./git-capabilities";
 import {
@@ -582,6 +583,7 @@ async function runGitSpawnAsync(
   timeoutMs: number = 300_000,
   envPatch?: NodeJS.ProcessEnv,
   stdin?: string | Buffer,
+  allowLongTimeout?: boolean,
 ): Promise<GitExecResult> {
   const normalizedArgv = buildNormalizedGitArgv(argv);
   const startedAt = Date.now();
@@ -597,6 +599,7 @@ async function runGitSpawnAsync(
     timeoutMs,
     envPatch,
     stdin,
+    allowLongTimeout,
     signal: ctx.abortSignal,
     onStdout: (chunk) => {
       gitConsoleStore.appendRunningOutput(consoleEntry.id, { stdoutChunk: chunk });
@@ -10517,7 +10520,14 @@ async function addWorktreeAsync(ctx: GitFeatureContext, repoRoot: string, payloa
   const argv = ["worktree", "add"];
   if (createBranch && branchName) argv.push("-b", branchName);
   argv.push(worktreePath, ref);
-  const res = await runGitSpawnAsync(ctx, repoRoot, argv, 300_000);
+  const timeoutEstimate = await estimateWorktreeTimeoutAsync({
+    repoRoot,
+    gitPath: ctx.gitPath,
+    ref,
+    worktreeCount: 1,
+    maxParallel: 1,
+  });
+  const res = await runGitSpawnAsync(ctx, repoRoot, argv, timeoutEstimate.perWorktreeAddTimeoutMs, undefined, undefined, true);
   if (!res.ok) return { ok: false, error: toGitErrorMessage(res, "新增 Worktree 失败") };
   return { ok: true };
 }

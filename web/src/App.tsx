@@ -1183,6 +1183,7 @@ export default function CodexFlowManagerUI() {
 	    failedCount: 0,
 	    allCompleted: false,
 	    worktreeStates: [],
+	    estimatedTaskTimeoutMs: undefined,
 	    postStateByKey: {},
 	    updatedAt: 0,
 	    error: undefined,
@@ -7621,6 +7622,7 @@ export default function CodexFlowManagerUI() {
       failedCount: 0,
       allCompleted: false,
       worktreeStates: [],
+      estimatedTaskTimeoutMs: undefined,
       postStateByKey: {},
       updatedAt: Date.now(),
       error: undefined,
@@ -7683,6 +7685,7 @@ export default function CodexFlowManagerUI() {
     let logText = "";
     let logOffset = 0;
     const startedAt = Date.now();
+    let waitTimeoutMs = 40 * 60_000;
     let stopPostCreate = false;
 
     /**
@@ -7854,6 +7857,9 @@ export default function CodexFlowManagerUI() {
           logOffset = Math.max(logOffset, Math.floor(Number(snapshot.logSize) || 0));
           stopPostCreateIfCanceled(snapshot.status);
           const worktreeStates = Array.isArray(snapshot.worktreeStates) ? snapshot.worktreeStates : [];
+          const estimatedTaskTimeoutMs = Math.max(0, Math.floor(Number(snapshot.timeoutEstimate?.taskTimeoutMs) || 0));
+          if (estimatedTaskTimeoutMs > 0)
+            waitTimeoutMs = estimatedTaskTimeoutMs;
           setWorktreeCreateProgress((prev) => {
             if (prev.taskId !== taskId) return prev;
             return {
@@ -7867,6 +7873,7 @@ export default function CodexFlowManagerUI() {
               failedCount: Math.max(0, Math.floor(Number(snapshot!.failedCount) || 0)),
               allCompleted: snapshot!.allCompleted === true,
               worktreeStates,
+              estimatedTaskTimeoutMs: estimatedTaskTimeoutMs || prev.estimatedTaskTimeoutMs,
               updatedAt: Math.floor(Number(snapshot!.updatedAt) || Date.now()),
               error: snapshot!.error ? String(snapshot!.error || "") : undefined,
             };
@@ -7877,7 +7884,7 @@ export default function CodexFlowManagerUI() {
       } catch {}
 
       // 兜底：避免无限等待
-      if (Date.now() - startedAt > 40 * 60_000) {
+      if (Date.now() - startedAt > waitTimeoutMs) {
         setWorktreeCreateProgress((prev) => {
           if (prev.taskId !== taskId) return prev;
           return {
