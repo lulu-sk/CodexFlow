@@ -21,7 +21,7 @@ function buildTrackedEntryKey(pathText: string, repoRoot?: string): string {
 }
 
 /**
- * 检查 merge 过程中是否仍有当前目标仓库的 tracked changes 被排除在本次提交之外，对齐 IDEA 的 excluded-changes 确认流。
+ * 检查 merge 过程中是否仍有当前目标仓库的 tracked changes 被排除在本次提交之外，保持与参考实现一致的 excluded-changes 确认流。
  */
 export function resolveMergeExclusionPrecheck(args: {
   status: GitStatusSnapshot | null | undefined;

@@ -2,6 +2,7 @@
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
 import type { CSSProperties } from "react";
+import type { GitLogItem } from "./types";
 import { resolveGitText } from "./git-i18n";
 
 export type GitLogColumnId = "subject" | "author" | "date" | "hash" | "refs";
@@ -18,6 +19,13 @@ export type GitLogColumnLayout = {
   order: GitLogColumnId[];
   widths: Record<GitLogColumnId, number>;
   autoFit: Record<GitLogColumnId, boolean>;
+};
+
+export type GitLogCopyTextOptions = {
+  items: GitLogItem[];
+  selectedHashes: string[];
+  layout: GitLogColumnLayout;
+  formatDate?: (iso: string) => string;
 };
 
 const GIT_LOG_COLUMN_LAYOUT_STORAGE_KEY = "cf.gitWorkbench.logColumns.v3";
@@ -195,7 +203,7 @@ export function saveGitLogColumnLayout(layout: GitLogColumnLayout): void {
 }
 
 /**
- * 返回某一列在当前布局下的弹性样式，模拟 IDEA 日志表格的“主列自适应、其余列可收缩”。
+ * 返回某一列在当前布局下的弹性样式，保留“主列自适应、其余列可收缩”的日志表格布局。
  */
 export function buildGitLogColumnStyle(layout: GitLogColumnLayout, columnId: GitLogColumnId, preferredWidth?: number): CSSProperties {
   const definition = GIT_LOG_COLUMN_DEFINITIONS.find((one) => one.id === columnId) || GIT_LOG_COLUMN_DEFINITIONS[0];
@@ -237,6 +245,33 @@ export function estimateGitLogColumnWidth(columnId: GitLogColumnId, samples: str
 }
 
 /**
+ * 按日志表当前可见列顺序构造复制文本，保持和表格显示字段一致。
+ */
+export function buildGitLogCopyText(options: GitLogCopyTextOptions): string {
+  const selected = new Set((options.selectedHashes || []).map((hash) => String(hash || "").trim()).filter(Boolean));
+  if (selected.size <= 0) return "";
+  const normalizedLayout = normalizeGitLogColumnLayout(options.layout);
+  const formatDate = options.formatDate || ((value: string) => String(value || "").trim());
+  return (options.items || [])
+    .filter((item) => selected.has(item.hash))
+    .map((item) => normalizedLayout.order.map((columnId) => resolveGitLogCopyCellText(item, columnId, formatDate)).filter(Boolean).join(" "))
+    .filter(Boolean)
+    .join("\n");
+}
+
+/**
+ * 将日志项转换为单列文本；与渲染列保持同一字段来源，避免复制内容与屏幕显示明显分叉。
+ */
+function resolveGitLogCopyCellText(item: GitLogItem, columnId: GitLogColumnId, formatDate: (iso: string) => string): string {
+  if (columnId === "subject") return String(item.subject || "").trim();
+  if (columnId === "author") return String(item.authorName || "").trim();
+  if (columnId === "date") return String(formatDate(item.authorDate) || "").trim();
+  if (columnId === "hash") return String(item.shortHash || item.hash || "").trim();
+  if (columnId === "refs") return String(item.decorations || "").trim();
+  return "";
+}
+
+/**
  * 解析日志列最终生效宽度；自动列优先取内容估算值，手动列保持用户拖拽结果。
  */
 export function resolveGitLogColumnWidth(layout: GitLogColumnLayout, columnId: GitLogColumnId, preferredWidth?: number): number {
@@ -269,7 +304,7 @@ export function resizeGitLogColumn(layout: GitLogColumnLayout, columnId: GitLogC
 }
 
 /**
- * 按拖拽结果重新排列日志列顺序，行为对齐 IDEA 的表头拖拽交换。
+ * 按拖拽结果重新排列日志列顺序，保持表头拖拽交换行为稳定。
  */
 export function moveGitLogColumn(layout: GitLogColumnLayout, sourceId: GitLogColumnId, targetId: GitLogColumnId): GitLogColumnLayout {
   if (sourceId === targetId) return normalizeGitLogColumnLayout(layout);

@@ -99,7 +99,7 @@ function getUpdateMethodLabel(
 }
 
 /**
- * 渲染 tracked branch 修复对话框，仅承载 IDEA 主路径的 upstream 修复与 Merge/Rebase 选择。
+ * 渲染 tracked branch 修复对话框，仅承载 参考实现主路径的 upstream 修复与 Merge/Rebase 选择。
  */
 export function FixTrackedBranchDialog(props: FixTrackedBranchDialogProps): JSX.Element | null {
   const { t } = useTranslation("git");

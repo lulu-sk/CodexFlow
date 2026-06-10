@@ -50,7 +50,7 @@ describe("commit tree interactions", () => {
     })).toBe("node:dir");
   });
 
-  it("speed search 应支持 IDEA 风格的宽松字符序列匹配", () => {
+  it("speed search 应支持宽松字符序列匹配", () => {
     expect(findCommitSpeedSearchRanges({
       text: "Font_cjkFonts_Medium_FontAssets.asset",
       query: "fc",

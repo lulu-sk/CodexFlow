@@ -9,7 +9,7 @@ export type GitLogRowStyle = {
 };
 
 /**
- * 判断当前日志视图是否应启用 current branch 高亮，语义对齐 IDEA `CurrentBranchHighlighter.update()`。
+ * 判断当前日志视图是否应启用 current branch 高亮，语义保持与参考实现一致 `CurrentBranchHighlighter.update()`。
  */
 export function shouldHighlightCurrentBranch(args: {
   currentBranch: string;

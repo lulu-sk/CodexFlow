@@ -27,7 +27,7 @@ function getLocalStorageSafe(): Storage | null {
 }
 
 /**
- * 把偏好对象收敛为稳定结构；缺省场景默认开启删除提交提醒，对齐 IDEA。
+ * 把偏好对象收敛为稳定结构；缺省场景默认开启删除提交提醒，保持与参考实现一致。
  */
 function normalizeGitLogCommitEditingPrefs(input: unknown): GitLogCommitEditingPrefs {
   const obj = (input && typeof input === "object") ? (input as Partial<GitLogCommitEditingPrefs>) : {};

@@ -74,7 +74,7 @@ export function countConflictMergeViewerLogicalLines(text: string): number {
 }
 
 /**
- * 基于三方块坐标构造左右-结果的同步滚动边界，参考上游 `BaseSyncScrollable` 使用的首尾边界对。
+ * 基于三方块坐标构造左右-结果的同步滚动边界，参考实现 `BaseSyncScrollable` 使用的首尾边界对。
  */
 export function buildConflictMergeViewerScrollMaps(args: {
   blocks: ConflictMergeBlock[];
@@ -103,7 +103,7 @@ export function buildConflictMergeViewerScrollMaps(args: {
 }
 
 /**
- * 把某一栏的逻辑行号映射到另一栏，沿用 IDEA `BaseSyncScrollable.transferLine` 的区间插值规则。
+ * 把某一栏的逻辑行号映射到另一栏，沿用参考实现 `BaseSyncScrollable.transferLine` 的区间插值规则。
  */
 export function transferConflictMergeViewerLine(
   line: number,
@@ -132,7 +132,7 @@ export function transferConflictMergeViewerLine(
 }
 
 /**
- * 按 IDEA `FoldingModelSupport` 的 unchanged group 语义，生成三栏同步折叠计划与分隔线锚点。
+ * 按参考实现 `FoldingModelSupport` 的 unchanged group 语义，生成三栏同步折叠计划与分隔线锚点。
  */
 export function buildConflictMergeViewerFoldingPlan(
   args: ConflictMergeViewerFoldPlanArgs,
@@ -210,7 +210,7 @@ function buildConflictMergeViewerChangedLineOffsets(
 }
 
 /**
- * 把起始/结束边界交错压成 scroll pair 列表，保持与 IDEA `processHelper` 一样的边界顺序。
+ * 把起始/结束边界交错压成 scroll pair 列表，保持与参考实现 `processHelper` 一样的边界顺序。
  */
 function buildConflictMergeViewerScrollPairs(
   starts: ConflictMergeViewerScrollPair[],
@@ -245,7 +245,7 @@ function reverseConflictMergeViewerScrollPairs(
 }
 
 /**
- * 基于 changed block 边界构造 unchanged fold group，参考上游 `FoldingBuilderBase.addGroup` 的范围裁切规则。
+ * 基于 changed block 边界构造 unchanged fold group，参考实现 `FoldingBuilderBase.addGroup` 的范围裁切规则。
  */
 function buildConflictMergeViewerFoldGroups(
   args: ConflictMergeViewerFoldPlanArgs,
@@ -339,7 +339,7 @@ function pushConflictMergeViewerFoldGroup(args: {
 }
 
 /**
- * 创建单栏折叠区间；不足两行的 unchanged 片段不进入折叠计划，和 IDEA 的 `createBlock` 条件一致。
+ * 创建单栏折叠区间；不足两行的 unchanged 片段不进入折叠计划，和参考实现的 `createBlock` 条件一致。
  */
 function createConflictMergeViewerFoldRange(
   start: number,
@@ -369,7 +369,7 @@ function convertConflictMergeViewerHiddenArea(
 }
 
 /**
- * 参考上游 `getRangeShift` 的 4/8/16 三层上下文裁切策略。
+ * 参考实现 `getRangeShift` 的 4/8/16 三层上下文裁切策略。
  */
 function resolveConflictMergeViewerRangeShift(
   contextRange: number,

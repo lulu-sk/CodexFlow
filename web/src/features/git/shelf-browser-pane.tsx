@@ -159,7 +159,7 @@ function resolveShelfStateBadgeLabel(state: GitShelfItem["state"], gt?: GitTrans
 }
 
 /**
- * 渲染 shelf 树浏览器，对齐 IDEA 的树形 shelf / recently deleted / directory grouping 交互。
+ * 渲染 shelf 树浏览器，保持与参考实现一致的树形 shelf / recently deleted / directory grouping 交互。
  */
 export function ShelfBrowserPane(props: ShelfBrowserPaneProps): JSX.Element {
   const { t } = useTranslation(["git", "common"]);
@@ -254,7 +254,7 @@ export function ShelfBrowserPane(props: ShelfBrowserPaneProps): JSX.Element {
   }, [menu, rows]);
 
   /**
-   * 切换目录/shelf/tag 节点展开态；未显式记录的节点默认视为展开，对齐 IDEA 初始展开语义。
+   * 切换目录/shelf/tag 节点展开态；未显式记录的节点默认视为展开，保持与参考实现一致的初始展开语义。
    */
   const toggleExpanded = (rowKey: string): void => {
     setExpandedRows((prev) => ({
@@ -313,7 +313,7 @@ export function ShelfBrowserPane(props: ShelfBrowserPaneProps): JSX.Element {
   };
 
   /**
-   * 执行 shelf 的 Create Patch / Copy Patch；路径组选区统一交给上层聚合导出，保持和 IDEA 菜单语义一致。
+   * 执行 shelf 的 Create Patch / Copy Patch；路径组选区统一交给上层聚合导出，保持和参考实现菜单语义一致。
    */
   const runCreatePatchAction = (
     row: GitShelfBrowserRow | null | undefined,
@@ -340,14 +340,14 @@ export function ShelfBrowserPane(props: ShelfBrowserPaneProps): JSX.Element {
   };
 
   /**
-   * 切换是否显示回收区，对齐 IDEA 的 Show/Hide Recycled 独立开关。
+   * 切换是否显示回收区，保持与参考实现一致的 Show/Hide Recycled 独立开关。
    */
   const toggleShowRecycled = (): void => {
     onViewStateChange({ showRecycled: !viewState.showRecycled });
   };
 
   /**
-   * 切换按目录分组开关，保持与 IDEA 分组菜单里的目录维度一致。
+   * 切换按目录分组开关，保持与参考实现分组菜单里的目录维度一致。
    */
   const toggleDirectoryGrouping = (): void => {
     onViewStateChange({ groupByDirectory: !viewState.groupByDirectory });

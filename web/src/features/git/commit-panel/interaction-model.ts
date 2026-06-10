@@ -14,7 +14,7 @@ export function canOpenDiffForCommitEntry(entry: GitStatusEntry | null | undefin
 }
 
 /**
- * 按 IDEA 的判定顺序解析文件激活动作；`F4` 永远打开源文件，`Enter/双击` 先看“是否以 Diff 方式打开”配置。
+ * 按参考实现的判定顺序解析文件激活动作；`F4` 永远打开源文件，`Enter/双击` 先看“是否以 Diff 方式打开”配置。
  */
 export function resolveCommitOpenAction(
   viewOptions: GitViewOptions,

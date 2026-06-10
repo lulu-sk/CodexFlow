@@ -101,7 +101,7 @@ function resolveBranchRowTooltip(item: GitBranchItem, resolveText?: GitBranchTex
 }
 
 /**
- * 按 IDEA `99+` 规则格式化同步计数。
+ * 按参考实现 `99+` 规则格式化同步计数。
  */
 export function formatBranchSyncCount(count: number): string {
   const normalized = Math.max(0, Math.floor(Number(count) || 0));
@@ -131,7 +131,7 @@ export function buildIncomingBranchSyncBadge(sync?: GitBranchSyncState, resolveT
 }
 
 /**
- * 构建 outgoing 标签展示模型；与 IDEA 一样只有存在待推送提交时才展示。
+ * 构建 outgoing 标签展示模型；与参考实现一样只有存在待推送提交时才展示。
  */
 export function buildOutgoingBranchSyncBadge(sync?: GitBranchSyncState, resolveText?: GitBranchTextResolver): GitBranchSyncBadgePresentation | null {
   if (!sync || sync.gone) return null;

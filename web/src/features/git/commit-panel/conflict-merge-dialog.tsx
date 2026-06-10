@@ -166,7 +166,7 @@ function buildConflictMergeResolveHint(args: {
 }
 
 /**
- * 构造“应用”前的确认提示，贴近 IDEA 对“部分解决仍可继续应用”的收口语义。
+ * 构造“应用”前的确认提示，贴近参考实现对“部分解决仍可继续应用”的收口语义。
  */
 function buildConflictMergeResolvePromptMessage(args: {
   unresolvedChanges: number;
@@ -194,7 +194,7 @@ function buildConflictMergeAcceptSourcePromptMessage(label: string, gt?: GitTran
 }
 
 /**
- * 把当前未处理更改/冲突数量格式化成接近 IDEA 顶部状态栏的摘要文案。
+ * 把当前未处理更改/冲突数量格式化成接近参考实现 顶部状态栏的摘要文案。
  */
 function buildConflictMergeChangeSummaryText(args: {
   unresolvedChanges: number;
@@ -345,7 +345,7 @@ function getConflictRevision(
 }
 
 /**
- * 应用内冲突处理对话框，按接近 IDEA `TextMergeViewer` 的方式展示三栏来源、结果与块级处理入口。
+ * 应用内冲突处理对话框，按接近参考实现 `TextMergeViewer` 的方式展示三栏来源、结果与块级处理入口。
  */
 export function ConflictMergeDialog(props: ConflictMergeDialogProps): React.ReactElement {
   const { t } = useTranslation(["git", "common"]);
@@ -491,7 +491,7 @@ export function ConflictMergeDialog(props: ConflictMergeDialogProps): React.Reac
   }, [selectedBlock?.index, updateViewerState, viewerState]);
 
   /**
-   * 批量应用不冲突更改，完整覆盖 IDEA 菜单中的左侧/所有/右侧三种语义。
+   * 批量应用不冲突更改，完整覆盖参考实现菜单中的左侧/所有/右侧三种语义。
    */
   const handleApplyNonConflictedChanges = React.useCallback((target: "ours" | "all" | "theirs"): void => {
     setViewerState((prev) => {
@@ -507,7 +507,7 @@ export function ConflictMergeDialog(props: ConflictMergeDialogProps): React.Reac
   }, [props.loading, props.saving, requestConflictMergeScroll, selectedBlock?.index, selectedBlockIndex]);
 
   /**
-   * 批量自动处理简单块，对齐 IDEA merge viewer 的 `Resolve simple conflicts` 入口会同时吞掉可直接应用的普通更改。
+   * 批量自动处理简单块，保持与参考实现一致的 merge viewer `Resolve simple conflicts` 入口会同时吞掉可直接应用的普通更改。
    */
   const handleAutoResolveSimpleConflicts = React.useCallback((): void => {
     setViewerState((prev) => {
@@ -537,7 +537,7 @@ export function ConflictMergeDialog(props: ConflictMergeDialogProps): React.Reac
   }, [unresolvedBlocks]);
 
   /**
-   * 执行最终应用动作；若仍有未处理块，则先给出一次接近 IDEA 的部分解决确认。
+   * 执行最终应用动作；若仍有未处理块，则先给出一次接近参考实现的部分解决确认。
    */
   const handleResolve = React.useCallback((): void => {
     if (!viewerState || props.loading || props.saving) return;

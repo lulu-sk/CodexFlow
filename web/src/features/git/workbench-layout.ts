@@ -53,7 +53,7 @@ export function normalizeWorkbenchProportion(value: number | null | undefined, f
 
 /**
  * 根据当前容器宽度推导主提交面板应占的像素宽度，并保留比例用于窗口缩放时自动跟随。
- * - 参考 IDEA `ChangesViewCommitPanelSplitter` 的 proportion 思路，避免固定像素宽度在窗口收窄时浪费空间。
+ * - 借鉴参考实现 `ChangesViewCommitPanelSplitter` 的 proportion 思路，避免固定像素宽度在窗口收窄时浪费空间。
  * - 右侧 Diff 区本身已经使用 `minmax(0,1fr)` + 工具栏横向滚动处理窄宽度，因此这里只保留技术最小宽度，
  *   避免用户手动拖拽时被过高的保底宽度过早锁死。
  */
@@ -87,7 +87,7 @@ export function resolveMainPanelLayout(
  * 根据底部三列容器宽度解析“分支树 / 日志 / 提交详情”的实际宽度。
  * - 分支树与提交详情按比例自动伸缩；
  * - 中央日志列始终优先保留最小阅读空间；
- * - 行为参考 IDEA 在 VCS Log / Changes 中对 splitter proportion 的持久化方式。
+ * - 行为借鉴参考实现在 VCS Log / Changes 中对 splitter proportion 的持久化方式。
  */
 export function resolveBottomPanelLayout(
   containerWidth: number,

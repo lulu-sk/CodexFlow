@@ -49,7 +49,7 @@ function getProblemActionVariant(action: GitUpdateOperationProblem["actions"][nu
 }
 
 /**
- * 按操作语义细化“查看受影响内容”按钮文案；Cherry-pick 本地改动覆盖时对齐 IDEA，使用“显示文件”。
+ * 按操作语义细化“查看受影响内容”按钮文案；Cherry-pick 本地改动覆盖时保持与参考实现一致，使用“显示文件”。
  */
 function getViewChangesButtonLabel(
   problem: GitUpdateOperationProblem,

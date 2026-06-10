@@ -141,7 +141,7 @@ export function getCommitDetailsActionItem(
 }
 
 /**
- * 按 IDEA `Vcs.RepositoryChangesBrowserMenu` 与 Git 追加动作的层级，构建提交详情右键菜单分组。
+ * 按参考实现 `Vcs.RepositoryChangesBrowserMenu` 与 Git 追加动作的层级，构建提交详情右键菜单分组。
  */
 export function buildCommitDetailsContextMenuGroups(
   availability: GitCommitDetailsActionAvailability | null | undefined,

@@ -410,7 +410,7 @@ describe("commit panel selection model", () => {
     expect(ctx.canIgnore).toBe(true);
   });
 
-  it("单选 amend modifier 节点时，应按真实 amend 历史条目保留 IDEA 共享菜单动作", () => {
+  it("单选 amend modifier 节点时，应按真实 amend 历史条目保留参考实现共享菜单动作", () => {
     const ctx = deriveCommitSelectionContext({
       selectedEntries: [
         { path: "src/amend.ts", x: "M", y: ".", staged: false, unstaged: false, untracked: false, ignored: false, renamed: false, deleted: false, statusText: "已修改", changeListId: "__amend__" },

@@ -13,6 +13,7 @@ export type GitBranchPopupPersistedState = {
   selectedRepoRoot: string;
   step: GitBranchPopupStep;
   groupOpen: BranchPopupGroupOpen;
+  panelGroupByDirectory: boolean;
 };
 
 function getStorage(): Storage | null {
@@ -34,6 +35,7 @@ function normalizeBranchPopupPersistedState(value: any): GitBranchPopupPersisted
       local: value?.groupOpen?.local !== false,
       remote: value?.groupOpen?.remote !== false,
     },
+    panelGroupByDirectory: value?.panelGroupByDirectory === true,
   };
 }
 
@@ -47,6 +49,7 @@ export function loadGitBranchPopupState(): GitBranchPopupPersistedState {
       selectedRepoRoot: "",
       step: "branches",
       groupOpen: createDefaultBranchPopupGroupOpen(),
+      panelGroupByDirectory: false,
     };
   }
   try {
@@ -56,6 +59,7 @@ export function loadGitBranchPopupState(): GitBranchPopupPersistedState {
         selectedRepoRoot: "",
         step: "branches",
         groupOpen: createDefaultBranchPopupGroupOpen(),
+        panelGroupByDirectory: false,
       };
     }
     return normalizeBranchPopupPersistedState(JSON.parse(raw));
@@ -64,6 +68,7 @@ export function loadGitBranchPopupState(): GitBranchPopupPersistedState {
       selectedRepoRoot: "",
       step: "branches",
       groupOpen: createDefaultBranchPopupGroupOpen(),
+      panelGroupByDirectory: false,
     };
   }
 }

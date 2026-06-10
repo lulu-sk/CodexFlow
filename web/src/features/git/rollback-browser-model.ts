@@ -79,7 +79,7 @@ function resolveRollbackDirectory(filePath: string, translate?: GitTranslate): s
 }
 
 /**
- * 按 IDEA flattened comparator 语义比较路径；先比文件名，再回落到完整层级路径。
+ * 按参考实现 flattened comparator 语义比较路径；先比文件名，再回落到完整层级路径。
  */
 function compareRollbackPaths(leftPath: string, rightPath: string, flattened: boolean): number {
   if (flattened) {
@@ -97,7 +97,7 @@ function compareRollbackPaths(leftPath: string, rightPath: string, flattened: bo
 }
 
 /**
- * 按 IDEA rollback browser 的扁平/树形比较器统一排序条目，避免组件层散落重复排序规则。
+ * 按参考实现 rollback browser 的扁平/树形比较器统一排序条目，避免组件层散落重复排序规则。
  */
 export function sortRollbackBrowserEntries(
   entries: GitRollbackBrowserEntry[],
@@ -177,7 +177,7 @@ function createPathOnlyRollbackEntry(filePath: string, translate?: GitTranslate)
 }
 
 /**
- * 规范化 rollback viewer 允许的 grouping key 集；当前仅开放 IDEA 同源的目录分组。
+ * 规范化 rollback viewer 允许的 grouping key 集；当前仅开放与参考实现同源的目录分组。
  */
 export function normalizeRollbackBrowserGroupingKeys(
   groupingKeysInput: ReadonlyArray<GitRollbackBrowserGroupingKey> | null | undefined,
@@ -242,7 +242,7 @@ export function buildOperationProblemRollbackEntries(
 }
 
 /**
- * 构建 rollback viewer 的线性渲染行；目录分组开启时复用提交树目录折叠逻辑，否则走 IDEA 风格扁平列表。
+ * 构建 rollback viewer 的线性渲染行；目录分组开启时复用提交树目录折叠逻辑，否则走 参考实现风格扁平列表。
  */
 export function buildRollbackBrowserRows(
   entries: GitRollbackBrowserEntry[],

@@ -98,7 +98,7 @@ export function formatGitLogDateFilterLabel(label: string, dateFrom: string, dat
 }
 
 /**
- * 顶部多值筛选按钮，按 IDEA popup 语义提供搜索、多选与清空入口。
+ * 顶部多值筛选按钮，按参考实现 popup 语义提供搜索、多选与清空入口。
  */
 export function GitLogMultiSelectFilterButton(props: GitLogMultiSelectFilterButtonProps): JSX.Element {
   const {
@@ -186,7 +186,7 @@ export function GitLogMultiSelectFilterButton(props: GitLogMultiSelectFilterButt
 }
 
 /**
- * 顶部日期筛选按钮，提供 IDEA 风格的快捷时间范围与自定义入口。
+ * 顶部日期筛选按钮，提供参考实现风格的快捷时间范围与自定义入口。
  */
 export function GitLogDateFilterButton(props: GitLogDateFilterButtonProps): JSX.Element {
   const {

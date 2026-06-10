@@ -94,6 +94,22 @@ type GitDetailsBrowserMenuState = GitContextMenuState & {
 };
 
 /**
+ * 按详情树当前显示顺序构造复制文本，目录节点输出完整路径，文件节点输出文件路径。
+ */
+export function buildGitDetailsBrowserCopyText(args: {
+  rows: Array<{ node: GitDetailsBrowserTreeNode; depth: number }>;
+  selectedNodeKeys: string[];
+}): string {
+  const selected = new Set((args.selectedNodeKeys || []).map((key) => String(key || "").trim()).filter(Boolean));
+  if (selected.size <= 0) return "";
+  return (args.rows || [])
+    .filter((row) => selected.has(row.node.key))
+    .map((row) => String(row.node.fullPath || row.node.name || "").trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+/**
  * 独立渲染 committed changes details browser，统一承接选择、Diff 同步、toolbar 与 popup。
  */
 export function GitDetailsBrowser(props: GitDetailsBrowserProps): JSX.Element {
@@ -207,7 +223,7 @@ export function GitDetailsBrowser(props: GitDetailsBrowserProps): JSX.Element {
   }, [detailSpeedSearchOpen]);
 
   /**
-   * 根据右键命中的节点与当前树选区推导动作目标文件；若命中节点已在选区内，则复用整个选区，对齐 IDEA 基于 `getSelectedChanges()` 的批量执行语义。
+   * 根据右键命中的节点与当前树选区推导动作目标文件；若命中节点已在选区内，则复用整个选区，保持批量动作目标一致。
    */
   const resolveTargetFiles = (targetPath: string): string[] => {
     const normalizedTargetPath = String(targetPath || "").trim();
@@ -349,7 +365,7 @@ export function GitDetailsBrowser(props: GitDetailsBrowserProps): JSX.Element {
         {details ? (
           <div className="flex min-h-0 flex-1 flex-col">
             {/* 当前产品设计要求把“提交详情”面板顶部工具栏内的重复动作统一收敛到右键菜单，顶部不再重复渲染同名按钮；
-                原因是右键已提供等价功能，继续平铺会造成重复操作入口。设计如此，此处在“提交详情顶部工具栏”范围内继续不对齐 IDEA。 */}
+                原因是右键已提供等价功能，继续平铺会造成重复操作入口。设计如此，此处在“提交详情顶部工具栏”范围内保留当前产品取舍。 */}
             <div ref={speedSearchRootRef} className="relative min-h-0 flex-[1.1] border-b border-[var(--cf-border)]">
               {detailSpeedSearchOpen ? (
                 <div

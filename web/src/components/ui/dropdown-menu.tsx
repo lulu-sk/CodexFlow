@@ -46,10 +46,17 @@ export function DropdownMenuContent({ align = 'start', className, children }: { 
   const ctx = React.useContext(Ctx);
   const contentRef = React.useRef<HTMLDivElement | null>(null);
   const [style, setStyle] = React.useState<React.CSSProperties>({});
+  const [positioned, setPositioned] = React.useState(false);
 
-  // 计算并更新弹层位置
+  /**
+   * 计算并更新弹层位置。
+   * @returns 是否已拿到触发器与内容节点并完成定位。
+   */
   const updatePosition = React.useCallback(() => {
-    if (!ctx?.open || !ctx.triggerRef.current || !contentRef.current) return;
+    if (!ctx?.open || !ctx.triggerRef.current || !contentRef.current) {
+      setPositioned(false);
+      return false;
+    }
     const triggerRect = ctx.triggerRef.current.getBoundingClientRect();
     const contentRect = contentRef.current.getBoundingClientRect();
     const viewportW = window.innerWidth;
@@ -74,10 +81,28 @@ export function DropdownMenuContent({ align = 'start', className, children }: { 
     }
 
     setStyle({ position: 'fixed', top, left, zIndex: 9999 });
+    setPositioned(true);
+    return true;
   }, [ctx?.open, align, ctx?.triggerRef]);
 
   React.useLayoutEffect(() => {
-    updatePosition();
+    if (!ctx?.open) {
+      setPositioned(false);
+      return;
+    }
+    setPositioned(false);
+    let frameId: number | null = null;
+    let attempts = 0;
+    // 在触发器或内容节点首帧尚未就绪时，短暂重试以避免菜单先显示到错误位置。
+    const retryPosition = () => {
+      attempts += 1;
+      if (updatePosition() || attempts >= 5) return;
+      frameId = window.requestAnimationFrame(retryPosition);
+    };
+    retryPosition();
+    return () => {
+      if (frameId != null) window.cancelAnimationFrame(frameId);
+    };
   }, [ctx?.open, updatePosition]);
 
   // 点击外部关闭
@@ -115,7 +140,15 @@ export function DropdownMenuContent({ align = 'start', className, children }: { 
     <div
       ref={contentRef}
       data-dropdown-menu-content="true"
-      style={style}
+      style={{
+        position: 'fixed',
+        left: 0,
+        top: 0,
+        zIndex: 9999,
+        visibility: positioned ? undefined : 'hidden',
+        pointerEvents: positioned ? undefined : 'none',
+        ...style,
+      }}
       className={cn(
         "min-w-[180px] rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple p-1.5 shadow-apple-lg text-[var(--cf-text-primary)] dark:shadow-apple-dark-lg",
         className,

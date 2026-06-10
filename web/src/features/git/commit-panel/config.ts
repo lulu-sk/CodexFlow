@@ -2,7 +2,7 @@
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
 /**
- * 提交面板 many files 默认阈值，对齐上游 `ChangesBrowserSpecificNode` 的默认行为。
+ * 提交面板 many files 默认阈值，保持与参考实现一致的 `ChangesBrowserSpecificNode` 默认行为。
  */
 export const DEFAULT_COMMIT_PANEL_MANY_FILES_THRESHOLD = 1000;
 export const COMMIT_TREE_RESET_THRESHOLD = 30_000;
@@ -17,7 +17,7 @@ export const SPECIAL_FILES_ROW_HEIGHT = 28;
 export const DEFAULT_COMMIT_PANEL_CHANGE_LIST_ID = "default";
 
 /**
- * 归一化 many files 阈值；无效输入统一回退到上游默认值。
+ * 归一化 many files 阈值；无效输入统一回退到参考实现默认值。
  */
 export function normalizeCommitPanelManyFilesThreshold(value: unknown): number {
   const normalized = Number(value);

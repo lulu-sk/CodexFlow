@@ -120,7 +120,7 @@ describe("commit amend model", () => {
     expect(buildCommitActionLabel(false, true, true)).toBe("提交并推送...");
   });
 
-  it("应按 IDEA 的 canonical Hash 语义做精确身份比较，而不是把短前缀视为同一提交", () => {
+  it("应按 canonical Hash 语义做精确身份比较，而不是把短前缀视为同一提交", () => {
     expect(isSameCommitHashIdentity(
       "64edc51214ddd76c3013e379e8e3ebfbaced1610",
       "64EDC51214DDD76C3013E379E8E3EBFBACED1610",

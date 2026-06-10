@@ -40,7 +40,7 @@ export function buildChangeListSelectOptions(lists: GitChangeList[]): Array<{ va
 }
 
 /**
- * 按 IDEA 的单列表移动语义过滤候选列表；若仅从一个列表移动，则优先排除该源列表。
+ * 按参考实现的单列表移动语义过滤候选列表；若仅从一个列表移动，则优先排除该源列表。
  */
 export function resolveMoveDialogLists(lists: GitChangeList[], selectedEntries: GitStatusEntry[]): GitChangeList[] {
   const affectedIds = new Set(

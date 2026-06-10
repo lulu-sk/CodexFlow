@@ -68,7 +68,7 @@ function buildCollapsedDirectoryTextPresentation(basePath: string, targetPath: s
 }
 
 /**
- * 对齐上游 `ChangesBrowserSpecificNode.isManyFiles()` 语义。
+ * 保持与参考实现一致的 `ChangesBrowserSpecificNode.isManyFiles()` 语义。
  */
 function isManySpecialFiles(entries: GitStatusEntry[], manyFilesThreshold: number): boolean {
   return entries.length > manyFilesThreshold;
@@ -205,7 +205,7 @@ export function getCommitNodeTextPresentation(node: Pick<CommitTreeNode, "textPr
 }
 
 /**
- * 按提交面板模式构建 section；结构对齐上游 changelist/helper node 思路，并预留 conflict/resolved conflict 扩展。
+ * 按提交面板模式构建 section；结构参考实现的 changelist/helper node 思路，并预留 conflict/resolved conflict 扩展。
  */
 export function buildChangeEntryGroups(args: BuildChangeEntryGroupsArgs): ChangeEntryGroup[] {
   const gt = args.translate;
@@ -418,7 +418,7 @@ function createMutableHelperNode(args: {
 }
 
 /**
- * 为折叠后的目录节点同步可见文案，确保提交树展示与上游的单子目录折叠路径一致。
+ * 为折叠后的目录节点同步可见文案，确保提交树展示与参考实现的单子目录折叠路径一致。
  */
 function applyCollapsedDirectoryPresentation(node: CommitTreeNode, textPresentation: string): CommitTreeNode {
   if (node.kind !== "directory") return node;
@@ -436,7 +436,7 @@ function applyCollapsedDirectoryPresentation(node: CommitTreeNode, textPresentat
 }
 
 /**
- * 对齐上游 `TreeModelBuilder.collapseDirectories()`，折叠连续的单子目录链，避免出现 `web -> src` 这类冗余层级。
+ * 保持与参考实现一致的 `TreeModelBuilder.collapseDirectories()`，折叠连续的单子目录链，避免出现 `web -> src` 这类冗余层级。
  */
 function collapseCommitDirectoryNodes(nodes: CommitTreeNode[], parentPath: string = ""): CommitTreeNode[] {
   return nodes.map((node) => {

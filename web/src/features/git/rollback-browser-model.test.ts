@@ -77,7 +77,7 @@ describe("rollback-browser-model", () => {
     });
   });
 
-  it("扁平模式应按 IDEA 风格优先使用文件名排序", () => {
+  it("扁平模式应按文件名优先规则排序", () => {
     const entries = buildRollbackBrowserEntriesFromStatusEntries([
       {
         path: "web/src/zeta.ts",

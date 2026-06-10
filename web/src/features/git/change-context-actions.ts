@@ -43,7 +43,7 @@ export function collectSelectedConflictPaths(entries: GitConflictEntryLike[]): s
 }
 
 /**
- * 仅在当前选择包含冲突文件时暴露 IDEA 对齐的右键快捷动作，并固定顺序为 Merge/Theirs/Yours。
+ * 仅在当前选择包含冲突文件时暴露与参考实现一致的右键快捷动作，并固定顺序为 Merge/Theirs/Yours。
  */
 export function buildConflictContextActionKeys(entries: GitConflictEntryLike[]): GitConflictContextActionKey[] {
   return collectSelectedConflictPaths(entries).length > 0 ? CONFLICT_CONTEXT_ACTION_ORDER : [];

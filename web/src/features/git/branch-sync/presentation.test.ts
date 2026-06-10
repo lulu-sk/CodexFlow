@@ -25,7 +25,7 @@ describe("branch sync presentation", () => {
     expect(presentation.tooltip).toContain("落后 2 个提交，领先 1 个提交");
   });
 
-  it("incoming / outgoing 标签应按 IDEA 规则格式化为 99+ 与空数字 incoming", () => {
+  it("incoming / outgoing 标签应按分支面板规则格式化为 99+ 与空数字 incoming", () => {
     const incoming = buildIncomingBranchSyncBadge({
       upstream: "origin/master",
       incoming: 124,

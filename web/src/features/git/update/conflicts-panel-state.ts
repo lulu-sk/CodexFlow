@@ -17,7 +17,7 @@ type StorageLike = Pick<Storage, "getItem" | "setItem">;
 const CONFLICTS_PANEL_STORAGE_KEY = "cf.gitWorkbench.conflicts.panel.v1";
 
 /**
- * 返回冲突面板默认偏好；gate 默认开启，贴近 IDEA 默认自动显隐的行为。
+ * 返回冲突面板默认偏好；门控默认开启，贴近参考实现默认自动显隐的行为。
  */
 export function createDefaultConflictsPanelPreferences(): ConflictsPanelPreferences {
   return {

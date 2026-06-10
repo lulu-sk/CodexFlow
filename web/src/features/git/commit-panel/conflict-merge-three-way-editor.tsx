@@ -230,7 +230,7 @@ function buildConflictMergeResolvedLineDecorations(
 }
 
 /**
- * 把指定块范围滚动到编辑区；强制模式对齐 IDEA `doScrollToChange(..., true)`，直接居中到目标块。
+ * 把指定块范围滚动到编辑区；强制模式保持与参考实现一致的 `doScrollToChange(..., true)`，直接居中到目标块。
  */
 function revealConflictMergeLineRange(
   editor: MonacoNS.editor.IStandaloneCodeEditor | null | undefined,
@@ -477,7 +477,7 @@ function buildConflictMergeFoldSeparatorPath(args: {
 }
 
 /**
- * 当一侧为空块时，把细锚点扩成与对侧等高的连接带，逼近 IDEA divider polygon 的 `withAlignedHeight` 效果。
+ * 当一侧为空块时，把细锚点扩成与对侧等高的连接带，逼近参考实现的 divider polygon 的 `withAlignedHeight` 效果。
  */
 function alignConflictMergeConnectorSpans(args: {
   source: { top: number; bottom: number; center: number };
@@ -521,7 +521,7 @@ function alignConflictMergeConnectorSpans(args: {
 }
 
 /**
- * 根据 gutter 控件语义返回对应图标，和 IDEA 的左右箭头 / 向下追加 / 删除操作保持一致。
+ * 根据 gutter 控件语义返回对应图标，和参考实现的左右箭头 / 向下追加 / 删除操作保持一致。
  */
 function renderConflictMergeGutterControlIcon(control: ConflictMergeGutterControl): React.ReactElement {
   if (control.icon === "apply-left") {
@@ -540,7 +540,7 @@ function renderConflictMergeGutterControlIcon(control: ConflictMergeGutterContro
 }
 
 /**
- * 更接近 IDEA `TextMergeViewer` 的三栏代码视图；左右为只读来源，中间为可编辑结果，并为每个未解决块渲染 gutter 操作。
+ * 更接近参考实现 `TextMergeViewer` 的三栏代码视图；左右为只读来源，中间为可编辑结果，并为每个未解决块渲染 gutter 操作。
  */
 export function ConflictMergeThreeWayEditor(props: ConflictMergeThreeWayEditorProps): React.ReactElement {
   const { t } = useTranslation(["git", "common"]);
@@ -663,7 +663,7 @@ export function ConflictMergeThreeWayEditor(props: ConflictMergeThreeWayEditorPr
   }, [paneLineCounts]);
 
   /**
-   * 按 IDEA `SyncScrollSupport` 的片段映射策略同步三栏纵向滚动，折叠后仍能保持块级错位关系可读。
+   * 按参考实现 `SyncScrollSupport` 的片段映射策略同步三栏纵向滚动，折叠后仍能保持块级错位关系可读。
    */
   const syncConflictMergeEditorScrollTop = React.useCallback((
     sourcePaneKey: ConflictMergeEditorPaneKey,
@@ -694,7 +694,7 @@ export function ConflictMergeThreeWayEditor(props: ConflictMergeThreeWayEditorPr
   }, [applyConflictMergeMappedScroll, resolveConflictMergeScrollAnchor, scrollMaps]);
 
   /**
-   * 根据块高亮、折叠分隔线与三栏真实位置计算所有叠层控件坐标，参考上游 merge viewer 的可视关联提示。
+   * 根据块高亮、折叠分隔线与三栏真实位置计算所有叠层控件坐标，参考实现 merge viewer 的可视关联提示。
    */
   const updateConflictMergeGutterControls = React.useCallback((): void => {
     const rootNode = rootRef.current;
@@ -1128,7 +1128,7 @@ export function ConflictMergeThreeWayEditor(props: ConflictMergeThreeWayEditorPr
   }, [editorMountStamp, props.blocks, props.selectedBlock, scheduleConflictMergeGutterControls]);
 
   /**
-   * 切换“收起未更改片段”时按同步 fold plan 更新三栏隐藏区域，参考上游 `FoldingModelSupport` 的同组折叠关系。
+   * 切换“收起未更改片段”时按同步 fold plan 更新三栏隐藏区域，参考实现 `FoldingModelSupport` 的同组折叠关系。
    */
   useEffect(() => {
     const monaco = monacoRef.current;

@@ -92,7 +92,7 @@ export function resolveShelfBrowserDirectory(pathText: string, translate?: GitTr
 }
 
 /**
- * 规范化 shelf browser 的 grouping key；当前仅开放 IDEA 同源的目录分组。
+ * 规范化 shelf browser 的 grouping key；当前仅开放与参考实现同源的目录分组。
  */
 export function normalizeShelfBrowserGroupingKeys(
   groupingKeysInput: ReadonlyArray<GitShelfBrowserGroupingKey> | null | undefined,
@@ -116,7 +116,7 @@ function toShelfBrowserCommitGroupingKeys(
 }
 
 /**
- * 按 IDEA shelf tree 的扁平比较器比较路径；无目录分组时先按文件名，再回落完整路径。
+ * 按参考实现 shelf tree 的扁平比较器比较路径；无目录分组时先按文件名，再回落完整路径。
  */
 function compareShelfPaths(leftPath: string, rightPath: string, flattened: boolean): number {
   if (flattened) {
@@ -284,7 +284,7 @@ function isVisibleActiveShelf(shelf: GitShelfItem, showRecycled: boolean): boole
 }
 
 /**
- * 构建 shelf browser 的线性渲染行，对齐 IDEA 的活动列表 + 最近删除标签结构。
+ * 构建 shelf browser 的线性渲染行，保持与参考实现一致的活动列表 + 最近删除标签结构。
  */
 export function buildShelfBrowserRows(args: {
   items: GitShelfItem[];

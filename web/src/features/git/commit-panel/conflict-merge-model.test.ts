@@ -202,7 +202,7 @@ describe("conflict-merge-model", () => {
     expect(applied.state.resultText).toBe("start\nours-left\nmid\ntheirs-right\nend\n");
   });
 
-  it("解决简单冲突应自动处理上游样例中的文本级可收敛冲突块", () => {
+  it("解决简单冲突应自动处理参考实现样例中的文本级可收敛冲突块", () => {
     const snapshot = createSnapshot({
       base: "version: 1.0.0\n",
       ours: "version: 2.0.0\n",

@@ -1761,6 +1761,7 @@
           "display": "Display",
           "incomingOutgoing": "Incoming / Outgoing",
           "myBranches": "My Branches",
+          "groupByDirectory": "Group by Directory",
           "repositories": "Repositories",
           "previousRepository": "Previous Repository",
           "nextRepository": "Next Repository",

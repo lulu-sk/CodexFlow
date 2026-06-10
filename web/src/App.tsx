@@ -10354,7 +10354,6 @@ export default function CodexFlowManagerUI() {
                   key={tab.id}
                   value={tab.id}
                   className="mt-1 flex flex-1 min-h-0 flex-col space-y-1"
-                  onContextMenu={(e: React.MouseEvent) => openTabContextMenu(e, tab.id, "tab-content")}
                 >
                   <Card className="relative flex flex-1 min-h-0 flex-col overflow-hidden">
                     <React.Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-[var(--cf-text-secondary)]">{t("projects:gitModuleLoading", "正在加载 Git 模块...") as string}</div>}>
@@ -10384,7 +10383,6 @@ export default function CodexFlowManagerUI() {
                 key={tab.id}
                 value={tab.id}
                 className="mt-1 flex flex-1 min-h-0 min-w-0 flex-col overflow-hidden space-y-1"
-                onContextMenu={(e: React.MouseEvent) => openTabContextMenu(e, tab.id, "tab-content")}
               >
                 <Card className="flex flex-1 min-h-0 min-w-0 flex-col overflow-hidden">
                   <CardContent className="relative flex flex-1 min-h-0 min-w-0 flex-col overflow-hidden p-0">
@@ -10396,7 +10394,7 @@ export default function CodexFlowManagerUI() {
                         attachTerminal={attachTerminal}
                         onScrollToTop={(tid) => terminalManagerRef.current?.scrollToTop(tid)}
                         onScrollToBottom={(tid) => terminalManagerRef.current?.scrollToBottom(tid)}
-                        onContextMenuDebug={(event) => openTabContextMenu(event, tab.id, "terminal-body")}
+                        onContextMenuDebug={showNotifDebugMenu ? (event) => openTabContextMenu(event, tab.id, "terminal-body") : undefined}
                         theme={terminalThemeDef}
                       />
                     </div>

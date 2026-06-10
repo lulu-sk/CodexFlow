@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
-// 三方冲突视图状态模型参考 IntelliJ IDEA Community Edition / IntelliJ Platform 的 Apache-2.0 源码语义，并按本项目 React/TypeScript 架构重写。
+// 三方冲突视图状态模型借鉴参考实现的 Apache-2.0 源码语义，并按本项目 React/TypeScript 架构重写。
 
 import { resolveConflictMergeSemanticBlocks } from "../../../../../electron/git/commitPanel/conflictMergeSemantic";
 import { tryResolveConflictMergeText } from "../../../../../electron/git/commitPanel/conflictMergeTextResolve";
@@ -459,7 +459,7 @@ function buildConflictMergeUnchangedRanges(
 }
 
 /**
- * 按 IDEA `ComparisonMergeUtil.buildSimple` 的 `FairMergeBuilder` 语义，把左右两侧相对 base 的 unchanged range 合成为三方 merge range。
+ * 按参考实现 `ComparisonMergeUtil.buildSimple` 的 `FairMergeBuilder` 语义，把左右两侧相对 base 的 unchanged range 合成为三方 merge range。
  */
 function buildConflictMergeRanges(args: {
   baseLength: number;
@@ -517,7 +517,7 @@ function buildConflictMergeRanges(args: {
   };
 
   /**
-   * 对齐一组左右 unchanged range；返回下一个应继续推进的侧别，与 IDEA `FairMergeBuilder.add` 保持同义。
+   * 对齐一组左右 unchanged range；返回下一个应继续推进的侧别，与参考实现 `FairMergeBuilder.add` 保持同义。
    */
   const addEqualOverlap = (
     leftRange: ConflictMergeUnchangedRange,
@@ -733,7 +733,7 @@ function hydrateConflictMergeViewerState(state: ConflictMergeViewerState): Confl
 }
 
 /**
- * 基于三方 revision 构造接近 IDEA `MergeConflictModel` 的前端块状态，结果列默认以基线文本初始化。
+ * 基于三方 revision 构造接近参考实现 `MergeConflictModel` 的前端块状态，结果列默认以基线文本初始化。
  */
 export function createConflictMergeViewerState(snapshot: GitConflictMergeSnapshot): ConflictMergeViewerState {
   const baseTokens = splitConflictMergeTokens(normalizeConflictMergeText(snapshot.base.text));
@@ -932,7 +932,7 @@ function combineConflictMergeBothTokens(oursTokens: string[], theirsTokens: stri
 }
 
 /**
- * 按块当前策略获取自动解决后的 token；`TEXT` 走 IDEA 对齐算法，`SEMANTIC` 直接采用 resolver 结果。
+ * 按块当前策略获取自动解决后的 token；`TEXT` 走与参考实现一致的算法，`SEMANTIC` 直接采用 resolver 结果。
  */
 function resolveConflictMergeBlockAutomatically(
   block: ConflictMergeBlock,
@@ -949,7 +949,7 @@ function resolveConflictMergeBlockAutomatically(
 }
 
 /**
- * 为普通更改块推导自动处理决议，参考上游 `canResolveChangeAutomatically(BASE)` 对 non-conflict change 的选择规则。
+ * 为普通更改块推导自动处理决议，参考实现 `canResolveChangeAutomatically(BASE)` 对 non-conflict change 的选择规则。
  */
 function resolveConflictMergeChangeAutoResolution(
   block: ConflictMergeBlock,
@@ -961,7 +961,7 @@ function resolveConflictMergeChangeAutoResolution(
 }
 
 /**
- * 判断当前块是否满足 IDEA `canResolveChangeAutomatically` 的前端等价条件；普通变更块与简单冲突块都纳入自动处理入口。
+ * 判断当前块是否满足参考实现 `canResolveChangeAutomatically` 的前端等价条件；普通变更块与简单冲突块都纳入自动处理入口。
  */
 export function canResolveConflictMergeBlockAutomatically(block: ConflictMergeBlock): boolean {
   if (block.isImportChange || block.onesideApplied) return false;
@@ -1062,14 +1062,14 @@ export function countConflictMergeUnresolvedChanges(state: ConflictMergeViewerSt
 }
 
 /**
- * 统计当前 state 中仍未解决的真正冲突块数量，供接近 IDEA 的“部分解决”提示复用。
+ * 统计当前 state 中仍未解决的真正冲突块数量，供接近参考实现的“部分解决”提示复用。
  */
 export function countConflictMergeUnresolvedConflicts(state: ConflictMergeViewerState): number {
   return state.blocks.filter((block) => block.kind === "conflict" && !block.resolved).length;
 }
 
 /**
- * 对指定块执行快速采用动作，完整保留 IDEA 的单侧应用、单侧追加与最终 resolved 状态迁移语义。
+ * 对指定块执行快速采用动作，完整保留参考实现的单侧应用、单侧追加与最终 resolved 状态迁移语义。
  */
 export function applyConflictMergeBlockResolution(
   state: ConflictMergeViewerState,
@@ -1216,7 +1216,7 @@ export function ignoreConflictMergeBlockSide(
 }
 
 /**
- * 批量应用某个范围内的不冲突更改，对齐 IDEA `ApplyNonConflictsAction` 的左/所有/右三种语义。
+ * 批量应用某个范围内的不冲突更改，保持与参考实现一致的 `ApplyNonConflictsAction` 的左/所有/右三种语义。
  */
 export function applyConflictMergeNonConflictedChanges(
   state: ConflictMergeViewerState,
@@ -1238,7 +1238,7 @@ export function applyConflictMergeNonConflictedChanges(
 }
 
 /**
- * 批量处理所有可安全自动处理的块，对齐 IDEA `MagicResolvedConflictsAction` 会同时覆盖 non-conflict change 与 simple conflict 的行为。
+ * 批量处理所有可安全自动处理的块，保持与参考实现一致的 `MagicResolvedConflictsAction` 会同时覆盖 non-conflict change 与 simple conflict 的行为。
  */
 export function applyResolvableConflictMergeBlocks(
   state: ConflictMergeViewerState,

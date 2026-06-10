@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   createDefaultGitLogColumnLayout,
+  buildGitLogCopyText,
   estimateGitLogColumnWidth,
   loadGitLogColumnLayout,
   normalizeGitLogColumnLayout,
@@ -124,5 +125,59 @@ describe("log-columns", () => {
     const resized = resizeGitLogColumn(layout, "author", 166);
     expect(resized.autoFit.author).toBe(false);
     expect(resolveGitLogColumnWidth(resized, "author", 72)).toBe(166);
+  });
+
+  /**
+   * 验证日志复制文本按当前列顺序输出，且只包含被选中的提交行。
+   */
+  it("copy provider 应按当前列顺序输出选中提交", () => {
+    const text = buildGitLogCopyText({
+      items: [
+        {
+          hash: "a1b2c3d4",
+          shortHash: "a1b2c3d",
+          parents: [],
+          authorName: "Alice",
+          authorEmail: "alice@example.com",
+          authorDate: "2025-06-01T00:00:00.000Z",
+          subject: "feat: one",
+          decorations: "main",
+        },
+        {
+          hash: "b2c3d4e5",
+          shortHash: "b2c3d4e",
+          parents: [],
+          authorName: "Bob",
+          authorEmail: "bob@example.com",
+          authorDate: "2025-06-02T00:00:00.000Z",
+          subject: "fix: two",
+          decorations: "origin/main",
+        },
+      ],
+      selectedHashes: ["b2c3d4e5", "a1b2c3d4"],
+      layout: {
+        order: ["author", "hash", "subject", "date", "refs"],
+        widths: {
+          subject: 368,
+          author: 104,
+          date: 96,
+          hash: 82,
+          refs: 128,
+        },
+        autoFit: {
+          subject: false,
+          author: true,
+          date: true,
+          hash: true,
+          refs: true,
+        },
+      },
+      formatDate: (iso) => iso.slice(0, 10),
+    });
+
+    expect(text).toBe([
+      "Alice a1b2c3d feat: one 2025-06-01 main",
+      "Bob b2c3d4e fix: two 2025-06-02 origin/main",
+    ].join("\n"));
   });
 });

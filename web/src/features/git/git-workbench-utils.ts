@@ -93,7 +93,7 @@ function sanitizePatchFileNameSegment(value: string): string {
 }
 
 /**
- * 按 IDEA `GitCheckoutActionGroup` 规则构建日志右键“签出”菜单模型：
+ * 按参考实现 `GitCheckoutActionGroup` 规则构建日志右键“签出”菜单模型：
  * 仅纳入本地分支引用，排除当前分支；只要存在分支签出入口，顶层就升级为子菜单。
  */
 export function buildGitLogCheckoutMenuModel(args: {
@@ -114,7 +114,7 @@ export function buildGitLogCheckoutMenuModel(args: {
 
 /**
  * 按动作语义规整日志多选提交的执行顺序。
- * IDEA 的 Cherry-pick 会把 UI 中“新到旧”的选区反转为“旧到新”后再执行，避免多提交应用顺序颠倒。
+ * 参考实现的 Cherry-pick 会把 UI 中“新到旧”的选区反转为“旧到新”后再执行，避免多提交应用顺序颠倒。
  */
 export function resolveLogActionExecutionHashes(args: {
   action: string;
@@ -411,7 +411,7 @@ export function resolvePartialCommitValidationDiffMode(args: {
 }
 
 /**
- * 判断当前状态是否应按 IDEA apply-changes 语义进入“提交更改完成 Cherry-pick”阶段。
+ * 判断当前状态是否应按参考实现 apply-changes 语义进入“提交更改完成 Cherry-pick”阶段。
  * 只要仓库仍处于 grafting、没有未解决冲突，且 Git 已提供建议提交消息，就应切到提交收尾；
  * 不要求当前状态列表里仍显式保留“已解决冲突文件”条目。
  */

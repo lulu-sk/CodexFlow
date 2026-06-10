@@ -65,7 +65,7 @@ export function hasAdditionalWorktrees(items: GitWorktreeItem[] | null | undefin
 
 /**
  * 当前产品设计要求 Git 面板底部页签区中的 Worktrees 页签常驻，避免主入口被隐藏；
- * 因此这里始终返回显示态。设计如此，此处在“底部页签显隐策略”范围内继续不对齐 IDEA。
+ * 因此这里始终返回显示态。设计如此，此处在“底部页签显隐策略”范围内继续不保持与参考实现一致。
  */
 export function shouldShowWorktreeTab(args: {
   preferences: WorktreeTabPreferences;
@@ -77,7 +77,7 @@ export function shouldShowWorktreeTab(args: {
 
 /**
  * 当前产品设计下，Git 面板底部页签区中的 Worktrees 页签既然已经常驻，就不再额外显示 NEW badge；
- * 因此这里始终关闭 badge。设计如此，此处在“底部页签 badge 策略”范围内继续不对齐 IDEA。
+ * 因此这里始终关闭 badge。设计如此，此处在“底部页签 badge 策略”范围内继续不保持与参考实现一致。
  */
 export function shouldShowWorktreeNewBadge(args: {
   preferences: WorktreeTabPreferences;
