@@ -22,7 +22,7 @@ type BranchSyncBadgesProps = {
 type BranchSyncGlyphKind = "incoming" | "outgoing" | "diverged" | "unfetched";
 
 /**
- * 渲染当前分支入口的同步状态图标，参考上游“branch + incoming/outgoing 状态”的主视觉语义。
+ * 渲染当前分支入口的同步状态图标，参考实现中“branch + incoming/outgoing 状态”的主视觉语义。
  */
 export function BranchSyncStatusIcon(props: BranchSyncStatusIconProps): JSX.Element {
   const glyphKind = resolveBranchSyncGlyphKind(props.sync);
@@ -70,7 +70,7 @@ export function BranchSyncBadges(props: BranchSyncBadgesProps): JSX.Element | nu
 }
 
 /**
- * 根据同步状态选择顶栏入口的 companion glyph，贴近 IDEA 的分层 branch icon 语义。
+ * 根据同步状态选择顶栏入口的 companion glyph，贴近参考实现的分层 branch icon 语义。
  */
 function resolveBranchSyncGlyphKind(sync?: GitBranchSyncState): BranchSyncGlyphKind | null {
   if (!sync || sync.gone || sync.status === "synced" || sync.status === "untracked")
@@ -87,7 +87,7 @@ function resolveBranchSyncGlyphKind(sync?: GitBranchSyncState): BranchSyncGlyphK
 }
 
 /**
- * 渲染顶栏当前分支旁的同步状态 glyph，使用更粗更清楚的矢量笔画模拟 IDEA layered icon。
+ * 渲染顶栏当前分支旁的同步状态 glyph，使用更粗更清楚的矢量笔画模拟参考实现的 layered icon。
  */
 function BranchSyncGlyph(props: { kind: BranchSyncGlyphKind }): JSX.Element {
   return (

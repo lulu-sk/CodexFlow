@@ -183,7 +183,7 @@ describe("ShelfBrowserPane", () => {
     }
   });
 
-  it("活动 shelf 删除语义应统一显示为 IDEA 对齐的删除文案", async () => {
+  it("活动 shelf 删除语义应统一显示为 与参考实现一致的删除文案", async () => {
     const mounted = createMountedRoot();
     const onRecycleShelf = vi.fn();
     try {
@@ -213,7 +213,7 @@ describe("ShelfBrowserPane", () => {
     }
   });
 
-  it("shelf 右键菜单应补齐 IDEA 对齐的差异与补丁动作", async () => {
+  it("shelf 右键菜单应补齐与参考实现一致的差异与补丁动作", async () => {
     const mounted = createMountedRoot();
     const onRunDiffAction = vi.fn();
     const onCreatePatch = vi.fn();

@@ -51,8 +51,8 @@ type CommitTreeSharedSelectionSnapshot = Pick<
 >;
 
 /**
- * 对齐 IDEA 提交树共享菜单的删除入口显示规则。
- * 只要当前冻结选区能解析出真实删除目标，就等价于 IDEA DataContext 中存在 VIRTUAL_FILE_ARRAY。
+ * 保持与参考实现一致的提交树共享菜单的删除入口显示规则。
+ * 只要当前冻结选区能解析出真实删除目标，就等价于参考实现 DataContext 中存在 VIRTUAL_FILE_ARRAY。
  */
 export function shouldShowCommitTreeSharedDeleteAction(args: {
   exactlySelectedFileCount: number;
@@ -109,7 +109,7 @@ function createSubmenuNode(
 }
 
 /**
- * 按 IDEA 提交工具窗口 `MultipleLocalChangeListsBrowser` 的结构构建主提交树共享右键菜单。
+ * 按参考实现提交工具窗口 `MultipleLocalChangeListsBrowser` 的结构构建主提交树共享右键菜单。
  * 这里故意不输出 changelist 管理项，只保留 commit tool window 实际会出现的公共动作与共享子菜单。
  */
 export function buildCommitTreeSharedMenuSections(args: {

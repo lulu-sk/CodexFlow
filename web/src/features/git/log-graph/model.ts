@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
-// Git 日志图布局参考 IntelliJ IDEA Community Edition / IntelliJ Platform 的 Apache-2.0 源码语义，并按本项目 React/TypeScript 架构重写。
+// Git 日志图布局借鉴参考实现的 Apache-2.0 源码语义，并按本项目 React/TypeScript 架构重写。
 
 import type { GitLogItem } from "../types";
 import { resolveLogGraphVisibleMaxLane } from "./metrics";
@@ -150,9 +150,9 @@ const LOG_GRAPH_VISIBLE_PART_SIZE = 1;
 export { LOG_GRAPH_BASE_WIDTH, LOG_GRAPH_LANE_WIDTH, LOG_GRAPH_TEXT_GAP, LOG_GRAPH_X_OFFSET } from "./metrics";
 
 /**
- * 按接近 IDEA `DefaultColorGenerator` 的规则，把稳定颜色种子映射成图谱颜色。
+ * 按接近参考实现 `DefaultColorGenerator` 的规则，把稳定颜色种子映射成图谱颜色。
  * - 颜色 ID 仍由上层 head-ref / fragment 语义提供；
- * - 实际 RGB/HSB 转换改成和 IDEA 同构，避免当前仓库固定调色盘与 IDEA 视觉方向明显偏离。
+ * - 实际 RGB/HSB 转换改成和参考实现同构，避免当前仓库固定调色盘与参考实现视觉方向明显偏离。
  */
 export function resolveLogGraphColor(seed: string): string {
   const normalized = String(seed || "").trim() || "default";
@@ -166,9 +166,9 @@ export function resolveLogGraphColor(seed: string): string {
 }
 
 /**
- * 把颜色种子解析成接近 IDEA `GraphColorManagerImpl` 的 color id。
+ * 把颜色种子解析成接近参考实现 `GraphColorManagerImpl` 的 color id。
  * - head fragment 仍按 ref 名字做稳定哈希；
- * - 普通 fragment 则直接复用 `fragmentIndex` 整数，避免把 `fragment:${index}` 再二次哈希后偏离 IDEA 配色。
+ * - 普通 fragment 则直接复用 `fragmentIndex` 整数，避免把 `fragment:${index}` 再二次哈希后偏离 参考实现配色。
  */
 function resolveLogGraphColorId(seed: string): number {
   const fragmentMatch = /^fragment:(-?\d+)$/.exec(seed);
@@ -178,7 +178,7 @@ function resolveLogGraphColorId(seed: string): number {
 }
 
 /**
- * 把任意整数拉回到接近 IDEA 的可用 RGB 区间，避免颜色过暗或过亮。
+ * 把任意整数拉回到接近参考实现的可用 RGB 区间，避免颜色过暗或过亮。
  */
 function rangeFix(value: number): number {
   return Math.abs(value % 100) + 70;
@@ -258,9 +258,9 @@ function hsbToHex(h: number, s: number, v: number): string {
 }
 
 /**
- * 对齐 IDEA visible graph 语义构建图谱单元。
+ * 保持与参考实现一致的 visible graph 语义构建图谱单元。
  * - `items` 是最终显示在列表里的可见提交；
- * - `graphItems` 是构建图谱时可用的完整行序列，允许保留被文本筛掉的隐藏提交，从而压缩出更接近 IDEA 的长边与 lane 延续。
+ * - `graphItems` 是构建图谱时可用的完整行序列，允许保留被文本筛掉的隐藏提交，从而压缩出更接近参考实现的长边与 lane 延续。
  */
 export function buildLogGraphCells(items: GitLogItem[], graphItems?: GitLogItem[]): GitGraphCell[] {
   const visibleItems = Array.isArray(items) ? items : [];
@@ -569,8 +569,8 @@ function createEmptyLogGraphCell(): GitGraphCell {
 
 /**
  * 把内部稳定 lane 压缩成当前行真正可见的局部位置。
- * - 保留稳定 lane 的相对顺序，用于参考上游 `GraphLayoutBuilder` 决定的左右关系；
- * - 去掉当前行并不存在的空槽，靠近 IDEA `PrintElementGenerator` 的按行位置分配语义；
+ * - 保留稳定 lane 的相对顺序，用于参考实现 `GraphLayoutBuilder` 决定的左右关系；
+ * - 去掉当前行并不存在的空槽，靠近参考实现 `PrintElementGenerator` 的按行位置分配语义；
  * - 上下半段连线的“另一行位置”分别映射到相邻可见行，避免继续使用全局 lane 导致宽度和斜线都被拉大。
  */
 function compressLogGraphCells(cells: GitGraphCell[]): GitGraphCell[] {
@@ -588,7 +588,7 @@ function compressLogGraphCells(cells: GitGraphCell[]): GitGraphCell[] {
 
 /**
  * 为单个可见行建立“图元 -> 当前行局部位置”的映射。
- * - 对齐 IDEA `PrintElementGeneratorImpl + GraphElementComparatorByLayoutIndex`，位置顺序按 node/edge 图元排序决定，而不是简单按唯一 lane 去重；
+ * - 保持与参考实现一致的 `PrintElementGeneratorImpl + GraphElementComparatorByLayoutIndex`，位置顺序按 node/edge 图元排序决定，而不是简单按唯一 lane 去重；
  * - 这样同一行里“节点 + 经过的边”即使共享稳定 lane，也仍能分配到不同的局部位置，避免被提前压成一列。
  */
 function buildLogGraphPositionMap(cell: GitGraphCell, rowIndex: number): GitGraphPositionMap {
@@ -632,11 +632,11 @@ function buildLogGraphPositionMap(cell: GitGraphCell, rowIndex: number): GitGrap
 
 /**
  * 把当前节点与所有过路线投影成一组可排序图元。
- * 对齐 IDEA `PrintElementGeneratorImpl#getSortedVisibleElementsInRow`：
+ * 保持与参考实现一致的 `PrintElementGeneratorImpl#getSortedVisibleElementsInRow`：
  * - 当前行包含节点本身；
  * - 包含从当前行向下穿过本行的 normal edge / track；
  * - 不包含“从上一行结束在当前节点”的 normal incoming edge；
- * - IDEA 的相邻 normal direct edge 不会作为独立 `GraphEdge` 留在 `visible elements` 里；
+ * - 参考实现的相邻 normal direct edge 不会作为独立 `GraphEdge` 留在 `visible elements` 里；
  *   因此这里只在当前行几乎没有别的可见图元时，补一个最小 `reserved-edge` 占位，
  *   用来保住下一行目标列，避免过滤隐藏提交后把弯折错误提前到上一行。
  */
@@ -685,7 +685,7 @@ function createLogGraphTrackPositionElement(
 
 /**
  * 把当前节点发出的非垂直边转成“仅占位”的排序图元。
- * 该图元不是 IDEA 原始 `visible elements` 的一部分，只在当前行缺少可见图元时作为压缩补偿使用，
+ * 该图元不是 参考实现原始 `visible elements` 的一部分，只在当前行缺少可见图元时作为压缩补偿使用，
  * 不参与相邻可见行的精确对接，避免把相邻 direct edge 错当成一条独立泳道。
  */
 function createLogGraphReservedEdgePositionElement(
@@ -715,7 +715,7 @@ function createLogGraphReservedEdgePositionElement(
 }
 
 /**
- * 按 IDEA `GraphElementComparatorByLayoutIndex` 的思路比较当前行两个图元的先后位置。
+ * 按参考实现 `GraphElementComparatorByLayoutIndex` 的思路比较当前行两个图元的先后位置。
  */
 function compareLogGraphPositionElements(left: GitGraphPositionElement, right: GitGraphPositionElement): number {
   if (left.kind !== "node" && right.kind !== "node")
@@ -729,7 +729,7 @@ function compareLogGraphPositionElements(left: GitGraphPositionElement, right: G
 
 /**
  * 比较一条过路线与一个节点的左右先后。
- * 规则直接对齐 IDEA `compare2(edge, node)`：
+ * 规则直接保持与参考实现一致 `compare2(edge, node)`：
  * 先看 edge 两端更靠右的 layout index；若相同，再用 edge 的 sourceRow 与节点行号断平。
  */
 function compareLogGraphTrackWithNode(
@@ -743,7 +743,7 @@ function compareLogGraphTrackWithNode(
 
 /**
  * 比较两条过路线的左右先后。
- * 规则对应 IDEA `GraphElementComparatorByLayoutIndex.compare(edge1, edge2)` 的 normal edge 分支。
+ * 规则对应参考实现 `GraphElementComparatorByLayoutIndex.compare(edge1, edge2)` 的 normal edge 分支。
  */
 function compareLogGraphTrackElements(
   left: Extract<GitGraphPositionElement, { kind: "track" | "reserved-edge" }>,
@@ -1033,10 +1033,10 @@ function synchronizeCompressedLogGraphNeighborGeometry(cells: GitGraphCell[]): v
       }
       if (String(nextCell.commitHash || "").trim() !== targetHash) continue;
       /**
-       * 对齐 IDEA `PrintElementGeneratorImpl#createEndPositionFunction`，
+       * 保持与参考实现一致的 `PrintElementGeneratorImpl#createEndPositionFunction`，
        * 当当前可见 track 的下一行就是目标节点时，本行下半段应直接对接目标节点列。
        * 即便这是长边靠近目标端的 terminal 可见段，也不能再额外保留一行竖线，
-       * 否则会把 IDEA 里的单段斜线错误拖成“先直后斜”。
+       * 否则会把 参考实现里的单段斜线错误拖成“先直后斜”。
        */
       track.outgoingToLane = nextCell.lane;
       nextCell.incomingEdges = appendLogGraphIncomingEdges(nextCell.incomingEdges, {
@@ -1067,7 +1067,7 @@ function resetCompressedLogGraphIncomingGeometry(cells: GitGraphCell[]): void {
 /**
  * 当同一条长边在上一行与当前行保持同列，而下一行已确定要向左收一列时，
  * 若当前行左侧目标列为空，则允许当前行提前完成这一步左收。
- * 这样可对齐 IDEA 里“连续长边在真正空出来的那一行就开始折”的形态，
+ * 这样可保持与参考实现一致的“连续长边在真正空出来的那一行就开始折”的形态，
  * 避免把折角拖迟一行后表现成你截图里 `9d7d9d3d` 一带的直线。
  */
 function advanceCompressedLogGraphLongTrackCorners(cells: GitGraphCell[]): void {
@@ -1215,7 +1215,7 @@ function compactCompressedLogGraphTrackGroupLeft(currentGroup: GitGraphTrack[], 
 
 /**
  * 压缩当前行时，先按当前行位置图里的局部顺序处理 track。
- * 这样长边会先占住 IDEA 对齐后的可见位置，再基于上一行做最小让位，
+ * 这样长边会先占住与参考实现一致的可见位置，再基于上一行做最小让位，
  * 避免仅因原始数组顺序不同而在当前行中途换位。
  */
 function compareCompressedLogGraphTrackProcessingOrder(
@@ -1245,7 +1245,7 @@ function compareCompressedLogGraphTrackProcessingOrder(
 
 /**
  * 比较同一目标 track 的稳定来源顺序。
- * 优先使用来源节点的稳定列位 `sourceLane`，再用来源提交哈希兜底，尽量贴近 IDEA 的稳定布局排序。
+ * 优先使用来源节点的稳定列位 `sourceLane`，再用来源提交哈希兜底，尽量贴近参考实现的稳定布局排序。
  */
 function compareCompressedLogGraphTrackStableOrder(left: GitGraphTrack, right: GitGraphTrack): number {
   const leftSourceLaneValue = left.sourceLane;
@@ -1322,7 +1322,7 @@ function resolveLogGraphIncomingLanesFromEdges(
 
 /**
  * 解析多行 track 在当前行的精确列位。
- * 对齐 IDEA 后，这里优先保留当前行已计算出的 edge 位置，仅在目标列已被占用时才做最小让位。
+ * 保持与参考实现一致后，这里优先保留当前行已计算出的 edge 位置，仅在目标列已被占用时才做最小让位。
  */
 function resolveCompressedLogGraphTrackCurrentLane(
   track: GitGraphTrack,
@@ -1423,7 +1423,7 @@ function resolveCompressedLogGraphTrackFreeLane(
 
 /**
  * 计算当前节点在上一可见行里的所有对接位置。
- * 若上一行里存在指向当前提交的 track，则优先复用这些 track 的局部位置；这样能对齐 IDEA 的 `positionInOtherRow`。
+ * 若上一行里存在指向当前提交的 track，则优先复用这些 track 的局部位置；这样能保持与参考实现一致的 `positionInOtherRow`。
  */
 function resolveCompressedLogGraphNodeIncomingLanes(
   hash: string,
@@ -1459,7 +1459,7 @@ function resolveCompressedLogGraphNodeIncomingLanes(
 
 /**
  * 当上一可见行为当前节点保留了 outgoing reserved-edge 位置时，优先把节点对齐到该停靠列。
- * 这样可以保住 IDEA 里“分支先竖直延续，再在真正需要的行发生弯折”的拓扑形态。
+ * 这样可以保住 参考实现里“分支先竖直延续，再在真正需要的行发生弯折”的拓扑形态。
  * 若上一行并未给当前节点保留 reserved-edge 停靠位，则当入射列与当前行排序列冲突时，优先采用当前行排序列。
  * 这样可以避免把“应在当前行发生的弯折”错误拖到下一行。
  */
@@ -1658,7 +1658,7 @@ function resolveCompressedLogGraphMaxOtherPosition(
 }
 
 /**
- * 按输入行序列构建稳定 lane 布局，参考上游 `GraphLayoutBuilder` 的“先排序 head，再沿 down 节点 DFS 分配 layoutIndex”语义。
+ * 按输入行序列构建稳定 lane 布局，参考实现 `GraphLayoutBuilder` 的“先排序 head，再沿 down 节点 DFS 分配 layoutIndex”语义。
  */
 function buildVisibleGraphLayout(items: GitLogItem[]): VisibleGraphLayout {
   const topology = buildVisibleGraphTopology(items);
@@ -1711,7 +1711,7 @@ function buildVisibleGraphTopology(items: GitLogItem[]): VisibleGraphTopology {
 }
 
 /**
- * 对可见图执行稳定 `layoutIndex` 分配；head 顺序优先对齐 IDEA 的 Git 分支布局比较器，再回退到可见行顺序保持稳定。
+ * 对可见图执行稳定 `layoutIndex` 分配；head 顺序优先保持与参考实现一致的 Git 分支布局比较器，再回退到可见行顺序保持稳定。
  */
 function assignVisibleGraphLayoutIndices(items: GitLogItem[], topology: VisibleGraphTopology): number[] {
   const layoutIndexByRow = Array(topology.hashByRow.length).fill(0);
@@ -1733,7 +1733,7 @@ function assignVisibleGraphLayoutIndices(items: GitLogItem[], topology: VisibleG
 
 /**
  * 收集参与稳定 layout 遍历的起点集合。
- * 对齐 IDEA `GraphLayoutBuilder.build(graph, branches, comparator)`：
+ * 保持与参考实现一致 `GraphLayoutBuilder.build(graph, branches, comparator)`：
  * - 既包含真正没有上游边的 graph heads；
  * - 也包含所有带 branch ref 的节点，避免仅按图头遍历时把重要分支压回主干。
  */
@@ -1747,7 +1747,7 @@ function resolveVisibleGraphLayoutStartRows(items: GitLogItem[], topology: Visib
 }
 
 /**
- * 按接近 IDEA `HeadCommitsComparator` 的规则为布局起点排序。
+ * 按接近参考实现 `HeadCommitsComparator` 的规则为布局起点排序。
  * 真正的 graph head 才按 branch ref 比较；非 head 的 branch 起点仍参与遍历，但排序时回退到行号。
  */
 function sortVisibleGraphHeadRows(items: GitLogItem[], topology: VisibleGraphTopology, headRows: number[]): number[] {
@@ -1757,7 +1757,7 @@ function sortVisibleGraphHeadRows(items: GitLogItem[], topology: VisibleGraphTop
 /**
  * 比较两个布局起点的优先级。
  * - 若两边都是真正的 graph head，则按代表 ref 的优先级与名称比较；
- * - 只要其中一边拿不到 `refForHeadCommit`，就按 IDEA 语义回退，使其排在真实 head 之后；
+ * - 只要其中一边拿不到 `refForHeadCommit`，就按参考实现语义回退，使其排在真实 head 之后；
  * - 双方都拿不到 ref 时回退到行号，保持排序稳定。
  */
 function compareVisibleGraphHeadRows(items: GitLogItem[], topology: VisibleGraphTopology, leftRow: number, rightRow: number): number {
@@ -1776,7 +1776,7 @@ function compareVisibleGraphHeadRows(items: GitLogItem[], topology: VisibleGraph
 }
 
 /**
- * 解析某个布局起点在 IDEA `HeadCommitsComparator` 语义下的排序引用。
+ * 解析某个布局起点在参考实现 `HeadCommitsComparator` 语义下的排序引用。
  * 只有真正没有上游边的 graph head 才能拿到 `refForHeadCommit`；非 head branch 起点统一回退为 `null`。
  */
 function resolveVisibleGraphStartRowHeadRefToken(
@@ -1795,7 +1795,7 @@ function resolveVisibleGraphStartRowHeadRefToken(
 }
 
 /**
- * 判断某行是否带有会参与 IDEA branch layout 排序的分支引用。
+ * 判断某行是否带有会参与参考实现 branch layout 排序的分支引用。
  * 这里只保留本地/远端 branch 类 ref；`tag`、`HEAD` 本身不作为 `branchesCommitId` 起点。
  */
 function hasVisibleGraphBranchLayoutRef(item?: GitLogItem | null): boolean {
@@ -1803,7 +1803,7 @@ function hasVisibleGraphBranchLayoutRef(item?: GitLogItem | null): boolean {
 }
 
 /**
- * 为单个 head 选择参与布局排序的代表引用，语义上对齐 IDEA 的“同一 head 取 branchLayoutComparator 最小 ref”。
+ * 为单个 head 选择参与布局排序的代表引用，语义上保持与参考实现一致的“同一 head 取 branchLayoutComparator 最小 ref”。
  */
 function resolveLogGraphHeadRefToken(item?: GitLogItem | null): GitLogGraphHeadRefToken {
   const candidates = extractLogGraphHeadRefTokens(String(item?.decorations || ""));
@@ -1816,7 +1816,7 @@ function resolveLogGraphHeadRefToken(item?: GitLogItem | null): GitLogGraphHeadR
 }
 
 /**
- * 按 IDEA `RefsModel.getRefForHeadCommit + branchLayoutComparator` 的语义，
+ * 按参考实现 `RefsModel.getRefForHeadCommit + branchLayoutComparator` 的语义，
  * 从 decorations 中挑出当前提交的最佳 ref 原始名字，供颜色种子直接复用。
  */
 function resolveLogGraphBestRefName(decorationsRaw: string): string {
@@ -1830,7 +1830,7 @@ function resolveLogGraphBestRefName(decorationsRaw: string): string {
 }
 
 /**
- * 按接近 IDEA `GitReference.REFS_NAMES_COMPARATOR` 的自然排序比较引用名。
+ * 按接近参考实现 `GitReference.REFS_NAMES_COMPARATOR` 的自然排序比较引用名。
  * 这里保留现有的 `numeric` 自然排序，但先补一层“ASCII 领先字符优先”。
  * 否则中文分支名在部分宿主环境里会被排到 `cf-wt/...` 这类 ASCII 工作分支之前，
  * 进而把整条支线错误挤到左侧泳道。
@@ -1868,7 +1868,7 @@ function extractLogGraphHeadRefTokens(decorationsRaw: string): GitLogGraphHeadRe
 
 /**
  * 把 decorations 展开成同时保留“排序语义”和“原始名字”的 ref 候选。
- * 排序仍走归一化后的名字，颜色种子则复用原始名字，避免大小写与 decoration 语法破坏 IDEA 的颜色归属。
+ * 排序仍走归一化后的名字，颜色种子则复用原始名字，避免大小写与 decoration 语法破坏参考实现的颜色归属。
  */
 function extractLogGraphRawRefCandidates(decorationsRaw: string): GitLogGraphRawRefCandidate[] {
   const tokens: GitLogGraphRawRefCandidate[] = [];
@@ -1898,7 +1898,7 @@ function extractLogGraphRawRefCandidates(decorationsRaw: string): GitLogGraphRaw
 }
 
 /**
- * 把普通引用名映射到接近 IDEA Git 分支布局比较器的优先级，优先级越小越靠左。
+ * 把普通引用名映射到接近参考实现 Git 分支布局比较器的优先级，优先级越小越靠左。
  */
 function resolveLogGraphNamedRefToken(refNameRaw: string): GitLogGraphRawRefCandidate {
   const refName = String(refNameRaw || "").trim();
@@ -1911,7 +1911,7 @@ function resolveLogGraphNamedRefToken(refNameRaw: string): GitLogGraphRawRefCand
 }
 
 /**
- * 按远端名提示判断引用是否更像远端分支；这里优先兼容 `origin/*`、`upstream/*` 等 IDEA 常见场景，避免把主干远端误排到本地分支之后。
+ * 按远端名提示判断引用是否更像远端分支；这里优先兼容 `origin/*`、`upstream/*` 等参考实现常见场景，避免把主干远端误排到本地分支之后。
  */
 function isLogGraphRemoteRef(refName: string): boolean {
   const prefix = refName.split("/")[0] || "";
@@ -1919,7 +1919,7 @@ function isLogGraphRemoteRef(refName: string): boolean {
 }
 
 /**
- * 按 IDEA `walk + first child without layoutIndex` 规则遍历可见图，确保公共祖先不会被后续分支改写到新的 lane。
+ * 按参考实现 `walk + first child without layoutIndex` 规则遍历可见图，确保公共祖先不会被后续分支改写到新的 lane。
  */
 function walkVisibleGraphLayout(
   downRows: number[][],
@@ -1984,7 +1984,7 @@ function normalizeVisibleGraphLayout(topology: VisibleGraphTopology, layoutIndex
 
 /**
  * 提取提交自身直接携带的颜色种子。
- * 对齐 IDEA `GraphColorManagerImpl`，head fragment 的颜色 ID 直接来自“最佳 ref 原始名字”的哈希，
+ * 保持与参考实现一致的 `GraphColorManagerImpl`，head fragment 的颜色 ID 直接来自“最佳 ref 原始名字”的哈希，
  * 这里不再附加 `local:` / `ref:` 之类的前缀，避免同名分支仅因 decoration 语法不同而取到不同颜色。
  * 另外，主干远端 `origin/master|main` / `upstream/master|main` 会归一到本地等价名字，
  * 避免远端前缀把主干颜色推到与旁侧远端支线过于接近的碰撞色。
@@ -1995,7 +1995,7 @@ function resolveLogGraphDirectColorSeed(item?: GitLogItem | null): string {
 
 /**
  * 归一化直接 ref 的颜色种子。
- * - 普通 ref 继续保留原始名字，对齐 IDEA 以 ref 名决定颜色 ID 的语义；
+ * - 普通 ref 继续保留原始名字，保持与参考实现一致，以 ref 名决定颜色 ID 的语义；
  * - 仅对主干远端分支做“远端名 -> 本地主干名”的收敛，让 `origin/master` 与 `master`
  *   保持同色，同时避免它与其它 `origin/*` 远端支线更容易撞到同一颜色。
  */
@@ -2009,7 +2009,7 @@ function normalizeLogGraphDirectColorSeed(seed: string): string {
 }
 
 /**
- * 按 IDEA `GraphColorManagerImpl + GraphColorGetterByHead` 的语义生成 fragment 颜色种子。
+ * 按参考实现 `GraphColorManagerImpl + GraphColorGetterByHead` 的语义生成 fragment 颜色种子。
  * - 头 fragment 使用 head ref 名字；
  * - 其余 fragment 主要由 fragment lane 决定；
  * - 若上下文还不足，则回退到调用方传入的稳定种子。
@@ -2034,7 +2034,7 @@ function resolveLogGraphColorSeed(item: GitLogItem, fallbackSeed: string): strin
 
 /**
  * 从所有可见来源里选出当前共享段应继承的支配 head。
- * 优先选择布局更靠左的 head；若相同，则优先较新的来源，尽量贴近 IDEA “更重要 branch 支配共享子图颜色”的语义。
+ * 优先选择布局更靠左的 head；若相同，则优先较新的来源，尽量贴近参考实现 “更重要 branch 支配共享子图颜色”的语义。
  */
 function resolveLogGraphDominantSourceHead(
   sources: GitGraphActiveSource[],
@@ -2076,7 +2076,7 @@ function resolveLogGraphActiveLaneColorSeed(entry: ActiveGraphLane, lane: number
 
 /**
  * 从活跃 lane 中提取当前行真正需要显示的过路线。
- * - 对齐 IDEA `PrintElementGeneratorImpl`，超过阈值的长边只显示两端可见段，中间隐藏；
+ * - 保持与参考实现一致的 `PrintElementGeneratorImpl`，超过阈值的长边只显示两端可见段，中间隐藏；
  * - 截断点通过 track 的 `incoming/outgoing + terminal + arrow` 状态传给渲染层，避免把整条长边一直画到屏幕下方。
  */
 function buildLogGraphTracks(
@@ -2149,9 +2149,9 @@ function buildLogGraphTracks(
 
 /**
  * 为过路线选择当前行的显示位置。
- * - 对齐 IDEA `GraphElementComparatorByLayoutIndex` 的核心规则：边在排序时优先锚定到“两端更靠右的 layout index”；
+ * - 保持与参考实现一致的 `GraphElementComparatorByLayoutIndex` 核心规则：边在排序时优先锚定到“两端更靠右的 layout index”；
  * - 因此回并到左侧主干时，中间几行的过路线要继续停留在右侧列，直到真正接入目标节点那一行再斜向落回主干；
- * - IDEA 的 `PrintElement` 允许边和节点处于同一列，边会在节点下方绘制，因此这里不再把冲突边强行右移到新列。
+ * - 参考实现的 `PrintElement` 允许边和节点处于同一列，边会在节点下方绘制，因此这里不再把冲突边强行右移到新列。
  */
 function resolveLogGraphTrackLane(
   entry: ActiveGraphLane,
@@ -2388,7 +2388,7 @@ function isLogGraphLongEdge(sourceRow: number, targetRow: number): boolean {
 
 /**
  * 判断指定行是否应该显示这条边。
- * 语义对齐 IDEA `isEdgeVisibleInRow`：短边全程可见，长边只显示靠近两端的 `visiblePartSize` 行。
+ * 语义保持与参考实现一致 `isEdgeVisibleInRow`：短边全程可见，长边只显示靠近两端的 `visiblePartSize` 行。
  */
 function isLogGraphEdgeVisibleInRow(sourceRow: number, targetRow: number, currentRow: number): boolean {
   if (currentRow <= sourceRow || currentRow >= targetRow) return false;

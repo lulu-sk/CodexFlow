@@ -112,7 +112,7 @@ function buildPullOptionMeta(gt: GitTranslate): Record<GitPullDialogOptionKey, {
 }
 
 /**
- * 判断候选 Pull 选项是否与当前模式及已选项兼容，规则对齐 IDEA `GitPullOption.isOptionSuitable()`。
+ * 判断候选 Pull 选项是否与当前模式及已选项兼容，规则保持与参考实现一致的 `GitPullOption.isOptionSuitable()`。
  */
 function resolvePullOptionAvailability(
   mode: GitPullDialogValue["mode"],
@@ -182,7 +182,7 @@ function getPullModeMeta(mode: GitPullDialogValue["mode"], gt: GitTranslate): { 
 }
 
 /**
- * 生成 Pull 对话框标题；有当前分支时对齐 IDEA 的“拉取到 <branch>”语义。
+ * 生成 Pull 对话框标题；有当前分支时保持与参考实现一致的“拉取到 <branch>”语义。
  */
 function buildPullDialogTitle(currentBranchName: string | undefined, gt: GitTranslate): string {
   const branchName = String(currentBranchName || "").trim();
@@ -192,7 +192,7 @@ function buildPullDialogTitle(currentBranchName: string | undefined, gt: GitTran
 }
 
 /**
- * 渲染独立 Pull 对话框，采用更接近 IDEA 的命令式布局与层级。
+ * 渲染独立 Pull 对话框，采用更接近参考实现的命令式布局与层级。
  */
 export function PullDialog(props: GitPullDialogProps): JSX.Element | null {
   const { t } = useTranslation(["git", "common"]);

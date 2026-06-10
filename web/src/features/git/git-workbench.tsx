@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
-// Git 工作台交互模型参考 IntelliJ IDEA Community Edition / IntelliJ Platform 的 Apache-2.0 源码语义，并按本项目 React/TypeScript 架构重写。
+// Git 工作台交互模型借鉴参考实现的 Apache-2.0 源码语义，并按本项目 React/TypeScript 架构重写。
 
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import i18next from "i18next";
@@ -135,6 +135,7 @@ import {
 } from "./api";
 import {
   buildGitLogColumnStyle,
+  buildGitLogCopyText,
   estimateGitLogColumnWidth,
   GIT_LOG_COLUMN_DEFINITIONS,
   type GitLogColumnId,
@@ -164,6 +165,7 @@ import {
 } from "./branch-sync/presentation";
 import { shouldAutoRefreshBranchSyncAfterActivity } from "./branch-sync/activity";
 import {
+  buildBranchPanelCopyText,
   buildBranchPanelRows,
   buildBranchPopupRows,
   createDefaultBranchPopupGroupOpen,
@@ -249,7 +251,7 @@ import {
   type GitRollbackBrowserEntry,
   type GitRollbackBrowserGroupingKey,
 } from "./rollback-browser-model";
-import { GitDetailsBrowser } from "./details-browser";
+import { buildGitDetailsBrowserCopyText, GitDetailsBrowser } from "./details-browser";
 import { ContextMenu, ContextMenuItem, ContextMenuSubmenu, renderContextMenuSections } from "./context-menu";
 import { resolveGitStageGlobalActionAvailability } from "./stage-action-model";
 import { resolveCommitToolbarIntent, resolveGitToolbarState } from "./toolbar-state";
@@ -416,6 +418,7 @@ import {
   resolveCommitPreviewDiffMode,
 } from "./commit-panel/interaction-model";
 import {
+  buildCommitTreeCopyText,
   findCommitSpeedSearchMatch,
   findCommitSpeedSearchRanges,
 } from "./commit-panel/tree-interactions";
@@ -708,7 +711,7 @@ function gitWorkbenchErrorText(raw: unknown, key: string, fallback: string, valu
 }
 
 /**
- * 把后端结构化 interactive rebase 不可用原因转换为更接近 IDEA gating 的用户提示。
+ * 把后端结构化 interactive rebase 不可用原因转换为更接近参考实现可用性门控的用户提示。
  */
 function resolveInteractiveRebasePlanErrorText(error: string | undefined, data: any): string {
   const reasonCode = String(data?.reasonCode || "").trim();
@@ -2660,7 +2663,7 @@ function buildLogDecorationPills(
 }
 
 /**
- * 根据日志 decorations 推断新建分支默认名称（与 IDEA 建议逻辑保持接近）。
+ * 根据日志 decorations 推断新建分支默认名称（与参考实现建议逻辑保持接近）。
  */
 function suggestBranchNameFromDecorations(decorationsRaw: string): string {
   const rows = String(decorationsRaw || "")
@@ -2994,7 +2997,7 @@ function ToolbarDropdownSubmenu(props: ToolbarDropdownSubmenuProps): JSX.Element
 }
 
 /**
- * Git 工作台，按 Rider/IntelliJ 风格组织提交、Diff、日志与分支交互。
+ * Git 工作台，按 现代 IDE 风格组织提交、Diff、日志与分支交互。
  */
 export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   const { t } = useTranslation(["git", "common"]);
@@ -3408,6 +3411,8 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
     remote: true,
   });
   const [branchPopupGroupOpen, setBranchPopupGroupOpen] = useState<BranchPopupGroupOpen>(initialBranchPopupState.groupOpen || createDefaultBranchPopupGroupOpen());
+  const [branchPanelGroupByDirectory, setBranchPanelGroupByDirectory] = useState<boolean>(initialBranchPopupState.panelGroupByDirectory === true);
+  const [branchDirectoryOpen, setBranchDirectoryOpen] = useState<Record<string, boolean>>({});
 
   const selectedBranchRepository = useMemo(() => {
     return resolveSelectedBranchPopupRepository(branchPopup, branchSelectedRepoRoot);
@@ -3450,16 +3455,17 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   );
 
   const branchPanelRows = useMemo<BranchPanelRow[]>(
-    () => buildBranchPanelRows(branchPopup, branchSelectedRepoRoot, branchGroupOpen, gt),
-    [branchGroupOpen, branchPopup, branchSelectedRepoRoot, gt],
+    () => buildBranchPanelRows(branchPopup, branchSelectedRepoRoot, branchGroupOpen, branchPanelGroupByDirectory, branchDirectoryOpen, gt),
+    [branchDirectoryOpen, branchGroupOpen, branchPanelGroupByDirectory, branchPopup, branchSelectedRepoRoot, gt],
   );
   useEffect(() => {
     saveGitBranchPopupState({
       selectedRepoRoot: branchSelectedRepoRoot,
       step: branchPopupStep,
       groupOpen: branchPopupGroupOpen,
+      panelGroupByDirectory: branchPanelGroupByDirectory,
     });
-  }, [branchPopupGroupOpen, branchPopupStep, branchSelectedRepoRoot]);
+  }, [branchPanelGroupByDirectory, branchPopupGroupOpen, branchPopupStep, branchSelectedRepoRoot]);
   const branchPanelPresentationByKey = useMemo<Map<string, GitBranchRowPresentation>>(() => {
     const map = new Map<string, GitBranchRowPresentation>();
     for (const row of branchPanelRows) {
@@ -3617,7 +3623,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
     if (!branchPanelSpeedSearchOpen) return;
 
     /**
-     * 点击分支面板外部时按 IDEA `focusLost -> manageSearchPopup(null)` 语义关闭并清空当前搜索。
+     * 点击分支面板外部时按参考实现 `focusLost -> manageSearchPopup(null)` 语义关闭并清空当前搜索。
      */
     const handleBranchPanelSpeedSearchOutsideMouseDown = (event: MouseEvent): void => {
       const root = branchPanelSpeedSearchRootRef.current;
@@ -4090,7 +4096,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   }, []);
 
   /**
-   * 当前仓按规则豁免 IDE Local History 宿主能力，因此统一映射到 Git 文件历史；仍支持携带目标修订号，对齐 IDEA “Show History / Show History for Revision” 的入口语义。
+   * 当前仓按规则豁免 IDE Local History 宿主能力，因此统一映射到 Git 文件历史；仍支持携带目标修订号，保持与参考实现一致的 “Show History / Show History for Revision” 的入口语义。
    */
   const showPathHistory = useCallback((relPath: string, options?: { revision?: string; followRenames?: boolean }): void => {
     const clean = String(relPath || "").trim().replace(/\\/g, "/");
@@ -4112,7 +4118,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   }, [closeUpdateInfoLogView]);
 
   /**
-   * 显式显示 Worktrees 页签；对齐 IDEA openedByUser 语义，并消耗 NEW badge。
+   * 显式显示 Worktrees 页签；保持与参考实现一致的 openedByUser 语义，并消耗 NEW badge。
    */
   const showWorktreesTabByUser = useCallback((options?: { select?: boolean }): void => {
     updateWorktreeTabPreferences((prev) => markWorktreeTabOpenedByUser(prev));
@@ -4129,7 +4135,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   }, [updateWorktreeTabPreferences]);
 
   /**
-   * 显式显示冲突面板；会重置当前关闭记忆，并在需要时重新开启自动面板 gate。
+   * 显式显示冲突面板；会重置当前关闭记忆，并在需要时重新开启自动面板门控。
    */
   const showConflictsPanelByUser = useCallback((options?: { select?: boolean }): void => {
     updateConflictsPanelPreferences((prev) => revealConflictsPanel(prev));
@@ -4139,7 +4145,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   }, [updateConflictsPanelPreferences]);
 
   /**
-   * 完全停用冲突自动面板 gate；用于替代 IDEA registry 开关的当前仓等价实现。
+   * 完全停用冲突自动面板门控；用于替代参考实现 registry 开关的当前仓等价实现。
    */
   const disableConflictsPanelGate = useCallback((): void => {
     updateConflictsPanelPreferences((prev) => setConflictsPanelGateEnabled(prev, false));
@@ -4898,7 +4904,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   }, [commitNodeByKey, commitRenderRowByKey, selectedCommitTreeKeys]);
   /**
    * 为当前右键菜单冻结提交树选择快照。
-   * - 对齐 IDEA DataContext：菜单项执行时应使用打开菜单那一刻的树选择，而不是依赖后续可能变化的全局状态。
+   * - 保持与参考实现一致的 DataContext：菜单项执行时应使用打开菜单那一刻的树选择，而不是依赖后续可能变化的全局状态。
    */
   const menuCommitSelectionSnapshot = useMemo(() => {
     const selectedRowKeys = menu?.type === "changes"
@@ -5004,7 +5010,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
     };
   }, [displayChangeLists, localChangesConfig.changeListsEnabled, localChangesConfig.stagingAreaEnabled, selectedChangeListIds, status?.changeLists?.activeListId]);
   /**
-   * 按 IDEA selectedDiffableNode 语义维护当前 diffable 节点；group/目录选中时优先保留仍在子树中的旧 diffable。
+   * 按参考实现 selectedDiffableNode 语义维护当前 diffable 节点；group/目录选中时优先保留仍在子树中的旧 diffable。
    */
   useEffect(() => {
     setSelectedDiffableCommitNodeKey((prev) => {
@@ -5169,7 +5175,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   }, [activeSelectionScope, leftTab, selectedActionableEntries, selectedChangeListIds, status?.changeLists?.activeListId]);
 
   /**
-   * 对齐 IDEA `setCommitState(initialChangeList, included, ...)` 语义；显式进入提交流程时，需同步重建 included changes 与树选区。
+   * 保持与参考实现一致的 `setCommitState(initialChangeList, included, ...)` 语义；显式进入提交流程时，需同步重建 included changes 与树选区。
    */
   const applyCommitWorkflowActivationReset = useCallback((request: CommitWorkflowActivationResetRequest): boolean => {
     if (commitTreeBusy || !status) return false;
@@ -5421,7 +5427,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
     return pushPreview.commits.find((one) => one.hash === selected) || null;
   }, [pushPreview, pushSelectedCommitHash]);
   /**
-   * 提取 Push 对话框中的仓库显示名，对齐 IDEA 顶层仓库节点的简短命名。
+   * 提取 Push 对话框中的仓库显示名，保持与参考实现一致的顶层仓库节点简短命名。
    */
   const pushRepoDisplayName = useMemo<string>(() => {
     const clean = String(repoRoot || "").trim().replace(/\\/g, "/").replace(/\/+$/, "");
@@ -5683,6 +5689,63 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
     return hashes.join(" ").trim();
   }, [logItems, selectedCommitHashes]);
 
+  /**
+   * 按当前焦点所在 Git 子视图构造 Ctrl+C 文本，复用各控件自身的复制语义。
+   */
+  const buildActiveGitCopyText = useCallback((target: HTMLElement | null): string => {
+    if (target && commitTreeContainerRef.current?.contains(target)) {
+      return buildCommitTreeCopyText({
+        rows: commitRenderRows,
+        selectedRowKeys: selectedCommitTreeKeys,
+      });
+    }
+    if (target && branchPanelContainerRef.current?.contains(target)) {
+      return buildBranchPanelCopyText({
+        rows: branchPanelRows,
+        focusedRowKey: branchPanelFocusedRowKey,
+      });
+    }
+    if (target && logVirtual.containerRef.current?.contains(target)) {
+      return buildGitLogCopyText({
+        items: logItems,
+        selectedHashes: selectedCommitHashes,
+        layout: logColumnLayout,
+        formatDate: toCompactDateText,
+      });
+    }
+    if (target && detailTreeContainerRef.current?.contains(target)) {
+      return buildGitDetailsBrowserCopyText({
+        rows: detailFileRows,
+        selectedNodeKeys: selectedDetailNodeKeys,
+      });
+    }
+    if (activeSelectionScope === "detail") {
+      return buildGitDetailsBrowserCopyText({
+        rows: detailFileRows,
+        selectedNodeKeys: selectedDetailNodeKeys,
+      });
+    }
+    if (activeSelectionScope === "commit") {
+      return buildCommitTreeCopyText({
+        rows: commitRenderRows,
+        selectedRowKeys: selectedCommitTreeKeys,
+      });
+    }
+    return "";
+  }, [
+    activeSelectionScope,
+    branchPanelFocusedRowKey,
+    branchPanelRows,
+    commitRenderRows,
+    detailFileRows,
+    logColumnLayout,
+    logItems,
+    logVirtual.containerRef,
+    selectedCommitHashes,
+    selectedCommitTreeKeys,
+    selectedDetailNodeKeys,
+  ]);
+
   const logDecorationPillsByHash = useMemo<Map<string, GitDecorationPill[]>>(() => {
     const map = new Map<string, GitDecorationPill[]>();
     for (const item of logItems) {
@@ -5733,7 +5796,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   }, [logColumnLayout, logColumnPreferredWidthMap]);
 
   /**
-   * 渲染日志表某一列的内容；`subject` 列会把图谱嵌入提交文本前，对齐 IDEA 在同一单元格内绘制 graph 的方式。
+   * 渲染日志表某一列的内容；`subject` 列会把图谱嵌入提交文本前，保持与参考实现一致，在同一单元格内绘制 graph 的方式。
    */
   const renderLogColumnContent = useCallback((
     item: GitLogItem,
@@ -5784,7 +5847,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   }, [logDecorationPillsByHash]);
 
   /**
-   * 读取日志动作默认消息草稿，对齐 IDEA 的 reword/squash 初始编辑体验。
+   * 读取日志动作默认消息草稿，保持与参考实现一致的 reword/squash 初始编辑体验。
    */
   const loadLogMessageDraftValueAsync = useCallback(
     async (action: "editMessage" | "squashCommits", hashes: string[]): Promise<string> => {
@@ -5950,7 +6013,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   }, [repoRoot]);
 
   /**
-   * 独立刷新 worktree 列表；对齐 IDEA `worktreesChanged` 只更新 worktree 视图的语义，
+   * 独立刷新 worktree 列表；保持与参考实现一致的 `worktreesChanged` 只更新 worktree 视图的语义，
    * 避免把 `.git/worktrees/*` 变化错误放大成整仓刷新。
    */
   const refreshWorktreeItemsAsync = useCallback(async (nextRepoRoot?: string): Promise<void> => {
@@ -6389,7 +6452,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   }, [commitAmendDetails?.hash, commitAmendEnabled, loadCommitAmendDetailsAsync, repoRoot, status?.headSha]);
 
   /**
-   * 切换“修改上一提交”模式；开启时读取 HEAD 详情并回填 message/author，关闭时按 IDEA 语义恢复旧草稿。
+   * 切换“修改上一提交”模式；开启时读取 HEAD 详情并回填 message/author，关闭时按参考实现语义恢复旧草稿。
    */
   const handleCommitAmendToggleAsync = useCallback(async (enabled: boolean): Promise<void> => {
     if (!enabled) {
@@ -6988,7 +7051,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   }, []);
 
   /**
-   * 把当前选中的提交直接移动到顶部或底部，补齐接近 IDEA 上下文动作的快速重排体验。
+   * 把当前选中的提交直接移动到顶部或底部，补齐接近参考实现上下文动作的快速重排体验。
    */
   const moveInteractiveRebaseDialogEntryToEdge = useCallback((hash: string, edge: "top" | "bottom"): void => {
     setInteractiveRebaseDialogState((prev) => {
@@ -7275,7 +7338,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
 
   /**
    * 为回滚弹窗临时 Diff 浮层保存打开前的工作台 Diff 状态。
-   * 这是对齐 IDEA“在当前流程里临时查看差异”的变通设计：当前产品没有独立的 Diff 窗口宿主，因此改为前置浮层并在关闭后恢复原状态。
+   * 这是保持与参考实现一致“在当前流程里临时查看差异”的变通设计：当前产品没有独立的 Diff 窗口宿主，因此改为前置浮层并在关闭后恢复原状态。
    */
   const captureRollbackDiffOverlayRestoreSnapshot = useCallback((): void => {
     if (rollbackDiffOverlayRestoreRef.current) return;
@@ -7963,8 +8026,8 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   }, [refreshAllAsync, repoRoot, shelfViewState]);
 
   /**
-   * 按 AGENTS.md 的 Git 面板对齐规则，Shelf 的“显示差异 / 在新标签页中显示差异 / 与本地比较”
-   * 统一映射到现有 GitWorkbench + Monaco Diff 宿主；其中“新标签页”用 pinned/fullscreen 作为 IDEA 标签页的等价变通实现。
+   * 按 AGENTS.md 的 Git 面板兼容规则，Shelf 的“显示差异 / 在新标签页中显示差异 / 与本地比较”
+   * 统一映射到现有 GitWorkbench + Monaco Diff 宿主；其中“新标签页”用 pinned/fullscreen 作为 参考实现标签页的等价变通实现。
    */
   const runShelfDiffActionAsync = useCallback(async (
     shelf: GitShelfItem,
@@ -7997,8 +8060,8 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   }, [openDiffRequestAsync, openPinnedDiffRequestAsync, repoRoot]);
 
   /**
-   * 按 AGENTS.md 的 Git 面板对齐规则，Shelf 的 Create Patch / Copy Patch 复用现有补丁导出链路；
-   * 多文件选择会逐文件读取 shelf patch 后再聚合导出，而不是新增 IDEA 原生 patch 对话框宿主。
+   * 按 AGENTS.md 的 Git 面板兼容规则，Shelf 的 Create Patch / Copy Patch 复用现有补丁导出链路；
+   * 多文件选择会逐文件读取 shelf patch 后再聚合导出，而不是新增 独立 patch 对话框宿主。
    */
   const exportShelfPatchSelectionAsync = useCallback(async (
     shelf: GitShelfItem,
@@ -8277,7 +8340,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   }, []);
 
   /**
-   * 把 resolver 焦点切到下一个未解决文件，形成 closer to IDEA 的 resolver 回跳闭环。
+   * 把 resolver 焦点切到下一个未解决文件，形成更接近参考实现的 resolver 回跳闭环。
    */
   const selectNextConflictResolverPath = useCallback((): void => {
     setConflictResolverDialogState((prev) => {
@@ -8534,7 +8597,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   }, [activateCommitWorkflow, closeConflictResolverDialog]);
 
   /**
-   * 在应用内 merge 已把文件写回并 `git add` 之后，按 IDEA `GitConflictResolver#proceedAfterAllMerged`
+   * 在应用内 merge 已把文件写回并 `git add` 之后，按参考实现 `GitConflictResolver#proceedAfterAllMerged`
    * 的收尾语义直接继续当前 Git 操作；后续是否还能继续、是否再次冲突、是否已自动结束，统一以后端真实仓库状态为准。
    */
   const continueResolvedOperationAsync = useCallback(async (
@@ -8644,7 +8707,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   }, [closeConflictMergeDialog, conflictMergeDialogState, continueResolvedOperationAsync]);
 
   /**
-   * 按 IDEA 底部“接受左侧/接受右侧”语义直接采用整侧内容并完成写回。
+   * 按参考实现底部“接受左侧/接受右侧”语义直接采用整侧内容并完成写回。
    */
   const resolveConflictMergeWithSourceAsync = useCallback(async (source: "ours" | "theirs"): Promise<void> => {
     const snapshot = conflictMergeDialogState?.snapshot;
@@ -9187,7 +9250,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   }, [openRollbackViewerDialog, operationProblem, repoRoot, status?.entries]);
 
   /**
-   * 在 Cherry-pick 冲突全部解决后切换到提交工作流，并预填 Git 建议的提交消息，对齐 IDEA 的收尾方式。
+   * 在 Cherry-pick 冲突全部解决后切换到提交工作流，并预填 Git 建议的提交消息，保持与参考实现一致的收尾方式。
    */
   const enterCherryPickCommitCompletionMode = useCallback((options?: {
     closeResolver?: boolean;
@@ -10357,7 +10420,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   }, [pushSelectedCommitHash]);
 
   /**
-   * 处理 Push 左侧树的键盘导航，行为尽量对齐 IDEA 的树选择体验。
+   * 处理 Push 左侧树的键盘导航，行为尽量保持与参考实现一致的树选择体验。
    */
   const handlePushTreeKeyboardNavigation = useCallback((event: KeyboardEvent): void => {
     if (!pushDialogOpen || pushDialogLoading) return;
@@ -11391,7 +11454,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
     if (!detailSpeedSearchOpen) return;
 
     /**
-     * 点击详情树外部时按 IDEA `focusLost -> manageSearchPopup(null)` 语义关闭并清空当前搜索。
+     * 点击详情树外部时按参考实现 `focusLost -> manageSearchPopup(null)` 语义关闭并清空当前搜索。
      */
     const handleDetailSpeedSearchOutsideMouseDown = (event: MouseEvent): void => {
       const root = detailTreeSpeedSearchRootRef.current;
@@ -11786,7 +11849,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
       });
       const availableChangeListIds = new Set((status?.changeLists?.lists || []).map((one) => String(one.id || "").trim()).filter(Boolean));
       /**
-       * 生成与 IDEA `VirtualFileDeleteProvider` 一致的删除确认文案。
+       * 生成与参考实现 `VirtualFileDeleteProvider` 一致的删除确认文案。
        */
       const confirmDeleteSelectionAsync = async (): Promise<boolean> => {
         const effectiveTargets = Array.from(new Set((actionSelectedDeleteTargets.length > 0 ? actionSelectedDeleteTargets : files).filter(Boolean)));
@@ -12696,7 +12759,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   }, [buildBranchCompareDialogConfig, openActionDialogAsync, openBranchCompareCommits, openBranchCompareFilesDialogAsync, repoRoot, resolveBranchCompareRepository]);
 
   /**
-   * 为“删除分支成功”提示构造补救动作，对齐 IDEA 的 Restore / View commits / Delete tracked branch 语义。
+   * 为“删除分支成功”提示构造补救动作，保持与参考实现一致的 Restore / View commits / Delete tracked branch 语义。
    */
   const buildDeletedBranchRecoveryNoticeActions = useCallback((recoveryInfo: GitDeletedBranchRecoveryInfo, repoRootOverride?: string): GitNoticeActionItem[] => {
     const actionRepoRoot = String(repoRootOverride || repoRoot || "").trim();
@@ -13215,7 +13278,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   );
 
   /**
-   * 执行日志菜单中的“提交 refs 分支/标签操作”（对齐 IDEA Git.BranchOperationGroup 主链路）。
+   * 执行日志菜单中的“提交 refs 分支/标签操作”（保持与参考实现一致的 Git.BranchOperationGroup 主链路）。
    */
   const runLogRefMenuActionAsync = useCallback(
     async (
@@ -13356,7 +13419,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
    * 执行日志分支 dashboard 的“选择分支”动作。
    * 在 Git 面板“分支”侧栏的双击交互范围内，当前产品设计要求双击分支优先切换当前日志筛选，不再因仓库上下文不一致而中断；
    * 若所选分支并非当前日志仓，或路径只在大小写/分隔符层面不同，则直接按分支名切换筛选。
-   * 设计如此，此处在“分支侧栏双击筛选”范围内继续不对齐 IDEA，以保证交互稳定可用。
+   * 设计如此，此处在“分支侧栏双击筛选”范围内继续不保持与参考实现一致，以保证交互稳定可用。
    */
   const applyLogBranchSelection = useCallback((args: {
     branchName: string;
@@ -13708,7 +13771,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   }, [activeLogFilters.path, isFileHistoryMode, logHasMore, logItems, logLoading, pendingLogSelectionHash]);
 
   /**
-   * 文件历史模式下，单击提交记录后自动打开该文件在该提交上的 Diff，对齐 IDEA 文件历史联动行为。
+   * 文件历史模式下，单击提交记录后自动打开该文件在该提交上的 Diff，保持与参考实现一致的文件历史联动行为。
    */
   useEffect(() => {
     if (!active || !repoRoot || !isFileHistoryMode) return;
@@ -13908,7 +13971,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   }, [commitTreeBusy, commitTreeGroups]);
 
   /**
-   * 确保当前主树选中行始终滚动到可视区域内，对齐 IDEA `selectNode/selectPath -> makeVisible()` 的语义。
+   * 确保当前主树选中行始终滚动到可视区域内，保持与参考实现一致的 `selectNode/selectPath -> makeVisible()` 的语义。
    */
   useEffect(() => {
     if (commitTreeBusy) return;
@@ -14198,6 +14261,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   useEffect(() => {
     if (!active) return;
     const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
       const ctrl = event.ctrlKey || event.metaKey;
       const key = event.key.toLowerCase();
       const target = event.target as HTMLElement | null;
@@ -14221,6 +14285,14 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
           event.preventDefault();
           applyCommitNodeSelection(commitVisibleRowKeys);
         }
+        return;
+      }
+      if (ctrl && !event.altKey && !event.shiftKey && key === "c") {
+        if (isTextEditable) return;
+        const text = buildActiveGitCopyText(target);
+        if (!text) return;
+        event.preventDefault();
+        void window.host?.utils?.copyText?.(text);
         return;
       }
       if (ctrl && event.shiftKey && !event.altKey && event.key.toLowerCase() === "k") {
@@ -14251,6 +14323,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
     active,
     activeSelectionScope,
     applyCommitNodeSelection,
+    buildActiveGitCopyText,
     commitVisibleRowKeys,
     detailVisibleNodeKeys,
     runBranchTreeActionAsync,
@@ -14324,7 +14397,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   }, [handlePushTreeKeyboardNavigation, pushDialogOpen]);
 
   /**
-   * 处理日志列宽拖拽，行为对齐 IDEA 的可调列表头。
+   * 处理日志列宽拖拽，行为保持与参考实现一致的可调列表头。
    */
   useEffect(() => {
     const onMove = (event: MouseEvent) => {
@@ -14847,7 +14920,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
                   cacheKey: group.kind,
                   kind: group.kind === "ignored" ? "ignored" : group.kind === "conflict" ? "conflict" : "unversioned",
                   title: group.label,
-                  description: gt("workbench.misc.changeListManyFilesDescription", "该节点包含 {{count}} 个文件，按 IDEA 的 many files 语义改为通过浏览对话框查看。", { count: group.entries.length }),
+                  description: gt("workbench.misc.changeListManyFilesDescription", "该节点包含 {{count}} 个文件，按大量文件节点语义改为通过浏览对话框查看。", { count: group.entries.length }),
                   entries: group.entries,
                 });
               }}
@@ -15212,7 +15285,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
                 {worktreeTabVisible ? (
                   <div className="flex items-center gap-1">
                     {/* 当前产品设计要求 Git 面板底部页签区里的 Worktrees 页签常驻且不可关闭，因此这里不再暴露关闭按钮。
-                        设计如此，此处在“底部页签显隐与关闭入口”范围内继续不对齐 IDEA。 */}
+                        设计如此，此处在“底部页签显隐与关闭入口”范围内继续不保持与参考实现一致。 */}
                     <TabsTrigger value="worktrees" className={cn(GIT_BOTTOM_TABS_TRIGGER_CLASS, "min-w-[92px] pr-2")}>
                       <span className="flex items-center gap-1">
                         <span>{gt("workbench.misc.worktrees.title", "工作树")}</span>
@@ -15396,7 +15469,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
                     ) : null}
                     <div className="ml-auto flex items-center gap-1">
                       {/* 当前产品设计把 Git 面板“分支”侧栏头部的低频控制统一收敛到一个下拉菜单，避免头部横向拥挤并减少多按钮并排造成的误触。
-                          设计如此，此处在“分支侧栏头部操作入口”范围内继续不对齐 IDEA。 */}
+                          设计如此，此处在“分支侧栏头部操作入口”范围内继续不保持与参考实现一致。 */}
                       <DropdownMenu>
                         <DropdownMenuTrigger>
                           <Button size="icon-sm" variant="ghost" title={gt("workbench.branches.panel.actionsTitle", "分支面板操作")}>
@@ -15412,6 +15485,16 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
                           <DropdownMenuItem className={TOOLBAR_MENU_ITEM_CLASS} onClick={() => void setBranchShowOnlyMyAsync(branchPopup?.showOnlyMy !== true)}>
                             <Check className={`mr-2 h-3.5 w-3.5 ${branchPopup?.showOnlyMy === true ? "opacity-100 text-[var(--cf-accent)]" : "opacity-0"}`} />
                             {gt("workbench.branches.panel.menu.myBranches", "我的分支")}
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            className={TOOLBAR_MENU_ITEM_CLASS}
+                            onClick={() => {
+                              setBranchPanelGroupByDirectory((prev) => !prev);
+                              setBranchDirectoryOpen({});
+                            }}
+                          >
+                            <Check className={`mr-2 h-3.5 w-3.5 ${branchPanelGroupByDirectory ? "opacity-100 text-[var(--cf-accent)]" : "opacity-0"}`} />
+                            {gt("workbench.branches.panel.menu.groupByDirectory", "分组依据 目录")}
                           </DropdownMenuItem>
                           {branchPanelRepositories.length > 1 ? (
                             <>
@@ -15464,16 +15547,32 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
                     </div>
                     {branchPanelRows.map((row, index) => {
                       if (row.kind === "group") {
-                        const expanded = row.key === "group:favorites"
-                          ? branchGroupOpen.favorites
-                          : row.key === "group:local"
-                            ? branchGroupOpen.local
-                            : branchGroupOpen.remote;
+                        const isDirectoryGroup = !!row.directoryPath;
+                        const expanded = isDirectoryGroup
+                          ? branchDirectoryOpen[row.key] !== false
+                          : row.key === "group:favorites"
+                            ? branchGroupOpen.favorites
+                            : row.key === "group:local"
+                              ? branchGroupOpen.local
+                              : branchGroupOpen.remote;
                         return (
                           <button
                             key={row.key}
-                            className={cn("cf-git-section-toggle flex w-full items-center gap-0.5 px-1 py-0.5 text-left text-[11px]", index > 0 ? "mt-0.5" : "")}
+                            className={cn(
+                              "cf-git-section-toggle flex w-full items-center gap-0.5 px-1 py-0.5 text-left text-[11px]",
+                              index > 0 && !isDirectoryGroup ? "mt-0.5" : "",
+                              isDirectoryGroup ? "ml-3 text-[var(--cf-text-secondary)]" : "",
+                            )}
+                            style={isDirectoryGroup ? { paddingLeft: 8 + Math.max(0, Number(row.depth) || 0) * 14 } : undefined}
+                            onMouseDown={() => {
+                              setBranchPanelFocusedRowKey(row.key);
+                              branchPanelContainerRef.current?.focus();
+                            }}
                             onClick={() => {
+                              if (isDirectoryGroup) {
+                                setBranchDirectoryOpen((prev) => ({ ...prev, [row.key]: prev[row.key] === false }));
+                                return;
+                              }
                               setBranchGroupOpen((prev) => ({
                                 ...prev,
                                 favorites: row.key === "group:favorites" ? !prev.favorites : prev.favorites,
@@ -15482,7 +15581,9 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
                               }));
                             }}
                           >
-                            {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />} {row.label}
+                            {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                            {isDirectoryGroup ? <Folder className="h-3.5 w-3.5 shrink-0" /> : null}
+                            <span className="min-w-0 truncate">{row.label}</span>
                           </button>
                         );
                       }
@@ -15506,6 +15607,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
                             row.section === "remote" && isFilteredBranch ? "cf-git-row-selected text-[var(--cf-text-primary)]" : "",
                             isSpeedSearchFocused ? "cf-git-row-selected text-[var(--cf-text-primary)]" : "",
                           )}
+                          style={branchPanelGroupByDirectory ? { marginLeft: 12 + Math.max(0, Number(row.depth) || 0) * 14 } : undefined}
                           title={presentation.tooltip}
                           onMouseDown={() => {
                             setBranchPanelFocusedRowKey(row.key);
@@ -15526,7 +15628,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
                         >
                           <span className="min-w-0 flex-1" title={row.name}>
                             <span className="block truncate text-[11px] leading-5">
-                              {branchPanelSpeedSearchQuery ? renderGitSpeedSearchText(row.name, branchPanelSpeedSearchQuery) : row.name}
+                              {branchPanelSpeedSearchQuery ? renderGitSpeedSearchText(row.displayName, branchPanelSpeedSearchQuery) : row.displayName}
                             </span>
                           </span>
                           <div className="ml-1 flex shrink-0 items-center gap-1">
@@ -15916,7 +16018,11 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
                 </div>
                 <div
                   ref={logVirtual.containerRef}
-                  className="min-h-0 flex-1 overflow-auto cf-scroll-area"
+                  className="min-h-0 flex-1 overflow-auto cf-scroll-area outline-none"
+                  tabIndex={0}
+                  onMouseDown={() => {
+                    logVirtual.containerRef.current?.focus();
+                  }}
                   onContextMenu={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
@@ -17143,7 +17249,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
         showEditSource: selectionContext.navigatablePaths.length > 0,
       });
       /**
-       * 把提交树共享菜单模型渲染成具体菜单项，统一承接 IDEA 提交工具窗口层级与当前产品豁免映射。
+       * 把提交树共享菜单模型渲染成具体菜单项，统一承接 参考实现提交工具窗口层级与当前产品豁免映射。
        */
       const renderSharedMenuNode = (node: CommitTreeSharedMenuNode): JSX.Element | null => {
         if (node.kind === "submenu") {
@@ -17752,7 +17858,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
       const allPathsHaveSingleHash = detailHashResolution.allPathsHaveSingleHash;
       const canShowRevisionHistory = targetIsFile && canSingleFileAction && singleHashContext && !!targetHash;
       /**
-       * 渲染单个提交详情菜单动作，保持 committed changes 菜单顺序和危险动作语义与 IDEA 一致。
+       * 渲染单个提交详情菜单动作，保持 committed changes 菜单顺序和危险动作语义与参考实现一致。
        */
       const renderDetailContextMenuAction = (actionKey: ReturnType<typeof buildCommitDetailsContextMenuGroups>[number][number]): JSX.Element | null => {
         if (actionKey === "showDiff") {
@@ -18837,7 +18943,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
 
   /**
    * 渲染 rollback viewer 之上的临时 Diff 浮层。
-   * 这是对齐 IDEA“当前流程内查看差异”的变通设计：现有产品没有单独的 Diff 窗口宿主，因此复用工作台 Diff 面板并临时前置显示。
+   * 这是保持与参考实现一致“当前流程内查看差异”的变通设计：现有产品没有单独的 Diff 窗口宿主，因此复用工作台 Diff 面板并临时前置显示。
    */
   const renderRollbackDiffOverlay = (): JSX.Element | null => {
     if (!rollbackDiffOverlayOpen || !diff) return null;

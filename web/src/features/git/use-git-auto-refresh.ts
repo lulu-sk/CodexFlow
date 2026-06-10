@@ -137,7 +137,7 @@ export function useGitAutoRefresh(args: UseGitAutoRefreshArgs): void {
 
     /**
      * 根据 watcher 来源与原因决定刷新粒度。
-     * - `worktrees` 对齐 IDEA `workingTreeHolder.scheduleReload()` 语义，仅刷新 worktree 列表；
+     * - `worktrees` 保持与参考实现一致的 `workingTreeHolder.scheduleReload()` 语义，仅刷新 worktree 列表；
      * - 其它事件继续走整仓刷新链路。
      */
     const resolveRefreshKind = (source: "fileIndex" | "repoWatch", reason?: string): GitAutoRefreshKind => {

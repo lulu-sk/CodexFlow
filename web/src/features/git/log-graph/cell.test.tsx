@@ -370,7 +370,7 @@ describe("GitLogGraphCell", () => {
     }
   });
 
-  it("普通节点默认应无 outline，选中 HEAD 节点应退化为 IDEA 的单个放大实心圆", async () => {
+  it("普通节点默认应无 outline，选中 HEAD 节点应退化为参考实现的单个放大实心圆", async () => {
     const rendered = await renderGraphCell({
       lane: 0,
       color: "#b28b33",

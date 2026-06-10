@@ -16,8 +16,27 @@ export type BranchPopupRow =
   | { kind: "branch"; name: string; section: "favorites" | "recent" | "local" | "remote"; repoRoot: string; item?: GitBranchItem };
 
 export type BranchPanelRow =
-  | { kind: "group"; key: string; label: string }
-  | { kind: "branch"; key: string; name: string; section: "favorites" | "local" | "remote"; repoRoot: string; textPresentation: string; item?: GitBranchItem };
+  | {
+      kind: "group";
+      key: string;
+      label: string;
+      section?: "favorites" | "local" | "remote";
+      depth?: number;
+      directoryPath?: string;
+      parentKey?: string;
+    }
+  | {
+      kind: "branch";
+      key: string;
+      name: string;
+      displayName: string;
+      section: "favorites" | "local" | "remote";
+      repoRoot: string;
+      textPresentation: string;
+      item?: GitBranchItem;
+      depth: number;
+      parentKey?: string;
+    };
 
 export type BranchPanelGroupOpen = {
   favorites: boolean;
@@ -32,8 +51,143 @@ export type BranchPopupGroupOpen = {
   remote: boolean;
 };
 
+type BranchPathNode = {
+  key: string;
+  label: string;
+  path: string;
+  depth: number;
+  children: BranchPathNode[];
+  item?: GitBranchItem;
+  isLeaf: boolean;
+};
+
 /**
- * 返回 branch popup 分组展开状态的默认值；默认全部展开，贴近 IDEA 首次打开体验。
+ * 统一规范化分支引用名，避免目录分组与复制文本在 Windows 路径分隔符上出现不一致。
+ */
+function normalizeBranchRefName(value: string): string {
+  return String(value || "").trim().replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\/+|\/+$/g, "");
+}
+
+/**
+ * 计算分支目录分组的稳定节点键；叶子节点保留完整引用名，目录节点按路径段递进生成。
+ */
+function buildBranchPathKey(section: string, repoRoot: string, path: string): string {
+  return `branch:${repoRoot}:${section}:${path}`;
+}
+
+/**
+ * 计算分支目录节点的稳定键，避免同名目录和同名分支叶子互相覆盖。
+ */
+function buildBranchDirectoryKey(section: string, repoRoot: string, path: string): string {
+  return `branch-dir:${repoRoot}:${section}:${path}`;
+}
+
+/**
+ * 把分支引用按 `/` 切成目录树，叶子仍保留完整分支名，供显示与动作复用。
+ */
+function buildBranchPathNodes(section: string, repoRoot: string, items: GitBranchItem[] | undefined): BranchPathNode[] {
+  const roots: BranchPathNode[] = [];
+  const directoryByKey = new Map<string, BranchPathNode>();
+  const branchByKey = new Set<string>();
+  if (!Array.isArray(items) || items.length <= 0) return [];
+  for (const item of items) {
+    const name = normalizeBranchRefName(item?.name || "");
+    if (!name) continue;
+    const segments = name.split("/").filter(Boolean);
+    if (segments.length <= 0) continue;
+    let parent: BranchPathNode | undefined;
+    let currentPath = "";
+    for (let index = 0; index < segments.length - 1; index += 1) {
+      const segment = segments[index] || "";
+      if (!segment) continue;
+      currentPath = currentPath ? `${currentPath}/${segment}` : segment;
+      const nodeKey = buildBranchDirectoryKey(section, repoRoot, currentPath);
+      let node = directoryByKey.get(nodeKey);
+      if (!node) {
+        node = {
+          key: nodeKey,
+          label: segment,
+          path: currentPath,
+          depth: index,
+          children: [],
+          isLeaf: false,
+        };
+        directoryByKey.set(nodeKey, node);
+        if (parent) parent.children.push(node);
+        else roots.push(node);
+      }
+      parent = node;
+    }
+    const leafKey = buildBranchPathKey(section, repoRoot, name);
+    if (branchByKey.has(leafKey)) continue;
+    branchByKey.add(leafKey);
+    const leaf: BranchPathNode = {
+      key: leafKey,
+      label: name,
+      path: name,
+      depth: Math.max(0, segments.length - 1),
+      children: [],
+      item,
+      isLeaf: true,
+    };
+    if (parent) parent.children.push(leaf);
+    else roots.push(leaf);
+  }
+  return roots;
+}
+
+/**
+ * 递归收集目录树中所有分支叶子，保持当前面板的显示顺序与路径层级。
+ */
+function flattenBranchPathNodes(nodes: BranchPathNode[], depth = 0, parentKey?: string): BranchPanelRow[] {
+  const out: BranchPanelRow[] = [];
+  for (const node of nodes) {
+    if (node.isLeaf) {
+      const segments = node.path.split("/").filter(Boolean);
+      const displayName = segments[segments.length - 1] || node.label;
+      out.push({
+        kind: "branch",
+        key: node.key,
+        name: node.path,
+        displayName,
+        section: "local",
+        repoRoot: "",
+        textPresentation: node.path,
+        item: node.item,
+        depth,
+        parentKey,
+      });
+      continue;
+    }
+    out.push({
+      kind: "group",
+      key: node.key,
+      label: node.label,
+      depth,
+      directoryPath: node.path,
+      parentKey,
+    });
+    out.push(...flattenBranchPathNodes(node.children, depth + 1, node.key));
+  }
+  return out;
+}
+
+/**
+ * 按屏幕显示顺序导出分支面板选中行文本，用于工作台复制处理。
+ */
+export function buildBranchPanelCopyText(args: {
+  rows: BranchPanelRow[];
+  focusedRowKey?: string;
+}): string {
+  const focusedRowKey = String(args.focusedRowKey || "").trim();
+  const row = args.rows.find((item) => item.key === focusedRowKey);
+  if (!row) return "";
+  if (row.kind === "branch") return String(row.displayName || row.textPresentation || "").trim();
+  return String(row.directoryPath || row.label || "").trim();
+}
+
+/**
+ * 返回 branch popup 分组展开状态的默认值；默认全部展开，贴近常见分支弹窗体验。
  */
 export function createDefaultBranchPopupGroupOpen(): BranchPopupGroupOpen {
   return {
@@ -147,6 +301,8 @@ export function buildBranchPanelRows(
   snapshot: GitBranchPopupSnapshot | null,
   selectedRepoRoot: string,
   groupOpen: BranchPanelGroupOpen,
+  groupByDirectory: boolean = false,
+  directoryOpen: Record<string, boolean> = {},
   resolveText?: GitBranchTextResolver,
 ): BranchPanelRow[] {
   const resolveLabel = (key: string, fallback: string, values?: Record<string, unknown>): string => {
@@ -158,28 +314,53 @@ export function buildBranchPanelRows(
   const groups = selectedRepository.groups;
   const pushBranchRows = (section: "favorites" | "local" | "remote", items: GitBranchItem[] | undefined): void => {
     if (!Array.isArray(items) || items.length <= 0) return;
-    for (const item of items) {
-      const name = String(item?.name || "").trim();
-      if (!name) continue;
+    if (!groupByDirectory) {
+      for (const item of items) {
+        const name = normalizeBranchRefName(item?.name || "");
+        if (!name) continue;
+        rows.push({
+          kind: "branch",
+          key: buildBranchPathKey(section, selectedRepository.repoRoot, name),
+          name,
+          displayName: name,
+          section,
+          repoRoot: selectedRepository.repoRoot,
+          textPresentation: name,
+          item,
+          depth: 0,
+        });
+      }
+      return;
+    }
+    const groupedRows = buildBranchPathNodes(section, selectedRepository.repoRoot, items);
+    const flatRows = flattenBranchPathNodes(groupedRows);
+    const hiddenDirectoryKeys = new Set<string>();
+    for (const row of flatRows) {
+      const parentHidden = !!row.parentKey && (directoryOpen[row.parentKey] === false || hiddenDirectoryKeys.has(row.parentKey));
+      if (parentHidden) {
+        if (row.kind === "group") hiddenDirectoryKeys.add(row.key);
+        continue;
+      }
+      if (row.kind === "group") {
+        rows.push({ ...row, section });
+        if (directoryOpen[row.key] === false) hiddenDirectoryKeys.add(row.key);
+        continue;
+      }
       rows.push({
-        kind: "branch",
-        key: `branch:${selectedRepository.repoRoot}:${section}:${name}`,
-        name,
+        ...row,
         section,
         repoRoot: selectedRepository.repoRoot,
-        textPresentation: name,
-        item,
       });
     }
   };
 
   if ((groups?.favorites || []).length > 0) {
-    rows.push({ kind: "group", key: "group:favorites", label: resolveLabel("workbench.branches.common.groups.favorites", "收藏") });
+    rows.push({ kind: "group", key: "group:favorites", label: resolveLabel("workbench.branches.common.groups.favorites", "收藏"), section: "favorites" });
     if (groupOpen.favorites) pushBranchRows("favorites", groups.favorites);
   }
-  rows.push({ kind: "group", key: "group:local", label: resolveLabel("workbench.branches.common.groups.local", "本地") });
+  rows.push({ kind: "group", key: "group:local", label: resolveLabel("workbench.branches.common.groups.local", "本地"), section: "local" });
   if (groupOpen.local) pushBranchRows("local", groups?.local);
-  rows.push({ kind: "group", key: "group:remote", label: resolveLabel("workbench.branches.common.groups.remote", "远端") });
+  rows.push({ kind: "group", key: "group:remote", label: resolveLabel("workbench.branches.common.groups.remote", "远端"), section: "remote" });
   if (groupOpen.remote) pushBranchRows("remote", groups?.remote);
   return rows;
 }

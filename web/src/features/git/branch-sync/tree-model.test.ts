@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildBranchPanelRows, buildBranchPopupRows, resolveSelectedBranchPopupRepository } from "./tree-model";
+import { buildBranchPanelCopyText, buildBranchPanelRows, buildBranchPopupRows, resolveSelectedBranchPopupRepository } from "./tree-model";
 import type { GitBranchPopupSnapshot } from "../types";
 
 /**
@@ -46,8 +46,14 @@ function createBranchPopupSnapshot(): GitBranchPopupSnapshot {
         groups: {
           favorites: [{ name: "main", favorite: true, current: true, secondaryText: "origin/main" }],
           recent: [{ name: "feature/recent" }],
-          local: [{ name: "main", favorite: true, current: true, secondaryText: "origin/main" }],
-          remote: [{ name: "origin/main" }],
+          local: [
+            { name: "main", favorite: true, current: true, secondaryText: "origin/main" },
+            { name: "feature/api/refactor" },
+          ],
+          remote: [
+            { name: "origin/main" },
+            { name: "origin/feature/api/refactor" },
+          ],
         },
       },
       {
@@ -126,5 +132,80 @@ describe("branch tree model", () => {
     expect(selectedRepository?.rootName).toBe("lib");
     expect(rows.some((row) => row.kind === "branch" && row.repoRoot === "/workspace/root/modules/lib" && row.name === "release")).toBe(true);
     expect(rows.some((row) => row.kind === "branch" && row.repoRoot === "/workspace/root" && row.name === "main")).toBe(false);
+  });
+
+  it("分支面板关闭目录分组时应保持分支名平铺显示", () => {
+    const snapshot = createBranchPopupSnapshot();
+    const rows = buildBranchPanelRows(snapshot, "/workspace/root", {
+      favorites: true,
+      local: true,
+      remote: true,
+    });
+
+    expect(rows.some((row) => row.kind === "group" && row.directoryPath === "feature")).toBe(false);
+    expect(rows.some((row) => row.kind === "branch" && row.name === "feature/api/refactor" && row.displayName === "feature/api/refactor")).toBe(true);
+  });
+
+  it("分支面板开启目录分组后应按斜杠生成目录节点并保留完整动作分支名", () => {
+    const snapshot = createBranchPopupSnapshot();
+    const rows = buildBranchPanelRows(snapshot, "/workspace/root", {
+      favorites: true,
+      local: true,
+      remote: true,
+    }, true);
+
+    expect(rows.some((row) => row.kind === "group" && row.directoryPath === "feature")).toBe(true);
+    expect(rows.some((row) => row.kind === "group" && row.directoryPath === "feature/api")).toBe(true);
+    expect(rows.some((row) => row.kind === "branch" && row.name === "feature/api/refactor" && row.displayName === "refactor")).toBe(true);
+    expect(rows.some((row) => row.kind === "branch" && row.name === "origin/feature/api/refactor" && row.displayName === "refactor")).toBe(true);
+  });
+
+  it("分支面板目录分组下应保留完整分支名供 speed search 使用", () => {
+    const snapshot = createBranchPopupSnapshot();
+    const rows = buildBranchPanelRows(snapshot, "/workspace/root", {
+      favorites: true,
+      local: true,
+      remote: true,
+    }, true);
+    const branch = rows.find((row) => row.kind === "branch" && row.name === "feature/api/refactor");
+
+    if (!branch || branch.kind !== "branch")
+      throw new Error("missing feature branch row");
+    expect(branch.displayName).toBe("refactor");
+    expect(branch.textPresentation).toBe("feature/api/refactor");
+  });
+
+  it("分支面板目录节点收起后应隐藏子目录与子分支", () => {
+    const snapshot = createBranchPopupSnapshot();
+    const openRows = buildBranchPanelRows(snapshot, "/workspace/root", {
+      favorites: true,
+      local: true,
+      remote: true,
+    }, true);
+    const featureGroup = openRows.find((row) => row.kind === "group" && row.directoryPath === "feature");
+    expect(featureGroup?.kind).toBe("group");
+
+    const rows = buildBranchPanelRows(snapshot, "/workspace/root", {
+      favorites: true,
+      local: true,
+      remote: true,
+    }, true, featureGroup ? { [featureGroup.key]: false } : {});
+
+    expect(rows.some((row) => row.kind === "group" && row.directoryPath === "feature/api")).toBe(false);
+    expect(rows.some((row) => row.kind === "branch" && row.name === "feature/api/refactor")).toBe(false);
+  });
+
+  it("分支面板 copy provider 应复制当前聚焦行的显示文本", () => {
+    const snapshot = createBranchPopupSnapshot();
+    const rows = buildBranchPanelRows(snapshot, "/workspace/root", {
+      favorites: true,
+      local: true,
+      remote: true,
+    }, true);
+    const branch = rows.find((row) => row.kind === "branch" && row.name === "feature/api/refactor");
+    const group = rows.find((row) => row.kind === "group" && row.directoryPath === "feature/api");
+
+    expect(buildBranchPanelCopyText({ rows, focusedRowKey: branch?.key })).toBe("refactor");
+    expect(buildBranchPanelCopyText({ rows, focusedRowKey: group?.key })).toBe("feature/api");
   });
 });

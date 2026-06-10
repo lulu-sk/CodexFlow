@@ -5,7 +5,7 @@ import i18next from "i18next";
 import { initReactI18next } from "react-i18next";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createRoot, type Root } from "react-dom/client";
-import { GitDetailsBrowser, type GitDetailsBrowserTreeNode } from "./details-browser";
+import { buildGitDetailsBrowserCopyText, GitDetailsBrowser, type GitDetailsBrowserTreeNode } from "./details-browser";
 import type { GitCommitDetailsActionAvailability, GitLogDetails } from "./types";
 import zhGit from "../../locales/zh/git.json";
 
@@ -128,6 +128,19 @@ beforeAll(async () => {
 });
 
 describe("GitDetailsBrowser", () => {
+  it("copy provider 应按当前显示顺序输出选中节点路径", () => {
+    expect(buildGitDetailsBrowserCopyText({
+      rows: [
+        { node: DETAIL_NODE, depth: 0 },
+        { node: SECOND_DETAIL_NODE, depth: 0 },
+      ],
+      selectedNodeKeys: [SECOND_DETAIL_NODE.key, DETAIL_NODE.key],
+    })).toBe([
+      "src/app.ts",
+      "src/other.ts",
+    ].join("\n"));
+  });
+
   it("应按当前产品设计隐藏重复 toolbar 动作，并在点击文件时打开 Diff", async () => {
     const mounted = createMountedRoot();
     const onOpenDiff = vi.fn();
@@ -240,7 +253,7 @@ describe("GitDetailsBrowser", () => {
     }
   });
 
-  it("提交详情右键菜单应对齐 IDEA 的历史与父项文案，并在多提交聚合时禁用历史动作", async () => {
+  it("提交详情右键菜单应保持与参考实现一致的历史与父项文案，并在多提交聚合时禁用历史动作", async () => {
     const mounted = createMountedRoot();
     try {
       await act(async () => {

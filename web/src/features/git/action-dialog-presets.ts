@@ -172,7 +172,7 @@ export function buildUndoCommitDialogConfig(args?: {
 }
 
 /**
- * 生成“删除提交”确认弹窗配置，对齐 IDEA 在执行 drop 前的确认与“不再询问”入口。
+ * 生成“删除提交”确认弹窗配置，保持与参考实现一致，在执行 drop 前的确认与“不再询问”入口。
  */
 export function buildDeleteCommitDialogConfig(args: {
   commitCount: number;
@@ -211,7 +211,7 @@ export function buildDeleteCommitDialogConfig(args: {
 }
 
 /**
- * 生成“优选/还原所选更改”对话框配置；启用 changelist 时要求先选择目标更改列表，对齐 IDEA 的 committed changes patch 流程。
+ * 生成“优选/还原所选更改”对话框配置；启用 changelist 时要求先选择目标更改列表，保持与参考实现一致的 committed changes patch 流程。
  */
 export function buildCommitDetailsPatchDialogConfig(
   mode: "revert" | "apply",

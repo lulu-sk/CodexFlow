@@ -200,7 +200,7 @@ function renderSelectedDetails(
 }
 
 /**
- * 渲染应用内 interactive rebase editor，对齐 IDEA 的提交列表 + 行级动作编辑主流程。
+ * 渲染应用内 interactive rebase editor，保持与参考实现一致的提交列表 + 行级动作编辑主流程。
  */
 export function InteractiveRebaseDialog({
   open,

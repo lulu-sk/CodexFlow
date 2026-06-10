@@ -12,7 +12,7 @@ function flattenMenuIds(sections: ReturnType<typeof buildCommitTreeSharedMenuSec
 }
 
 describe("commit tree context menu model", () => {
-  it("应按 IDEA 提交工具窗口结构输出共享菜单，并移除 changelist 管理段", () => {
+  it("应按参考实现提交工具窗口结构输出共享菜单，并移除 changelist 管理段", () => {
     const sections = buildCommitTreeSharedMenuSections({
       selection: {
         canCommit: true,
@@ -110,7 +110,7 @@ describe("commit tree context menu model", () => {
     ]);
   });
 
-  it("删除入口显示规则应对可解析删除目标的目录选择对齐 IDEA", () => {
+  it("删除入口显示规则应对可解析删除目标的目录选择保持与参考实现一致", () => {
     expect(shouldShowCommitTreeSharedDeleteAction({
       exactlySelectedFileCount: 0,
       selectedDeleteTargetCount: 1,
@@ -148,7 +148,7 @@ describe("commit tree context menu model", () => {
     })).toBe(false);
   });
 
-  it("amend 来源应对齐 IDEA：启用提交/回滚，但继续禁用搁置", () => {
+  it("amend 来源应保持与参考实现一致：启用提交/回滚，但继续禁用搁置", () => {
     const sections = buildCommitTreeSharedMenuSections({
       selection: {
         canCommit: true,

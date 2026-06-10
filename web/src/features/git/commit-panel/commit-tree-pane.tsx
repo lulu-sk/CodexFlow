@@ -203,14 +203,14 @@ function resolveDragPayloadPaths(payload: CommitTreeDragPayload, kind: "change" 
 }
 
 /**
- * 对齐 IDEA `GitAddOperation.matches`，仅允许未暂存或未跟踪条目投放到 staged 分组。
+ * 保持与参考实现一致 `GitAddOperation.matches`，仅允许未暂存或未跟踪条目投放到 staged 分组。
  */
 function canStageDraggedEntry(entry: GitStatusEntry): boolean {
   return !entry.ignored && (entry.untracked || entry.unstaged || !entry.staged);
 }
 
 /**
- * 对齐 IDEA `GitResetOperation.matches`，仅允许已暂存条目投放到 unstaged 分组。
+ * 保持与参考实现一致 `GitResetOperation.matches`，仅允许已暂存条目投放到 unstaged 分组。
  */
 function canUnstageDraggedEntry(entry: GitStatusEntry): boolean {
   return !entry.ignored && entry.staged;
@@ -272,7 +272,7 @@ function resolveContextSelectionRowKeys(args: {
 }
 
 /**
- * 仅当提交树处于单选且命中当前节点时，才允许触发节点级 openHandler，对齐 IDEA 的 `selected(...).single()` 语义。
+ * 仅当提交树处于单选且命中当前节点时，才允许触发节点级 openHandler，保持与参考实现一致的 `selected(...).single()` 语义。
  */
 function canInvokeNodeOpenHandler(rowKey: string, selectedRowKeys: string[]): boolean {
   return selectedRowKeys.length === 1 && selectedRowKeys[0] === rowKey;
@@ -514,7 +514,7 @@ export function CommitTreePane(props: CommitTreePaneProps): React.ReactElement {
     if (!speedSearchOpen) return;
 
     /**
-     * 点击提交面板外部时按 IDEA `focusLost -> manageSearchPopup(null)` 语义关闭并清空搜索。
+     * 点击提交面板外部时按参考实现 `focusLost -> manageSearchPopup(null)` 语义关闭并清空搜索。
      */
     const handleDocumentMouseDown = (event: MouseEvent): void => {
       const root = paneRootRef.current;

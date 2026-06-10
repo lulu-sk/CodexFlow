@@ -261,7 +261,7 @@ function isAutoIncludedActiveChangeItem(item: CommitInclusionItem, activeChangeL
 }
 
 /**
- * 把 resolved conflict 自动纳入当前 inclusion 集；即使用户未手动勾选，也要与 IDEA workflow 语义保持一致。
+ * 把 resolved conflict 自动纳入当前 inclusion 集；即使用户未手动勾选，也要与参考实现 workflow 语义保持一致。
  */
 function includeResolvedConflictItems(
   includedIds: Set<string>,
@@ -328,7 +328,7 @@ export function syncCommitInclusionState(
 }
 
 /**
- * 按 IDEA `CheckinActionUtil.setCommitState(initialChangeList, included, ...)` 语义重建提交入口的 inclusion 状态。
+ * 按参考实现 `CheckinActionUtil.setCommitState(initialChangeList, included, ...)` 语义重建提交入口的 inclusion 状态。
  * - 存在显式 selected changes / unversioned 时，只纳入这些显式选项，并保留 resolved conflict 自动纳入。
  * - 否则按 initial changelist 语义纳入目标 changelist 的普通 change，不默认纳入 unversioned。
  */
@@ -459,7 +459,7 @@ export function getCommitInclusionCheckState(
 }
 
 /**
- * 判断分组头部是否应显示 inclusion checkbox，对齐 IDEA changelist/unversioned/ignored 规则。
+ * 判断分组头部是否应显示 inclusion checkbox，保持与参考实现一致的 changelist/unversioned/ignored 规则。
  */
 export function isCommitGroupInclusionVisible(group: Pick<ChangeEntryGroup, "kind" | "entries">): boolean {
   if (group.kind === "ignored") return false;
@@ -478,7 +478,7 @@ export function isCommitNodeInclusionVisible(node: Pick<CommitTreeNode, "selecti
 }
 
 /**
- * 按 IDEA Space toggle 语义批量切换 inclusion；若目标集合存在任一未选项则整体纳入，否则整体排除。
+ * 按参考实现 Space toggle 语义批量切换 inclusion；若目标集合存在任一未选项则整体纳入，否则整体排除。
  */
 export function toggleCommitInclusionForItemIds(
   prev: CommitInclusionState,

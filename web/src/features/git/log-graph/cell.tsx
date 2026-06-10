@@ -111,7 +111,7 @@ function resolveGraphElementScopeKey(cell: GitGraphCell, scopeId: string): strin
 
 /**
  * 渲染不带节点的背景 track；若上一行通过斜线接入，则在本行补齐上半段对接，再继续向下延伸竖线。
- * 对齐 IDEA 后，track 还需要支持上/下两个方向各自独立的 terminal arrow。
+ * 保持与参考实现一致后，track 还需要支持上/下两个方向各自独立的 terminal arrow。
  */
 function renderGraphTrack(args: {
   track: GitGraphCell["tracks"][number];
@@ -206,7 +206,7 @@ function resolveGraphIncomingSegments(
 
 /**
  * 计算斜线在当前行边界处的中点横坐标。
- * 终止箭头仍锚在边界中点，以对齐 IDEA 对非垂直线段的箭头落点语义。
+ * 终止箭头仍锚在边界中点，以保留参考实现对非垂直线段的箭头落点语义。
  */
 function resolveGraphBoundaryX(fromX: number, toX: number): number {
   return (fromX + toX) / 2;
@@ -215,7 +215,7 @@ function resolveGraphBoundaryX(fromX: number, toX: number): number {
 /**
  * 渲染从上一行进入当前行中心的入射连线。
  * - 垂直线仍按 Web 分片绘制到当前行上边界，避免与相邻行背景互相覆盖；
- * - 斜线改为按 IDEA 的完整几何（上一行中心 -> 当前行中心）绘制，再裁切出当前行可见部分，
+ * - 斜线改为按参考实现的完整几何（上一行中心 -> 当前行中心）绘制，再裁切出当前行可见部分，
  *   这样不会在行接缝处叠出两个圆角端帽，避免截图里的折痕。
  */
 function renderGraphIncomingEdge(args: {
@@ -303,7 +303,7 @@ function renderGraphIncomingEdge(args: {
 /**
  * 渲染从当前行中心发往下一行的出射连线。
  * - 垂直线仍只画到当前行下边界，保持 Web 分片渲染稳定；
- * - 斜线改为按 IDEA 的完整几何（当前行中心 -> 下一行中心）绘制，再裁切出当前行可见部分，
+ * - 斜线改为按参考实现的完整几何（当前行中心 -> 下一行中心）绘制，再裁切出当前行可见部分，
  *   保证跨行视觉上仍是一条直线，而不是两段各自带圆角端帽的半线。
  */
 function renderGraphOutgoingEdge(args: {
@@ -385,7 +385,7 @@ function renderGraphOutgoingEdge(args: {
 
 /**
  * 计算 terminal edge 在当前行内的收口位置。
- * 对齐 IDEA `SimpleGraphCellPainter` 的 `circleRadius / 2 + 1`，让箭头贴近边界但不压到节点圆心。
+ * 保持与参考实现一致的 `SimpleGraphCellPainter` 的 `circleRadius / 2 + 1`，让箭头贴近边界但不压到节点圆心。
  */
 function resolveGraphTerminalBoundaryY(rowHeight: number, direction: "up" | "down"): number {
   const gap = resolveLogGraphTerminalGap(rowHeight);
@@ -531,7 +531,7 @@ function renderGraphArrow(args: {
 }
 
 /**
- * 按 IDEA `rotate(...)` 的几何把箭头两条边从终点反向旋出。
+ * 按参考实现 `rotate(...)` 的几何把箭头两条边从终点反向旋出。
  */
 function rotateGraphPoint(
   x: number,
@@ -555,7 +555,7 @@ function rotateGraphPoint(
 }
 
 /**
- * 计算 terminal arrow 的臂长，对齐 IDEA `ARROW_LENGTH * rowHeight`。
+ * 计算 terminal arrow 的臂长，保持与参考实现一致的 `ARROW_LENGTH * rowHeight`。
  */
 function resolveGraphArrowLength(rowHeight: number): number {
   return LOG_GRAPH_ARROW_LENGTH_FACTOR * rowHeight;
@@ -569,7 +569,7 @@ function formatGraphCoordinate(value: number): string {
 }
 
 /**
- * 渲染普通节点与 HEAD 节点，整体语义对齐 IDEA `SimpleGraphCellPainter` / `HeadNodePainter`。
+ * 渲染普通节点与 HEAD 节点，整体语义保持与参考实现一致的 `SimpleGraphCellPainter` / `HeadNodePainter`。
  * 默认节点直接填充圆；HEAD 节点未选中时绘制三层圆，选中时退化为单个放大的实心圆。
  */
 function renderGraphNode(args: {
@@ -635,7 +635,7 @@ function renderGraphNode(args: {
 }
 
 /**
- * 按接近 IDEA painter 的规则推导虚线节距。
+ * 按接近参考实现 painter 的规则推导虚线节距。
  * 由于 Web 端把跨行边拆成半段绘制，这里需要先还原对应的“逻辑整段长度”，避免 terminal edge 或半段斜线出现负 dash / 过密短线。
  */
 function resolveGraphDashArray(x1: number, y1: number, x2: number, y2: number, rowHeight: number): string {

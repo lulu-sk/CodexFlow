@@ -479,7 +479,7 @@ export async function setChangesViewOptionAsync(
 }
 
 /**
- * 设置提交面板 grouping key 集，用于对齐 IDEA 的 directory/module/repository 组合分组。
+ * 设置提交面板 grouping key 集，用于保持与参考实现一致的 directory/module/repository 组合分组。
  */
 export async function setCommitGroupingKeysAsync(
   repoPath: string,

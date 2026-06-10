@@ -18,6 +18,7 @@ describe("branch popup state", () => {
         local: true,
         remote: true,
       },
+      panelGroupByDirectory: false,
     });
   });
 
@@ -31,6 +32,7 @@ describe("branch popup state", () => {
         local: false,
         remote: true,
       },
+      panelGroupByDirectory: true,
     });
 
     expect(loadGitBranchPopupState()).toEqual({
@@ -42,6 +44,7 @@ describe("branch popup state", () => {
         local: false,
         remote: true,
       },
+      panelGroupByDirectory: true,
     });
   });
 });

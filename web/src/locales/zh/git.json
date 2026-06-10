@@ -1761,6 +1761,7 @@
           "display": "显示",
           "incomingOutgoing": "传入/传出",
           "myBranches": "我的分支",
+          "groupByDirectory": "分组依据 目录",
           "repositories": "仓库",
           "previousRepository": "上一个仓库",
           "nextRepository": "下一个仓库",

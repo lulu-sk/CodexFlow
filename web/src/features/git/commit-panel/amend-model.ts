@@ -38,7 +38,7 @@ function normalizeCommitHashIdentity(value: string): string {
 }
 
 /**
- * 按 IDEA `equalsIgnoreWhitespaces` 近似语义压平提交消息中的连续空白，供 amend 消息回填判定复用。
+ * 按参考实现 `equalsIgnoreWhitespaces` 近似语义压平提交消息中的连续空白，供 amend 消息回填判定复用。
  */
 function normalizeCommitAmendMessageForCompare(value: string): string {
   return String(value || "").replace(/\s+/g, " ").trim();
@@ -123,7 +123,7 @@ export function buildCommitAmendDetails(detail: GitLogDetailsSingle["detail"]): 
 
 /**
  * 判断两个提交哈希是否指向同一提交。
- * IDEA 比较的是 canonical `Hash` 对象；这里应保持同样的“精确身份”语义，不把短前缀适配成同一提交。
+ * 参考实现比较的是 canonical `Hash` 对象；这里应保持同样的“精确身份”语义，不把短前缀适配成同一提交。
  */
 export function isSameCommitHashIdentity(leftHash: string, rightHash: string): boolean {
   const left = normalizeCommitHashIdentity(leftHash);
@@ -158,7 +158,7 @@ export function isCommitAmendNode(
 }
 
 /**
- * 判断加载完成后是否需要用 amend 消息覆盖当前提交消息，对齐 IDEA non-modal amend 的“忽略空白差异”判定。
+ * 判断加载完成后是否需要用 amend 消息覆盖当前提交消息，保持与参考实现一致的 non-modal amend 的“忽略空白差异”判定。
  */
 export function shouldApplyCommitAmendMessage(currentMessage: string, amendMessage: string): boolean {
   const nextMessage = String(amendMessage || "");

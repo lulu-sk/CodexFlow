@@ -63,7 +63,7 @@ describe("shelf-browser-model", () => {
     expect(rows.find((row) => row.kind === "shelf" && row.shelf.ref === "shelf@{deleted}")?.depth).toBe(1);
   });
 
-  it("扁平模式应按 IDEA 风格优先按文件名排序", () => {
+  it("扁平模式应按参考实现风格优先按文件名排序", () => {
     const rows = buildShelfBrowserRows({
       items: [
         createShelfItem({

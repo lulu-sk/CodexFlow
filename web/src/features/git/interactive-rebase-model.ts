@@ -52,7 +52,7 @@ function getCommitMessageSubject(message: string): string {
 }
 
 /**
- * 判断消息是否为 autosquash 前缀，便于生成更接近 IDEA 的 squash 初始文案。
+ * 判断消息是否为 autosquash 前缀，便于生成更接近参考实现的 squash 初始文案。
  */
 function isAutosquashCommitMessage(message: string): boolean {
   return /^(fixup|squash|amend)! /i.test(getCommitMessageSubject(message));
@@ -67,7 +67,7 @@ function trimAutosquashCommitMessage(message: string): string {
 }
 
 /**
- * 按 IDEA `pretty squash` 的思路生成消息建议，用于 squash 文本区提示。
+ * 按参考实现 `pretty squash` 的思路生成消息建议，用于 squash 文本区提示。
  */
 function buildPrettySquashMessage(messagesInput: string[]): string {
   const messages = messagesInput.map((one) => String(one || "")).filter((one) => one.length > 0);
@@ -230,7 +230,7 @@ function canAttachInteractiveRebaseEntry(entries: GitInteractiveRebaseEntry[], h
 }
 
 /**
- * 计算某条 entry 上下文动作当前是否可用，对齐前序可附着目标这一类 IDEA gating。
+ * 计算某条 entry 上下文动作当前是否可用，复用参考实现中“前序可附着目标”这一类可用性门控。
  */
 export function getInteractiveRebaseActionAvailability(
   entries: GitInteractiveRebaseEntry[],

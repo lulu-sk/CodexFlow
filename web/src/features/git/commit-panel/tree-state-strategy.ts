@@ -37,7 +37,7 @@ function isSameExpandedState(
 }
 
 /**
- * 判断旧状态里是否已有“非默认 changelist 被展开”的情况，用于参考上游默认展开策略。
+ * 判断旧状态里是否已有“非默认 changelist 被展开”的情况，用于参考实现默认展开策略。
  */
 function hasExpandedNonDefaultChangeList(
   groups: ChangeEntryGroup[],
@@ -52,7 +52,7 @@ function hasExpandedNonDefaultChangeList(
 }
 
 /**
- * 参考上游 `shouldExpandDefaultChangeList()` 的核心语义。
+ * 参考实现 `shouldExpandDefaultChangeList()` 的核心语义。
  */
 export function shouldExpandDefaultChangeList(args: {
   previousGroups: ChangeEntryGroup[];
@@ -190,7 +190,7 @@ function findFirstFileNodeKey(nodes: CommitTreeNode[]): string {
 }
 
 /**
- * 按当前 inclusion 状态判断指定 changelist 是否处于“全集已纳入”状态，对齐 IDEA `setSelection()` 的 fully included 分支。
+ * 按当前 inclusion 状态判断指定 changelist 是否处于“全集已纳入”状态，保持与参考实现一致的 `setSelection()` fully included 分支。
  */
 function isCommitGroupFullyIncluded(
   group: CommitTreeGroup,
@@ -247,7 +247,7 @@ function resolveFirstIncludedNodeKey(
 }
 
 /**
- * 当刷新后原选择失效时，按 IDEA inclusion / merge conflict / default changelist 的顺序回落默认选中对象。
+ * 当刷新后原选择失效时，按参考实现 inclusion / merge conflict / default changelist 的顺序回落默认选中对象。
  */
 export function resolveCommitFallbackRowSelection(args: {
   groups: CommitTreeGroup[];

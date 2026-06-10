@@ -181,7 +181,7 @@ export function consumePendingSavedChangesOpenRequest(currentRepoRoot: string): 
 }
 
 /**
- * 按当前选择、当前更改列表与当前可见受影响变更构建手动搁置载荷，对齐 IDEA 的手动 shelf 入口语义。
+ * 按当前选择、当前更改列表与当前可见受影响变更构建手动搁置载荷，保持与参考实现一致的手动 shelf 入口语义。
  */
 export function buildManualShelveSelection(args: {
   selectedEntries: GitStatusEntry[];

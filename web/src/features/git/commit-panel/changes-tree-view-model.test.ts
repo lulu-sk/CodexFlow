@@ -44,7 +44,7 @@ describe("commit panel tree view model", () => {
     expect(groups[0]?.sortWeight).toBe(0);
   });
 
-  it("conflict/resolved-conflict 节点应生成上游语义对应的 hover/open 动作", () => {
+  it("conflict/resolved-conflict 节点应生成参考实现语义对应的 hover/open 动作", () => {
     const treeGroups = buildCommitTreeGroups([
       {
         key: "special:conflicts",
@@ -109,7 +109,7 @@ describe("commit panel tree view model", () => {
     expect(rows.some((row) => row.node.fullPath === "src/app/a.ts")).toBe(true);
   });
 
-  it("连续单子目录应折叠为上游风格的组合路径显示", () => {
+  it("连续单子目录应折叠为参考实现风格的组合路径显示", () => {
     const tree = buildCommitTree([
       { path: "web/src/App.tsx", x: "M", y: ".", staged: true, unstaged: false, untracked: false, ignored: false, renamed: false, deleted: false, statusText: "已暂存", changeListId: "default" },
       { path: "web/src/lib/render.ts", x: "M", y: ".", staged: true, unstaged: false, untracked: false, ignored: false, renamed: false, deleted: false, statusText: "已暂存", changeListId: "default" },
@@ -304,7 +304,7 @@ describe("commit panel tree view model", () => {
     expect(rows[2]?.textPresentation).toBe("a.ts");
   });
 
-  it("ignored/unversioned 超过上游 many files 阈值时，不应继续在树中展开全部子节点", () => {
+  it("ignored/unversioned 超过参考实现 many files 阈值时，不应继续在树中展开全部子节点", () => {
     const entries = Array.from({ length: DEFAULT_COMMIT_PANEL_MANY_FILES_THRESHOLD + 1 }, (_, index) => ({
       path: `dist/${index}.txt`,
       x: "!",

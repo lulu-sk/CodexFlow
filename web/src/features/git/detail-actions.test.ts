@@ -67,7 +67,7 @@ describe("detail-actions", () => {
     });
   });
 
-  it("应按 IDEA committed changes 菜单层级输出详情右键分组", () => {
+  it("应按 committed changes 菜单层级输出详情右键分组", () => {
     const availability = {
       actions: {
         editSource: { visible: true, enabled: true },

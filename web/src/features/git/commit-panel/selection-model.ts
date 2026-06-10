@@ -254,7 +254,7 @@ export type CommitMenuSelectionSnapshot = {
 
 /**
  * 基于显式树行键生成一次性菜单选择快照。
- * - 对齐 IDEA `uiDataSnapshot(DataSink)` 的语义：弹出菜单后动作应读取“打开菜单当下”的选择，而不是后续漂移的全局状态。
+ * - 保持与参考实现一致的 `uiDataSnapshot(DataSink)` 的语义：弹出菜单后动作应读取“打开菜单当下”的选择，而不是后续漂移的全局状态。
  * - 同时收敛 selected entries / paths / delete targets / changelist ids，避免右键动作各自重复推导。
  */
 export function buildCommitMenuSelectionSnapshot(args: {
@@ -294,7 +294,7 @@ export function buildCommitMenuSelectionSnapshot(args: {
 }
 
 /**
- * 按 IDEA selectedDiffableNode 语义解析当前 diffable 文件节点；若旧 diffable 仍落在选中子树内，则优先保留。
+ * 按参考实现 selectedDiffableNode 语义解析当前 diffable 文件节点；若旧 diffable 仍落在选中子树内，则优先保留。
  */
 export function resolveSelectedDiffableCommitNodeKey(args: {
   selectedRowKeys: string[];
@@ -498,7 +498,7 @@ export function deriveCommitSelectionContext(args: {
     && args.selectedEntries.every((entry) => !entry.staged && !entry.unstaged && !entry.untracked && !entry.ignored)
   );
   /**
-   * amend helper 节点在 IDEA 里仍复用共享右键菜单；虽然它不是当前工作区状态条目，
+   * amend helper 节点在 参考实现里仍复用共享右键菜单；虽然它不是当前工作区状态条目，
    * 但提交 / 回滚 / 搁置等动作的可用性不应被 reference-only 规则整体拦截。
    */
   const amendSharedPopupSelection = amendOnlySelection && actionableEntries.length > 0;
@@ -569,7 +569,7 @@ export type CommitDiffSelection = {
 };
 
 /**
- * 按 IDEA diffable selection 语义为单选/多选结果构建可导航文件集合。
+ * 按参考实现 diffable selection 语义为单选/多选结果构建可导航文件集合。
  */
 export function buildCommitDiffSelection(args: {
   selectedEntries: GitStatusEntry[];

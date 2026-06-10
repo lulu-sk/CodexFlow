@@ -124,7 +124,7 @@ function resolveBrowseLeadNodeKey(selectedNodeKeys: string[], rows: Array<{ node
 }
 
 /**
- * 按 IDEA Browse 首开语义生成默认展开态；仅当根下恰有一个目录节点时自动展开该单根节点。
+ * 按参考实现 Browse 首开语义生成默认展开态；仅当根下恰有一个目录节点时自动展开该单根节点。
  */
 function buildBrowseDefaultExpandedState(nodes: ReturnType<typeof buildCommitTree>): Record<string, boolean> {
   const firstNode = nodes[0];
@@ -189,7 +189,7 @@ function buildBrowseRenderRows(
 }
 
 /**
- * 提交面板 special node 的 Browse 对话框，使用树结构和 popup 动作收敛到 IDEA `SpecificFilesViewDialog`。
+ * 提交面板 special node 的 Browse 对话框，使用树结构和 popup 动作收敛到 参考实现 `SpecificFilesViewDialog`。
  */
 export function SpecialFilesDialog(props: SpecialFilesDialogProps): React.ReactElement {
   const { t } = useTranslation(["git", "common"]);
@@ -440,7 +440,7 @@ export function SpecialFilesDialog(props: SpecialFilesDialogProps): React.ReactE
   }, [actionMenuState]);
 
   /**
-   * 按当前选中结果执行 Browse 动作集；open 成功后关闭对话框，对齐 IDEA Browse 行为。
+   * 按当前选中结果执行 Browse 动作集；open 成功后关闭对话框，保持与参考实现一致的 Browse 行为。
    */
   const runCurrentActionAsync = async (action: "open" | "stage" | "ignore" | "delete"): Promise<void> => {
     const selectedNode = treeRows.find((row) => row.node.key === leadSelectedNodeKey)?.node || null;

@@ -32,7 +32,7 @@ function resolvePopupPosition(anchor?: { x: number; y: number }): React.CSSPrope
 }
 
 /**
- * 展示 ignored special node 投放后的 ignore 目标 popup，对齐 IDEA 的 action popup 语义。
+ * 展示 ignored special node 投放后的 ignore 目标 popup，保持与参考实现一致的 action popup 语义。
  */
 export function IgnoreTargetDialog(props: IgnoreTargetDialogProps): React.ReactElement | null {
   const { open, paths, targets, repoRoot, repoIndex, repoCount, applyingTargetId, anchor, onOpenChange, onSelectTarget } = props;
@@ -86,7 +86,7 @@ export function IgnoreTargetDialog(props: IgnoreTargetDialogProps): React.ReactE
           <div className="mt-1 text-[11px] text-[var(--cf-text-secondary)]">
             {resolveGitText(
               "commit.ignoreTarget.description",
-              "选择要写入的 ignore 目标。该 popup 只接收未跟踪文件投放，对齐 IDEA 的 ignored special node 语义。",
+              "选择要写入的 ignore 目标。该 popup 只接收未跟踪文件投放，保持与参考实现一致的 ignored special node 语义。",
             )}
           </div>
           {normalizedRepoRoot ? (

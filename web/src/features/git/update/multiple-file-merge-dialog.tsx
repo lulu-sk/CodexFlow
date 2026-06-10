@@ -204,7 +204,7 @@ function buildMergeConflictPrimaryActionDescription(args: {
 }
 
 /**
- * 把当前仓库冲突状态翻译为顶部提示文案，尽量贴近 IDEA resolver 的说明密度。
+ * 把当前仓库冲突状态翻译为顶部提示文案，尽量贴近参考实现 resolver 的说明密度。
  */
 function buildMergeConflictScopeHint(snapshot: GitConflictMergeSessionSnapshot | null, resolveLabel?: LabelResolver): string {
   if (snapshot?.reverseSides) {
@@ -228,7 +228,7 @@ function formatMergeConflictDirectorySummary(fileCount: number, resolveLabel?: L
 }
 
 /**
- * 渲染接近 IDEA MultipleFileMergeDialog 的多文件冲突总线 UI，统一承载表格、目录分组与主操作按钮。
+ * 渲染接近参考实现的 MultipleFileMergeDialog 的多文件冲突总线 UI，统一承载表格、目录分组与主操作按钮。
  */
 export function MultipleFileMergeDialog(props: MultipleFileMergeDialogProps): React.ReactElement {
   const { t } = useTranslation("git");

@@ -206,7 +206,7 @@ function resolveEditorLineHeight(
 }
 
 /**
- * 把复选框定位到行号前侧 gutter，优先居中落在 glyph margin 内，和 IDEA 的左侧勾选列保持一致。
+ * 把复选框定位到行号前侧 gutter，优先居中落在 glyph margin 内，和参考实现的左侧勾选列保持一致。
  */
 function resolveEditorCheckboxLeft(args: {
   rootNode: HTMLDivElement;

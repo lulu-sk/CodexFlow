@@ -18,14 +18,14 @@ type LogGraphRoundingMode = "floor" | "ceil" | "round";
 type LogGraphParityMode = "odd" | "even";
 
 /**
- * 按 IDEA `PaintParameters.scaleWithRowHeight` 的语义，把图谱尺寸随着实际行高同比缩放。
+ * 按参考实现 `PaintParameters.scaleWithRowHeight` 的语义，把图谱尺寸随着实际行高同比缩放。
  */
 export function scaleLogGraphMetric(value: number, rowHeight = LOG_GRAPH_RENDER_ROW_HEIGHT): number {
   return (value * rowHeight) / LOG_GRAPH_ROW_HEIGHT_BASE;
 }
 
 /**
- * 按指定舍入策略把值对齐到整数像素，语义贴近 IDEA `PaintUtil.alignToInt`。
+ * 按指定舍入策略把值对齐到整数像素，语义贴近参考实现 `PaintUtil.alignToInt`。
  */
 function alignLogGraphToPixel(value: number, roundingMode: LogGraphRoundingMode, parityMode?: LogGraphParityMode): number {
   let rounded = roundLogGraphPixel(value, parityMode && roundingMode === "round" ? "floor" : roundingMode);
@@ -46,7 +46,7 @@ function roundLogGraphPixel(value: number, roundingMode: LogGraphRoundingMode): 
 }
 
 /**
- * 返回整数像素值的奇偶性，供 IDEA 风格的奇/偶对齐使用。
+ * 返回整数像素值的奇偶性，供参考实现风格的奇/偶对齐使用。
  */
 function resolveLogGraphParity(value: number): LogGraphParityMode {
   return Math.abs(value % 2) === 0 ? "even" : "odd";
@@ -54,7 +54,7 @@ function resolveLogGraphParity(value: number): LogGraphParityMode {
 
 /**
  * 获取当前行高下的行中心。
- * Web 端这里必须与日志列表行盒的真实几何中心保持一致；若继续照搬 IDEA Swing 里的奇数像素对齐，
+ * Web 端这里必须与日志列表行盒的真实几何中心保持一致；若继续照搬参考实现 Swing 里的奇数像素对齐，
  * 在当前 `32px` 偶数行高下会把整张图谱统一上移 `1px`，导致节点与文本行心整体错位。
  */
 export function resolveLogGraphRowCenter(rowHeight = LOG_GRAPH_RENDER_ROW_HEIGHT): number {
@@ -62,35 +62,35 @@ export function resolveLogGraphRowCenter(rowHeight = LOG_GRAPH_RENDER_ROW_HEIGHT
 }
 
 /**
- * 获取当前行高下的 lane 宽度，对齐 IDEA `elementWidth = alignToInt(getElementWidth(rowHeight), FLOOR, ODD)`。
+ * 获取当前行高下的 lane 宽度，保持与参考实现一致 `elementWidth = alignToInt(getElementWidth(rowHeight), FLOOR, ODD)`。
  */
 export function resolveLogGraphLaneWidth(rowHeight = LOG_GRAPH_RENDER_ROW_HEIGHT): number {
   return alignLogGraphToPixel(scaleLogGraphMetric(LOG_GRAPH_LANE_WIDTH, rowHeight), "floor", "odd");
 }
 
 /**
- * 获取当前行高下的单个 lane 的水平中心，保证列中心与 IDEA 的布局一致。
+ * 获取当前行高下的单个 lane 的水平中心，保证列中心与参考实现的布局一致。
  */
 export function resolveLogGraphLaneCenter(lane: number, rowHeight = LOG_GRAPH_RENDER_ROW_HEIGHT): number {
   return lane * resolveLogGraphLaneWidth(rowHeight) + resolveLogGraphXOffset(rowHeight);
 }
 
 /**
- * 获取当前行高下的图谱列中心偏移，对齐 IDEA `elementCenter = alignToInt(getElementWidth(rowHeight) / 2, FLOOR, null)`。
+ * 获取当前行高下的图谱列中心偏移，保持与参考实现一致 `elementCenter = alignToInt(getElementWidth(rowHeight) / 2, FLOOR, null)`。
  */
 export function resolveLogGraphXOffset(rowHeight = LOG_GRAPH_RENDER_ROW_HEIGHT): number {
   return alignLogGraphToPixel(scaleLogGraphMetric(LOG_GRAPH_LANE_WIDTH, rowHeight) / 2, "floor");
 }
 
 /**
- * 获取当前行高下的普通线宽，对齐 IDEA `lineThickness = alignToInt(getLineThickness(rowHeight), FLOOR, ODD)`。
+ * 获取当前行高下的普通线宽，保持与参考实现一致 `lineThickness = alignToInt(getLineThickness(rowHeight), FLOOR, ODD)`。
  */
 export function resolveLogGraphLineWidth(rowHeight = LOG_GRAPH_RENDER_ROW_HEIGHT): number {
   return Math.max(1, alignLogGraphToPixel(scaleLogGraphMetric(LOG_GRAPH_LINE_WIDTH, rowHeight), "floor", "odd"));
 }
 
 /**
- * 获取当前行高下的选中线宽，对齐 IDEA `selectedLineThickness` 的对齐与最小差值规则。
+ * 获取当前行高下的选中线宽，保持与参考实现一致 `selectedLineThickness` 的对齐与最小差值规则。
  */
 export function resolveLogGraphSelectedLineWidth(rowHeight = LOG_GRAPH_RENDER_ROW_HEIGHT): number {
   return Math.max(
@@ -100,49 +100,49 @@ export function resolveLogGraphSelectedLineWidth(rowHeight = LOG_GRAPH_RENDER_RO
 }
 
 /**
- * 获取当前行高下的节点圆直径，对齐 IDEA `circleDiameter = alignToInt(2 * getCircleRadius(rowHeight), FLOOR, ODD)`。
+ * 获取当前行高下的节点圆直径，保持与参考实现一致 `circleDiameter = alignToInt(2 * getCircleRadius(rowHeight), FLOOR, ODD)`。
  */
 export function resolveLogGraphCircleDiameter(rowHeight = LOG_GRAPH_RENDER_ROW_HEIGHT): number {
   return alignLogGraphToPixel(scaleLogGraphMetric(LOG_GRAPH_CIRCLE_RADIUS * 2, rowHeight), "floor", "odd");
 }
 
 /**
- * 获取当前行高下的节点圆半径，对齐 IDEA `circleRadius = alignToInt(circleDiameter / 2, FLOOR, null)`。
+ * 获取当前行高下的节点圆半径，保持与参考实现一致 `circleRadius = alignToInt(circleDiameter / 2, FLOOR, null)`。
  */
 export function resolveLogGraphCircleRadius(rowHeight = LOG_GRAPH_RENDER_ROW_HEIGHT): number {
   return alignLogGraphToPixel(resolveLogGraphCircleDiameter(rowHeight) / 2, "floor");
 }
 
 /**
- * 获取当前行高下的选中节点圆直径，对齐 IDEA `selectedCircleDiameter = circleDiameter + selectedLineThickness - lineThickness`。
+ * 获取当前行高下的选中节点圆直径，保持与参考实现一致 `selectedCircleDiameter = circleDiameter + selectedLineThickness - lineThickness`。
  */
 export function resolveLogGraphSelectedCircleDiameter(rowHeight = LOG_GRAPH_RENDER_ROW_HEIGHT): number {
   return resolveLogGraphCircleDiameter(rowHeight) + resolveLogGraphSelectedLineWidth(rowHeight) - resolveLogGraphLineWidth(rowHeight);
 }
 
 /**
- * 获取当前行高下的选中节点圆半径，对齐 IDEA `selectedCircleRadius = alignToInt(selectedCircleDiameter / 2, FLOOR, null)`。
+ * 获取当前行高下的选中节点圆半径，保持与参考实现一致 `selectedCircleRadius = alignToInt(selectedCircleDiameter / 2, FLOOR, null)`。
  */
 export function resolveLogGraphSelectedCircleRadius(rowHeight = LOG_GRAPH_RENDER_ROW_HEIGHT): number {
   return alignLogGraphToPixel(resolveLogGraphSelectedCircleDiameter(rowHeight) / 2, "floor");
 }
 
 /**
- * 获取当前行高下的图谱与文本间距，对齐 IDEA `PaintParameters.getGraphTextGap`。
+ * 获取当前行高下的图谱与文本间距，保持与参考实现一致 `PaintParameters.getGraphTextGap`。
  */
 export function resolveLogGraphTextGap(rowHeight = LOG_GRAPH_RENDER_ROW_HEIGHT): number {
   return scaleLogGraphMetric(LOG_GRAPH_TEXT_GAP, rowHeight);
 }
 
 /**
- * 获取当前行高下的 HEAD 节点外圈半径增量，对齐 IDEA `HeadNodePainter` 中的 `delta`。
+ * 获取当前行高下的 HEAD 节点外圈半径增量，保持与参考实现一致 `HeadNodePainter` 中的 `delta`。
  */
 export function resolveLogGraphHeadRadiusDelta(rowHeight = LOG_GRAPH_RENDER_ROW_HEIGHT): number {
   return alignLogGraphToPixel(scaleLogGraphMetric(LOG_GRAPH_HEAD_RADIUS_DELTA, rowHeight), "floor");
 }
 
 /**
- * 获取当前行高下的 HEAD 节点外圈直径，对齐 IDEA `outerCircleDiameter` 的计算方式。
+ * 获取当前行高下的 HEAD 节点外圈直径，保持与参考实现一致 `outerCircleDiameter` 的计算方式。
  */
 export function resolveLogGraphHeadOuterCircleDiameter(rowHeight = LOG_GRAPH_RENDER_ROW_HEIGHT): number {
   return alignLogGraphToPixel(
@@ -153,28 +153,28 @@ export function resolveLogGraphHeadOuterCircleDiameter(rowHeight = LOG_GRAPH_REN
 }
 
 /**
- * 获取当前行高下的 HEAD 节点外圈半径，对齐 IDEA `outerCircleRadius`。
+ * 获取当前行高下的 HEAD 节点外圈半径，保持与参考实现一致 `outerCircleRadius`。
  */
 export function resolveLogGraphHeadOuterCircleRadius(rowHeight = LOG_GRAPH_RENDER_ROW_HEIGHT): number {
   return alignLogGraphToPixel(resolveLogGraphHeadOuterCircleDiameter(rowHeight) / 2, "floor");
 }
 
 /**
- * 获取当前行高下的选中 HEAD 节点外圈直径，对齐 IDEA `selectedOuterCircleDiameter`。
+ * 获取当前行高下的选中 HEAD 节点外圈直径，保持与参考实现一致 `selectedOuterCircleDiameter`。
  */
 export function resolveLogGraphHeadSelectedOuterCircleDiameter(rowHeight = LOG_GRAPH_RENDER_ROW_HEIGHT): number {
   return resolveLogGraphHeadOuterCircleDiameter(rowHeight) + resolveLogGraphSelectedLineWidth(rowHeight) - resolveLogGraphLineWidth(rowHeight);
 }
 
 /**
- * 获取当前行高下的选中 HEAD 节点外圈半径，对齐 IDEA `selectedOuterCircleRadius`。
+ * 获取当前行高下的选中 HEAD 节点外圈半径，保持与参考实现一致 `selectedOuterCircleRadius`。
  */
 export function resolveLogGraphHeadSelectedOuterCircleRadius(rowHeight = LOG_GRAPH_RENDER_ROW_HEIGHT): number {
   return alignLogGraphToPixel(resolveLogGraphHeadSelectedOuterCircleDiameter(rowHeight) / 2, "floor");
 }
 
 /**
- * 计算 Web 端单行 SVG 中，上/下半段跨行边的拼接边界，等价于 IDEA 完整边在相邻两行中心之间的中点。
+ * 计算 Web 端单行 SVG 中，上/下半段跨行边的拼接边界，等价于参考实现完整边在相邻两行中心之间的中点。
  * 由于 Web 端每一行外层还带有 `border-b` 分隔线，若边界刚好卡在 `0 / rowHeight`，斜线会在接缝处显得断半截。
  * 这里额外向上下各延伸 `1px`，让相邻两行的半段在分隔线区域有稳定重叠。
  */
@@ -197,14 +197,14 @@ function resolveLogGraphHalfEdgeOverlap(rowHeight: number): number {
 }
 
 /**
- * 计算 terminal edge 在当前行内的收口间距，对齐 IDEA `circleRadius / 2 + 1`。
+ * 计算 terminal edge 在当前行内的收口间距，保持与参考实现一致 `circleRadius / 2 + 1`。
  */
 export function resolveLogGraphTerminalGap(rowHeight = LOG_GRAPH_RENDER_ROW_HEIGHT): number {
   return resolveLogGraphCircleRadius(rowHeight) / 2 + 1;
 }
 
 /**
- * 仅按当前行实际可见的节点、轨道和边计算最右侧 lane，语义对齐 IDEA `GraphCommitCellUtil`
+ * 仅按当前行实际可见的节点、轨道和边计算最右侧 lane，语义保持与参考实现一致的 `GraphCommitCellUtil`
  * “只消费本行 print elements，不预留未来行空白”的宽度判定方式。
  * 由于 Web 端把跨行斜线拆成上下半段，这里要按“当前行真实画出的半段”估算右边界，而不是直接吃下一行的完整目标列。
  */
@@ -272,7 +272,7 @@ function resolveLogGraphBoundaryVisibleLane(fromLane: number, toLane: number): n
 }
 
 /**
- * 把 lane 上界换算成图谱宽度，保持与 IDEA `PaintParameters` 相同的元素宽和文本间隔口径。
+ * 把 lane 上界换算成图谱宽度，保持与参考实现 `PaintParameters` 相同的元素宽和文本间隔口径。
  */
 export function resolveLogGraphWidth(maxLane: number, rowHeight = LOG_GRAPH_RENDER_ROW_HEIGHT): number {
   const laneWidth = resolveLogGraphLaneWidth(rowHeight);

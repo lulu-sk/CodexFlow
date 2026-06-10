@@ -237,7 +237,7 @@ describe("git log graph model", () => {
     expect(cells[4]?.color).not.toBe(trackAtDf30?.color);
   });
 
-  it("长边应像 IDEA 一样只保留两端可见段，并在截断点绘制箭头", () => {
+  it("长边应像 参考实现一样只保留两端可见段，并在截断点绘制箭头", () => {
     const items: GitLogItem[] = [
       createLogItem({ hash: "feature-head", parents: ["feature-base"], decorations: "feature/demo" }),
       createLogItem({ hash: "main-0", parents: ["main-1"], decorations: "HEAD -> master, origin/master" }),
@@ -717,7 +717,7 @@ describe("git log graph model", () => {
   it("脱敏拓扑复现：merge 首父缺失时，不应把可见次父误并入当前 fragment", () => {
     /**
      * 该夹具直接取自脱敏截图的顶部序列。
-     * 对齐 IDEA `GraphLayoutBuilder.build + walk(first child without layoutIndex)` 的完整图语义：
+     * 保持与参考实现一致 `GraphLayoutBuilder.build + walk(first child without layoutIndex)` 的完整图语义：
      * - `a0000420` 的首父 `a00002c0` 虽然当前页不可见，但仍属于当前 `feature/audio-demo` fragment；
      * - 因此可见次父 `a0000760` 必须落到独立 lane，而不是被误当成当前 fragment 的继续直线；
      * - 后续 `a0000150` 也不能再把 `a0000260` 主链挤到右侧。
@@ -766,7 +766,7 @@ describe("git log graph model", () => {
     /**
      * 该夹具直接取自脱敏提交序列中的对应时间段。
      * 当前截图里的剩余问题是 `a0000640/a0000820 -> a0000280` 两条长边在中段互换左右顺序，
-     * 导致 `a00004c0/a00002e0` 一带出现 IDEA 中不存在的 X 形折返。
+     * 导致 `a00004c0/a00002e0` 一带出现 参考实现中不存在的 X 形折返。
      * 这里要求两条兄弟长边在到达 `a0000280` 前，左右顺序必须持续稳定。
      */
     const items = [
@@ -815,7 +815,7 @@ describe("git log graph model", () => {
 
     /**
      * 兄弟长边重排后，track 自身的上半段入射列也必须同步到上一行真实列位。
-     * 否则即使左右顺序没换位，`bc76/38989/36484` 这些行仍会沿用重排前旧列位，形成 IDEA 不存在的折返尖角。
+     * 否则即使左右顺序没换位，`bc76/38989/36484` 这些行仍会沿用重排前旧列位，形成参考实现不存在的折返尖角。
      */
     const assertTrackContinuity = (previousRowIndex: number, currentRowIndex: number, sourceHashPrefix: string): void => {
       const previousTrack = (cells[previousRowIndex]?.tracks || []).find((track) =>
@@ -895,8 +895,8 @@ describe("git log graph model", () => {
   it("脱敏拓扑复现：a00003d / a000008 / a000012 这一段不应把右侧长边提前左挪", () => {
     /**
      * 该夹具直接取自脱敏仓库的对应区间。
-     * 对齐 IDEA 后：
-     * - `a000012 -> a00003d` 在 `a000008` 这一行仍应保持在节点右侧，但目标行要回到 IDEA 当前行排序后的列位；
+     * 保持与参考实现一致后：
+     * - `a000012 -> a00003d` 在 `a000008` 这一行仍应保持在节点右侧，但目标行要回到 参考实现当前行排序后的列位；
      * - `a00003d` 节点在下一行应从上一行同一条 track 的列位接入，而不是再额外右偏一列；
      * - 这段修复只影响 `a000012 -> a00003d` 这条右侧长边，不应误伤 `a000008 -> a00009e` 这一条左侧链路。
      */
@@ -947,7 +947,7 @@ describe("git log graph model", () => {
 
   it("脱敏拓扑复现：a00005c0 这一行应已经切到 a0000a70 所属颜色，而不是继续沿用右侧说明分支颜色", () => {
     /**
-     * 对齐 IDEA `PrintElementPresentationManagerImpl#getColorId`。
+     * 保持与参考实现一致的 `PrintElementPresentationManagerImpl#getColorId`。
      * `a00006c0 -> a0000a70` 这条 normal edge 在 a00005c0 行对应的可见 track，
      * 颜色必须与目标 fragment `a0000a70` 保持一致，并且不能再沿用 `a00005c0` 自身链路的颜色。
      */
@@ -1025,7 +1025,7 @@ describe("git log graph model", () => {
 
   it("脱敏拓扑复现：a0000440 与 a0000500 指向 a00007b0 的折线应从 a0000a70 行开始，而不是拖到 a00007b0 行", () => {
     /**
-     * 对齐 IDEA `GraphElementComparatorByLayoutIndex` 驱动的可见位置排序。
+     * 保持与参考实现一致的 `GraphElementComparatorByLayoutIndex` 驱动的可见位置排序。
      * 到了 `a0000a70` 这一行，指向 `a00007b0` 的两条长边已经进入“下一压缩行的目标列”。
      * 因此当前行就必须产出指向目标节点列的 `outgoingToLane`，而不是等到下一行节点处再弯折。
      */
@@ -1085,7 +1085,7 @@ describe("git log graph model", () => {
 
   it("长边 terminal 可见段在目标前一行应直接对接目标节点列", () => {
     /**
-     * 对齐 IDEA `PrintElementGeneratorImpl#createEndPositionFunction`。
+     * 保持与参考实现一致的 `PrintElementGeneratorImpl#createEndPositionFunction`。
      * 当一条长边在目标前一行首次作为 terminal 可见段出现时，
      * 当前行下半段就应直接指向下一行目标节点列，而不是额外保留一行竖线。
      */
@@ -1117,7 +1117,7 @@ describe("git log graph model", () => {
   it("脱敏拓扑复现：a0000650 -> a00004b0 -> a00006d0 为相邻 direct edge 链时，应保持同列直下", () => {
     /**
      * 该夹具直接覆盖脱敏拓扑里 `a0000270/a00008c0/a0000650/a00004b0/a00006d0` 这一段。
-     * 对齐 IDEA `PrintElementGeneratorImpl#getSortedVisibleElementsInRow` + `EdgesInRowGenerator#getEdgesInRow`：
+     * 保持与参考实现一致的 `PrintElementGeneratorImpl#getSortedVisibleElementsInRow` + `EdgesInRowGenerator#getEdgesInRow`：
      * - 相邻 normal direct edge 不会在当前行留下独立 `GraphEdge` 位置；
      * - 因而 `a0000650 -> a00004b0 -> a00006d0` 这一条短链应继续共用同一局部列位；
      * - 不能把 direct edge 误当成额外泳道，再人为压出一次折线。
@@ -1156,7 +1156,7 @@ describe("git log graph model", () => {
     expect(edge65To9f?.to).toBe(cells[8]?.lane);
   });
 
-  it("脱敏拓扑复现：wt7 截图整段可见序列应保留 IDEA 的独立轨道与双入射关系", () => {
+  it("脱敏拓扑复现：wt7 截图整段可见序列应保留参考实现的独立轨道与双入射关系", () => {
     /**
      * 该夹具直接取自脱敏截图里的同一组可见提交顺序。
      * 这里锁定三类问题：

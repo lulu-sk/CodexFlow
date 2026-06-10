@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
-// Diff/Merge 行级比较流程参考 IntelliJ IDEA Community Edition / IntelliJ Platform 的 Apache-2.0 源码语义，并按本项目 React/TypeScript 架构重写。
+// Diff/Merge 行级比较流程借鉴参考实现的 Apache-2.0 源码语义，并按本项目 React/TypeScript 架构重写。
 
 export type ConflictMergeRange = {
   oursStart: number;
@@ -53,7 +53,7 @@ const CONFLICT_MERGE_DIFF_MATRIX_CELL_LIMIT = 4_000_000;
 const CONFLICT_MERGE_UNIMPORTANT_LINE_CHAR_COUNT = 3;
 
 /**
- * 去掉逐行 token 末尾的换行符，让行比较语义与 IDEA `LineOffsets.getLineEnd()` 一致。
+ * 去掉逐行 token 末尾的换行符，让行比较语义与参考实现 `LineOffsets.getLineEnd()` 一致。
  */
 function stripConflictMergeTokenLineEnding(token: string): string {
   return String(token || "").endsWith("\n")
@@ -75,7 +75,7 @@ function normalizeConflictMergeLineForPolicy(
 }
 
 /**
- * 统计一行中非空白字符数量，供 IDEA `unimportant line` 阈值裁剪复用。
+ * 统计一行中非空白字符数量，供参考实现 `unimportant line` 阈值裁剪复用。
  */
 function countConflictMergeNonSpaceChars(content: string): number {
   let count = 0;
@@ -119,7 +119,7 @@ function convertConflictMergeComparisonLinePolicy(
 }
 
 /**
- * 判断两行在当前策略下是否相等；与 IDEA `Line.equals` 的职责保持一致。
+ * 判断两行在当前策略下是否相等；与参考实现 `Line.equals` 的职责保持一致。
  */
 function isConflictMergeComparisonLineEqual(
   left: ConflictMergeComparisonLine | null | undefined,
@@ -291,7 +291,7 @@ function buildConflictMergeMyersDiffOperationsFromTrace<T>(
 }
 
 /**
- * 裁掉公共前后缀后再选 diff 算法，参考上游 line compare 常见路径里的性能折中。
+ * 裁掉公共前后缀后再选 diff 算法，参考实现 line compare 常见路径里的性能折中。
  */
 function buildConflictMergeDiffOperations<T>(
   left: T[],
@@ -327,7 +327,7 @@ function buildConflictMergeDiffOperations<T>(
 }
 
 /**
- * 创建 fair diff equal range builder；可选开启 gap trimming，参考上游 `ExpandChangeBuilder`。
+ * 创建 fair diff equal range builder；可选开启 gap trimming，参考实现 `ExpandChangeBuilder`。
  */
 function createConflictMergeEqualRangeBuilder<T>(args: {
   length1: number;
@@ -371,7 +371,7 @@ function pushConflictMergeEqualRange<T>(
 }
 
 /**
- * 裁掉 change gap 两端已经完全相等的前后缀，参考上游 `TrimUtil.expand` 在 line diff 里的语义。
+ * 裁掉 change gap 两端已经完全相等的前后缀，参考实现 `TrimUtil.expand` 在 line diff 里的语义。
  */
 function trimConflictMergeEqualEdges<T>(
   objects1: T[],
@@ -517,7 +517,7 @@ function buildConflictMergeFairDiff<T>(
 }
 
 /**
- * 提取“大行”集合，参考上游 `compareSmart` 里先用重要行建立骨架的策略。
+ * 提取“大行”集合，参考实现 `compareSmart` 里先用重要行建立骨架的策略。
  */
 function getConflictMergeBigLines(
   lines: ConflictMergeComparisonLine[],
@@ -586,7 +586,7 @@ function matchConflictMergeGap<T>(args: {
 }
 
 /**
- * 把大行 diff 投影回完整行序列，参考上游 `SmartLineChangeCorrector` 的纠偏路径。
+ * 把大行 diff 投影回完整行序列，参考实现 `SmartLineChangeCorrector` 的纠偏路径。
  */
 function buildConflictMergeSmartLineDiff(
   lines1: ConflictMergeComparisonLine[],
@@ -646,7 +646,7 @@ function buildConflictMergeSmartLineDiff(
 }
 
 /**
- * 计算两段等长观察窗口的公共前缀长度，参考上游 `TrimUtil.expandForward` 的块优化辅助逻辑。
+ * 计算两段等长观察窗口的公共前缀长度，参考实现 `TrimUtil.expandForward` 的块优化辅助逻辑。
  */
 function countConflictMergeForwardEquals<T>(
   objects1: T[],
@@ -720,7 +720,7 @@ function findPreviousConflictMergeUnimportantLine(
 }
 
 /**
- * 把前向/后向候选 shift 合成最终偏移量，参考上游 `LineChunkOptimizer.getShift`。
+ * 把前向/后向候选 shift 合成最终偏移量，参考实现 `LineChunkOptimizer.getShift`。
  */
 function resolveConflictMergeChunkShift(
   shiftForward: number,
@@ -732,7 +732,7 @@ function resolveConflictMergeChunkShift(
 }
 
 /**
- * 在 unchanged 区域中寻找更稳定的空白边界，让块在折叠未改动片段时更接近 IDEA 的块感知。
+ * 在 unchanged 区域中寻找更稳定的空白边界，让块在折叠未改动片段时更接近参考实现的块感知。
  */
 function getConflictMergeUnchangedBoundaryShift(args: {
   touchSide: "left" | "right";
@@ -793,7 +793,7 @@ function getConflictMergeChangedBoundaryShift(args: {
 }
 
 /**
- * 对相邻 equal chunks 做边界吸附与合并，参考上游 `LineChunkOptimizer` 的块稳定化逻辑。
+ * 对相邻 equal chunks 做边界吸附与合并，参考实现 `LineChunkOptimizer` 的块稳定化逻辑。
  */
 function optimizeConflictMergeLineChunks(
   lines1: ConflictMergeComparisonLine[],
@@ -932,7 +932,7 @@ function optimizeConflictMergeLineChunks(
 }
 
 /**
- * 在忽略空白的匹配结果上，尽量保留 exact-equal 的最大匹配，参考上游 `correctChangesSecondStep`。
+ * 在忽略空白的匹配结果上，尽量保留 exact-equal 的最大匹配，参考实现 `correctChangesSecondStep`。
  */
 function correctConflictMergeChangesSecondStep(
   lines1: ConflictMergeComparisonLine[],
@@ -966,7 +966,7 @@ function correctConflictMergeChangesSecondStep(
     let bestWeight = 0;
 
     /**
-     * 枚举所有递增组合，沿用 IDEA 原实现的小规模暴力策略。
+     * 枚举所有递增组合，沿用参考实现原实现的小规模暴力策略。
      */
     const combinations = (start: number, n: number, k: number): void => {
       if (k === size) {
@@ -1084,7 +1084,7 @@ function correctConflictMergeChangesSecondStep(
 }
 
 /**
- * 构造接近 IDEA `ByLine.merge` 的 pair fair diff；这是三方 merge ranges 的基础输入。
+ * 构造接近参考实现 `ByLine.merge` 的 pair fair diff；这是三方 merge ranges 的基础输入。
  */
 function buildConflictMergeLineFairDiff(
   baseTokens: string[],
@@ -1110,7 +1110,7 @@ function buildConflictMergeUnchangedRanges(
 }
 
 /**
- * 按 IDEA `ComparisonMergeUtil.buildSimple` 的 `FairMergeBuilder` 语义合成最终三方 merge ranges。
+ * 按参考实现 `ComparisonMergeUtil.buildSimple` 的 `FairMergeBuilder` 语义合成最终三方 merge ranges。
  */
 function buildConflictMergeRanges(args: {
   baseLength: number;
@@ -1168,7 +1168,7 @@ function buildConflictMergeRanges(args: {
   };
 
   /**
-   * 对齐一组左右 unchanged range；返回下一次应推进的侧别，与 IDEA `FairMergeBuilder.add` 同义。
+   * 对齐一组左右 unchanged range；返回下一次应推进的侧别，与参考实现 `FairMergeBuilder.add` 同义。
    */
   const addEqualOverlap = (
     leftRange: ConflictMergePairRange,
@@ -1207,7 +1207,7 @@ function buildConflictMergeRanges(args: {
 }
 
 /**
- * 对外暴露的三方 merge range 构建入口；统一参考上游 merge viewer 的块划分基础逻辑。
+ * 对外暴露的三方 merge range 构建入口；统一参考实现 merge viewer 的块划分基础逻辑。
  */
 export function buildConflictMergeLineRanges(args: {
   baseTokens: string[];
