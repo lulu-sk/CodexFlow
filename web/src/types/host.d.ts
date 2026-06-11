@@ -53,6 +53,23 @@ export type ClaudeCodeSettings = {
   readAgentHistory?: boolean;
 };
 
+export type CodexErrorHandlingSettings = {
+  /** 是否识别 Codex TUI/CLI 输出中的错误文本。 */
+  detectionEnabled?: boolean;
+  /** 是否在 Codex 仍处于 Reconnecting 阶段时也发送通知。 */
+  notifyReconnectErrors?: boolean;
+  /** 是否在可恢复错误后自动发送 continue。 */
+  autoContinueEnabled?: boolean;
+  /** 自动 continue 适用的可恢复错误类型。 */
+  autoContinueErrorKinds?: Array<"rateLimited" | "concurrency" | "networkStream" | "badGateway" | "serviceUnavailable" | "highDemand" | "modelCapacity" | "forbidden" | "badRequest">;
+  /** 自动 continue 错误类型列表版本，用于一次性默认项迁移。 */
+  autoContinueErrorKindsVersion?: number;
+  /** 自动发送 continue 前等待的秒数。 */
+  autoContinueDelaySeconds?: number;
+  /** 单个错误连续自动 continue 的最大次数。 */
+  autoContinueMaxAttempts?: number;
+};
+
 export type OnboardingSettings = {
   /** 是否已经处理过启动时 YOLO 权限模式推荐提示。 */
   yoloPromptHandled?: boolean;
@@ -102,6 +119,8 @@ export type AppSettings = {
     recordEnabled?: boolean;
     lastSeenSignatureByRuntime?: Record<string, string>;
   };
+  /** Codex TUI/CLI 错误识别与自动 continue 设置 */
+  codexErrorHandling?: CodexErrorHandlingSettings;
   /** 终端字体栈 */
   terminalFontFamily?: string;
   /** 实验性功能开关（全局共享，不随 profile 隔离） */
@@ -894,8 +913,8 @@ export type ProjectPreferredIde = BuiltinIdeId;
 
 export interface NotificationsAPI {
   setBadgeCount(count: number): void;
-  /** 同步任务栏角标状态；完成数量优先于运行中提示。 */
-  setTaskbarBadgeState?(state: { completedCount?: number; runningCount?: number; hasRunningTask?: boolean }): void;
+  /** 同步任务栏角标状态；错误优先，其次完成数量，最后运行中提示。 */
+  setTaskbarBadgeState?(state: { errorCount?: number; hasError?: boolean; completedCount?: number; runningCount?: number; hasRunningTask?: boolean }): void;
   showAgentCompletion(payload: { tabId: string; tabName?: string; projectName?: string; preview?: string; title: string; body: string; appTitle?: string }): void;
   /** 监听主进程转发的外部完成通知（如 Codex/Gemini/Claude hook -> JSONL 桥接）。 */
   onExternalAgentComplete?(handler: (payload: { providerId?: "codex" | "gemini" | "claude"; tabId?: string; envLabel?: string; preview?: string; previewEscapedWhitespace?: boolean; timestamp?: string; eventId?: string; hookEventName?: string; completionKind?: "agent" | "subagent"; agentType?: string; agentId?: string }) => void): () => void;

@@ -289,6 +289,32 @@
       "desc": "Also notify when a subagent finishes. Off by default; the alert clearly marks it as a subagent."
     }
   },
+  "codexErrorHandling": {
+    "title": "Codex Error Handling",
+    "help": "Detect common errors in Codex TUI output so a failed terminal is not left looking like it is still Working.",
+    "detection": {
+      "label": "Detect Codex errors",
+      "desc": "Only scans a small rolling output window for Codex tabs. Full terminal history is not read."
+    },
+    "reconnectNotification": {
+      "label": "Notify during reconnecting",
+      "desc": "Off by default. When enabled, reconnecting error details can show a notification, but the timer keeps running and no taskbar error badge is shown."
+    },
+    "autoContinue": {
+      "label": "Auto-send continue after detected errors",
+      "desc": "When enabled, choose the applicable error types below."
+    },
+    "delay": {
+      "label": "Auto continue delay (seconds)"
+    },
+    "attempts": {
+      "label": "Max attempts"
+    },
+    "errorTypes": {
+      "label": "Auto continue error types"
+    },
+    "scope": "Currently supported only for Codex CLI/TUI. Before sending continue, CodexFlow checks the tab and settings again to avoid stale timers firing."
+  },
   "codexAccount": {
     "label": "ChatGPT account",
     "help": "Check the login status synced from your ChatGPT desktop session.",
