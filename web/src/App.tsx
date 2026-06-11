@@ -4602,6 +4602,11 @@ export default function CodexFlowManagerUI() {
     claude: { terminal: "wsl", distro: "Ubuntu-24.04" },
     gemini: { terminal: "wsl", distro: "Ubuntu-24.04" },
   }));
+  const activeProviderIdRef = useRef(activeProviderId);
+  const providerItemsRef = useRef(providerItems);
+  const providerEnvByIdRef = useRef(providerEnvById);
+  const providerSwitchSeqRef = useRef(0);
+  const providerSettingsPersistQueueRef = useRef<Promise<void>>(Promise.resolve());
   const [wslDistro, setWslDistro] = useState("Ubuntu-24.04");
   // 基础命令（默认 'codex'），不做 tmux 包装，直接在 WSL 中执行。
   const [codexCmd, setCodexCmd] = useState("codex");
@@ -4630,6 +4635,18 @@ export default function CodexFlowManagerUI() {
   const [startupChecksComplete, setStartupChecksComplete] = useState(false);
 
   const themeMode = useThemeController(themeSetting);
+
+  useEffect(() => {
+    activeProviderIdRef.current = activeProviderId;
+  }, [activeProviderId]);
+
+  useEffect(() => {
+    providerItemsRef.current = providerItems;
+  }, [providerItems]);
+
+  useEffect(() => {
+    providerEnvByIdRef.current = providerEnvById;
+  }, [providerEnvById]);
 
   useEffect(() => {
     writeThemeSettingCache(themeSetting);
@@ -4707,15 +4724,32 @@ export default function CodexFlowManagerUI() {
   }, [wslDistro]);
 
   /**
+   * 排队持久化当前 Provider 状态，避免快速切换时旧写入覆盖新选择。
+   */
+  const queueProviderSettingsPersist = useCallback((): void => {
+    providerSettingsPersistQueueRef.current = providerSettingsPersistQueueRef.current
+      .catch(() => {})
+      .then(async () => {
+        await persistProviders({
+          activeId: activeProviderIdRef.current,
+          items: providerItemsRef.current,
+          env: providerEnvByIdRef.current,
+        });
+      })
+      .catch(() => {});
+  }, [persistProviders]);
+
+  /**
    * 获取指定 Provider 的环境（缺失时回退到 codex 或当前状态）。
    */
   const getProviderEnv = useCallback((providerId: string): Required<ProviderEnv> => {
-    const hit = providerEnvById[providerId];
+    const envById = providerEnvByIdRef.current;
+    const hit = envById[providerId];
     if (hit) return hit;
-    const fallback = providerEnvById["codex"];
+    const fallback = envById["codex"];
     if (fallback) return fallback;
     return { terminal: terminalMode, distro: wslDistro };
-  }, [providerEnvById, terminalMode, wslDistro]);
+  }, [terminalMode, wslDistro]);
 
   /**
    * 中文说明：获取标签页真实执行环境。
@@ -4725,6 +4759,78 @@ export default function CodexFlowManagerUI() {
   const getTabExecEnv = useCallback((tabId: string, providerId: string): Required<ProviderEnv> => {
     return tabExecEnvByTabRef.current[tabId] || getProviderEnv(providerId);
   }, [getProviderEnv]);
+
+  /**
+   * 解析当前机器可见的 Provider 执行环境，并在必要时同步到界面状态。
+   *
+   * @param providerId Provider 唯一标识
+   * @param requestedEnv 请求使用的执行环境
+   * @param options 是否把修正后的环境写入 Provider 设置或界面状态
+   */
+  const resolveVisibleProviderEnv = useCallback(async (
+    providerId: string,
+    requestedEnv: Required<ProviderEnv>,
+    options?: { persist?: boolean; updateState?: boolean },
+  ): Promise<Required<ProviderEnv>> => {
+    const fallback: Required<ProviderEnv> = {
+      terminal: normalizeTerminalMode(requestedEnv?.terminal),
+      distro: String(requestedEnv?.distro || wslDistro || "").trim(),
+    };
+    try {
+      const result = await window.host.settings.resolveRuntimeEnv?.({
+        terminal: fallback.terminal,
+        distro: fallback.distro,
+      });
+      if (!result?.ok || !result.terminal)
+        return fallback;
+      const resolved: Required<ProviderEnv> = {
+        terminal: normalizeTerminalMode(result.terminal),
+        distro: String(result.distro || fallback.distro || "").trim(),
+      };
+      const changed = resolved.terminal !== fallback.terminal
+        || String(resolved.distro || "").toLowerCase() !== String(fallback.distro || "").toLowerCase();
+      const shouldUpdateState = options?.updateState !== false;
+      if (shouldUpdateState && (changed || options?.persist)) {
+        const nextMap = { ...providerEnvByIdRef.current, [providerId]: resolved };
+        providerEnvByIdRef.current = nextMap;
+        setProviderEnvById(nextMap);
+        if (providerId === activeProviderIdRef.current) {
+          setTerminalMode(resolved.terminal);
+          setWslDistro(resolved.distro);
+        }
+        if (options?.persist)
+          await persistProviders({ activeId: activeProviderIdRef.current, items: providerItemsRef.current, env: nextMap });
+      }
+      return resolved;
+    } catch {
+      return fallback;
+    }
+  }, [persistProviders, wslDistro]);
+
+  /**
+   * 按实际执行环境生成终端标签名称。
+   *
+   * @param env 实际执行环境
+   * @param projectId 项目 id
+   */
+  const buildConsoleTabNameForEnv = useCallback((env: Required<ProviderEnv>, projectId: string): string => {
+    return isWindowsLike(env.terminal as any)
+      ? toShellLabel(env.terminal as any)
+      : (env.distro || `Console ${((tabsByProjectRef.current[projectId] || []).length + 1).toString()}`);
+  }, []);
+
+  /**
+   * 生成执行环境展示名，用于环境回退与 CLI 缺失提示。
+   *
+   * @param env 实际执行环境
+   */
+  const formatProviderEnvLabel = useCallback((env: Required<ProviderEnv>): string => {
+    if (env.terminal === "wsl") {
+      const distro = String(env.distro || "").trim();
+      return distro ? `WSL (${distro})` : "WSL";
+    }
+    return toShellLabel(env.terminal as any);
+  }, []);
 
   /**
    * 中文说明：构造某个标签页真正打开 PTY 时使用的环境变量。
@@ -4807,16 +4913,30 @@ export default function CodexFlowManagerUI() {
   }, []);
 
   /**
-   * 构造某个 Provider 的启动命令（Codex 会按调试开关注入 trace 环境变量）。
+   * 构造某个 Provider 的基础启动命令，用于 CLI 可用性检查。
+   *
+   * @param providerId Provider 唯一标识
    */
-  const buildProviderStartupCmd = useCallback((providerId: string, env: Required<ProviderEnv>): string => {
+  const buildProviderBaseStartupCmd = useCallback((providerId: string): string => {
     const item = providerItems.find((x) => x.id === providerId) ?? { id: providerId };
     const resolved = resolveProvider(item);
-    if (providerId === "codex") {
-      return injectCodexTraceEnv({ cmd: resolved.startupCmd || codexCmd, traceEnabled: codexTraceEnabled, terminalMode: env.terminal as any });
-    }
+    if (providerId === "codex")
+      return resolved.startupCmd || codexCmd || "codex";
     return resolved.startupCmd;
-  }, [providerItems, codexCmd, codexTraceEnabled]);
+  }, [providerItems, codexCmd]);
+
+  /**
+   * 构造某个 Provider 的启动命令（Codex 会按调试开关注入 trace 环境变量）。
+   *
+   * @param providerId Provider 唯一标识
+   * @param env 实际执行环境
+   */
+  const buildProviderStartupCmd = useCallback((providerId: string, env: Required<ProviderEnv>): string => {
+    const baseCmd = buildProviderBaseStartupCmd(providerId);
+    if (providerId === "codex")
+      return injectCodexTraceEnv({ cmd: baseCmd, traceEnabled: codexTraceEnabled, terminalMode: env.terminal as any });
+    return baseCmd;
+  }, [buildProviderBaseStartupCmd, codexTraceEnabled]);
 
   /**
    * 构造 worktree 创建面板用的 Provider 启动命令（可临时覆盖 YOLO，不写入全局设置）。
@@ -4830,16 +4950,14 @@ export default function CodexFlowManagerUI() {
     const env = args.env;
     if (typeof args.useYolo !== "boolean") return buildProviderStartupCmd(providerId, env);
 
-    const item = providerItems.find((x) => x.id === providerId) ?? { id: providerId };
-    const resolved = resolveProvider(item);
-    const raw = providerId === "codex" ? (resolved.startupCmd || codexCmd) : resolved.startupCmd;
+    const raw = buildProviderBaseStartupCmd(providerId);
     const adjusted = resolveStartupCmdWithYolo({ providerId, startupCmd: raw, enabled: args.useYolo });
 
     if (providerId === "codex") {
       return injectCodexTraceEnv({ cmd: adjusted || raw || codexCmd, traceEnabled: codexTraceEnabled, terminalMode: env.terminal as any });
     }
     return adjusted;
-  }, [buildProviderStartupCmd, codexCmd, codexTraceEnabled, providerItems]);
+  }, [buildProviderBaseStartupCmd, buildProviderStartupCmd, codexTraceEnabled]);
 
   /**
    * 中文说明：按目标 Provider 的真实终端环境，编译 worktree 首次启动要注入的初始提示词。
@@ -4850,11 +4968,12 @@ export default function CodexFlowManagerUI() {
     providerId: GitWorktreeProviderId;
     prompt?: string;
     promptSource?: WorktreePromptSource;
+    envOverride?: Required<ProviderEnv>;
   }): string => {
     const prompt = typeof args.prompt === "string" ? String(args.prompt || "") : "";
     if (prompt) return prompt;
     if (!args.promptSource) return "";
-    const env = getProviderEnv(args.providerId);
+    const env = args.envOverride || getProviderEnv(args.providerId);
     return compileWorktreePromptText({
       chips: args.promptSource.chips,
       draft: args.promptSource.draft,
@@ -4879,17 +4998,213 @@ export default function CodexFlowManagerUI() {
   }, [providerItemById, t]);
 
   /**
+   * 展示环境回退提示，并写入 perf 日志。
+   *
+   * @param args 环境回退信息
+   */
+  const notifyRuntimeEnvFallback = useCallback(async (args: {
+    providerId?: string;
+    from: Required<ProviderEnv>;
+    to: Required<ProviderEnv>;
+    reason?: string;
+    source?: string;
+  }) => {
+    const fromLabel = formatProviderEnvLabel(args.from);
+    const toLabel = formatProviderEnvLabel(args.to);
+    if (fromLabel === toLabel && !args.reason) return;
+    const provider = args.providerId ? getProviderLabel(args.providerId) : "";
+    const reason = String(args.reason || "");
+    const title = t("terminal:envFallbackTitle", "已切换运行环境") as string;
+    const message = reason === "wsl_spawn_failed"
+      ? t("terminal:envFallbackWslStartFailed", "WSL 启动失败，已切换到 {to}。", { to: toLabel }) as string
+      : t("terminal:envFallbackMessage", "原 {from} 环境不可用，已切换到 {to}。", { from: fromLabel, to: toLabel }) as string;
+    setNoticeDialog({ open: true, title, message });
+    try {
+      await (window as any).host?.utils?.perfLog?.(
+        `[runtime-env] fallback source=${args.source || "ui"} provider=${provider || args.providerId || ""} from=${fromLabel} to=${toLabel} reason=${reason}`,
+      );
+    } catch {}
+  }, [formatProviderEnvLabel, getProviderLabel, t]);
+
+  /**
+   * 展示主进程修正设置环境后的提示。
+   *
+   * @param repair settings.get 返回的一次性修正信息
+   */
+  const notifyRuntimeEnvRepair = useCallback(async (repair: any): Promise<void> => {
+    if (!repair || repair.notify !== true || !Array.isArray(repair.entries) || repair.entries.length <= 0) return;
+    const first = repair.entries.find((item: any) => item && item.from && item.to) || null;
+    if (!first) return;
+    const from: Required<ProviderEnv> = {
+      terminal: normalizeTerminalMode(first.from?.terminal),
+      distro: String(first.from?.distro || ""),
+    };
+    const to: Required<ProviderEnv> = {
+      terminal: normalizeTerminalMode(first.to?.terminal),
+      distro: String(first.to?.distro || ""),
+    };
+    await notifyRuntimeEnvFallback({
+      providerId: String(first.providerId || ""),
+      from,
+      to,
+      reason: String(first.reason || ""),
+      source: "settings",
+    });
+  }, [notifyRuntimeEnvFallback]);
+
+  /**
+   * 检查 Provider CLI 是否存在；缺失时提示并阻止打开终端。
+   *
+   * @param providerId Provider 唯一标识
+   * @param env 实际执行环境
+   * @param startupCmd 用于检查的基础启动命令
+   */
+  const checkProviderCliBeforeLaunch = useCallback(async (
+    providerId: string,
+    env: Required<ProviderEnv>,
+    startupCmd?: string,
+  ): Promise<boolean> => {
+    if (!isBuiltInSessionProviderId(providerId)) return true;
+    const checkCmd = String(startupCmd || buildProviderBaseStartupCmd(providerId) || "").trim();
+    if (!checkCmd) return true;
+    try {
+      const result = await window.host.settings.checkRuntimeCli?.({
+        terminal: env.terminal,
+        distro: env.distro,
+        startupCmd: checkCmd,
+      });
+      if (!result || result.ok) return true;
+      const provider = getProviderLabel(providerId);
+      const cli = String(result.cli || checkCmd.split(/\s+/)[0] || providerId).trim();
+      const envLabel = formatProviderEnvLabel(env);
+      setNoticeDialog({
+        open: true,
+        title: t("terminal:cliMissingTitle", "{provider} CLI 未安装", { provider }) as string,
+        message: t("terminal:cliMissingMessage", "{provider} CLI 未安装，当前 {env} 环境无法访问 `{cli}` 命令。", { provider, env: envLabel, cli }) as string,
+      });
+      try {
+        await (window as any).host?.utils?.perfLog?.(
+          `[runtime-env] cli-block provider=${providerId} cli=${cli} env=${envLabel}`,
+        );
+      } catch {}
+      return false;
+    } catch (error: any) {
+      try {
+        await (window as any).host?.utils?.perfLog?.(
+          `[runtime-env] cli-check exception provider=${providerId} error=${String(error?.message || error)}`,
+        );
+      } catch {}
+      return true;
+    }
+  }, [buildProviderBaseStartupCmd, formatProviderEnvLabel, getProviderLabel, t]);
+
+  /**
+   * 准备 Provider 启动所需的实际环境与命令；检查失败时不创建终端。
+   *
+   * @param args Provider 启动请求
+   */
+  const prepareProviderLaunch = useCallback(async (args: {
+    providerId: string;
+    requestedEnv: Required<ProviderEnv>;
+    startupCmd?: string;
+    cliCheckCmd?: string;
+    persist?: boolean;
+    notifyEnvFallback?: boolean;
+    source?: string;
+  }): Promise<{ ok: true; env: Required<ProviderEnv>; startupCmd: string } | { ok: false; error?: string }> => {
+    const requestedEnv: Required<ProviderEnv> = {
+      terminal: normalizeTerminalMode(args.requestedEnv?.terminal),
+      distro: String(args.requestedEnv?.distro || wslDistro || "").trim(),
+    };
+    const env = await resolveVisibleProviderEnv(args.providerId, requestedEnv, { persist: args.persist });
+    const changed = env.terminal !== requestedEnv.terminal
+      || String(env.distro || "").toLowerCase() !== String(requestedEnv.distro || "").toLowerCase();
+    if (changed && args.notifyEnvFallback)
+      await notifyRuntimeEnvFallback({ providerId: args.providerId, from: requestedEnv, to: env, source: args.source || "prepare" });
+    const cliCheckCmd = String(args.cliCheckCmd || buildProviderBaseStartupCmd(args.providerId) || "").trim();
+    const cliReady = await checkProviderCliBeforeLaunch(args.providerId, env, cliCheckCmd);
+    if (!cliReady) return { ok: false, error: "cli_missing" };
+    const startupCmd = String(args.startupCmd ?? buildProviderStartupCmd(args.providerId, env)).trim();
+    return { ok: true, env, startupCmd };
+  }, [buildProviderBaseStartupCmd, buildProviderStartupCmd, checkProviderCliBeforeLaunch, notifyRuntimeEnvFallback, resolveVisibleProviderEnv, wslDistro]);
+
+  /**
+   * 若 PTY 启动阶段发生运行时兜底，则提醒用户。
+   *
+   * @param args PTY 打开结果
+   */
+  const notifyPtyFallbackIfNeeded = useCallback(async (args: {
+    providerId: string;
+    requestedEnv: Required<ProviderEnv>;
+    actualEnv: Required<ProviderEnv>;
+    fallbackReason?: string;
+  }) => {
+    const reason = String(args.fallbackReason || "").trim();
+    if (!reason) return;
+    const changed = args.actualEnv.terminal !== args.requestedEnv.terminal
+      || String(args.actualEnv.distro || "").toLowerCase() !== String(args.requestedEnv.distro || "").toLowerCase();
+    if (!changed && reason !== "wsl_spawn_failed") return;
+    await notifyRuntimeEnvFallback({
+      providerId: args.providerId,
+      from: args.requestedEnv,
+      to: args.actualEnv,
+      reason,
+      source: "pty",
+    });
+  }, [notifyRuntimeEnvFallback]);
+
+  /**
    * 切换当前 Provider，并将其环境同步到“当前默认环境”状态（仅影响后续新建/启动）。
    */
-  const changeActiveProvider = useCallback(async (nextId: string) => {
+  const changeActiveProvider = useCallback((nextId: string) => {
     const id = String(nextId || "").trim();
-    if (!id || id === activeProviderId) return;
-    const env = getProviderEnv(id);
+    if (!id || id === activeProviderIdRef.current) return;
+    const requestedEnv = getProviderEnv(id);
+    const seq = providerSwitchSeqRef.current + 1;
+    providerSwitchSeqRef.current = seq;
+
+    activeProviderIdRef.current = id;
+    const optimisticMap = { ...providerEnvByIdRef.current, [id]: requestedEnv };
+    providerEnvByIdRef.current = optimisticMap;
     setActiveProviderId(id);
-    setTerminalMode(env.terminal as any);
-    setWslDistro(env.distro);
-    await persistProviders({ activeId: id, items: providerItems, env: providerEnvById });
-  }, [activeProviderId, getProviderEnv, persistProviders, providerEnvById, providerItems]);
+    setProviderEnvById(optimisticMap);
+    setTerminalMode(requestedEnv.terminal as any);
+    setWslDistro(requestedEnv.distro);
+    queueProviderSettingsPersist();
+
+    void (async () => {
+      const env = await resolveVisibleProviderEnv(id, requestedEnv, { persist: false, updateState: false });
+      if (providerSwitchSeqRef.current !== seq || activeProviderIdRef.current !== id) return;
+      const changed = env.terminal !== requestedEnv.terminal
+        || String(env.distro || "").toLowerCase() !== String(requestedEnv.distro || "").toLowerCase();
+      if (changed)
+        await notifyRuntimeEnvFallback({ providerId: id, from: requestedEnv, to: env, source: "providerSwitch" });
+      const nextMap = { ...providerEnvByIdRef.current, [id]: env };
+      providerEnvByIdRef.current = nextMap;
+      setProviderEnvById(nextMap);
+      setTerminalMode(env.terminal as any);
+      setWslDistro(env.distro);
+      queueProviderSettingsPersist();
+    })();
+  }, [getProviderEnv, notifyRuntimeEnvFallback, queueProviderSettingsPersist, resolveVisibleProviderEnv]);
+
+  /**
+   * 用户主动选择左上角环境时，修正不可用环境并提示最终选择。
+   *
+   * @param requestedEnv 用户请求切换到的环境
+   */
+  const selectActiveProviderEnv = useCallback(async (requestedEnv: Required<ProviderEnv>): Promise<Required<ProviderEnv>> => {
+    const normalized: Required<ProviderEnv> = {
+      terminal: normalizeTerminalMode(requestedEnv.terminal),
+      distro: String(requestedEnv.distro || wslDistro || "").trim(),
+    };
+    const env = await resolveVisibleProviderEnv(activeProviderId, normalized, { persist: true });
+    const changed = env.terminal !== normalized.terminal
+      || String(env.distro || "").toLowerCase() !== String(normalized.distro || "").toLowerCase();
+    if (changed)
+      await notifyRuntimeEnvFallback({ providerId: activeProviderId, from: normalized, to: env, source: "envMenu" });
+    return env;
+  }, [activeProviderId, notifyRuntimeEnvFallback, resolveVisibleProviderEnv, wslDistro]);
 
   // WSL 发行版列表：供环境下拉与设置面板复用（缓存到内存，避免重复请求）
   const [availableDistros, setAvailableDistros] = useState<string[]>([]);
@@ -5285,6 +5600,7 @@ export default function CodexFlowManagerUI() {
           const codexItem = normalizedProviders.items.find((x) => x.id === "codex");
           const codexResolved = resolveProvider(codexItem ?? { id: "codex" });
           setCodexCmd(codexResolved.startupCmd || legacyCodexCmd);
+          void notifyRuntimeEnvRepair((s as any)._runtimeEnvRepair);
           setSendMode(s.sendMode || 'write_and_enter');
           setProjectPathStyle((s as any).projectPathStyle || 'absolute');
           setDragDropWarnOutsideProject(((s as any)?.dragDrop?.warnOutsideProject) !== false);
@@ -5715,9 +6031,10 @@ export default function CodexFlowManagerUI() {
 
   async function openConsoleForProject(project: Project) {
     if (!project) return;
-    const tabName = isWindowsLike(terminalMode)
-      ? toShellLabel(terminalMode)
-      : (wslDistro || `Console ${((tabsByProject[project.id] || []).length + 1).toString()}`);
+    // 中文说明：普通新建终端是点击热路径，直接使用已保存环境；环境修复由设置加载/显式切换/PTY 启动兜底承担。
+    const env = getProviderEnv(activeProviderId);
+    const startupCmd = buildProviderStartupCmd(activeProviderId, env);
+    const tabName = buildConsoleTabNameForEnv(env, project.id);
     const tab: ConsoleTab = {
       id: uid(),
       name: String(tabName),
@@ -5727,11 +6044,19 @@ export default function CodexFlowManagerUI() {
       createdAt: Date.now(),
     };
     let ptyId: string | undefined;
+    registerTabProject(tab.id, project.id);
+    const nextTabsByProject = {
+      ...tabsByProjectRef.current,
+      [project.id]: [...(tabsByProjectRef.current[project.id] || []), tab],
+    };
+    tabsByProjectRef.current = nextTabsByProject;
+    setTabsByProject(nextTabsByProject);
+    setActiveTab(tab.id, { focusMode: 'immediate', allowDuringRename: true, delay: 0 });
+    try { setCenterMode('console'); } catch {}
+
     try {
-      const env = getProviderEnv(activeProviderId);
-      const startupCmd = buildProviderStartupCmd(activeProviderId, env);
       const launchEnv = await buildProviderLaunchEnv(tab.id, tab.providerId, tab.name, env, startupCmd);
-      const { id } = await window.host.pty.openWSLConsole({
+      const openRes = await window.host.pty.openWSLConsole({
         terminal: env.terminal,
         distro: env.distro,
         wslPath: project.wslPath,
@@ -5741,13 +6066,29 @@ export default function CodexFlowManagerUI() {
         startupCmd,
         env: launchEnv.env,
       });
-      tabExecEnvByTabRef.current[tab.id] = env;
+      const actualEnv: Required<ProviderEnv> = {
+        terminal: normalizeTerminalMode(openRes.terminal || env.terminal),
+        distro: String(openRes.distro || env.distro || ""),
+      };
+      if (actualEnv.terminal !== env.terminal || String(actualEnv.distro || "").toLowerCase() !== String(env.distro || "").toLowerCase()) {
+        const nextName = buildConsoleTabNameForEnv(actualEnv, project.id);
+        tab.name = nextName;
+        const renamedTabsByProject = {
+          ...tabsByProjectRef.current,
+          [project.id]: (tabsByProjectRef.current[project.id] || []).map((item) => item.id === tab.id ? { ...item, name: nextName } : item),
+        };
+        tabsByProjectRef.current = renamedTabsByProject;
+        setTabsByProject(renamedTabsByProject);
+      }
+      await notifyPtyFallbackIfNeeded({ providerId: activeProviderId, requestedEnv: env, actualEnv, fallbackReason: openRes.fallbackReason });
+      tabExecEnvByTabRef.current[tab.id] = actualEnv;
       geminiWindowsEditorReadyByTabRef.current[tab.id] = launchEnv.geminiWindowsEditorReady;
       geminiWslEditorReadyByTabRef.current[tab.id] = launchEnv.geminiWslEditorReady;
       geminiExternalEditorShortcutByTabRef.current[tab.id] = launchEnv.geminiExternalEditorShortcut;
-      ptyId = id;
+      ptyId = openRes.id;
     } catch (e) {
       console.error('Failed to open PTY for project', e);
+      closeTab(tab.id, project.id);
       alert(String(t('terminal:openFailed', { error: String((e as any)?.message || e) })));
       return;
     }
@@ -5759,9 +6100,6 @@ export default function CodexFlowManagerUI() {
       void recordCustomProviderDirIfNeeded(project, activeProviderId);
     }
 
-    registerTabProject(tab.id, project.id);
-    setTabsByProject((m) => ({ ...m, [project.id]: [...(m[project.id] || []), tab] }));
-    setActiveTab(tab.id, { focusMode: 'immediate', allowDuringRename: true, delay: 0 });
     if (ptyId) {
       ptyByTabRef.current[tab.id] = ptyId;
       setPtyByTab((m) => ({ ...m, [tab.id]: ptyId }));
@@ -5773,8 +6111,6 @@ export default function CodexFlowManagerUI() {
     try { window.host.projects.touch(project.id); } catch {}
     // 打开控制台后，立即在内存中更新最近使用时间，保证"最近使用优先"实时生效
     markProjectUsed(project.id);
-    // 确保视图停留在控制台
-    try { setCenterMode('console'); } catch {}
   }
   // 点击"打开项目"：弹出系统选择目录并把选中目录加入项目，随后打开控制台
   async function openProjectPicker() {
@@ -5817,10 +6153,12 @@ export default function CodexFlowManagerUI() {
   }, [tm]);
 
   async function openNewConsole() {
-    if (!selectedProject) return;
-    const tabName = isWindowsLike(terminalMode)
-      ? toShellLabel(terminalMode)
-      : (wslDistro || `Console ${((tabsByProject[selectedProject.id] || []).length + 1).toString()}`);
+    const project = selectedProject;
+    if (!project) return;
+    // 中文说明：普通新增标签页优先保证按钮响应，避免启动前环境/CLI 检测阻塞交互。
+    const env = getProviderEnv(activeProviderId);
+    const startupCmd = buildProviderStartupCmd(activeProviderId, env);
+    const tabName = buildConsoleTabNameForEnv(env, project.id);
     const tab: ConsoleTab = {
       id: uid(),
       // 默认使用当前设置中的终端名称
@@ -5831,45 +6169,65 @@ export default function CodexFlowManagerUI() {
       createdAt: Date.now(),
     };
     let ptyId: string | undefined;
+    registerTabProject(tab.id, project.id);
+    const nextTabsByProject = {
+      ...tabsByProjectRef.current,
+      [project.id]: [...(tabsByProjectRef.current[project.id] || []), tab],
+    };
+    tabsByProjectRef.current = nextTabsByProject;
+    setTabsByProject(nextTabsByProject);
+    setActiveTab(tab.id, { focusMode: 'immediate', allowDuringRename: true, delay: 0 });
+
     // Open PTY in main (WSL)
     try {
-      try { await (window as any).host?.utils?.perfLog?.(`[ui] openNewConsole start project=${selectedProject?.name}`); } catch {}
-      const env = getProviderEnv(activeProviderId);
-      const startupCmd = buildProviderStartupCmd(activeProviderId, env);
+      try { await (window as any).host?.utils?.perfLog?.(`[ui] openNewConsole start project=${project.name}`); } catch {}
       const launchEnv = await buildProviderLaunchEnv(tab.id, tab.providerId, tab.name, env, startupCmd);
-      const { id } = await window.host.pty.openWSLConsole({
+      const openRes = await window.host.pty.openWSLConsole({
         terminal: env.terminal,
         distro: env.distro,
-        wslPath: selectedProject.wslPath,
-        winPath: selectedProject.winPath,
+        wslPath: project.wslPath,
+        winPath: project.winPath,
         cols: 80,
         rows: 24,
         startupCmd,
         env: launchEnv.env,
       });
-      try { await (window as any).host?.utils?.perfLog?.(`[ui] openNewConsole pty=${id}`); } catch {}
-      tabExecEnvByTabRef.current[tab.id] = env;
+      try { await (window as any).host?.utils?.perfLog?.(`[ui] openNewConsole pty=${openRes.id}`); } catch {}
+      const actualEnv: Required<ProviderEnv> = {
+        terminal: normalizeTerminalMode(openRes.terminal || env.terminal),
+        distro: String(openRes.distro || env.distro || ""),
+      };
+      if (actualEnv.terminal !== env.terminal || String(actualEnv.distro || "").toLowerCase() !== String(env.distro || "").toLowerCase()) {
+        const nextName = buildConsoleTabNameForEnv(actualEnv, project.id);
+        tab.name = nextName;
+        const renamedTabsByProject = {
+          ...tabsByProjectRef.current,
+          [project.id]: (tabsByProjectRef.current[project.id] || []).map((item) => item.id === tab.id ? { ...item, name: nextName } : item),
+        };
+        tabsByProjectRef.current = renamedTabsByProject;
+        setTabsByProject(renamedTabsByProject);
+      }
+      await notifyPtyFallbackIfNeeded({ providerId: activeProviderId, requestedEnv: env, actualEnv, fallbackReason: openRes.fallbackReason });
+      tabExecEnvByTabRef.current[tab.id] = actualEnv;
       geminiWindowsEditorReadyByTabRef.current[tab.id] = launchEnv.geminiWindowsEditorReady;
       geminiWslEditorReadyByTabRef.current[tab.id] = launchEnv.geminiWslEditorReady;
       geminiExternalEditorShortcutByTabRef.current[tab.id] = launchEnv.geminiExternalEditorShortcut;
-      ptyId = id;
+      ptyId = openRes.id;
     } catch (e) {
       console.error('Failed to open PTY', e);
       try { await (window as any).host?.utils?.perfLog?.(`[ui] openNewConsole error ${String((e as any)?.stack || e)}`); } catch {}
+      closeTab(tab.id, project.id);
       alert(String(t('terminal:openFailed', { error: String((e as any)?.message || e) })));
       return;
     }
 
     // 内置三引擎：即便会话记录落盘存在延迟，也先在 UI 侧标记，避免“自定义目录记录可移除”误判。
     if (isBuiltInSessionProviderId(activeProviderId)) {
-      markProjectHasBuiltInSessions(selectedProject.id);
+      markProjectHasBuiltInSessions(project.id);
     } else {
-      void recordCustomProviderDirIfNeeded(selectedProject, activeProviderId);
+      void recordCustomProviderDirIfNeeded(project, activeProviderId);
     }
 
-    registerTabProject(tab.id, selectedProject.id);
-    setTabsByProject((m) => ({ ...m, [selectedProject.id]: [...(m[selectedProject.id] || []), tab] }));
-    setActiveTab(tab.id, { focusMode: 'immediate', allowDuringRename: true, delay: 0 });
     if (ptyId) {
       ptyByTabRef.current[tab.id] = ptyId;
       setPtyByTab((m) => ({ ...m, [tab.id]: ptyId }));
@@ -5880,9 +6238,9 @@ export default function CodexFlowManagerUI() {
       try { tm.setPty(tab.id, ptyId); } catch (err) { console.warn('tm.setPty failed', err); }
     }
     // touch project lastOpenedAt
-    try { window.host.projects.touch(selectedProject.id); } catch {}
+    try { window.host.projects.touch(project.id); } catch {}
     // 同步更新内存，触发排序刷新；并抑制历史面板自动切换
-    markProjectUsed(selectedProject.id);
+    markProjectUsed(project.id);
   }
 
   /**
@@ -6118,10 +6476,9 @@ export default function CodexFlowManagerUI() {
     try { suppressAutoSelectRef.current = true; } catch {}
     setSelectedProjectId(target.id);
 
-    const env = getProviderEnv(activeProviderId);
-    const defaultTitle = isWindowsLike(env.terminal)
-      ? toShellLabel(env.terminal)
-      : (env.distro || `Console ${((tabsByProjectRef.current[target.id] || []).length + 1).toString()}`);
+    const requestedEnv = getProviderEnv(activeProviderId);
+    const env = await resolveVisibleProviderEnv(activeProviderId, requestedEnv, { persist: true });
+    const defaultTitle = buildConsoleTabNameForEnv(env, target.id);
     const tab: ConsoleTab = {
       id: uid(),
       name: String(args?.title || "").trim() || defaultTitle,
@@ -6135,7 +6492,7 @@ export default function CodexFlowManagerUI() {
     let ptyId: string | undefined;
     try {
       const launchEnv = await buildProviderLaunchEnv(tab.id, tab.providerId, tab.name, env, startupCmd);
-      const { id } = await window.host.pty.openWSLConsole({
+      const openRes = await window.host.pty.openWSLConsole({
         terminal: env.terminal,
         distro: env.distro,
         wslPath: target.wslPath,
@@ -6145,11 +6502,18 @@ export default function CodexFlowManagerUI() {
         startupCmd,
         env: launchEnv.env,
       });
-      tabExecEnvByTabRef.current[tab.id] = env;
+      const actualEnv: Required<ProviderEnv> = {
+        terminal: normalizeTerminalMode(openRes.terminal || env.terminal),
+        distro: String(openRes.distro || env.distro || ""),
+      };
+      if (actualEnv.terminal !== env.terminal || String(actualEnv.distro || "").toLowerCase() !== String(env.distro || "").toLowerCase())
+        tab.name = buildConsoleTabNameForEnv(actualEnv, target.id);
+      await notifyPtyFallbackIfNeeded({ providerId: activeProviderId, requestedEnv: env, actualEnv, fallbackReason: openRes.fallbackReason });
+      tabExecEnvByTabRef.current[tab.id] = actualEnv;
       geminiWindowsEditorReadyByTabRef.current[tab.id] = launchEnv.geminiWindowsEditorReady;
       geminiWslEditorReadyByTabRef.current[tab.id] = launchEnv.geminiWslEditorReady;
       geminiExternalEditorShortcutByTabRef.current[tab.id] = launchEnv.geminiExternalEditorShortcut;
-      ptyId = id;
+      ptyId = openRes.id;
     } catch {
       return false;
     }
@@ -6177,14 +6541,17 @@ export default function CodexFlowManagerUI() {
     return true;
   }, [
     activeProviderId,
+    buildConsoleTabNameForEnv,
     buildProviderLaunchEnv,
     currentWindowId,
     getProviderEnv,
     hiddenProjectIdSet,
     markProjectHasBuiltInSessions,
     markProjectUsed,
+    notifyPtyFallbackIfNeeded,
     recordCustomProviderDirIfNeeded,
     resolveProjectByPathAsync,
+    resolveVisibleProviderEnv,
     tm,
   ]);
 
@@ -6795,10 +7162,11 @@ export default function CodexFlowManagerUI() {
       delete next[tabId];
       return next;
     });
-    const nextActiveTabByProject = activeTabId === tabId
+    const isClosingActiveTab = activeTabIdRef.current === tabId;
+    const nextActiveTabByProject = isClosingActiveTab
       ? { ...activeTabByProject, [projectId]: null }
       : activeTabByProject;
-    if (activeTabId === tabId) setActiveTab(null, { projectId, focusMode: "immediate", allowDuringRename: true });
+    if (isClosingActiveTab) setActiveTab(null, { projectId, focusMode: "immediate", allowDuringRename: true });
     const latestSnapshot = loadConsoleSession({ currentBootId: appBootId });
     const currentProjectName = projectsRef.current.find((project) => project.id === selectedProjectId)?.name || "";
     persistConsoleSessionSnapshot(nextTabsByProject, {
@@ -7471,15 +7839,14 @@ export default function CodexFlowManagerUI() {
     project: Project;
     providerId: GitWorktreeProviderId;
     startupCmd: string;
+    envOverride?: Required<ProviderEnv>;
   }): Promise<{ ok: boolean; tabId?: string; error?: string }> => {
     const project = args.project;
     const providerId = args.providerId;
     if (!project?.id) return { ok: false, error: "missing project" };
-    const env = getProviderEnv(providerId);
+    const env = args.envOverride || await resolveVisibleProviderEnv(providerId, getProviderEnv(providerId), { persist: true });
 
-    const tabName = env.terminal !== "wsl"
-      ? toShellLabel(env.terminal as any)
-      : (env.distro || `Console ${((tabsByProjectRef.current[project.id] || []).length + 1).toString()}`);
+    const tabName = buildConsoleTabNameForEnv(env, project.id);
 
     const tab: ConsoleTab = {
       id: uid(),
@@ -7493,7 +7860,7 @@ export default function CodexFlowManagerUI() {
     let ptyId: string | undefined;
     try {
       const launchEnv = await buildProviderLaunchEnv(tab.id, tab.providerId, tab.name, env, args.startupCmd);
-      const { id } = await window.host.pty.openWSLConsole({
+      const openRes = await window.host.pty.openWSLConsole({
         terminal: env.terminal,
         distro: env.distro,
         wslPath: project.wslPath,
@@ -7503,11 +7870,18 @@ export default function CodexFlowManagerUI() {
         startupCmd: args.startupCmd,
         env: launchEnv.env,
       });
-      tabExecEnvByTabRef.current[tab.id] = env;
+      const actualEnv: Required<ProviderEnv> = {
+        terminal: normalizeTerminalMode(openRes.terminal || env.terminal),
+        distro: String(openRes.distro || env.distro || ""),
+      };
+      if (actualEnv.terminal !== env.terminal || String(actualEnv.distro || "").toLowerCase() !== String(env.distro || "").toLowerCase())
+        tab.name = buildConsoleTabNameForEnv(actualEnv, project.id);
+      await notifyPtyFallbackIfNeeded({ providerId, requestedEnv: env, actualEnv, fallbackReason: openRes.fallbackReason });
+      tabExecEnvByTabRef.current[tab.id] = actualEnv;
       geminiWindowsEditorReadyByTabRef.current[tab.id] = launchEnv.geminiWindowsEditorReady;
       geminiWslEditorReadyByTabRef.current[tab.id] = launchEnv.geminiWslEditorReady;
       geminiExternalEditorShortcutByTabRef.current[tab.id] = launchEnv.geminiExternalEditorShortcut;
-      ptyId = id;
+      ptyId = openRes.id;
     } catch (e: any) {
       return { ok: false, error: String(e?.message || e) };
     }
@@ -7534,7 +7908,7 @@ export default function CodexFlowManagerUI() {
     try { window.host.projects.touch(project.id); } catch {}
     markProjectUsed(project.id);
     return { ok: true, tabId: tab.id };
-  }, [buildProviderLaunchEnv, currentWindowId, getProviderEnv, markProjectHasBuiltInSessions, recordCustomProviderDirIfNeeded, tm, markProjectUsed]);
+  }, [buildConsoleTabNameForEnv, buildProviderLaunchEnv, currentWindowId, getProviderEnv, markProjectHasBuiltInSessions, notifyPtyFallbackIfNeeded, recordCustomProviderDirIfNeeded, resolveVisibleProviderEnv, tm, markProjectUsed]);
 
   /**
    * 在指定项目中启动某个引擎实例，并注入初始提示词（worktree 新建/复用共用）。
@@ -7551,15 +7925,27 @@ export default function CodexFlowManagerUI() {
       const project = args.project;
       const providerId = args.providerId;
       if (!project?.id) return { ok: false, error: "missing project" };
-      const env = getProviderEnv(providerId);
+      const requestedEnv = getProviderEnv(providerId);
+      const env = await resolveVisibleProviderEnv(providerId, requestedEnv, { persist: true });
+      const baseCmd = buildProviderStartupCmdForWorktreeCreate({ providerId, env, useYolo: args.useYolo });
+      const prepared = await prepareProviderLaunch({
+        providerId,
+        requestedEnv,
+        startupCmd: baseCmd,
+        cliCheckCmd: baseCmd,
+        persist: true,
+        notifyEnvFallback: true,
+        source: "worktree",
+      });
+      if (!prepared.ok) return prepared;
       const prompt = buildWorktreePromptForProvider({
         providerId,
         prompt: args.prompt,
         promptSource: args.promptSource,
+        envOverride: prepared.env,
       });
-      const baseCmd = buildProviderStartupCmdForWorktreeCreate({ providerId, env, useYolo: args.useYolo });
-      const startupCmd = buildProviderStartupCmdWithInitialPrompt({ providerId, terminalMode: env.terminal as any, baseCmd, prompt });
-      const started = await openProviderConsoleInProject({ project, providerId, startupCmd });
+      const startupCmd = buildProviderStartupCmdWithInitialPrompt({ providerId, terminalMode: prepared.env.terminal as any, baseCmd: prepared.startupCmd, prompt });
+      const started = await openProviderConsoleInProject({ project, providerId, startupCmd, envOverride: prepared.env });
       const hasInitialPrompt = String(prompt || "").trim().length > 0;
       const tabId = String(started.tabId || "").trim();
       if (started.ok && tabId && hasInitialPrompt && shouldEnableAgentTimerForProvider(providerId))
@@ -7568,7 +7954,7 @@ export default function CodexFlowManagerUI() {
     } catch (e: any) {
       return { ok: false, error: String(e?.message || e) };
     }
-  }, [buildProviderStartupCmdForWorktreeCreate, buildWorktreePromptForProvider, getProviderEnv, openProviderConsoleInProject, shouldEnableAgentTimerForProvider, startAgentTurnTimer]);
+  }, [buildProviderStartupCmdForWorktreeCreate, buildWorktreePromptForProvider, getProviderEnv, openProviderConsoleInProject, prepareProviderLaunch, resolveVisibleProviderEnv, shouldEnableAgentTimerForProvider, startAgentTurnTimer]);
 
   /**
    * 执行创建 worktree，并在每个 worktree 内启动对应引擎 CLI。
@@ -9442,11 +9828,7 @@ export default function CodexFlowManagerUI() {
               className="flex items-center justify-between gap-2"
               onClick={async () => {
                 const nextEnv: Required<ProviderEnv> = { ...getProviderEnv(activeProviderId), terminal: "wsl" };
-                const nextMap = { ...providerEnvById, [activeProviderId]: nextEnv };
-                setProviderEnvById(nextMap);
-                setTerminalMode("wsl");
-                setWslDistro(nextEnv.distro);
-                await persistProviders({ activeId: activeProviderId, items: providerItems, env: nextMap });
+                await selectActiveProviderEnv(nextEnv);
               }}
             >
               <span>{t("settings:terminalMode.wsl")}</span>
@@ -9456,10 +9838,7 @@ export default function CodexFlowManagerUI() {
               className="flex items-center justify-between gap-2"
               onClick={async () => {
                 const nextEnv: Required<ProviderEnv> = { ...getProviderEnv(activeProviderId), terminal: "windows" };
-                const nextMap = { ...providerEnvById, [activeProviderId]: nextEnv };
-                setProviderEnvById(nextMap);
-                setTerminalMode("windows" as any);
-                await persistProviders({ activeId: activeProviderId, items: providerItems, env: nextMap });
+                await selectActiveProviderEnv(nextEnv);
               }}
             >
               <span>{t("settings:terminalMode.windows")}</span>
@@ -9469,10 +9848,7 @@ export default function CodexFlowManagerUI() {
               className="flex items-center justify-between gap-2"
               onClick={async () => {
                 const nextEnv: Required<ProviderEnv> = { ...getProviderEnv(activeProviderId), terminal: "pwsh" };
-                const nextMap = { ...providerEnvById, [activeProviderId]: nextEnv };
-                setProviderEnvById(nextMap);
-                setTerminalMode("pwsh" as any);
-                await persistProviders({ activeId: activeProviderId, items: providerItems, env: nextMap });
+                await selectActiveProviderEnv(nextEnv);
               }}
             >
               <span>{t("settings:terminalMode.pwsh")}</span>
@@ -9482,10 +9858,7 @@ export default function CodexFlowManagerUI() {
               className="flex items-center justify-between gap-2"
               onClick={async () => {
                 const nextEnv: Required<ProviderEnv> = { ...getProviderEnv(activeProviderId), terminal: "cmd" };
-                const nextMap = { ...providerEnvById, [activeProviderId]: nextEnv };
-                setProviderEnvById(nextMap);
-                setTerminalMode("cmd" as any);
-                await persistProviders({ activeId: activeProviderId, items: providerItems, env: nextMap });
+                await selectActiveProviderEnv(nextEnv);
               }}
             >
               <span>{t("settings:terminalMode.cmd")}</span>
@@ -10660,18 +11033,25 @@ export default function CodexFlowManagerUI() {
 	  const executeResume = async (filePath: string, mode: ResumeExecutionMode, execEnv: Required<ProviderEnv>, forceLegacyCli: boolean, targetProject: Project): Promise<boolean> => {
 	    try {
 	      if (!filePath || !targetProject) return false;
-	      const { providerId, startupCmd, session, sessionId, resumeLabel, strategy, resumeHint, forceLegacyCli: finalForceLegacy } = buildResumeStartup(filePath, execEnv.terminal as any, { forceLegacyCli });
+        const resumeSession = findSessionForFile(filePath);
+        const resumeProviderId = resolveHistoryProviderId(resumeSession ?? null);
+        const visibleExecEnv = await resolveVisibleProviderEnv(resumeProviderId, execEnv, { persist: true });
+        const envChanged = visibleExecEnv.terminal !== execEnv.terminal
+          || String(visibleExecEnv.distro || "").toLowerCase() !== String(execEnv.distro || "").toLowerCase();
+        if (envChanged)
+          await notifyRuntimeEnvFallback({ providerId: resumeProviderId, from: execEnv, to: visibleExecEnv, source: "historyResume" });
+	      const { providerId, startupCmd, session, sessionId, resumeLabel, strategy, resumeHint, forceLegacyCli: finalForceLegacy } = buildResumeStartup(filePath, visibleExecEnv.terminal as any, { forceLegacyCli });
+        const cliReady = await checkProviderCliBeforeLaunch(providerId, visibleExecEnv, buildProviderBaseStartupCmd(providerId));
+        if (!cliReady) return false;
 	      try {
-	        const base = `[ui] history.resume ${mode} provider=${providerId} terminal=${execEnv.terminal} target=${resumeLabel}`;
+	        const base = `[ui] history.resume ${mode} provider=${providerId} terminal=${visibleExecEnv.terminal} target=${resumeLabel}`;
 	        const extra = providerId === "codex"
 	          ? ` strategy=${strategy} resumeHint=${resumeHint} forceLegacy=${finalForceLegacy ? '1' : '0'} sessionId=${sessionId || 'none'} sessionRaw=${session?.id || 'n/a'}`
 	          : ` sessionRaw=${session?.id || 'n/a'}`;
 	        await (window as any).host?.utils?.perfLog?.(`${base}${extra}`);
 	      } catch {}
 	      if (mode === 'internal') {
-	        const tabName = isWindowsLike(execEnv.terminal as any)
-	          ? toShellLabel(execEnv.terminal as any)
-	          : (execEnv.distro || `Console ${((tabsByProject[targetProject.id] || []).length + 1).toString()}`);
+	        const tabName = buildConsoleTabNameForEnv(visibleExecEnv, targetProject.id);
         const tab: ConsoleTab = {
           id: uid(),
           name: String(tabName),
@@ -10685,10 +11065,10 @@ export default function CodexFlowManagerUI() {
           await (window as any).host?.utils?.perfLog?.(`[ui] history.resume openWSLConsole start tab=${tab.id}`);
         } catch {}
 	        try {
-          const launchEnv = await buildProviderLaunchEnv(tab.id, tab.providerId, tab.name, execEnv, startupCmd);
-          const { id } = await window.host.pty.openWSLConsole({
-            terminal: execEnv.terminal as any,
-            distro: execEnv.distro,
+          const launchEnv = await buildProviderLaunchEnv(tab.id, tab.providerId, tab.name, visibleExecEnv, startupCmd);
+          const openRes = await window.host.pty.openWSLConsole({
+            terminal: visibleExecEnv.terminal as any,
+            distro: visibleExecEnv.distro,
             wslPath: targetProject.wslPath,
             winPath: targetProject.winPath,
             cols: 80,
@@ -10697,13 +11077,20 @@ export default function CodexFlowManagerUI() {
             env: launchEnv.env,
           });
           try {
-            await (window as any).host?.utils?.perfLog?.(`[ui] history.resume pty=${id} tab=${tab.id} - registering listener`);
+            await (window as any).host?.utils?.perfLog?.(`[ui] history.resume pty=${openRes.id} tab=${tab.id} - registering listener`);
           } catch {}
-          tabExecEnvByTabRef.current[tab.id] = execEnv;
+          const actualEnv: Required<ProviderEnv> = {
+            terminal: normalizeTerminalMode(openRes.terminal || visibleExecEnv.terminal),
+            distro: String(openRes.distro || visibleExecEnv.distro || ""),
+          };
+          if (actualEnv.terminal !== visibleExecEnv.terminal || String(actualEnv.distro || "").toLowerCase() !== String(visibleExecEnv.distro || "").toLowerCase())
+            tab.name = buildConsoleTabNameForEnv(actualEnv, targetProject.id);
+          await notifyPtyFallbackIfNeeded({ providerId, requestedEnv: visibleExecEnv, actualEnv, fallbackReason: openRes.fallbackReason });
+          tabExecEnvByTabRef.current[tab.id] = actualEnv;
           geminiWindowsEditorReadyByTabRef.current[tab.id] = launchEnv.geminiWindowsEditorReady;
           geminiWslEditorReadyByTabRef.current[tab.id] = launchEnv.geminiWslEditorReady;
           geminiExternalEditorShortcutByTabRef.current[tab.id] = launchEnv.geminiExternalEditorShortcut;
-          ptyId = id;
+          ptyId = openRes.id;
         } catch (err) {
           console.warn('executeResume failed', err);
           alert(String(t('history:resumeFailed', { error: String((err as any)?.message || err) })));
@@ -10736,10 +11123,10 @@ export default function CodexFlowManagerUI() {
         return true;
 	      }
 	      const res: any = await (window.host.utils as any).openExternalConsole({
-	        terminal: execEnv.terminal,
+	        terminal: visibleExecEnv.terminal,
 	        wslPath: targetProject.wslPath,
 	        winPath: targetProject.winPath,
-	        distro: execEnv.distro,
+	        distro: visibleExecEnv.distro,
 	        startupCmd,
 	        title: getProviderLabel(providerId),
 	      });
@@ -11580,14 +11967,21 @@ export default function CodexFlowManagerUI() {
                 onClick={async () => {
 	                  if (proj) {
 	                    try {
-	                      const env = getProviderEnv(activeProviderId);
-	                      const startupCmd = buildProviderStartupCmd(activeProviderId, env);
+	                      const requestedEnv = getProviderEnv(activeProviderId);
+	                      const prepared = await prepareProviderLaunch({
+	                        providerId: activeProviderId,
+	                        requestedEnv,
+	                        persist: true,
+	                        notifyEnvFallback: true,
+	                        source: "projectExternal",
+	                      });
+	                      if (!prepared.ok) return;
 	                      const res: any = await (window.host.utils as any).openExternalConsole({
-	                        terminal: env.terminal,
+	                        terminal: prepared.env.terminal,
 	                        wslPath: proj.wslPath,
 	                        winPath: proj.winPath,
-	                        distro: env.distro,
-	                        startupCmd,
+	                        distro: prepared.env.distro,
+	                        startupCmd: prepared.startupCmd,
 	                        title: getProviderLabel(activeProviderId),
 	                      });
 	                      if (!(res && res.ok)) throw new Error(res?.error || 'failed');

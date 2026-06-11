@@ -5,8 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { app } from 'electron';
 import os from 'node:os';
-import { execFileSync } from 'node:child_process';
-import { getSessionsRootsFastAsync, listDistros, execInWslAsync } from './wsl.js';
+import { getSessionsRootsFastAsync, listDistros } from './wsl.js';
 import { hasPwsh, normalizeTerminal, type TerminalMode } from './shells.js';
 import type { TerminalThemeId } from '@/types/terminal-theme';
 import type { DistroInfo } from './wsl';
@@ -166,6 +165,34 @@ export type AppSettings = {
 
 function getStorePath() {
   return path.join(app.getPath('userData'), 'settings.json');
+}
+
+/**
+ * 判断设置文件是否已经存在。
+ */
+export function hasSettingsStore(): boolean {
+  try {
+    return fs.existsSync(getStorePath());
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 判断用户是否已经保存过明确的终端环境选择。
+ */
+export function hasSavedRuntimeEnvSelection(): boolean {
+  try {
+    const storePath = getStorePath();
+    if (!fs.existsSync(storePath)) return false;
+    const raw = JSON.parse(fs.readFileSync(storePath, 'utf8') || '{}') as any;
+    if (typeof raw?.terminal === 'string' && raw.terminal.trim().length > 0) return true;
+    const env = raw?.providers?.env;
+    if (!env || typeof env !== 'object') return false;
+    return Object.values(env).some((value: any) => typeof value?.terminal === 'string' && value.terminal.trim().length > 0);
+  } catch {
+    return false;
+  }
 }
 
 const DEFAULT_WSL_DISTRO = 'Ubuntu-24.04';
@@ -676,7 +703,7 @@ export async function ensureSettingsAutodetect(): Promise<AppSettings> {
  * 首次运行时：自动选择终端环境（不提示安装）。
  * 规则：
  *  - 优先使用 WSL；在有多个发行版时优先 Ubuntu（版本高者优先）。
- *  - 若未检测到任何 WSL 发行版，但在 PowerShell 可找到 codex，则默认使用 PowerShell。
+ *  - 若未检测到任何 WSL 发行版，则优先使用 PowerShell 7，否则使用 Windows PowerShell。
  *  - 仅在“首次无设置文件或设置缺失 terminal 字段”时写入；否则保持用户选择。
  */
 export async function ensureFirstRunTerminalSelection(): Promise<AppSettings> {
@@ -690,39 +717,14 @@ export async function ensureFirstRunTerminalSelection(): Promise<AppSettings> {
     }
 
     const distros = loadDistroList();
-    // 情况 A：存在 WSL，优先 Ubuntu；若仅 PowerShell 中存在 codex 则选 Windows
+    // 情况 A：存在 WSL，首次直接选择可见 WSL，不混入 CLI 是否安装的判断。
     if (os.platform() === 'win32' && Array.isArray(distros) && distros.length > 0) {
       const distro = pickPreferredDistro('', distros);
-      const hasPsCodex = (() => {
-        try {
-          const out = execFileSync('where.exe', ['codex'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 });
-          return !!String(out || '').trim();
-        } catch { return false; }
-      })();
-      const hasWslCodex = !!(await (async () => {
-        try {
-          const out = await execInWslAsync(distro, 'command -v codex >/dev/null 2>&1 && echo yes || echo no');
-          return (out || '').trim().toLowerCase() === 'yes';
-        } catch { return false; }
-      })());
-      if (hasPsCodex && !hasWslCodex) {
-        if (await hasPwsh()) {
-          return updateSettings({ terminal: 'pwsh' });
-        }
-        return updateSettings({ terminal: 'windows' });
-      }
       return updateSettings({ terminal: 'wsl', distro });
     }
 
-    // 情况 B：无 WSL，若 PowerShell 中存在 codex，则选 Windows；否则仍写 Windows 以避免 WSL 失败
-    const hasPsCodex = (() => {
-      if (os.platform() !== 'win32') return false;
-      try {
-        const out = execFileSync('where.exe', ['codex'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 });
-        return !!String(out || '').trim();
-      } catch { return false; }
-    })();
-    if (hasPsCodex || os.platform() === 'win32') {
+    // 情况 B：无 WSL，优先 PowerShell 7，否则 Windows PowerShell。
+    if (os.platform() === 'win32') {
       return updateSettings({ terminal: await hasPwsh() ? 'pwsh' : 'windows' });
     }
 
@@ -733,6 +735,6 @@ export async function ensureFirstRunTerminalSelection(): Promise<AppSettings> {
   }
 }
 
-export default { getSettings, updateSettings };
+export default { getSettings, updateSettings, hasSettingsStore, hasSavedRuntimeEnvSelection };
 
 

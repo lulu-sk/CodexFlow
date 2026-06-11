@@ -101,6 +101,15 @@ export async function hasPwsh(): Promise<boolean> {
   return !!hit;
 }
 
+/**
+ * 选择当前平台可见的 Windows 终端环境。
+ */
+export async function pickVisibleWindowsTerminalMode(): Promise<TerminalMode> {
+  if (process.platform === "win32" && await hasPwsh())
+    return "pwsh";
+  return "windows";
+}
+
 export function resolveWindowsShell(mode: "windows" | "pwsh" | "cmd"): WindowsShellResolution {
   if (mode === "cmd") {
     return { command: "cmd.exe", kind: "cmd" };

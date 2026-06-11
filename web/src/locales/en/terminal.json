@@ -24,6 +24,11 @@
   "collapseInput": "Exit expand",
   "readyPlaceholder": "# Terminal ready. Embedded console placeholder (UI prototype; no real PTY yet).",
   "openFailed": "Failed to start console: {error}",
+  "envFallbackTitle": "Runtime Environment Changed",
+  "envFallbackMessage": "The previous {from} environment is unavailable. Switched to {to}.",
+  "envFallbackWslStartFailed": "WSL failed to start. Switched to {to}.",
+  "cliMissingTitle": "{provider} CLI Not Installed",
+  "cliMissingMessage": "{provider} CLI is not installed, or the current {env} environment cannot access the `{cli}` command.",
   "childTerminalsActive": "Active items in sub-projects",
   "childTerminalsPending": "Sub-projects have completed tasks awaiting review",
   "closeWorkingConfirm": {

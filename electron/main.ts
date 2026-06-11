@@ -23,9 +23,10 @@ import { parseGeminiSessionFile, extractGeminiProjectHashFromPath, deriveGeminiP
 import { hasNonEmptyIOFromMessages } from "./agentSessions/shared/empty";
 import { historyItemBelongsToScope } from "./historyScope";
 import { perfLogger } from "./log";
-import settings, { ensureSettingsAutodetect, ensureFirstRunTerminalSelection, type ThemeSetting as SettingsThemeSetting, type AppSettings, type IdeOpenSettings } from "./settings";
+import settings, { ensureSettingsAutodetect, ensureFirstRunTerminalSelection, hasSavedRuntimeEnvSelection, type ThemeSetting as SettingsThemeSetting, type AppSettings, type IdeOpenSettings } from "./settings";
 import { getOnboardingState, updateOnboardingState } from "./onboarding";
 import { normalizeTerminal, resolveWindowsShell, detectPwshExecutable, type TerminalMode } from "./shells";
+import { checkRuntimeCli, resolveVisibleRuntimeEnv, type ResolvedRuntimeEnv } from "./runtimeEnv";
 import { resolveActiveProviderId, resolveProviderRuntimeEnvFromSettings, resolveProviderStartupCmdFromSettings } from "./providers/runtime";
 import i18n from "./i18n";
 import wsl from "./wsl";
@@ -640,6 +641,14 @@ function logIdeOpenTrace(message: string): void {
 type CursorOpenStrategy = "auto" | "protocol" | "command";
 let cursorPreferredStrategy: CursorOpenStrategy = "auto";
 
+type RuntimeEnvRepairEntry = {
+  providerId?: string;
+  scope: "legacy" | "provider";
+  from: { terminal: TerminalMode; distro: string };
+  to: { terminal: TerminalMode; distro: string };
+  reason?: string;
+};
+
 /**
  * 中文说明：更新 Cursor 当前优先策略，用于加速后续文件定位打开。
  */
@@ -653,6 +662,131 @@ const APP_USER_MODEL_ID = 'com.codexflow.app';
 const DEV_APP_USER_MODEL_ID = 'com.codexflow.app.dev';
 const PROTOCOL_SCHEME = 'codexflow';
 const ptyManager = new PTYManager(() => BrowserWindow.getAllWindows().filter((win) => !win.isDestroyed()));
+
+/**
+ * 解析请求环境，确保返回一个当前机器可见的终端环境。
+ * @param input 请求使用的终端环境
+ */
+async function resolveVisibleRuntimeEnvForMain(input: { terminal?: TerminalMode; distro?: string }): Promise<ResolvedRuntimeEnv> {
+  return await resolveVisibleRuntimeEnv({
+    terminal: normalizeTerminal(input?.terminal),
+    distro: String(input?.distro || "").trim(),
+  });
+}
+
+/**
+ * 判断两个运行环境是否一致。
+ * @param left 左侧环境
+ * @param right 右侧环境
+ */
+function isSameRuntimeEnv(left: { terminal?: TerminalMode; distro?: string }, right: { terminal?: TerminalMode; distro?: string }): boolean {
+  return normalizeTerminal(left?.terminal) === normalizeTerminal(right?.terminal)
+    && String(left?.distro || "").trim().toLowerCase() === String(right?.distro || "").trim().toLowerCase();
+}
+
+/**
+ * 将可见环境修正写回设置，避免下次启动重复修复同一个不可用环境。
+ * @param cfg 已完成修正的设置快照
+ */
+function persistVisibleRuntimeEnvRepairs(cfg: any): void {
+  const patch: any = {
+    terminal: normalizeTerminal(cfg?.terminal),
+    distro: String(cfg?.distro || ""),
+  };
+  if (cfg?.providers && typeof cfg.providers === "object")
+    patch.providers = cfg.providers;
+  const saved = settings.updateSettings(patch) as any;
+  cfg.terminal = normalizeTerminal(saved?.terminal);
+  cfg.distro = String(saved?.distro || cfg.distro || "");
+  if (saved?.providers && typeof saved.providers === "object")
+    cfg.providers = saved.providers;
+}
+
+/**
+ * 修正设置中的 legacy/provider 环境，避免 UI 显示或启动到不可用环境。
+ * @param cfg 当前设置快照
+ * @param options 是否需要把修正信息暴露给渲染进程
+ */
+async function resolveVisibleSettingsRuntimeEnvs(cfg: any, options?: { notifyWhenChanged?: boolean }): Promise<any> {
+  const next = { ...(cfg || {}) };
+  const repairs: RuntimeEnvRepairEntry[] = [];
+  const legacy = await resolveVisibleRuntimeEnvForMain({
+    terminal: next.terminal,
+    distro: next.distro,
+  });
+  const legacyFrom = {
+    terminal: normalizeTerminal(next.terminal),
+    distro: String(next.distro || ""),
+  };
+  const legacyTo = {
+    terminal: legacy.terminal,
+    distro: legacy.distro || String(next.distro || ""),
+  };
+  if (!isSameRuntimeEnv(legacyFrom, legacyTo)) {
+    repairs.push({
+      scope: "legacy",
+      from: legacyFrom,
+      to: legacyTo,
+      reason: legacy.reason,
+    });
+  }
+  next.terminal = legacy.terminal;
+  next.distro = legacy.distro || String(next.distro || "");
+
+  const providers = next.providers && typeof next.providers === "object" ? { ...next.providers } : undefined;
+  if (providers) {
+    const envInput = providers.env && typeof providers.env === "object" ? providers.env : {};
+    const envNext: Record<string, any> = {};
+    const entries = Object.entries(envInput);
+    for (const [id, value] of entries) {
+      const raw = value && typeof value === "object" ? value as any : {};
+      const from = {
+        terminal: normalizeTerminal(raw.terminal),
+        distro: String(raw.distro || next.distro || ""),
+      };
+      const resolved = await resolveVisibleRuntimeEnvForMain({
+        terminal: raw.terminal,
+        distro: raw.distro || next.distro,
+      });
+      const to = {
+        terminal: resolved.terminal,
+        distro: resolved.distro || raw.distro || next.distro || "",
+      };
+      if (!isSameRuntimeEnv(from, to)) {
+        repairs.push({
+          scope: "provider",
+          providerId: String(id || ""),
+          from,
+          to,
+          reason: resolved.reason,
+        });
+      }
+      envNext[id] = {
+        ...raw,
+        terminal: resolved.terminal,
+        distro: resolved.distro || raw.distro || next.distro || "",
+      };
+    }
+    providers.env = envNext;
+    next.providers = providers;
+  }
+  if (repairs.length > 0) {
+    try {
+      persistVisibleRuntimeEnvRepairs(next);
+    } catch (e: any) {
+      try { perfLogger.log(`[runtime-env] settings repair persist failed error=${String(e?.message || e)}`); } catch {}
+    }
+    next._runtimeEnvRepair = {
+      changed: true,
+      notify: options?.notifyWhenChanged === true,
+      entries: repairs,
+    };
+    try {
+      perfLogger.log(`[runtime-env] settings repaired notify=${options?.notifyWhenChanged ? "1" : "0"} entries=${JSON.stringify(repairs)}`);
+    } catch {}
+  }
+  return next;
+}
 // worktree 创建后台任务：用于“创建中”进度 UI（可关闭/可重新打开查看输出）
 const worktreeCreateTasks = new WorktreeCreateTaskManager();
 // worktree 回收后台任务：用于“回收中”进度 UI（可查看实时日志）
@@ -2508,9 +2642,12 @@ function setupAppMenu() {
 ipcMain.handle('pty:open', async (_event, args: {
   terminal?: TerminalMode; distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string; env?: Record<string, string>;
 }) => {
-  const id = ptyManager.openWSLConsole({
-    terminal: args?.terminal as any,
-    distro: args?.distro,
+  // 中文说明：打开 PTY 是标签页点击热路径；这里不做 WSL 枚举/CLI 检测，直接按请求环境启动。
+  const requestedTerminal = args?.terminal ? normalizeTerminal(args.terminal) : undefined;
+  const requestedDistro = String(args?.distro || "").trim();
+  const opened = ptyManager.openWSLConsole({
+    terminal: requestedTerminal,
+    distro: requestedDistro,
     wslPath: args?.wslPath,
     winPath: args?.winPath,
     cols: args?.cols ?? 80,
@@ -2518,7 +2655,12 @@ ipcMain.handle('pty:open', async (_event, args: {
     startupCmd: args?.startupCmd ?? '',
     env: args?.env,
   });
-  return { id };
+  return {
+    id: opened.id,
+    terminal: opened.terminal || requestedTerminal,
+    distro: opened.distro || requestedDistro,
+    fallbackReason: opened.fallbackReason,
+  };
 });
 
 /**
@@ -6233,6 +6375,8 @@ ipcMain.handle("gemini.usage", async () => {
 
 // Settings
 ipcMain.handle('settings.get', async () => {
+  const notifyRuntimeRepair = hasSavedRuntimeEnvSelection();
+  try { await ensureFirstRunTerminalSelection(); } catch {}
   try { await ensureSettingsAutodetect(); } catch {}
   try { await ensureAllCodexNotifications(); } catch {}
   try { await ensureAllClaudeNotifications(); } catch {}
@@ -6240,12 +6384,49 @@ ipcMain.handle('settings.get', async () => {
   try { await startCodexNotificationBridge(() => mainWindow); } catch {}
   try { await startClaudeNotificationBridge(() => mainWindow); } catch {}
   try { await startGeminiNotificationBridge(() => mainWindow); } catch {}
-  const cfg = settings.getSettings() as any;
+  let cfg = settings.getSettings() as any;
   try {
     const flags = getFeatureFlags();
     cfg.experimental = { ...(cfg.experimental || {}), multiInstanceEnabled: !!flags.multiInstanceEnabled };
   } catch {}
+  try { cfg = await resolveVisibleSettingsRuntimeEnvs(cfg, { notifyWhenChanged: notifyRuntimeRepair }); } catch {}
   return cfg;
+});
+
+ipcMain.handle('settings.resolveRuntimeEnv', async (_e, input: { terminal?: TerminalMode; distro?: string } = {}) => {
+  try {
+    const resolved = await resolveVisibleRuntimeEnvForMain(input || {});
+    return {
+      ok: true,
+      terminal: resolved.terminal,
+      distro: resolved.distro,
+      changed: resolved.changed,
+      reason: resolved.reason,
+      availableDistros: resolved.availableDistros,
+    };
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+ipcMain.handle('settings.checkRuntimeCli', async (_e, input: { terminal?: TerminalMode; distro?: string; startupCmd?: string } = {}) => {
+  try {
+    const result = await checkRuntimeCli(input || {});
+    try {
+      if (!result.ok)
+        perfLogger.log(`[runtime-env] cli missing terminal=${result.terminal} distro=${result.distro || ""} cli=${result.cli || ""} reason=${result.reason || ""}`);
+    } catch {}
+    return {
+      ok: result.ok,
+      cli: result.cli,
+      terminal: result.terminal,
+      distro: result.distro,
+      reason: result.reason,
+      error: result.error,
+    };
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
+  }
 });
 
 ipcMain.handle("onboarding.get", async () => {
@@ -6333,7 +6514,10 @@ ipcMain.handle('settings.update', async (_e, partial: any) => {
       try { mainWindow?.webContents.send('history:index:invalidate', { reason: 'settings' }); } catch {}
     }
   } catch {}
-  const merged = next as any;
+  let merged = next as any;
+  try {
+    merged = await resolveVisibleSettingsRuntimeEnvs(merged);
+  } catch {}
   try {
     const flags = getFeatureFlags();
     const enabled = updatedMultiInstance == null ? !!flags.multiInstanceEnabled : !!updatedMultiInstance;

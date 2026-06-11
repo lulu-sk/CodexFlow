@@ -6,6 +6,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 type TerminalMode = 'wsl' | 'windows' | 'pwsh' | 'cmd';
 type OpenArgs = { terminal?: TerminalMode; distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string; env?: Record<string, string> };
+type OpenResult = { id: string; terminal?: TerminalMode; distro?: string; fallbackReason?: string };
 
 type PtyDataPayload = { id: string; data: string };
 type PtyExitPayload = { id: string; exitCode?: number };
@@ -304,7 +305,7 @@ contextBridge.exposeInMainWorld('host', {
     }
   },
   pty: {
-    openWSLConsole: async (args: OpenArgs): Promise<{ id: string }> => {
+    openWSLConsole: async (args: OpenArgs): Promise<OpenResult> => {
       return await ipcRenderer.invoke('pty:open', args);
     },
     /**
@@ -619,6 +620,12 @@ contextBridge.exposeInMainWorld('host', {
     },
     update: async (partial: any) => {
       return await ipcRenderer.invoke('settings.update', partial);
+    },
+    resolveRuntimeEnv: async (args: { terminal?: TerminalMode; distro?: string }) => {
+      return await ipcRenderer.invoke('settings.resolveRuntimeEnv', args || {});
+    },
+    checkRuntimeCli: async (args: { terminal?: TerminalMode; distro?: string; startupCmd?: string }) => {
+      return await ipcRenderer.invoke('settings.checkRuntimeCli', args || {});
     },
     codexRoots: async () => {
       const res = await ipcRenderer.invoke('settings.codexRoots');

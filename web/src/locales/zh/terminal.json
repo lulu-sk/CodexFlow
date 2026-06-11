@@ -24,6 +24,11 @@
   "collapseInput": "退出大屏",
   "readyPlaceholder": "# 终端就绪。这里是内嵌控制台的视觉占位（UI 原型，未接真 PTY）。",
   "openFailed": "启动终端失败：{error}",
+  "envFallbackTitle": "已切换运行环境",
+  "envFallbackMessage": "原 {from} 环境不可用，已切换到 {to}。",
+  "envFallbackWslStartFailed": "WSL 启动失败，已切换到 {to}。",
+  "cliMissingTitle": "{provider} CLI 未安装",
+  "cliMissingMessage": "{provider} CLI 未安装，当前 {env} 环境无法访问 `{cli}` 命令。",
   "childTerminalsActive": "子项目有活动项",
   "childTerminalsPending": "子项目有已完成待查看任务",
   "closeWorkingConfirm": {
