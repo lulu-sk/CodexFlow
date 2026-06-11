@@ -7,6 +7,7 @@ import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import { promises as fsp } from 'node:fs';
 import path from 'node:path';
+import { Worker } from 'node:worker_threads';
 import { ProxyAgent, setGlobalDispatcher, Agent } from 'undici';
 import { PTYManager, setTermDebug } from "./pty";
 import opentype from 'opentype.js';
@@ -39,7 +40,7 @@ import { CodexBridge, type CodexBridgeOptions } from "./codex/bridge";
 import { applyCodexAuthBackupAsync, deleteCodexAuthBackupAsync, isSafeAuthBackupId, listCodexAuthBackupsAsync, readCodexAuthBackupMetaAsync, resolveCodexAccountSignature, resolveCodexAuthJsonPathAsync, upsertCodexAuthBackupAsync, upsertCodexAuthBackupMetaOnlyAsync } from "./codex/authBackups";
 import { ensureAllCodexNotifications } from "./codex/config";
 import { startCodexNotificationBridge, stopCodexNotificationBridge } from "./codex/notifications";
-import { cleanupCodexStateForDeletedHistoryFiles, repairMissingCodexRolloutRows, type CodexStateCleanupResult } from "./codexStateCleanup";
+import type { CodexStateCleanupResult } from "./codexStateCleanup";
 import { ensureAllClaudeNotifications, startClaudeNotificationBridge, stopClaudeNotificationBridge } from "./claude/notifications";
 import { getClaudeUsageSnapshotAsync } from "./claude/usage";
 import { ensureAllGeminiNotifications, startGeminiNotificationBridge, stopGeminiNotificationBridge } from "./gemini/notifications";
@@ -57,6 +58,7 @@ import * as repoWatch from "./git/repoWatch";
 import { initGitRepositoryAsync } from "./git/repoInit";
 import { activateWindowPreservingState } from "./windowActivation";
 import { dispatchGitFeatureAction } from "./git/featureService";
+import { installMainEventLoopDiagnostics, installMainIpcTimingDiagnostics } from "./runtimeDiagnostics";
 import { autoCommitWorktreeIfDirtyAsync, createWorktreesAsync, listLocalBranchesAsync, recycleWorktreeAsync, removeWorktreeAsync } from "./git/worktreeOps";
 import { isWorktreeAlignedToMainAsync, resetWorktreeAsync } from "./git/worktreeReset";
 import { resolveWorktreeForkPointAsync, searchForkPointCommitsAsync, validateForkPointRefAsync } from "./git/worktreeForkPoint";
@@ -78,6 +80,9 @@ import {
 // 使用 CommonJS 编译输出时，运行时环境会提供 `__dirname`，直接使用即可
 
 let codexStateRepairStarted = false;
+let codexStateCleanupWorkerChain: Promise<void> = Promise.resolve();
+
+try { installMainIpcTimingDiagnostics(); } catch {}
 
 /**
  * 汇总 Codex sqlite 清理结果，便于主进程日志快速定位问题。
@@ -108,15 +113,88 @@ function logCodexStateCleanupResult(reason: string, result: CodexStateCleanupRes
 }
 
 /**
+ * 使用 worker thread 执行 Codex sqlite 清理，避免 better-sqlite3 同步调用阻塞 Electron 主事件循环。
+ */
+function runCodexStateCleanupWorker(
+  task: { kind: "cleanupDeleted"; filePaths: string[] } | { kind: "repairMissing" },
+  timeoutMs = 60_000,
+): Promise<CodexStateCleanupResult> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let worker: Worker | null = null;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      try { clearTimeout(timer); } catch {}
+      fn();
+    };
+    const timer = setTimeout(() => {
+      finish(() => {
+        try { worker?.terminate().catch(() => {}); } catch {}
+        reject(new Error(`Codex sqlite cleanup worker timeout after ${timeoutMs}ms`));
+      });
+    }, Math.max(5000, timeoutMs));
+    try { (timer as any).unref?.(); } catch {}
+
+    try {
+      worker = new Worker(path.join(__dirname, "codexStateCleanupWorker.js"), {
+        workerData: task,
+      });
+      worker.on("message", (message: any) => {
+        finish(() => {
+          if (message?.ok && message.result) {
+            resolve(message.result as CodexStateCleanupResult);
+            return;
+          }
+          reject(new Error(String(message?.error || "Codex sqlite cleanup worker failed")));
+        });
+      });
+      worker.on("error", (error) => {
+        finish(() => reject(error));
+      });
+      worker.on("exit", (code) => {
+        if (settled) return;
+        finish(() => reject(new Error(`Codex sqlite cleanup worker exited with code ${code}`)));
+      });
+    } catch (error) {
+      finish(() => reject(error as Error));
+    }
+  });
+}
+
+/**
+ * 串行执行 Codex sqlite 清理 worker，避免多个 worker 同时争用同一批 sqlite DB。
+ */
+async function enqueueCodexStateCleanupWorker(
+  task: { kind: "cleanupDeleted"; filePaths: string[] } | { kind: "repairMissing" },
+): Promise<CodexStateCleanupResult> {
+  let resolveTask: (value: CodexStateCleanupResult) => void;
+  let rejectTask: (reason?: unknown) => void;
+  const promise = new Promise<CodexStateCleanupResult>((resolve, reject) => {
+    resolveTask = resolve;
+    rejectTask = reject;
+  });
+  codexStateCleanupWorkerChain = codexStateCleanupWorkerChain
+    .catch(() => {})
+    .then(async () => {
+      try {
+        const result = await runCodexStateCleanupWorker(task);
+        resolveTask(result);
+      } catch (error) {
+        rejectTask(error);
+      }
+    });
+  return promise;
+}
+
+/**
  * 安全清理本次已删除历史路径对应的 Codex sqlite 状态。
  */
 async function cleanupCodexStateForDeletedPathsSafely(filePaths: string[], reason: string): Promise<void> {
   const paths = Array.from(new Set(filePaths.filter((item) => typeof item === "string" && item.trim())));
   if (paths.length === 0) return;
   try {
-    const result = await cleanupCodexStateForDeletedHistoryFiles(paths, {
-      repairMissingRollouts: false,
-    });
+    const result = await enqueueCodexStateCleanupWorker({ kind: "cleanupDeleted", filePaths: paths });
     logCodexStateCleanupResult(reason, result);
   } catch (error) {
     try { console.warn(`codex state cleanup ${reason} failed`, error); } catch {}
@@ -130,7 +208,7 @@ function startCodexStateRepairOnce(reason: string): void {
   if (codexStateRepairStarted) return;
   codexStateRepairStarted = true;
   const timer = setTimeout(() => {
-    void repairMissingCodexRolloutRows()
+    void enqueueCodexStateCleanupWorker({ kind: "repairMissing" })
       .then((result) => logCodexStateCleanupResult(reason, result))
       .catch((error) => {
         try { console.warn(`codex state repair ${reason} failed`, error); } catch {}
@@ -2226,6 +2304,7 @@ if (!gotLock) {
   app.whenReady().then(async () => {
     // 加载统一调试配置并建立监听
     try { readDebugConfig(); applyDebugGlobalsFromConfig(); watchDebugConfig(); } catch {}
+    try { installMainEventLoopDiagnostics(); } catch {}
     // Windows：尽早设置 AUMID（建议在创建窗口前完成）
     try {
       if (process.platform === 'win32') {

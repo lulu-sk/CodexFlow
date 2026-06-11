@@ -11,12 +11,14 @@ import ErrorBoundary from '@/components/ErrorBoundary';
 import { applyTheme, getCachedThemeSetting } from '@/lib/theme';
 import { installPreventReloadShortcuts } from '@/lib/preventReloadShortcuts';
 import { installRendererLifecycleLogging } from '@/lib/renderer-lifecycle-log';
+import { installRendererRuntimeDiagnostics } from '@/lib/runtime-diagnostics';
 
 const cachedThemeSetting = getCachedThemeSetting();
 applyTheme(cachedThemeSetting ?? 'system');
 // 关键：阻止 Ctrl/Cmd+R、F5 导致的渲染进程 reload（不影响 xterm 接收按键）
 installPreventReloadShortcuts();
 installRendererLifecycleLogging();
+installRendererRuntimeDiagnostics();
 
 const root = createRoot(document.getElementById('root')!);
 
