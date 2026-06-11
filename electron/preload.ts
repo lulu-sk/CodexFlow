@@ -10,6 +10,55 @@ type OpenArgs = { terminal?: TerminalMode; distro?: string; wslPath?: string; wi
 type PtyDataPayload = { id: string; data: string };
 type PtyExitPayload = { id: string; exitCode?: number };
 
+const PRELOAD_SLOW_INVOKE_WARN_MS = 700;
+
+/**
+ * 读取单调时间，用于计算渲染侧 IPC 等待耗时。
+ */
+function nowMs(): number {
+  try { return typeof performance !== 'undefined' ? performance.now() : Date.now(); } catch { return Date.now(); }
+}
+
+/**
+ * 判断普通诊断日志是否开启，避免默认写入低优先级性能日志。
+ */
+function isDiagLogEnabled(): boolean {
+  try { return !!(globalThis as any).__cf_diag_log__; } catch { return false; }
+}
+
+/**
+ * 安装渲染侧 IPC invoke 耗时探针。
+ */
+function installInvokeTimingDiagnostics(): void {
+  try {
+    const key = Symbol.for("codexflow:ipcInvokeTimingInstalled");
+    const g: any = process as any;
+    if (g[key]) return;
+    g[key] = true;
+    const originalInvoke = ipcRenderer.invoke.bind(ipcRenderer);
+    (ipcRenderer as any).invoke = async (channel: string, ...args: any[]) => {
+      const startedAt = nowMs();
+      try {
+        const result = await originalInvoke(channel, ...args);
+        const durationMs = nowMs() - startedAt;
+        if (durationMs >= PRELOAD_SLOW_INVOKE_WARN_MS && isDiagLogEnabled() && channel !== 'utils.perfLog' && channel !== 'utils.perfLogCritical') {
+          try { void originalInvoke('utils.perfLog', { text: `[ipc.invoke.slow] channel=${String(channel)} ok=1 durationMs=${Math.round(durationMs)} args=${args.length}` }); } catch {}
+        }
+        return result;
+      } catch (error) {
+        const durationMs = nowMs() - startedAt;
+        if (durationMs >= PRELOAD_SLOW_INVOKE_WARN_MS && isDiagLogEnabled() && channel !== 'utils.perfLog' && channel !== 'utils.perfLogCritical') {
+          const message = String((error as any)?.message || error || "");
+          try { void originalInvoke('utils.perfLog', { text: `[ipc.invoke.slow] channel=${String(channel)} ok=0 durationMs=${Math.round(durationMs)} args=${args.length} error=${message.slice(0, 160)}` }); } catch {}
+        }
+        throw error;
+      }
+    };
+  } catch {}
+}
+
+installInvokeTimingDiagnostics();
+
 // ---- PTY 事件分发（关键性能修复）----
 //
 // - 旧实现：每次 `window.host.pty.onData(id, cb)` 都会 `ipcRenderer.on('pty:data', ...)` 注册一个监听器；
@@ -872,6 +921,7 @@ module.exports = {};
 // ---- 统一调试配置：同步关键项到全局只读缓存（供渲染层直接读取，避免多次 IPC）----
 function __applyDebugGlobals(cfg: any) {
   try {
+    (globalThis as any).__cf_diag_log__ = !!(cfg?.global?.diagLog);
     (globalThis as any).__cf_ui_debug_cache__ = !!(cfg?.renderer?.uiDebug);
     (globalThis as any).__cf_notif_debug_cache__ = !!(cfg?.renderer?.notifications?.debug);
     (globalThis as any).__cf_notif_menu_mode__ = String(cfg?.renderer?.notifications?.menu || 'auto');
