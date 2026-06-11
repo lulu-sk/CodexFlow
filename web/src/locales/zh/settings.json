@@ -289,6 +289,32 @@
       "desc": "子代理完成时也发送提醒。默认关闭，提醒内容会明确标记为子代理。"
     }
   },
+  "codexErrorHandling": {
+    "title": "Codex 报错处理",
+    "help": "在 Codex TUI 输出中识别常见错误，避免终端已经报错但状态仍显示 Working。",
+    "detection": {
+      "label": "识别 Codex 错误",
+      "desc": "仅扫描 Codex 标签页当前输出的小窗口，不读取完整终端历史。"
+    },
+    "reconnectNotification": {
+      "label": "重连中也发送错误通知",
+      "desc": "默认关闭。开启后会提示 Reconnecting 阶段的错误详情，但不会中断计时，也不会显示任务栏错误角标。"
+    },
+    "autoContinue": {
+      "label": "识别到错误后自动发送 continue",
+      "desc": "启用后可在下方单独选择适用的错误类型。"
+    },
+    "delay": {
+      "label": "自动 continue 间隔（秒）"
+    },
+    "attempts": {
+      "label": "最大尝试次数"
+    },
+    "errorTypes": {
+      "label": "自动 continue 错误类型"
+    },
+    "scope": "当前只支持 Codex CLI/TUI。自动 continue 发送前会再次校验标签页和设置，避免旧定时器误触发。"
+  },
   "codexAccount": {
     "label": "ChatGPT 账号",
     "help": "查看从 ChatGPT 桌面端同步的登录状态。",

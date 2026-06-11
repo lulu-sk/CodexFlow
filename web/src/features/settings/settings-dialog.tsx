@@ -65,6 +65,17 @@ import { resolveFirstAvailableFont, parseFontFamilyList } from "@/lib/font-utils
 import { resolveSystemTheme, subscribeSystemTheme, type ThemeMode, type ThemeSetting } from "@/lib/theme";
 import type { TerminalThemeId } from "@/types/terminal-theme";
 import type { AppSettings, ProviderEnv, ProviderItem } from "@/types/host";
+import {
+  CODEX_AUTO_CONTINUE_ERROR_KINDS,
+  CODEX_ERROR_AUTO_CONTINUE_ATTEMPTS_MAX,
+  CODEX_ERROR_AUTO_CONTINUE_ATTEMPTS_MIN,
+  CODEX_ERROR_AUTO_CONTINUE_DELAY_MAX_SECONDS,
+  CODEX_ERROR_AUTO_CONTINUE_DELAY_MIN_SECONDS,
+  normalizeCodexErrorHandlingPrefs,
+  type CodexAutoContinueErrorKind,
+  type CodexErrorHandlingPrefs,
+} from "@/lib/codex-error-handling-settings";
+import { getCodexCliErrorKindLabel } from "@/lib/codex-cli-error-classifier";
 
 type TerminalMode = NonNullable<AppSettings["terminal"]>;
 type SendMode = "write_only" | "write_and_enter";
@@ -158,6 +169,7 @@ export type SettingsDialogProps = {
     dragDropWarnOutsideProject: boolean;
     theme: ThemeSetting;
     notifications: NotificationPrefs;
+    codexErrorHandling: CodexErrorHandlingPrefs;
     network?: NetworkPrefs;
     codexAccount: CodexAccountPrefs;
     defaultIde: IdeOpenPrefs;
@@ -179,6 +191,7 @@ export type SettingsDialogProps = {
     dragDropWarnOutsideProject: boolean;
     theme: ThemeSetting;
     notifications: NotificationPrefs;
+    codexErrorHandling: CodexErrorHandlingPrefs;
     network: NetworkPrefs;
     codexAccount: CodexAccountPrefs;
     defaultIde: IdeOpenPrefs;
@@ -581,6 +594,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   const [pathStyle, setPathStyle] = useState<PathStyle>(values.projectPathStyle || "absolute");
   const [dragDropWarnOutsideProject, setDragDropWarnOutsideProject] = useState<boolean>(values.dragDropWarnOutsideProject ?? true);
   const [notifications, setNotifications] = useState<NotificationPrefs>(() => normalizeNotificationPrefs(values.notifications));
+  const [codexErrorHandling, setCodexErrorHandling] = useState<CodexErrorHandlingPrefs>(() => normalizeCodexErrorHandlingPrefs(values.codexErrorHandling));
   const [network, setNetwork] = useState<NetworkPrefs>({
     proxyEnabled: values.network?.proxyEnabled ?? true,
     proxyMode: values.network?.proxyMode ?? "system",
@@ -726,7 +740,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     setLang(values.locale || "en");
     setTheme(normalizeThemeSetting(values.theme));
     setMultiInstanceEnabled(!!values.multiInstanceEnabled);
-    setNotifications(values.notifications);
+    setNotifications(normalizeNotificationPrefs(values.notifications));
+    setCodexErrorHandling(normalizeCodexErrorHandlingPrefs(values.codexErrorHandling));
     setNetwork({
       proxyEnabled: values.network?.proxyEnabled ?? true,
       proxyMode: values.network?.proxyMode ?? "system",
@@ -1579,6 +1594,144 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                       </div>
                     </div>
                   </label>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardTitle>{t("settings:codexErrorHandling.title")}</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <p className="text-sm text-slate-500 dark:text-[var(--cf-text-secondary)]">
+                    {t("settings:codexErrorHandling.help")}
+                  </p>
+                  <label className="flex items-start gap-3 rounded-lg border border-slate-200/70 bg-white/60 px-3 py-3 shadow-sm dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:text-[var(--cf-text-primary)]">
+                    <input
+                      type="checkbox"
+                      className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)] dark:checked:bg-[var(--cf-accent)] dark:focus-visible:ring-[var(--cf-accent)]/40"
+                      checked={codexErrorHandling.detectionEnabled}
+                      onChange={(event) => {
+                        setCodexErrorHandling((prev) => normalizeCodexErrorHandlingPrefs({ ...prev, detectionEnabled: event.target.checked }));
+                      }}
+                    />
+                    <div>
+                      <div className="text-sm font-medium text-slate-800 dark:text-[var(--cf-text-primary)]">
+                        {t("settings:codexErrorHandling.detection.label")}
+                      </div>
+                      <p className="text-xs text-slate-500 dark:text-[var(--cf-text-secondary)]">
+                        {t("settings:codexErrorHandling.detection.desc")}
+                      </p>
+                    </div>
+                  </label>
+                  <label className="flex items-start gap-3 rounded-lg border border-slate-200/70 bg-white/60 px-3 py-3 shadow-sm dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:text-[var(--cf-text-primary)]">
+                    <input
+                      type="checkbox"
+                      className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 disabled:opacity-50 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)] dark:checked:bg-[var(--cf-accent)] dark:focus-visible:ring-[var(--cf-accent)]/40"
+                      checked={codexErrorHandling.notifyReconnectErrors}
+                      disabled={!codexErrorHandling.detectionEnabled}
+                      onChange={(event) => {
+                        setCodexErrorHandling((prev) => normalizeCodexErrorHandlingPrefs({ ...prev, notifyReconnectErrors: event.target.checked }));
+                      }}
+                    />
+                    <div>
+                      <div className="text-sm font-medium text-slate-800 dark:text-[var(--cf-text-primary)]">
+                        {t("settings:codexErrorHandling.reconnectNotification.label")}
+                      </div>
+                      <p className="text-xs text-slate-500 dark:text-[var(--cf-text-secondary)]">
+                        {t("settings:codexErrorHandling.reconnectNotification.desc")}
+                      </p>
+                    </div>
+                  </label>
+                  <label className="flex items-start gap-3 rounded-lg border border-slate-200/70 bg-white/60 px-3 py-3 shadow-sm dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:text-[var(--cf-text-primary)]">
+                    <input
+                      type="checkbox"
+                      className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 disabled:opacity-50 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)] dark:checked:bg-[var(--cf-accent)] dark:focus-visible:ring-[var(--cf-accent)]/40"
+                      checked={codexErrorHandling.autoContinueEnabled}
+                      disabled={!codexErrorHandling.detectionEnabled}
+                      onChange={(event) => {
+                        setCodexErrorHandling((prev) => normalizeCodexErrorHandlingPrefs({ ...prev, autoContinueEnabled: event.target.checked }));
+                      }}
+                    />
+                    <div>
+                      <div className="text-sm font-medium text-slate-800 dark:text-[var(--cf-text-primary)]">
+                        {t("settings:codexErrorHandling.autoContinue.label")}
+                      </div>
+                      <p className="text-xs text-slate-500 dark:text-[var(--cf-text-secondary)]">
+                        {t("settings:codexErrorHandling.autoContinue.desc")}
+                      </p>
+                    </div>
+                  </label>
+                  {codexErrorHandling.detectionEnabled && codexErrorHandling.autoContinueEnabled ? (
+                    <>
+                      <div className="rounded-lg border border-slate-200/70 bg-white/60 px-3 py-3 shadow-sm dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)]">
+                        <div className="text-sm font-medium text-slate-800 dark:text-[var(--cf-text-primary)]">
+                          {t("settings:codexErrorHandling.errorTypes.label")}
+                        </div>
+                        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                          {CODEX_AUTO_CONTINUE_ERROR_KINDS.map((kind) => {
+                            const checked = codexErrorHandling.autoContinueErrorKinds.includes(kind);
+                            return (
+                              <label key={kind} className="flex items-center gap-2 rounded-md border border-slate-200/60 bg-slate-50/70 px-2.5 py-2 text-xs text-slate-700 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)] dark:text-[var(--cf-text-primary)]">
+                                <input
+                                  type="checkbox"
+                                  className="h-3.5 w-3.5 rounded border-slate-300 text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)] dark:checked:bg-[var(--cf-accent)] dark:focus-visible:ring-[var(--cf-accent)]/40"
+                                  checked={checked}
+                                  onChange={(event) => {
+                                    setCodexErrorHandling((prev) => {
+                                      const selected = new Set<CodexAutoContinueErrorKind>(prev.autoContinueErrorKinds);
+                                      if (event.target.checked) selected.add(kind);
+                                      else selected.delete(kind);
+                                      return normalizeCodexErrorHandlingPrefs({
+                                        ...prev,
+                                        autoContinueErrorKinds: CODEX_AUTO_CONTINUE_ERROR_KINDS.filter((item) => selected.has(item)),
+                                      });
+                                    });
+                                  }}
+                                />
+                                <span>{getCodexCliErrorKindLabel(kind)}</span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div className="space-y-1.5">
+                          <Label htmlFor="codex-error-auto-continue-delay">
+                            {t("settings:codexErrorHandling.delay.label")}
+                          </Label>
+                          <Input
+                            id="codex-error-auto-continue-delay"
+                            type="number"
+                            min={CODEX_ERROR_AUTO_CONTINUE_DELAY_MIN_SECONDS}
+                            max={CODEX_ERROR_AUTO_CONTINUE_DELAY_MAX_SECONDS}
+                            step={5}
+                            value={codexErrorHandling.autoContinueDelaySeconds}
+                            onChange={(event) => {
+                              setCodexErrorHandling((prev) => normalizeCodexErrorHandlingPrefs({ ...prev, autoContinueDelaySeconds: event.target.value }));
+                            }}
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label htmlFor="codex-error-auto-continue-attempts">
+                            {t("settings:codexErrorHandling.attempts.label")}
+                          </Label>
+                          <Input
+                            id="codex-error-auto-continue-attempts"
+                            type="number"
+                            min={CODEX_ERROR_AUTO_CONTINUE_ATTEMPTS_MIN}
+                            max={CODEX_ERROR_AUTO_CONTINUE_ATTEMPTS_MAX}
+                            step={1}
+                            value={codexErrorHandling.autoContinueMaxAttempts}
+                            onChange={(event) => {
+                              setCodexErrorHandling((prev) => normalizeCodexErrorHandlingPrefs({ ...prev, autoContinueMaxAttempts: event.target.value }));
+                            }}
+                          />
+                        </div>
+                      </div>
+                      <p className="text-xs text-slate-500 dark:text-[var(--cf-text-secondary)]">
+                        {t("settings:codexErrorHandling.scope")}
+                      </p>
+                    </>
+                  ) : null}
                 </CardContent>
               </Card>
             </div>
@@ -2889,6 +3042,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     pathStyle,
     dragDropWarnOutsideProject,
     notifications,
+    codexErrorHandling,
     network,
     codexAccount,
     defaultIde,
@@ -3087,6 +3241,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
 	                        theme,
 	                        multiInstanceEnabled,
 	                        notifications,
+	                        codexErrorHandling: normalizeCodexErrorHandlingPrefs(codexErrorHandling),
 	                        network,
 	                        codexAccount,
                           defaultIde: {

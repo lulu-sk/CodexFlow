@@ -39,6 +39,23 @@ export type CodexAccountSettings = {
   lastSeenSignatureByRuntime?: Record<string, string>;
 };
 
+export type CodexErrorHandlingSettings = {
+  /** 是否识别 Codex TUI/CLI 输出中的错误文本 */
+  detectionEnabled?: boolean;
+  /** 是否在 Codex 仍处于 Reconnecting 阶段时也发送通知 */
+  notifyReconnectErrors?: boolean;
+  /** 是否在可恢复错误后自动发送 continue */
+  autoContinueEnabled?: boolean;
+  /** 自动 continue 适用的可恢复错误类型 */
+  autoContinueErrorKinds?: Array<'rateLimited' | 'concurrency' | 'networkStream' | 'badGateway' | 'serviceUnavailable' | 'highDemand' | 'modelCapacity' | 'forbidden' | 'badRequest'>;
+  /** 自动 continue 错误类型列表版本，用于一次性默认项迁移 */
+  autoContinueErrorKindsVersion?: number;
+  /** 自动发送 continue 前等待的秒数 */
+  autoContinueDelaySeconds?: number;
+  /** 单个错误连续自动 continue 的最大次数 */
+  autoContinueMaxAttempts?: number;
+};
+
 export type DragDropSettings = {
   /** 拖拽添加的资源不在当前项目目录时提醒（默认开启） */
   warnOutsideProject?: boolean;
@@ -149,6 +166,8 @@ export type AppSettings = {
   network?: NetworkSettings;
   /** ChatGPT/Codex 账号相关设置（记录账号、切换备份等） */
   codexAccount?: CodexAccountSettings;
+  /** Codex TUI/CLI 错误识别与自动 continue 设置 */
+  codexErrorHandling?: CodexErrorHandlingSettings;
   /** 终端字体栈（CSS font-family 字符串） */
   terminalFontFamily?: string;
   /** Claude Code 本地会话读取策略（仅影响索引/预览，不影响 CLI 本身）。 */
@@ -218,6 +237,33 @@ const DEFAULT_CODEX_ACCOUNT: CodexAccountSettings = {
   recordEnabled: false,
   lastSeenSignatureByRuntime: {},
 };
+const DEFAULT_CODEX_ERROR_HANDLING: Required<CodexErrorHandlingSettings> = {
+  detectionEnabled: true,
+  notifyReconnectErrors: false,
+  autoContinueEnabled: false,
+  autoContinueErrorKinds: ['networkStream', 'rateLimited', 'concurrency', 'modelCapacity', 'badGateway', 'serviceUnavailable', 'highDemand', 'forbidden', 'badRequest'],
+  autoContinueErrorKindsVersion: 3,
+  autoContinueDelaySeconds: 30,
+  autoContinueMaxAttempts: 2,
+};
+const CODEX_AUTO_CONTINUE_ERROR_KINDS_VERSION = 3;
+const LEGACY_CODEX_AUTO_CONTINUE_ERROR_KINDS_V1: Required<CodexErrorHandlingSettings>['autoContinueErrorKinds'] = [
+  'networkStream',
+  'rateLimited',
+  'concurrency',
+  'badGateway',
+  'serviceUnavailable',
+];
+const LEGACY_CODEX_AUTO_CONTINUE_ERROR_KINDS_V2: Required<CodexErrorHandlingSettings>['autoContinueErrorKinds'] = [
+  'networkStream',
+  'rateLimited',
+  'concurrency',
+  'modelCapacity',
+  'badGateway',
+  'serviceUnavailable',
+  'forbidden',
+  'badRequest',
+];
 const DEFAULT_CLAUDE_CODE: ClaudeCodeSettings = {
   readAgentHistory: false,
 };
@@ -324,6 +370,89 @@ function normalizeTerminalTheme(raw: unknown): TerminalThemeId {
     return 'catppuccin-latte';
   }
   return DEFAULT_TERMINAL_THEME;
+}
+
+/**
+ * 将输入值归一化为指定范围内的整数。
+ */
+function normalizeBoundedInteger(raw: unknown, fallback: number, min: number, max: number): number {
+  const numeric = Number(raw);
+  if (!Number.isFinite(numeric)) return fallback;
+  const rounded = Math.round(numeric);
+  return Math.min(max, Math.max(min, rounded));
+}
+
+/**
+ * 归一化自动 continue 错误类型列表版本，缺失版本按旧配置处理。
+ */
+function normalizeCodexAutoContinueErrorKindsVersion(raw: unknown): number {
+  const numeric = Number(raw);
+  if (!Number.isFinite(numeric) || numeric < 0) return 0;
+  return Math.min(CODEX_AUTO_CONTINUE_ERROR_KINDS_VERSION, Math.floor(numeric));
+}
+
+/**
+ * 判断两个错误类型列表是否包含同一组类型。
+ */
+function hasSameCodexAutoContinueErrorKinds(
+  left: Required<CodexErrorHandlingSettings>['autoContinueErrorKinds'],
+  right: Required<CodexErrorHandlingSettings>['autoContinueErrorKinds'],
+): boolean {
+  return (
+    left.length === right.length &&
+    right.every((kind) => left.includes(kind))
+  );
+}
+
+/**
+ * 判断旧配置是否仍是当时版本的默认全选列表。
+ */
+function shouldUpgradeLegacyCodexAutoContinueDefaultKinds(
+  kinds: Required<CodexErrorHandlingSettings>['autoContinueErrorKinds'],
+  version: number,
+): boolean {
+  if (version < 2 && hasSameCodexAutoContinueErrorKinds(kinds, LEGACY_CODEX_AUTO_CONTINUE_ERROR_KINDS_V1)) return true;
+  if (version < 3 && hasSameCodexAutoContinueErrorKinds(kinds, LEGACY_CODEX_AUTO_CONTINUE_ERROR_KINDS_V2)) return true;
+  return false;
+}
+
+/**
+ * 归一化自动 continue 错误类型列表，保留用户显式清空的选择。
+ */
+function normalizeCodexAutoContinueErrorKinds(raw: unknown, version: number): Required<CodexErrorHandlingSettings>['autoContinueErrorKinds'] {
+  if (!Array.isArray(raw)) return [...DEFAULT_CODEX_ERROR_HANDLING.autoContinueErrorKinds];
+  const allowed = new Set(DEFAULT_CODEX_ERROR_HANDLING.autoContinueErrorKinds);
+  const next: Required<CodexErrorHandlingSettings>['autoContinueErrorKinds'] = [];
+  for (const item of raw) {
+    const kind = String(item || '').trim() as Required<CodexErrorHandlingSettings>['autoContinueErrorKinds'][number];
+    if (!allowed.has(kind) || next.includes(kind)) continue;
+    next.push(kind);
+  }
+  if (shouldUpgradeLegacyCodexAutoContinueDefaultKinds(next, version)) {
+    return [...DEFAULT_CODEX_ERROR_HANDLING.autoContinueErrorKinds];
+  }
+  return next;
+}
+
+/**
+ * 归一化 Codex 错误处理设置：补齐默认值并限制自动 continue 参数范围。
+ */
+function normalizeCodexErrorHandlingSettings(raw: unknown): CodexErrorHandlingSettings {
+  try {
+    const obj = raw && typeof raw === 'object' ? (raw as any) : {};
+    const autoContinueErrorKindsVersion = normalizeCodexAutoContinueErrorKindsVersion(obj.autoContinueErrorKindsVersion);
+    return {
+      detectionEnabled: obj.detectionEnabled !== false,
+      notifyReconnectErrors: obj.notifyReconnectErrors === true,
+      autoContinueEnabled: obj.autoContinueEnabled === true,
+      autoContinueErrorKinds: normalizeCodexAutoContinueErrorKinds(obj.autoContinueErrorKinds, autoContinueErrorKindsVersion),
+      autoContinueErrorKindsVersion: CODEX_AUTO_CONTINUE_ERROR_KINDS_VERSION,
+      autoContinueDelaySeconds: normalizeBoundedInteger(obj.autoContinueDelaySeconds, DEFAULT_CODEX_ERROR_HANDLING.autoContinueDelaySeconds, 5, 600),
+      autoContinueMaxAttempts: normalizeBoundedInteger(obj.autoContinueMaxAttempts, DEFAULT_CODEX_ERROR_HANDLING.autoContinueMaxAttempts, 0, 10),
+    };
+  } catch {
+    return { ...DEFAULT_CODEX_ERROR_HANDLING };
+  }
 }
 
 /**
@@ -525,6 +654,7 @@ function mergeWithDefaults(raw: Partial<AppSettings>, preloadedDistros?: DistroI
     notifications: { ...DEFAULT_NOTIFICATIONS },
     network: { ...DEFAULT_NETWORK },
     codexAccount: { ...DEFAULT_CODEX_ACCOUNT },
+    codexErrorHandling: { ...DEFAULT_CODEX_ERROR_HANDLING },
     dragDrop: { ...DEFAULT_DRAG_DROP },
     claudeCode: { ...DEFAULT_CLAUDE_CODE },
     gitWorktree: { ...DEFAULT_GIT_WORKTREE },
@@ -574,6 +704,7 @@ function mergeWithDefaults(raw: Partial<AppSettings>, preloadedDistros?: DistroI
       return { ...DEFAULT_CODEX_ACCOUNT };
     }
   })();
+  merged.codexErrorHandling = normalizeCodexErrorHandlingSettings((raw as any)?.codexErrorHandling);
   merged.distro = pickPreferredDistro(merged.distro, distros);
   merged.theme = normalizeTheme((raw as any)?.theme ?? merged.theme);
   merged.terminalTheme = normalizeTerminalTheme((raw as any)?.terminalTheme ?? merged.terminalTheme);

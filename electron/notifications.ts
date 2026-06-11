@@ -11,6 +11,8 @@ import { activateWindowPreservingState } from './windowActivation';
 
 type BadgePayload = {
   count?: number;
+  errorCount?: number;
+  hasError?: boolean;
   completedCount?: number;
   runningCount?: number;
   hasRunningTask?: boolean;
@@ -27,6 +29,7 @@ type CompletionPayload = {
 };
 
 const RUNNING_OVERLAY_LABEL = 'running';
+const ERROR_OVERLAY_LABEL = 'error';
 const OVERLAY_CACHE = new Map<string, Electron.NativeImage>();
 const BADGE_CANVAS_SIZE = 32;
 const GLYPH_WIDTH = 5;
@@ -315,6 +318,25 @@ function renderRunningBitmap(): Buffer {
   return buffer;
 }
 
+/**
+ * 渲染任务失败使用的红色感叹号覆盖图位图。
+ */
+function renderErrorBitmap(): Buffer {
+  const buffer = Buffer.alloc(BADGE_CANVAS_SIZE * BADGE_CANVAS_SIZE * 4, 0);
+  drawCircle(buffer);
+  for (let y = 7; y <= 20; y += 1) {
+    for (let x = 14; x <= 17; x += 1) {
+      setPixel(buffer, x, y, 255, 255, 255, 255);
+    }
+  }
+  for (let y = 24; y <= 27; y += 1) {
+    for (let x = 14; x <= 17; x += 1) {
+      setPixel(buffer, x, y, 255, 255, 255, 255);
+    }
+  }
+  return buffer;
+}
+
 function logNotification(message: string) {
   try { perfLogger.log(`[notifications] ${message}`); } catch {}
 }
@@ -333,7 +355,11 @@ function createOverlayIcon(label: string): Electron.NativeImage {
   const cached = OVERLAY_CACHE.get(label);
   if (cached) return cached;
   const text = label.length > 3 ? label.slice(0, 3) : label;
-  const bitmap = label === RUNNING_OVERLAY_LABEL ? renderRunningBitmap() : renderBadgeBitmap(text);
+  const bitmap = label === RUNNING_OVERLAY_LABEL
+    ? renderRunningBitmap()
+    : label === ERROR_OVERLAY_LABEL
+      ? renderErrorBitmap()
+      : renderBadgeBitmap(text);
   let image = nativeImage.createFromBitmap(bitmap, {
     width: BADGE_CANVAS_SIZE,
     height: BADGE_CANVAS_SIZE,
@@ -407,18 +433,27 @@ export function registerNotificationIPC(getWindow: () => BrowserWindow | null, o
   })();
   logNotification(`register IPC appUserModelId=${appUserModelId || 'none'}`);
   /**
-   * 按完成数优先、运行中次之的规则同步系统任务栏角标。
+   * 按错误优先、完成数次之、运行中最后的规则同步系统任务栏角标。
    */
-  const updateBadge = (completedCount: number, runningCount: number) => {
+  const updateBadge = (errorCount: number, completedCount: number, runningCount: number) => {
     const enabled = shouldEnableBadge();
-    const safeCompleted = enabled ? completedCount : 0;
-    const safeRunning = enabled && safeCompleted <= 0 ? runningCount : 0;
-    logNotification(`updateBadge completed=${completedCount} running=${runningCount} effectiveCompleted=${safeCompleted} effectiveRunning=${safeRunning} enabled=${enabled} platform=${process.platform}`);
-    try { app.setBadgeCount(safeCompleted); } catch {}
+    const safeError = enabled ? errorCount : 0;
+    const safeCompleted = enabled && safeError <= 0 ? completedCount : 0;
+    const safeRunning = enabled && safeError <= 0 && safeCompleted <= 0 ? runningCount : 0;
+    logNotification(`updateBadge error=${errorCount} completed=${completedCount} running=${runningCount} effectiveError=${safeError} effectiveCompleted=${safeCompleted} effectiveRunning=${safeRunning} enabled=${enabled} platform=${process.platform}`);
+    try { app.setBadgeCount(safeError > 0 ? safeError : safeCompleted); } catch {}
     if (process.platform === 'win32') {
       const win = getWindow();
       if (!win) return;
-      if (safeCompleted > 0) {
+      if (safeError > 0) {
+        const icon = createOverlayIcon(ERROR_OVERLAY_LABEL);
+        try {
+          win.setOverlayIcon(icon, 'error');
+          logNotification('setOverlayIcon label=error');
+        } catch (error) {
+          logNotification(`setOverlayIcon error failed: ${String(error)}`);
+        }
+      } else if (safeCompleted > 0) {
         const label = labelForCount(safeCompleted);
         const icon = createOverlayIcon(label);
         try {
@@ -450,10 +485,11 @@ export function registerNotificationIPC(getWindow: () => BrowserWindow | null, o
    * 接收渲染进程推送的任务栏角标状态。
    */
   const onSetBadge = (_event: Electron.IpcMainEvent, payload: BadgePayload) => {
+    const errorCount = payload?.hasError ? Math.max(1, coerceCount(payload?.errorCount)) : coerceCount(payload?.errorCount);
     const completedCount = coerceCount(typeof payload?.completedCount === 'number' ? payload.completedCount : payload?.count);
     const runningCount = payload?.hasRunningTask ? Math.max(1, coerceCount(payload?.runningCount)) : coerceCount(payload?.runningCount);
-    logNotification(`setBadge IPC completed=${completedCount} running=${runningCount}`);
-    updateBadge(completedCount, runningCount);
+    logNotification(`setBadge IPC error=${errorCount} completed=${completedCount} running=${runningCount}`);
+    updateBadge(errorCount, completedCount, runningCount);
   };
 
   const onAgentComplete = (_event: Electron.IpcMainEvent, payload: CompletionPayload) => {

@@ -69,6 +69,21 @@ import TerminalManager from "@/lib/TerminalManager";
 import { isGeminiProvider, writeBracketedPaste, writeBracketedPasteAndEnter } from "@/lib/terminal-send";
 import { oscBufferDefaults, trimOscBuffer } from "@/lib/oscNotificationBuffer";
 import { collectRetainedAgentTurnTabIds, pruneAgentTurnHistory, pruneAgentTurnTimers } from "@/lib/agent-turn-timer";
+import {
+  classifyCodexCliErrorText,
+  detectCodexCliRuntimeStatusText,
+  getCodexCliErrorKindLabel,
+  shouldDelayCodexCliFinalErrorForReconnect,
+  stripAnsiForCodexErrorScan,
+  type CodexCliErrorClassification,
+  type CodexCliErrorKind,
+} from "@/lib/codex-cli-error-classifier";
+import {
+  DEFAULT_CODEX_ERROR_HANDLING_PREFS,
+  isCodexAutoContinueErrorKind,
+  normalizeCodexErrorHandlingPrefs,
+  type CodexErrorHandlingPrefs,
+} from "@/lib/codex-error-handling-settings";
 import { resolveDirRowDropPosition } from "@/lib/dir-tree-dnd";
 import HistoryCopyButton from "@/components/history/history-copy-button";
 import { useHistoryImageContextMenu } from "@/components/history/history-image-context-menu";
@@ -347,14 +362,53 @@ type ResolveHistoryActionTargetOptions = {
   allowSelectedProjectFallback?: boolean;
 };
 
-type AgentTurnTimerStatus = "working" | "done" | "interrupted";
+type AgentTurnTimerStatus = "working" | "done" | "interrupted" | "failed";
 
 type AgentTurnTimerState = {
   status: AgentTurnTimerStatus;
   startedAt: number;
   elapsedMs: number;
   finishedAt?: number;
+  reconnectAttempt?: number;
+  reconnectMaxAttempts?: number;
+  reconnectErrorKind?: CodexCliErrorKind;
+  reconnectErrorMessage?: string;
+  errorKind?: CodexCliErrorKind;
+  errorMessage?: string;
+  errorRetryable?: boolean;
+  errorAcknowledgedAt?: number;
+  autoContinueScheduledAt?: number;
+  autoContinueAttempt?: number;
+  autoContinueMaxAttempts?: number;
 };
+
+type CodexErrorScanState = {
+  buffer: string;
+  lastReconnectErrorKey?: string;
+  lastFinalErrorKey?: string;
+  lastReconnectStatusAt?: number;
+  pendingErrorKey?: string;
+  pendingErrorKind?: CodexCliErrorKind;
+  autoContinueAttempts: number;
+  autoContinueTimerId?: number;
+  pendingFinalErrorKey?: string;
+  pendingFinalErrorKind?: CodexCliErrorKind;
+  pendingFinalError?: CodexCliErrorClassification;
+  pendingFinalErrorAt?: number;
+  pendingFinalErrorTimerId?: number;
+};
+
+const CODEX_ERROR_SCAN_MAX_BUFFER_LENGTH = 16 * 1024;
+const CODEX_RECONNECT_DETAIL_GRACE_MS = 10_000;
+const CODEX_RECONNECT_AFTER_ERROR_GRACE_MS = 10_000;
+
+/**
+ * 中文说明：生成 Codex 错误去重键，避免同一段终端输出反复触发处理。
+ */
+function buildCodexCliErrorKey(classification: CodexCliErrorClassification): string {
+  const attempt = classification.reconnectAttempt ? `:${classification.reconnectAttempt}/${classification.reconnectMaxAttempts || "?"}` : "";
+  return `${classification.phase}:${classification.kind}${attempt}:${classification.matchedText}`;
+}
 
 type CompletionEventSource = "osc" | "external" | "manual" | "unknown";
 type GeminiExternalEditorShortcut = "ctrlG" | "ctrlX" | "auto";
@@ -1636,6 +1690,8 @@ export default function CodexFlowManagerUI() {
   const tm = terminalManagerRef.current;
   const [notificationPrefs, setNotificationPrefs] = useState<CompletionPreferences>(DEFAULT_COMPLETION_PREFS);
   const notificationPrefsRef = useRef<CompletionPreferences>(DEFAULT_COMPLETION_PREFS);
+  const [codexErrorHandlingPrefs, setCodexErrorHandlingPrefs] = useState<CodexErrorHandlingPrefs>(DEFAULT_CODEX_ERROR_HANDLING_PREFS);
+  const codexErrorHandlingPrefsRef = useRef<CodexErrorHandlingPrefs>(DEFAULT_CODEX_ERROR_HANDLING_PREFS);
   const [pendingCompletions, setPendingCompletions] = useState<Record<string, number>>({});
   const pendingCompletionsRef = useRef<Record<string, number>>({});
   const [agentTurnTimerByTab, setAgentTurnTimerByTab] = useState<Record<string, AgentTurnTimerState>>({});
@@ -1656,6 +1712,7 @@ export default function CodexFlowManagerUI() {
   const pendingOscCompletionPreviewRef = useRef<Record<string, string>>({});
   const resumeCompletionGuardByTabRef = useRef<Record<string, number>>({});
   const ptyNotificationBuffersRef = useRef<Record<string, string>>({});
+  const codexErrorScanByTabRef = useRef<Record<string, CodexErrorScanState>>({});
   const ptyListenersRef = useRef<Record<string, () => void>>({});
   const ptyToTabRef = useRef<Record<string, string>>({});
   const tabProjectRef = useRef<Record<string, string>>({});
@@ -1675,6 +1732,7 @@ export default function CodexFlowManagerUI() {
 
   useEffect(() => { editingTabIdRef.current = editingTabId; }, [editingTabId]);
   useEffect(() => { notificationPrefsRef.current = notificationPrefs; }, [notificationPrefs]);
+  useEffect(() => { codexErrorHandlingPrefsRef.current = codexErrorHandlingPrefs; }, [codexErrorHandlingPrefs]);
   useEffect(() => { agentTurnTimerByTabRef.current = agentTurnTimerByTab; }, [agentTurnTimerByTab]);
   useEffect(() => { agentTurnHistoryByTabRef.current = agentTurnHistoryByTab; }, [agentTurnHistoryByTab]);
   useEffect(() => { tabsByProjectRef.current = tabsByProject; }, [tabsByProject]);
@@ -1688,6 +1746,15 @@ export default function CodexFlowManagerUI() {
       }
       pendingOscCompletionTimersRef.current = {};
       pendingOscCompletionPreviewRef.current = {};
+      for (const state of Object.values(codexErrorScanByTabRef.current)) {
+        if (typeof state?.autoContinueTimerId === "number") {
+          try { window.clearTimeout(state.autoContinueTimerId); } catch {}
+        }
+        if (typeof state?.pendingFinalErrorTimerId === "number") {
+          try { window.clearTimeout(state.pendingFinalErrorTimerId); } catch {}
+        }
+      }
+      codexErrorScanByTabRef.current = {};
     };
   }, []);
 
@@ -2496,12 +2563,58 @@ export default function CodexFlowManagerUI() {
   }, []);
 
   /**
+   * 中文说明：清理指定标签页待执行的 Codex 自动 continue 定时器。
+   */
+  const clearCodexErrorAutoContinueTimer = useCallback((tabId: string, source: string): void => {
+    const id = String(tabId || "").trim();
+    if (!id) return;
+    const state = codexErrorScanByTabRef.current[id];
+    if (!state) return;
+    if (typeof state.autoContinueTimerId === "number") {
+      try { window.clearTimeout(state.autoContinueTimerId); } catch {}
+      notifyLog(`codexError.autoContinue.clear tab=${id} source=${source}`);
+    }
+    codexErrorScanByTabRef.current[id] = {
+      ...state,
+      autoContinueTimerId: undefined,
+      pendingErrorKey: undefined,
+      pendingErrorKind: undefined,
+    };
+  }, [notifyLog]);
+
+  /**
+   * 中文说明：重置指定标签页的 Codex 错误扫描状态，可选择保留自动 continue 尝试次数。
+   */
+  const resetCodexErrorScanForTab = useCallback((tabId: string, source: string, options?: { keepAttempts?: boolean }): void => {
+    const id = String(tabId || "").trim();
+    if (!id) return;
+    const state = codexErrorScanByTabRef.current[id];
+    if (state && typeof state.autoContinueTimerId === "number") {
+      try { window.clearTimeout(state.autoContinueTimerId); } catch {}
+      notifyLog(`codexError.scan.resetTimer tab=${id} source=${source}`);
+    }
+    if (state && typeof state.pendingFinalErrorTimerId === "number") {
+      try { window.clearTimeout(state.pendingFinalErrorTimerId); } catch {}
+      notifyLog(`codexError.scan.resetPendingFinalTimer tab=${id} source=${source}`);
+    }
+    if (options?.keepAttempts && state) {
+      codexErrorScanByTabRef.current[id] = {
+        buffer: "",
+        autoContinueAttempts: state.autoContinueAttempts || 0,
+      };
+      return;
+    }
+    delete codexErrorScanByTabRef.current[id];
+  }, [notifyLog]);
+
+  /**
    * 中文说明：在用户发送消息或手动继续计时时启动计时；若当前标签页已在计时中则保持不变，避免重复启动。
    */
   const startAgentTurnTimer = useCallback((tabId: string) => {
     const id = String(tabId || "").trim();
     if (!id) return;
     if (agentTurnTimerByTabRef.current[id]?.status === "working") return;
+    resetCodexErrorScanForTab(id, "timer-start", { keepAttempts: true });
     const now = Date.now();
     const nextState: AgentTurnTimerState = {
       status: "working",
@@ -2521,7 +2634,7 @@ export default function CodexFlowManagerUI() {
       };
     });
     notifyLog(`agentTimer.start tab=${id}`);
-  }, [notifyLog]);
+  }, [notifyLog, resetCodexErrorScanForTab]);
 
   /**
    * 中文说明：在收到代理完成通知时结束计时，并固化本轮总耗时，同时记入历史。
@@ -2560,8 +2673,82 @@ export default function CodexFlowManagerUI() {
       ...hPrev,
       [id]: nextHistory,
     }));
-    
+
+    resetCodexErrorScanForTab(id, "timer-done");
     notifyLog(`agentTimer.done tab=${id}`);
+  }, [notifyLog, resetCodexErrorScanForTab]);
+
+  /**
+   * 中文说明：记录 Codex 当前处于 Reconnecting 阶段；计时仍保持 working，不写入历史。
+   */
+  const markAgentTurnReconnecting = useCallback((tabId: string, classification: CodexCliErrorClassification): void => {
+    const id = String(tabId || "").trim();
+    if (!id) return;
+    const current = agentTurnTimerByTabRef.current[id];
+    if (!current || current.status !== "working") return;
+    const nextState: AgentTurnTimerState = {
+      ...current,
+      reconnectAttempt: classification.reconnectAttempt,
+      reconnectMaxAttempts: classification.reconnectMaxAttempts,
+      reconnectErrorKind: classification.kind,
+      reconnectErrorMessage: classification.matchedText,
+    };
+    agentTurnTimerByTabRef.current = {
+      ...agentTurnTimerByTabRef.current,
+      [id]: nextState,
+    };
+    setAgentTurnTimerByTab((prev) => {
+      const latest = prev[id];
+      if (!latest || latest.status !== "working") return prev;
+      return {
+        ...prev,
+        [id]: {
+          ...latest,
+          reconnectAttempt: classification.reconnectAttempt,
+          reconnectMaxAttempts: classification.reconnectMaxAttempts,
+          reconnectErrorKind: classification.kind,
+          reconnectErrorMessage: classification.matchedText,
+        },
+      };
+    });
+    notifyLog(`agentTimer.reconnecting tab=${id} kind=${classification.kind} attempt=${classification.reconnectAttempt || "?"}/${classification.reconnectMaxAttempts || "?"}`);
+  }, [notifyLog]);
+
+  /**
+   * 中文说明：清理 Codex Reconnecting 附加状态，恢复普通 working 展示。
+   */
+  const clearAgentTurnReconnecting = useCallback((tabId: string, source: string): void => {
+    const id = String(tabId || "").trim();
+    if (!id) return;
+    const current = agentTurnTimerByTabRef.current[id];
+    if (!current || current.status !== "working") return;
+    if (!current.reconnectAttempt && !current.reconnectErrorKind && !current.reconnectErrorMessage) return;
+    const nextCurrent: AgentTurnTimerState = {
+      ...current,
+      reconnectAttempt: undefined,
+      reconnectMaxAttempts: undefined,
+      reconnectErrorKind: undefined,
+      reconnectErrorMessage: undefined,
+    };
+    agentTurnTimerByTabRef.current = {
+      ...agentTurnTimerByTabRef.current,
+      [id]: nextCurrent,
+    };
+    setAgentTurnTimerByTab((prev) => {
+      const latest = prev[id];
+      if (!latest || latest.status !== "working") return prev;
+      return {
+        ...prev,
+        [id]: {
+          ...latest,
+          reconnectAttempt: undefined,
+          reconnectMaxAttempts: undefined,
+          reconnectErrorKind: undefined,
+          reconnectErrorMessage: undefined,
+        },
+      };
+    });
+    notifyLog(`agentTimer.reconnect.clear tab=${id} source=${source}`);
   }, [notifyLog]);
 
   /**
@@ -2601,7 +2788,58 @@ export default function CodexFlowManagerUI() {
       [id]: nextHistory,
     }));
 
+    resetCodexErrorScanForTab(id, `timer-interrupt:${source}`);
     notifyLog(`agentTimer.interrupt tab=${id} source=${source}`);
+  }, [notifyLog, resetCodexErrorScanForTab]);
+
+  /**
+   * 中文说明：在识别到 Codex CLI 错误时结束本轮计时，并记录失败原因与自动 continue 计划。
+   */
+  const failAgentTurnTimer = useCallback((tabId: string, classification: CodexCliErrorClassification, autoContinue?: {
+    scheduledAt?: number;
+    attempt?: number;
+    maxAttempts?: number;
+  }) => {
+    const id = String(tabId || "").trim();
+    if (!id) return;
+    const now = Date.now();
+
+    const current = agentTurnTimerByTabRef.current[id];
+    if (!current || current.status !== "working") return;
+
+    const elapsedMs = Math.max(0, now - current.startedAt);
+    const failed: AgentTurnTimerState = {
+      ...current,
+      status: "failed",
+      elapsedMs,
+      finishedAt: now,
+      errorKind: classification.kind,
+      errorMessage: classification.matchedText,
+      errorRetryable: classification.retryable,
+      autoContinueScheduledAt: autoContinue?.scheduledAt,
+      autoContinueAttempt: autoContinue?.attempt,
+      autoContinueMaxAttempts: autoContinue?.maxAttempts,
+    };
+    const nextHistory = [failed, ...(agentTurnHistoryByTabRef.current[id] || [])].slice(0, MAX_AGENT_TURN_HISTORY);
+    agentTurnTimerByTabRef.current = {
+      ...agentTurnTimerByTabRef.current,
+      [id]: failed,
+    };
+    agentTurnHistoryByTabRef.current = {
+      ...agentTurnHistoryByTabRef.current,
+      [id]: nextHistory,
+    };
+
+    setAgentTurnTimerByTab((prev) => ({
+      ...prev,
+      [id]: failed,
+    }));
+    setAgentTurnHistoryByTab((hPrev) => ({
+      ...hPrev,
+      [id]: nextHistory,
+    }));
+
+    notifyLog(`agentTimer.failed tab=${id} kind=${classification.kind} retryable=${classification.retryable ? "1" : "0"}`);
   }, [notifyLog]);
 
   /**
@@ -2621,11 +2859,49 @@ export default function CodexFlowManagerUI() {
       delete next[id];
       return next;
     });
+    resetCodexErrorScanForTab(id, `timer-cancel:${source}`);
     notifyLog(`agentTimer.cancel tab=${id} source=${source}`);
+  }, [notifyLog, resetCodexErrorScanForTab]);
+
+  /**
+   * 用户已查看失败标签页后清理任务栏错误角标，当前失败计时状态与自动 continue 倒计时继续展示。
+   */
+  const acknowledgeAgentTurnFailure = useCallback((tabId: string, source: string): void => {
+    const id = String(tabId || "").trim();
+    if (!id) return;
+    const current = agentTurnTimerByTabRef.current[id];
+    if (!current || current.status !== "failed") return;
+    const acknowledged: AgentTurnTimerState = {
+      ...current,
+      errorAcknowledgedAt: Date.now(),
+    };
+    agentTurnTimerByTabRef.current = {
+      ...agentTurnTimerByTabRef.current,
+      [id]: acknowledged,
+    };
+    setAgentTurnTimerByTab((prev) => {
+      if (prev[id]?.status !== "failed") return prev;
+      return {
+        ...prev,
+        [id]: {
+          ...prev[id],
+          errorAcknowledgedAt: acknowledged.errorAcknowledgedAt,
+        },
+      };
+    });
+    try { clearPendingForTab(id); } catch {}
+    notifyLog(`agentTimer.failed.ack tab=${id} source=${source}`);
   }, [notifyLog]);
 
   /**
-   * 中文说明：生成标签页计时状态展示文本，支持“计时中/中断/已完成”三种状态。
+   * 中文说明：将 Codex 错误类别转换为状态条可读文案。
+   */
+  const resolveCodexErrorKindLabel = useCallback((kind: CodexCliErrorKind | undefined): string => {
+    return getCodexCliErrorKindLabel(kind);
+  }, []);
+
+  /**
+   * 中文说明：生成标签页计时状态展示文本，支持“计时中/中断/失败/已完成”状态。
    */
   const resolveAgentTurnStatusText = useCallback((tabId: string): string => {
     const id = String(tabId || "").trim();
@@ -2633,10 +2909,35 @@ export default function CodexFlowManagerUI() {
     const state = agentTurnTimerByTab[id];
     if (!state) return "";
     const elapsed = formatElapsedClock(resolveAgentTurnElapsedMs(state));
-    if (state.status === "working") return t("terminal:agentWorking", { elapsed }) as string;
+    if (state.status === "working") {
+      if (state.reconnectAttempt || state.reconnectErrorKind) {
+        return t("terminal:agentReconnecting", {
+          elapsed,
+          attempt: state.reconnectAttempt || "?",
+          max: state.reconnectMaxAttempts || "?",
+          reason: resolveCodexErrorKindLabel(state.reconnectErrorKind),
+        }) as string;
+      }
+      return t("terminal:agentWorking", { elapsed }) as string;
+    }
     if (state.status === "interrupted") return t("terminal:agentInterrupted", { elapsed }) as string;
+    if (state.status === "failed") {
+      const reason = resolveCodexErrorKindLabel(state.errorKind);
+      const scheduledAt = Number(state.autoContinueScheduledAt || 0);
+      const remainingSeconds = scheduledAt > Date.now() ? Math.ceil((scheduledAt - Date.now()) / 1000) : 0;
+      if (remainingSeconds > 0 && state.autoContinueAttempt && state.autoContinueMaxAttempts) {
+        return t("terminal:agentFailedAutoContinue", {
+          elapsed,
+          reason,
+          seconds: remainingSeconds,
+          attempt: state.autoContinueAttempt,
+          max: state.autoContinueMaxAttempts,
+        }) as string;
+      }
+      return t("terminal:agentFailed", { elapsed, reason }) as string;
+    }
     return t("terminal:agentDone", { elapsed }) as string;
-  }, [agentTurnClockTick, agentTurnTimerByTab, t]);
+  }, [agentTurnClockTick, agentTurnTimerByTab, resolveCodexErrorKindLabel, t]);
 
   /**
    * 中文说明：打开计时状态的右键菜单，提供“继续计时/取消计时”等操作入口。
@@ -2657,7 +2958,9 @@ export default function CodexFlowManagerUI() {
     const state = id ? agentTurnTimerByTab[id] : undefined;
     if (!state) return null;
     const working = state?.status === "working";
+    const reconnecting = working && !!(state.reconnectAttempt || state.reconnectErrorKind || state.reconnectErrorMessage);
     const interrupted = state?.status === "interrupted";
+    const failed = state?.status === "failed";
     const statusText = resolveAgentTurnStatusText(id);
 
     // 计算总耗时（包含历史和当前进行中的）
@@ -2675,19 +2978,24 @@ export default function CodexFlowManagerUI() {
             onContextMenu={(event) => {
               openAgentTurnContextMenu(event, id);
             }}
-            title={t("terminal:timerContextHint") as string}
+            title={failed && state.errorMessage ? state.errorMessage : (reconnecting && state.reconnectErrorMessage ? state.reconnectErrorMessage : (t("terminal:timerContextHint") as string))}
           >
             {working ? (
-              <span className="flex items-center gap-1.5">
+              <span className={`flex items-center gap-1.5 ${reconnecting ? "text-amber-600 dark:text-amber-400" : ""}`}>
                 <span className="relative flex h-1.5 w-1.5">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-sky-500"></span>
+                  <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${reconnecting ? "bg-amber-400" : "bg-sky-400"}`}></span>
+                  <span className={`relative inline-flex rounded-full h-1.5 w-1.5 ${reconnecting ? "bg-amber-500 dark:bg-amber-400" : "bg-sky-500"}`}></span>
                 </span>
                 {statusText}
               </span>
             ) : interrupted ? (
               <span className="flex items-center gap-1.5">
                 <span className="h-1.5 w-1.5 rounded-full bg-amber-500 dark:bg-amber-400"></span>
+                {statusText}
+              </span>
+            ) : failed ? (
+              <span className="flex items-center gap-1.5 text-red-600 dark:text-red-400">
+                <span className="h-1.5 w-1.5 rounded-full bg-red-500 dark:bg-red-400"></span>
                 {statusText}
               </span>
             ) : (
@@ -2728,6 +3036,7 @@ export default function CodexFlowManagerUI() {
                         </span>
                         <div className="flex items-center gap-1.5 flex-shrink-0">
                           {h.status === "interrupted" && <span className="h-1.5 w-1.5 rounded-full bg-amber-400" title={t("terminal:agentInterrupted", { elapsed: formatElapsedClock(h.elapsedMs) }) as string}></span>}
+                          {h.status === "failed" && <span className="h-1.5 w-1.5 rounded-full bg-red-400" title={t("terminal:agentFailed", { elapsed: formatElapsedClock(h.elapsedMs), reason: resolveCodexErrorKindLabel(h.errorKind) }) as string}></span>}
                           <span className="font-mono">{formatElapsedClock(h.elapsedMs)}</span>
                         </div>
                       </div>
@@ -2746,14 +3055,16 @@ export default function CodexFlowManagerUI() {
    * 中文说明：判断是否存在任意“进行中”计时；存在时驱动 1 秒一次的 UI 刷新。
    */
   const hasWorkingAgentTimer = useMemo(() => {
+    const now = Date.now();
     for (const state of Object.values(agentTurnTimerByTab)) {
       if (state?.status === "working") return true;
+      if (state?.status === "failed" && Number(state.autoContinueScheduledAt || 0) > now) return true;
     }
     return false;
-  }, [agentTurnTimerByTab]);
+  }, [agentTurnClockTick, agentTurnTimerByTab]);
 
   /**
-   * 中文说明：存在运行中计时时，每秒更新一次渲染节拍以刷新“已耗时”显示。
+   * 中文说明：存在运行中计时或自动 continue 倒计时时，每秒更新一次渲染节拍以刷新显示。
    */
   useEffect(() => {
     if (!hasWorkingAgentTimer) return;
@@ -2848,18 +3159,31 @@ export default function CodexFlowManagerUI() {
   }
 
   /**
-   * 同步任务栏角标状态：完成任务数量优先，未完成数量为 0 时才显示运行中角标。
+   * 统计当前已失败但尚未被新任务覆盖的任务数量，用于驱动任务栏错误角标。
+   */
+  function computeFailedTaskTotal(map: Record<string, AgentTurnTimerState>): number {
+    let total = 0;
+    for (const state of Object.values(map)) {
+      if (state?.status === "failed" && !state.errorAcknowledgedAt) total += 1;
+    }
+    return total;
+  }
+
+  /**
+   * 同步任务栏角标状态：错误优先，其次完成待查看，最后才显示运行中角标。
    */
   function syncTaskbarBadge(map: Record<string, number>, prefs?: CompletionPreferences) {
     try {
       const effective = prefs ?? notificationPrefsRef.current;
       const rawTotal = computePendingTotal(map);
-      const total = effective.badge ? rawTotal : 0;
+      const rawFailed = computeFailedTaskTotal(agentTurnTimerByTabRef.current);
+      const failed = effective.badge ? rawFailed : 0;
+      const total = effective.badge && failed <= 0 ? rawTotal : 0;
       const rawRunning = computeRunningTaskTotal(agentTurnTimerByTabRef.current);
-      const running = effective.badge && total <= 0 ? rawRunning : 0;
-      notifyLog(`syncTaskbarBadge raw=${rawTotal} runningRaw=${rawRunning} effective=${total} running=${running} enabled=${effective.badge}`);
+      const running = effective.badge && failed <= 0 && total <= 0 ? rawRunning : 0;
+      notifyLog(`syncTaskbarBadge raw=${rawTotal} failedRaw=${rawFailed} runningRaw=${rawRunning} effectiveFailed=${failed} effective=${total} running=${running} enabled=${effective.badge}`);
       if (window.host.notifications?.setTaskbarBadgeState) {
-        window.host.notifications.setTaskbarBadgeState({ completedCount: total, runningCount: running, hasRunningTask: running > 0 });
+        window.host.notifications.setTaskbarBadgeState({ errorCount: failed, hasError: failed > 0, completedCount: total, runningCount: running, hasRunningTask: running > 0 });
       } else {
         window.host.notifications?.setBadgeCount?.(total);
       }
@@ -3503,6 +3827,242 @@ export default function CodexFlowManagerUI() {
     void playCompletionChime();
   }
 
+  /**
+   * 中文说明：处理已识别的 Codex CLI 错误，统一落计时失败、通知用户并按设置安排自动 continue。
+   */
+  function handleCodexCliErrorDetected(tabId: string, classification: CodexCliErrorClassification, errorKey: string) {
+    const id = String(tabId || "").trim();
+    if (!id) return;
+    const autoContinue = scheduleCodexAutoContinue(id, classification, errorKey);
+    failAgentTurnTimer(id, classification, autoContinue);
+
+    const reason = resolveCodexErrorKindLabel(classification.kind);
+    const elapsed = formatElapsedClock(agentTurnTimerByTabRef.current[id]?.elapsedMs || 0);
+    const notificationBody = autoContinue
+      ? t("terminal:codexErrorNotificationAutoContinue", {
+        reason,
+        elapsed,
+        detail: classification.matchedText,
+        seconds: Math.max(0, Math.ceil((autoContinue.scheduledAt - Date.now()) / 1000)),
+        attempt: autoContinue.attempt,
+        max: autoContinue.maxAttempts,
+      }) as string
+      : t("terminal:codexErrorNotification", {
+        reason,
+        elapsed,
+        detail: classification.matchedText,
+      }) as string;
+
+    const foreground = isAppForeground();
+    const activeMatch = activeTabIdRef.current === id;
+    if (foreground && activeMatch) {
+      autoClearActiveTabIfForeground("codex-error");
+    } else {
+      const current = pendingCompletionsRef.current;
+      applyPending({ ...current, [id]: (current[id] ?? 0) + 1 });
+    }
+    showCompletionNotification(id, notificationBody);
+    if (foreground && activeMatch)
+      acknowledgeAgentTurnFailure(id, "visible-final-error");
+    notifyLog(`codexError.detected tab=${id} kind=${classification.kind} retryable=${classification.retryable ? "1" : "0"} auto=${autoContinue ? "1" : "0"}`);
+  }
+
+  /**
+   * 中文说明：处理 Codex Reconnecting 阶段的错误详情；默认只更新状态，不结束计时、不驱动任务栏错误角标。
+   */
+  function handleCodexCliReconnectDetected(tabId: string, classification: CodexCliErrorClassification) {
+    const id = String(tabId || "").trim();
+    if (!id) return;
+    markAgentTurnReconnecting(id, classification);
+    if (!codexErrorHandlingPrefsRef.current.notifyReconnectErrors) {
+      notifyLog(`codexError.reconnecting tab=${id} kind=${classification.kind} notify=0`);
+      return;
+    }
+
+    const reason = resolveCodexErrorKindLabel(classification.kind);
+    const elapsed = formatElapsedClock(resolveAgentTurnElapsedMs(agentTurnTimerByTabRef.current[id]));
+    const notificationBody = t("terminal:codexReconnectNotification", {
+      reason,
+      elapsed,
+      detail: classification.matchedText,
+      attempt: classification.reconnectAttempt || "?",
+      max: classification.reconnectMaxAttempts || "?",
+    }) as string;
+    showCompletionNotification(id, notificationBody);
+    notifyLog(`codexError.reconnecting tab=${id} kind=${classification.kind} notify=1`);
+  }
+
+  /**
+   * 将等待 Reconnecting 的疑似最终错误落为真正最终失败。
+   */
+  function flushCodexPendingFinalError(tabId: string, errorKey: string, source: string) {
+    const id = String(tabId || "").trim();
+    if (!id || !errorKey) return;
+    const state = codexErrorScanByTabRef.current[id];
+    if (!state || state.pendingFinalErrorKey !== errorKey || !state.pendingFinalError) return;
+    if (typeof state.pendingFinalErrorTimerId === "number") {
+      try { window.clearTimeout(state.pendingFinalErrorTimerId); } catch {}
+    }
+    codexErrorScanByTabRef.current[id] = {
+      ...state,
+      pendingFinalErrorKey: undefined,
+      pendingFinalErrorKind: undefined,
+      pendingFinalError: undefined,
+      pendingFinalErrorAt: undefined,
+      pendingFinalErrorTimerId: undefined,
+      lastFinalErrorKey: errorKey,
+    };
+    const timerState = agentTurnTimerByTabRef.current[id];
+    if (!timerState || timerState.status !== "working") {
+      notifyLog(`codexError.pendingFinal.drop tab=${id} source=${source} reason=not-working`);
+      return;
+    }
+    notifyLog(`codexError.pendingFinal.flush tab=${id} source=${source} key=${errorKey}`);
+    handleCodexCliErrorDetected(id, state.pendingFinalError, errorKey);
+  }
+
+  /**
+   * 中文说明：在已有 PTY 输出流上低成本扫描 Codex CLI 错误文本。
+   */
+  function processCodexPtyErrorChunk(ptyId: string, chunk: string) {
+    if (!ptyId || typeof chunk !== "string" || chunk.length === 0) return;
+    const prefs = codexErrorHandlingPrefsRef.current;
+    if (!prefs.detectionEnabled) return;
+
+    const tabId = ptyToTabRef.current[ptyId];
+    if (!tabId) return;
+    const providerId = resolveTabProviderId(tabId).toLowerCase();
+    if (providerId !== "codex") return;
+    const timerState = agentTurnTimerByTabRef.current[tabId];
+    if (!timerState || timerState.status !== "working") return;
+
+    const cleanedChunk = stripAnsiForCodexErrorScan(chunk);
+    if (!cleanedChunk) return;
+    const previous = codexErrorScanByTabRef.current[tabId] || { buffer: "", autoContinueAttempts: 0 };
+    const now = Date.now();
+    const chunkRuntimeStatus = detectCodexCliRuntimeStatusText(cleanedChunk);
+    if (chunkRuntimeStatus?.phase === "working" && typeof previous.pendingFinalErrorTimerId === "number") {
+      try { window.clearTimeout(previous.pendingFinalErrorTimerId); } catch {}
+      notifyLog(`codexError.pendingFinal.clear tab=${tabId} source=working-output`);
+    }
+    const baseScanState: CodexErrorScanState = chunkRuntimeStatus?.phase === "working"
+      ? {
+        ...previous,
+        buffer: "",
+        lastReconnectErrorKey: undefined,
+        lastReconnectStatusAt: undefined,
+        pendingFinalErrorKey: undefined,
+        pendingFinalErrorKind: undefined,
+        pendingFinalError: undefined,
+        pendingFinalErrorAt: undefined,
+        pendingFinalErrorTimerId: undefined,
+      }
+      : previous;
+    const nextBuffer = `${baseScanState.buffer || ""}${cleanedChunk}`.slice(-CODEX_ERROR_SCAN_MAX_BUFFER_LENGTH);
+    const latestScanState: CodexErrorScanState = chunkRuntimeStatus?.phase === "reconnecting"
+      ? { ...baseScanState, lastReconnectStatusAt: now }
+      : baseScanState;
+    if (chunkRuntimeStatus?.phase === "working")
+      clearAgentTurnReconnecting(tabId, "working-output");
+    if (chunkRuntimeStatus?.phase === "reconnecting" && previous.pendingFinalError && previous.pendingFinalErrorKey) {
+      const pendingAgeMs = Math.max(0, now - Number(previous.pendingFinalErrorAt || now));
+      if (pendingAgeMs <= CODEX_RECONNECT_AFTER_ERROR_GRACE_MS) {
+        if (typeof previous.pendingFinalErrorTimerId === "number") {
+          try { window.clearTimeout(previous.pendingFinalErrorTimerId); } catch {}
+        }
+        const reconnectClassification: CodexCliErrorClassification = {
+          ...previous.pendingFinalError,
+          phase: "reconnecting",
+          reconnectAttempt: chunkRuntimeStatus.reconnectAttempt,
+          reconnectMaxAttempts: chunkRuntimeStatus.reconnectMaxAttempts,
+        };
+        const reconnectErrorKey = buildCodexCliErrorKey(reconnectClassification);
+        codexErrorScanByTabRef.current[tabId] = {
+          ...latestScanState,
+          buffer: nextBuffer,
+          pendingFinalErrorKey: undefined,
+          pendingFinalErrorKind: undefined,
+          pendingFinalError: undefined,
+          pendingFinalErrorAt: undefined,
+          pendingFinalErrorTimerId: undefined,
+          lastReconnectErrorKey: reconnectErrorKey,
+        };
+        if (previous.lastReconnectErrorKey !== reconnectErrorKey)
+          handleCodexCliReconnectDetected(tabId, reconnectClassification);
+        notifyLog(`codexError.pendingFinal.reconnecting tab=${tabId} kind=${reconnectClassification.kind} ageMs=${pendingAgeMs}`);
+        return;
+      }
+    }
+    const chunkClassification = classifyCodexCliErrorText(cleanedChunk);
+    const bufferClassification = classifyCodexCliErrorText(nextBuffer);
+    const recentlySawReconnect = !!(
+      bufferClassification?.phase === "reconnecting" &&
+      latestScanState.lastReconnectStatusAt &&
+      now - latestScanState.lastReconnectStatusAt <= CODEX_RECONNECT_DETAIL_GRACE_MS
+    );
+    const classification = chunkClassification?.phase === "final" && !recentlySawReconnect
+      ? chunkClassification
+      : bufferClassification;
+    if (!classification) {
+      codexErrorScanByTabRef.current[tabId] = {
+        ...latestScanState,
+        buffer: nextBuffer,
+      };
+      return;
+    }
+
+    const errorKey = buildCodexCliErrorKey(classification);
+    if (classification.phase === "reconnecting") {
+      if (typeof previous.pendingFinalErrorTimerId === "number") {
+        try { window.clearTimeout(previous.pendingFinalErrorTimerId); } catch {}
+      }
+      codexErrorScanByTabRef.current[tabId] = {
+        ...latestScanState,
+        buffer: nextBuffer,
+        lastReconnectErrorKey: errorKey,
+        pendingFinalErrorKey: undefined,
+        pendingFinalErrorKind: undefined,
+        pendingFinalError: undefined,
+        pendingFinalErrorAt: undefined,
+        pendingFinalErrorTimerId: undefined,
+      };
+      if (previous.lastReconnectErrorKey === errorKey) return;
+      handleCodexCliReconnectDetected(tabId, classification);
+      return;
+    }
+
+    if (shouldDelayCodexCliFinalErrorForReconnect(classification)) {
+      let pendingFinalErrorTimerId = previous.pendingFinalErrorTimerId;
+      if (previous.pendingFinalErrorKey !== errorKey) {
+        if (typeof pendingFinalErrorTimerId === "number") {
+          try { window.clearTimeout(pendingFinalErrorTimerId); } catch {}
+        }
+        pendingFinalErrorTimerId = window.setTimeout(() => {
+          flushCodexPendingFinalError(tabId, errorKey, "reconnect-grace-timeout");
+        }, CODEX_RECONNECT_AFTER_ERROR_GRACE_MS);
+        notifyLog(`codexError.pendingFinal.schedule tab=${tabId} kind=${classification.kind} graceMs=${CODEX_RECONNECT_AFTER_ERROR_GRACE_MS}`);
+      }
+      codexErrorScanByTabRef.current[tabId] = {
+        ...latestScanState,
+        buffer: nextBuffer,
+        pendingFinalErrorKey: errorKey,
+        pendingFinalErrorKind: classification.kind,
+        pendingFinalError: classification,
+        pendingFinalErrorAt: previous.pendingFinalErrorKey === errorKey ? previous.pendingFinalErrorAt : now,
+        pendingFinalErrorTimerId,
+      };
+      return;
+    }
+
+    codexErrorScanByTabRef.current[tabId] = {
+      ...latestScanState,
+      buffer: nextBuffer,
+      lastFinalErrorKey: errorKey,
+    };
+    if (previous.lastFinalErrorKey === errorKey) return;
+    handleCodexCliErrorDetected(tabId, classification, errorKey);
+  }
+
   function processPtyNotificationChunk(ptyId: string, chunk: string) {
     if (!ptyId || typeof chunk !== 'string' || chunk.length === 0) return;
     const hasOsc = chunk.includes(OSC_NOTIFICATION_PREFIX);
@@ -3646,12 +4206,14 @@ export default function CodexFlowManagerUI() {
 
   function unregisterPtyListener(ptyId: string | undefined | null) {
     if (!ptyId) return;
+    const tabId = ptyToTabRef.current[ptyId];
     const off = ptyListenersRef.current[ptyId];
     if (typeof off === 'function') {
       try { off(); } catch {}
     }
     delete ptyListenersRef.current[ptyId];
     delete ptyNotificationBuffersRef.current[ptyId];
+    if (tabId) resetCodexErrorScanForTab(tabId, "pty-unregister");
     delete ptyToTabRef.current[ptyId];
     notifyLog(`unregisterPtyListener pty=${ptyId}`);
   }
@@ -3691,6 +4253,7 @@ export default function CodexFlowManagerUI() {
     let off: (() => void) | undefined;
     try {
       off = window.host.pty.onData(ptyId, (data) => {
+        try { processCodexPtyErrorChunk(ptyId, data); } catch (err) { console.warn('processCodexPtyErrorChunk failed', err); }
         try { processPtyNotificationChunk(ptyId, data); } catch (err) { console.warn('processPtyNotificationChunk failed', err); }
       });
     } catch (err) {
@@ -3725,6 +4288,7 @@ export default function CodexFlowManagerUI() {
     // 只在确实需要重置时才删除缓冲区，并记录详细信息
     if (shouldResetBuffer) {
       delete ptyNotificationBuffersRef.current[ptyId];
+      if (previousTab) resetCodexErrorScanForTab(previousTab, "pty-reassign");
       notifyLog(`registerPtyForTab buffer reset pty=${ptyId}`);
     } else if (existingBuffer && existingBuffer.length > 0) {
       // 不需要重置但有缓冲区内容，记录以便跟踪
@@ -3864,7 +4428,8 @@ export default function CodexFlowManagerUI() {
     setSelectedHistoryDir(null);
     setSelectedHistoryId(null);
     setActiveTab(tabId, { focusMode: 'immediate', allowDuringRename: true, delay: 0, projectId });
-  }, [revealProjectRowInSidebar, selectedProjectId, setActiveTab, setCenterMode, setSelectedHistoryDir, setSelectedHistoryId, setSelectedProjectId]);
+    acknowledgeAgentTurnFailure(tabId, "notification-focus");
+  }, [acknowledgeAgentTurnFailure, revealProjectRowInSidebar, selectedProjectId, setActiveTab, setCenterMode, setSelectedHistoryDir, setSelectedHistoryId, setSelectedProjectId]);
 
   const [historyQuery, setHistoryQuery] = useState("");
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
@@ -4761,6 +5326,116 @@ export default function CodexFlowManagerUI() {
   }, [getProviderEnv]);
 
   /**
+   * 中文说明：执行已排队的 Codex 自动 continue，发送前再次校验标签页、设置与尝试次数。
+   */
+  const sendCodexAutoContinue = useCallback(async (tabId: string, errorKey: string): Promise<void> => {
+    const id = String(tabId || "").trim();
+    if (!id) return;
+    const state = codexErrorScanByTabRef.current[id];
+    if (!state || state.pendingErrorKey !== errorKey) return;
+
+    const prefs = codexErrorHandlingPrefsRef.current;
+    if (!prefs.detectionEnabled || !prefs.autoContinueEnabled) {
+      resetCodexErrorScanForTab(id, "auto-continue-disabled");
+      return;
+    }
+    if (isCodexAutoContinueErrorKind(state.pendingErrorKind) && !prefs.autoContinueErrorKinds.includes(state.pendingErrorKind)) {
+      resetCodexErrorScanForTab(id, "auto-continue-kind-disabled");
+      return;
+    }
+    const providerId = resolveTabProviderId(id).toLowerCase();
+    if (providerId !== "codex") {
+      resetCodexErrorScanForTab(id, "auto-continue-provider-changed");
+      return;
+    }
+    const maxAttempts = Math.max(0, prefs.autoContinueMaxAttempts);
+    const previousAttempts = Math.max(0, Number(state.autoContinueAttempts || 0));
+    if (previousAttempts >= maxAttempts) {
+      clearCodexErrorAutoContinueTimer(id, "auto-continue-attempts-exhausted");
+      return;
+    }
+    const ptyId = ptyByTabRef.current[id];
+    if (!ptyId) {
+      resetCodexErrorScanForTab(id, "auto-continue-missing-pty");
+      return;
+    }
+
+    const nextAttempts = previousAttempts + 1;
+    codexErrorScanByTabRef.current[id] = {
+      ...state,
+      buffer: "",
+      lastReconnectErrorKey: undefined,
+      lastFinalErrorKey: undefined,
+      pendingErrorKey: undefined,
+      pendingErrorKind: undefined,
+      autoContinueTimerId: undefined,
+      autoContinueAttempts: nextAttempts,
+    };
+
+    const tabEnv = getTabExecEnv(id, "codex");
+    notifyLog(`codexError.autoContinue.send tab=${id} attempt=${nextAttempts}/${maxAttempts}`);
+    startAgentTurnTimer(id);
+    try {
+      await tm.sendTextAndEnter(id, "continue", {
+        providerId: "codex",
+        terminalMode: tabEnv.terminal as any,
+        distro: tabEnv.terminal === "wsl" ? tabEnv.distro : undefined,
+      });
+    } catch (error) {
+      notifyLog(`codexError.autoContinue.sendFailed tab=${id} error=${String((error as any)?.message || error)}`);
+      interruptAgentTurnTimer(id, "codex-auto-continue-send-failed");
+    }
+  }, [
+    clearCodexErrorAutoContinueTimer,
+    getTabExecEnv,
+    interruptAgentTurnTimer,
+    notifyLog,
+    resetCodexErrorScanForTab,
+    resolveTabProviderId,
+    startAgentTurnTimer,
+    tm,
+  ]);
+
+  /**
+   * 中文说明：按当前设置为可恢复 Codex 错误安排一次自动 continue。
+   */
+  const scheduleCodexAutoContinue = useCallback((tabId: string, classification: CodexCliErrorClassification, errorKey: string): {
+    scheduledAt: number;
+    attempt: number;
+    maxAttempts: number;
+  } | undefined => {
+    const id = String(tabId || "").trim();
+    if (!id) return undefined;
+    const prefs = codexErrorHandlingPrefsRef.current;
+    if (!prefs.detectionEnabled || !prefs.autoContinueEnabled || !classification.retryable) return undefined;
+    if (!isCodexAutoContinueErrorKind(classification.kind) || !prefs.autoContinueErrorKinds.includes(classification.kind)) return undefined;
+    const maxAttempts = Math.max(0, prefs.autoContinueMaxAttempts);
+    if (maxAttempts <= 0) return undefined;
+
+    const state = codexErrorScanByTabRef.current[id] || { buffer: "", autoContinueAttempts: 0 };
+    const previousAttempts = Math.max(0, Number(state.autoContinueAttempts || 0));
+    if (previousAttempts >= maxAttempts) return undefined;
+    if (typeof state.autoContinueTimerId === "number") {
+      try { window.clearTimeout(state.autoContinueTimerId); } catch {}
+    }
+
+    const delayMs = Math.max(0, prefs.autoContinueDelaySeconds) * 1000;
+    const scheduledAt = Date.now() + delayMs;
+    const attempt = previousAttempts + 1;
+    const timerId = window.setTimeout(() => {
+      void sendCodexAutoContinue(id, errorKey);
+    }, delayMs);
+    codexErrorScanByTabRef.current[id] = {
+      ...state,
+      pendingErrorKey: errorKey,
+      pendingErrorKind: classification.kind,
+      autoContinueTimerId: timerId,
+    };
+    notifyLog(`codexError.autoContinue.schedule tab=${id} kind=${classification.kind} delayMs=${delayMs} attempt=${attempt}/${maxAttempts}`);
+    return { scheduledAt, attempt, maxAttempts };
+  }, [notifyLog, sendCodexAutoContinue]);
+
+  /**
    * 解析当前机器可见的 Provider 执行环境，并在必要时同步到界面状态。
    *
    * @param providerId Provider 唯一标识
@@ -5496,11 +6171,13 @@ export default function CodexFlowManagerUI() {
   useEffect(() => {
     activeTabIdRef.current = activeTabId;
     if (!activeTabId) return;
+    if (isAppForeground())
+      acknowledgeAgentTurnFailure(activeTabId, "active-tab");
     if (!pendingCompletionsRef.current[activeTabId]) return;
     const next = { ...pendingCompletionsRef.current };
     delete next[activeTabId];
     applyPending(next);
-  }, [activeTabId]);
+  }, [acknowledgeAgentTurnFailure, activeTabId]);
 
   useEffect(() => {
     const visibleTabIds = new Set<string>();
@@ -5525,6 +6202,11 @@ export default function CodexFlowManagerUI() {
   useEffect(() => {
     const handleFocus = () => {
       try { autoClearActiveTabIfForeground('window-focus'); } catch {}
+      try {
+        const tabId = activeTabIdRef.current;
+        if (tabId && isAppForeground())
+          acknowledgeAgentTurnFailure(tabId, "window-focus");
+      } catch {}
     };
     window.addEventListener('focus', handleFocus);
     document.addEventListener('visibilitychange', handleFocus);
@@ -5532,7 +6214,7 @@ export default function CodexFlowManagerUI() {
       window.removeEventListener('focus', handleFocus);
       document.removeEventListener('visibilitychange', handleFocus);
     };
-  }, []);
+  }, [acknowledgeAgentTurnFailure]);
 
   useEffect(() => {
     syncTaskbarBadge(pendingCompletionsRef.current, notificationPrefs);
@@ -5608,6 +6290,7 @@ export default function CodexFlowManagerUI() {
           setThemeSetting(nextThemeSetting);
           writeThemeSettingCache(nextThemeSetting);
           setNotificationPrefs(normalizeCompletionPrefs((s as any).notifications));
+          setCodexErrorHandlingPrefs(normalizeCodexErrorHandlingPrefs((s as any).codexErrorHandling));
           setTerminalFontFamily(normalizeTerminalFontFamily((s as any).terminalFontFamily));
           setTerminalTheme(normalizeTerminalTheme((s as any).terminalTheme));
           setClaudeCodeReadAgentHistory(!!(s as any)?.claudeCode?.readAgentHistory);
@@ -7037,6 +7720,7 @@ export default function CodexFlowManagerUI() {
     }
     // 用户开始新一轮输入后，立即取消恢复期守卫，避免影响真实完成通知。
     delete resumeCompletionGuardByTabRef.current[activeTab.id];
+    resetCodexErrorScanForTab(activeTab.id, "user-send");
     if (shouldEnableAgentTimerForProvider(activeTab.providerId)) startAgentTurnTimer(activeTab.id);
     else cancelAgentTurnTimer(activeTab.id, "provider-not-supported");
     // 统一改用 TerminalManager 的封装，保证行为一致且便于复用
@@ -14377,6 +15061,7 @@ export default function CodexFlowManagerUI() {
           theme: themeSetting,
           multiInstanceEnabled,
           notifications: notificationPrefs,
+          codexErrorHandling: codexErrorHandlingPrefs,
           network: networkPrefs,
           codexAccount: { recordEnabled: codexAccountRecordEnabled },
           defaultIde: defaultIdePrefs,
@@ -14399,6 +15084,7 @@ export default function CodexFlowManagerUI() {
           const nextLocale = v.locale;
           const nextWarnOutsideProjectDrop = !!(v as any).dragDropWarnOutsideProject;
           const nextNotifications = normalizeCompletionPrefs(v.notifications);
+          const nextCodexErrorHandling = normalizeCodexErrorHandlingPrefs((v as any).codexErrorHandling);
           const nextFontFamily = normalizeTerminalFontFamily(v.terminalFontFamily);
           const nextTerminalTheme = normalizeTerminalTheme(v.terminalTheme);
           const nextTheme = normalizeThemeSetting(v.theme);
@@ -14433,6 +15119,7 @@ export default function CodexFlowManagerUI() {
               theme: nextTheme,
               experimental: { multiInstanceEnabled: nextMultiInstanceEnabled },
               notifications: nextNotifications,
+              codexErrorHandling: nextCodexErrorHandling,
               network: v.network,
               codexAccount: v.codexAccount as any,
               ideOpen: {
@@ -14477,6 +15164,7 @@ export default function CodexFlowManagerUI() {
           setThemeSetting(nextTheme);
           writeThemeSettingCache(nextTheme);
           setNotificationPrefs(nextNotifications);
+          setCodexErrorHandlingPrefs(nextCodexErrorHandling);
           setNetworkPrefs(v.network);
           setCodexAccountRecordEnabled(!!v.codexAccount?.recordEnabled);
           setDefaultIdePrefs(nextDefaultIde);
