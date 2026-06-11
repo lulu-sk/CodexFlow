@@ -119,6 +119,21 @@ export async function listDistrosAsync(): Promise<DistroInfo[]> {
 }
 
 /**
+ * 判断指定 WSL 发行版当前是否可用。
+ */
+export async function isDistroAvailableAsync(distro?: string): Promise<boolean> {
+  try {
+    const name = String(distro || "").trim();
+    const distros = await listDistrosAsync();
+    if (name)
+      return distros.some((item) => String(item?.name || "").toLowerCase() === name.toLowerCase());
+    return distros.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * 在 WSL 发行版中执行命令并返回 stdout（默认带超时；失败返回 null）。
  */
 export async function execInWslAsync(
@@ -431,6 +446,7 @@ export function distroExists(name: string): boolean {
 export default {
   listDistros,
   listDistrosAsync,
+  isDistroAvailableAsync,
   winToWsl,
   winToWslAsync,
   wslToUNC,

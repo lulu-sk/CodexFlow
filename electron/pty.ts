@@ -2,7 +2,6 @@
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
 import os from 'node:os';
-import wsl from './wsl.js';
 import settings from './settings.js';
 import { resolveWindowsShell, type TerminalMode } from './shells.js';
 import type { IPty } from '@lydell/node-pty';
@@ -175,6 +174,13 @@ type PtyIpcPendingState = {
   droppedChars: number;
 };
 
+export type PtyOpenResult = {
+  id: string;
+  terminal: TerminalMode;
+  distro?: string;
+  fallbackReason?: string;
+};
+
 export class PTYManager {
   private sessions = new Map<string, IPty>();
   private backlogs = new Map<string, PtyBacklogBuffer>();
@@ -330,13 +336,15 @@ export class PTYManager {
    * 打开一个 PTY 会话。
    * - 允许通过 opts.terminal 覆盖全局 settings.terminal，用于实现 Provider 级别环境隔离。
    */
-  openWSLConsole(opts: { terminal?: TerminalMode; distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string; env?: Record<string, string> }): string {
+  openWSLConsole(opts: { terminal?: TerminalMode; distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string; env?: Record<string, string> }): PtyOpenResult {
     const distro = opts.distro || 'Ubuntu-22.04';
     const wslPath = opts.wslPath || '~';
     const winPath = String(opts.winPath || '').trim();
     const cols = opts.cols || 80;
     const rows = opts.rows || 24;
     const startupCmd = opts.startupCmd || '';
+    let startupNotice = "";
+    let fallbackReason: string | undefined;
 
     const id = uid();
 
@@ -344,7 +352,7 @@ export class PTYManager {
     env = mergeExtraEnv(env, opts.env);
 
     // 根据设置选择 WSL 或 Windows 本地终端
-    const termMode = (opts.terminal || settings.getSettings().terminal || 'wsl');
+    let termMode = (opts.terminal || settings.getSettings().terminal || 'wsl');
     let proc: IPty;
     if (os.platform() !== 'win32') {
       // 在非 Windows 环境使用本地 shell 便于开发调试
@@ -375,17 +383,8 @@ export class PTYManager {
       let shell = 'wsl.exe';
       let args: string[] = [];
       if (os.platform() === 'win32') {
-        try {
-          // 如果指定了发行版且存在，则使用 -d <distro>
-          if (opts.distro && wsl.distroExists(opts.distro)) {
-            args = ['-d', distro];
-          } else {
-            // 否则回退到默认发行版（不传 -d）
-            args = [];
-          }
-        } catch {
-          args = [];
-        }
+        // 中文说明：打开标签页不预先枚举 WSL 发行版；直接尝试指定 distro，避免点击热路径阻塞。
+        args = opts.distro ? ['-d', distro] : [];
         if (opts.wslPath) {
           args.push('--cd', wslPath);
         }
@@ -394,13 +393,27 @@ export class PTYManager {
         const keys = Object.keys(opts.env).map((k) => String(k || "").trim()).filter(Boolean);
         if (keys.length > 0) env.WSLENV = appendWslEnv(env.WSLENV, keys);
       }
-      proc = pty.spawn(shell, args, {
-        name: 'xterm-256color',
-        cols,
-        rows,
-        cwd: undefined,
-        env
-      });
+      try {
+        proc = pty.spawn(shell, args, {
+          name: 'xterm-256color',
+          cols,
+          rows,
+          cwd: undefined,
+          env
+        });
+      } catch (error: any) {
+        const resolved = resolveWindowsShell('windows');
+        termMode = 'windows';
+        fallbackReason = 'wsl_spawn_failed';
+        startupNotice = `CodexFlow: WSL 环境不可用，已切换到 PowerShell。${error?.message ? ` (${String(error.message)})` : ""}\r\n`;
+        proc = pty.spawn(resolved.command, ['-NoLogo'], {
+          name: 'xterm-256color',
+          cols,
+          rows,
+          cwd: winPath || undefined,
+          env
+        });
+      }
     }
 
     this.sessions.set(id, proc);
@@ -425,13 +438,17 @@ export class PTYManager {
 
     // 关键修复：延迟执行 startupCmd，确保前端有足够时间订阅 'pty:data' 事件
     // 使用 setImmediate 让前端的 IPC 订阅先完成，避免早期输出（包括 OSC 通知）丢失
-    if (startupCmd) {
+    if (startupNotice || startupCmd) {
       const isWin = os.platform() === 'win32';
       const mode = isWin ? (termMode || 'wsl') : 'posix';
       const isWinShell = mode === 'windows' || mode === 'pwsh' || mode === 'cmd';
       setImmediate(() => {
         const p = this.sessions.get(id);
         if (!p) return; // PTY 可能已关闭
+        if (startupNotice) {
+          try { p.write(startupNotice); } catch {}
+        }
+        if (!startupCmd) return;
         if (isWinShell) {
           // Windows 本地 shell 中直接执行命令（cwd 已设置）
           p.write(`${startupCmd}\r`);
@@ -447,7 +464,7 @@ export class PTYManager {
       });
     }
 
-    return id;
+    return { id, terminal: termMode as TerminalMode, distro, fallbackReason };
   }
 
   /**
