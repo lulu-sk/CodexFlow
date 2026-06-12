@@ -61,7 +61,7 @@ export type CodexErrorHandlingSettings = {
   /** 是否在可恢复错误后自动发送 continue。 */
   autoContinueEnabled?: boolean;
   /** 自动 continue 适用的可恢复错误类型。 */
-  autoContinueErrorKinds?: Array<"rateLimited" | "concurrency" | "networkStream" | "badGateway" | "serviceUnavailable" | "highDemand" | "modelCapacity" | "forbidden" | "badRequest">;
+  autoContinueErrorKinds?: Array<"rateLimited" | "concurrency" | "networkStream" | "badGateway" | "serviceUnavailable" | "highDemand" | "modelCapacity" | "forbidden" | "badRequest" | "payloadTooLarge">;
   /** 自动 continue 错误类型列表版本，用于一次性默认项迁移。 */
   autoContinueErrorKindsVersion?: number;
   /** 自动发送 continue 前等待的秒数。 */

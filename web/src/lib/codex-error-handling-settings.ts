@@ -2,7 +2,7 @@ import type { CodexCliErrorKind } from "./codex-cli-error-classifier";
 
 export type CodexAutoContinueErrorKind = Extract<
   CodexCliErrorKind,
-  "rateLimited" | "concurrency" | "networkStream" | "badGateway" | "serviceUnavailable" | "highDemand" | "modelCapacity" | "forbidden" | "badRequest"
+  "rateLimited" | "concurrency" | "networkStream" | "badGateway" | "serviceUnavailable" | "highDemand" | "modelCapacity" | "forbidden" | "badRequest" | "payloadTooLarge"
 >;
 
 export type CodexErrorHandlingPrefs = {
@@ -21,6 +21,18 @@ export const CODEX_ERROR_AUTO_CONTINUE_ATTEMPTS_MIN = 0;
 export const CODEX_ERROR_AUTO_CONTINUE_ATTEMPTS_MAX = 10;
 export const CODEX_AUTO_CONTINUE_ERROR_KINDS_VERSION = 3;
 export const CODEX_AUTO_CONTINUE_ERROR_KINDS: CodexAutoContinueErrorKind[] = [
+  "networkStream",
+  "rateLimited",
+  "concurrency",
+  "modelCapacity",
+  "badGateway",
+  "serviceUnavailable",
+  "highDemand",
+  "forbidden",
+  "badRequest",
+  "payloadTooLarge",
+];
+export const CODEX_DEFAULT_AUTO_CONTINUE_ERROR_KINDS: CodexAutoContinueErrorKind[] = [
   "networkStream",
   "rateLimited",
   "concurrency",
@@ -55,7 +67,7 @@ export const DEFAULT_CODEX_ERROR_HANDLING_PREFS: CodexErrorHandlingPrefs = {
   detectionEnabled: true,
   notifyReconnectErrors: false,
   autoContinueEnabled: false,
-  autoContinueErrorKinds: [...CODEX_AUTO_CONTINUE_ERROR_KINDS],
+  autoContinueErrorKinds: [...CODEX_DEFAULT_AUTO_CONTINUE_ERROR_KINDS],
   autoContinueErrorKindsVersion: CODEX_AUTO_CONTINUE_ERROR_KINDS_VERSION,
   autoContinueDelaySeconds: 30,
   autoContinueMaxAttempts: 2,
