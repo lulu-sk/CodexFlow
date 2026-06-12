@@ -174,6 +174,10 @@ describe("electron/codex/config（tui 通知配置修复）", () => {
       expect(hookScript).toContain("SubagentStop");
       expect(hookScript).toContain("completionKind");
       expect(hookScript).toContain("agentType");
+      expect(hookScript).toContain("input.session_id");
+      expect(hookScript).toContain("threadId");
+      expect(hookScript).toContain("turnId");
+      expect(hookScript).toContain("sqliteHome");
     } finally {
       cleanup();
     }
@@ -474,6 +478,11 @@ describe("electron/codex/config（tui 通知配置修复）", () => {
         expect(script).toContain("$PreviewEscapedWhitespace = $true");
         expect(script).toContain("$RawPayload -match");
         expect(script).toContain("last-assistant-message");
+        expect(script).toContain("thread-id");
+        expect(script).toContain("turn-id");
+        expect(script).toContain("CODEX_SQLITE_HOME");
+        expect(script).toContain("threadId = $ThreadId");
+        expect(script).toContain("sqliteHome = $SqliteHome");
         expect(script).toContain("$Preview = $Preview.Trim()");
         expect(script).not.toContain('-replace "\\s+"');
       } finally {
@@ -489,7 +498,11 @@ describe("electron/codex/config（tui 通知配置修复）", () => {
         const mod = await loadConfigModule();
         await mod.ensureAllCodexNotifications();
         const script = readCodexNotifyScriptByName(home, "codexflow_after_agent_notify.sh");
-        expect(script).toContain('match($0, /"last-assistant-message"[[:space:]]*:[[:space:]]*"/)');
+        expect(script).toContain('json_string_field "last-assistant-message"');
+        expect(script).toContain('json_string_field "thread-id"');
+        expect(script).toContain('json_string_field "turn-id"');
+        expect(script).toContain("CODEX_SQLITE_HOME");
+        expect(script).toContain('"threadId":"%s"');
         expect(script).toContain('out = out "\\\\" ch');
         expect(script).toContain("sed -e '1s/^[[:space:]]*//' -e '$s/[[:space:]]*$//'");
         expect(script).not.toContain("tr '\\r\\n\\t' '   '");
