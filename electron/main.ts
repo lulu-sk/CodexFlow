@@ -240,6 +240,8 @@ let quitConfirming = false;
 let gpuFallbackActive = false;
 const MAIN_APP_WINDOW_ID = "main";
 const appWindowMetaByWindow = new WeakMap<BrowserWindow, { windowId: string; windowMode: AppWindowMode }>();
+const rendererRecoveryClosingWindows = new WeakSet<BrowserWindow>();
+let rendererRecoveryRecreateDepth = 0;
 
 type AppWindowMode = "main" | "detached-tab";
 
@@ -292,6 +294,38 @@ type CreateWindowOptions = {
  */
 function getAppWindowMeta(win: BrowserWindow): { windowId: string; windowMode: AppWindowMode } {
   return appWindowMetaByWindow.get(win) || { windowId: MAIN_APP_WINDOW_ID, windowMode: "main" };
+}
+
+/**
+ * 判断窗口是否正由渲染恢复流程关闭。
+ */
+function isRendererRecoveryClosingWindow(win: BrowserWindow): boolean {
+  try { return rendererRecoveryClosingWindows.has(win); } catch { return false; }
+}
+
+/**
+ * 判断当前是否处于渲染恢复的窗口重建阶段。
+ */
+function isRendererRecoveryRecreateInFlight(): boolean {
+  return rendererRecoveryRecreateDepth > 0;
+}
+
+/**
+ * 标记渲染恢复开始重建窗口。
+ */
+function beginRendererRecoveryWindowRecreate(win: BrowserWindow, reason: string): void {
+  try { rendererRecoveryClosingWindows.add(win); } catch {}
+  rendererRecoveryRecreateDepth += 1;
+  logWhiteScreenDiagnostic(`[RECOVERY] recreate begin reason=${clampLogValue(reason, 160)}`);
+}
+
+/**
+ * 标记渲染恢复窗口重建结束，并清理旧窗口的关闭标记。
+ */
+function finishRendererRecoveryWindowRecreate(win: BrowserWindow): void {
+  try { rendererRecoveryClosingWindows.delete(win); } catch {}
+  rendererRecoveryRecreateDepth = Math.max(0, rendererRecoveryRecreateDepth - 1);
+  logWhiteScreenDiagnostic(`[RECOVERY] recreate end depth=${rendererRecoveryRecreateDepth}`);
 }
 
 /**
@@ -830,10 +864,11 @@ async function applyMergedGitRepoRootsAsync(): Promise<{ opened: number; closed:
 async function confirmQuitWithActiveTerminals(win: BrowserWindow | null, count: number): Promise<boolean> {
   try {
     // 优先使用渲染进程自定义弹窗（保持 UI 风格一致）
-    const rendererRes = await requestQuitConfirmFromRenderer(win, count, { timeoutMs: 30_000 });
+    const rendererRes = await requestQuitConfirmFromRenderer(win, count, { timeoutMs: 6_000 });
     if (rendererRes !== null) return rendererRes;
 
     // 回退：原生对话框（渲染进程不可用时）
+    try { perfLogger.logAlways(`[quitConfirm] fallback native count=${count} win=${win && !win.isDestroyed() ? 1 : 0}`); } catch {}
     const L = getQuitConfirmDialogTextForLocale(i18n.getCurrentLocale?.(), count);
     const options: Electron.MessageBoxOptions = {
       type: "warning",
@@ -847,6 +882,7 @@ async function confirmQuitWithActiveTerminals(win: BrowserWindow | null, count: 
       normalizeAccessKeys: true,
     };
     const res = win ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options);
+    try { perfLogger.logAlways(`[quitConfirm] fallback native response=${res.response}`); } catch {}
     return res.response === 1;
   } catch {
     // 若对话框弹出失败，为避免卡死退出流程，默认允许退出
@@ -1641,12 +1677,15 @@ function recoverWindowRenderer(win: BrowserWindow, reason: RendererRecoveryReaso
  * 在恢复失败时重建窗口，并尽量保留原窗口的几何状态与宿主身份。
  */
 function recreateWindowForRecovery(win: BrowserWindow, reason: string): void {
+  let recreateStarted = false;
   try {
     const restoreBounds = (() => { try { return win.getBounds(); } catch { return undefined; } })();
     const startMaximized = (() => { try { return win.isMaximized(); } catch { return false; } })();
     const startFullScreen = (() => { try { return win.isFullScreen(); } catch { return false; } })();
     const { windowId, windowMode } = getAppWindowMeta(win);
     logWhiteScreenDiagnostic(`[RECOVERY] recreate reason=${reason}`);
+    beginRendererRecoveryWindowRecreate(win, reason);
+    recreateStarted = true;
     clearRendererRecoveryState(win);
     try { win.removeAllListeners("close"); } catch {}
     try { win.removeAllListeners("closed"); } catch {}
@@ -1655,6 +1694,8 @@ function recreateWindowForRecovery(win: BrowserWindow, reason: string): void {
     createWindow({ restoreBounds, startMaximized, startFullScreen, recoveryReason: reason, windowId, windowMode });
   } catch (e) {
     logWhiteScreenDiagnostic(`[RECOVERY] recreate failed reason=${reason} err=${String(e)}`);
+  } finally {
+    if (recreateStarted) finishRendererRecoveryWindowRecreate(win);
   }
 }
 
@@ -2099,6 +2140,10 @@ function createWindow(options?: CreateWindowOptions): void {
   win.on("close", (event) => {
     try {
       if (!isMainAppWindow) return;
+      if (isRendererRecoveryClosingWindow(win)) {
+        logWhiteScreenDiagnostic("[RECOVERY] skip close quit confirm during window recreate");
+        return;
+      }
       if (quitConfirmed) return;
       const count = ptyManager.getActiveSessionCount();
       if (count <= 0) return;
@@ -2516,6 +2561,11 @@ if (!gotLock) {
 
   app.on('before-quit', (event) => {
     try {
+      if (isRendererRecoveryRecreateInFlight()) {
+        logWhiteScreenDiagnostic("[RECOVERY] skip before-quit terminal confirm during window recreate");
+        event.preventDefault();
+        return;
+      }
       if (!quitConfirmed) {
         const count = ptyManager.getActiveSessionCount();
         if (count > 0) {
@@ -2582,6 +2632,10 @@ if (!gotLock) {
 
   app.on('window-all-closed', () => {
     // On Windows & Linux, quit on all closed
+    if (isRendererRecoveryRecreateInFlight()) {
+      logWhiteScreenDiagnostic("[RECOVERY] skip app quit during window recreate");
+      return;
+    }
     if (process.platform !== 'darwin') app.quit();
   });
 

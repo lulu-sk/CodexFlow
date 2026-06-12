@@ -52,10 +52,80 @@ type MonacoPartialCommitOverlayButton = {
 
 type MonacoThemeId = "vs" | "vs-dark";
 
+type MonacoDiffModelPaths = {
+  original: string;
+  modified: string;
+};
+
 /**
  * 强制使用本地打包的 Monaco，避免离线环境卡在 “Loading...”。
  */
 loader.config({ monaco: MonacoEditor as any });
+
+/**
+ * 计算短哈希，用于生成稳定且长度受控的 Monaco model URI。
+ */
+function hashModelPathKey(text: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+/**
+ * 构造左右 Diff model 的 URI，避免 @monaco-editor/react 使用匿名 model 后难以安全释放。
+ */
+function buildDiffModelPaths(key: string): MonacoDiffModelPaths {
+  const normalizedKey = hashModelPathKey(key || "empty");
+  return {
+    original: `inmemory://codexflow/git-diff/original/${normalizedKey}.txt`,
+    modified: `inmemory://codexflow/git-diff/modified/${normalizedKey}.txt`,
+  };
+}
+
+/**
+ * 当前 DiffEditor 仍引用目标 model 时，先置空 model，避免 Monaco 在 TextModel 先释放时抛错。
+ */
+function detachDiffEditorModelsIfMatching(
+  editor: MonacoNS.editor.IStandaloneDiffEditor | null,
+  paths: MonacoDiffModelPaths,
+): void {
+  if (!editor) return;
+  try {
+    const model = editor.getModel();
+    const originalUri = model?.original?.uri?.toString();
+    const modifiedUri = model?.modified?.uri?.toString();
+    if (originalUri === paths.original || modifiedUri === paths.modified)
+      editor.setModel(null);
+  } catch {}
+}
+
+/**
+ * 释放指定 URI 对应的 Monaco TextModel。
+ */
+function disposeMonacoModelByPath(monaco: typeof MonacoNS, path: string): void {
+  try {
+    const model = monaco.editor.getModel(monaco.Uri.parse(path));
+    if (model && !model.isDisposed())
+      model.dispose();
+  } catch {}
+}
+
+/**
+ * 安全释放一组 Diff model：先从 DiffEditor 脱钩，再释放 TextModel。
+ */
+function disposeDiffModels(
+  monaco: typeof MonacoNS | null,
+  editor: MonacoNS.editor.IStandaloneDiffEditor | null,
+  paths: MonacoDiffModelPaths,
+): void {
+  if (!monaco) return;
+  detachDiffEditorModelsIfMatching(editor, paths);
+  disposeMonacoModelByPath(monaco, paths.original);
+  disposeMonacoModelByPath(monaco, paths.modified);
+}
 
 /**
  * 根据当前文档根节点的主题类名，解析 Monaco 应使用的亮暗主题标识。
@@ -430,6 +500,7 @@ export default function MonacoGitDiff(props: MonacoGitDiffProps): JSX.Element {
   const overlayListenerRefs = useRef<MonacoNS.IDisposable[]>([]);
   const overlayFrameRef = useRef<number | null>(null);
   const focusSideRef = useRef<GitDiffEditorSelection["focusSide"]>(null);
+  const modelPathsRef = useRef<MonacoDiffModelPaths | null>(null);
   const [overlayButtons, setOverlayButtons] = useState<MonacoPartialCommitOverlayButton[]>([]);
 
   const language = useMemo(() => detectLanguageId(String(diff?.path || "")), [diff?.path]);
@@ -443,6 +514,7 @@ export default function MonacoGitDiff(props: MonacoGitDiffProps): JSX.Element {
       Array.isArray(diff?.hashes) ? diff?.hashes.join("|") : "",
     ].join("::");
   }, [diff?.hash, diff?.hashes, diff?.mode, diff?.path]);
+  const modelPaths = useMemo(() => buildDiffModelPaths(editorKey), [editorKey]);
   const theme = useMonacoTheme();
 
   /**
@@ -597,6 +669,7 @@ export default function MonacoGitDiff(props: MonacoGitDiffProps): JSX.Element {
   const onMount = useCallback((editor: MonacoNS.editor.IStandaloneDiffEditor, monaco: typeof MonacoNS): void => {
     diffEditorRef.current = editor;
     monacoRef.current = monaco;
+    modelPathsRef.current = modelPaths;
     decorationRef.current = editor.getModifiedEditor().createDecorationsCollection();
     originalExcludedDecorationRef.current = editor.getOriginalEditor().createDecorationsCollection();
     modifiedExcludedDecorationRef.current = editor.getModifiedEditor().createDecorationsCollection();
@@ -617,7 +690,20 @@ export default function MonacoGitDiff(props: MonacoGitDiffProps): JSX.Element {
     ignoreWhitespace,
     onModifiedContentChange,
     sideBySide,
+    modelPaths,
   ]);
+
+  /**
+   * Diff 切换或组件卸载时释放当前 Monaco model；必须先从 DiffEditor 脱钩，再释放 TextModel。
+   */
+  useEffect(() => {
+    modelPathsRef.current = modelPaths;
+    return () => {
+      disposeDiffModels(monacoRef.current, diffEditorRef.current, modelPaths);
+      if (modelPathsRef.current?.original === modelPaths.original && modelPathsRef.current.modified === modelPaths.modified)
+        modelPathsRef.current = null;
+    };
+  }, [modelPaths]);
 
   useEffect(() => {
     if (!diff) {
@@ -777,6 +863,10 @@ export default function MonacoGitDiff(props: MonacoGitDiffProps): JSX.Element {
         overlayFrameRef.current = null;
       }
       focusSideRef.current = null;
+      const paths = modelPathsRef.current;
+      if (paths)
+        disposeDiffModels(monacoRef.current, diffEditorRef.current, paths);
+      modelPathsRef.current = null;
       diffEditorRef.current = null;
       monacoRef.current = null;
     };
@@ -867,6 +957,10 @@ export default function MonacoGitDiff(props: MonacoGitDiffProps): JSX.Element {
         language={language}
         original={original}
         modified={modified}
+        originalModelPath={modelPaths.original}
+        modifiedModelPath={modelPaths.modified}
+        keepCurrentOriginalModel
+        keepCurrentModifiedModel
         theme={theme}
         onMount={onMount}
         options={{

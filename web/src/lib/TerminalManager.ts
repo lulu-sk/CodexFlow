@@ -204,6 +204,8 @@ export default class TerminalManager {
   private adapterResizeReadyUnsubByTab: Record<string, (() => void) | null> = {};
   private hostElByTab: Record<string, HTMLElement | null> = {};
   private backlogHydratedPtyByTab: Record<string, string | undefined> = {};
+  private backlogHydratingPtyByTab: Record<string, string | undefined> = {};
+  private lastResumeAllPtyAt = 0;
   private windowResizeStableSampleByTab: Record<string, WindowResizeStableSample | undefined> = {};
   private getPtyId: (tabId: string) => string | undefined;
   private hostPty: HostPtyAPI;
@@ -2675,9 +2677,15 @@ export default class TerminalManager {
       return;
     }
 
-    // 同一 tab + 同一 ptyId：避免重复回放导致内容叠加
+    // 同一 tab + 同一 ptyId：已完成回放时只重新接线，避免重复回放导致内容叠加。
     if (this.backlogHydratedPtyByTab[tabId] === ptyId) {
       this.wireUp(tabId, ptyId);
+      return;
+    }
+
+    // 正在回放时只重接监听，不触发初始 resize，避免恢复期额外 pause/resume 放大卡顿。
+    if (this.backlogHydratingPtyByTab[tabId] === ptyId) {
+      this.wireUp(tabId, ptyId, { skipInitialResize: true });
       return;
     }
 
@@ -2689,6 +2697,7 @@ export default class TerminalManager {
     }
 
     // 回放阶段：先尝试暂停数据流，避免乱序
+    this.backlogHydratingPtyByTab[tabId] = ptyId;
     try { this.hostPty.pause?.(ptyId); } catch {}
     this.wireUp(tabId, ptyId, { skipInitialResize: true });
 
@@ -2717,6 +2726,9 @@ export default class TerminalManager {
               resolve({ ok: false, error: String((err as any)?.message || err) });
             });
         });
+        // 回放结果返回时再次确认绑定关系，避免延迟结果写入已切换 PTY 的 tab。
+        if (this.getPtyId(tabId) !== ptyId || this.backlogHydratingPtyByTab[tabId] !== ptyId)
+          return;
         if (res && res.ok && typeof res.data === "string" && res.data.length > 0) {
           try { this.adapters[tabId]?.write(res.data); } catch {}
         }
@@ -2724,6 +2736,8 @@ export default class TerminalManager {
       } catch {
         // ignore
       } finally {
+        if (this.backlogHydratingPtyByTab[tabId] === ptyId)
+          delete this.backlogHydratingPtyByTab[tabId];
         try { this.hostPty.resume?.(ptyId); } catch {}
         try { this.scheduleResizeSync(tabId, true); } catch {}
       }
@@ -2741,12 +2755,16 @@ export default class TerminalManager {
       this.blurTab(this.lastFocusedTabId, "switch");
     }
     this.lastFocusedTabId = tabId;
-    // 先确保所有 PTY 均处于 resume 状态：后台标签仍需接收 OSC 事件以触发完成通知
+    // 先确保所有 PTY 均处于 resume 状态：后台标签仍需接收 OSC 事件以触发完成通知；短时间内去重，避免切换/恢复时放大 IPC 压力。
     try {
-      for (const t of Object.keys(this.adapters)) {
-        const pid = this.getPtyId(t);
-        if (!pid) continue;
-        try { this.hostPty.resume?.(pid); this.dlog(`resume pty=${pid} tab=${t}`); } catch {}
+      const now = Date.now();
+      if (now - this.lastResumeAllPtyAt > 1500) {
+        this.lastResumeAllPtyAt = now;
+        for (const t of Object.keys(this.adapters)) {
+          const pid = this.getPtyId(t);
+          if (!pid) continue;
+          try { this.hostPty.resume?.(pid); this.dlog(`resume pty=${pid} tab=${t}`); } catch {}
+        }
       }
     } catch {}
     // 精确度量并立即同步尺寸
@@ -2758,6 +2776,7 @@ export default class TerminalManager {
     const pid = this.getPtyId(tabId);
     if (pid) {
       try {
+        this.hostPty.resume?.(pid);
         this.hostPty.write(pid, "\u001b[I");
         this.dlog(`tabActivate.injectFocusGain tab=${tabId} pty=${pid}`);
       } catch (err) {
@@ -2907,6 +2926,7 @@ export default class TerminalManager {
     delete this.containers[tabId];
     delete this.scrollSnapshotByTab[tabId];
     delete this.backlogHydratedPtyByTab[tabId];
+    delete this.backlogHydratingPtyByTab[tabId];
 
     if (alsoClosePty) {
       const pid = this.getPtyId(tabId);
