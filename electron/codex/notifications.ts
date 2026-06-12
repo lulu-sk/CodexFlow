@@ -7,6 +7,7 @@ import { BrowserWindow } from "electron";
 import { perfLogger } from "../log";
 import { getCodexRootsFastAsync } from "../wsl";
 import { requestHistoryFastRefresh } from "../indexer";
+import { getCodexNotifyStateDecision, type CodexNotifyStateDecision, type CodexNotifyStateEntry } from "./notifyState";
 
 const CODEX_NOTIFY_FILENAME = "codexflow_after_agent_notify.jsonl";
 const CODEX_NOTIFY_POLL_INTERVAL_MS = 250;
@@ -27,6 +28,10 @@ type CodexNotifyEntry = {
   completionKind?: string;
   agentType?: string;
   agentId?: string;
+  threadId?: string;
+  turnId?: string;
+  cwd?: string;
+  sqliteHome?: string;
 };
 
 type CodexNotifySource = {
@@ -47,6 +52,10 @@ type CodexNotifyPayload = {
   completionKind?: "agent" | "subagent";
   agentType?: string;
   agentId?: string;
+  threadId?: string;
+  turnId?: string;
+  cwd?: string;
+  sqliteHome?: string;
 };
 
 type RecentCodexSubagentNotify = {
@@ -62,6 +71,7 @@ const recentCodexSubagentNotifies: RecentCodexSubagentNotify[] = [];
 let codexNotifyTimer: NodeJS.Timeout | null = null;
 let codexNotifyPolling = false;
 let codexNotifyWindowGetter: (() => BrowserWindow | null) | null = null;
+let codexNotifyStateDecisionReader: (entry: CodexNotifyStateEntry, sourcePath?: string) => CodexNotifyStateDecision = getCodexNotifyStateDecision;
 
 /**
  * 中文说明：记录 Codex 通知桥接调试日志。
@@ -246,9 +256,9 @@ function isDuplicateRecentCodexSubagentNotify(payload: CodexNotifyPayload, now: 
 }
 
 /**
- * 中文说明：从 Codex notify entry 构造发送给渲染进程的 payload，并处理旧 notify 的子代理归类。
+ * 中文说明：从 Codex notify entry 构造发送给渲染进程的 payload，并处理旧 notify 的状态兜底与子代理归类。
  */
-function buildCodexNotifyDispatch(entry: CodexNotifyEntry, now = Date.now()): { payload: CodexNotifyPayload; dropReason?: string } {
+function buildCodexNotifyDispatch(entry: CodexNotifyEntry, now = Date.now(), sourcePath?: string): { payload: CodexNotifyPayload; dropReason?: string } {
   const payload: CodexNotifyPayload = {
     providerId: "codex" as const,
     tabId: entry.tabId ? String(entry.tabId) : "",
@@ -263,18 +273,32 @@ function buildCodexNotifyDispatch(entry: CodexNotifyEntry, now = Date.now()): { 
   const completionKind = String(entry.completionKind || "").trim().toLowerCase();
   const agentType = String(entry.agentType || "").trim();
   const agentId = String(entry.agentId || "").trim();
+  const threadId = String(entry.threadId || "").trim();
+  const turnId = String(entry.turnId || "").trim();
+  const cwd = String(entry.cwd || "").trim();
+  const sqliteHome = String(entry.sqliteHome || "").trim();
   const explicitSubagent = completionKind === "subagent" || hookEventName === "SubagentStop";
   const explicitAgent = completionKind === "agent" || hookEventName === "Stop";
   const isLegacyNotify = !hookEventName && !completionKind;
   const legacySubagentPreview = isLegacySubagentCompletionPreview(payload.preview);
+  const stateDecision = threadId
+    ? codexNotifyStateDecisionReader({ threadId, cwd, sqliteHome }, sourcePath)
+    : {};
 
   if (hookEventName) payload.hookEventName = hookEventName;
-  if (explicitSubagent || legacySubagentPreview)
+  if (explicitSubagent || stateDecision.completionKind === "subagent" || legacySubagentPreview)
     payload.completionKind = "subagent";
   else if (explicitAgent)
     payload.completionKind = "agent";
   if (agentType) payload.agentType = agentType;
-  if (agentId) payload.agentId = agentId;
+  if (agentId || stateDecision.agentId) payload.agentId = agentId || stateDecision.agentId;
+  if (threadId) payload.threadId = threadId;
+  if (turnId) payload.turnId = turnId;
+  if (cwd) payload.cwd = cwd;
+  if (sqliteHome) payload.sqliteHome = sqliteHome;
+
+  if (stateDecision.dropReason)
+    return { payload, dropReason: stateDecision.dropReason };
 
   if (isLegacyNotify && isDuplicateRecentCodexSubagentNotify(payload, now))
     return { payload, dropReason: "duplicate-subagent-legacy" };
@@ -341,7 +365,7 @@ function emitCodexNotify(entry: CodexNotifyEntry, sourcePath?: string): void {
   if (!win) return;
   const providerId = String(entry.providerId || "codex").toLowerCase();
   if (providerId && providerId !== "codex") return;
-  const { payload, dropReason } = buildCodexNotifyDispatch(entry);
+  const { payload, dropReason } = buildCodexNotifyDispatch(entry, Date.now(), sourcePath);
   if (dropReason) {
     logCodexNotification(`notify event dropped reason=${dropReason} tab=${payload.tabId || "n/a"} kind=${payload.completionKind || "agent"} previewLen=${payload.preview.length}`);
     return;
@@ -413,6 +437,12 @@ export const __testing = {
    */
   resetCodexNotifyDedupeState() {
     recentCodexSubagentNotifies.length = 0;
+  },
+  /**
+   * 中文说明：替换 legacy notify 状态判断读取器，便于测试覆盖不同 Codex SQLite 状态。
+   */
+  setCodexNotifyStateDecisionReader(reader?: (entry: CodexNotifyStateEntry, sourcePath?: string) => CodexNotifyStateDecision) {
+    codexNotifyStateDecisionReader = reader || getCodexNotifyStateDecision;
   },
 };
 

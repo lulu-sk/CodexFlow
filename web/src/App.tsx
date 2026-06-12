@@ -428,6 +428,10 @@ type ExternalAgentCompletePayload = {
   completionKind?: "agent" | "subagent" | string;
   agentType?: string;
   agentId?: string;
+  threadId?: string;
+  turnId?: string;
+  cwd?: string;
+  sqliteHome?: string;
 };
 
 type CompletionSnapshot = {
