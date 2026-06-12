@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("./wsl.js", () => ({
   default: {
     listDistrosAsync: vi.fn(),
+    execInWslAsync: vi.fn(),
   },
 }));
 
@@ -25,7 +26,7 @@ vi.mock("node:child_process", () => ({
 import wsl from "./wsl.js";
 import { execFile } from "node:child_process";
 import { hasPwsh, pickVisibleWindowsTerminalMode } from "./shells.js";
-import { checkRuntimeCli, extractRuntimeCliName, resolveVisibleRuntimeEnv } from "./runtimeEnv";
+import { checkRuntimeCli, clearRuntimeEnvProbeCachesForTest, extractRuntimeCliName, resolveVisibleRuntimeEnv } from "./runtimeEnv";
 
 const mockedWsl = vi.mocked(wsl);
 const mockedExecFile = vi.mocked(execFile as any);
@@ -36,6 +37,7 @@ const originalPlatform = process.platform;
 describe("resolveVisibleRuntimeEnv", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    clearRuntimeEnvProbeCachesForTest();
     Object.defineProperty(process, "platform", { value: "win32" });
     mockedPickVisibleWindowsTerminalMode.mockResolvedValue("pwsh");
     mockedHasPwsh.mockResolvedValue(true);
@@ -110,6 +112,7 @@ describe("extractRuntimeCliName", () => {
 describe("checkRuntimeCli", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    clearRuntimeEnvProbeCachesForTest();
     mockedWsl.listDistrosAsync.mockResolvedValue([]);
     mockedPickVisibleWindowsTerminalMode.mockResolvedValue("pwsh");
     mockedHasPwsh.mockResolvedValue(true);
@@ -141,5 +144,32 @@ describe("checkRuntimeCli", () => {
       expect.anything(),
       expect.anything(),
     );
+  });
+
+  it("连续检查相同宿主 CLI 时复用短期缓存", async () => {
+    Object.defineProperty(process, "platform", { value: "linux" });
+
+    const first = await checkRuntimeCli({ terminal: "windows", startupCmd: "codex --yolo" });
+    const second = await checkRuntimeCli({ terminal: "windows", startupCmd: "codex --yolo" });
+
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    expect(mockedExecFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("并发检查相同 WSL CLI 时合并为一次 WSL 命令", async () => {
+    Object.defineProperty(process, "platform", { value: "win32" });
+    mockedWsl.listDistrosAsync.mockResolvedValue([{ name: "Ubuntu-24.04" }]);
+    vi.mocked((mockedWsl as any).execInWslAsync).mockResolvedValue("yes");
+
+    const [first, second] = await Promise.all([
+      checkRuntimeCli({ terminal: "wsl", distro: "Ubuntu-24.04", startupCmd: "codex --yolo" }),
+      checkRuntimeCli({ terminal: "wsl", distro: "Ubuntu-24.04", startupCmd: "codex --yolo" }),
+    ]);
+
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    expect(mockedWsl.listDistrosAsync).toHaveBeenCalledTimes(1);
+    expect((mockedWsl as any).execInWslAsync).toHaveBeenCalledTimes(1);
   });
 });

@@ -5263,6 +5263,7 @@ export default function CodexFlowManagerUI() {
   const [themeSetting, setThemeSetting] = useState<ThemeSetting>(() => normalizeThemeSetting(getCachedThemeSetting() ?? "system"));
   const [legacyResumePrompt, setLegacyResumePrompt] = useState<LegacyResumePrompt | null>(null);
   const [legacyResumeLoading, setLegacyResumeLoading] = useState(false);
+  const pendingResumeRequestKeysRef = useRef<Set<string>>(new Set());
   const [blockingNotice, setBlockingNotice] = useState<BlockingNotice | null>(null);
   const [yoloPromptDialog, setYoloPromptDialog] = useState<YoloPromptDialogState>(() => ({ open: false, loading: false, handled: false }));
   const [startupChecksComplete, setStartupChecksComplete] = useState(false);
@@ -11786,13 +11787,17 @@ export default function CodexFlowManagerUI() {
 	  const executeResume = async (filePath: string, mode: ResumeExecutionMode, execEnv: Required<ProviderEnv>, forceLegacyCli: boolean, targetProject: Project): Promise<boolean> => {
 	    try {
 	      if (!filePath || !targetProject) return false;
+        const requestedExecEnv: Required<ProviderEnv> = {
+          terminal: normalizeTerminalMode(execEnv.terminal),
+          distro: String(execEnv.distro || wslDistro || "").trim(),
+        };
         const resumeSession = findSessionForFile(filePath);
         const resumeProviderId = resolveHistoryProviderId(resumeSession ?? null);
-        const visibleExecEnv = await resolveVisibleProviderEnv(resumeProviderId, execEnv, { persist: true });
-        const envChanged = visibleExecEnv.terminal !== execEnv.terminal
-          || String(visibleExecEnv.distro || "").toLowerCase() !== String(execEnv.distro || "").toLowerCase();
+        const visibleExecEnv = await resolveVisibleProviderEnv(resumeProviderId, requestedExecEnv, { persist: true });
+        const envChanged = visibleExecEnv.terminal !== requestedExecEnv.terminal
+          || String(visibleExecEnv.distro || "").toLowerCase() !== String(requestedExecEnv.distro || "").toLowerCase();
         if (envChanged)
-          await notifyRuntimeEnvFallback({ providerId: resumeProviderId, from: execEnv, to: visibleExecEnv, source: "historyResume" });
+          await notifyRuntimeEnvFallback({ providerId: resumeProviderId, from: requestedExecEnv, to: visibleExecEnv, source: "historyResume" });
 	      const { providerId, startupCmd, session, sessionId, resumeLabel, strategy, resumeHint, forceLegacyCli: finalForceLegacy } = buildResumeStartup(filePath, visibleExecEnv.terminal as any, { forceLegacyCli });
         const cliReady = await checkProviderCliBeforeLaunch(providerId, visibleExecEnv, buildProviderBaseStartupCmd(providerId));
         if (!cliReady) return false;
@@ -11897,6 +11902,11 @@ export default function CodexFlowManagerUI() {
 
 	  const requestResume = async (filePath?: string, mode: ResumeExecutionMode = 'internal', options?: { skipPrompt?: boolean; forceLegacyCli?: boolean }): Promise<'prompt' | 'ok' | 'blocked-shell' | 'error'> => {
 	    if (!filePath) return 'error';
+      const resumeRequestKey = `${mode}:${options?.forceLegacyCli ? "legacy" : "normal"}:${filePath}`;
+      if (pendingResumeRequestKeysRef.current.has(resumeRequestKey))
+        return 'ok';
+      pendingResumeRequestKeysRef.current.add(resumeRequestKey);
+      try {
 	    const { session, env } = resolveResumeEnv(filePath);
 	    const sessionMode = session?.resumeMode || 'unknown';
 	    const allowSelectedProjectFallback = historyScopeDescriptor.effectiveScope === 'current_project';
@@ -11933,6 +11943,9 @@ export default function CodexFlowManagerUI() {
 	    const useLegacy = !!options?.forceLegacyCli || isLegacyHistory(filePath);
 	    const ok = await executeResume(filePath, mode, env, useLegacy, project);
 	    return ok ? 'ok' : 'error';
+      } finally {
+        pendingResumeRequestKeysRef.current.delete(resumeRequestKey);
+      }
 	  };
 
   const cancelLegacyResume = () => {
@@ -12525,14 +12538,15 @@ export default function CodexFlowManagerUI() {
                 <button
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
                   onClick={async () => {
+                    const it = historyCtxMenu.item;
+                    const filePath = it?.filePath;
+                    setHistoryCtxMenu((m) => ({ ...m, show: false }));
+                    if (!filePath) return;
                     try {
-                      const it = historyCtxMenu.item;
-                      if (!it || !it.filePath) { setHistoryCtxMenu((m) => ({ ...m, show: false })); return; }
-                      await requestResume(it.filePath, 'internal');
+                      await requestResume(filePath, 'internal');
                     } catch (err) {
                       console.warn('resume session failed', err);
                     }
-                    setHistoryCtxMenu((m) => ({ ...m, show: false }));
                   }}
                 >
                   {t('history:continueConversation')}
@@ -12540,18 +12554,19 @@ export default function CodexFlowManagerUI() {
                 <button
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
                   onClick={async () => {
+                    const it = historyCtxMenu.item;
+                    const filePath = it?.filePath;
+                    setHistoryCtxMenu((m) => ({ ...m, show: false }));
+                    if (!filePath) return;
                     try {
-	                      const it = historyCtxMenu.item;
-	                      if (!it || !it.filePath) { setHistoryCtxMenu((m) => ({ ...m, show: false })); return; }
-	                      const status = await requestResume(it.filePath, 'external');
+	                      const status = await requestResume(filePath, 'external');
 	                      if (status === 'error') {
-	                        const env = resolveResumeShellLabel(it.filePath, it);
+	                        const env = resolveResumeShellLabel(filePath, it);
 	                        setBlockingNotice({ type: 'external-console', env });
 	                      }
 	                    } catch (e) {
 	                      console.warn('resume external failed', e);
                     }
-                    setHistoryCtxMenu((m) => ({ ...m, show: false }));
                   }}
 	                >
 	                  <ExternalLink className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t('history:continueExternalWith', { env: resolveResumeShellLabel(historyCtxMenu.item?.filePath, historyCtxMenu.item) })}
