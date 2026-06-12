@@ -1715,6 +1715,9 @@ export default function CodexFlowManagerUI() {
   const codexErrorScanByTabRef = useRef<Record<string, CodexErrorScanState>>({});
   const ptyListenersRef = useRef<Record<string, () => void>>({});
   const ptyToTabRef = useRef<Record<string, string>>({});
+  const hydratedPtyBindingQueueRef = useRef<Array<{ tabId: string; ptyId: string; windowId: string; source: string }>>([]);
+  const hydratedPtyBindingQueuedRef = useRef<Record<string, string>>({});
+  const hydratedPtyBindingTimerRef = useRef<number | null>(null);
   const tabProjectRef = useRef<Record<string, string>>({});
   const tabsByProjectRef = useRef<Record<string, ConsoleTab[]>>(tabsByProject);
   const detachedWindowHasOwnedTabsRef = useRef(false);
@@ -1729,6 +1732,64 @@ export default function CodexFlowManagerUI() {
   const CODEX_OSC_EXTERNAL_WAIT_NO_DETAIL_MS = 3_000;
   const COMPLETION_DEDUPE_WINDOW_MS = 1_600;
   const COMPLETION_CROSS_SOURCE_WINDOW_MS = 5_000;
+
+  /**
+   * 判断待恢复的 tab 是否仍属于指定窗口，避免延迟任务绑定已被移动/关闭的终端。
+   */
+  function isQueuedTabStillVisible(tabId: string, windowId: string): boolean {
+    for (const list of Object.values(tabsByProjectRef.current || {})) {
+      for (const tab of list || []) {
+        if (tab.id === tabId && isTabOwnedByWindow(tab, windowId))
+          return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * 推进 PTY 恢复绑定队列，每次只处理一个 tab，避免 reload 后多个 backlog 同帧写入卡住渲染线程。
+   */
+  function scheduleHydratedPtyBindingPump(): void {
+    if (hydratedPtyBindingTimerRef.current !== null) return;
+    hydratedPtyBindingTimerRef.current = window.setTimeout(() => {
+      hydratedPtyBindingTimerRef.current = null;
+      const next = hydratedPtyBindingQueueRef.current.shift();
+      if (!next) return;
+      if (hydratedPtyBindingQueuedRef.current[next.tabId] === next.ptyId)
+        delete hydratedPtyBindingQueuedRef.current[next.tabId];
+
+      try {
+        const currentPtyId = ptyByTabRef.current[next.tabId];
+        if (currentPtyId === next.ptyId && isQueuedTabStillVisible(next.tabId, next.windowId)) {
+          try { registerPtyForTab(next.tabId, next.ptyId); } catch {}
+          try { tm.setPty(next.tabId, next.ptyId, { hydrateBacklog: true }); } catch {}
+        }
+      } catch {}
+
+      if (hydratedPtyBindingQueueRef.current.length > 0)
+        scheduleHydratedPtyBindingPump();
+    }, 24);
+  }
+
+  /**
+   * 将 PTY 恢复绑定加入分帧队列，同一 tab+ptyId 的重复请求会合并。
+   */
+  function scheduleHydratedPtyBindings(entries: Array<{ tabId: string; ptyId: string }>, source: string): void {
+    let added = 0;
+    for (const entry of entries) {
+      const tabId = String(entry?.tabId || "");
+      const ptyId = String(entry?.ptyId || "");
+      if (!tabId || !ptyId) continue;
+      if (hydratedPtyBindingQueuedRef.current[tabId] === ptyId) continue;
+      hydratedPtyBindingQueuedRef.current[tabId] = ptyId;
+      hydratedPtyBindingQueueRef.current.push({ tabId, ptyId, windowId: currentWindowId, source });
+      added += 1;
+    }
+    if (added > 0) {
+      try { uiLog(`ptyBinding.queue source=${source} added=${added} pending=${hydratedPtyBindingQueueRef.current.length}`); } catch {}
+      scheduleHydratedPtyBindingPump();
+    }
+  }
 
   useEffect(() => { editingTabIdRef.current = editingTabId; }, [editingTabId]);
   useEffect(() => { notificationPrefsRef.current = notificationPrefs; }, [notificationPrefs]);
@@ -1755,6 +1816,12 @@ export default function CodexFlowManagerUI() {
         }
       }
       codexErrorScanByTabRef.current = {};
+      if (hydratedPtyBindingTimerRef.current !== null) {
+        try { window.clearTimeout(hydratedPtyBindingTimerRef.current); } catch {}
+        hydratedPtyBindingTimerRef.current = null;
+      }
+      hydratedPtyBindingQueueRef.current = [];
+      hydratedPtyBindingQueuedRef.current = {};
     };
   }, []);
 
@@ -1784,11 +1851,12 @@ export default function CodexFlowManagerUI() {
           knownTabs.add(tab.id);
         }
       }
+      const restoreEntries: Array<{ tabId: string; ptyId: string }> = [];
       for (const [tabId, ptyId] of Object.entries(snapshot.ptyByTab || {})) {
         if (!knownTabs.has(tabId)) continue;
-        try { registerPtyForTab(tabId, ptyId); } catch {}
-        try { tm.setPty(tabId, ptyId, { hydrateBacklog: true }); } catch {}
+        restoreEntries.push({ tabId, ptyId });
       }
+      scheduleHydratedPtyBindings(restoreEntries, "snapshot");
     } catch {}
   }, [restoredConsoleSession, tm, currentWindowId]);
 
@@ -6181,16 +6249,17 @@ export default function CodexFlowManagerUI() {
 
   useEffect(() => {
     const visibleTabIds = new Set<string>();
+    const hydrateEntries: Array<{ tabId: string; ptyId: string }> = [];
     for (const list of Object.values(tabsByProject || {})) {
       for (const tab of list || []) {
         if (!isTabOwnedByWindow(tab, currentWindowId)) continue;
         visibleTabIds.add(tab.id);
         const ptyId = ptyByTabRef.current[tab.id];
         if (!ptyId) continue;
-        try { registerPtyForTab(tab.id, ptyId); } catch {}
-        try { tm.setPty(tab.id, ptyId, { hydrateBacklog: true }); } catch {}
+        hydrateEntries.push({ tabId: tab.id, ptyId });
       }
     }
+    scheduleHydratedPtyBindings(hydrateEntries, "visible-tabs");
     for (const tabId of Object.keys(ptyByTabRef.current || {})) {
       if (visibleTabIds.has(tabId)) continue;
       const ptyId = ptyByTabRef.current[tabId];

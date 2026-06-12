@@ -2,6 +2,7 @@
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
 import { ipcMain, type BrowserWindow } from "electron";
+import { perfLogger } from "./log";
 
 export type QuitConfirmRequestPayload = {
   token: string;
@@ -14,6 +15,13 @@ type Pending = {
 };
 
 const pendingByToken = new Map<string, Pending>();
+
+/**
+ * 写入退出确认桥接日志。
+ */
+function logQuitConfirmBridge(message: string): void {
+  try { perfLogger.logAlways(`[quitConfirm.bridge] ${message}`); } catch {}
+}
 
 function uidToken(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
@@ -29,12 +37,17 @@ export function registerQuitConfirmIPC(): void {
       const token = String(args?.token || "");
       const ok = !!args?.ok;
       const p = pendingByToken.get(token);
-      if (!p) return { ok: false, error: "not_found" };
+      if (!p) {
+        logQuitConfirmBridge(`respond token=${token || "empty"} ok=${ok ? 1 : 0} result=not_found`);
+        return { ok: false, error: "not_found" };
+      }
       pendingByToken.delete(token);
       try { if (p.timer) clearTimeout(p.timer); } catch {}
       try { p.resolve(ok); } catch {}
+      logQuitConfirmBridge(`respond token=${token} ok=${ok ? 1 : 0}`);
       return { ok: true };
     } catch (e: any) {
+      logQuitConfirmBridge(`respond error=${String(e?.message || e)}`);
       return { ok: false, error: String(e) };
     }
   });
@@ -52,8 +65,14 @@ export async function requestQuitConfirmFromRenderer(
 ): Promise<boolean | null> {
   try {
     const target = win && !win.isDestroyed() ? win : null;
-    if (!target) return null;
-    if (!target.webContents || target.webContents.isDestroyed()) return null;
+    if (!target) {
+      logQuitConfirmBridge("skip reason=no-window");
+      return null;
+    }
+    if (!target.webContents || target.webContents.isDestroyed()) {
+      logQuitConfirmBridge("skip reason=no-webContents");
+      return null;
+    }
 
     const token = uidToken();
     const payload: QuitConfirmRequestPayload = { token, count: Math.max(0, Math.floor(Number(count) || 0)) };
@@ -62,19 +81,23 @@ export async function requestQuitConfirmFromRenderer(
     const done = await new Promise<boolean | null>((resolve) => {
       const timer = setTimeout(() => {
         pendingByToken.delete(token);
+        logQuitConfirmBridge(`timeout token=${token} timeoutMs=${timeoutMs}`);
         resolve(null);
       }, timeoutMs);
       pendingByToken.set(token, { resolve: (ok) => resolve(ok), timer });
       try {
+        logQuitConfirmBridge(`send token=${token} count=${payload.count} timeoutMs=${timeoutMs} loading=${target.webContents.isLoading() ? 1 : 0}`);
         target.webContents.send("app:quitConfirm", payload);
       } catch {
         pendingByToken.delete(token);
         try { clearTimeout(timer); } catch {}
+        logQuitConfirmBridge(`send failed token=${token}`);
         resolve(null);
       }
     });
     return done;
   } catch {
+    logQuitConfirmBridge("request error");
     return null;
   }
 }
