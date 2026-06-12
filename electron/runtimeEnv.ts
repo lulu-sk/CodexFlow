@@ -28,6 +28,116 @@ export type RuntimeCliCheckResult = {
   error?: string;
 };
 
+type TimedCacheEntry<T> = {
+  value: T;
+  expiresAt: number;
+};
+
+const RUNTIME_DISTRO_CACHE_TTL_MS = 5_000;
+const CLI_EXISTS_POSITIVE_CACHE_TTL_MS = 10_000;
+const CLI_EXISTS_NEGATIVE_CACHE_TTL_MS = 2_000;
+const runtimeDistroCache = new Map<string, TimedCacheEntry<DistroInfo[]>>();
+const runtimeDistroPending = new Map<string, Promise<DistroInfo[]>>();
+const hostCliCache = new Map<string, TimedCacheEntry<boolean>>();
+const hostCliPending = new Map<string, Promise<boolean>>();
+const wslCliCache = new Map<string, TimedCacheEntry<boolean>>();
+const wslCliPending = new Map<string, Promise<boolean>>();
+
+/**
+ * 读取仍在有效期内的探测缓存，过期项会被同步清理。
+ * @param cache 缓存表
+ * @param key 缓存键
+ */
+function readFreshCache<T>(cache: Map<string, TimedCacheEntry<T>>, key: string): T | undefined {
+  const hit = cache.get(key);
+  if (!hit) return undefined;
+  if (hit.expiresAt > Date.now())
+    return hit.value;
+  cache.delete(key);
+  return undefined;
+}
+
+/**
+ * 写入带过期时间的探测缓存。
+ * @param cache 缓存表
+ * @param key 缓存键
+ * @param value 缓存值
+ * @param ttlMs 有效期毫秒数
+ */
+function writeTimedCache<T>(cache: Map<string, TimedCacheEntry<T>>, key: string, value: T, ttlMs: number): T {
+  cache.set(key, { value, expiresAt: Date.now() + Math.max(0, ttlMs) });
+  return value;
+}
+
+/**
+ * 复制 WSL 发行版列表，避免调用方修改缓存中的对象。
+ * @param distros 原始发行版列表
+ */
+function cloneDistroList(distros: DistroInfo[]): DistroInfo[] {
+  return distros.map((item) => ({ ...item }));
+}
+
+/**
+ * 缓存并合并 WSL 发行版列表探测，避免连续启动时反复调用 wsl.exe。
+ */
+async function listRuntimeDistrosCached(): Promise<DistroInfo[]> {
+  const key = process.platform;
+  const cached = readFreshCache(runtimeDistroCache, key);
+  if (cached) return cloneDistroList(cached);
+  const pending = runtimeDistroPending.get(key);
+  if (pending) return cloneDistroList(await pending);
+
+  const next = wsl.listDistrosAsync()
+    .then((items) => {
+      const list = Array.isArray(items) ? cloneDistroList(items) : [];
+      writeTimedCache(runtimeDistroCache, key, list, RUNTIME_DISTRO_CACHE_TTL_MS);
+      return list;
+    })
+    .finally(() => {
+      runtimeDistroPending.delete(key);
+    });
+  runtimeDistroPending.set(key, next);
+  return cloneDistroList(await next);
+}
+
+/**
+ * 根据 CLI 探测结果选择缓存时间：成功稍长，失败更短以便用户安装后快速重试。
+ * @param exists CLI 是否存在
+ */
+function cliExistsCacheTtl(exists: boolean): number {
+  return exists ? CLI_EXISTS_POSITIVE_CACHE_TTL_MS : CLI_EXISTS_NEGATIVE_CACHE_TTL_MS;
+}
+
+/**
+ * 生成宿主 CLI 探测缓存键。
+ * @param command CLI 名称或路径
+ */
+function hostCliCacheKey(command: string): string {
+  const normalized = process.platform === "win32" ? command.toLowerCase() : command;
+  return `${process.platform}:${normalized}`;
+}
+
+/**
+ * 生成 WSL CLI 探测缓存键。
+ * @param distro WSL 发行版
+ * @param command CLI 名称或路径
+ */
+function wslCliCacheKey(distro: string, command: string): string {
+  return `${String(distro || "").trim().toLowerCase()}:${command}`;
+}
+
+/**
+ * 清理运行环境探测缓存；仅供测试使用。
+ */
+export function clearRuntimeEnvProbeCachesForTest(): void {
+  runtimeDistroCache.clear();
+  runtimeDistroPending.clear();
+  hostCliCache.clear();
+  hostCliPending.clear();
+  wslCliCache.clear();
+  wslCliPending.clear();
+}
+
 /**
  * 将命令行拆成轻量 argv，用于提取首个可执行命令。
  * @param cmd 用户配置或内置生成的启动命令
@@ -182,9 +292,22 @@ async function hasHostCli(cli: string): Promise<boolean> {
   if (!command) return false;
   if (/[\\/]/.test(command))
     return hasExecutablePath(command);
-  if (process.platform === "win32")
-    return await execFileOk("where.exe", [command]);
-  return await execFileOk("sh", ["-lc", `command -v -- ${bashSingleQuote(command)} >/dev/null 2>&1`]);
+  const key = hostCliCacheKey(command);
+  const cached = readFreshCache(hostCliCache, key);
+  if (typeof cached === "boolean") return cached;
+  const pending = hostCliPending.get(key);
+  if (pending) return await pending;
+
+  const next = (async () => {
+    const exists = process.platform === "win32"
+      ? await execFileOk("where.exe", [command])
+      : await execFileOk("sh", ["-lc", `command -v -- ${bashSingleQuote(command)} >/dev/null 2>&1`]);
+    return writeTimedCache(hostCliCache, key, exists, cliExistsCacheTtl(exists));
+  })().finally(() => {
+    hostCliPending.delete(key);
+  });
+  hostCliPending.set(key, next);
+  return await next;
 }
 
 /**
@@ -195,12 +318,26 @@ async function hasHostCli(cli: string): Promise<boolean> {
 async function hasWslCli(distro: string, cli: string): Promise<boolean> {
   const command = String(cli || "").trim();
   if (!command) return false;
+  const key = wslCliCacheKey(distro, command);
+  const cached = readFreshCache(wslCliCache, key);
+  if (typeof cached === "boolean") return cached;
+  const pending = wslCliPending.get(key);
+  if (pending) return await pending;
+
   const quoted = bashSingleQuote(command);
   const script = command.includes("/")
     ? `test -x ${quoted} && echo yes || echo no`
     : `command -v -- ${quoted} >/dev/null 2>&1 && echo yes || echo no`;
-  const out = await wsl.execInWslAsync(distro, script, { timeoutMs: 3_000 });
-  return String(out || "").trim().toLowerCase() === "yes";
+  const next = wsl.execInWslAsync(distro, script, { timeoutMs: 3_000 })
+    .then((out) => {
+      const exists = String(out || "").trim().toLowerCase() === "yes";
+      return writeTimedCache(wslCliCache, key, exists, cliExistsCacheTtl(exists));
+    })
+    .finally(() => {
+      wslCliPending.delete(key);
+    });
+  wslCliPending.set(key, next);
+  return await next;
 }
 
 /**
@@ -253,7 +390,7 @@ export async function resolveVisibleRuntimeEnv(input: RuntimeEnvInput): Promise<
     };
   }
 
-  const distros = await wsl.listDistrosAsync();
+  const distros = await listRuntimeDistrosCached();
   const availableDistros = distros.map((item) => String(item?.name || "").trim()).filter(Boolean);
 
   if (requestedTerminal === "wsl") {
