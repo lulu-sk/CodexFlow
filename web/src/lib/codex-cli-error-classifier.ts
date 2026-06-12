@@ -9,6 +9,7 @@ export type CodexCliErrorKind =
   | "highDemand"
   | "forbidden"
   | "badRequest"
+  | "payloadTooLarge"
   | "unknownHttp";
 
 export type CodexCliErrorSeverity = "temporary" | "blocking";
@@ -42,6 +43,7 @@ export const CODEX_CLI_ERROR_KIND_LABELS: Record<CodexCliErrorKind, string> = {
   highDemand: "We're currently experiencing high demand, which may cause temporary errors.",
   forbidden: "403 Forbidden",
   badRequest: "400 Bad Request",
+  payloadTooLarge: "413 Payload Too Large",
   unknownHttp: "unexpected status",
 };
 
@@ -88,6 +90,11 @@ const CODEX_CLI_ERROR_RULES: CodexCliErrorRule[] = [
     pattern: /(?:unexpected status\s+400|400\s+Bad Request|<h1>\s*400\s+Bad Request\s*<\/h1>)/i,
   },
   {
+    kind: "payloadTooLarge",
+    severity: "blocking",
+    pattern: /(?:unexpected status\s+413(?:\s+(?:Payload Too Large|Request Entity Too Large))?|413\s+(?:Payload Too Large|Request Entity Too Large)|<h1>\s*413\s+(?:Payload Too Large|Request Entity Too Large)\s*<\/h1>)/i,
+  },
+  {
     kind: "concurrency",
     severity: "temporary",
     pattern: /concurrency limit exceeded/i,
@@ -117,7 +124,7 @@ const MAX_MATCHED_TEXT_LENGTH = 280;
 const RECONNECTING_STATUS_PATTERN = /Reconnecting\.\.\.\s+(\d+)\/(\d+)/gi;
 const WORKING_STATUS_PATTERN = /\bWorking\s*\(/gi;
 const EXPLICIT_FINAL_ERROR_PATTERN =
-  /(?:exceeded retry limit|selected model is at capacity|you['’]ve hit your usage limit|usage limit(?:ed)?(?:\s+reached)?|currently experiencing high demand|400\s+Bad Request|<h1>\s*400\s+Bad Request\s*<\/h1>)/i;
+  /(?:exceeded retry limit|selected model is at capacity|you['’]ve hit your usage limit|usage limit(?:ed)?(?:\s+reached)?|currently experiencing high demand|400\s+Bad Request|<h1>\s*400\s+Bad Request\s*<\/h1>|unexpected status\s+413\b|413\s+Payload Too Large|413\s+Request Entity Too Large|<h1>\s*413\s+(?:Payload Too Large|Request Entity Too Large)\s*<\/h1>)/i;
 
 /**
  * 去除终端 ANSI/控制序列，并保留足够的换行信息用于错误文本识别。
@@ -142,7 +149,8 @@ export function isCodexCliErrorAutoRetryable(kind: CodexCliErrorKind): boolean {
     kind === "highDemand" ||
     kind === "modelCapacity" ||
     kind === "forbidden" ||
-    kind === "badRequest"
+    kind === "badRequest" ||
+    kind === "payloadTooLarge"
   );
 }
 

@@ -57,6 +57,22 @@ describe("codex-cli-error-classifier（Codex TUI 错误识别）", () => {
       retryable: true,
     },
     {
+      text: `unexpected status 413 Payload Too Large: <html>
+<head><title>413 Request Entity Too Large</title></head>
+<body>
+<center><h1>413 Request Entity Too Large</h1></center>
+<hr><center>nginx</center>
+</body>
+</html>, url: https://example.test/v1/responses, cf-ray: a04d1f6`,
+      kind: "payloadTooLarge",
+      retryable: true,
+    },
+    {
+      text: "unexpected status 413, url: https://example.test/v1/responses",
+      kind: "payloadTooLarge",
+      retryable: true,
+    },
+    {
       text: "unexpected status 503 Service Unavailable: openai_error, url: https://example.test/v1/responses, cf-ray: a03f93882b23f591-SJC",
       kind: "serviceUnavailable",
       retryable: true,
@@ -203,6 +219,9 @@ describe("codex-cli-error-classifier（Codex TUI 错误识别）", () => {
       classifyCodexCliErrorText("<html><body><h1>400 Bad Request</h1></body></html>"),
     )).toBe(false);
     expect(shouldDelayCodexCliFinalErrorForReconnect(
+      classifyCodexCliErrorText("<html><body><h1>413 Request Entity Too Large</h1></body></html>"),
+    )).toBe(false);
+    expect(shouldDelayCodexCliFinalErrorForReconnect(
       classifyCodexCliErrorText("We're currently experiencing high demand, which may cause temporary errors."),
     )).toBe(false);
   });
@@ -215,6 +234,7 @@ describe("codex-cli-error-classifier（Codex TUI 错误识别）", () => {
     expect(getCodexCliErrorKindLabel("rateLimited")).toBe("429 Too Many Requests");
     expect(getCodexCliErrorKindLabel("networkStream")).toBe("stream disconnected before completion");
     expect(getCodexCliErrorKindLabel("serviceUnavailable")).toBe("503 Service Unavailable");
+    expect(getCodexCliErrorKindLabel("payloadTooLarge")).toBe("413 Payload Too Large");
     expect(getCodexCliErrorKindLabel("highDemand")).toBe("We're currently experiencing high demand, which may cause temporary errors.");
   });
 });

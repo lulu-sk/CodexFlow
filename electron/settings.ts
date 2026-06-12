@@ -47,7 +47,7 @@ export type CodexErrorHandlingSettings = {
   /** 是否在可恢复错误后自动发送 continue */
   autoContinueEnabled?: boolean;
   /** 自动 continue 适用的可恢复错误类型 */
-  autoContinueErrorKinds?: Array<'rateLimited' | 'concurrency' | 'networkStream' | 'badGateway' | 'serviceUnavailable' | 'highDemand' | 'modelCapacity' | 'forbidden' | 'badRequest'>;
+  autoContinueErrorKinds?: Array<'rateLimited' | 'concurrency' | 'networkStream' | 'badGateway' | 'serviceUnavailable' | 'highDemand' | 'modelCapacity' | 'forbidden' | 'badRequest' | 'payloadTooLarge'>;
   /** 自动 continue 错误类型列表版本，用于一次性默认项迁移 */
   autoContinueErrorKindsVersion?: number;
   /** 自动发送 continue 前等待的秒数 */
@@ -246,6 +246,10 @@ const DEFAULT_CODEX_ERROR_HANDLING: Required<CodexErrorHandlingSettings> = {
   autoContinueDelaySeconds: 30,
   autoContinueMaxAttempts: 2,
 };
+const CODEX_AUTO_CONTINUE_ERROR_KINDS: Required<CodexErrorHandlingSettings>['autoContinueErrorKinds'] = [
+  ...DEFAULT_CODEX_ERROR_HANDLING.autoContinueErrorKinds,
+  'payloadTooLarge',
+];
 const CODEX_AUTO_CONTINUE_ERROR_KINDS_VERSION = 3;
 const LEGACY_CODEX_AUTO_CONTINUE_ERROR_KINDS_V1: Required<CodexErrorHandlingSettings>['autoContinueErrorKinds'] = [
   'networkStream',
@@ -421,7 +425,7 @@ function shouldUpgradeLegacyCodexAutoContinueDefaultKinds(
  */
 function normalizeCodexAutoContinueErrorKinds(raw: unknown, version: number): Required<CodexErrorHandlingSettings>['autoContinueErrorKinds'] {
   if (!Array.isArray(raw)) return [...DEFAULT_CODEX_ERROR_HANDLING.autoContinueErrorKinds];
-  const allowed = new Set(DEFAULT_CODEX_ERROR_HANDLING.autoContinueErrorKinds);
+  const allowed = new Set(CODEX_AUTO_CONTINUE_ERROR_KINDS);
   const next: Required<CodexErrorHandlingSettings>['autoContinueErrorKinds'] = [];
   for (const item of raw) {
     const kind = String(item || '').trim() as Required<CodexErrorHandlingSettings>['autoContinueErrorKinds'][number];
