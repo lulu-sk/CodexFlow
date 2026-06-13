@@ -18,7 +18,6 @@ export type CodexErrorHandlingPrefs = {
 export const CODEX_ERROR_AUTO_CONTINUE_DELAY_MIN_SECONDS = 5;
 export const CODEX_ERROR_AUTO_CONTINUE_DELAY_MAX_SECONDS = 600;
 export const CODEX_ERROR_AUTO_CONTINUE_ATTEMPTS_MIN = 0;
-export const CODEX_ERROR_AUTO_CONTINUE_ATTEMPTS_MAX = 10;
 export const CODEX_AUTO_CONTINUE_ERROR_KINDS_VERSION = 3;
 export const CODEX_AUTO_CONTINUE_ERROR_KINDS: CodexAutoContinueErrorKind[] = [
   "networkStream",
@@ -70,7 +69,7 @@ export const DEFAULT_CODEX_ERROR_HANDLING_PREFS: CodexErrorHandlingPrefs = {
   autoContinueErrorKinds: [...CODEX_DEFAULT_AUTO_CONTINUE_ERROR_KINDS],
   autoContinueErrorKindsVersion: CODEX_AUTO_CONTINUE_ERROR_KINDS_VERSION,
   autoContinueDelaySeconds: 30,
-  autoContinueMaxAttempts: 2,
+  autoContinueMaxAttempts: 5,
 };
 
 /**
@@ -82,13 +81,14 @@ export function isCodexAutoContinueErrorKind(kind: CodexCliErrorKind | undefined
 }
 
 /**
- * 将输入值归一化为指定区间内的整数。
+ * 将输入值归一化为指定下限和可选上限内的整数。
  */
-function normalizeBoundedInteger(value: unknown, fallback: number, min: number, max: number): number {
+function normalizeBoundedInteger(value: unknown, fallback: number, min: number, max?: number): number {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return fallback;
   const rounded = Math.round(numeric);
-  return Math.min(max, Math.max(min, rounded));
+  const lowerBounded = Math.max(min, rounded);
+  return typeof max === "number" ? Math.min(max, lowerBounded) : lowerBounded;
 }
 
 /**
@@ -159,7 +159,6 @@ export function normalizeCodexErrorHandlingPrefs(value: unknown): CodexErrorHand
       raw.autoContinueMaxAttempts,
       DEFAULT_CODEX_ERROR_HANDLING_PREFS.autoContinueMaxAttempts,
       CODEX_ERROR_AUTO_CONTINUE_ATTEMPTS_MIN,
-      CODEX_ERROR_AUTO_CONTINUE_ATTEMPTS_MAX,
     ),
   };
 }

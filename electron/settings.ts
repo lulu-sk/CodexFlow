@@ -244,7 +244,7 @@ const DEFAULT_CODEX_ERROR_HANDLING: Required<CodexErrorHandlingSettings> = {
   autoContinueErrorKinds: ['networkStream', 'rateLimited', 'concurrency', 'modelCapacity', 'badGateway', 'serviceUnavailable', 'highDemand', 'forbidden', 'badRequest'],
   autoContinueErrorKindsVersion: 3,
   autoContinueDelaySeconds: 30,
-  autoContinueMaxAttempts: 2,
+  autoContinueMaxAttempts: 5,
 };
 const CODEX_AUTO_CONTINUE_ERROR_KINDS: Required<CodexErrorHandlingSettings>['autoContinueErrorKinds'] = [
   ...DEFAULT_CODEX_ERROR_HANDLING.autoContinueErrorKinds,
@@ -377,13 +377,14 @@ function normalizeTerminalTheme(raw: unknown): TerminalThemeId {
 }
 
 /**
- * 将输入值归一化为指定范围内的整数。
+ * 将输入值归一化为指定下限和可选上限内的整数。
  */
-function normalizeBoundedInteger(raw: unknown, fallback: number, min: number, max: number): number {
+function normalizeBoundedInteger(raw: unknown, fallback: number, min: number, max?: number): number {
   const numeric = Number(raw);
   if (!Number.isFinite(numeric)) return fallback;
   const rounded = Math.round(numeric);
-  return Math.min(max, Math.max(min, rounded));
+  const lowerBounded = Math.max(min, rounded);
+  return typeof max === 'number' ? Math.min(max, lowerBounded) : lowerBounded;
 }
 
 /**
@@ -452,7 +453,7 @@ function normalizeCodexErrorHandlingSettings(raw: unknown): CodexErrorHandlingSe
       autoContinueErrorKinds: normalizeCodexAutoContinueErrorKinds(obj.autoContinueErrorKinds, autoContinueErrorKindsVersion),
       autoContinueErrorKindsVersion: CODEX_AUTO_CONTINUE_ERROR_KINDS_VERSION,
       autoContinueDelaySeconds: normalizeBoundedInteger(obj.autoContinueDelaySeconds, DEFAULT_CODEX_ERROR_HANDLING.autoContinueDelaySeconds, 5, 600),
-      autoContinueMaxAttempts: normalizeBoundedInteger(obj.autoContinueMaxAttempts, DEFAULT_CODEX_ERROR_HANDLING.autoContinueMaxAttempts, 0, 10),
+      autoContinueMaxAttempts: normalizeBoundedInteger(obj.autoContinueMaxAttempts, DEFAULT_CODEX_ERROR_HANDLING.autoContinueMaxAttempts, 0),
     };
   } catch {
     return { ...DEFAULT_CODEX_ERROR_HANDLING };
