@@ -333,7 +333,31 @@ import type {
   WorktreeRecycleProgressState,
 } from "@/app/app-shared";
 
-const GitWorkbench = React.lazy(async () => await import("@/features/git/git-workbench"));
+let gitWorkbenchModulePromise: Promise<typeof import("@/features/git/git-workbench")> | null = null;
+
+/**
+ * 预加载 Git 工作台模块，减少打开或拖出 Git 标签时的 lazy fallback 闪烁。
+ */
+function preloadGitWorkbenchModule(): void {
+  if (!gitWorkbenchModulePromise)
+    gitWorkbenchModulePromise = import("@/features/git/git-workbench");
+}
+
+const GitWorkbench = React.lazy(async () => {
+  if (!gitWorkbenchModulePromise)
+    gitWorkbenchModulePromise = import("@/features/git/git-workbench");
+  return await gitWorkbenchModulePromise;
+});
+
+type GitWorkbenchPublishSnapshotDoneDetail = {
+  tabId?: string;
+  requestId?: string;
+  ok?: boolean;
+};
+
+const GIT_WORKBENCH_PUBLISH_SNAPSHOT_EVENT = "cf:git-workbench-publish-snapshot";
+const GIT_WORKBENCH_PUBLISH_SNAPSHOT_DONE_EVENT = "cf:git-workbench-publish-snapshot-done";
+const GIT_WORKBENCH_PUBLISH_SNAPSHOT_TIMEOUT_MS = 350;
 
 type HistorySearchScope = "current_project" | "project_group" | "all_sessions";
 
@@ -1627,6 +1651,10 @@ export default function CodexFlowManagerUI() {
   const allProjectTabs = tabsByProject[selectedProjectId] || [];
   const tabs = useMemo(() => allProjectTabs.filter((tab) => isTabOwnedByWindow(tab, currentWindowId)), [allProjectTabs, currentWindowId]);
   const hasProjectGitWorkbenchTab = allProjectTabs.some((tab) => tab.kind === "git");
+  useEffect(() => {
+    if (!Object.values(tabsByProject).some((list) => (list || []).some((tab) => tab.kind === "git"))) return;
+    preloadGitWorkbenchModule();
+  }, [tabsByProject]);
   const [activeTabId, setActiveTabId] = useState<string | null>(() => {
     const state = restoredConsoleSession?.windowUiStateById?.[currentWindowId];
     return state?.activeTabIdByProject?.[selectedProjectId] || null;
@@ -2506,6 +2534,42 @@ export default function CodexFlowManagerUI() {
   }, [closeTabDragPreviewWindow]);
 
   /**
+   * 请求当前渲染进程里的 Git 工作台立即发布快照，供拖出窗口首帧恢复。
+   */
+  const requestGitWorkbenchSnapshotPublishAsync = useCallback(async (tabId: string): Promise<void> => {
+    const safeTabId = String(tabId || "").trim();
+    if (!safeTabId || typeof window === "undefined") return;
+    const tab = Object.values(tabsByProjectRef.current || {}).flat().find((item) => item.id === safeTabId) || null;
+    if (tab?.kind !== "git") return;
+    preloadGitWorkbenchModule();
+    const requestId = `git-snapshot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timerId);
+        window.removeEventListener(GIT_WORKBENCH_PUBLISH_SNAPSHOT_DONE_EVENT, handleDone);
+        resolve();
+      };
+      const handleDone = (event: Event) => {
+        const detail = (event as CustomEvent<GitWorkbenchPublishSnapshotDoneDetail>).detail || {};
+        if (String(detail.tabId || "").trim() !== safeTabId) return;
+        if (String(detail.requestId || "").trim() !== requestId) return;
+        finish();
+      };
+      const timerId = window.setTimeout(finish, GIT_WORKBENCH_PUBLISH_SNAPSHOT_TIMEOUT_MS);
+      window.addEventListener(GIT_WORKBENCH_PUBLISH_SNAPSHOT_DONE_EVENT, handleDone);
+      window.dispatchEvent(new CustomEvent(GIT_WORKBENCH_PUBLISH_SNAPSHOT_EVENT, {
+        detail: {
+          tabId: safeTabId,
+          requestId,
+        },
+      }));
+    });
+  }, []);
+
+  /**
    * 将标签页分离到新窗口中；先写入快照再开窗，避免新窗口首帧读到“空标签”状态。
    */
   const detachTabToNewWindow = useCallback(async (
@@ -2514,6 +2578,7 @@ export default function CodexFlowManagerUI() {
   ) => {
     const safeTabId = String(tabId || "").trim();
     if (!safeTabId || isDetachedTabWindow) return;
+    await requestGitWorkbenchSnapshotPublishAsync(safeTabId);
     const nextWindowId = `detached-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const previousTabsByProject = tabsByProjectRef.current;
     const previousSelectedProjectId = selectedProjectId;
@@ -2579,6 +2644,7 @@ export default function CodexFlowManagerUI() {
     currentWindowId,
     isDetachedTabWindow,
     persistConsoleSessionSnapshot,
+    requestGitWorkbenchSnapshotPublishAsync,
     selectedProjectId,
     showHistoryPanel,
   ]);
@@ -7043,6 +7109,7 @@ export default function CodexFlowManagerUI() {
   const openGitWorkbenchTabForProjectId = useCallback((projectId: string): void => {
     const id = String(projectId || "").trim();
     if (!id) return;
+    preloadGitWorkbenchModule();
     const currentTabsByProject = tabsByProjectRef.current;
     const projectTabs = currentTabsByProject[id] || [];
     const existing = projectTabs.find((tab) => tab.kind === "git" && isTabOwnedByWindow(tab, currentWindowId));
@@ -7334,6 +7401,7 @@ export default function CodexFlowManagerUI() {
    */
   function openGitWorkbenchTab() {
     if (!selectedProject) return;
+    preloadGitWorkbenchModule();
     openGitWorkbenchTabForProjectId(selectedProject.id);
   }
 
@@ -7890,6 +7958,16 @@ export default function CodexFlowManagerUI() {
     if (!tabId) return;
     const projectId = String(projectIdOverride || selectedProject?.id || "").trim();
     if (!projectId) return;
+    const closingTab = (tabsByProjectRef.current[projectId] || []).find((tab) => tab.id === tabId) || null;
+    if (closingTab?.kind === "git") {
+      const projectRoot = String(projectsRef.current.find((project) => project.id === projectId)?.winPath || selectedProject?.winPath || "").trim();
+      if (projectRoot) {
+        void window.host.gitWorkbench?.snapshot?.delete?.({
+          tabId,
+          repoRoot: projectRoot,
+        });
+      }
+    }
     const pid = ptyByTabRef.current[tabId];
     if (pid) {
       try { window.host.pty.close(pid); } catch {}
@@ -11651,6 +11729,7 @@ export default function CodexFlowManagerUI() {
                   <Card className="relative flex flex-1 min-h-0 flex-col overflow-hidden">
                     <React.Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-[var(--cf-text-secondary)]">{t("projects:gitModuleLoading", "正在加载 Git 模块...") as string}</div>}>
                       <GitWorkbench
+                        tabId={tab.id}
                         repoPath={selectedProject?.winPath || ""}
                         active={activeTabId === tab.id && !!selectedProject}
                         onOpenProjectInApp={openGitWorkbenchForPathAsync}

@@ -5,8 +5,6 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useGitAutoRefresh } from "./use-git-auto-refresh";
 
-type HostListener<TPayload> = ((payload: TPayload) => void) | null;
-
 type HostApis = {
   fileIndex: {
     setActiveRoots: ReturnType<typeof vi.fn>;
@@ -16,6 +14,8 @@ type HostApis = {
     setActiveRoots: ReturnType<typeof vi.fn>;
     onChanged: ReturnType<typeof vi.fn>;
   };
+  fileIndexListeners: Set<(payload: { root?: string; reason?: string }) => void>;
+  repoWatchListeners: Set<(payload: { repoRoot?: string; reason?: string; paths?: string[] }) => void>;
   emitFileIndex(payload: { root?: string; reason?: string }): void;
   emitRepoWatch(payload: { repoRoot?: string; reason?: string; paths?: string[] }): void;
 };
@@ -24,34 +24,36 @@ type HostApis = {
  * 构造最小 host watcher 桩，便于精确驱动 hook 的订阅、切仓与卸载行为。
  */
 function createHostApis(): HostApis {
-  let fileIndexListener: HostListener<{ root?: string; reason?: string }> = null;
-  let repoWatchListener: HostListener<{ repoRoot?: string; reason?: string; paths?: string[] }> = null;
+  const fileIndexListeners = new Set<(payload: { root?: string; reason?: string }) => void>();
+  const repoWatchListeners = new Set<(payload: { repoRoot?: string; reason?: string; paths?: string[] }) => void>();
   const fileIndex = {
     setActiveRoots: vi.fn(async (_roots: string[]) => {}),
     onChanged: vi.fn((listener: (payload: { root?: string; reason?: string }) => void) => {
-      fileIndexListener = listener;
+      fileIndexListeners.add(listener);
       return () => {
-        if (fileIndexListener === listener) fileIndexListener = null;
+        fileIndexListeners.delete(listener);
       };
     }),
   };
   const gitRepoWatch = {
     setActiveRoots: vi.fn(async (_roots: string[]) => {}),
     onChanged: vi.fn((listener: (payload: { repoRoot?: string; reason?: string; paths?: string[] }) => void) => {
-      repoWatchListener = listener;
+      repoWatchListeners.add(listener);
       return () => {
-        if (repoWatchListener === listener) repoWatchListener = null;
+        repoWatchListeners.delete(listener);
       };
     }),
   };
   return {
     fileIndex,
     gitRepoWatch,
+    fileIndexListeners,
+    repoWatchListeners,
     emitFileIndex(payload) {
-      fileIndexListener?.(payload);
+      for (const listener of Array.from(fileIndexListeners)) listener(payload);
     },
     emitRepoWatch(payload) {
-      repoWatchListener?.(payload);
+      for (const listener of Array.from(repoWatchListeners)) listener(payload);
     },
   };
 }
@@ -64,6 +66,8 @@ function TestHarness(props: {
   repoRoot: string;
   repoRoots?: string[];
   refreshAllAsync: (options?: { keepLog?: boolean; debounceMs?: number }) => Promise<void>;
+  refreshStatusAsync?: (options?: { debounceMs?: number }) => Promise<void>;
+  refreshRefsAsync?: (options?: { debounceMs?: number }) => Promise<void>;
   refreshWorktreesAsync?: (options?: { debounceMs?: number }) => Promise<void>;
 }): JSX.Element | null {
   useGitAutoRefresh(props);
@@ -100,10 +104,12 @@ describe("useGitAutoRefresh", () => {
     vi.restoreAllMocks();
   });
 
-  it("应同时订阅 fileIndex 与 gitRepoWatch，并按不同来源透传去抖参数", async () => {
+  it("应同时订阅 fileIndex 与 gitRepoWatch，并按来源选择轻量刷新入口", async () => {
     vi.useFakeTimers();
     const hostApis = createHostApis();
     const refreshAllAsync = vi.fn(async (_options?: { keepLog?: boolean; debounceMs?: number }) => {});
+    const refreshStatusAsync = vi.fn(async (_options?: { debounceMs?: number }) => {});
+    const refreshRefsAsync = vi.fn(async (_options?: { debounceMs?: number }) => {});
     const refreshWorktreesAsync = vi.fn(async (_options?: { debounceMs?: number }) => {});
     Object.defineProperty(window, "host", {
       configurable: true,
@@ -123,6 +129,8 @@ describe("useGitAutoRefresh", () => {
         active: true,
         repoRoot: "/repo-a",
         refreshAllAsync,
+        refreshStatusAsync,
+        refreshRefsAsync,
         refreshWorktreesAsync,
       }));
       await flushMicrotasksAsync();
@@ -135,26 +143,29 @@ describe("useGitAutoRefresh", () => {
       hostApis.emitRepoWatch({ repoRoot: "/repo-a", reason: "head", paths: ["/repo-a/.git/HEAD"] });
       await flushMicrotasksAsync();
     });
-    expect(refreshAllAsync).toHaveBeenLastCalledWith({ keepLog: false, debounceMs: 80 });
+    expect(refreshRefsAsync).toHaveBeenLastCalledWith({ debounceMs: 80 });
+    expect(refreshAllAsync).not.toHaveBeenCalled();
 
     await act(async () => {
       hostApis.emitFileIndex({ root: "/repo-a" });
       await flushMicrotasksAsync();
     });
-    expect(refreshAllAsync).toHaveBeenCalledTimes(1);
+    expect(refreshStatusAsync).not.toHaveBeenCalled();
 
     await act(async () => {
       vi.advanceTimersByTime(2500);
       await flushMicrotasksAsync();
     });
-    expect(refreshAllAsync).toHaveBeenCalledTimes(2);
-    expect(refreshAllAsync).toHaveBeenLastCalledWith({ keepLog: false, debounceMs: 180 });
+    expect(refreshStatusAsync).toHaveBeenCalledTimes(1);
+    expect(refreshStatusAsync).toHaveBeenLastCalledWith({ debounceMs: 180 });
+    expect(refreshAllAsync).not.toHaveBeenCalled();
 
     await act(async () => {
       hostApis.emitRepoWatch({ repoRoot: "/repo-b" });
       await flushMicrotasksAsync();
     });
-    expect(refreshAllAsync).toHaveBeenCalledTimes(2);
+    expect(refreshAllAsync).not.toHaveBeenCalled();
+    expect(refreshRefsAsync).toHaveBeenCalledTimes(1);
   });
 
   it("worktrees 元数据事件应只刷新 worktree 列表，不触发整仓刷新", async () => {
@@ -195,7 +206,81 @@ describe("useGitAutoRefresh", () => {
     expect(refreshWorktreesAsync).toHaveBeenLastCalledWith({ debounceMs: 80 });
   });
 
-  it("切仓与卸载时应清理旧订阅，并把活跃 roots 回收为空集", async () => {
+  it("状态类事件应只刷新 status", async () => {
+    const hostApis = createHostApis();
+    const refreshAllAsync = vi.fn(async (_options?: { keepLog?: boolean; debounceMs?: number }) => {});
+    const refreshStatusAsync = vi.fn(async (_options?: { debounceMs?: number }) => {});
+    Object.defineProperty(window, "host", {
+      configurable: true,
+      writable: true,
+      value: {
+        fileIndex: hostApis.fileIndex,
+        gitRepoWatch: hostApis.gitRepoWatch,
+      },
+    });
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root!.render(React.createElement(TestHarness, {
+        active: true,
+        repoRoot: "/repo-a",
+        refreshAllAsync,
+        refreshStatusAsync,
+      }));
+      await flushMicrotasksAsync();
+    });
+
+    await act(async () => {
+      hostApis.emitRepoWatch({ repoRoot: "/repo-a", reason: "index", paths: ["/repo-a/.git/index"] });
+      await flushMicrotasksAsync();
+    });
+
+    expect(refreshStatusAsync).toHaveBeenCalledTimes(1);
+    expect(refreshStatusAsync).toHaveBeenLastCalledWith({ debounceMs: 80 });
+    expect(refreshAllAsync).not.toHaveBeenCalled();
+  });
+
+  it("引用类事件应只刷新 refs", async () => {
+    const hostApis = createHostApis();
+    const refreshAllAsync = vi.fn(async (_options?: { keepLog?: boolean; debounceMs?: number }) => {});
+    const refreshRefsAsync = vi.fn(async (_options?: { debounceMs?: number }) => {});
+    Object.defineProperty(window, "host", {
+      configurable: true,
+      writable: true,
+      value: {
+        fileIndex: hostApis.fileIndex,
+        gitRepoWatch: hostApis.gitRepoWatch,
+      },
+    });
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root!.render(React.createElement(TestHarness, {
+        active: true,
+        repoRoot: "/repo-a",
+        refreshAllAsync,
+        refreshRefsAsync,
+      }));
+      await flushMicrotasksAsync();
+    });
+
+    await act(async () => {
+      hostApis.emitRepoWatch({ repoRoot: "/repo-a", reason: "head", paths: ["/repo-a/.git/HEAD"] });
+      await flushMicrotasksAsync();
+    });
+
+    expect(refreshRefsAsync).toHaveBeenCalledTimes(1);
+    expect(refreshRefsAsync).toHaveBeenLastCalledWith({ debounceMs: 80 });
+    expect(refreshAllAsync).not.toHaveBeenCalled();
+  });
+
+  it("切仓与卸载时应从窗口级 watcher 聚合中移除旧 roots", async () => {
     const hostApis = createHostApis();
     const refreshAllAsync = vi.fn(async (_options?: { keepLog?: boolean; debounceMs?: number }) => {});
     Object.defineProperty(window, "host", {
@@ -230,11 +315,9 @@ describe("useGitAutoRefresh", () => {
     });
 
     expect(hostApis.fileIndex.setActiveRoots).toHaveBeenNthCalledWith(1, ["/repo-a"]);
-    expect(hostApis.fileIndex.setActiveRoots).toHaveBeenNthCalledWith(2, []);
-    expect(hostApis.fileIndex.setActiveRoots).toHaveBeenNthCalledWith(3, ["/repo-b"]);
+    expect(hostApis.fileIndex.setActiveRoots).toHaveBeenNthCalledWith(2, ["/repo-b"]);
     expect(hostApis.gitRepoWatch.setActiveRoots).toHaveBeenNthCalledWith(1, ["/repo-a"]);
-    expect(hostApis.gitRepoWatch.setActiveRoots).toHaveBeenNthCalledWith(2, []);
-    expect(hostApis.gitRepoWatch.setActiveRoots).toHaveBeenNthCalledWith(3, ["/repo-b"]);
+    expect(hostApis.gitRepoWatch.setActiveRoots).toHaveBeenNthCalledWith(2, ["/repo-b"]);
 
     await act(async () => {
       hostApis.emitFileIndex({ root: "/repo-a" });
@@ -295,6 +378,132 @@ describe("useGitAutoRefresh", () => {
     });
 
     expect(refreshAllAsync).toHaveBeenCalledWith({ keepLog: false, debounceMs: 80 });
+  });
+
+  it("同窗口多个 Git 工作台应聚合 watcher roots，避免互相覆盖", async () => {
+    const hostApis = createHostApis();
+    const refreshAllAsync = vi.fn(async (_options?: { keepLog?: boolean; debounceMs?: number }) => {});
+    Object.defineProperty(window, "host", {
+      configurable: true,
+      writable: true,
+      value: {
+        fileIndex: hostApis.fileIndex,
+        gitRepoWatch: hostApis.gitRepoWatch,
+      },
+    });
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root!.render(React.createElement(React.Fragment, null,
+        React.createElement(TestHarness, {
+          active: true,
+          repoRoot: "/repo-a",
+          refreshAllAsync,
+        }),
+        React.createElement(TestHarness, {
+          active: false,
+          repoRoot: "/repo-b",
+          refreshAllAsync,
+        }),
+      ));
+      await flushMicrotasksAsync();
+    });
+
+    expect(hostApis.fileIndex.setActiveRoots).toHaveBeenLastCalledWith(["/repo-a", "/repo-b"]);
+    expect(hostApis.gitRepoWatch.setActiveRoots).toHaveBeenLastCalledWith(["/repo-a", "/repo-b"]);
+    expect(hostApis.fileIndexListeners.size).toBe(2);
+    expect(hostApis.repoWatchListeners.size).toBe(2);
+  });
+
+  it("inactive 热 watcher roots 到期后应自动释放", async () => {
+    vi.useFakeTimers();
+    const hostApis = createHostApis();
+    const refreshAllAsync = vi.fn(async (_options?: { keepLog?: boolean; debounceMs?: number }) => {});
+    Object.defineProperty(window, "host", {
+      configurable: true,
+      writable: true,
+      value: {
+        fileIndex: hostApis.fileIndex,
+        gitRepoWatch: hostApis.gitRepoWatch,
+      },
+    });
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root!.render(React.createElement(TestHarness, {
+        active: false,
+        repoRoot: "/repo-a",
+        refreshAllAsync,
+      }));
+      await flushMicrotasksAsync();
+    });
+
+    expect(hostApis.fileIndex.setActiveRoots).toHaveBeenLastCalledWith(["/repo-a"]);
+    expect(hostApis.gitRepoWatch.setActiveRoots).toHaveBeenLastCalledWith(["/repo-a"]);
+
+    await act(async () => {
+      vi.advanceTimersByTime((2 * 60 + 5) * 60 * 1000 + 1);
+      await flushMicrotasksAsync();
+    });
+
+    expect(hostApis.fileIndex.setActiveRoots).toHaveBeenLastCalledWith([]);
+    expect(hostApis.gitRepoWatch.setActiveRoots).toHaveBeenLastCalledWith([]);
+  });
+
+  it("失活期间的 watcher 事件只记录脏类型，重新激活后再按粒度刷新", async () => {
+    const hostApis = createHostApis();
+    const refreshAllAsync = vi.fn(async (_options?: { keepLog?: boolean; debounceMs?: number }) => {});
+    const refreshStatusAsync = vi.fn(async (_options?: { debounceMs?: number }) => {});
+    Object.defineProperty(window, "host", {
+      configurable: true,
+      writable: true,
+      value: {
+        fileIndex: hostApis.fileIndex,
+        gitRepoWatch: hostApis.gitRepoWatch,
+      },
+    });
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root!.render(React.createElement(TestHarness, {
+        active: false,
+        repoRoot: "/repo-a",
+        refreshAllAsync,
+        refreshStatusAsync,
+      }));
+      await flushMicrotasksAsync();
+    });
+
+    await act(async () => {
+      hostApis.emitFileIndex({ root: "/repo-a" });
+      await flushMicrotasksAsync();
+    });
+
+    expect(refreshStatusAsync).not.toHaveBeenCalled();
+    expect(refreshAllAsync).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root!.render(React.createElement(TestHarness, {
+        active: true,
+        repoRoot: "/repo-a",
+        refreshAllAsync,
+        refreshStatusAsync,
+      }));
+      await flushMicrotasksAsync();
+    });
+
+    expect(refreshStatusAsync).toHaveBeenCalledTimes(1);
+    expect(refreshStatusAsync).toHaveBeenLastCalledWith({ debounceMs: 180 });
+    expect(refreshAllAsync).not.toHaveBeenCalled();
   });
 
   it("刷新中的 index 元数据事件应视为自噪音，不能继续触发无限回刷", async () => {

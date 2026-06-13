@@ -1443,6 +1443,7 @@
       "status": {
         "ready": "Ready",
         "busy": "Working on {{activity}}",
+        "detecting": "Detecting Git repository...",
         "noRepo": "No Git repository detected"
       },
       "actionUnsupported": "Action not supported: {{label}}",

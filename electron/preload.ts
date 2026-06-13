@@ -537,6 +537,17 @@ contextBridge.exposeInMainWorld('host', {
     },
   },
   gitWorkbench: {
+    snapshot: {
+      get: async (args: { tabId: string; repoRoot?: string }) => {
+        return await ipcRenderer.invoke("gitWorkbench.snapshot.get", args);
+      },
+      put: async (args: { tabId: string; repoRoot: string; snapshot: any }) => {
+        return await ipcRenderer.invoke("gitWorkbench.snapshot.put", args);
+      },
+      delete: async (args: { tabId: string; repoRoot: string }) => {
+        return await ipcRenderer.invoke("gitWorkbench.snapshot.delete", args);
+      },
+    },
     /** 请求宿主打开 Git 工作台，并可按公共 actionId 触发提交、提交并推送、更新、拉取、获取、推送、冲突解决与搁置入口。 */
     show: async (args: {
       actionId?: string;

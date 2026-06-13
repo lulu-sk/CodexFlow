@@ -264,6 +264,15 @@ type TabDragPreviewWindowEntry = {
   lastBounds: Electron.Rectangle | null;
 };
 
+type GitWorkbenchSnapshotEntry = {
+  key: string;
+  tabId: string;
+  repoRoot: string;
+  snapshot: any;
+  updatedAt: number;
+  lastAccessedAt: number;
+};
+
 type RendererRecoveryReason = "render-process-gone" | "did-fail-load" | "unresponsive-timeout" | "gpu-process-gone";
 type RendererRecoveryAction = "reload" | "recreate";
 type RendererRecoveryState = {
@@ -277,9 +286,67 @@ const TAB_DRAG_PREVIEW_MAX_WIDTH = 228;
 const TAB_DRAG_PREVIEW_HEIGHT = 36;
 const TAB_DRAG_PREVIEW_CURSOR_OFFSET_X = 12;
 const TAB_DRAG_PREVIEW_CURSOR_OFFSET_Y = 10;
+const GIT_WORKBENCH_SNAPSHOT_MAX_ENTRIES = 3;
+const GIT_WORKBENCH_SNAPSHOT_IDLE_TTL_MS = 2 * 60 * 60 * 1000;
+const GIT_WORKBENCH_SNAPSHOT_TRIM_INTERVAL_MS = 5 * 60 * 1000;
+const GIT_WORKBENCH_SNAPSHOT_DELETE_TOMBSTONE_MS = 30 * 1000;
 const tabDragPreviewWindowsById = new Map<string, TabDragPreviewWindowEntry>();
 const tabDragPreviewWindowIdByOwner = new Map<string, string>();
+const gitWorkbenchSnapshotsByKey = new Map<string, GitWorkbenchSnapshotEntry>();
+const gitWorkbenchSnapshotDeletedTabIds = new Map<string, number>();
 let cachedAppBrandIconDataUrl: string | null | undefined;
+
+/**
+ * 构造 Git 工作台热会话缓存键，按 tab 与仓库根隔离跨窗口快照。
+ */
+function buildGitWorkbenchSnapshotKey(tabId: string, repoRoot: string): string {
+  const safeTabId = String(tabId || "").trim();
+  const safeRepoRoot = String(repoRoot || "").trim().replace(/\\/g, "/").toLowerCase();
+  if (!safeTabId || !safeRepoRoot) return "";
+  return `${safeTabId}\n${safeRepoRoot}`;
+}
+
+/**
+ * 清理过期或超出数量预算的 Git 工作台热会话快照。
+ */
+function trimGitWorkbenchSnapshots(now: number = Date.now()): void {
+  for (const [tabId, deletedAt] of Array.from(gitWorkbenchSnapshotDeletedTabIds.entries())) {
+    if (now - deletedAt > GIT_WORKBENCH_SNAPSHOT_DELETE_TOMBSTONE_MS)
+      gitWorkbenchSnapshotDeletedTabIds.delete(tabId);
+  }
+  for (const [key, entry] of Array.from(gitWorkbenchSnapshotsByKey.entries())) {
+    if (now - entry.lastAccessedAt > GIT_WORKBENCH_SNAPSHOT_IDLE_TTL_MS)
+      gitWorkbenchSnapshotsByKey.delete(key);
+  }
+  const entries = Array.from(gitWorkbenchSnapshotsByKey.entries())
+    .sort((a, b) => a[1].lastAccessedAt - b[1].lastAccessedAt);
+  while (entries.length > GIT_WORKBENCH_SNAPSHOT_MAX_ENTRIES) {
+    const [key] = entries.shift()!;
+    gitWorkbenchSnapshotsByKey.delete(key);
+  }
+}
+
+/**
+ * 读取指定 Git 工作台热会话；repoRoot 未命中时回退到同 tabId 的最近快照，支撑拖出窗口首帧恢复。
+ */
+function resolveGitWorkbenchSnapshotEntry(tabId: string, repoRoot: string): GitWorkbenchSnapshotEntry | null {
+  const safeTabId = String(tabId || "").trim();
+  if (!safeTabId) return null;
+  const key = buildGitWorkbenchSnapshotKey(safeTabId, repoRoot);
+  if (key) {
+    const entry = gitWorkbenchSnapshotsByKey.get(key);
+    if (entry) return entry;
+  }
+  const candidates = Array.from(gitWorkbenchSnapshotsByKey.values())
+    .filter((entry) => entry.tabId === safeTabId)
+    .sort((a, b) => b.lastAccessedAt - a.lastAccessedAt);
+  return candidates[0] || null;
+}
+
+const gitWorkbenchSnapshotTrimTimer = setInterval(() => {
+  trimGitWorkbenchSnapshots();
+}, GIT_WORKBENCH_SNAPSHOT_TRIM_INTERVAL_MS);
+try { (gitWorkbenchSnapshotTrimTimer as any).unref?.(); } catch {}
 
 type CreateWindowOptions = {
   restoreBounds?: Electron.Rectangle;
@@ -3444,6 +3511,79 @@ ipcMain.handle("gitFeature.call", async (event, args: { action: string; payload?
     });
   } catch (e: any) {
     return { ok: false, error: String(e?.message || e) };
+  }
+});
+
+/**
+ * Git 工作台热会话：写入跨窗口内存快照。
+ */
+ipcMain.handle("gitWorkbench.snapshot.put", async (_event, args: { tabId?: string; repoRoot?: string; snapshot?: any }) => {
+  try {
+    const tabId = String(args?.tabId || "").trim();
+    const repoRoot = String(args?.repoRoot || "").trim();
+    const key = buildGitWorkbenchSnapshotKey(tabId, repoRoot);
+    if (!key) return { ok: false, error: "missing tabId or repoRoot" };
+    const now = Date.now();
+    trimGitWorkbenchSnapshots(now);
+    if (gitWorkbenchSnapshotDeletedTabIds.has(tabId))
+      return { ok: true, ignored: true, count: gitWorkbenchSnapshotsByKey.size } as const;
+    gitWorkbenchSnapshotsByKey.set(key, {
+      key,
+      tabId,
+      repoRoot,
+      snapshot: args?.snapshot && typeof args.snapshot === "object" ? args.snapshot : {},
+      updatedAt: now,
+      lastAccessedAt: now,
+    });
+    trimGitWorkbenchSnapshots(now);
+    return { ok: true, updatedAt: now, count: gitWorkbenchSnapshotsByKey.size } as const;
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) } as const;
+  }
+});
+
+/**
+ * Git 工作台热会话：读取跨窗口内存快照。
+ */
+ipcMain.handle("gitWorkbench.snapshot.get", async (_event, args: { tabId?: string; repoRoot?: string }) => {
+  try {
+    const tabId = String(args?.tabId || "").trim();
+    if (!tabId) return { ok: false, error: "missing tabId" };
+    trimGitWorkbenchSnapshots();
+    const entry = resolveGitWorkbenchSnapshotEntry(tabId, String(args?.repoRoot || ""));
+    if (!entry) return { ok: true, snapshot: null } as const;
+    entry.lastAccessedAt = Date.now();
+    return { ok: true, snapshot: entry.snapshot, repoRoot: entry.repoRoot, updatedAt: entry.updatedAt } as const;
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) } as const;
+  }
+});
+
+/**
+ * Git 工作台热会话：删除指定快照，通常用于标签关闭后的资源回收。
+ */
+ipcMain.handle("gitWorkbench.snapshot.delete", async (_event, args: { tabId?: string; repoRoot?: string }) => {
+  try {
+    const tabId = String(args?.tabId || "").trim();
+    const repoRoot = String(args?.repoRoot || "").trim();
+    if (!tabId) return { ok: false, error: "missing tabId" };
+    const key = buildGitWorkbenchSnapshotKey(tabId, repoRoot);
+    let deletedCount = 0;
+    if (key) {
+      if (gitWorkbenchSnapshotsByKey.delete(key)) deletedCount += 1;
+    } else {
+      for (const [entryKey, entry] of Array.from(gitWorkbenchSnapshotsByKey.entries())) {
+        if (entry.tabId !== tabId) continue;
+        gitWorkbenchSnapshotsByKey.delete(entryKey);
+        deletedCount += 1;
+      }
+    }
+    gitWorkbenchSnapshotDeletedTabIds.set(tabId, Date.now());
+    trimGitWorkbenchSnapshots();
+    const deleted = deletedCount > 0;
+    return { ok: true, deleted } as const;
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) } as const;
   }
 });
 

@@ -312,7 +312,7 @@ describe("git workbench utils", () => {
     })).toBe(false);
   });
 
-  it("同一激活周期内，同仓库首刷只应触发一次；失活后重新激活可再次触发", () => {
+  it("同一仓库首刷只应触发一次；失活后重新激活应复用已初始化标记", () => {
     expect(resolveGitWorkbenchBootstrapRefresh({
       active: true,
       repoPath: "G:/Repo",
@@ -335,14 +335,14 @@ describe("git workbench utils", () => {
       lastBootstrapRepoPath: "G:/Repo",
     })).toEqual({
       shouldRefresh: false,
-      nextBootstrapRepoPath: "",
+      nextBootstrapRepoPath: "G:/Repo",
     });
     expect(resolveGitWorkbenchBootstrapRefresh({
       active: true,
       repoPath: "G:/Repo",
-      lastBootstrapRepoPath: "",
+      lastBootstrapRepoPath: "G:/Repo",
     })).toEqual({
-      shouldRefresh: true,
+      shouldRefresh: false,
       nextBootstrapRepoPath: "G:/Repo",
     });
   });

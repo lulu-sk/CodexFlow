@@ -716,6 +716,14 @@ export interface GitFeatureAPI {
 }
 
 export interface GitWorkbenchAPI {
+  snapshot?: {
+    /** 读取同一主进程生命周期内的 Git 工作台热会话快照。 */
+    get(args: { tabId: string; repoRoot?: string }): Promise<{ ok: boolean; snapshot?: any | null; repoRoot?: string; updatedAt?: number; error?: string }>;
+    /** 写入 Git 工作台热会话快照；仅用于小型结构化状态，不持久化大 diff。 */
+    put(args: { tabId: string; repoRoot: string; snapshot: any }): Promise<{ ok: boolean; updatedAt?: number; count?: number; error?: string }>;
+    /** 删除指定 Git 工作台热会话快照。 */
+    delete(args: { tabId: string; repoRoot: string }): Promise<{ ok: boolean; deleted?: boolean; error?: string }>;
+  };
   /**
    * 请求宿主打开 GitWorkbench；可按公共 actionId 触发提交、提交并推送、拉取、获取、推送、更新项目、冲突解决、搁置等入口。
    */

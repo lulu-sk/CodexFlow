@@ -587,10 +587,70 @@ import {
 const MonacoGitDiff = React.lazy(async () => await import("./monaco-git-diff"));
 
 type GitWorkbenchProps = {
+  tabId?: string;
   repoPath: string;
   active: boolean;
   onOpenProjectInApp?: (projectPath: string) => Promise<boolean>;
   onOpenTerminalInApp?: (args: { projectPath: string; startupCmd: string; title?: string }) => Promise<boolean>;
+};
+
+type GitWorkbenchDiffSnapshotRef = Pick<
+  GitDiffSnapshot,
+  "path" | "oldPath" | "mode" | "hash" | "hashes" | "shelfRef" | "selectionPaths" | "selectionKind" | "selectionIndex" | "fingerprint"
+>;
+
+type GitWorkbenchHotSessionSnapshot = {
+  version: 1;
+  tabId: string;
+  repoPath: string;
+  repoRoot: string;
+  capturedAt: number;
+  isRepo: boolean;
+  repoBranch: string;
+  repoDetached: boolean;
+  status: GitStatusSnapshot | null;
+  branchPopup: GitBranchPopupSnapshot | null;
+  shelfItems: GitShelfItem[];
+  shelfViewState: GitShelfViewState;
+  stashItems: GitStashItem[];
+  worktreeItems: GitWorktreeItem[];
+  logItems: GitLogItem[];
+  logGraphItems: GitLogItem[];
+  logCursor: number;
+  logHasMore: boolean;
+  logFilters: GitLogFilters;
+  selectedPaths: string[];
+  exactlySelectedPaths: string[];
+  selectedCommitTreeKeys: string[];
+  selectedDiffableCommitNodeKey: string;
+  commitTreeExpanded: Record<string, boolean>;
+  commitGroupExpanded: Record<string, boolean>;
+  selectedCommitHashes: string[];
+  selectedDetailNodeKeys: string[];
+  detailTreeExpanded: Record<string, boolean>;
+  branchCompareFilesTreeExpanded: Record<string, boolean>;
+  leftTab: "commit" | "shelve";
+  bottomTab: "git" | "log" | "worktrees" | "conflicts";
+  bottomCollapsed: boolean;
+  leftCollapsed: boolean;
+  diffRef: GitWorkbenchDiffSnapshotRef | null;
+  scroll: {
+    commitTreeTop: number;
+    logTop: number;
+    logLeft: number;
+    detailTreeTop: number;
+  };
+};
+
+type GitWorkbenchPublishSnapshotRequestDetail = {
+  tabId?: string;
+  requestId?: string;
+};
+
+type GitWorkbenchPublishSnapshotDoneDetail = {
+  tabId: string;
+  requestId: string;
+  ok: boolean;
 };
 
 type MenuState = {
@@ -920,6 +980,13 @@ const DEFAULT_LOG_FILTERS: GitLogFilters = normalizeGitLogFilters({
 
 const LOG_ROW_HEIGHT = 32;
 const VIRTUAL_OVERSCAN = 8;
+const GIT_WORKBENCH_SNAPSHOT_VERSION = 1 as const;
+const GIT_WORKBENCH_SNAPSHOT_MAX_LOG_ITEMS = 400;
+const GIT_WORKBENCH_HOT_SESSION_STALE_MS = 30 * 60 * 1000;
+const GIT_WORKBENCH_LOCAL_HOT_SESSION_IDLE_TTL_MS = 2 * 60 * 60 * 1000;
+const GIT_WORKBENCH_LOCAL_HOT_SESSION_MAX_KEYS = 8;
+const GIT_WORKBENCH_PUBLISH_SNAPSHOT_EVENT = "cf:git-workbench-publish-snapshot";
+const GIT_WORKBENCH_PUBLISH_SNAPSHOT_DONE_EVENT = "cf:git-workbench-publish-snapshot-done";
 const CONTEXT_MENU_SAFE_GAP = 6;
 const TREE_DEPTH_INDENT = 18;
 const DETAIL_TREE_BASE_PADDING = 12;
@@ -938,6 +1005,182 @@ const GIT_TONE_CLASSNAME: Record<GitUiTone, string> = {
   info: "cf-git-tone-info",
   muted: "cf-git-tone-muted",
 };
+const gitWorkbenchLocalHotSessionSnapshotsByKey = new Map<string, GitWorkbenchHotSessionSnapshot>();
+
+/**
+ * 把 Diff 快照压缩成可恢复选择的轻量引用，避免把大文本和 patch 放入热会话缓存。
+ */
+function toGitWorkbenchDiffSnapshotRef(diff: GitDiffSnapshot | null): GitWorkbenchDiffSnapshotRef | null {
+  if (!diff?.path || !diff.mode) return null;
+  return {
+    path: String(diff.path || ""),
+    oldPath: String(diff.oldPath || "").trim() || undefined,
+    mode: diff.mode,
+    hash: String(diff.hash || "").trim() || undefined,
+    hashes: Array.isArray(diff.hashes) ? diff.hashes.map((one) => String(one || "").trim()).filter(Boolean) : undefined,
+    shelfRef: String(diff.shelfRef || "").trim() || undefined,
+    selectionPaths: Array.isArray(diff.selectionPaths) ? diff.selectionPaths.map((one) => String(one || "").trim()).filter(Boolean) : undefined,
+    selectionKind: diff.selectionKind,
+    selectionIndex: Number.isFinite(Number(diff.selectionIndex)) ? Number(diff.selectionIndex) : undefined,
+    fingerprint: String(diff.fingerprint || "").trim() || undefined,
+  };
+}
+
+/**
+ * 把外部快照规整为当前版本可消费的数据结构，防止脏数据破坏工作台状态。
+ */
+function normalizeGitWorkbenchHotSessionSnapshot(raw: any): GitWorkbenchHotSessionSnapshot | null {
+  if (!raw || typeof raw !== "object") return null;
+  if (Number(raw.version) !== GIT_WORKBENCH_SNAPSHOT_VERSION) return null;
+  const tabId = String(raw.tabId || "").trim();
+  const repoRoot = String(raw.repoRoot || "").trim();
+  if (!tabId || !repoRoot) return null;
+  const diffRefRaw = raw.diffRef && typeof raw.diffRef === "object" ? raw.diffRef : null;
+  return {
+    version: GIT_WORKBENCH_SNAPSHOT_VERSION,
+    tabId,
+    repoPath: String(raw.repoPath || "").trim(),
+    repoRoot,
+    capturedAt: Math.max(0, Math.floor(Number(raw.capturedAt) || 0)),
+    isRepo: raw.isRepo === true,
+    repoBranch: String(raw.repoBranch || ""),
+    repoDetached: raw.repoDetached === true,
+    status: raw.status && typeof raw.status === "object" ? raw.status as GitStatusSnapshot : null,
+    branchPopup: raw.branchPopup && typeof raw.branchPopup === "object" ? raw.branchPopup as GitBranchPopupSnapshot : null,
+    shelfItems: Array.isArray(raw.shelfItems) ? raw.shelfItems as GitShelfItem[] : [],
+    shelfViewState: raw.shelfViewState && typeof raw.shelfViewState === "object"
+      ? raw.shelfViewState as GitShelfViewState
+      : { showRecycled: false, groupByDirectory: false },
+    stashItems: Array.isArray(raw.stashItems) ? raw.stashItems as GitStashItem[] : [],
+    worktreeItems: Array.isArray(raw.worktreeItems) ? raw.worktreeItems as GitWorktreeItem[] : [],
+    logItems: Array.isArray(raw.logItems) ? (raw.logItems as GitLogItem[]).slice(0, GIT_WORKBENCH_SNAPSHOT_MAX_LOG_ITEMS) : [],
+    logGraphItems: Array.isArray(raw.logGraphItems) ? (raw.logGraphItems as GitLogItem[]).slice(0, GIT_WORKBENCH_SNAPSHOT_MAX_LOG_ITEMS) : [],
+    logCursor: Math.max(0, Math.floor(Number(raw.logCursor) || 0)),
+    logHasMore: raw.logHasMore === true,
+    logFilters: normalizeGitLogFilters(raw.logFilters || DEFAULT_LOG_FILTERS),
+    selectedPaths: Array.isArray(raw.selectedPaths) ? raw.selectedPaths.map((one: unknown) => String(one || "")).filter(Boolean) : [],
+    exactlySelectedPaths: Array.isArray(raw.exactlySelectedPaths) ? raw.exactlySelectedPaths.map((one: unknown) => String(one || "")).filter(Boolean) : [],
+    selectedCommitTreeKeys: Array.isArray(raw.selectedCommitTreeKeys) ? raw.selectedCommitTreeKeys.map((one: unknown) => String(one || "")).filter(Boolean) : [],
+    selectedDiffableCommitNodeKey: String(raw.selectedDiffableCommitNodeKey || ""),
+    commitTreeExpanded: raw.commitTreeExpanded && typeof raw.commitTreeExpanded === "object" ? raw.commitTreeExpanded as Record<string, boolean> : {},
+    commitGroupExpanded: raw.commitGroupExpanded && typeof raw.commitGroupExpanded === "object" ? raw.commitGroupExpanded as Record<string, boolean> : {},
+    selectedCommitHashes: Array.isArray(raw.selectedCommitHashes) ? raw.selectedCommitHashes.map((one: unknown) => String(one || "")).filter(Boolean) : [],
+    selectedDetailNodeKeys: Array.isArray(raw.selectedDetailNodeKeys) ? raw.selectedDetailNodeKeys.map((one: unknown) => String(one || "")).filter(Boolean) : [],
+    detailTreeExpanded: raw.detailTreeExpanded && typeof raw.detailTreeExpanded === "object" ? raw.detailTreeExpanded as Record<string, boolean> : {},
+    branchCompareFilesTreeExpanded: raw.branchCompareFilesTreeExpanded && typeof raw.branchCompareFilesTreeExpanded === "object" ? raw.branchCompareFilesTreeExpanded as Record<string, boolean> : {},
+    leftTab: raw.leftTab === "shelve" ? "shelve" : "commit",
+    bottomTab: raw.bottomTab === "log" || raw.bottomTab === "worktrees" || raw.bottomTab === "conflicts" ? raw.bottomTab : "git",
+    bottomCollapsed: raw.bottomCollapsed === true,
+    leftCollapsed: raw.leftCollapsed === true,
+    diffRef: diffRefRaw?.path && diffRefRaw?.mode ? {
+      path: String(diffRefRaw.path || ""),
+      oldPath: String(diffRefRaw.oldPath || "").trim() || undefined,
+      mode: diffRefRaw.mode as GitDiffMode,
+      hash: String(diffRefRaw.hash || "").trim() || undefined,
+      hashes: Array.isArray(diffRefRaw.hashes) ? diffRefRaw.hashes.map((one: unknown) => String(one || "").trim()).filter(Boolean) : undefined,
+      shelfRef: String(diffRefRaw.shelfRef || "").trim() || undefined,
+      selectionPaths: Array.isArray(diffRefRaw.selectionPaths) ? diffRefRaw.selectionPaths.map((one: unknown) => String(one || "").trim()).filter(Boolean) : undefined,
+      selectionKind: diffRefRaw.selectionKind,
+      selectionIndex: Number.isFinite(Number(diffRefRaw.selectionIndex)) ? Number(diffRefRaw.selectionIndex) : undefined,
+      fingerprint: String(diffRefRaw.fingerprint || "").trim() || undefined,
+    } : null,
+    scroll: {
+      commitTreeTop: Math.max(0, Math.floor(Number(raw.scroll?.commitTreeTop) || 0)),
+      logTop: Math.max(0, Math.floor(Number(raw.scroll?.logTop) || 0)),
+      logLeft: Math.max(0, Math.floor(Number(raw.scroll?.logLeft) || 0)),
+      detailTreeTop: Math.max(0, Math.floor(Number(raw.scroll?.detailTreeTop) || 0)),
+    },
+  };
+}
+
+/**
+ * 构造渲染进程本地热会话键，避免同窗口项目切换时还要等待 IPC 恢复。
+ */
+function buildGitWorkbenchLocalHotSessionKey(tabId: string, path: string): string {
+  const safeTabId = String(tabId || "").trim();
+  const pathKey = normalizeGitWorkbenchProjectPathKey(path);
+  if (!safeTabId || !pathKey) return "";
+  return `${safeTabId}\n${pathKey}`;
+}
+
+/**
+ * 构造“已恢复”标记键，让 bootstrap 能识别当前 tab/path 已经有可用快照。
+ */
+function buildGitWorkbenchHotSessionAppliedKey(tabId: string, path: string): string {
+  const safeTabId = String(tabId || "").trim();
+  const pathKey = normalizeGitWorkbenchProjectPathKey(path);
+  if (!safeTabId || !pathKey) return "";
+  return `${safeTabId}:${pathKey}`;
+}
+
+/**
+ * 用快照自身路径补齐恢复键，支持独立窗口首帧暂时没有 repoPath 的情况。
+ */
+function buildGitWorkbenchSnapshotAppliedKey(snapshot: GitWorkbenchHotSessionSnapshot, currentPath: string): string {
+  return buildGitWorkbenchHotSessionAppliedKey(snapshot.tabId, currentPath || snapshot.repoPath || snapshot.repoRoot);
+}
+
+/**
+ * 判断热会话快照是否属于目标路径；目标路径为空时只按 tabId 恢复，等待宿主项目路径随后补齐。
+ */
+function isGitWorkbenchHotSessionSnapshotForPath(snapshot: GitWorkbenchHotSessionSnapshot, currentPath: string): boolean {
+  const currentPathKey = normalizeGitWorkbenchProjectPathKey(currentPath);
+  if (!currentPathKey) return true;
+  const snapshotRepoPathKey = normalizeGitWorkbenchProjectPathKey(snapshot.repoPath || "");
+  const snapshotRepoRootKey = normalizeGitWorkbenchProjectPathKey(snapshot.repoRoot || "");
+  if (!snapshotRepoRootKey) return false;
+  return snapshotRepoPathKey === currentPathKey
+    || snapshotRepoRootKey === currentPathKey
+    || currentPathKey.startsWith(`${snapshotRepoRootKey}/`)
+    || snapshotRepoRootKey.startsWith(`${currentPathKey}/`);
+}
+
+/**
+ * 清理本地热会话缓存，容量按 key 计算，实际仓库数通常只有 1-2 个。
+ */
+function trimLocalGitWorkbenchHotSessionSnapshots(now: number = Date.now()): void {
+  for (const [key, snapshot] of Array.from(gitWorkbenchLocalHotSessionSnapshotsByKey.entries())) {
+    if (now - Math.max(0, Number(snapshot.capturedAt) || 0) > GIT_WORKBENCH_LOCAL_HOT_SESSION_IDLE_TTL_MS)
+      gitWorkbenchLocalHotSessionSnapshotsByKey.delete(key);
+  }
+  const entries = Array.from(gitWorkbenchLocalHotSessionSnapshotsByKey.entries())
+    .sort((a, b) => Math.max(0, Number(a[1].capturedAt) || 0) - Math.max(0, Number(b[1].capturedAt) || 0));
+  while (entries.length > GIT_WORKBENCH_LOCAL_HOT_SESSION_MAX_KEYS) {
+    const [key] = entries.shift()!;
+    gitWorkbenchLocalHotSessionSnapshotsByKey.delete(key);
+  }
+}
+
+/**
+ * 记录渲染进程本地热会话，优先服务同窗口项目切换后的同步首帧恢复。
+ */
+function rememberLocalGitWorkbenchHotSessionSnapshot(snapshot: GitWorkbenchHotSessionSnapshot): void {
+  const normalized = normalizeGitWorkbenchHotSessionSnapshot(snapshot);
+  if (!normalized) return;
+  for (const path of [normalized.repoRoot, normalized.repoPath]) {
+    const key = buildGitWorkbenchLocalHotSessionKey(normalized.tabId, path);
+    if (!key) continue;
+    gitWorkbenchLocalHotSessionSnapshotsByKey.delete(key);
+    gitWorkbenchLocalHotSessionSnapshotsByKey.set(key, normalized);
+  }
+  trimLocalGitWorkbenchHotSessionSnapshots();
+}
+
+/**
+ * 从本地热会话里读取当前 tab/path 最合适的快照，路径为空时回退到同 tab 最新快照。
+ */
+function findLocalGitWorkbenchHotSessionSnapshot(tabId: string, currentPath: string): GitWorkbenchHotSessionSnapshot | null {
+  const safeTabId = String(tabId || "").trim();
+  if (!safeTabId) return null;
+  trimLocalGitWorkbenchHotSessionSnapshots();
+  const exactKey = buildGitWorkbenchLocalHotSessionKey(safeTabId, currentPath);
+  const exact = exactKey ? gitWorkbenchLocalHotSessionSnapshotsByKey.get(exactKey) || null : null;
+  if (exact && isGitWorkbenchHotSessionSnapshotForPath(exact, currentPath)) return exact;
+  const candidates = Array.from(new Set(gitWorkbenchLocalHotSessionSnapshotsByKey.values()))
+    .filter((snapshot) => snapshot.tabId === safeTabId && isGitWorkbenchHotSessionSnapshotForPath(snapshot, currentPath))
+    .sort((a, b) => Math.max(0, Number(b.capturedAt) || 0) - Math.max(0, Number(a.capturedAt) || 0));
+  return candidates[0] || null;
+}
 
 type GitWorkbenchLayout = {
   leftPanelWidth: number;
@@ -3001,7 +3244,7 @@ function ToolbarDropdownSubmenu(props: ToolbarDropdownSubmenuProps): JSX.Element
  */
 export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   const { t } = useTranslation(["git", "common"]);
-  const { repoPath, active, onOpenProjectInApp, onOpenTerminalInApp } = props;
+  const { tabId, repoPath, active, onOpenProjectInApp, onOpenTerminalInApp } = props;
   const gt = useCallback((key: string, fallback: string, values?: Record<string, unknown>): string => {
     return interpolateI18nText(String(t(key, {
       ns: "git",
@@ -3016,13 +3259,18 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
     return toErrorText(raw, gt(key, fallback, values));
   }, [gt]);
   const projectScopePath = String(repoPath || "").trim();
+  const hotSessionTabId = String(tabId || "").trim();
+  const initialHotSessionSnapshot = useMemo(() => {
+    return findLocalGitWorkbenchHotSessionSnapshot(hotSessionTabId, projectScopePath);
+  }, [hotSessionTabId, projectScopePath]);
   const initialLayout = useMemo(() => loadWorkbenchLayout(), []);
   const initialBranchPopupState = useMemo(() => loadGitBranchPopupState(), []);
 
-  const [repoRoot, setRepoRoot] = useState<string>("");
-  const [repoBranch, setRepoBranch] = useState<string>("");
-  const [repoDetached, setRepoDetached] = useState<boolean>(false);
-  const [isRepo, setIsRepo] = useState<boolean>(false);
+  const [repoRoot, setRepoRoot] = useState<string>(() => initialHotSessionSnapshot?.repoRoot || "");
+  const [repoBranch, setRepoBranch] = useState<string>(() => initialHotSessionSnapshot?.repoBranch || initialHotSessionSnapshot?.branchPopup?.currentBranch || initialHotSessionSnapshot?.status?.branch || "");
+  const [repoDetached, setRepoDetached] = useState<boolean>(() => initialHotSessionSnapshot?.repoDetached || initialHotSessionSnapshot?.branchPopup?.detached === true || initialHotSessionSnapshot?.status?.detached === true);
+  const [isRepo, setIsRepo] = useState<boolean>(() => !!initialHotSessionSnapshot && (initialHotSessionSnapshot.isRepo || !!initialHotSessionSnapshot.status || !!initialHotSessionSnapshot.branchPopup));
+  const [repoProbeSettled, setRepoProbeSettled] = useState<boolean>(() => !!initialHotSessionSnapshot || (!projectScopePath && !hotSessionTabId));
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string>("");
   const [gitNotices, setGitNotices] = useState<GitNoticeItem[]>([]);
@@ -3048,30 +3296,34 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   const [branchPopupOpen, setBranchPopupOpen] = useState<boolean>(false);
   const [branchPopupQuery, setBranchPopupQuery] = useState<string>("");
   const [branchPopupIndex, setBranchPopupIndex] = useState<number>(0);
-  const [branchPopup, setBranchPopup] = useState<GitBranchPopupSnapshot | null>(null);
-  const [branchSelectedRepoRoot, setBranchSelectedRepoRoot] = useState<string>(initialBranchPopupState.selectedRepoRoot);
+  const [branchPopup, setBranchPopup] = useState<GitBranchPopupSnapshot | null>(() => initialHotSessionSnapshot?.branchPopup || null);
+  const [branchSelectedRepoRoot, setBranchSelectedRepoRoot] = useState<string>(() => initialHotSessionSnapshot?.branchPopup?.selectedRepoRoot || initialHotSessionSnapshot?.repoRoot || initialBranchPopupState.selectedRepoRoot);
   const [branchPopupStep, setBranchPopupStep] = useState<GitBranchPopupStep>(initialBranchPopupState.step);
   const [branchPanelSpeedSearch, setBranchPanelSpeedSearch] = useState<string>("");
   const [branchPanelSpeedSearchOpen, setBranchPanelSpeedSearchOpen] = useState<boolean>(false);
   const [branchPanelFocusedRowKey, setBranchPanelFocusedRowKey] = useState<string>("");
   const [logBranchesDashboardState, setLogBranchesDashboardState] = useState<GitLogBranchesDashboardState>(() => loadGitLogBranchesDashboardState());
 
-  const [leftTab, setLeftTab] = useState<"commit" | "shelve">("commit");
+  const [leftTab, setLeftTab] = useState<"commit" | "shelve">(() => initialHotSessionSnapshot?.leftTab || "commit");
   const [commitMessage, setCommitMessage] = useState<string>("");
-  const [status, setStatus] = useState<GitStatusSnapshot | null>(null);
-  const [ignoredEntries, setIgnoredEntries] = useState<GitStatusEntry[]>([]);
+  const [status, setStatus] = useState<GitStatusSnapshot | null>(() => initialHotSessionSnapshot?.status || null);
+  const [ignoredEntries, setIgnoredEntries] = useState<GitStatusEntry[]>(() => {
+    return initialHotSessionSnapshot?.status?.viewOptions?.showIgnored && Array.isArray(initialHotSessionSnapshot.status.ignoredEntries)
+      ? initialHotSessionSnapshot.status.ignoredEntries
+      : [];
+  });
   const [ignoredLoading, setIgnoredLoading] = useState<boolean>(false);
   const [commitTreeBusy, setCommitTreeBusy] = useState<boolean>(false);
   const [commitTreeResetPending, setCommitTreeResetPending] = useState<boolean>(false);
   const [commitInclusionState, setCommitInclusionState] = useState<CommitInclusionState>(() => createCommitInclusionState());
   const [partialCommitSelectionState, setPartialCommitSelectionState] = useState<PartialCommitSelectionState>(() => createPartialCommitSelectionState());
-  const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
-  const [exactlySelectedPaths, setExactlySelectedPaths] = useState<string[]>([]);
-  const [selectedCommitTreeKeys, setSelectedCommitTreeKeys] = useState<string[]>([]);
-  const [selectedDiffableCommitNodeKey, setSelectedDiffableCommitNodeKey] = useState<string>("");
+  const [selectedPaths, setSelectedPaths] = useState<string[]>(() => initialHotSessionSnapshot?.selectedPaths || []);
+  const [exactlySelectedPaths, setExactlySelectedPaths] = useState<string[]>(() => initialHotSessionSnapshot?.exactlySelectedPaths || []);
+  const [selectedCommitTreeKeys, setSelectedCommitTreeKeys] = useState<string[]>(() => initialHotSessionSnapshot?.selectedCommitTreeKeys || []);
+  const [selectedDiffableCommitNodeKey, setSelectedDiffableCommitNodeKey] = useState<string>(() => initialHotSessionSnapshot?.selectedDiffableCommitNodeKey || "");
   const [commitSelectionAnchors, setCommitSelectionAnchors] = useState<CommitSelectionAnchor[]>([]);
-  const [commitTreeExpanded, setCommitTreeExpanded] = useState<Record<string, boolean>>({});
-  const [commitGroupExpanded, setCommitGroupExpanded] = useState<Record<string, boolean>>({});
+  const [commitTreeExpanded, setCommitTreeExpanded] = useState<Record<string, boolean>>(() => initialHotSessionSnapshot?.commitTreeExpanded || {});
+  const [commitGroupExpanded, setCommitGroupExpanded] = useState<Record<string, boolean>>(() => initialHotSessionSnapshot?.commitGroupExpanded || {});
   const [commitAmendEnabled, setCommitAmendEnabled] = useState<boolean>(false);
   const [commitAmendLoading, setCommitAmendLoading] = useState<boolean>(false);
   const [commitAmendDetails, setCommitAmendDetails] = useState<CommitAmendDetails | null>(null);
@@ -3113,10 +3365,10 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
     modifiedSelectedLines: [],
   });
 
-  const [bottomCollapsed, setBottomCollapsed] = useState<boolean>(false);
+  const [bottomCollapsed, setBottomCollapsed] = useState<boolean>(() => initialHotSessionSnapshot?.bottomCollapsed || false);
   const [bottomHeight, setBottomHeight] = useState<number>(initialLayout.bottomHeight);
-  const [bottomTab, setBottomTab] = useState<"git" | "log" | "worktrees" | "conflicts">("git");
-  const [leftCollapsed, setLeftCollapsed] = useState<boolean>(false);
+  const [bottomTab, setBottomTab] = useState<"git" | "log" | "worktrees" | "conflicts">(() => initialHotSessionSnapshot?.bottomTab || "git");
+  const [leftCollapsed, setLeftCollapsed] = useState<boolean>(() => initialHotSessionSnapshot?.leftCollapsed || false);
   const [leftPanelWidth, setLeftPanelWidth] = useState<number>(initialLayout.leftPanelWidth);
   const [leftPanelProportion, setLeftPanelProportion] = useState<number | null>(null);
   const [branchPanelWidth, setBranchPanelWidth] = useState<number>(initialLayout.branchPanelWidth);
@@ -3147,22 +3399,25 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   const updateInfoAutoOpenedRequestIdsRef = useRef<Set<number>>(new Set());
   const conflictPanelSignatureRef = useRef<string>("");
 
-  const [logItems, setLogItems] = useState<GitLogItem[]>([]);
-  const [logGraphItems, setLogGraphItems] = useState<GitLogItem[]>([]);
+  const [logItems, setLogItems] = useState<GitLogItem[]>(() => initialHotSessionSnapshot?.logItems || []);
+  const [logGraphItems, setLogGraphItems] = useState<GitLogItem[]>(() => {
+    if (!initialHotSessionSnapshot) return [];
+    return initialHotSessionSnapshot.logGraphItems.length > 0 ? initialHotSessionSnapshot.logGraphItems : initialHotSessionSnapshot.logItems;
+  });
   const [logColumnLayout, setLogColumnLayout] = useState<GitLogColumnLayout>(() => loadGitLogColumnLayout());
-  const [logCursor, setLogCursor] = useState<number>(0);
-  const [logHasMore, setLogHasMore] = useState<boolean>(false);
+  const [logCursor, setLogCursor] = useState<number>(() => initialHotSessionSnapshot?.logCursor || 0);
+  const [logHasMore, setLogHasMore] = useState<boolean>(() => initialHotSessionSnapshot?.logHasMore || false);
   const [logLoading, setLogLoading] = useState<boolean>(false);
-  const [logFilters, setLogFilters] = useState<GitLogFilters>(DEFAULT_LOG_FILTERS);
-  const [selectedCommitHashes, setSelectedCommitHashes] = useState<string[]>([]);
+  const [logFilters, setLogFilters] = useState<GitLogFilters>(() => initialHotSessionSnapshot?.logFilters || DEFAULT_LOG_FILTERS);
+  const [selectedCommitHashes, setSelectedCommitHashes] = useState<string[]>(() => initialHotSessionSnapshot?.selectedCommitHashes || []);
   const [pendingLogSelectionHash, setPendingLogSelectionHash] = useState<string>("");
   const [logActionAvailability, setLogActionAvailability] = useState<GitLogActionAvailability | null>(null);
   const [logActionAvailabilityHashesKey, setLogActionAvailabilityHashesKey] = useState<string>("");
   const [logActionAvailabilityLoading, setLogActionAvailabilityLoading] = useState<boolean>(false);
   const [details, setDetails] = useState<GitLogDetails | null>(null);
-  const [selectedDetailNodeKeys, setSelectedDetailNodeKeys] = useState<string[]>([]);
-  const [detailTreeExpanded, setDetailTreeExpanded] = useState<Record<string, boolean>>({});
-  const [branchCompareFilesTreeExpanded, setBranchCompareFilesTreeExpanded] = useState<Record<string, boolean>>({});
+  const [selectedDetailNodeKeys, setSelectedDetailNodeKeys] = useState<string[]>(() => initialHotSessionSnapshot?.selectedDetailNodeKeys || []);
+  const [detailTreeExpanded, setDetailTreeExpanded] = useState<Record<string, boolean>>(() => initialHotSessionSnapshot?.detailTreeExpanded || {});
+  const [branchCompareFilesTreeExpanded, setBranchCompareFilesTreeExpanded] = useState<Record<string, boolean>>(() => initialHotSessionSnapshot?.branchCompareFilesTreeExpanded || {});
   const [detailSpeedSearch, setDetailSpeedSearch] = useState<string>("");
   const [detailSpeedSearchOpen, setDetailSpeedSearchOpen] = useState<boolean>(false);
   const [showParentChanges, setShowParentChanges] = useState<boolean>(true);
@@ -3193,9 +3448,9 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   const [rollbackViewerRefreshing, setRollbackViewerRefreshing] = useState<boolean>(false);
   const [rollbackDiffOverlayOpen, setRollbackDiffOverlayOpen] = useState<boolean>(false);
 
-  const [shelfItems, setShelfItems] = useState<GitShelfItem[]>([]);
-  const [shelfViewState, setShelfViewState] = useState<GitShelfViewState>({ showRecycled: false, groupByDirectory: false });
-  const [stashItems, setStashItems] = useState<GitStashItem[]>([]);
+  const [shelfItems, setShelfItems] = useState<GitShelfItem[]>(() => initialHotSessionSnapshot?.shelfItems || []);
+  const [shelfViewState, setShelfViewState] = useState<GitShelfViewState>(() => initialHotSessionSnapshot?.shelfViewState || { showRecycled: false, groupByDirectory: false });
+  const [stashItems, setStashItems] = useState<GitStashItem[]>(() => initialHotSessionSnapshot?.stashItems || []);
   const [shelfRestoreDialogOpen, setShelfRestoreDialogOpen] = useState<boolean>(false);
   const [shelfRestoreDialogSubmitting, setShelfRestoreDialogSubmitting] = useState<boolean>(false);
   const [shelfRestoreDialogShelf, setShelfRestoreDialogShelf] = useState<GitShelfItem | null>(null);
@@ -3204,7 +3459,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
     targetChangeListId: "",
     removeAppliedFromShelf: true,
   });
-  const [worktreeItems, setWorktreeItems] = useState<GitWorktreeItem[]>([]);
+  const [worktreeItems, setWorktreeItems] = useState<GitWorktreeItem[]>(() => initialHotSessionSnapshot?.worktreeItems || []);
   const [worktreeTreeExpanded, setWorktreeTreeExpanded] = useState<Record<string, boolean>>({});
   const [gitConsoleItems, setGitConsoleItems] = useState<GitConsoleEntry[]>([]);
   const [gitConsoleLoading, setGitConsoleLoading] = useState<boolean>(false);
@@ -3259,8 +3514,20 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   const [branchRemoteManagerDialogState, setBranchRemoteManagerDialogState] = useState<BranchRemoteManagerDialogState | null>(null);
   const actionDialogResolveRef = useRef<((value: Record<string, string> | null) => void) | null>(null);
   const commitOptionsTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const hotSessionRestoreKeyRef = useRef<string>("");
+  const hotSessionAppliedRestoreKeyRef = useRef<string>(initialHotSessionSnapshot ? buildGitWorkbenchSnapshotAppliedKey(initialHotSessionSnapshot, projectScopePath) : "");
+  const hotSessionSnapshotTimerRef = useRef<number | null>(null);
+  const hotSessionRestoringRef = useRef<boolean>(false);
+  const pendingRestoreScrollRef = useRef<GitWorkbenchHotSessionSnapshot["scroll"] | null>(initialHotSessionSnapshot?.scroll || null);
+  const latestHotSessionSnapshotRef = useRef<GitWorkbenchHotSessionSnapshot | null>(null);
+  const hotSessionStaleCheckKeyRef = useRef<string>(initialHotSessionSnapshot && Date.now() - Math.max(0, Number(initialHotSessionSnapshot.capturedAt) || 0) > GIT_WORKBENCH_HOT_SESSION_STALE_MS
+    ? `${initialHotSessionSnapshot.tabId}:${initialHotSessionSnapshot.repoRoot}:${initialHotSessionSnapshot.capturedAt}`
+    : "");
+  const repoProbePathKeyRef = useRef<string>(normalizeGitWorkbenchProjectPathKey(projectScopePath));
+  const [hotSessionRestoreSettledKey, setHotSessionRestoreSettledKey] = useState<string>(() => initialHotSessionSnapshot ? buildGitWorkbenchSnapshotAppliedKey(initialHotSessionSnapshot, projectScopePath) : "");
   const diffRequestSeqRef = useRef<number>(0);
-  const bootstrapRefreshRepoPathRef = useRef<string>("");
+  const bootstrapRefreshRepoPathRef = useRef<string>(initialHotSessionSnapshot?.repoPath || initialHotSessionSnapshot?.repoRoot || "");
+  const lastLogReloadKeyRef = useRef<string>("");
   const logRequestSeqRef = useRef<number>(0);
   const worktreeRequestSeqRef = useRef<number>(0);
   const detailRequestSeqRef = useRef<number>(0);
@@ -3337,6 +3604,166 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   const detailTreeSpeedSearchRootRef = useRef<HTMLDivElement>(null);
   const detailTreeContainerRef = useRef<HTMLDivElement>(null);
   const [activeSelectionScope, setActiveSelectionScope] = useState<"commit" | "detail" | null>(null);
+
+  /**
+   * 把热会话快照应用到当前工作台，只恢复可直接显示的小型状态。
+   */
+  function applyHotSessionSnapshot(snapshot: GitWorkbenchHotSessionSnapshot): void {
+    hotSessionRestoringRef.current = true;
+    try {
+      rememberLocalGitWorkbenchHotSessionSnapshot(snapshot);
+      setRepoRoot(snapshot.repoRoot);
+      setRepoBranch(snapshot.repoBranch || snapshot.branchPopup?.currentBranch || snapshot.status?.branch || "HEAD");
+      setRepoDetached(snapshot.repoDetached || snapshot.branchPopup?.detached === true || snapshot.status?.detached === true);
+      setIsRepo(snapshot.isRepo || !!snapshot.status || !!snapshot.branchPopup);
+      setRepoProbeSettled(true);
+      setStatus(snapshot.status);
+      setBranchPopup(snapshot.branchPopup);
+      setBranchSelectedRepoRoot(snapshot.branchPopup?.selectedRepoRoot || snapshot.repoRoot);
+      setShelfItems(snapshot.shelfItems);
+      setShelfViewState(snapshot.shelfViewState);
+      setStashItems(snapshot.stashItems);
+      setWorktreeItems(snapshot.worktreeItems);
+      setLogItems(snapshot.logItems);
+      setLogGraphItems(snapshot.logGraphItems.length > 0 ? snapshot.logGraphItems : snapshot.logItems);
+      setLogCursor(snapshot.logCursor);
+      setLogHasMore(snapshot.logHasMore);
+      setLogFilters(snapshot.logFilters);
+      setSelectedPaths(snapshot.selectedPaths);
+      setExactlySelectedPaths(snapshot.exactlySelectedPaths);
+      setSelectedCommitTreeKeys(snapshot.selectedCommitTreeKeys);
+      setSelectedDiffableCommitNodeKey(snapshot.selectedDiffableCommitNodeKey);
+      setCommitTreeExpanded(snapshot.commitTreeExpanded);
+      setCommitGroupExpanded(snapshot.commitGroupExpanded);
+      setSelectedCommitHashes(snapshot.selectedCommitHashes);
+      setSelectedDetailNodeKeys(snapshot.selectedDetailNodeKeys);
+      setDetailTreeExpanded(snapshot.detailTreeExpanded);
+      setBranchCompareFilesTreeExpanded(snapshot.branchCompareFilesTreeExpanded);
+      setLeftTab(snapshot.leftTab);
+      setBottomTab(snapshot.bottomTab);
+      setBottomCollapsed(snapshot.bottomCollapsed);
+      setLeftCollapsed(snapshot.leftCollapsed);
+      setDiff(null);
+      loadedDiffRequestSignatureRef.current = "";
+      pendingRestoreScrollRef.current = snapshot.scroll;
+      bootstrapRefreshRepoPathRef.current = snapshot.repoPath || snapshot.repoRoot;
+      hotSessionAppliedRestoreKeyRef.current = buildGitWorkbenchSnapshotAppliedKey(snapshot, projectScopePath);
+      const snapshotAgeMs = Date.now() - Math.max(0, Number(snapshot.capturedAt) || 0);
+      hotSessionStaleCheckKeyRef.current = snapshotAgeMs > GIT_WORKBENCH_HOT_SESSION_STALE_MS
+        ? `${snapshot.tabId}:${snapshot.repoRoot}:${snapshot.capturedAt}`
+        : "";
+      if (snapshot.status?.viewOptions?.showIgnored && Array.isArray(snapshot.status.ignoredEntries)) {
+        setIgnoredEntries(snapshot.status.ignoredEntries);
+      }
+    } finally {
+      window.setTimeout(() => {
+        hotSessionRestoringRef.current = false;
+      }, 0);
+    }
+  }
+
+  /**
+   * 判断热会话快照是否属于当前工作台路径，避免 tabId 被复用后误恢复旧仓库状态。
+   */
+  function isHotSessionSnapshotForCurrentPath(snapshot: GitWorkbenchHotSessionSnapshot): boolean {
+    return isGitWorkbenchHotSessionSnapshotForPath(snapshot, projectScopePath);
+  }
+
+  /**
+   * 采集当前工作台小型结构化状态；大 diff、patch、blob 内容只保留轻量引用。
+   */
+  function captureHotSessionSnapshot(): GitWorkbenchHotSessionSnapshot | null {
+    if (!hotSessionTabId || !repoRoot) return null;
+    return {
+      version: GIT_WORKBENCH_SNAPSHOT_VERSION,
+      tabId: hotSessionTabId,
+      repoPath: projectScopePath,
+      repoRoot,
+      capturedAt: Date.now(),
+      isRepo,
+      repoBranch,
+      repoDetached,
+      status,
+      branchPopup,
+      shelfItems,
+      shelfViewState,
+      stashItems,
+      worktreeItems,
+      logItems: logItems.slice(0, GIT_WORKBENCH_SNAPSHOT_MAX_LOG_ITEMS),
+      logGraphItems: logGraphItems.slice(0, GIT_WORKBENCH_SNAPSHOT_MAX_LOG_ITEMS),
+      logCursor,
+      logHasMore,
+      logFilters,
+      selectedPaths,
+      exactlySelectedPaths,
+      selectedCommitTreeKeys,
+      selectedDiffableCommitNodeKey,
+      commitTreeExpanded,
+      commitGroupExpanded,
+      selectedCommitHashes,
+      selectedDetailNodeKeys,
+      detailTreeExpanded,
+      branchCompareFilesTreeExpanded,
+      leftTab,
+      bottomTab,
+      bottomCollapsed,
+      leftCollapsed,
+      diffRef: toGitWorkbenchDiffSnapshotRef(diff),
+      scroll: {
+        commitTreeTop: commitTreeContainerRef.current?.scrollTop || 0,
+        logTop: logVirtual.containerRef.current?.scrollTop || 0,
+        logLeft: logVirtual.containerRef.current?.scrollLeft || 0,
+        detailTreeTop: detailTreeContainerRef.current?.scrollTop || 0,
+      },
+    };
+  }
+
+  /**
+   * 把当前热会话写入主进程内存 registry，供普通切换和独立窗口接管复用。
+   */
+  async function publishHotSessionSnapshotAsync(): Promise<void> {
+    const snapshot = latestHotSessionSnapshotRef.current;
+    if (!snapshot) return;
+    rememberLocalGitWorkbenchHotSessionSnapshot(snapshot);
+    try {
+      await window.host.gitWorkbench?.snapshot?.put({
+        tabId: snapshot.tabId,
+        repoRoot: snapshot.repoRoot,
+        snapshot,
+      });
+    } catch {}
+  }
+
+  /**
+   * 监听宿主拖窗前的快照发布请求，确保独立窗口接管前主进程已经有最新热会话。
+   */
+  useEffect(() => {
+    if (!hotSessionTabId) return;
+    const handlePublishSnapshot = (event: Event): void => {
+      const detail = (event as CustomEvent<GitWorkbenchPublishSnapshotRequestDetail>).detail || {};
+      if (String(detail.tabId || "").trim() !== hotSessionTabId) return;
+      const requestId = String(detail.requestId || "").trim();
+      void (async () => {
+        let ok = false;
+        try {
+          await publishHotSessionSnapshotAsync();
+          ok = true;
+        } finally {
+          if (requestId) {
+            window.dispatchEvent(new CustomEvent<GitWorkbenchPublishSnapshotDoneDetail>(GIT_WORKBENCH_PUBLISH_SNAPSHOT_DONE_EVENT, {
+              detail: {
+                tabId: hotSessionTabId,
+                requestId,
+                ok,
+              },
+            }));
+          }
+        }
+      })();
+    };
+    window.addEventListener(GIT_WORKBENCH_PUBLISH_SNAPSHOT_EVENT, handlePublishSnapshot);
+    return () => window.removeEventListener(GIT_WORKBENCH_PUBLISH_SNAPSHOT_EVENT, handlePublishSnapshot);
+  }, [hotSessionTabId]);
 
   /**
    * 当日志修订筛选不再匹配当前 compare range 时，自动清空比较态，避免 chip 文案与实际过滤条件脱节。
@@ -4377,6 +4804,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
       writeLastCommitMessage(window.localStorage, commitMessageValueRef.current);
     };
   }, [commitAdvancedOptionsState, repoRoot]);
+
   const availableCommitGroupingKeys = useMemo<CommitGroupingKey[]>(() => {
     return normalizeCommitGroupingKeys(viewOptions.availableGroupingKeys, true);
   }, [viewOptions.availableGroupingKeys]);
@@ -5417,6 +5845,147 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   const logHeaderScrollRef = useRef<HTMLDivElement>(null);
   const logScrollSyncLockRef = useRef<boolean>(false);
   const logVirtual = useVirtualWindow(logItems.length, LOG_ROW_HEIGHT, VIRTUAL_OVERSCAN, `${bottomTab}:${bottomCollapsed ? 1 : 0}:${diffFullscreen ? 1 : 0}`);
+  latestHotSessionSnapshotRef.current = captureHotSessionSnapshot();
+
+  /**
+   * 项目路径变化时重新进入仓库检测态，避免把旧仓库或旧空状态短暂渲染到新路径。
+   */
+  useEffect(() => {
+    const nextPathKey = normalizeGitWorkbenchProjectPathKey(projectScopePath);
+    if (repoProbePathKeyRef.current === nextPathKey) return;
+    repoProbePathKeyRef.current = nextPathKey;
+    const snapshot = findLocalGitWorkbenchHotSessionSnapshot(hotSessionTabId, projectScopePath);
+    if (snapshot) {
+      applyHotSessionSnapshot(snapshot);
+      const appliedKey = buildGitWorkbenchSnapshotAppliedKey(snapshot, projectScopePath);
+      setHotSessionRestoreSettledKey(appliedKey);
+      return;
+    }
+    setRepoProbeSettled(!nextPathKey && !hotSessionTabId);
+    setIsRepo(false);
+    setRepoRoot("");
+    setRepoBranch("");
+    setRepoDetached(false);
+    setError("");
+    bootstrapRefreshRepoPathRef.current = "";
+    hotSessionRestoreKeyRef.current = "";
+    hotSessionAppliedRestoreKeyRef.current = "";
+    hotSessionStaleCheckKeyRef.current = "";
+    setHotSessionRestoreSettledKey("");
+  }, [hotSessionTabId, projectScopePath]);
+
+  /**
+   * 首帧优先尝试恢复主进程热会话快照；成功后 UI 立即可见，后续刷新由 watcher 或手动刷新驱动。
+   */
+  useEffect(() => {
+    if (!hotSessionTabId) return;
+    const pathKey = normalizeGitWorkbenchProjectPathKey(projectScopePath);
+    const restoreKey = buildGitWorkbenchHotSessionAppliedKey(hotSessionTabId, projectScopePath) || `${hotSessionTabId}:pending`;
+    const requestKey = restoreKey;
+    if (hotSessionAppliedRestoreKeyRef.current === restoreKey) return;
+    if (hotSessionRestoreKeyRef.current === requestKey) return;
+    const localSnapshot = findLocalGitWorkbenchHotSessionSnapshot(hotSessionTabId, projectScopePath);
+    if (localSnapshot) {
+      applyHotSessionSnapshot(localSnapshot);
+      setHotSessionRestoreSettledKey(buildGitWorkbenchSnapshotAppliedKey(localSnapshot, projectScopePath));
+      return;
+    }
+    hotSessionRestoreKeyRef.current = requestKey;
+    setHotSessionRestoreSettledKey("");
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await window.host.gitWorkbench?.snapshot?.get({
+          tabId: hotSessionTabId,
+          repoRoot: projectScopePath,
+        });
+        if (cancelled || !res?.ok) return;
+        const snapshot = normalizeGitWorkbenchHotSessionSnapshot(res.snapshot);
+        if (!snapshot || !isHotSessionSnapshotForCurrentPath(snapshot)) return;
+        applyHotSessionSnapshot(snapshot);
+        await window.host.utils?.perfLog?.(`[GIT_WORKBENCH] hot-session restore tab=${hotSessionTabId} repo=${snapshot.repoRoot}`);
+      } catch {
+      } finally {
+        if (!cancelled) setHotSessionRestoreSettledKey(pathKey ? requestKey : `${hotSessionTabId}:pending`);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (hotSessionRestoreKeyRef.current === requestKey)
+        hotSessionRestoreKeyRef.current = "";
+    };
+  }, [hotSessionTabId, projectScopePath]);
+
+  /**
+   * 工作台状态变化后防抖发布热会话快照；切走或拖出窗口时可复用最近一次结构化状态。
+   */
+  useEffect(() => {
+    if (hotSessionRestoringRef.current) return;
+    if (!hotSessionTabId || !repoRoot) return;
+    if (hotSessionSnapshotTimerRef.current != null)
+      window.clearTimeout(hotSessionSnapshotTimerRef.current);
+    hotSessionSnapshotTimerRef.current = window.setTimeout(() => {
+      hotSessionSnapshotTimerRef.current = null;
+      void publishHotSessionSnapshotAsync();
+    }, active ? 400 : 0);
+    return () => {
+      if (hotSessionSnapshotTimerRef.current == null) return;
+      window.clearTimeout(hotSessionSnapshotTimerRef.current);
+      hotSessionSnapshotTimerRef.current = null;
+    };
+  }, [
+    active,
+    hotSessionTabId,
+    projectScopePath,
+    repoRoot,
+    isRepo,
+    repoBranch,
+    repoDetached,
+    status,
+    branchPopup,
+    shelfItems,
+    shelfViewState,
+    stashItems,
+    worktreeItems,
+    logItems,
+    logGraphItems,
+    logCursor,
+    logHasMore,
+    logFilters,
+    selectedPaths,
+    exactlySelectedPaths,
+    selectedCommitTreeKeys,
+    selectedDiffableCommitNodeKey,
+    commitTreeExpanded,
+    commitGroupExpanded,
+    selectedCommitHashes,
+    selectedDetailNodeKeys,
+    detailTreeExpanded,
+    branchCompareFilesTreeExpanded,
+    leftTab,
+    bottomTab,
+    bottomCollapsed,
+    leftCollapsed,
+    diff,
+  ]);
+
+  /**
+   * 快照恢复后把关键滚动位置回写到真实容器。
+   */
+  useEffect(() => {
+    const scroll = pendingRestoreScrollRef.current;
+    if (!scroll) return;
+    pendingRestoreScrollRef.current = null;
+    window.setTimeout(() => {
+      if (commitTreeContainerRef.current) commitTreeContainerRef.current.scrollTop = scroll.commitTreeTop;
+      if (logVirtual.containerRef.current) {
+        logVirtual.containerRef.current.scrollTop = scroll.logTop;
+        logVirtual.containerRef.current.scrollLeft = scroll.logLeft;
+      }
+      if (detailTreeContainerRef.current) detailTreeContainerRef.current.scrollTop = scroll.detailTreeTop;
+    }, 0);
+  }, [logItems.length, selectedCommitTreeKeys, selectedDetailNodeKeys, logVirtual.containerRef]);
+
   const worktreeTreeRows = useMemo<WorktreeTreeRow[]>(() => {
     return buildWorktreeTreeRows(repoRoot, displayWorktreeItems, worktreeTreeExpanded);
   }, [displayWorktreeItems, repoRoot, worktreeTreeExpanded]);
@@ -6043,6 +6612,68 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   }, [refreshWorktreeItemsAsync]);
 
   /**
+   * 自动刷新链路的状态轻量刷新入口，只更新本地变更树和提交 inclusion 状态。
+   */
+  const refreshStatusForAutoRefreshAsync = useCallback(async (
+    options?: { debounceMs?: number },
+  ): Promise<void> => {
+    const targetRepoRoot = String(repoRoot || projectScopePath || "").trim();
+    if (!targetRepoRoot) return;
+    const debounceMs = Math.max(0, Math.floor(Number(options?.debounceMs) || 0));
+    if (debounceMs > 0) {
+      await new Promise<void>((resolve) => {
+        window.setTimeout(resolve, debounceMs);
+      });
+    }
+    setCommitTreeBusy(true);
+    try {
+      const statusRes = await getStatusAsync(projectScopePath || targetRepoRoot);
+      if (!statusRes.ok || !statusRes.data) return;
+      const statusData = statusRes.data;
+      setStatus(statusData);
+      setCommitInclusionState((prev) => syncCommitInclusionState(
+        prev,
+        buildCommitInclusionItems(statusData.entries || []),
+        String(statusData.changeLists?.activeListId || ""),
+        effectiveCommitAllSetting,
+      ));
+      if (statusData.viewOptions?.showIgnored) {
+        void refreshIgnoredEntriesAsync(targetRepoRoot, { preferCache: true });
+      } else {
+        ignoredRequestSeqRef.current += 1;
+        setIgnoredLoading(false);
+        setIgnoredEntries([]);
+      }
+    } finally {
+      setCommitTreeBusy(false);
+    }
+  }, [buildCommitInclusionItems, effectiveCommitAllSetting, projectScopePath, refreshIgnoredEntriesAsync, repoRoot, syncCommitInclusionState]);
+
+  /**
+   * 自动刷新链路的引用轻量刷新入口，只更新分支状态与日志首屏。
+   */
+  const refreshRefsForAutoRefreshAsync = useCallback(async (
+    options?: { debounceMs?: number },
+  ): Promise<void> => {
+    const targetRepoRoot = String(repoRoot || "").trim();
+    if (!targetRepoRoot) return;
+    const debounceMs = Math.max(0, Math.floor(Number(options?.debounceMs) || 0));
+    if (debounceMs > 0) {
+      await new Promise<void>((resolve) => {
+        window.setTimeout(resolve, debounceMs);
+      });
+    }
+    const branchRes = await getBranchPopupAsync(targetRepoRoot);
+    if (branchRes.ok && branchRes.data) {
+      setBranchPopup(branchRes.data);
+      setRepoBranch(String(branchRes.data.currentBranch || repoBranch || "HEAD"));
+      setRepoDetached(!!branchRes.data.detached);
+    }
+    if (active)
+      await loadLogAsync(targetRepoRoot, 0, true);
+  }, [active, loadLogAsync, repoBranch, repoRoot]);
+
+  /**
    * 执行通用刷新（状态/日志/分支/搁置/worktree），并始终使用最新日志筛选条件重载列表。
    */
   const runRefreshAllTaskAsync = useCallback(async (options?: { keepLog?: boolean }): Promise<void> => {
@@ -6060,6 +6691,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
       const repo = detect.data;
       if (!repo?.isRepo || !repo.repoRoot) {
         setIsRepo(false);
+        setRepoProbeSettled(true);
         setRepoRoot("");
         setRepoBranch("");
         setRepoDetached(false);
@@ -6075,6 +6707,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
       }
 
       setIsRepo(true);
+      setRepoProbeSettled(true);
       setRepoRoot(repo.repoRoot);
       setRepoBranch(String(repo.branch || "HEAD"));
       setRepoDetached(!!repo.detached);
@@ -6138,6 +6771,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
         await loadLogAsync(repo.repoRoot, 0, true);
       }
     } finally {
+      setRepoProbeSettled(true);
       setLoading(false);
       setCommitTreeBusy(false);
     }
@@ -6327,8 +6961,24 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
     repoRoot,
     repoRoots: autoRefreshRepoRoots,
     refreshAllAsync,
+    refreshStatusAsync: refreshStatusForAutoRefreshAsync,
+    refreshRefsAsync: refreshRefsForAutoRefreshAsync,
     refreshWorktreesAsync: refreshWorktreeItemsForAutoRefreshAsync,
   });
+
+  /**
+   * 宽松 TTL 命中后仍先展示旧快照，再后台做轻量校验，照顾慢机器返回 Git 页签的体验。
+   */
+  useEffect(() => {
+    if (!active || !repoRoot) return;
+    const staleKey = hotSessionStaleCheckKeyRef.current;
+    if (!staleKey) return;
+    hotSessionStaleCheckKeyRef.current = "";
+    void (async () => {
+      await refreshStatusForAutoRefreshAsync();
+      await refreshRefsForAutoRefreshAsync();
+    })();
+  }, [active, refreshRefsForAutoRefreshAsync, refreshStatusForAutoRefreshAsync, repoRoot]);
 
   /**
    * 统一展示历史改写反馈，供 interactive rebase / editMessage / deleteCommit 共用通知与刷新语义。
@@ -13599,9 +14249,14 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   }, [activeLogFilters.dateFrom, activeLogFilters.dateTo, openActionDialogAsync, updateActiveLogFilters]);
 
   /**
-   * 初始化与激活时加载数据，未激活时不做请求；同一激活周期内对同一 repoPath 只做一次首刷。
+   * 初始化时在热会话恢复尝试之后加载数据；同一 repoPath 只做一次首刷。
    */
   useEffect(() => {
+    const restoreKey = hotSessionTabId && repoPath
+      ? buildGitWorkbenchHotSessionAppliedKey(hotSessionTabId, repoPath)
+      : "";
+    if (hotSessionTabId && repoPath && hotSessionRestoreSettledKey !== restoreKey && hotSessionAppliedRestoreKeyRef.current !== restoreKey)
+      return;
     const bootstrap = resolveGitWorkbenchBootstrapRefresh({
       active,
       repoPath,
@@ -13610,7 +14265,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
     bootstrapRefreshRepoPathRef.current = bootstrap.nextBootstrapRepoPath;
     if (!bootstrap.shouldRefresh) return;
     void invokeRefreshAllAsync({ keepLog: false });
-  }, [active, invokeRefreshAllAsync, repoPath]);
+  }, [active, hotSessionRestoreSettledKey, hotSessionTabId, invokeRefreshAllAsync, repoPath]);
 
   /**
    * 订阅底层 Git 活动，统一驱动状态栏文案，并在控制台页签下按操作完成后做一次去抖刷新。
@@ -13727,6 +14382,11 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
         window.clearInterval(gitConsoleLiveRefreshTimerRef.current);
         gitConsoleLiveRefreshTimerRef.current = null;
       }
+      if (hotSessionSnapshotTimerRef.current != null) {
+        window.clearTimeout(hotSessionSnapshotTimerRef.current);
+        hotSessionSnapshotTimerRef.current = null;
+      }
+      void publishHotSessionSnapshotAsync();
       for (const timerId of gitNoticeTimersRef.current.values()) {
         window.clearTimeout(timerId);
       }
@@ -13743,6 +14403,9 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
    */
   useEffect(() => {
     if (!active || !repoRoot) return;
+    const reloadKey = `${repoRoot}\n${JSON.stringify(activeLogFilters)}`;
+    if (lastLogReloadKeyRef.current === reloadKey) return;
+    lastLogReloadKeyRef.current = reloadKey;
     const id = window.setTimeout(() => {
       void loadLogAsync(repoRoot, 0, true);
     }, 260);
@@ -14548,6 +15211,20 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
               {gt("workbench.misc.noRepo.redetect", "重新检测")}
               </Button>
           </div>
+        </div>
+      </div>
+    );
+  };
+
+  /**
+   * 渲染仓库检测尚未完成时的轻量状态，避免首刷前误显示“未检测到 Git 仓库”。
+   */
+  const renderRepoProbePending = (): JSX.Element => {
+    return (
+      <div className="flex h-full items-center justify-center p-4 text-sm text-[var(--cf-text-secondary)]">
+        <div className="flex items-center gap-2">
+          <Loader2 className="h-4 w-4 animate-spin text-[var(--cf-accent)]" />
+          <span>{gt("workbench.misc.status.detecting", "正在检测 Git 仓库...")}</span>
         </div>
       </div>
     );
@@ -19284,14 +19961,13 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   };
 
   const gitBusy = gitActivityCount > 0;
+  const repoProbePending = !repoProbeSettled && !isRepo;
   const gitStatusText = gitBusy
     ? gt("workbench.misc.status.busy", "正在{{activity}}", { activity: gitActivityText })
-    : (isRepo ? gt("workbench.misc.status.ready", "就绪") : gt("workbench.misc.status.noRepo", "未检测到 Git 仓库"));
+    : (repoProbePending
+      ? gt("workbench.misc.status.detecting", "正在检测 Git 仓库...")
+      : (isRepo ? gt("workbench.misc.status.ready", "就绪") : gt("workbench.misc.status.noRepo", "未检测到 Git 仓库")));
   const commitToolbarActive = leftTab === "commit" && !leftCollapsed;
-
-  if (!active) {
-    return <div className="h-full w-full bg-[var(--cf-surface-solid)]"></div>;
-  }
 
   return (
     <div className="cf-git-workbench relative flex h-full min-h-0 flex-col overflow-hidden rounded-[inherit] bg-[var(--cf-surface-muted)]">
@@ -19617,7 +20293,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
         />
       ) : null}
 
-      {!isRepo ? renderNoRepo() : (
+      {repoProbePending ? renderRepoProbePending() : !isRepo ? renderNoRepo() : (
         diffFullscreen && diff ? (
           <div className="min-h-0 flex flex-1 flex-col bg-[var(--cf-surface-solid)]">
             {renderDiffPanel(true)}
