@@ -1443,6 +1443,7 @@
       "status": {
         "ready": "就绪",
         "busy": "正在{{activity}}",
+        "detecting": "正在检测 Git 仓库...",
         "noRepo": "未检测到 Git 仓库"
       },
       "actionUnsupported": "不支持的操作：{{label}}",

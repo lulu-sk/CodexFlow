@@ -352,13 +352,20 @@ export function resolveGitWorkbenchBootstrapRefresh(args: {
   lastBootstrapRepoPath: string;
 }): { shouldRefresh: boolean; nextBootstrapRepoPath: string } {
   const cleanRepoPath = String(args.repoPath || "").trim();
-  if (!args.active || !cleanRepoPath) {
+  const lastRepoPath = String(args.lastBootstrapRepoPath || "").trim();
+  if (!args.active) {
     return {
       shouldRefresh: false,
-      nextBootstrapRepoPath: "",
+      nextBootstrapRepoPath: lastRepoPath,
     };
   }
-  if (cleanRepoPath === String(args.lastBootstrapRepoPath || "").trim()) {
+  if (!cleanRepoPath) {
+    return {
+      shouldRefresh: false,
+      nextBootstrapRepoPath: lastRepoPath,
+    };
+  }
+  if (cleanRepoPath === lastRepoPath) {
     return {
       shouldRefresh: false,
       nextBootstrapRepoPath: cleanRepoPath,
