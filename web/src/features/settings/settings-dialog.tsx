@@ -67,7 +67,6 @@ import type { TerminalThemeId } from "@/types/terminal-theme";
 import type { AppSettings, ProviderEnv, ProviderItem } from "@/types/host";
 import {
   CODEX_AUTO_CONTINUE_ERROR_KINDS,
-  CODEX_ERROR_AUTO_CONTINUE_ATTEMPTS_MAX,
   CODEX_ERROR_AUTO_CONTINUE_ATTEMPTS_MIN,
   CODEX_ERROR_AUTO_CONTINUE_DELAY_MAX_SECONDS,
   CODEX_ERROR_AUTO_CONTINUE_DELAY_MIN_SECONDS,
@@ -1718,7 +1717,6 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                             id="codex-error-auto-continue-attempts"
                             type="number"
                             min={CODEX_ERROR_AUTO_CONTINUE_ATTEMPTS_MIN}
-                            max={CODEX_ERROR_AUTO_CONTINUE_ATTEMPTS_MAX}
                             step={1}
                             value={codexErrorHandling.autoContinueMaxAttempts}
                             onChange={(event) => {

@@ -7,6 +7,16 @@ import {
 } from "./codex-error-handling-settings";
 
 describe("codex-error-handling-settings（Codex 错误处理设置）", () => {
+  it("自动 continue 最大尝试次数默认 5 次且不设置上限", () => {
+    expect(normalizeCodexErrorHandlingPrefs({}).autoContinueMaxAttempts).toBe(5);
+    expect(normalizeCodexErrorHandlingPrefs({ autoContinueMaxAttempts: 30 }).autoContinueMaxAttempts).toBe(30);
+  });
+
+  it("自动 continue 最大尝试次数只保留非负整数下限", () => {
+    expect(normalizeCodexErrorHandlingPrefs({ autoContinueMaxAttempts: -1 }).autoContinueMaxAttempts).toBe(0);
+    expect(normalizeCodexErrorHandlingPrefs({ autoContinueMaxAttempts: 3.6 }).autoContinueMaxAttempts).toBe(4);
+  });
+
   it("重连中错误通知默认关闭且可显式开启", () => {
     expect(normalizeCodexErrorHandlingPrefs({}).notifyReconnectErrors).toBe(false);
     expect(normalizeCodexErrorHandlingPrefs({ notifyReconnectErrors: true }).notifyReconnectErrors).toBe(true);
