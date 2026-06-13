@@ -61,6 +61,7 @@ import { activateWindowPreservingState } from "./windowActivation";
 import { dispatchGitFeatureAction } from "./git/featureService";
 import { installMainEventLoopDiagnostics, installMainIpcTimingDiagnostics } from "./runtimeDiagnostics";
 import { autoCommitWorktreeIfDirtyAsync, createWorktreesAsync, listLocalBranchesAsync, recycleWorktreeAsync, removeWorktreeAsync } from "./git/worktreeOps";
+import { applyWorktreePostSetupAsync, normalizeWorktreePostSetupConfig } from "./git/worktreePostSetup";
 import { isWorktreeAlignedToMainAsync, resetWorktreeAsync } from "./git/worktreeReset";
 import { resolveWorktreeForkPointAsync, searchForkPointCommitsAsync, validateForkPointRefAsync } from "./git/worktreeForkPoint";
 import { WorktreeCreateTaskManager } from "./git/worktreeCreateTasks";
@@ -3119,6 +3120,16 @@ ipcMain.handle('projects.add', async (_e, { winPath, dirRecord }: { winPath: str
   }
 });
 
+ipcMain.handle('projects.updateWorktreePostSetup', async (_e, { id, config }: { id: string; config?: any }) => {
+  try {
+    const fn = (projects as any).updateProjectWorktreePostSetupById;
+    if (typeof fn !== "function") return { ok: false, project: null, error: "project update not supported" };
+    return fn.call(projects, String(id || "").trim(), config ?? null);
+  } catch (e: any) {
+    return { ok: false, project: null, error: String(e?.message || e) };
+  }
+});
+
 ipcMain.handle('projects.removeDirRecord', async (_e, { id }: { id: string }) => {
   try {
     const res = projects.removeProjectDirRecordById(id);
@@ -3561,7 +3572,7 @@ ipcMain.handle("gitWorktree.getMeta", async (_e, args: { worktreePath: string })
 /**
  * Git：从分支创建 worktree（统一上级目录管理，支持多实例）。
  */
-ipcMain.handle("gitWorktree.create", async (_e, args: { repoDir: string; baseBranch: string; instances: any[]; copyRules?: boolean }) => {
+ipcMain.handle("gitWorktree.create", async (_e, args: { repoDir: string; baseBranch: string; instances: any[]; copyRules?: boolean; postSetup?: any }) => {
   try {
     const repoDir = String(args?.repoDir || "").trim();
     const baseBranch = String(args?.baseBranch || "").trim();
@@ -3574,7 +3585,8 @@ ipcMain.handle("gitWorktree.create", async (_e, args: { repoDir: string; baseBra
     const cfg = settings.getSettings() as any;
     const gitPath = String(cfg?.gitWorktree?.gitPath || "").trim() || "git";
     const copyRules = args?.copyRules === true;
-    return await createWorktreesAsync({ repoDir, baseBranch, instances, gitPath, copyRules });
+    const postSetup = normalizeWorktreePostSetupConfig(args?.postSetup);
+    return await createWorktreesAsync({ repoDir, baseBranch, instances, gitPath, copyRules, postSetup });
   } catch (e: any) {
     return { ok: false, error: String(e?.message || e) };
   }
@@ -3583,7 +3595,7 @@ ipcMain.handle("gitWorktree.create", async (_e, args: { repoDir: string; baseBra
 /**
  * Git：启动（或复用）worktree 创建后台任务，并返回 taskId（用于进度 UI）。
  */
-ipcMain.handle("gitWorktree.createTaskStart", async (_e, args: { repoDir: string; baseBranch: string; instances: any[]; copyRules?: boolean }) => {
+ipcMain.handle("gitWorktree.createTaskStart", async (_e, args: { repoDir: string; baseBranch: string; instances: any[]; copyRules?: boolean; postSetup?: any }) => {
   try {
     const repoDir = String(args?.repoDir || "").trim();
     const baseBranch = String(args?.baseBranch || "").trim();
@@ -3596,7 +3608,8 @@ ipcMain.handle("gitWorktree.createTaskStart", async (_e, args: { repoDir: string
     const cfg = settings.getSettings() as any;
     const gitPath = String(cfg?.gitWorktree?.gitPath || "").trim() || "git";
     const copyRules = args?.copyRules === true;
-    return worktreeCreateTasks.startOrReuse({ repoDir, baseBranch, instances, gitPath, copyRules });
+    const postSetup = normalizeWorktreePostSetupConfig(args?.postSetup);
+    return worktreeCreateTasks.startOrReuse({ repoDir, baseBranch, instances, gitPath, copyRules, postSetup });
   } catch (e: any) {
     return { ok: false, error: String(e?.message || e) };
   }
@@ -3713,6 +3726,28 @@ ipcMain.handle("gitWorktree.reset", async (_e, args: any) => {
     return await resetWorktreeAsync({ worktreePath, targetRef, force, gitPath });
   } catch (e: any) {
     return { ok: false, needsForce: false, error: String(e?.message || e) };
+  }
+});
+
+/**
+ * Git：对已存在 worktree 应用项目级保留项与命令（用于 reset 后重新应用）。
+ */
+ipcMain.handle("gitWorktree.applyPostSetup", async (_e, args: any) => {
+  try {
+    const sourceDir = String(args?.sourceDir || "").trim();
+    const targetDir = String(args?.targetDir || "").trim();
+    if (!sourceDir || !targetDir) return { ok: false, error: "missing sourceDir or targetDir" };
+    const cfg = settings.getSettings() as any;
+    const gitPath = String(cfg?.gitWorktree?.gitPath || "").trim() || "git";
+    return await applyWorktreePostSetupAsync({
+      sourceDir,
+      targetDir,
+      config: normalizeWorktreePostSetupConfig(args?.config),
+      copyRules: args?.copyRules === true,
+      gitPath,
+    });
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) };
   }
 });
 
@@ -6229,13 +6264,43 @@ ipcMain.handle('app.getEnvMeta', async () => {
 });
 
 // 打开选择目录对话并返回选中的 Windows 路径（若取消则返回 canceled）
-ipcMain.handle('utils.chooseFolder', async (_e) => {
+ipcMain.handle('utils.chooseFolder', async (_e, args?: { title?: string; defaultPath?: string }) => {
   try {
     const win = BrowserWindow.getFocusedWindow();
-    const opts = { properties: ['openDirectory'] } as any;
+    const title = String(args?.title || "").trim();
+    const defaultPath = String(args?.defaultPath || "").trim();
+    const opts = {
+      properties: ['openDirectory'],
+      ...(title ? { title } : {}),
+      ...(defaultPath ? { defaultPath } : {}),
+    } as any;
     const ret = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
     if (!ret || ret.canceled || !Array.isArray(ret.filePaths) || ret.filePaths.length === 0) return { ok: false, canceled: true };
     return { ok: true, path: ret.filePaths[0] };
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+// 打开选择文件对话并返回选中的 Windows 路径列表（若取消则返回 canceled）
+ipcMain.handle('utils.chooseFiles', async (_e, args?: { title?: string; defaultPath?: string; multiSelections?: boolean; filters?: Array<{ name: string; extensions: string[] }> }) => {
+  try {
+    const win = BrowserWindow.getFocusedWindow();
+    const title = String(args?.title || "").trim();
+    const defaultPath = String(args?.defaultPath || "").trim();
+    const multiSelections = args?.multiSelections === true;
+    const filters = Array.isArray(args?.filters)
+      ? args.filters.filter((item) => item && typeof item.name === "string" && Array.isArray(item.extensions))
+      : undefined;
+    const opts = {
+      properties: ['openFile', ...(multiSelections ? ['multiSelections'] : [])],
+      ...(title ? { title } : {}),
+      ...(defaultPath ? { defaultPath } : {}),
+      ...(filters && filters.length > 0 ? { filters } : {}),
+    } as any;
+    const ret = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
+    if (!ret || ret.canceled || !Array.isArray(ret.filePaths) || ret.filePaths.length === 0) return { ok: false, canceled: true };
+    return { ok: true, paths: ret.filePaths };
   } catch (e: any) {
     return { ok: false, error: String(e) };
   }

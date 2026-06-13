@@ -5,6 +5,7 @@ import { promises as fsp } from "node:fs";
 import { toFsPathAbs, toFsPathKey } from "./pathKey";
 import { execGitAsync, spawnGitAsync } from "./exec";
 import { createWorktreesAsync, type CreatedWorktree } from "./worktreeOps";
+import type { WorktreePostSetupConfig } from "./worktreePostSetup";
 import { estimateWorktreeTimeoutAsync, type WorktreeTimeoutEstimate } from "./worktreeTimeout";
 import { deleteWorktreeMeta } from "../stores/worktreeMetaStore";
 
@@ -57,6 +58,8 @@ type WorktreeCreateTaskState = WorktreeCreateTaskSnapshot & {
   plannedSoFar: Array<{ worktreePath: string; wtBranch: string }>;
   /** 中文说明：创建任务使用的 gitPath（用于取消时清理）。 */
   gitPath?: string;
+  /** 创建后应用的项目级保留项与命令。 */
+  postSetup?: WorktreePostSetupConfig;
 };
 
 /**
@@ -87,6 +90,7 @@ export class WorktreeCreateTaskManager {
     instances: Array<{ providerId: "codex" | "claude" | "gemini"; count: number }>;
     gitPath?: string;
     copyRules?: boolean;
+    postSetup?: WorktreePostSetupConfig;
   }): { ok: boolean; taskId?: string; reused?: boolean; error?: string } {
     const repoDir = String(args?.repoDir || "").trim();
     const baseBranch = String(args?.baseBranch || "").trim();
@@ -136,6 +140,7 @@ export class WorktreeCreateTaskManager {
       createdSoFar: [],
       plannedSoFar: [],
       gitPath: typeof args?.gitPath === "string" ? String(args.gitPath || "").trim() || undefined : undefined,
+      postSetup: args?.postSetup,
     };
     this.tasks.set(taskId, state);
     this.runningByRepoKey.set(repoKey, taskId);
@@ -291,7 +296,7 @@ export class WorktreeCreateTaskManager {
    */
   private async runCreateTask(
     taskId: string,
-    args: { repoDir: string; baseBranch: string; instances: Array<{ providerId: "codex" | "claude" | "gemini"; count: number }>; gitPath?: string; copyRules?: boolean }
+    args: { repoDir: string; baseBranch: string; instances: Array<{ providerId: "codex" | "claude" | "gemini"; count: number }>; gitPath?: string; copyRules?: boolean; postSetup?: WorktreePostSetupConfig }
   ): Promise<void> {
     const t = this.tasks.get(taskId);
     if (!t) return;
@@ -306,6 +311,7 @@ export class WorktreeCreateTaskManager {
         instances: args.instances,
         gitPath: args.gitPath,
         copyRules: args.copyRules === true,
+        postSetup: args.postSetup,
         onLog: append,
         signal: t.abortController.signal,
         onTimeoutEstimated: (estimate) => {

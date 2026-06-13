@@ -155,12 +155,56 @@ export type Project = {
   winPath: string;
   wslPath: string;
   hasDotCodex: boolean;
+  /** worktree 创建/重置后的项目级保留项与命令设置。 */
+  worktreePostSetup?: WorktreePostSetupConfig;
   /** 是否已确认存在内置三引擎（codex/claude/gemini）的会话记录。 */
   hasBuiltInSessions?: boolean;
   /** 自定义引擎无法从会话文件反推 cwd 时，用于“保留该目录”的显式记录。 */
   dirRecord?: { kind: "custom_provider"; providerId: string; recordedAt: number };
   createdAt: number;
   lastOpenedAt?: number;
+};
+
+export type WorktreePostSetupItem = {
+  /** 源项目内的相对路径，使用 / 分隔。 */
+  relativePath: string;
+  /** 展示名称，通常等于 relativePath。 */
+  label?: string;
+};
+
+export type WorktreePostSetupConfig = {
+  /** 创建 worktree 后复制的项目内保留项。 */
+  items?: WorktreePostSetupItem[];
+  /** 创建 worktree 后在目标目录执行的命令，留空表示不执行。 */
+  command?: string;
+  /** 重置后是否重新复制保留项并执行命令；默认开启。 */
+  applyAfterReset?: boolean;
+};
+
+export type WorktreePostSetupApplyRequest = {
+  /** 提供保留项和命令的源项目目录。 */
+  sourceDir: string;
+  /** 要应用到的目标 worktree 目录。 */
+  targetDir: string;
+  /** 项目级后置设置。 */
+  config?: WorktreePostSetupConfig;
+  /** 兼容旧设置：创建时拷贝 AI 规则文件。 */
+  copyRules?: boolean;
+};
+
+export type WorktreePostSetupApplyResult = {
+  ok: boolean;
+  copied?: string[];
+  warnings?: string[];
+  command?: {
+    skipped?: boolean;
+    command?: string;
+    exitCode?: number;
+    stdout?: string;
+    stderr?: string;
+    error?: string;
+  };
+  error?: string;
 };
 
 export type AppWindowMode = "main" | "detached-tab";
@@ -377,6 +421,8 @@ export interface ProjectsAPI {
   list(): Promise<{ ok: boolean; projects?: Project[]; error?: string }>;
   scan(args?: { roots?: string[] }): Promise<{ ok: boolean; projects?: Project[]; error?: string }>;
   add(args: { winPath: string; dirRecord?: { providerId: string; recordedAt?: number } }): Promise<{ ok: boolean; project?: Project | null; error?: string }>;
+  /** 更新项目级 worktree 后置设置。 */
+  updateWorktreePostSetup(args: { id: string; config?: WorktreePostSetupConfig | null }): Promise<{ ok: boolean; project?: Project | null; error?: string }>;
   /** 移除“自定义引擎目录记录”。若项目已确认存在内置会话，仅清空记录；否则从列表移除该项目。 */
   removeDirRecord(args: { id: string }): Promise<{ ok: boolean; removed: boolean; project?: Project | null; error?: string }>;
   touch(id: string): void;
@@ -644,8 +690,8 @@ export interface GitWorktreeAPI {
   listBranches(repoDir: string): Promise<{ ok: boolean; repoRoot?: string; branches?: string[]; current?: string; detached?: boolean; headSha?: string; error?: string }>;
   initRepo(args: { dir: string }): Promise<InitGitRepositoryResult>;
   getMeta(worktreePath: string): Promise<{ ok: boolean; meta?: WorktreeMeta | null; error?: string }>;
-  create(args: { repoDir: string; baseBranch: string; instances: Array<{ providerId: "codex" | "claude" | "gemini"; count: number }>; copyRules?: boolean }): Promise<{ ok: boolean; items?: CreatedWorktree[]; error?: string }>;
-  createTaskStart(args: { repoDir: string; baseBranch: string; instances: Array<{ providerId: "codex" | "claude" | "gemini"; count: number }>; copyRules?: boolean }): Promise<{ ok: boolean; taskId?: string; reused?: boolean; error?: string }>;
+  create(args: { repoDir: string; baseBranch: string; instances: Array<{ providerId: "codex" | "claude" | "gemini"; count: number }>; copyRules?: boolean; postSetup?: WorktreePostSetupConfig }): Promise<{ ok: boolean; items?: CreatedWorktree[]; error?: string }>;
+  createTaskStart(args: { repoDir: string; baseBranch: string; instances: Array<{ providerId: "codex" | "claude" | "gemini"; count: number }>; copyRules?: boolean; postSetup?: WorktreePostSetupConfig }): Promise<{ ok: boolean; taskId?: string; reused?: boolean; error?: string }>;
   createTaskGet(args: { taskId: string; from?: number }): Promise<{ ok: boolean; task?: WorktreeCreateTaskSnapshot; append?: string; error?: string }>;
   createTaskCancel(args: { taskId: string }): Promise<{ ok: boolean; alreadyFinished?: boolean; error?: string }>;
   recycleTaskStart(args: { worktreePath: string; baseBranch: string; wtBranch: string; range?: RecycleWorktreeRange; forkBaseRef?: string; mode: "squash" | "rebase"; commitMessage?: string; autoStashBaseWorktree?: boolean }): Promise<{ ok: boolean; taskId?: string; reused?: boolean; error?: string }>;
@@ -656,6 +702,8 @@ export interface GitWorktreeAPI {
   validateForkPointRef(args: { worktreePath: string; wtBranch: string; ref: string }): Promise<{ ok: boolean; commit?: GitCommitSummary; error?: string }>;
   remove(args: { worktreePath: string; deleteBranch?: boolean; forceDeleteBranch?: boolean; forceRemoveWorktree?: boolean }): Promise<any>;
   reset(args: { worktreePath: string; targetRef?: string; force?: boolean }): Promise<ResetWorktreeResult>;
+  /** 在已存在 worktree 上应用项目级保留项和命令。 */
+  applyPostSetup(args: WorktreePostSetupApplyRequest): Promise<WorktreePostSetupApplyResult>;
   isAlignedToMain(args: { worktreePath: string; targetRef?: string }): Promise<IsWorktreeAlignedToMainResult>;
   autoCommit(args: { worktreePath: string; message: string }): Promise<{ ok: boolean; committed: boolean; error?: string }>;
   openExternalTool(dir: string): Promise<{ ok: boolean; error?: string }>;
@@ -1017,7 +1065,7 @@ export interface UtilsAPI {
   pathExists(p: string, dirOnly?: boolean): Promise<{ ok: boolean; exists?: boolean; isDirectory?: boolean; isFile?: boolean; error?: string }>;
   /** 获取当前用户主目录路径（轻量）。 */
   getHomeDir(): Promise<{ ok: boolean; homeDir?: string; error?: string }>;
-  chooseFolder(): Promise<{ ok: boolean; path?: string; canceled?: boolean; error?: string }>;
+  chooseFolder(args?: { title?: string; defaultPath?: string }): Promise<{ ok: boolean; path?: string; canceled?: boolean; error?: string }>;
   chooseFiles(args?: {
     title?: string;
     defaultPath?: string;

@@ -15,6 +15,12 @@ import { tidyPathCandidate } from "./agentSessions/shared/path";
 import { perfLogger } from "./log";
 import { getDebugConfig } from "./debugConfig";
 import settings from "./settings";
+import {
+  mergeProjectWorktreePostSetup,
+  normalizeProjectWorktreePostSetup,
+  type WorktreePostSetupConfig,
+} from "./projects/worktreePostSetupConfig";
+export type { WorktreePostSetupConfig, WorktreePostSetupItem } from "./projects/worktreePostSetupConfig";
 
 export type Project = {
   id: string;
@@ -22,6 +28,8 @@ export type Project = {
   winPath: string;
   wslPath: string;
   hasDotCodex: boolean;
+  /** worktree 创建/重置后的项目级保留项与命令设置。 */
+  worktreePostSetup?: WorktreePostSetupConfig;
   createdAt: number;
   lastOpenedAt?: number;
   /** 是否已确认存在内置三引擎（codex/claude/gemini）的会话记录。 */
@@ -549,15 +557,15 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
         delete (merged as any).dirRecord;
         // 保持展示路径尽量为盘符路径（避免被 UNC 覆盖导致不美观/部分场景不可用）
         merged.winPath = pickPreferredWinPath(prev.winPath, p.winPath, merged.wslPath);
-        uniqueMap.set(k, merged);
+        uniqueMap.set(k, mergeProjectWorktreePostSetup(merged, prev));
         continue;
       }
-      uniqueMap.set(k, {
+      uniqueMap.set(k, mergeProjectWorktreePostSetup({
         ...p,
         hasBuiltInSessions: true,
         winPath: pickPreferredWinPath("", p.winPath, p.wslPath),
         name: fixedName || p.name,
-      });
+      }));
     }
 
     // 将“自定义引擎目录记录”产生的项目合并进最终列表（即便无会话文件，也要保留）
@@ -719,10 +727,38 @@ export function removeProjectDirRecordById(id: string): RemoveProjectDirRecordRe
   }
 }
 
+export type UpdateProjectWorktreePostSetupResult = {
+  ok: boolean;
+  project?: Project | null;
+  error?: string;
+};
+
+/**
+ * 更新指定项目的 worktree 后置设置。
+ */
+export function updateProjectWorktreePostSetupById(id: string, config: WorktreePostSetupConfig | null | undefined): UpdateProjectWorktreePostSetupResult {
+  try {
+    const pid = String(id || "").trim();
+    if (!pid) return { ok: false, project: null, error: "invalid id" };
+    const store = loadStore();
+    const idx = store.findIndex((s) => String(s?.id || "").trim() === pid);
+    if (idx < 0) return { ok: false, project: null, error: "project not found" };
+    const normalized = normalizeProjectWorktreePostSetup(config);
+    const next: Project = { ...(store[idx] as any) };
+    if (normalized) next.worktreePostSetup = normalized;
+    else delete (next as any).worktreePostSetup;
+    store[idx] = next;
+    saveStore(store);
+    return { ok: true, project: next };
+  } catch (e: any) {
+    return { ok: false, project: null, error: String(e?.message || e) };
+  }
+}
+
 export function touchProject(id: string) {
   const store = loadStore();
   const p = store.find((s) => s.id === id);
   if (p) { p.lastOpenedAt = Date.now(); saveStore(store); }
 }
 
-export default { scanProjectsAsync, addProjectByWinPath, removeProjectDirRecordById, touchProject, listProjectsFromStore };
+export default { scanProjectsAsync, addProjectByWinPath, removeProjectDirRecordById, updateProjectWorktreePostSetupById, touchProject, listProjectsFromStore };

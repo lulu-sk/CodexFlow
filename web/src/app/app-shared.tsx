@@ -261,6 +261,16 @@ type WorktreeDeleteDialogState = {
   error?: string;
 };
 
+type WorktreePostSetupDialogState = {
+  open: boolean;
+  projectId: string;
+  itemsDraft: string;
+  commandDraft: string;
+  applyAfterReset: boolean;
+  saving: boolean;
+  error?: string;
+};
+
 type WorktreePostRecycleDialogState = {
   open: boolean;
   projectId: string;
@@ -2140,6 +2150,7 @@ export type {
   WorktreeRecycleDialogState,
   BaseWorktreeDirtyDialogState,
   WorktreeDeleteDialogState,
+  WorktreePostSetupDialogState,
   WorktreePostRecycleDialogState,
   GitActionErrorDialogState,
   WorktreeCreateProgressState,

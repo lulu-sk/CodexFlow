@@ -12,6 +12,7 @@ import { parseWorktreeListPorcelain } from "./worktreeList";
 import { pickRepoMainPathFromSnapshot, readWorktreeListSnapshotAsync, resolveRepoMainPathForBranchAsync, resolveRepoMainPathFromWorktreeAsync, resolveWorktreeBranchNameAsync } from "./worktreeMetaResolve";
 import { buildRestoreCommandsForWorktreeStateSnapshot, cleanupWorktreeStateSnapshotAsync, createWorktreeStateSnapshotAsync, restoreWorktreeStateSnapshotAsync, type WorktreeStateSnapshot } from "./worktreeStateSnapshot";
 import { estimateWorktreeTimeoutAsync, formatWorktreeTimeoutEstimate, type WorktreeTimeoutEstimate } from "./worktreeTimeout";
+import { applyWorktreePostSetupAsync, type WorktreePostSetupConfig } from "./worktreePostSetup";
 import { buildNextWorktreeMeta, deleteWorktreeMeta, getWorktreeMeta, setWorktreeMeta, type WorktreeMeta } from "../stores/worktreeMetaStore";
 
 export type GitWorktreeBranchInfo = {
@@ -30,6 +31,8 @@ export type CreateWorktreesRequest = {
   instances: Array<{ providerId: "codex" | "claude" | "gemini"; count: number }>;
   gitPath?: string;
   copyRules?: boolean;
+  /** 创建成功后应用的项目级保留项与命令。 */
+  postSetup?: WorktreePostSetupConfig;
   /** 创建过程日志回调（用于渲染层进度 UI 展示）。 */
   onLog?: (text: string) => void;
   /** 可选取消信号；触发后将尽快停止创建并返回 aborted。 */
@@ -60,7 +63,7 @@ export type CreatedWorktree = {
   wtBranch: string;
   /** 目录编号（<项目名>_wt<n> 的 n） */
   index: number;
-  /** 复制规则文件时的非致命警告 */
+  /** 创建后复制保留项或执行命令时的非致命警告 */
   warnings?: string[];
 };
 
@@ -545,25 +548,19 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
   };
 
   /**
-   * 在创建 worktree 后按规则复制 AI 规则文件（非致命）。
+   * 在创建 worktree 后应用保留项与初始化命令（非致命）。
    */
-  const copyRulesIfNeeded = async (targetWorktree: string): Promise<string[]> => {
-    const warnings: string[] = [];
-    if (req.copyRules !== true) return warnings;
-    const names = ["AGENTS.md", "CLAUDE.md", "GEMINI.md"] as const;
-    for (const name of names) {
-      try {
-        const src = path.join(mainWorktreePath, name);
-        if (!fs.existsSync(src)) continue;
-        const ign = await execGitAsync({ gitPath, argv: ["-C", mainWorktreePath, "check-ignore", "-q", name], timeoutMs: 4000 });
-        // check-ignore：0=ignored，1=not ignored，128=error
-        if (ign.exitCode !== 0) continue;
-        const dst = path.join(targetWorktree, name);
-        await fsp.copyFile(src, dst);
-      } catch (e: any) {
-        warnings.push(`${name}: ${String(e?.message || e)}`);
-      }
-    }
+  const applyPostSetupIfNeeded = async (targetWorktree: string): Promise<string[]> => {
+    const res = await applyWorktreePostSetupAsync({
+      sourceDir: mainWorktreePath,
+      targetDir: targetWorktree,
+      config: req.postSetup,
+      copyRules: req.copyRules === true,
+      gitPath,
+      signal,
+    });
+    const warnings = Array.isArray(res.warnings) ? res.warnings.slice() : [];
+    if (!res.ok && res.error) warnings.push(res.error);
     return warnings;
   };
 
@@ -737,7 +734,7 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
       return;
     }
 
-    const warnings = await copyRulesIfNeeded(plan.targetDir);
+    const warnings = await applyPostSetupIfNeeded(plan.targetDir);
     const meta: WorktreeMeta = {
       repoMainPath: baseRepoMainPath,
       baseBranch: req.baseBranch,
