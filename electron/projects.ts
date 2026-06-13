@@ -8,6 +8,12 @@ import os from 'node:os';
 import { getDebugConfig } from './debugConfig';
 import { app } from 'electron';
 import { wslToUNC, isUNCPath, uncToWsl, listDistrosAsync, getDistroHomeAsync, execInWslAsync, readFileInWslAsync, winToWslAsync, getDefaultRootsAsync, normalizeWinPath } from './wsl';
+import {
+  mergeProjectWorktreePostSetup,
+  normalizeProjectWorktreePostSetup,
+  type WorktreePostSetupConfig,
+} from "./projects/worktreePostSetupConfig";
+export type { WorktreePostSetupConfig, WorktreePostSetupItem } from "./projects/worktreePostSetupConfig";
 
 /** 项目管理: scan/add/touch, 本地缓存 projects.json 存放 metadata */
 
@@ -17,6 +23,8 @@ export type Project = {
   winPath: string;
   wslPath: string;
   hasDotCodex: boolean;
+  /** worktree 创建/重置后的项目级保留项与命令设置。 */
+  worktreePostSetup?: WorktreePostSetupConfig;
   createdAt: number;
   lastOpenedAt?: number;
 };
@@ -150,6 +158,26 @@ async function saveStoreAsync(list: Project[]) {
 
 async function pathExists(p: string): Promise<boolean> {
   try { await fsp.access(p); return true; } catch { return false; }
+}
+
+/**
+ * 为扫描出的会话项目合并缓存里的 worktree 后置设置。
+ */
+function mergeSessionProjectsWithStoredPostSetup(sessionProjects: Project[], store: Project[]): Project[] {
+  const normalizeKey = (value: string): string => String(value || '').replace(/\\/g, '/').replace(/\/$/, '').toLowerCase();
+  const keyOf = (project: Project): string => {
+    const wsl = normalizeKey(project.wslPath);
+    if (wsl) return wsl;
+    const derivedWsl = normalizeKey(ruleWinPathToWslPath(project.winPath));
+    if (derivedWsl) return derivedWsl;
+    return normalizeKey(project.winPath);
+  };
+  const storeMap = new Map<string, Project>();
+  for (const item of store) {
+    const key = keyOf(item);
+    if (key && !storeMap.has(key)) storeMap.set(key, item);
+  }
+  return sessionProjects.map((project) => mergeProjectWorktreePostSetup(project, storeMap.get(keyOf(project))));
 }
 
 async function statIsDir(p: string): Promise<boolean> {
@@ -372,9 +400,10 @@ export async function scanProjectsAsync(roots?: string[], verbose = false): Prom
 
   // 如果通过 WSL 或 Windows 的 sessions 已经反推出项目，按“会话即真相”直接返回，避免引入无历史的目录
   if (sessionProjects.length > 0) {
-    try { await saveStoreAsync(sessionProjects); } catch {}
+    const mergedSessionProjects = mergeSessionProjectsWithStoredPostSetup(sessionProjects, store);
+    try { await saveStoreAsync(mergedSessionProjects); } catch {}
     await writeDbg(`[RETURN] by sessions count=${sessionProjects.length}`);
-    return sessionProjects;
+    return mergedSessionProjects;
   }
 
   // Fast-path: if roots & session signatures equal to meta and we already have store, skip heavy rescans
@@ -572,12 +601,19 @@ export async function scanProjectsAsync(roots?: string[], verbose = false): Prom
     // 回退：用 winPath 标准化
     return p.winPath.replace(/\\/g, '/').replace(/\/$/, '').toLowerCase();
   };
+  const storeMap = new Map<string, Project>();
+  for (const s of store) {
+    try {
+      const key = await canon(s);
+      if (key && !storeMap.has(key)) storeMap.set(key, s);
+    } catch {}
+  }
   const mergedMap = new Map<string, Project>();
   for (const p of found) {
     const key = await canon(p);
     const prev = mergedMap.get(key);
     if (!prev) {
-      mergedMap.set(key, p);
+      mergedMap.set(key, mergeProjectWorktreePostSetup(p, storeMap.get(key)));
     } else {
       // 合并：保留更早创建时间的 id/name，补充缺失的路径与标志
       const keep = prev.createdAt <= p.createdAt ? prev : p;
@@ -586,7 +622,7 @@ export async function scanProjectsAsync(roots?: string[], verbose = false): Prom
       if (!keep.wslPath && other.wslPath) keep.wslPath = other.wslPath;
       if (!keep.winPath && other.winPath) keep.winPath = other.winPath;
       if (!keep.name && other.name) keep.name = other.name;
-      mergedMap.set(key, keep);
+      mergedMap.set(key, mergeProjectWorktreePostSetup(keep, other));
     }
   }
   const unique = Array.from(mergedMap.values());
@@ -672,4 +708,32 @@ export function touchProject(id: string) {
   }
 }
 
-export default { scanProjectsAsync, addProjectByWinPath, touchProject };
+export type UpdateProjectWorktreePostSetupResult = {
+  ok: boolean;
+  project?: Project | null;
+  error?: string;
+};
+
+/**
+ * 更新指定项目的 worktree 后置设置。
+ */
+export function updateProjectWorktreePostSetupById(id: string, config: WorktreePostSetupConfig | null | undefined): UpdateProjectWorktreePostSetupResult {
+  try {
+    const pid = String(id || "").trim();
+    if (!pid) return { ok: false, project: null, error: "invalid id" };
+    const store = loadStore();
+    const idx = store.findIndex((s) => String(s?.id || "").trim() === pid);
+    if (idx < 0) return { ok: false, project: null, error: "project not found" };
+    const normalized = normalizeProjectWorktreePostSetup(config);
+    const next: Project = { ...(store[idx] as any) };
+    if (normalized) next.worktreePostSetup = normalized;
+    else delete (next as any).worktreePostSetup;
+    store[idx] = next;
+    saveStore(store);
+    return { ok: true, project: next };
+  } catch (e: any) {
+    return { ok: false, project: null, error: String(e?.message || e) };
+  }
+}
+
+export default { scanProjectsAsync, addProjectByWinPath, updateProjectWorktreePostSetupById, touchProject };

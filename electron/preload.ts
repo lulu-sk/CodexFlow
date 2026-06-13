@@ -404,6 +404,9 @@ contextBridge.exposeInMainWorld('host', {
     add: async (args: { winPath: string; dirRecord?: { providerId: string; recordedAt?: number } }) => {
       return await ipcRenderer.invoke('projects.add', args);
     },
+    updateWorktreePostSetup: async (args: { id: string; config?: any }) => {
+      return await ipcRenderer.invoke('projects.updateWorktreePostSetup', args);
+    },
     removeDirRecord: async (args: { id: string }) => {
       return await ipcRenderer.invoke('projects.removeDirRecord', args);
     },
@@ -499,6 +502,10 @@ contextBridge.exposeInMainWorld('host', {
     /** 对齐 worktree 到主工作区当前基线，并恢复为干净状态（保持目录，不删除）。 */
     reset: async (args: any) => {
       return await ipcRenderer.invoke("gitWorktree.reset", args);
+    },
+    /** 在已存在 worktree 上应用项目级保留项和命令。 */
+    applyPostSetup: async (args: any) => {
+      return await ipcRenderer.invoke("gitWorktree.applyPostSetup", args);
     },
     /** 检测 worktree 是否已与主工作区当前基线对齐（只读，不修改状态）。 */
     isAlignedToMain: async (args: any) => {
@@ -880,8 +887,8 @@ contextBridge.exposeInMainWorld('host', {
     , getHomeDir: async () => {
       return await ipcRenderer.invoke('utils.getHomeDir');
     }
-    , chooseFolder: async () => {
-      return await ipcRenderer.invoke('utils.chooseFolder');
+    , chooseFolder: async (args?: { title?: string; defaultPath?: string }) => {
+      return await ipcRenderer.invoke('utils.chooseFolder', args || {});
     }
     , chooseFiles: async (args?: { title?: string; defaultPath?: string; multiSelections?: boolean; filters?: Array<{ name: string; extensions: string[] }> }) => {
       return await ipcRenderer.invoke('utils.chooseFiles', args || {});

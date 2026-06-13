@@ -192,6 +192,12 @@ import {
 } from "@/lib/worktree-delete-prefs";
 import { resolveWorktreeDeleteResetTargetBranch } from "@/lib/worktree-delete";
 import {
+  hasWorktreePostSetupActions,
+  isBlockedWorktreePostSetupRelativePath,
+  normalizeWorktreePostSetupConfig,
+  toProjectRelativeWorktreePostSetupPath,
+} from "@/lib/worktree-post-setup";
+import {
   createGitWorkbenchHostRequest,
   isGitWorkbenchCommitLikeActionId,
   publishGitWorkbenchHostRequest,
@@ -208,6 +214,7 @@ import type {
   ProviderItem,
   ProviderEnv,
   TabDragPreviewWindowState,
+  WorktreePostSetupConfig,
   WorktreeCreateTaskItemSnapshot,
   WorktreeCreateTaskItemStatus,
   WorktreeCreateTaskSnapshot,
@@ -319,6 +326,7 @@ import type {
   WorktreeCreateDialogState,
   WorktreeCreateProgressState,
   WorktreeDeleteDialogState,
+  WorktreePostSetupDialogState,
   WorktreePostRecycleDialogState,
   WorktreeProviderCounts,
   WorktreeRecycleDialogState,
@@ -1297,6 +1305,15 @@ export default function CodexFlowManagerUI() {
     error: undefined,
   }));
   const [worktreePostRecycleDialog, setWorktreePostRecycleDialog] = useState<WorktreePostRecycleDialogState>(() => ({ open: false, projectId: "", hint: undefined }));
+  const [worktreePostSetupDialog, setWorktreePostSetupDialog] = useState<WorktreePostSetupDialogState>(() => ({
+    open: false,
+    projectId: "",
+    itemsDraft: "",
+    commandDraft: "",
+    applyAfterReset: true,
+    saving: false,
+    error: undefined,
+  }));
   const worktreeDeleteInFlightByProjectIdRef = useRef<Record<string, boolean>>({});
   const [worktreeDeleteInFlightByProjectId, setWorktreeDeleteInFlightByProjectId] = useState<Record<string, boolean>>({});
   const [worktreeBlockedDialog, setWorktreeBlockedDialog] = useState<{ open: boolean; count: number }>(() => ({ open: false, count: 0 }));
@@ -8252,6 +8269,128 @@ export default function CodexFlowManagerUI() {
   }, [t]);
 
   /**
+   * 解析 worktree 后置设置的配置所属项目。
+   */
+  const resolveWorktreePostSetupOwnerProject = useCallback((project: Project | null | undefined): Project | null => {
+    const pid = String(project?.id || "").trim();
+    if (!pid) return null;
+    const parentId = resolveWorktreeManagementParentProjectId(pid);
+    if (parentId && parentId !== pid) {
+      const parent = projectsRef.current.find((item) => item.id === parentId) || null;
+      if (parent) return parent;
+    }
+    return project || null;
+  }, [resolveWorktreeManagementParentProjectId]);
+
+  /**
+   * 打开项目级 worktree 后置设置对话框。
+   */
+  const openWorktreePostSetupDialog = useCallback((project: Project | null | undefined) => {
+    const owner = resolveWorktreePostSetupOwnerProject(project);
+    if (!owner) return;
+    const cfg = normalizeWorktreePostSetupConfig((owner as any).worktreePostSetup);
+    setWorktreePostSetupDialog({
+      open: true,
+      projectId: owner.id,
+      itemsDraft: (cfg.items || []).map((item) => item.relativePath).join("\n"),
+      commandDraft: cfg.command || "",
+      applyAfterReset: cfg.applyAfterReset !== false,
+      saving: false,
+      error: undefined,
+    });
+  }, [resolveWorktreePostSetupOwnerProject]);
+
+  /**
+   * 关闭项目级 worktree 后置设置对话框。
+   */
+  const closeWorktreePostSetupDialog = useCallback(() => {
+    setWorktreePostSetupDialog((prev) => ({ ...prev, open: false, saving: false, error: undefined }));
+  }, []);
+
+  /**
+   * 将保留项草稿解析为后置设置项。
+   */
+  const parseWorktreePostSetupItemsDraft = useCallback((itemsDraft: string): NonNullable<WorktreePostSetupConfig["items"]> => {
+    const lines = String(itemsDraft || "").split(/\r?\n/);
+    const out: NonNullable<WorktreePostSetupConfig["items"]> = [];
+    const seen = new Set<string>();
+    for (const line of lines) {
+      const relativePath = String(line || "").trim().replace(/\\/g, "/");
+      if (!relativePath) continue;
+      const key = relativePath.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ relativePath, label: relativePath });
+    }
+    return out;
+  }, []);
+
+  /**
+   * 保存项目级 worktree 后置设置。
+   */
+  const saveWorktreePostSetupDialog = useCallback(async () => {
+    const dlg = worktreePostSetupDialog;
+    if (!dlg.open || dlg.saving) return;
+    const project = projectsRef.current.find((item) => item.id === dlg.projectId) || null;
+    if (!project) return;
+
+    const config = normalizeWorktreePostSetupConfig({
+      items: parseWorktreePostSetupItemsDraft(dlg.itemsDraft),
+      command: dlg.commandDraft,
+      applyAfterReset: dlg.applyAfterReset,
+    });
+    const blocked = (config.items || []).find((item) => isBlockedWorktreePostSetupRelativePath(item.relativePath));
+    if (blocked) {
+      setWorktreePostSetupDialog((prev) => ({ ...prev, error: t("projects:worktreePostSetupBlockedPath", "该路径不适合复制：{path}", { path: blocked.relativePath }) as string }));
+      return;
+    }
+
+    setWorktreePostSetupDialog((prev) => ({ ...prev, saving: true, error: undefined }));
+    try {
+      const res: any = await window.host.projects.updateWorktreePostSetup({ id: project.id, config });
+      if (!(res && res.ok)) throw new Error(res?.error || "save failed");
+      if (res.project) upsertProjectInList(res.project as Project);
+      setWorktreePostSetupDialog((prev) => ({ ...prev, open: false, saving: false, error: undefined }));
+    } catch (e: any) {
+      setWorktreePostSetupDialog((prev) => ({ ...prev, saving: false, error: String(e?.message || e) }));
+    }
+  }, [parseWorktreePostSetupItemsDraft, t, upsertProjectInList, worktreePostSetupDialog]);
+
+  /**
+   * 选择项目内文件/文件夹并追加到保留项草稿。
+   */
+  const appendWorktreePostSetupPath = useCallback(async (kind: "file" | "folder") => {
+    const dlg = worktreePostSetupDialog;
+    if (!dlg.open) return;
+    const project = projectsRef.current.find((item) => item.id === dlg.projectId) || null;
+    if (!project) return;
+    try {
+      const picked = kind === "folder"
+        ? await window.host.utils.chooseFolder({ title: t("projects:worktreePostSetupPickFolder", "选择要保留的文件夹") as string, defaultPath: project.winPath })
+        : await window.host.utils.chooseFiles({ title: t("projects:worktreePostSetupPickFile", "选择要保留的文件") as string, defaultPath: project.winPath, multiSelections: false });
+      if (!picked || picked.canceled) return;
+      const rawPath = kind === "folder" ? String((picked as any).path || "") : String((picked as any).paths?.[0] || "");
+      const relativePath = toProjectRelativeWorktreePostSetupPath(project.winPath, rawPath);
+      if (!relativePath) {
+        setWorktreePostSetupDialog((prev) => ({ ...prev, error: t("projects:worktreePostSetupOutsideProject", "只能选择当前项目目录内的文件或文件夹。") as string }));
+        return;
+      }
+      if (isBlockedWorktreePostSetupRelativePath(relativePath)) {
+        setWorktreePostSetupDialog((prev) => ({ ...prev, error: t("projects:worktreePostSetupBlockedPath", "该路径不适合复制：{path}", { path: relativePath }) as string }));
+        return;
+      }
+      setWorktreePostSetupDialog((prev) => {
+        const items = parseWorktreePostSetupItemsDraft(prev.itemsDraft);
+        const exists = items.some((item) => item.relativePath.toLowerCase() === relativePath.toLowerCase());
+        const nextLines = exists ? items.map((item) => item.relativePath) : [...items.map((item) => item.relativePath), relativePath];
+        return { ...prev, itemsDraft: nextLines.join("\n"), error: undefined };
+      });
+    } catch (e: any) {
+      setWorktreePostSetupDialog((prev) => ({ ...prev, error: String(e?.message || e) }));
+    }
+  }, [parseWorktreePostSetupItemsDraft, t, worktreePostSetupDialog]);
+
+  /**
    * 中文说明：切换 Build/Run 配置保存范围，并在切回“继承父项目”时同步对齐草稿内容。
    */
   const switchBuildRunDialogSaveScope = useCallback(async (nextScope: "self" | "parent") => {
@@ -8783,11 +8922,14 @@ export default function CodexFlowManagerUI() {
     // 启动后台任务（主进程执行 git worktree add，并持续产生日志）
     let taskId = "";
     try {
+      const postSetupOwner = resolveWorktreePostSetupOwnerProject(repoProject);
+      const postSetup = normalizeWorktreePostSetupConfig((postSetupOwner as any)?.worktreePostSetup);
       const res: any = await (window as any).host?.gitWorktree?.createTaskStart?.({
         repoDir: repoProject.winPath,
         baseBranch,
         instances,
         copyRules: gitWorktreeCopyRulesOnCreate,
+        postSetup,
       });
       if (!(res && res.ok && res.taskId)) throw new Error(res?.error || "create task start failed");
       taskId = String(res.taskId || "").trim();
@@ -9076,7 +9218,7 @@ export default function CodexFlowManagerUI() {
         message: (t("projects:worktreeCreateWarnings", "创建已完成，但存在警告：\n{{warnings}}") as any).replace("{{warnings}}", warnings.join("\n")),
       });
     }
-  }, [attachDirChildToParent, gitWorktreeCopyRulesOnCreate, listManagedWorktreeChildIds, resetWorktreeCreateTransientRecord, resolveWorktreeManagementParentProjectId, setActiveTab, startProviderInstanceInProject, t, unhideProject, upsertProjectInList]);
+  }, [attachDirChildToParent, gitWorktreeCopyRulesOnCreate, listManagedWorktreeChildIds, resetWorktreeCreateTransientRecord, resolveWorktreeManagementParentProjectId, resolveWorktreePostSetupOwnerProject, setActiveTab, startProviderInstanceInProject, t, unhideProject, upsertProjectInList]);
 
   /**
    * Ctrl+单击：快速创建（不弹确认/不打开面板）。
@@ -10247,6 +10389,26 @@ export default function CodexFlowManagerUI() {
           force: opts?.forceResetWorktree === true,
         });
         if (res && res.ok) {
+          const owner = resolveWorktreePostSetupOwnerProject(project);
+          const postSetup = normalizeWorktreePostSetupConfig((owner as any)?.worktreePostSetup);
+          if (owner?.winPath && postSetup.applyAfterReset !== false && hasWorktreePostSetupActions(postSetup)) {
+            const postRes: any = await (window as any).host?.gitWorktree?.applyPostSetup?.({
+              sourceDir: owner.winPath,
+              targetDir: project.winPath,
+              config: postSetup,
+            });
+            const warnings = [
+              ...(Array.isArray(postRes?.warnings) ? postRes.warnings.map((item: any) => String(item || "").trim()).filter(Boolean) : []),
+              ...(postRes && postRes.ok ? [] : [String(postRes?.error || "").trim()].filter(Boolean)),
+            ];
+            if (warnings.length > 0) {
+              setNoticeDialog({
+                open: true,
+                title: t("projects:worktreePostSetupWarningTitle", "保留项应用存在警告") as string,
+                message: warnings.slice(0, 8).join("\n"),
+              });
+            }
+          }
           setWorktreeDeleteDialog((prev) => (prev.open && prev.projectId === pid ? { ...prev, open: false, running: false } : prev));
           void refreshGitInfoForProjectIds([project.id]);
           return;
@@ -10315,7 +10477,7 @@ export default function CodexFlowManagerUI() {
     } finally {
       setWorktreeDeleteInFlight(project.id, false);
     }
-  }, [refreshGitInfoForProjectIds, setWorktreeDeleteInFlight, showGitActionErrorDialog, t, worktreeDeleteDialog]);
+  }, [refreshGitInfoForProjectIds, resolveWorktreePostSetupOwnerProject, setWorktreeDeleteInFlight, showGitActionErrorDialog, t, worktreeDeleteDialog]);
 
 	  /**
 	   * 若当前项目满足“worktree 自动提交”条件，则将一次自动提交加入队列（同一项目串行执行，避免 git lock 冲突）。
@@ -12733,6 +12895,19 @@ export default function CodexFlowManagerUI() {
             );
             menuItems.push(
               <button
+                key="worktree-post-setup"
+                disabled={!proj || !dirExists}
+                className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast ${dirRequiredBtnCls}`}
+                onClick={() => {
+                  openWorktreePostSetupDialog(proj);
+                  setProjectCtxMenu((m) => ({ ...m, show: false, project: null }));
+                }}
+              >
+                <SettingsIcon className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t("projects:ctxWorktreePostSetup", "工作区保留项设置") as string}
+              </button>
+            );
+            menuItems.push(
+              <button
                 key="open-external"
                 disabled={!dirExists}
                 className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast ${dirRequiredBtnCls}`}
@@ -13386,7 +13561,23 @@ export default function CodexFlowManagerUI() {
       >
         <DialogContent className="w-[min(96vw,56rem)] max-w-2xl max-h-[calc(100vh-2rem)] overflow-hidden flex flex-col">
           <DialogHeader className="pb-2 shrink-0">
-            <DialogTitle>{t("projects:worktreeCreateTitle", "从分支创建 worktree") as string}</DialogTitle>
+            <div className="flex items-center justify-between gap-3 mb-2">
+              <DialogTitle className="!mb-0">{t("projects:worktreeCreateTitle", "从分支创建 worktree") as string}</DialogTitle>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="h-8 w-8 shrink-0 rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:text-slate-500 dark:hover:bg-slate-800/60 dark:hover:text-slate-300 transition-colors"
+                disabled={worktreeCreateDialog.creating || !worktreeCreateDialog.repoProjectId}
+                aria-label={t("projects:worktreeCreatePostSetupAction", "创建后设置") as string}
+                title={t("projects:worktreeCreatePostSetupAction", "创建后设置") as string}
+                onClick={() => {
+                  const repo = projectsRef.current.find((x) => x.id === worktreeCreateDialog.repoProjectId) || null;
+                  openWorktreePostSetupDialog(repo);
+                }}
+              >
+                <SettingsIcon className="h-4 w-4" aria-hidden="true" />
+              </Button>
+            </div>
             <DialogDescription>
               {t("projects:worktreeCreateDesc", "每个引擎实例需要一个 worktree，并在控制台中启动对应 CLI。") as string}
             </DialogDescription>
@@ -14553,6 +14744,118 @@ export default function CodexFlowManagerUI() {
 	                  <Button variant="secondary" size="sm" className="h-8 text-xs" onClick={() => void submitWorktreeRecycle()} disabled={!canSubmitRecycle}>
 	                    {worktreeRecycleDialog.running ? (t("projects:worktreeRecycling", "合并中…") as string) : (t("projects:worktreeRecycleAction", "合并") as string)}
 	                  </Button>
+                </div>
+              </div>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
+
+      {/* 工作区保留项设置 */}
+      <Dialog
+        open={worktreePostSetupDialog.open}
+        onOpenChange={(open) => {
+          if (open) return;
+          closeWorktreePostSetupDialog();
+        }}
+      >
+        <DialogContent className="max-w-[560px] !p-4">
+          <DialogHeader className="mb-3 pb-1.5 border-b border-slate-100 dark:border-slate-800/50">
+            <DialogTitle className="!mb-1 text-[15px] leading-none">
+              {t("projects:worktreePostSetupTitle", "工作区保留项设置") as string}
+            </DialogTitle>
+            <DialogDescription className="text-[12px] leading-snug">
+              {t("projects:worktreePostSetupDesc", "创建子工作区后会复制这些项目内文件/文件夹，并可执行一条初始化命令。") as string}
+            </DialogDescription>
+          </DialogHeader>
+          {(function renderWorktreePostSetupDialog() {
+            const project = projectsRef.current.find((item) => item.id === worktreePostSetupDialog.projectId) || null;
+            const items = parseWorktreePostSetupItemsDraft(worktreePostSetupDialog.itemsDraft);
+            return (
+              <div className="space-y-3">
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-[11px] font-semibold text-slate-700 dark:text-[var(--cf-text-primary)]">
+                      {t("projects:worktreePostSetupItemsLabel", "保留文件/文件夹") as string}
+                    </label>
+                    <div className="flex items-center gap-1.5">
+                      <Button variant="outline" size="sm" className="h-7 px-2 text-[11px]" onClick={() => void appendWorktreePostSetupPath("file")} disabled={worktreePostSetupDialog.saving || !project}>
+                        <FileText className="mr-1 h-3.5 w-3.5" /> {t("projects:worktreePostSetupAddFile", "添加文件") as string}
+                      </Button>
+                      <Button variant="outline" size="sm" className="h-7 px-2 text-[11px]" onClick={() => void appendWorktreePostSetupPath("folder")} disabled={worktreePostSetupDialog.saving || !project}>
+                        <FolderOpen className="mr-1 h-3.5 w-3.5" /> {t("projects:worktreePostSetupAddFolder", "添加文件夹") as string}
+                      </Button>
+                    </div>
+                  </div>
+                  <Input
+                    multiline
+                    value={worktreePostSetupDialog.itemsDraft}
+                    onChange={(e: any) => setWorktreePostSetupDialog((prev) => ({ ...prev, itemsDraft: e.target.value, error: undefined }))}
+                    placeholder={t("projects:worktreePostSetupItemsPlaceholder", ".env.local\n.config/local") as string}
+                    className="min-h-[104px] font-mono text-[11px]"
+                    disabled={worktreePostSetupDialog.saving}
+                  />
+                  <p className="text-[11px] text-slate-500 dark:text-[var(--cf-text-secondary)]">
+                    {t("projects:worktreePostSetupItemsHint", "每行一个项目内相对路径；node_modules、.git、dist 不会被复制。") as string}
+                  </p>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-semibold text-slate-700 dark:text-[var(--cf-text-primary)]">
+                    {t("projects:worktreePostSetupCommandLabel", "创建后执行命令") as string}
+                  </label>
+                  <Input
+                    value={worktreePostSetupDialog.commandDraft}
+                    onChange={(e: any) => setWorktreePostSetupDialog((prev) => ({ ...prev, commandDraft: e.target.value, error: undefined }))}
+                    placeholder={t("projects:worktreePostSetupCommandPlaceholder", "npm ci && npm rebuild better-sqlite3") as string}
+                    className="h-8 font-mono text-[11px]"
+                    disabled={worktreePostSetupDialog.saving}
+                  />
+                  <p className="text-[11px] text-slate-500 dark:text-[var(--cf-text-secondary)]">
+                    {t("projects:worktreePostSetupCommandHint", "命令会在新工作区目录内执行；留空则不执行。") as string}
+                  </p>
+                </div>
+
+                <label className="flex items-start gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-[12px] text-slate-700 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)] dark:text-[var(--cf-text-primary)]">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5 h-3.5 w-3.5"
+                    checked={worktreePostSetupDialog.applyAfterReset}
+                    disabled={worktreePostSetupDialog.saving}
+                    onChange={(e) => setWorktreePostSetupDialog((prev) => ({ ...prev, applyAfterReset: e.target.checked, error: undefined }))}
+                  />
+                  <span>
+                    {t("projects:worktreePostSetupApplyAfterReset", "重置后重新应用保留项和命令") as string}
+                  </span>
+                </label>
+
+                {items.length > 0 ? (
+                  <div className="rounded-md border border-slate-200 bg-white px-3 py-2 text-[11px] dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-solid)]">
+                    <div className="mb-1 font-semibold text-slate-600 dark:text-[var(--cf-text-secondary)]">{t("projects:worktreePostSetupPreview", "将保留") as string}</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {items.map((item) => (
+                        <span key={item.relativePath} className="rounded border border-slate-200 px-1.5 py-0.5 font-mono text-[10px] text-slate-700 dark:border-[var(--cf-border)] dark:text-[var(--cf-text-primary)]">
+                          {item.relativePath}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                {worktreePostSetupDialog.error ? (
+                  <div className="rounded-md border border-red-200 bg-red-50 px-3 py-1.5 text-[11px] font-medium text-red-800 flex items-center gap-2">
+                    <TriangleAlert className="h-3.5 w-3.5" />
+                    {worktreePostSetupDialog.error}
+                  </div>
+                ) : null}
+
+                <div className="flex justify-end gap-2 pt-1.5 border-t border-slate-100 dark:border-slate-800/50">
+                  <Button variant="outline" size="sm" className="h-8 text-xs" onClick={closeWorktreePostSetupDialog} disabled={worktreePostSetupDialog.saving}>
+                    {t("common:cancel", "取消") as string}
+                  </Button>
+                  <Button variant="secondary" size="sm" className="h-8 text-xs" onClick={() => void saveWorktreePostSetupDialog()} disabled={worktreePostSetupDialog.saving}>
+                    {worktreePostSetupDialog.saving ? (t("common:saving", "保存中…") as string) : (t("common:save", "保存") as string)}
+                  </Button>
                 </div>
               </div>
             );
