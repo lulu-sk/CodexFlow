@@ -1073,7 +1073,11 @@ export interface UtilsAPI {
   pathExists(p: string, dirOnly?: boolean): Promise<{ ok: boolean; exists?: boolean; isDirectory?: boolean; isFile?: boolean; error?: string }>;
   /** 获取当前用户主目录路径（轻量）。 */
   getHomeDir(): Promise<{ ok: boolean; homeDir?: string; error?: string }>;
-  chooseFolder(args?: { title?: string; defaultPath?: string }): Promise<{ ok: boolean; path?: string; canceled?: boolean; error?: string }>;
+  chooseFolder(args?: {
+    title?: string;
+    defaultPath?: string;
+    multiSelections?: boolean;
+  }): Promise<{ ok: boolean; path?: string; paths?: string[]; canceled?: boolean; error?: string }>;
   chooseFiles(args?: {
     title?: string;
     defaultPath?: string;

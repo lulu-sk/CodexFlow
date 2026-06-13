@@ -898,7 +898,7 @@ contextBridge.exposeInMainWorld('host', {
     , getHomeDir: async () => {
       return await ipcRenderer.invoke('utils.getHomeDir');
     }
-    , chooseFolder: async (args?: { title?: string; defaultPath?: string }) => {
+    , chooseFolder: async (args?: { title?: string; defaultPath?: string; multiSelections?: boolean }) => {
       return await ipcRenderer.invoke('utils.chooseFolder', args || {});
     }
     , chooseFiles: async (args?: { title?: string; defaultPath?: string; multiSelections?: boolean; filters?: Array<{ name: string; extensions: string[] }> }) => {

@@ -6403,20 +6403,21 @@ ipcMain.handle('app.getEnvMeta', async () => {
   }
 });
 
-// 打开选择目录对话并返回选中的 Windows 路径（若取消则返回 canceled）
-ipcMain.handle('utils.chooseFolder', async (_e, args?: { title?: string; defaultPath?: string }) => {
+// 打开选择目录对话并返回首个 Windows 路径与完整路径列表（若取消则返回 canceled）
+ipcMain.handle('utils.chooseFolder', async (_e, args?: { title?: string; defaultPath?: string; multiSelections?: boolean }) => {
   try {
     const win = BrowserWindow.getFocusedWindow();
     const title = String(args?.title || "").trim();
     const defaultPath = String(args?.defaultPath || "").trim();
+    const multiSelections = args?.multiSelections === true;
     const opts = {
-      properties: ['openDirectory'],
+      properties: ['openDirectory', ...(multiSelections ? ['multiSelections'] : [])],
       ...(title ? { title } : {}),
       ...(defaultPath ? { defaultPath } : {}),
     } as any;
     const ret = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
     if (!ret || ret.canceled || !Array.isArray(ret.filePaths) || ret.filePaths.length === 0) return { ok: false, canceled: true };
-    return { ok: true, path: ret.filePaths[0] };
+    return { ok: true, path: ret.filePaths[0], paths: ret.filePaths };
   } catch (e: any) {
     return { ok: false, error: String(e) };
   }

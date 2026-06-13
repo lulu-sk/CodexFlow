@@ -8444,23 +8444,47 @@ export default function CodexFlowManagerUI() {
     if (!project) return;
     try {
       const picked = kind === "folder"
-        ? await window.host.utils.chooseFolder({ title: t("projects:worktreePostSetupPickFolder", "选择要保留的文件夹") as string, defaultPath: project.winPath })
-        : await window.host.utils.chooseFiles({ title: t("projects:worktreePostSetupPickFile", "选择要保留的文件") as string, defaultPath: project.winPath, multiSelections: false });
+        ? await window.host.utils.chooseFolder({ title: t("projects:worktreePostSetupPickFolder", "选择要保留的文件夹") as string, defaultPath: project.winPath, multiSelections: true })
+        : await window.host.utils.chooseFiles({ title: t("projects:worktreePostSetupPickFile", "选择要保留的文件") as string, defaultPath: project.winPath, multiSelections: true });
       if (!picked || picked.canceled) return;
-      const rawPath = kind === "folder" ? String((picked as any).path || "") : String((picked as any).paths?.[0] || "");
-      const relativePath = toProjectRelativeWorktreePostSetupPath(project.winPath, rawPath);
-      if (!relativePath) {
+      const pickedPaths = (Array.isArray((picked as any).paths) ? (picked as any).paths : [(picked as any).path])
+        .map((item: any) => String(item || "").trim())
+        .filter(Boolean);
+      const relativePaths: string[] = [];
+      const seen = new Set<string>();
+      let outsidePath = "";
+      let blockedPath = "";
+      for (const rawPath of pickedPaths) {
+        const relativePath = toProjectRelativeWorktreePostSetupPath(project.winPath, rawPath);
+        if (!relativePath) {
+          outsidePath = rawPath;
+          break;
+        }
+        if (isBlockedWorktreePostSetupRelativePath(relativePath)) {
+          blockedPath = relativePath;
+          break;
+        }
+        const key = relativePath.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        relativePaths.push(relativePath);
+      }
+      if (outsidePath) {
         setWorktreePostSetupDialog((prev) => ({ ...prev, error: t("projects:worktreePostSetupOutsideProject", "只能选择当前项目目录内的文件或文件夹。") as string }));
         return;
       }
-      if (isBlockedWorktreePostSetupRelativePath(relativePath)) {
-        setWorktreePostSetupDialog((prev) => ({ ...prev, error: t("projects:worktreePostSetupBlockedPath", "该路径不适合复制：{path}", { path: relativePath }) as string }));
+      if (blockedPath) {
+        setWorktreePostSetupDialog((prev) => ({ ...prev, error: t("projects:worktreePostSetupBlockedPath", "该路径不适合复制：{path}", { path: blockedPath }) as string }));
+        return;
+      }
+      if (relativePaths.length <= 0) {
         return;
       }
       setWorktreePostSetupDialog((prev) => {
         const items = parseWorktreePostSetupItemsDraft(prev.itemsDraft);
-        const exists = items.some((item) => item.relativePath.toLowerCase() === relativePath.toLowerCase());
-        const nextLines = exists ? items.map((item) => item.relativePath) : [...items.map((item) => item.relativePath), relativePath];
+        const existingKeys = new Set(items.map((item) => item.relativePath.toLowerCase()));
+        const appendLines = relativePaths.filter((relativePath) => !existingKeys.has(relativePath.toLowerCase()));
+        const nextLines = [...items.map((item) => item.relativePath), ...appendLines];
         return { ...prev, itemsDraft: nextLines.join("\n"), error: undefined };
       });
     } catch (e: any) {
