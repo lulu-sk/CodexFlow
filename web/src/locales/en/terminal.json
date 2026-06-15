@@ -18,6 +18,8 @@
   "agentFailedAutoContinue": "Failed: {reason} ({elapsed}), auto continue in {seconds}s ({attempt}/{max})",
   "continueTimer": "Continue timer",
   "cancelTimer": "Cancel timer",
+  "sendContinueNow": "Send continue now",
+  "cancelAutoContinue": "Cancel auto continue",
   "timerContextHint": "Right click to manage timer",
   "usageHistory": "Usage History",
   "totalDuration": "Total: {total}",

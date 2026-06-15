@@ -2934,6 +2934,51 @@ export default function CodexFlowManagerUI() {
   }, [notifyLog]);
 
   /**
+   * 中文说明：当 Codex 后续明确进入 Reconnecting 时，把误落的失败状态恢复为进行中并清理失败残留。
+   */
+  const restoreFailedAgentTurnToReconnecting = useCallback((tabId: string, classification: CodexCliErrorClassification, source: string): void => {
+    const id = String(tabId || "").trim();
+    if (!id) return;
+    const current = agentTurnTimerByTabRef.current[id];
+    if (!current || current.status !== "failed") return;
+
+    clearCodexErrorAutoContinueTimer(id, `restore-reconnecting:${source}`);
+    const restored: AgentTurnTimerState = {
+      status: "working",
+      startedAt: current.startedAt,
+      elapsedMs: 0,
+      reconnectAttempt: classification.reconnectAttempt,
+      reconnectMaxAttempts: classification.reconnectMaxAttempts,
+      reconnectErrorKind: classification.kind,
+      reconnectErrorMessage: classification.matchedText,
+    };
+    const previousHistory = agentTurnHistoryByTabRef.current[id] || [];
+    const nextHistory = previousHistory.filter((item, index) => {
+      if (index > 0) return true;
+      return !(item.status === "failed" && item.startedAt === current.startedAt && item.errorKind === current.errorKind);
+    });
+
+    agentTurnTimerByTabRef.current = {
+      ...agentTurnTimerByTabRef.current,
+      [id]: restored,
+    };
+    agentTurnHistoryByTabRef.current = {
+      ...agentTurnHistoryByTabRef.current,
+      [id]: nextHistory,
+    };
+    setAgentTurnTimerByTab((prev) => ({
+      ...prev,
+      [id]: restored,
+    }));
+    setAgentTurnHistoryByTab((prev) => ({
+      ...prev,
+      [id]: nextHistory,
+    }));
+    clearPendingForTab(id);
+    notifyLog(`agentTimer.failed.restoreReconnecting tab=${id} kind=${classification.kind} source=${source}`);
+  }, [clearCodexErrorAutoContinueTimer, notifyLog]);
+
+  /**
    * 中文说明：将指定标签页的计时标记为“中断”，并保留当前已耗时（用于终端 ESC 中断场景），同时记入历史。
    */
   const interruptAgentTurnTimer = useCallback((tabId: string, source: string) => {
@@ -4116,13 +4161,98 @@ export default function CodexFlowManagerUI() {
     const providerId = resolveTabProviderId(tabId).toLowerCase();
     if (providerId !== "codex") return;
     const timerState = agentTurnTimerByTabRef.current[tabId];
-    if (!timerState || timerState.status !== "working") return;
+    if (!timerState || (timerState.status !== "working" && timerState.status !== "failed")) return;
 
     const cleanedChunk = stripAnsiForCodexErrorScan(chunk);
     if (!cleanedChunk) return;
     const previous = codexErrorScanByTabRef.current[tabId] || { buffer: "", autoContinueAttempts: 0 };
     const now = Date.now();
     const chunkRuntimeStatus = detectCodexCliRuntimeStatusText(cleanedChunk);
+    if (chunkRuntimeStatus?.phase === "idle") {
+      const idleClassification = classifyCodexCliErrorText(cleanedChunk);
+      if (typeof previous.pendingFinalErrorTimerId === "number") {
+        try { window.clearTimeout(previous.pendingFinalErrorTimerId); } catch {}
+      }
+      if (idleClassification?.phase === "final") {
+        const errorKey = buildCodexCliErrorKey(idleClassification);
+        codexErrorScanByTabRef.current[tabId] = {
+          ...previous,
+          buffer: "",
+          lastReconnectErrorKey: undefined,
+          lastReconnectStatusAt: undefined,
+          lastFinalErrorKey: errorKey,
+          pendingFinalErrorKey: undefined,
+          pendingFinalErrorKind: undefined,
+          pendingFinalError: undefined,
+          pendingFinalErrorAt: undefined,
+          pendingFinalErrorTimerId: undefined,
+        };
+        clearAgentTurnReconnecting(tabId, "idle-final-error");
+        if (previous.lastFinalErrorKey !== errorKey)
+          handleCodexCliErrorDetected(tabId, idleClassification, errorKey);
+        notifyLog(`codexError.idle.final tab=${tabId} kind=${idleClassification.kind}`);
+        return;
+      }
+      codexErrorScanByTabRef.current[tabId] = {
+        ...previous,
+        buffer: "",
+        lastReconnectErrorKey: undefined,
+        lastReconnectStatusAt: undefined,
+        pendingFinalErrorKey: undefined,
+        pendingFinalErrorKind: undefined,
+        pendingFinalError: undefined,
+        pendingFinalErrorAt: undefined,
+        pendingFinalErrorTimerId: undefined,
+      };
+      clearAgentTurnReconnecting(tabId, "idle-output");
+      if (timerState.status === "working")
+        interruptAgentTurnTimer(tabId, "codex-idle-output");
+      notifyLog(`codexError.idle tab=${tabId}`);
+      return;
+    }
+    if (timerState.status === "failed") {
+      if (chunkRuntimeStatus?.phase !== "reconnecting") return;
+      const nextBuffer = `${previous.buffer || ""}${cleanedChunk}`.slice(-CODEX_ERROR_SCAN_MAX_BUFFER_LENGTH);
+      const reconnectClassification = classifyCodexCliErrorText(`${cleanedChunk}\n${timerState.errorMessage || ""}`) || {
+        kind: timerState.errorKind || previous.pendingErrorKind || previous.pendingFinalErrorKind || "unknownHttp",
+        severity: "temporary" as const,
+        retryable: true,
+        matchedText: timerState.errorMessage || "Reconnecting",
+        phase: "reconnecting" as const,
+        reconnectAttempt: chunkRuntimeStatus.reconnectAttempt,
+        reconnectMaxAttempts: chunkRuntimeStatus.reconnectMaxAttempts,
+      };
+      const normalizedReconnectClassification: CodexCliErrorClassification = {
+        ...reconnectClassification,
+        phase: "reconnecting",
+        reconnectAttempt: reconnectClassification.reconnectAttempt || chunkRuntimeStatus.reconnectAttempt,
+        reconnectMaxAttempts: reconnectClassification.reconnectMaxAttempts || chunkRuntimeStatus.reconnectMaxAttempts,
+      };
+      const reconnectErrorKey = buildCodexCliErrorKey(normalizedReconnectClassification);
+      restoreFailedAgentTurnToReconnecting(tabId, normalizedReconnectClassification, "pty-runtime-status");
+      const restoredScanState = codexErrorScanByTabRef.current[tabId] || previous;
+      if (typeof restoredScanState.pendingFinalErrorTimerId === "number") {
+        try { window.clearTimeout(restoredScanState.pendingFinalErrorTimerId); } catch {}
+      }
+      codexErrorScanByTabRef.current[tabId] = {
+        ...restoredScanState,
+        buffer: nextBuffer,
+        lastReconnectErrorKey: reconnectErrorKey,
+        lastReconnectStatusAt: now,
+        pendingErrorKey: undefined,
+        pendingErrorKind: undefined,
+        autoContinueTimerId: undefined,
+        pendingFinalErrorKey: undefined,
+        pendingFinalErrorKind: undefined,
+        pendingFinalError: undefined,
+        pendingFinalErrorAt: undefined,
+        pendingFinalErrorTimerId: undefined,
+      };
+      if (previous.lastReconnectErrorKey !== reconnectErrorKey)
+        handleCodexCliReconnectDetected(tabId, normalizedReconnectClassification);
+      notifyLog(`codexError.failed.reconnecting tab=${tabId} kind=${normalizedReconnectClassification.kind}`);
+      return;
+    }
     if (chunkRuntimeStatus?.phase === "working" && typeof previous.pendingFinalErrorTimerId === "number") {
       try { window.clearTimeout(previous.pendingFinalErrorTimerId); } catch {}
       notifyLog(`codexError.pendingFinal.clear tab=${tabId} source=working-output`);
@@ -5578,6 +5708,100 @@ export default function CodexFlowManagerUI() {
     startAgentTurnTimer,
     tm,
   ]);
+
+  /**
+   * 中文说明：用户从右键菜单立即发送 Codex continue，绕过自动 continue 开关但保留发送前环境校验。
+   */
+  const sendCodexManualContinue = useCallback(async (tabId: string): Promise<void> => {
+    const id = String(tabId || "").trim();
+    if (!id) return;
+    const providerId = resolveTabProviderId(id).toLowerCase();
+    if (providerId !== "codex") return;
+    const ptyId = ptyByTabRef.current[id];
+    if (!ptyId) {
+      notifyLog(`codexError.manualContinue.skip tab=${id} reason=missing-pty`);
+      return;
+    }
+
+    const state = codexErrorScanByTabRef.current[id] || { buffer: "", autoContinueAttempts: 0 };
+    if (typeof state.autoContinueTimerId === "number") {
+      try { window.clearTimeout(state.autoContinueTimerId); } catch {}
+    }
+    if (typeof state.pendingFinalErrorTimerId === "number") {
+      try { window.clearTimeout(state.pendingFinalErrorTimerId); } catch {}
+    }
+    const nextAttempts = Math.max(0, Number(state.autoContinueAttempts || 0)) + 1;
+    codexErrorScanByTabRef.current[id] = {
+      ...state,
+      buffer: "",
+      lastReconnectErrorKey: undefined,
+      lastFinalErrorKey: undefined,
+      pendingErrorKey: undefined,
+      pendingErrorKind: undefined,
+      autoContinueTimerId: undefined,
+      autoContinueAttempts: nextAttempts,
+      pendingFinalErrorKey: undefined,
+      pendingFinalErrorKind: undefined,
+      pendingFinalError: undefined,
+      pendingFinalErrorAt: undefined,
+      pendingFinalErrorTimerId: undefined,
+    };
+
+    const tabEnv = getTabExecEnv(id, "codex");
+    notifyLog(`codexError.manualContinue.send tab=${id} attempt=${nextAttempts}`);
+    startAgentTurnTimer(id);
+    try {
+      await tm.sendTextAndEnter(id, "continue", {
+        providerId: "codex",
+        terminalMode: tabEnv.terminal as any,
+        distro: tabEnv.terminal === "wsl" ? tabEnv.distro : undefined,
+      });
+    } catch (error) {
+      notifyLog(`codexError.manualContinue.sendFailed tab=${id} error=${String((error as any)?.message || error)}`);
+      interruptAgentTurnTimer(id, "codex-manual-continue-send-failed");
+    }
+  }, [
+    getTabExecEnv,
+    interruptAgentTurnTimer,
+    notifyLog,
+    resolveTabProviderId,
+    startAgentTurnTimer,
+    tm,
+  ]);
+
+  /**
+   * 中文说明：取消指定标签页已安排的 Codex 自动 continue，同时清除状态条倒计时展示。
+   */
+  const cancelCodexScheduledContinue = useCallback((tabId: string, source: string): void => {
+    const id = String(tabId || "").trim();
+    if (!id) return;
+    clearCodexErrorAutoContinueTimer(id, source);
+    const current = agentTurnTimerByTabRef.current[id];
+    if (current?.status !== "failed") return;
+    const nextState: AgentTurnTimerState = {
+      ...current,
+      autoContinueScheduledAt: undefined,
+      autoContinueAttempt: undefined,
+      autoContinueMaxAttempts: undefined,
+    };
+    agentTurnTimerByTabRef.current = {
+      ...agentTurnTimerByTabRef.current,
+      [id]: nextState,
+    };
+    setAgentTurnTimerByTab((prev) => {
+      if (prev[id]?.status !== "failed") return prev;
+      return {
+        ...prev,
+        [id]: {
+          ...prev[id],
+          autoContinueScheduledAt: undefined,
+          autoContinueAttempt: undefined,
+          autoContinueMaxAttempts: undefined,
+        },
+      };
+    });
+    notifyLog(`codexError.autoContinue.cancel tab=${id} source=${source}`);
+  }, [clearCodexErrorAutoContinueTimer, notifyLog]);
 
   /**
    * 中文说明：按当前设置为可恢复 Codex 错误安排一次自动 continue。
@@ -13179,6 +13403,11 @@ export default function CodexFlowManagerUI() {
             const timerState = tabId ? agentTurnTimerByTab[tabId] : undefined;
             if (!tabId || !timerState) return null;
             const canContinueTimer = timerState.status !== "working";
+            const isCodexFailed = timerState.status === "failed" && resolveTabProviderId(tabId).toLowerCase() === "codex";
+            const hasScheduledCodexContinue = isCodexFailed && (
+              Number(timerState.autoContinueScheduledAt || 0) > Date.now() ||
+              typeof codexErrorScanByTabRef.current[tabId]?.autoContinueTimerId === "number"
+            );
             return (
               <div
                 ref={agentTurnCtxMenuRef}
@@ -13197,6 +13426,30 @@ export default function CodexFlowManagerUI() {
                 >
                   <Play className="h-4 w-4" /> {t("terminal:continueTimer") as string}
                 </button>
+                {isCodexFailed ? (
+                  <>
+                    <button
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
+                      onClick={() => {
+                        void sendCodexManualContinue(tabId);
+                        setAgentTurnCtxMenu((m) => ({ ...m, show: false, tabId: null }));
+                      }}
+                    >
+                      <Send className="h-4 w-4" /> {t("terminal:sendContinueNow") as string}
+                    </button>
+                    <button
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] disabled:opacity-40 disabled:pointer-events-none transition-all duration-apple-fast"
+                      disabled={!hasScheduledCodexContinue}
+                      onClick={() => {
+                        if (!hasScheduledCodexContinue) return;
+                        cancelCodexScheduledContinue(tabId, "context-menu");
+                        setAgentTurnCtxMenu((m) => ({ ...m, show: false, tabId: null }));
+                      }}
+                    >
+                      <X className="h-4 w-4" /> {t("terminal:cancelAutoContinue") as string}
+                    </button>
+                  </>
+                ) : null}
                 <button
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-red)] rounded-apple-sm hover:bg-[var(--cf-red-light)] transition-all duration-apple-fast"
                   onClick={() => {

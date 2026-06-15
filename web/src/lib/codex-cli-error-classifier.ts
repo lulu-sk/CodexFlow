@@ -14,7 +14,7 @@ export type CodexCliErrorKind =
 
 export type CodexCliErrorSeverity = "temporary" | "blocking";
 export type CodexCliErrorPhase = "reconnecting" | "final";
-export type CodexCliRuntimePhase = "working" | "reconnecting";
+export type CodexCliRuntimePhase = "working" | "reconnecting" | "idle";
 
 export type CodexCliErrorClassification = {
   kind: CodexCliErrorKind;
@@ -22,6 +22,7 @@ export type CodexCliErrorClassification = {
   retryable: boolean;
   matchedText: string;
   phase: CodexCliErrorPhase;
+  explicitFinal?: boolean;
   reconnectAttempt?: number;
   reconnectMaxAttempts?: number;
 };
@@ -123,6 +124,9 @@ const CONTROL_CHARS_EXCEPT_WHITESPACE_PATTERN = /[\u0000-\u0008\u000b\u000c\u000
 const MAX_MATCHED_TEXT_LENGTH = 280;
 const RECONNECTING_STATUS_PATTERN = /Reconnecting\.\.\.\s+(\d+)\/(\d+)/gi;
 const WORKING_STATUS_PATTERN = /\bWorking\s*\(/gi;
+const CODEX_HISTORY_LINE_MARKER_PATTERN = /(?:^|\n)[^\S\n]*[■▪]\s+/gu;
+const CODEX_FINAL_HISTORY_LINE_PATTERN =
+  /^(?:unexpected status\s+\d{3}|exceeded retry limit|Conversation interrupted|Goal budget reached|you['’]ve hit your usage limit|usage limit(?:ed)?(?:\s+reached)?|selected model is at capacity|model is at capacity|currently experiencing high demand|400\s+Bad Request|403\s+Forbidden|413\s+(?:Payload Too Large|Request Entity Too Large)|sign in with ChatGPT)\b/i;
 const EXPLICIT_FINAL_ERROR_PATTERN =
   /(?:exceeded retry limit|selected model is at capacity|you['’]ve hit your usage limit|usage limit(?:ed)?(?:\s+reached)?|currently experiencing high demand|400\s+Bad Request|<h1>\s*400\s+Bad Request\s*<\/h1>|unexpected status\s+413\b|413\s+Payload Too Large|413\s+Request Entity Too Large|<h1>\s*413\s+(?:Payload Too Large|Request Entity Too Large)\s*<\/h1>)/i;
 
@@ -159,6 +163,7 @@ export function isCodexCliErrorAutoRetryable(kind: CodexCliErrorKind): boolean {
  */
 export function shouldDelayCodexCliFinalErrorForReconnect(classification: CodexCliErrorClassification | null | undefined): boolean {
   if (!classification || classification.phase !== "final") return false;
+  if (classification.explicitFinal) return false;
   return (
     classification.kind === "rateLimited" ||
     classification.kind === "concurrency" ||
@@ -197,8 +202,18 @@ function clipMatchedText(text: string): string {
   return `${normalized.slice(0, MAX_MATCHED_TEXT_LENGTH - 1)}…`;
 }
 
+/**
+ * 判断 Codex 历史行是否是已停止运行的最终/中断状态，避免把普通方块项目符号当作空闲状态。
+ */
+function isCodexFinalHistoryLine(text: string, contentStartIndex: number): boolean {
+  const index = Math.max(0, Number(contentStartIndex) || 0);
+  const lineEnd = text.indexOf("\n", index);
+  const lineText = text.slice(index, lineEnd === -1 ? text.length : lineEnd).trim();
+  return CODEX_FINAL_HISTORY_LINE_PATTERN.test(lineText);
+}
+
 type CodexStatusMarker = {
-  kind: "reconnecting" | "working";
+  kind: "reconnecting" | "working" | "idle";
   index: number;
   attempt?: number;
   maxAttempts?: number;
@@ -223,6 +238,14 @@ function collectCodexStatusMarkers(text: string): CodexStatusMarker[] {
       index: match.index || 0,
     });
   }
+  for (const match of text.matchAll(CODEX_HISTORY_LINE_MARKER_PATTERN)) {
+    const contentStartIndex = (match.index || 0) + match[0].length;
+    if (!isCodexFinalHistoryLine(text, contentStartIndex)) continue;
+    markers.push({
+      kind: "idle",
+      index: contentStartIndex,
+    });
+  }
   markers.sort((left, right) => left.index - right.index);
   return markers;
 }
@@ -234,6 +257,16 @@ function isExplicitFinalCodexErrorText(matchedText: string): boolean {
   const text = String(matchedText || "").trim();
   if (!text) return false;
   return EXPLICIT_FINAL_ERROR_PATTERN.test(text);
+}
+
+/**
+ * 判断错误匹配是否位于 Codex TUI 最终历史行中，典型形态为红色方块后的错误/中断消息。
+ */
+function hasCodexFinalHistoryMarkerBeforeMatch(text: string, errorIndex: number): boolean {
+  const index = Math.max(0, Number(errorIndex) || 0);
+  const lineStart = Math.max(0, text.lastIndexOf("\n", Math.max(0, index - 1)) + 1);
+  const prefix = text.slice(lineStart, index);
+  return /[■▪]\s*$/u.test(prefix) && isCodexFinalHistoryLine(text, index);
 }
 
 /**
@@ -250,12 +283,23 @@ function resolveCodexCliErrorPhase(text: string, errorIndex: number): {
     if (marker.index > errorIndex) break;
     latestBeforeError = marker;
   }
-  if (latestBeforeError?.kind !== "reconnecting") return { phase: "final" };
-  return {
-    phase: "reconnecting",
-    reconnectAttempt: latestBeforeError.attempt,
-    reconnectMaxAttempts: latestBeforeError.maxAttempts,
-  };
+  if (latestBeforeError?.kind === "reconnecting") {
+    return {
+      phase: "reconnecting",
+      reconnectAttempt: latestBeforeError.attempt,
+      reconnectMaxAttempts: latestBeforeError.maxAttempts,
+    };
+  }
+  const latestMarker = markers[markers.length - 1];
+  if (latestMarker?.kind === "reconnecting" && latestMarker.index > errorIndex) {
+    // Codex TUI 重绘状态行时，PTY 片段里可能先出现错误详情，再出现 Reconnecting 标题。
+    return {
+      phase: "reconnecting",
+      reconnectAttempt: latestMarker.attempt,
+      reconnectMaxAttempts: latestMarker.maxAttempts,
+    };
+  }
+  return { phase: "final" };
 }
 
 /**
@@ -283,6 +327,7 @@ export function detectCodexCliRuntimeStatusText(input: string): CodexCliRuntimeS
   const latest = markers[markers.length - 1];
   if (!latest) return null;
   if (latest.kind === "working") return { phase: "working" };
+  if (latest.kind === "idle") return { phase: "idle" };
   return {
     phase: "reconnecting",
     reconnectAttempt: latest.attempt,
@@ -316,7 +361,8 @@ export function classifyCodexCliErrorText(input: string): CodexCliErrorClassific
     const markers = collectCodexStatusMarkers(text);
     const latestMarker = markers[markers.length - 1];
     if (latestMarker?.kind === "working" && latestMarker.index > (match.index || 0)) return null;
-    const phase = isExplicitFinalCodexErrorText(match[0])
+    const explicitFinal = isExplicitFinalCodexErrorText(match[0]) || hasCodexFinalHistoryMarkerBeforeMatch(text, match.index || 0);
+    const phase = explicitFinal
       ? { phase: "final" as const }
       : resolveCodexCliErrorPhase(text, match.index || 0);
     return {
@@ -324,6 +370,7 @@ export function classifyCodexCliErrorText(input: string): CodexCliErrorClassific
       severity: rule.severity,
       retryable: isCodexCliErrorAutoRetryable(rule.kind),
       matchedText: clipMatchedText(match[0] || text),
+      explicitFinal: explicitFinal || undefined,
       ...phase,
     };
   }
