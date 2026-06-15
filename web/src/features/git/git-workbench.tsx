@@ -987,6 +987,7 @@ const GIT_WORKBENCH_LOCAL_HOT_SESSION_IDLE_TTL_MS = 2 * 60 * 60 * 1000;
 const GIT_WORKBENCH_LOCAL_HOT_SESSION_MAX_KEYS = 8;
 const GIT_WORKBENCH_PUBLISH_SNAPSHOT_EVENT = "cf:git-workbench-publish-snapshot";
 const GIT_WORKBENCH_PUBLISH_SNAPSHOT_DONE_EVENT = "cf:git-workbench-publish-snapshot-done";
+const GIT_WORKBENCH_DRAG_WATCHDOG_MS = 30_000;
 const CONTEXT_MENU_SAFE_GAP = 6;
 const TREE_DEPTH_INDENT = 18;
 const DETAIL_TREE_BASE_PADDING = 12;
@@ -3394,6 +3395,8 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
     startWidth: number;
   }>(null);
   const draggingLogColumnIdRef = useRef<GitLogColumnId | null>(null);
+  const dragBodyStyleRef = useRef<null | { userSelect: string; cursor: string; touchAction: string }>(null);
+  const dragWatchdogRef = useRef<number | null>(null);
   const previousCommitChangeGroupsRef = useRef<CommitPanelChangeEntryGroup[]>([]);
   const conflictMergeLoadSeqRef = useRef<number>(0);
   const updateInfoAutoOpenedRequestIdsRef = useRef<Set<number>>(new Set());
@@ -3604,6 +3607,50 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   const detailTreeSpeedSearchRootRef = useRef<HTMLDivElement>(null);
   const detailTreeContainerRef = useRef<HTMLDivElement>(null);
   const [activeSelectionScope, setActiveSelectionScope] = useState<"commit" | "detail" | null>(null);
+
+  /**
+   * 结束 Git 工作台内部拖拽，并恢复拖拽期间临时写入的页面级交互样式。
+   */
+  const endWorkbenchDragInteraction = useCallback((): void => {
+    draggingBottomRef.current = false;
+    draggingLayoutRef.current = null;
+    draggingLogColumnRef.current = null;
+    if (dragWatchdogRef.current !== null) {
+      window.clearTimeout(dragWatchdogRef.current);
+      dragWatchdogRef.current = null;
+    }
+    const prevStyle = dragBodyStyleRef.current;
+    dragBodyStyleRef.current = null;
+    if (prevStyle && typeof document !== "undefined") {
+      document.body.style.userSelect = prevStyle.userSelect;
+      document.body.style.cursor = prevStyle.cursor;
+      document.body.style.touchAction = prevStyle.touchAction;
+    }
+  }, []);
+
+  /**
+   * 开始 Git 工作台拖拽，统一屏蔽文本选择并安装超时兜底，避免丢失 mouseup 后卡住交互。
+   */
+  const beginWorkbenchDragInteraction = useCallback((cursor: "col-resize" | "row-resize"): void => {
+    endWorkbenchDragInteraction();
+    if (typeof document !== "undefined" && !dragBodyStyleRef.current) {
+      dragBodyStyleRef.current = {
+        userSelect: document.body.style.userSelect,
+        cursor: document.body.style.cursor,
+        touchAction: document.body.style.touchAction,
+      };
+    }
+    if (typeof document !== "undefined") {
+      document.body.style.userSelect = "none";
+      document.body.style.cursor = cursor;
+      document.body.style.touchAction = "none";
+    }
+    if (dragWatchdogRef.current !== null)
+      window.clearTimeout(dragWatchdogRef.current);
+    dragWatchdogRef.current = window.setTimeout(() => {
+      endWorkbenchDragInteraction();
+    }, GIT_WORKBENCH_DRAG_WATCHDOG_MS);
+  }, [endWorkbenchDragInteraction]);
 
   /**
    * 把热会话快照应用到当前工作台，只恢复可直接显示的小型状态。
@@ -15072,7 +15119,8 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
       setLogColumnLayout((prev) => resizeGitLogColumn(prev, draggingColumn.columnId, nextWidth));
     };
     const onUp = () => {
-      draggingLogColumnRef.current = null;
+      if (draggingLogColumnRef.current)
+        endWorkbenchDragInteraction();
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -15080,7 +15128,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, []);
+  }, [endWorkbenchDragInteraction]);
 
   /**
    * 处理所有分栏拖拽（上方左右、下方左右、底部高度）。
@@ -15160,8 +15208,8 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
       if (next > COLLAPSED_BOTTOM_HEIGHT + 4) setBottomCollapsed(false);
     };
     const onUp = () => {
-      draggingBottomRef.current = false;
-      draggingLayoutRef.current = null;
+      if (draggingBottomRef.current || draggingLayoutRef.current)
+        endWorkbenchDragInteraction();
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -15169,7 +15217,41 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [branchPanelProportion, branchPanelWidth, detailPanelProportion, detailPanelWidth, leftCollapsed]);
+  }, [branchPanelProportion, branchPanelWidth, detailPanelProportion, detailPanelWidth, endWorkbenchDragInteraction, leftCollapsed]);
+
+  /**
+   * 拖拽中遇到窗口失焦、页面隐藏、右键菜单或指针取消时，主动释放交互状态。
+   */
+  useEffect(() => {
+    const release = () => {
+      endWorkbenchDragInteraction();
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== "visible") release();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") release();
+    };
+    window.addEventListener("blur", release);
+    window.addEventListener("mouseup", release, true);
+    window.addEventListener("pointerup", release, true);
+    window.addEventListener("pointercancel", release, true);
+    window.addEventListener("dragend", release, true);
+    window.addEventListener("contextmenu", release, true);
+    window.addEventListener("keydown", onKeyDown, true);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("blur", release);
+      window.removeEventListener("mouseup", release, true);
+      window.removeEventListener("pointerup", release, true);
+      window.removeEventListener("pointercancel", release, true);
+      window.removeEventListener("dragend", release, true);
+      window.removeEventListener("contextmenu", release, true);
+      window.removeEventListener("keydown", onKeyDown, true);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      release();
+    };
+  }, [endWorkbenchDragInteraction]);
 
   /**
    * 渲染 Git 仓库缺失时的空状态，提供初始化与重新检测入口。
@@ -15903,6 +15985,8 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
           className="cf-git-bottom-handle group h-[3px] cursor-row-resize border-b border-[var(--cf-border)] bg-[var(--cf-surface-muted)]"
           onMouseDown={(event) => {
             if (event.button !== 0) return;
+            event.preventDefault();
+            beginWorkbenchDragInteraction("row-resize");
             draggingBottomRef.current = true;
           }}
           onDoubleClick={() => {
@@ -16350,6 +16434,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
                 onMouseDown={(event) => {
                   if (event.button !== 0) return;
                   event.preventDefault();
+                  beginWorkbenchDragInteraction("col-resize");
                   draggingLayoutRef.current = {
                     kind: "bottomLeft",
                     startX: event.clientX,
@@ -16679,6 +16764,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
                               onMouseDown={(event) => {
                                 event.preventDefault();
                                 event.stopPropagation();
+                                beginWorkbenchDragInteraction("col-resize");
                                 draggingLogColumnRef.current = {
                                   columnId,
                                   startX: event.clientX,
@@ -16776,6 +16862,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
                 onMouseDown={(event) => {
                   if (event.button !== 0) return;
                   event.preventDefault();
+                  beginWorkbenchDragInteraction("col-resize");
                   draggingLayoutRef.current = {
                     kind: "bottomRight",
                     startX: event.clientX,
@@ -20313,6 +20400,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
                 onMouseDown={(event) => {
                   if (event.button !== 0) return;
                   event.preventDefault();
+                  beginWorkbenchDragInteraction("col-resize");
                   draggingLayoutRef.current = {
                     kind: "main",
                     startX: event.clientX,

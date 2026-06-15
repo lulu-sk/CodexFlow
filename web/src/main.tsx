@@ -4,6 +4,7 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import './index.css';
+import '@/lib/monaco-workers';
 import App from './App';
 import { I18nextProvider } from 'react-i18next';
 import i18n, { initI18n } from '@/i18n/setup';
