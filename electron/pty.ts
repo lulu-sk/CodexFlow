@@ -308,6 +308,38 @@ export class PTYManager {
   }
 
   /**
+   * 判断异常是否来自“已退出 PTY 的 resize 请求”。
+   *
+   * @param error - 捕获到的异常
+   * @returns 是否为已退出 PTY 的 resize 异常
+   */
+  private isExitedPtyResizeError(error: unknown): boolean {
+    const message = String((error as any)?.message || error || "");
+    return message.includes("Cannot resize a pty that has already exited");
+  }
+
+  /**
+   * 按退出语义清理 PTY 会话，并通知前端解绑旧 PTY。
+   *
+   * @param id - PTY 会话 id
+   * @param exitCode - 退出码，未知时可省略
+   */
+  private cleanupExitedSession(id: string, exitCode?: number): void {
+    const key = String(id || "").trim();
+    if (!key) return;
+    const hadSession = this.sessions.has(key);
+    // 先 flush，避免短命令最后一段输出卡在合并队列中。
+    try { this.flushPtyData(key); } catch {}
+    this.sessions.delete(key);
+    try { this.clearPendingPtyData(key); } catch {}
+    try { this.backlogs.get(key)?.clear(); } catch {}
+    this.backlogs.delete(key);
+    if (hadSession) {
+      this.sendToRenderer('pty:exit', { id: key, exitCode });
+    }
+  }
+
+  /**
    * 获取当前仍处于活跃状态的 PTY 会话数量。
    */
   getActiveSessionCount(): number {
@@ -428,12 +460,7 @@ export class PTYManager {
     });
 
     proc.onExit((evt: { exitCode: number; signal?: number }) => {
-      // 中文说明：在退出前先 flush，避免最后一批输出被合并队列吞掉（例如短命令 < 16ms 即退出）。
-      try { this.flushPtyData(id); } catch {}
-      this.sessions.delete(id);
-      try { this.backlogs.get(id)?.clear(); } catch {}
-      this.backlogs.delete(id);
-      this.sendToRenderer('pty:exit', { id, exitCode: evt?.exitCode });
+      this.cleanupExitedSession(id, evt?.exitCode);
     });
 
     // 关键修复：延迟执行 startupCmd，确保前端有足够时间订阅 'pty:data' 事件
@@ -489,7 +516,16 @@ export class PTYManager {
       const c = Math.max(2, cols);
       const r = Math.max(2, rows);
       dlog(`[pty] resize id=${id} cols=${c} rows=${r}`);
-      p.resize(c, r);
+      try {
+        p.resize(c, r);
+      } catch (e: any) {
+        const message = String(e?.message || e || "");
+        // 终端退出和窗口尺寸变化可能同时发生，resize 失败不应拖垮主进程。
+        try { perfLogger.log(`[pty] resize failed id=${id} cols=${c} rows=${r} error=${message}`); } catch {}
+        if (this.isExitedPtyResizeError(e)) {
+          this.cleanupExitedSession(id);
+        }
+      }
     }
   }
 
