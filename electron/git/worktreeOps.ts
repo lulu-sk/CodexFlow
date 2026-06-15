@@ -51,6 +51,8 @@ export type CreateWorktreesRequest = {
   }) => void;
   /** 在尝试创建某个 worktree 前回调（用于捕获“中断时的目标目录/分支”）。 */
   onWorktreePlanned?: (args: { providerId: "codex" | "claude" | "gemini"; repoMainPath: string; worktreePath: string; baseBranch: string; wtBranch: string; index: number }) => void;
+  /** 单个 worktree 创建阶段变化回调（用于 UI 展示慢在哪一步）。 */
+  onItemProgress?: (args: { providerId: "codex" | "claude" | "gemini"; repoMainPath: string; worktreePath: string; baseBranch: string; wtBranch: string; index: number; detail: string }) => void;
   /** 创建超时估算完成后回调，供后台任务快照和 UI 等待兜底复用。 */
   onTimeoutEstimated?: (estimate: WorktreeTimeoutEstimate) => void;
 };
@@ -550,7 +552,13 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
   /**
    * 在创建 worktree 后应用保留项与初始化命令（非致命）。
    */
-  const applyPostSetupIfNeeded = async (targetWorktree: string): Promise<string[]> => {
+  const applyPostSetupIfNeeded = async (targetWorktree: string, onProgress?: (detail: string) => void): Promise<string[]> => {
+    const hasPostSetupActions =
+      req.copyRules === true ||
+      (Array.isArray(req.postSetup?.items) && req.postSetup.items.length > 0) ||
+      !!String(req.postSetup?.command || "").trim();
+    if (!hasPostSetupActions) return [];
+
     const res = await applyWorktreePostSetupAsync({
       sourceDir: mainWorktreePath,
       targetDir: targetWorktree,
@@ -558,6 +566,8 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
       copyRules: req.copyRules === true,
       gitPath,
       signal,
+      onLog: log,
+      onProgress,
     });
     const warnings = Array.isArray(res.warnings) ? res.warnings.slice() : [];
     if (!res.ok && res.error) warnings.push(res.error);
@@ -704,6 +714,23 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
    * 执行单个创建计划，并汇总成功项或失败项。
    */
   const executePlanAsync = async (plan: WorktreeCreatePlan): Promise<void> => {
+    /**
+     * 上报单个 worktree 当前阶段；回调失败不影响创建流程。
+     */
+    const reportProgress = (detail: string): void => {
+      try {
+        req.onItemProgress?.({
+          providerId: plan.providerId,
+          repoMainPath: baseRepoMainPath,
+          worktreePath: plan.targetDir,
+          baseBranch: req.baseBranch,
+          wtBranch: plan.wtBranch,
+          index: plan.index,
+          detail,
+        });
+      } catch {}
+    };
+
     try {
       req.onWorktreePlanned?.({
         providerId: plan.providerId,
@@ -715,6 +742,7 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
       });
     } catch {}
 
+    reportProgress("正在执行 git worktree add");
     const addResult = await runWorktreeAddWithRetryAsync(plan);
     if (!addResult.ok) {
       const error = String(addResult.error || "git worktree add failed");
@@ -734,7 +762,9 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
       return;
     }
 
-    const warnings = await applyPostSetupIfNeeded(plan.targetDir);
+    reportProgress("正在应用保留项与初始化设置");
+    const warnings = await applyPostSetupIfNeeded(plan.targetDir, reportProgress);
+    reportProgress("正在写入 worktree 元数据");
     const meta: WorktreeMeta = {
       repoMainPath: baseRepoMainPath,
       baseBranch: req.baseBranch,

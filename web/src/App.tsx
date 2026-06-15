@@ -1326,6 +1326,7 @@ export default function CodexFlowManagerUI() {
     needsForceRemoveWorktree: false,
     needsForceDeleteBranch: false,
     needsForceResetWorktree: false,
+    progress: undefined,
     error: undefined,
   }));
   const [worktreePostRecycleDialog, setWorktreePostRecycleDialog] = useState<WorktreePostRecycleDialogState>(() => ({ open: false, projectId: "", hint: undefined }));
@@ -10442,6 +10443,7 @@ export default function CodexFlowManagerUI() {
 	      needsForceRemoveWorktree: false,
 	      needsForceDeleteBranch: false,
 	      needsForceResetWorktree: false,
+	      progress: undefined,
 	      error: undefined,
 	    });
 	    void loadWorktreeDeleteBranches(project);
@@ -10465,6 +10467,7 @@ export default function CodexFlowManagerUI() {
 	      needsForceRemoveWorktree: false,
 	      needsForceDeleteBranch: false,
 	      needsForceResetWorktree: false,
+	      progress: undefined,
 	      error: undefined,
 	    }));
 	  }, []);
@@ -10503,7 +10506,14 @@ export default function CodexFlowManagerUI() {
 
     setWorktreeDeleteInFlight(project.id, true);
 
-    setWorktreeDeleteDialog((prev) => (prev.open && prev.projectId === pid ? { ...prev, running: true, error: undefined } : prev));
+    setWorktreeDeleteDialog((prev) => (prev.open && prev.projectId === pid ? {
+      ...prev,
+      running: true,
+      progress: dlg.action === "reset"
+        ? (t("projects:worktreeResetProgressResetting", "正在重置到目标分支…") as string)
+        : (t("projects:worktreeDeleteProgressRemoving", "正在移除 worktree…") as string),
+      error: undefined,
+    } : prev));
     try {
       if (dlg.action === "reset") {
         const targetRef = String(dlg.resetTargetBranch || "").trim();
@@ -10520,6 +10530,10 @@ export default function CodexFlowManagerUI() {
           const owner = resolveWorktreePostSetupOwnerProject(project);
           const postSetup = normalizeWorktreePostSetupConfig((owner as any)?.worktreePostSetup);
           if (owner?.winPath && postSetup.applyAfterReset !== false && hasWorktreePostSetupActions(postSetup)) {
+            setWorktreeDeleteDialog((prev) => (prev.open && prev.projectId === pid ? {
+              ...prev,
+              progress: t("projects:worktreeResetProgressPostSetup", "正在重新应用保留项与初始化设置…") as string,
+            } : prev));
             const postRes: any = await (window as any).host?.gitWorktree?.applyPostSetup?.({
               sourceDir: owner.winPath,
               targetDir: project.winPath,
@@ -10537,12 +10551,16 @@ export default function CodexFlowManagerUI() {
               });
             }
           }
+          setWorktreeDeleteDialog((prev) => (prev.open && prev.projectId === pid ? {
+            ...prev,
+            progress: t("projects:worktreeResetProgressRefreshing", "正在刷新项目状态…") as string,
+          } : prev));
           setWorktreeDeleteDialog((prev) => (prev.open && prev.projectId === pid ? { ...prev, open: false, running: false } : prev));
           void refreshGitInfoForProjectIds([project.id]);
           return;
         }
         if (res?.needsForce) {
-          setWorktreeDeleteDialog((prev) => (prev.open && prev.projectId === pid ? { ...prev, running: false, needsForceResetWorktree: true, error: String(res?.error || "") } : prev));
+          setWorktreeDeleteDialog((prev) => (prev.open && prev.projectId === pid ? { ...prev, running: false, progress: undefined, needsForceResetWorktree: true, error: String(res?.error || "") } : prev));
           return;
         }
         throw new Error(res?.error || "reset failed");
@@ -10554,6 +10572,10 @@ export default function CodexFlowManagerUI() {
           forceDeleteBranch: opts?.forceDeleteBranch === true,
         });
         if (res && res.ok) {
+          setWorktreeDeleteDialog((prev) => (prev.open && prev.projectId === pid ? {
+            ...prev,
+            progress: t("projects:worktreeDeleteProgressRefreshing", "正在刷新项目状态…") as string,
+          } : prev));
           setWorktreeDeleteDialog((prev) => (prev.open && prev.projectId === pid ? { ...prev, open: false, running: false } : prev));
           void refreshGitInfoForProjectIds([project.id]);
           try {
@@ -10574,6 +10596,7 @@ export default function CodexFlowManagerUI() {
             ? {
               ...prev,
               running: false,
+              progress: undefined,
               needsForceRemoveWorktree: true,
               needsForceDeleteBranch: res?.needsForceDeleteBranch === true || prev.needsForceDeleteBranch === true,
               error: undefined,
@@ -10586,6 +10609,7 @@ export default function CodexFlowManagerUI() {
             ? {
               ...prev,
               running: false,
+              progress: undefined,
               needsForceRemoveWorktree: res?.needsForceRemoveWorktree === true || prev.needsForceRemoveWorktree === true,
               needsForceDeleteBranch: true,
               error: undefined,
@@ -10596,7 +10620,7 @@ export default function CodexFlowManagerUI() {
         throw new Error(res?.error || "delete failed");
       }
     } catch (e: any) {
-      setWorktreeDeleteDialog((prev) => (prev.open && prev.projectId === pid ? { ...prev, running: false, error: String(e?.message || e) } : prev));
+      setWorktreeDeleteDialog((prev) => (prev.open && prev.projectId === pid ? { ...prev, running: false, progress: undefined, error: String(e?.message || e) } : prev));
       showGitActionErrorDialog({
         title: dlg.action === "reset" ? (t("projects:worktreeResetFailed", "重置失败") as string) : (t("projects:worktreeDeleteFailed", "删除 worktree 失败") as string),
         message: String(e?.message || e),
@@ -14413,6 +14437,9 @@ export default function CodexFlowManagerUI() {
                               </div>
                               <div className="text-[11px] text-slate-500 break-all font-mono">{state.worktreePath}</div>
                               <div className="text-[11px] text-slate-500 break-all font-mono">{state.wtBranch}</div>
+                              {state.detail && createStatus === "creating" ? (
+                                <div className="text-[11px] text-slate-600 dark:text-[var(--cf-text-secondary)]">{state.detail}</div>
+                              ) : null}
                               {state.error ? (
                                 <div className="text-[11px] text-red-700 whitespace-pre-wrap break-words">{state.error}</div>
                               ) : null}
@@ -14464,28 +14491,6 @@ export default function CodexFlowManagerUI() {
                   ) : null}
                   <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => setWorktreeCreateProgress((prev) => ({ ...prev, open: false }))}>
                     {t("common:close", "关闭") as string}
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    className="h-8 text-xs"
-                    onClick={async () => {
-                      try { if (repo?.winPath) await (window as any).host?.gitWorktree?.openExternalTool?.(repo.winPath); } catch {}
-                    }}
-                    disabled={!repo?.winPath}
-                  >
-                    {t("projects:gitOpenExternalTool", "打开外部 Git 工具") as string}
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    className="h-8 text-xs"
-                    onClick={async () => {
-                      try { if (repo?.winPath) await (window as any).host?.gitWorktree?.openTerminal?.(repo.winPath); } catch {}
-                    }}
-                    disabled={!repo?.winPath}
-                  >
-                    {t("projects:gitOpenTerminal", "在外部终端 / Git Bash 打开") as string}
                   </Button>
                 </div>
               </div>
@@ -15068,6 +15073,7 @@ export default function CodexFlowManagerUI() {
                             needsForceRemoveWorktree: false,
                             needsForceDeleteBranch: false,
                             needsForceResetWorktree: false,
+                            progress: undefined,
                             error: undefined,
                           }));
                         }}
@@ -15122,6 +15128,7 @@ export default function CodexFlowManagerUI() {
                                   ...prev,
                                   resetTargetBranch: e.target.value,
                                   needsForceResetWorktree: false,
+                                  progress: undefined,
                                   error: undefined,
                                 }))
                               }
@@ -15165,13 +15172,19 @@ export default function CodexFlowManagerUI() {
 	                    {worktreeDeleteDialog.afterRecycleHint}
 	                  </div>
 	                ) : null}
-	                {forceHint ? (
+                {forceHint ? (
 	                  <div className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 flex gap-2 items-start">
                     <TriangleAlert className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
                     <div className="text-[10px] text-amber-800 leading-normal font-medium">
 	                    {forceHint}
 	                  </div>
 	</div>
+                ) : null}
+                {worktreeDeleteDialog.running && worktreeDeleteDialog.progress ? (
+                  <div className="flex items-center gap-2 rounded-md border border-[var(--cf-border)] bg-[var(--cf-surface-muted)]/75 px-2 py-1.5 text-[10px] leading-snug text-[var(--cf-text-secondary)]">
+                    <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-[var(--cf-accent)]" />
+                    <span className="min-w-0 truncate">{worktreeDeleteDialog.progress}</span>
+                  </div>
                 ) : null}
                 {worktreeDeleteDialog.error ? (
                   <div className="rounded-md border border-red-200 bg-red-50 px-2 py-1.5 text-[10px] font-medium text-red-800 flex items-center gap-2">

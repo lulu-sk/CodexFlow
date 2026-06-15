@@ -35,6 +35,8 @@ export type WorktreePostSetupApplyResult = {
   error?: string;
 };
 
+type SymlinkPrefixChecker = (targetPath: string) => Promise<void>;
+
 export const WORKTREE_POST_SETUP_BLOCKED_PATHS = new Set([
   ".git",
   "node_modules",
@@ -143,6 +145,44 @@ async function assertNoSymlinkPathPrefixAsync(root: string, target: string): Pro
 }
 
 /**
+ * 创建带缓存的路径前缀符号链接检查器，避免复制大目录时反复检查同一批父目录。
+ */
+function createSymlinkPrefixChecker(root: string): SymlinkPrefixChecker {
+  const rootAbs = path.resolve(root);
+  const checked = new Map<string, Promise<void>>();
+
+  return async (target: string): Promise<void> => {
+    const targetAbs = path.resolve(target);
+    const rel = path.relative(rootAbs, targetAbs);
+    if (rel.startsWith("..") || path.isAbsolute(rel)) throw new Error("path escapes project");
+    if (!rel) return;
+
+    let cursor = rootAbs;
+    for (const part of rel.split(path.sep).filter(Boolean)) {
+      cursor = path.join(cursor, part);
+      const current = cursor;
+      let pending = checked.get(current);
+      if (!pending) {
+        pending = (async () => {
+          try {
+            const st = await fsp.lstat(current);
+            if (st.isSymbolicLink()) {
+              const display = path.relative(rootAbs, current).replace(/\\/g, "/");
+              throw new Error(`${display}: symbolic link is not supported`);
+            }
+          } catch (error: any) {
+            if (String(error?.code || "") === "ENOENT") return;
+            throw error;
+          }
+        })();
+        checked.set(current, pending);
+      }
+      await pending;
+    }
+  };
+}
+
+/**
  * 安全拼接项目内相对路径，越界时返回空串。
  */
 function resolveProjectRelativePath(root: string, relativePath: string): string {
@@ -155,16 +195,19 @@ function resolveProjectRelativePath(root: string, relativePath: string): string 
 /**
  * 递归复制文件或目录；目标已存在时覆盖同名文件并合并目录。
  */
-async function copyPathRecursiveAsync(source: string, target: string, roots: { sourceRoot: string; targetRoot: string }): Promise<void> {
-  await assertNoSymlinkPathPrefixAsync(roots.sourceRoot, source);
-  await assertNoSymlinkPathPrefixAsync(roots.targetRoot, target);
+async function copyPathRecursiveAsync(source: string, target: string, guards: {
+  assertSourcePrefix: SymlinkPrefixChecker;
+  assertTargetPrefix: SymlinkPrefixChecker;
+}): Promise<void> {
+  await guards.assertSourcePrefix(source);
+  await guards.assertTargetPrefix(target);
   const st = await fsp.lstat(source);
   if (st.isSymbolicLink()) throw new Error("symbolic link is not supported");
   if (st.isDirectory()) {
     await fsp.mkdir(target, { recursive: true });
     const entries = await fsp.readdir(source, { withFileTypes: true });
     for (const entry of entries) {
-      await copyPathRecursiveAsync(path.join(source, entry.name), path.join(target, entry.name), roots);
+      await copyPathRecursiveAsync(path.join(source, entry.name), path.join(target, entry.name), guards);
     }
     return;
   }
@@ -184,6 +227,33 @@ function appendLimitedOutput(current: string, chunk: Buffer | string): string {
 }
 
 /**
+ * 格式化后置准备步骤耗时，便于创建日志展示。
+ */
+function formatPostSetupDuration(ms: number): string {
+  const value = Math.max(0, Math.floor(Number(ms) || 0));
+  if (value < 1000) return `${value}ms`;
+  const seconds = Math.round(value / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  if (minutes <= 0) return `${seconds}s`;
+  return rest > 0 ? `${minutes}m${rest}s` : `${minutes}m`;
+}
+
+/**
+ * 从命令输出块中提取最后一行可读进度，避免初始化命令长时间运行时 UI 看起来不动。
+ */
+function pickLastProgressLineFromChunk(chunk: Buffer | string): string {
+  const text = String(chunk ?? "").replace(/\r/g, "\n");
+  const lines = text
+    .split(/\n+/)
+    .map((line) => line.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").trim())
+    .filter(Boolean);
+  const last = lines[lines.length - 1] || "";
+  if (!last) return "";
+  return last.length > 80 ? `${last.slice(0, 80)}...` : last;
+}
+
+/**
  * 按当前平台选择执行用户命令的 shell。
  */
 function buildPostSetupShellCommand(command: string): { file: string; args: string[] } {
@@ -194,7 +264,13 @@ function buildPostSetupShellCommand(command: string): { file: string; args: stri
 /**
  * 在目标 worktree 内执行用户配置的初始化命令，并强制设置超时。
  */
-async function runPostSetupCommandAsync(command: string, cwd: string, signal?: AbortSignal): Promise<NonNullable<WorktreePostSetupApplyResult["command"]>> {
+async function runPostSetupCommandAsync(
+  command: string,
+  cwd: string,
+  signal?: AbortSignal,
+  onLog?: (text: string) => void,
+  onProgress?: (detail: string) => void,
+): Promise<NonNullable<WorktreePostSetupApplyResult["command"]>> {
   const trimmed = String(command || "").trim();
   if (!trimmed) return { skipped: true };
   const shell = buildPostSetupShellCommand(trimmed);
@@ -204,6 +280,27 @@ async function runPostSetupCommandAsync(command: string, cwd: string, signal?: A
     let finished = false;
     let child: ReturnType<typeof spawn> | null = null;
     let timer: NodeJS.Timeout | null = null;
+    const startedAt = Date.now();
+    let lastProgressAt = 0;
+
+    /**
+     * 写入后置准备日志；日志失败不影响创建流程。
+     */
+    const log = (text: string): void => {
+      try { onLog?.(String(text ?? "")); } catch {}
+    };
+
+    /**
+     * 将初始化命令的最新输出同步到创建条目状态，并做轻量节流。
+     */
+    const progressFromOutput = (chunk: Buffer | string): void => {
+      const line = pickLastProgressLineFromChunk(chunk);
+      if (!line) return;
+      const now = Date.now();
+      if (now - lastProgressAt < 250) return;
+      lastProgressAt = now;
+      try { onProgress?.(`初始化命令：${line}`); } catch {}
+    };
 
     /**
      * 结束命令执行并清理计时器与 abort 监听。
@@ -216,6 +313,12 @@ async function runPostSetupCommandAsync(command: string, cwd: string, signal?: A
         timer = null;
       }
       try { signal?.removeEventListener("abort", onAbort); } catch {}
+      const durationText = formatPostSetupDuration(Date.now() - startedAt);
+      if (result.skipped !== true) {
+        const error = String(result.error || "").trim();
+        if (error) log(`[后置准备] 初始化命令结束但有警告（${durationText}）：${error}\n`);
+        else log(`[后置准备] 初始化命令完成（${durationText}）\n`);
+      }
       resolve({ command: trimmed, stdout, stderr, ...result });
     };
 
@@ -252,6 +355,7 @@ async function runPostSetupCommandAsync(command: string, cwd: string, signal?: A
         finalize({ exitCode: -1, error: "aborted" });
         return;
       }
+      log("[后置准备] 正在执行初始化命令…\n");
       child = spawn(shell.file, shell.args, {
         cwd,
         windowsHide: true,
@@ -261,8 +365,14 @@ async function runPostSetupCommandAsync(command: string, cwd: string, signal?: A
           CF_WORKTREE_POST_SETUP: "1",
         },
       });
-      child.stdout?.on("data", (chunk) => { stdout = appendLimitedOutput(stdout, chunk); });
-      child.stderr?.on("data", (chunk) => { stderr = appendLimitedOutput(stderr, chunk); });
+      child.stdout?.on("data", (chunk) => {
+        stdout = appendLimitedOutput(stdout, chunk);
+        progressFromOutput(chunk);
+      });
+      child.stderr?.on("data", (chunk) => {
+        stderr = appendLimitedOutput(stderr, chunk);
+        progressFromOutput(chunk);
+      });
       child.on("error", (error: any) => {
         finalize({ exitCode: -1, error: String(error?.message || error) });
       });
@@ -282,6 +392,35 @@ async function runPostSetupCommandAsync(command: string, cwd: string, signal?: A
 }
 
 /**
+ * 批量读取旧版 AI 规则文件中被 Git ignore 的文件名，减少 Windows 下重复启动 Git 的开销。
+ */
+async function listIgnoredLegacyRuleFilesAsync(args: {
+  sourceDir: string;
+  gitPath?: string;
+  names: readonly string[];
+}): Promise<Set<string>> {
+  const existing = args.names.filter((name) => {
+    try { return fs.existsSync(path.join(args.sourceDir, name)); } catch { return false; }
+  });
+  if (existing.length === 0) return new Set();
+
+  const checked = await execGitAsync({
+    gitPath: args.gitPath,
+    argv: ["-C", args.sourceDir, "check-ignore", "--stdin"],
+    stdin: `${existing.join("\n")}\n`,
+    timeoutMs: 4000,
+  });
+  if (!checked.ok && checked.exitCode !== 1) return new Set();
+
+  return new Set(
+    String(checked.stdout || "")
+      .split(/\r?\n/)
+      .map((item) => item.trim().replace(/\\/g, "/"))
+      .filter(Boolean),
+  );
+}
+
+/**
  * 兼容旧版“创建时拷贝 AI 规则文件”开关，只拷贝被 Git 忽略的规则文件。
  */
 async function copyLegacyRuleFilesAsync(args: {
@@ -292,15 +431,17 @@ async function copyLegacyRuleFilesAsync(args: {
   const copied: string[] = [];
   const warnings: string[] = [];
   const names = ["AGENTS.md", "CLAUDE.md", "GEMINI.md"] as const;
+  const ignoredNames = await listIgnoredLegacyRuleFilesAsync({ sourceDir: args.sourceDir, gitPath: args.gitPath, names });
+  const assertSourcePrefix = createSymlinkPrefixChecker(args.sourceDir);
+  const assertTargetPrefix = createSymlinkPrefixChecker(args.targetDir);
   for (const name of names) {
     try {
       const src = path.join(args.sourceDir, name);
       if (!fs.existsSync(src)) continue;
-      const ign = await execGitAsync({ gitPath: args.gitPath, argv: ["-C", args.sourceDir, "check-ignore", "-q", name], timeoutMs: 4000 });
-      if (ign.exitCode !== 0) continue;
+      if (!ignoredNames.has(name)) continue;
       const dst = path.join(args.targetDir, name);
-      await assertNoSymlinkPathPrefixAsync(args.sourceDir, src);
-      await assertNoSymlinkPathPrefixAsync(args.targetDir, dst);
+      await assertSourcePrefix(src);
+      await assertTargetPrefix(dst);
       const st = await fsp.lstat(src);
       if (st.isSymbolicLink()) throw new Error("symbolic link is not supported");
       if (!st.isFile()) continue;
@@ -323,6 +464,8 @@ export async function applyWorktreePostSetupAsync(args: {
   copyRules?: boolean;
   gitPath?: string;
   signal?: AbortSignal;
+  onLog?: (text: string) => void;
+  onProgress?: (detail: string) => void;
 }): Promise<WorktreePostSetupApplyResult> {
   const sourceDir = toFsPathAbs(args.sourceDir);
   const targetDir = toFsPathAbs(args.targetDir);
@@ -338,6 +481,21 @@ export async function applyWorktreePostSetupAsync(args: {
   const config = normalizeWorktreePostSetupConfig(args.config);
   const copied: string[] = [];
   const warnings: string[] = [];
+  const startedAt = Date.now();
+  const hasActions = (config.items?.length || 0) > 0 || args.copyRules === true || !!String(config.command || "").trim();
+  const log = (text: string): void => {
+    try { args.onLog?.(String(text ?? "")); } catch {}
+  };
+  const progress = (detail: string): void => {
+    try { args.onProgress?.(String(detail || "").trim()); } catch {}
+  };
+
+  if (hasActions) {
+    progress("正在应用保留项与初始化设置");
+    log("[后置准备] 开始应用保留项与初始化设置…\n");
+  }
+  const assertSourcePrefix = createSymlinkPrefixChecker(sourceDir);
+  const assertTargetPrefix = createSymlinkPrefixChecker(targetDir);
 
   for (const item of config.items || []) {
     const relativePath = normalizeWorktreePostSetupRelativePath(item.relativePath);
@@ -357,7 +515,12 @@ export async function applyWorktreePostSetupAsync(args: {
       continue;
     }
     try {
-      await copyPathRecursiveAsync(src, dst, { sourceRoot: sourceDir, targetRoot: targetDir });
+      const itemStartedAt = Date.now();
+      progress(`正在复制保留项：${relativePath}`);
+      log(`[后置准备] 正在复制保留项：${relativePath}\n`);
+      await copyPathRecursiveAsync(src, dst, { assertSourcePrefix, assertTargetPrefix });
+      progress(`保留项复制完成：${relativePath}`);
+      log(`[后置准备] 保留项复制完成：${relativePath}（${formatPostSetupDuration(Date.now() - itemStartedAt)}）\n`);
       copied.push(relativePath);
     } catch (error: any) {
       warnings.push(`${relativePath}: ${String(error?.message || error)}`);
@@ -365,13 +528,23 @@ export async function applyWorktreePostSetupAsync(args: {
   }
 
   if (args.copyRules === true) {
+    const ruleStartedAt = Date.now();
+    progress("正在检查并复制 AI 规则文件");
+    log("[后置准备] 正在检查并复制 AI 规则文件…\n");
     const legacy = await copyLegacyRuleFilesAsync({ sourceDir, targetDir, gitPath: args.gitPath });
     copied.push(...legacy.copied.filter((item) => !copied.includes(item)));
     warnings.push(...legacy.warnings);
+    progress("AI 规则文件处理完成");
+    log(`[后置准备] AI 规则文件处理完成（${formatPostSetupDuration(Date.now() - ruleStartedAt)}）\n`);
   }
 
-  const command = await runPostSetupCommandAsync(config.command || "", targetDir, args.signal);
+  if (String(config.command || "").trim()) progress("正在执行初始化命令");
+  const command = await runPostSetupCommandAsync(config.command || "", targetDir, args.signal, args.onLog, args.onProgress);
   if (command.error) warnings.push(`command: ${command.error}`);
+  if (hasActions) {
+    progress("后置准备完成");
+    log(`[后置准备] 完成（${formatPostSetupDuration(Date.now() - startedAt)}）\n`);
+  }
 
   return {
     ok: true,
