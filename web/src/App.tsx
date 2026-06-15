@@ -1674,6 +1674,7 @@ export default function CodexFlowManagerUI() {
   const [renameDraft, setRenameDraft] = useState<string>("");
   const [renameWidth, setRenameWidth] = useState<number | null>(null);
   const editInputRef = useRef<HTMLInputElement | null>(null);
+  const tabRenameKeyboardHandledRef = useRef<string | null>(null);
   const tabFocusTimerRef = useRef<number | null>(null);
   const tabFocusNextRef = useRef<{ immediate: boolean; allowDuringRename: boolean; delay?: number }>({ immediate: false, allowDuringRename: false });
   const editingTabIdRef = useRef<string | null>(null);
@@ -2127,14 +2128,39 @@ export default function CodexFlowManagerUI() {
   type TabFocusOptions = { focusMode?: 'immediate' | 'defer'; allowDuringRename?: boolean; delay?: number; projectId?: string };
 
   function startEditTab(id: string, name: string) {
-    // set a fixed width equal to current label width to avoid layout jump
+    // 固定为当前标签名宽度，避免输入框出现时布局跳动。
     try {
       const el = document.getElementById(`tab-label-${id}`);
       const w = el ? Math.ceil((el.getBoundingClientRect().width || 80)) : 80;
       setRenameWidth(Math.max(60, w));
     } catch { setRenameWidth(null); }
+    tabRenameKeyboardHandledRef.current = null;
     setEditingTabId(id);
     setRenameDraft(name);
+  }
+
+  /**
+   * 提交标签页名称编辑，并在必要时恢复当前标签页的终端焦点。
+   */
+  function commitTabRename(tabId: string, fallbackName: string) {
+    const projKey = selectedProjectId;
+    const newName = String(renameDraft || fallbackName).trim();
+    setTabsByProject((m) => {
+      const list = (m[projKey] || []).map((x) => x.id === tabId ? { ...x, name: newName } : x);
+      return { ...m, [projKey]: list };
+    });
+    setEditingTabId(null);
+    setRenameWidth(null);
+    if (activeTabId === tabId) scheduleFocusForTab(tabId, { immediate: true, allowDuringRename: true });
+  }
+
+  /**
+   * 取消标签页名称编辑，并在必要时恢复当前标签页的终端焦点。
+   */
+  function cancelTabRename(tabId: string) {
+    setEditingTabId(null);
+    setRenameWidth(null);
+    if (activeTabId === tabId) scheduleFocusForTab(tabId, { immediate: true, allowDuringRename: true });
   }
 
   // 当开始编辑某个 tab 时，选中文本（只执行一次）
@@ -11646,31 +11672,23 @@ export default function CodexFlowManagerUI() {
                         value={renameDraft}
                         onChange={(e) => setRenameDraft(e.target.value)}
                         onBlur={() => {
-                          const projKey = selectedProjectId;
-                          const newName = String(renameDraft || tab.name).trim();
-                          setTabsByProject((m) => {
-                            const list = (m[projKey] || []).map((x) => x.id === tab.id ? { ...x, name: newName } : x);
-                            return { ...m, [projKey]: list };
-                          });
-                          setEditingTabId(null);
-                          setRenameWidth(null);
-                          if (activeTabId === tab.id) scheduleFocusForTab(tab.id, { immediate: true, allowDuringRename: true });
+                          if (tabRenameKeyboardHandledRef.current === tab.id) {
+                            tabRenameKeyboardHandledRef.current = null;
+                            return;
+                          }
+                          commitTabRename(tab.id, tab.name);
                         }}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter') {
-                            const projKey = selectedProjectId;
-                            const newName = String(renameDraft || tab.name).trim();
-                            setTabsByProject((m) => {
-                              const list = (m[projKey] || []).map((x) => x.id === tab.id ? { ...x, name: newName } : x);
-                              return { ...m, [projKey]: list };
-                            });
-                            setEditingTabId(null);
-                            setRenameWidth(null);
-                            if (activeTabId === tab.id) scheduleFocusForTab(tab.id, { immediate: true, allowDuringRename: true });
+                            e.preventDefault();
+                            e.stopPropagation();
+                            tabRenameKeyboardHandledRef.current = tab.id;
+                            commitTabRename(tab.id, tab.name);
                           } else if (e.key === 'Escape') {
-                            setEditingTabId(null);
-                            setRenameWidth(null);
-                            if (activeTabId === tab.id) scheduleFocusForTab(tab.id, { immediate: true, allowDuringRename: true });
+                            e.preventDefault();
+                            e.stopPropagation();
+                            tabRenameKeyboardHandledRef.current = tab.id;
+                            cancelTabRename(tab.id);
                           }
                         }}
                       />
