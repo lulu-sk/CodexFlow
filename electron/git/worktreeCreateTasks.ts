@@ -21,6 +21,8 @@ export type WorktreeCreateTaskItemSnapshot = {
   wtBranch: string;
   index: number;
   status: WorktreeCreateTaskItemStatus;
+  /** 当前正在执行的阶段说明，用于让进度 UI 明确显示慢在哪一步。 */
+  detail?: string;
   updatedAt: number;
   error?: string;
   warnings?: string[];
@@ -204,6 +206,7 @@ export class WorktreeCreateTaskManager {
     wtBranch: string;
     index: number;
     status: WorktreeCreateTaskItemStatus;
+    detail?: string;
     error?: string;
     warnings?: string[];
   }): void {
@@ -223,6 +226,7 @@ export class WorktreeCreateTaskManager {
       wtBranch: String(args.wtBranch || "").trim(),
       index: Math.max(1, Math.floor(Number(args.index) || 1)),
       status: args.status,
+      detail: typeof args.detail === "string" ? String(args.detail || "").trim() || undefined : undefined,
       updatedAt,
       error: typeof args.error === "string" ? String(args.error || "").trim() || undefined : undefined,
       warnings: Array.isArray(args.warnings) ? args.warnings.map((item) => String(item || "").trim()).filter(Boolean) : undefined,
@@ -354,6 +358,17 @@ export class WorktreeCreateTaskManager {
             wtBranch: planned.wtBranch,
             index: Math.max(1, Math.floor(Number(p.index) || 1)),
             status: "creating",
+            detail: "等待开始创建",
+          });
+        },
+        onItemProgress: (p) => {
+          this.upsertWorktreeState(taskId, {
+            providerId: p.providerId,
+            worktreePath: String(p.worktreePath || "").trim(),
+            wtBranch: String(p.wtBranch || "").trim(),
+            index: Math.max(1, Math.floor(Number(p.index) || 1)),
+            status: "creating",
+            detail: String(p.detail || "").trim() || undefined,
           });
         },
       });

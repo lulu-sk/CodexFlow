@@ -258,6 +258,8 @@ type WorktreeDeleteDialogState = {
   needsForceRemoveWorktree?: boolean;
   needsForceDeleteBranch?: boolean;
   needsForceResetWorktree?: boolean;
+  /** 正在执行删除/重置时展示给用户的当前步骤。 */
+  progress?: string;
   error?: string;
 };
 

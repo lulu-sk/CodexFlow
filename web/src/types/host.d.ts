@@ -568,6 +568,8 @@ export type WorktreeCreateTaskItemSnapshot = {
   wtBranch: string;
   index: number;
   status: WorktreeCreateTaskItemStatus;
+  /** 当前正在执行的阶段说明，用于让进度 UI 明确显示慢在哪一步。 */
+  detail?: string;
   updatedAt: number;
   error?: string;
   warnings?: string[];
