@@ -164,6 +164,34 @@ describe("codex-cli-error-classifier（Codex TUI 错误识别）", () => {
     expect(result?.phase).toBe("final");
   });
 
+  it("Codex 最终历史错误行会压住旧的 Reconnecting 状态", () => {
+    const text = `
+      Reconnecting... 1/5 (4m 09s  esc to interrupt)
+      ■ unexpected status 503 Service Unavailable: upstream_status: HTTP 503
+    `;
+
+    const result = classifyCodexCliErrorText(text);
+    expect(result?.kind).toBe("serviceUnavailable");
+    expect(result?.phase).toBe("final");
+    expect(result?.explicitFinal).toBe(true);
+    expect(shouldDelayCodexCliFinalErrorForReconnect(result)).toBe(false);
+    expect(detectCodexCliRuntimeStatusText(text)?.phase).toBe("idle");
+  });
+
+  it("普通方块项目符号不会被误判为 Codex 最终历史行", () => {
+    const text = `
+      Reconnecting... 1/5 (4m 09s  esc to interrupt)
+      ■ checklist item
+    `;
+
+    const result = classifyCodexCliErrorText(text);
+    const status = detectCodexCliRuntimeStatusText(text);
+    expect(result).toBeNull();
+    expect(status?.phase).toBe("reconnecting");
+    expect(status?.reconnectAttempt).toBe(1);
+    expect(status?.reconnectMaxAttempts).toBe(5);
+  });
+
   it("同一个 Reconnecting 状态后的多条错误详情仍不应被误判为最终失败", () => {
     const text = `
       Reconnecting... 5/5 (8m 53s  esc to interrupt)
@@ -175,6 +203,19 @@ describe("codex-cli-error-classifier（Codex TUI 错误识别）", () => {
     expect(result?.kind).toBe("serviceUnavailable");
     expect(result?.phase).toBe("reconnecting");
     expect(result?.reconnectAttempt).toBe(5);
+    expect(result?.reconnectMaxAttempts).toBe(5);
+  });
+
+  it("同一块重绘输出中错误详情先于 Reconnecting 标题时仍识别为重连", () => {
+    const text = `
+      Unexpected status 502 Bad Gateway: upstream_status: HTTP 502
+      Reconnecting... 2/5 (6m 48s  esc to interrupt)
+    `;
+
+    const result = classifyCodexCliErrorText(text);
+    expect(result?.kind).toBe("badGateway");
+    expect(result?.phase).toBe("reconnecting");
+    expect(result?.reconnectAttempt).toBe(2);
     expect(result?.reconnectMaxAttempts).toBe(5);
   });
 

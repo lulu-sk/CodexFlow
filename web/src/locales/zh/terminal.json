@@ -18,6 +18,8 @@
   "agentFailedAutoContinue": "已报错：{reason}（{elapsed}），{seconds}s 后自动 continue（{attempt}/{max}）",
   "continueTimer": "继续计时",
   "cancelTimer": "取消计时",
+  "sendContinueNow": "立即发送 continue",
+  "cancelAutoContinue": "取消自动 continue",
   "timerContextHint": "右键可管理计时",
   "usageHistory": "历史时长记录",
   "totalDuration": "总计时：{total}",
