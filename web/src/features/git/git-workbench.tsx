@@ -18166,6 +18166,18 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
         if (node.id === "ignore") {
           return <ContextMenuItem key="ignore" label={gt("workbench.changes.context.ignore", "忽略")} disabled={node.disabled} shortcut={node.shortcut} title={node.title} onClick={() => { runMenuChangeAction("ignore"); }} />;
         }
+        if (node.id === "newChangelist") {
+          return <ContextMenuItem key="new-changelist" label={gt("workbench.changes.context.newChangelist", "新建更改列表...")} disabled={node.disabled} shortcut={node.shortcut} title={node.title} onClick={() => { runMenuChangeAction("newList"); }} />;
+        }
+        if (node.id === "removeChangelist") {
+          return <ContextMenuItem key="remove-changelist" label={gt("workbench.changes.context.removeChangelist", "删除更改列表")} disabled={node.disabled} shortcut={node.shortcut} title={node.title} onClick={() => { runMenuChangeAction("removeList"); }} />;
+        }
+        if (node.id === "setActiveChangelist") {
+          return <ContextMenuItem key="set-active-changelist" label={gt("workbench.changes.context.setActiveChangelist", "设为活动更改列表")} disabled={node.disabled} shortcut={node.shortcut} title={node.title} onClick={() => { runMenuChangeAction("setActiveList"); }} />;
+        }
+        if (node.id === "editChangelist") {
+          return <ContextMenuItem key="edit-changelist" label={gt("workbench.changes.context.editChangelist", "编辑更改列表...")} disabled={node.disabled} shortcut={node.shortcut} title={node.title} onClick={() => { runMenuChangeAction("editList"); }} />;
+        }
         if (node.id === "createPatch") {
           return <ContextMenuItem key="create-patch" label={gt("workbench.changes.context.createPatchFromLocalCommit", "从本地更改创建补丁...")} disabled={node.disabled} shortcut={node.shortcut} title={node.title} onClick={() => { setMenu(null); void exportPatchFromChangeSelectionAsync("save"); }} />;
         }
@@ -18224,6 +18236,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
             ] : [],
             sharedMenuSections[2]?.map((node) => renderSharedMenuNode(node)) || [],
             sharedMenuSections[3]?.map((node) => renderSharedMenuNode(node)) || [],
+            sharedMenuSections[4]?.map((node) => renderSharedMenuNode(node)) || [],
           ])}
         </ContextMenu>
       );

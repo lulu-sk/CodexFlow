@@ -12,7 +12,7 @@ function flattenMenuIds(sections: ReturnType<typeof buildCommitTreeSharedMenuSec
 }
 
 describe("commit tree context menu model", () => {
-  it("应按参考实现提交工具窗口结构输出共享菜单，并移除 changelist 管理段", () => {
+  it("应按参考实现提交工具窗口结构输出共享菜单，并包含 changelist 管理段", () => {
     const sections = buildCommitTreeSharedMenuSections({
       selection: {
         canCommit: true,
@@ -25,6 +25,10 @@ describe("commit tree context menu model", () => {
         canIgnore: false,
         canShowHistory: true,
         canShelve: true,
+        changeListsEnabled: true,
+        canDeleteList: true,
+        canSetActiveList: false,
+        canEditList: true,
       },
       singleSelection: true,
     });
@@ -32,10 +36,40 @@ describe("commit tree context menu model", () => {
     expect(flattenMenuIds(sections)).toEqual([
       ["commitFile", "rollback", "move", "showDiff", "showStandaloneDiff", "editSource"],
       ["delete"],
+      ["newChangelist", "removeChangelist", "editChangelist"],
       ["createPatch", "copyPatch", "shelve"],
       ["refresh", "localHistory", "git"],
     ]);
-    expect(sections.flatMap((section) => section.map((node) => node.id))).not.toContain("newChangelist");
+    expect(sections.flatMap((section) => section.map((node) => node.id))).not.toContain("setActiveChangelist");
+  });
+
+  it("非活动 changelist 应显示设为活动入口，并位于删除与编辑之间", () => {
+    const sections = buildCommitTreeSharedMenuSections({
+      selection: {
+        canCommit: true,
+        canRollback: true,
+        canMoveToList: true,
+        canShowDiff: true,
+        canOpenSource: true,
+        canDelete: true,
+        canAddToVcs: false,
+        canIgnore: false,
+        canShowHistory: true,
+        canShelve: true,
+        changeListsEnabled: true,
+        canDeleteList: true,
+        canSetActiveList: true,
+        canEditList: true,
+      },
+      singleSelection: true,
+    });
+
+    expect(flattenMenuIds(sections)[2]).toEqual([
+      "newChangelist",
+      "removeChangelist",
+      "setActiveChangelist",
+      "editChangelist",
+    ]);
   });
 
   it("存在未跟踪文件时应暴露 add-to-vcs 与 ignore，且历史子菜单在非单选时禁用", () => {
