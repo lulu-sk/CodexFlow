@@ -593,7 +593,7 @@ function isNodeInsideTerminal(node: EventTarget | null | undefined): boolean {
 }
 
 /**
- * 中文说明：判断右键目标是否为可编辑元素，用于避免调试菜单截获系统编辑菜单。
+ * 判断右键目标是否为可编辑元素，用于避免调试菜单截获系统编辑菜单。
  */
 function isEditableContextMenuTarget(node: EventTarget | null | undefined): boolean {
   const el = node && typeof (node as any).closest === "function" ? (node as HTMLElement) : null;
@@ -618,7 +618,7 @@ function normalizeWorktreeRemarkBaseName(value: unknown): string {
 }
 
 /**
- * 中文说明：从 `序号.备注名` 文本中解析序号；不匹配时返回 null。
+ * 从 `序号.备注名` 文本中解析序号；不匹配时返回 null。
  */
 function parseWorktreeRemarkIndex(label: string, remarkBaseName: string): number | null {
   const text = String(label || "").trim();
@@ -633,7 +633,7 @@ function parseWorktreeRemarkIndex(label: string, remarkBaseName: string): number
 }
 
 /**
- * 中文说明：根据当前管理作用域下的副 worktree 备注，计算下一个可用的 worktree 备注序号（最小为 1）。
+ * 根据当前管理作用域下的副 worktree 备注，计算下一个可用的 worktree 备注序号（最小为 1）。
  */
 function resolveNextWorktreeRemarkIndex(args: {
   store: DirTreeStore | null | undefined;
@@ -669,7 +669,7 @@ function resolveNextWorktreeRemarkIndex(args: {
 }
 
 /**
- * 中文说明：提取项目的“最近活跃时间戳”，用于启动阶段优先刷新更可能被立刻操作的项目。
+ * 提取项目的“最近活跃时间戳”，用于启动阶段优先刷新更可能被立刻操作的项目。
  */
 function resolveProjectGitStatusPriorityTimestamp(project: Project | null | undefined): number {
   const lastOpenedAt = Number(project?.lastOpenedAt);
@@ -680,7 +680,7 @@ function resolveProjectGitStatusPriorityTimestamp(project: Project | null | unde
 }
 
 /**
- * 中文说明：构建启动阶段的 Git 状态探测队列。
+ * 构建启动阶段的 Git 状态探测队列。
  * - 仅保留有效项目 id 与目录路径；
  * - 按最近活跃时间优先，尽快回填用户更可能先点开的项目；
  * - 同优先级下按路径稳定排序，避免刷新顺序抖动。
@@ -713,7 +713,7 @@ type IdeOpenPrefs = {
 };
 
 /**
- * 中文说明：归一化内置 IDE 标识，非法值统一回退到 Cursor。
+ * 归一化内置 IDE 标识，非法值统一回退到 Cursor。
  */
 function normalizeBuiltinIdeId(value: unknown): BuiltinIdeId {
   const raw = String(value || "").trim().toLowerCase();
@@ -722,7 +722,7 @@ function normalizeBuiltinIdeId(value: unknown): BuiltinIdeId {
 }
 
 /**
- * 中文说明：归一化默认 IDE 设置，确保渲染层始终使用稳定结构。
+ * 归一化默认 IDE 设置，确保渲染层始终使用稳定结构。
  */
 function normalizeIdeOpenPrefs(value: unknown): IdeOpenPrefs {
   const raw = value && typeof value === "object" ? (value as any) : {};
@@ -765,7 +765,7 @@ export default function CodexFlowManagerUI() {
     try { (window as any).host?.utils?.perfLog?.(`[ui] ${msg}`); } catch { try { console.log(`[ui] ${msg}`); } catch {} }
   }, [uiDebugEnabled]);
   /**
-   * 中文说明：写入历史项目归属诊断日志，便于定位“点击历史后落到错误项目”的问题。
+   * 写入历史项目归属诊断日志，便于定位“点击历史后落到错误项目”的问题。
    */
   const logHistoryProjectResolution = React.useCallback((message: string) => {
     try { if (!(globalThis as any).__cf_history_debug__) return; } catch {}
@@ -920,14 +920,14 @@ export default function CodexFlowManagerUI() {
     return loadConsoleSession({ currentBootId: appBootId });
   }, [appBootId]);
   /**
-   * 中文说明：恢复仅在“同一 bootId”内有效的运行态草稿快照，用于补回渲染进程刷新造成的输入丢失。
+   * 恢复仅在“同一 bootId”内有效的运行态草稿快照，用于补回渲染进程刷新造成的输入丢失。
    */
   const restoredRendererDraftRecovery = useMemo(() => {
     if (!appBootId) return null;
     return loadRendererDraftRecovery({ currentBootId: appBootId });
   }, [appBootId]);
   /**
-   * 中文说明：将恢复快照中的 tab 输入草稿还原为运行态 state 初始值。
+   * 将恢复快照中的 tab 输入草稿还原为运行态 state 初始值。
    */
   const restoredTabDraftState = useMemo(() => {
     const nextChipsByTab: Record<string, PathChip[]> = {};
@@ -947,7 +947,7 @@ export default function CodexFlowManagerUI() {
     };
   }, [restoredRendererDraftRecovery]);
   /**
-   * 中文说明：将恢复快照中的 worktree 创建草稿还原为内存缓存，保证刷新后仍可找回 fromPaste 图片。
+   * 将恢复快照中的 worktree 创建草稿还原为内存缓存，保证刷新后仍可找回 fromPaste 图片。
    */
   const restoredWorktreeCreateDraftByRepoId = useMemo<Record<string, WorktreeCreateDialogDraftRecord>>(() => {
     const out: Record<string, WorktreeCreateDialogDraftRecord> = {};
@@ -1041,14 +1041,14 @@ export default function CodexFlowManagerUI() {
 	  const worktreeRecycleForkPointSearchReqIdRef = useRef<number>(0);
 
 	  /**
-	   * 中文说明：worktree 创建面板关闭时，同步关闭“初始提示词大屏编辑”弹窗，避免状态残留导致下次打开直接弹出。
+	   * worktree 创建面板关闭时，同步关闭“初始提示词大屏编辑”弹窗，避免状态残留导致下次打开直接弹出。
 	   */
 		  useEffect(() => {
 		    if (!worktreeCreateDialog.open) setWorktreeCreatePromptFullscreenOpen(false);
 		  }, [worktreeCreateDialog.open]);
 
 		  /**
-		   * 中文说明：将 worktree 创建面板的 PathChip 转为可持久化的最小结构（用于 localStorage）。
+		   * 将 worktree 创建面板的 PathChip 转为可持久化的最小结构（用于 localStorage）。
 		   * - 会过滤 `fromPaste` 的临时图片：这些文件会在应用关闭/下次启动时清理，跨会话持久化没有意义；
 		   * - 去除 blob/previewUrl 等运行态字段，避免序列化失败或产生无效数据。
 		   */
@@ -1079,7 +1079,7 @@ export default function CodexFlowManagerUI() {
 		  }, []);
 
 		  /**
-		   * 中文说明：将持久化的提示词 chips 还原为 PathChip（不恢复预览，仅用于显示与插入路径）。
+		   * 将持久化的提示词 chips 还原为 PathChip（不恢复预览，仅用于显示与插入路径）。
 		   */
 		  const restoreWorktreePromptChips = useCallback((chips: PersistedWorktreePromptChip[] | null | undefined): PathChip[] => {
 		    const list = Array.isArray(chips) ? chips : [];
@@ -1114,7 +1114,7 @@ export default function CodexFlowManagerUI() {
 		  }, []);
 
 		  /**
-		   * 中文说明：从 worktreeCreateDialog 状态提取可持久化偏好（用于“每个项目独立记录上次设置”）。
+		   * 从 worktreeCreateDialog 状态提取可持久化偏好（用于“每个项目独立记录上次设置”）。
 		   */
 		  const buildWorktreeCreatePrefsFromDialog = useCallback((state: WorktreeCreateDialogState): WorktreeCreatePrefs => {
 		    const singleProviderId: GitWorktreeProviderId =
@@ -1140,7 +1140,7 @@ export default function CodexFlowManagerUI() {
 		  }, [toPersistedWorktreePromptChips]);
 
 		  /**
-		   * 中文说明：清理指定 repo 的 worktree 创建偏好防抖计时器，避免旧快照在重置后回写。
+		   * 清理指定 repo 的 worktree 创建偏好防抖计时器，避免旧快照在重置后回写。
 		   */
 			  const clearWorktreeCreatePrefsPersistTimer = useCallback((repoProjectId: string) => {
 			    const repoId = String(repoProjectId || "").trim();
@@ -1155,7 +1155,7 @@ export default function CodexFlowManagerUI() {
 			  }, []);
 
 			  /**
-			   * 中文说明：在“从分支创建 worktree”首次成功启动实例后，重置非模型实例类记忆。
+			   * 在“从分支创建 worktree”首次成功启动实例后，重置非模型实例类记忆。
 			   * - 当前需求规则要求：仅保留模型实例相关设置（YOLO、多模型开关、引擎选择与计数）；
 			   * - 其余记忆（baseBranch、工作区备注名、复用已有子 worktree、初始提示词）全部清空；
 			   * - 这样下次打开面板时，会回到接近初始提示的状态，避免把上一次的分支/复用选择继续带入。
@@ -1216,7 +1216,7 @@ export default function CodexFlowManagerUI() {
 			  }, [clearWorktreeCreatePrefsPersistTimer, dirTreeStore.labelById]);
 
 			  /**
-			   * 中文说明：worktree 创建面板字段变更时，更新“按项目隔离”的内存缓存，并防抖写入 localStorage。
+			   * worktree 创建面板字段变更时，更新“按项目隔离”的内存缓存，并防抖写入 localStorage。
 			   */
 			  useEffect(() => {
 			    const repoId = String(worktreeCreateDialog.repoProjectId || "").trim();
@@ -1371,7 +1371,7 @@ export default function CodexFlowManagerUI() {
   const gitRepoInitProgressByProjectIdRef = useRef<Record<string, GitRepoInitProgressSnapshot>>({});
 
   /**
-   * 中文说明：设置某个 worktree 的“删除进行中”标记。
+   * 设置某个 worktree 的“删除进行中”标记。
    * - 用于禁用侧栏按钮，避免重复触发删除（尤其是用户关闭弹窗后再次点击）。
    */
   const setWorktreeDeleteInFlight = useCallback((projectId: string, inFlight: boolean) => {
@@ -1521,7 +1521,7 @@ export default function CodexFlowManagerUI() {
     }
 
     /**
-     * 中文说明：按批次读取 Git 状态，并将结果增量合并到当前缓存。
+     * 按批次读取 Git 状态，并将结果增量合并到当前缓存。
      */
     const loadGitInfoBatch = async (batch: Array<{ id: string; dir: string }>): Promise<void> => {
       if (batch.length === 0) return;
@@ -1555,7 +1555,7 @@ export default function CodexFlowManagerUI() {
   }, [projects]);
 
   /**
-   * 中文说明：解析当前节点所属 worktree 组的“管理父节点”。
+   * 解析当前节点所属 worktree 组的“管理父节点”。
    * - 主工作区返回自身；
    * - 子 worktree 返回其主工作区节点；
    * - 被提升为根级的副 worktree 也会尽量回溯到主工作区节点。
@@ -1570,7 +1570,7 @@ export default function CodexFlowManagerUI() {
   }, [dirTreeStore, gitInfoByProjectId, projects]);
 
   /**
-   * 中文说明：获取当前节点所在 worktree 组下可复用的子 worktree 顺序列表。
+   * 获取当前节点所在 worktree 组下可复用的子 worktree 顺序列表。
    */
   const listManagedWorktreeChildIds = useCallback((projectId: string): string[] => {
     return listManagedWorktreeChildIdsFromStore({
@@ -2697,7 +2697,7 @@ export default function CodexFlowManagerUI() {
     return "";
   }, []);
   /**
-   * 中文说明：设置某个项目“创建 Git 仓库”进行中标记（用于按钮禁用与进度面板重入）。
+   * 设置某个项目“创建 Git 仓库”进行中标记（用于按钮禁用与进度面板重入）。
    */
   const setGitRepoInitInFlight = useCallback((projectId: string, inFlight: boolean) => {
     const pid = String(projectId || "").trim();
@@ -2712,7 +2712,7 @@ export default function CodexFlowManagerUI() {
   }, []);
 
   /**
-   * 中文说明：读取某项目的 Git 初始化进度快照（用于并发任务时恢复对应日志与状态）。
+   * 读取某项目的 Git 初始化进度快照（用于并发任务时恢复对应日志与状态）。
    */
   const getGitRepoInitProgressSnapshot = useCallback((projectId: string): GitRepoInitProgressSnapshot | null => {
     const pid = String(projectId || "").trim();
@@ -2722,7 +2722,7 @@ export default function CodexFlowManagerUI() {
   }, []);
 
   /**
-   * 中文说明：写入某项目的 Git 初始化进度快照（覆盖写，用于状态收敛）。
+   * 写入某项目的 Git 初始化进度快照（覆盖写，用于状态收敛）。
    */
   const setGitRepoInitProgressSnapshot = useCallback((projectId: string, snapshot: GitRepoInitProgressSnapshot): void => {
     const pid = String(projectId || "").trim();
@@ -2736,7 +2736,7 @@ export default function CodexFlowManagerUI() {
   }, []);
 
   /**
-   * 中文说明：判断某个 provider 是否允许触发“Working/完成计时”功能（仅会话型内置引擎）。
+   * 判断某个 provider 是否允许触发“Working/完成计时”功能（仅会话型内置引擎）。
    */
   const shouldEnableAgentTimerForProvider = useCallback((providerId: string): boolean => {
     const pid = String(providerId || "").trim();
@@ -2745,7 +2745,7 @@ export default function CodexFlowManagerUI() {
   }, []);
 
   /**
-   * 中文说明：清理指定标签页待执行的 Codex 自动 continue 定时器。
+   * 清理指定标签页待执行的 Codex 自动 continue 定时器。
    */
   const clearCodexErrorAutoContinueTimer = useCallback((tabId: string, source: string): void => {
     const id = String(tabId || "").trim();
@@ -2765,7 +2765,7 @@ export default function CodexFlowManagerUI() {
   }, [notifyLog]);
 
   /**
-   * 中文说明：重置指定标签页的 Codex 错误扫描状态，可选择保留自动 continue 尝试次数。
+   * 重置指定标签页的 Codex 错误扫描状态，可选择保留自动 continue 尝试次数。
    */
   const resetCodexErrorScanForTab = useCallback((tabId: string, source: string, options?: { keepAttempts?: boolean }): void => {
     const id = String(tabId || "").trim();
@@ -2790,7 +2790,7 @@ export default function CodexFlowManagerUI() {
   }, [notifyLog]);
 
   /**
-   * 中文说明：在用户发送消息或手动继续计时时启动计时；若当前标签页已在计时中则保持不变，避免重复启动。
+   * 在用户发送消息或手动继续计时时启动计时；若当前标签页已在计时中则保持不变，避免重复启动。
    */
   const startAgentTurnTimer = useCallback((tabId: string) => {
     const id = String(tabId || "").trim();
@@ -2819,7 +2819,7 @@ export default function CodexFlowManagerUI() {
   }, [notifyLog, resetCodexErrorScanForTab]);
 
   /**
-   * 中文说明：在收到代理完成通知时结束计时，并固化本轮总耗时，同时记入历史。
+   * 在收到代理完成通知时结束计时，并固化本轮总耗时，同时记入历史。
    */
   const completeAgentTurnTimer = useCallback((tabId: string) => {
     const id = String(tabId || "").trim();
@@ -2861,7 +2861,7 @@ export default function CodexFlowManagerUI() {
   }, [notifyLog, resetCodexErrorScanForTab]);
 
   /**
-   * 中文说明：记录 Codex 当前处于 Reconnecting 阶段；计时仍保持 working，不写入历史。
+   * 记录 Codex 当前处于 Reconnecting 阶段；计时仍保持 working，不写入历史。
    */
   const markAgentTurnReconnecting = useCallback((tabId: string, classification: CodexCliErrorClassification): void => {
     const id = String(tabId || "").trim();
@@ -2897,7 +2897,7 @@ export default function CodexFlowManagerUI() {
   }, [notifyLog]);
 
   /**
-   * 中文说明：清理 Codex Reconnecting 附加状态，恢复普通 working 展示。
+   * 清理 Codex Reconnecting 附加状态，恢复普通 working 展示。
    */
   const clearAgentTurnReconnecting = useCallback((tabId: string, source: string): void => {
     const id = String(tabId || "").trim();
@@ -2934,7 +2934,7 @@ export default function CodexFlowManagerUI() {
   }, [notifyLog]);
 
   /**
-   * 中文说明：当 Codex 后续明确进入 Reconnecting 时，把误落的失败状态恢复为进行中并清理失败残留。
+   * 当 Codex 后续明确进入 Reconnecting 时，把误落的失败状态恢复为进行中并清理失败残留。
    */
   const restoreFailedAgentTurnToReconnecting = useCallback((tabId: string, classification: CodexCliErrorClassification, source: string): void => {
     const id = String(tabId || "").trim();
@@ -2979,7 +2979,48 @@ export default function CodexFlowManagerUI() {
   }, [clearCodexErrorAutoContinueTimer, notifyLog]);
 
   /**
-   * 中文说明：将指定标签页的计时标记为“中断”，并保留当前已耗时（用于终端 ESC 中断场景），同时记入历史。
+   * 当 Codex 后续明确恢复 Working 时，把误落的失败状态恢复为进行中并清理失败残留。
+   */
+  const restoreFailedAgentTurnToWorking = useCallback((tabId: string, source: string): void => {
+    const id = String(tabId || "").trim();
+    if (!id) return;
+    const current = agentTurnTimerByTabRef.current[id];
+    if (!current || current.status !== "failed") return;
+
+    clearCodexErrorAutoContinueTimer(id, `restore-working:${source}`);
+    const restored: AgentTurnTimerState = {
+      status: "working",
+      startedAt: current.startedAt,
+      elapsedMs: 0,
+    };
+    const previousHistory = agentTurnHistoryByTabRef.current[id] || [];
+    const nextHistory = previousHistory.filter((item, index) => {
+      if (index > 0) return true;
+      return !(item.status === "failed" && item.startedAt === current.startedAt && item.errorKind === current.errorKind);
+    });
+
+    agentTurnTimerByTabRef.current = {
+      ...agentTurnTimerByTabRef.current,
+      [id]: restored,
+    };
+    agentTurnHistoryByTabRef.current = {
+      ...agentTurnHistoryByTabRef.current,
+      [id]: nextHistory,
+    };
+    setAgentTurnTimerByTab((prev) => ({
+      ...prev,
+      [id]: restored,
+    }));
+    setAgentTurnHistoryByTab((prev) => ({
+      ...prev,
+      [id]: nextHistory,
+    }));
+    clearPendingForTab(id);
+    notifyLog(`agentTimer.failed.restoreWorking tab=${id} source=${source}`);
+  }, [clearCodexErrorAutoContinueTimer, notifyLog]);
+
+  /**
+   * 将指定标签页的计时标记为“中断”，并保留当前已耗时（用于终端 ESC 中断场景），同时记入历史。
    */
   const interruptAgentTurnTimer = useCallback((tabId: string, source: string) => {
     const id = String(tabId || "").trim();
@@ -3020,7 +3061,7 @@ export default function CodexFlowManagerUI() {
   }, [notifyLog, resetCodexErrorScanForTab]);
 
   /**
-   * 中文说明：在识别到 Codex CLI 错误时结束本轮计时，并记录失败原因与自动 continue 计划。
+   * 在识别到 Codex CLI 错误时结束本轮计时，并记录失败原因与自动 continue 计划。
    */
   const failAgentTurnTimer = useCallback((tabId: string, classification: CodexCliErrorClassification, autoContinue?: {
     scheduledAt?: number;
@@ -3070,7 +3111,7 @@ export default function CodexFlowManagerUI() {
   }, [notifyLog]);
 
   /**
-   * 中文说明：取消指定标签页的计时状态（用于右键手动取消）。
+   * 取消指定标签页的计时状态（用于右键手动取消）。
    */
   const cancelAgentTurnTimer = useCallback((tabId: string, source: string) => {
     const id = String(tabId || "").trim();
@@ -3121,14 +3162,14 @@ export default function CodexFlowManagerUI() {
   }, [notifyLog]);
 
   /**
-   * 中文说明：将 Codex 错误类别转换为状态条可读文案。
+   * 将 Codex 错误类别转换为状态条可读文案。
    */
   const resolveCodexErrorKindLabel = useCallback((kind: CodexCliErrorKind | undefined): string => {
     return getCodexCliErrorKindLabel(kind);
   }, []);
 
   /**
-   * 中文说明：生成标签页计时状态展示文本，支持“计时中/中断/失败/已完成”状态。
+   * 生成标签页计时状态展示文本，支持“计时中/中断/失败/已完成”状态。
    */
   const resolveAgentTurnStatusText = useCallback((tabId: string): string => {
     const id = String(tabId || "").trim();
@@ -3167,7 +3208,7 @@ export default function CodexFlowManagerUI() {
   }, [agentTurnClockTick, agentTurnTimerByTab, resolveCodexErrorKindLabel, t]);
 
   /**
-   * 中文说明：打开计时状态的右键菜单，提供“继续计时/取消计时”等操作入口。
+   * 打开计时状态的右键菜单，提供“继续计时/取消计时”等操作入口。
    */
   const openAgentTurnContextMenu = useCallback((event: React.MouseEvent, tabId: string) => {
     const id = String(tabId || "").trim();
@@ -3178,7 +3219,7 @@ export default function CodexFlowManagerUI() {
   }, []);
 
   /**
-   * 中文说明：渲染输入区上方的计时状态条（仅在存在计时状态时显示）。
+   * 渲染输入区上方的计时状态条（仅在存在计时状态时显示）。
    */
   const renderAgentTurnStatusBar = useCallback((tabId: string, wrapperClassName: string = "mb-0.5 px-1") => {
     const id = String(tabId || "").trim();
@@ -3279,7 +3320,7 @@ export default function CodexFlowManagerUI() {
   }, [agentTurnHistoryByTab, agentTurnTimerByTab, agentTurnClockTick, openAgentTurnContextMenu, resolveAgentTurnStatusText, t]);
 
   /**
-   * 中文说明：判断是否存在任意“进行中”计时；存在时驱动 1 秒一次的 UI 刷新。
+   * 判断是否存在任意“进行中”计时；存在时驱动 1 秒一次的 UI 刷新。
    */
   const hasWorkingAgentTimer = useMemo(() => {
     const now = Date.now();
@@ -3291,7 +3332,7 @@ export default function CodexFlowManagerUI() {
   }, [agentTurnClockTick, agentTurnTimerByTab]);
 
   /**
-   * 中文说明：存在运行中计时或自动 continue 倒计时时，每秒更新一次渲染节拍以刷新显示。
+   * 存在运行中计时或自动 continue 倒计时时，每秒更新一次渲染节拍以刷新显示。
    */
   useEffect(() => {
     if (!hasWorkingAgentTimer) return;
@@ -3300,7 +3341,7 @@ export default function CodexFlowManagerUI() {
   }, [hasWorkingAgentTimer]);
 
   /**
-   * 中文说明：监听键盘 ESC；当焦点位于终端区域且该标签页计时中时，执行取消计时。
+   * 监听键盘 ESC；当焦点位于终端区域且该标签页计时中时，执行取消计时。
    */
   useEffect(() => {
     const onKeyDownCapture = (event: KeyboardEvent) => {
@@ -3317,7 +3358,7 @@ export default function CodexFlowManagerUI() {
   }, [interruptAgentTurnTimer]);
 
   /**
-   * 中文说明：当标签集合变化时，清理已不存在标签页的计时状态，防止状态泄漏。
+   * 当标签集合变化时，清理已不存在标签页的计时状态，防止状态泄漏。
    */
   useEffect(() => {
     const retainedTabIds = collectRetainedAgentTurnTabIds({
@@ -3555,7 +3596,7 @@ export default function CodexFlowManagerUI() {
   }
 
   /**
-   * 中文说明：记录最近一次完成通知，用于去重。
+   * 记录最近一次完成通知，用于去重。
    */
   function recordCompletionSnapshot(tabId: string, preview: string, source: CompletionEventSource) {
     const safeId = String(tabId || "").trim();
@@ -3568,7 +3609,7 @@ export default function CodexFlowManagerUI() {
   }
 
   /**
-   * 中文说明：清理指定标签页待发送的 OSC 完成通知，避免 external 预览到达后仍回放旧的单行版本。
+   * 清理指定标签页待发送的 OSC 完成通知，避免 external 预览到达后仍回放旧的单行版本。
    */
   function clearPendingOscCompletion(tabId: string, reason: string): void {
     const safeId = String(tabId || "").trim();
@@ -3585,7 +3626,7 @@ export default function CodexFlowManagerUI() {
   }
 
   /**
-   * 中文说明：为 Codex 的 OSC 完成事件设置短时缓冲，优先等待更完整的 external 预览。
+   * 为 Codex 的 OSC 完成事件设置短时缓冲，优先等待更完整的 external 预览。
    */
   function armPendingOscCompletion(tabId: string, preview: string): void {
     const safeId = String(tabId || "").trim();
@@ -3609,7 +3650,7 @@ export default function CodexFlowManagerUI() {
   }
 
   /**
-   * 中文说明：判断两条完成预览是否可视为“同一条完成事件”。
+   * 判断两条完成预览是否可视为“同一条完成事件”。
    * - 优先严格相等；
    * - 兼容“一个是另一个前缀”的截断差异（例如 OSC 截断 vs hook 完整预览）。
    */
@@ -3618,7 +3659,7 @@ export default function CodexFlowManagerUI() {
   }
 
   /**
-   * 中文说明：判断是否为短时间内重复通知（支持相似预览去重）。
+   * 判断是否为短时间内重复通知（支持相似预览去重）。
    */
   function isDuplicateCompletion(
     tabId: string,
@@ -3661,7 +3702,7 @@ export default function CodexFlowManagerUI() {
   }
 
   /**
-   * 中文说明：为“继续对话”创建的标签页设置短时守卫，避免会话恢复阶段误触发完成通知。
+   * 为“继续对话”创建的标签页设置短时守卫，避免会话恢复阶段误触发完成通知。
    */
   function armResumeCompletionGuard(tabId: string, providerId: string) {
     const safeId = String(tabId || "").trim();
@@ -3673,7 +3714,7 @@ export default function CodexFlowManagerUI() {
   }
 
   /**
-   * 中文说明：判断并消费恢复期守卫；命中时返回 true，表示本次完成通知应被抑制。
+   * 判断并消费恢复期守卫；命中时返回 true，表示本次完成通知应被抑制。
    * 说明：守卫仅在 Codex 恢复路径中被设置，因此这里不再依赖 providerId，避免标签映射尚未同步时误清除守卫。
    */
   function consumeResumeCompletionGuardIfNeeded(tabId: string, hasWorkingTimer: boolean): boolean {
@@ -3699,7 +3740,7 @@ export default function CodexFlowManagerUI() {
   }
 
   /**
-   * 中文说明：根据外部通知负载推断对应的 tabId。
+   * 根据外部通知负载推断对应的 tabId。
    */
   function resolveExternalTabId(payload: { tabId?: string; providerId?: string; envLabel?: string }): string | null {
     const direct = String(payload?.tabId || "").trim();
@@ -3976,7 +4017,7 @@ export default function CodexFlowManagerUI() {
   }
 
   /**
-   * 中文说明：处理代理完成事件，统一刷新通知、铃声、用量与本轮输入计时状态。
+   * 处理代理完成事件，统一刷新通知、铃声、用量与本轮输入计时状态。
    */
   function handleAgentCompletion(
     tabId: string,
@@ -4028,7 +4069,7 @@ export default function CodexFlowManagerUI() {
   }
 
   /**
-   * 中文说明：处理子代理完成通知，只提醒用户，不结束主任务计时、不增加主任务徽标、不触发自动提交。
+   * 处理子代理完成通知，只提醒用户，不结束主任务计时、不增加主任务徽标、不触发自动提交。
    */
   function handleSubagentCompletion(
     tabId: string,
@@ -4055,7 +4096,7 @@ export default function CodexFlowManagerUI() {
   }
 
   /**
-   * 中文说明：处理已识别的 Codex CLI 错误，统一落计时失败、通知用户并按设置安排自动 continue。
+   * 处理已识别的 Codex CLI 错误，统一落计时失败、通知用户并按设置安排自动 continue。
    */
   function handleCodexCliErrorDetected(tabId: string, classification: CodexCliErrorClassification, errorKey: string) {
     const id = String(tabId || "").trim();
@@ -4095,7 +4136,7 @@ export default function CodexFlowManagerUI() {
   }
 
   /**
-   * 中文说明：处理 Codex Reconnecting 阶段的错误详情；默认只更新状态，不结束计时、不驱动任务栏错误角标。
+   * 处理 Codex Reconnecting 阶段的错误详情；默认只更新状态，不结束计时、不驱动任务栏错误角标。
    */
   function handleCodexCliReconnectDetected(tabId: string, classification: CodexCliErrorClassification) {
     const id = String(tabId || "").trim();
@@ -4130,6 +4171,31 @@ export default function CodexFlowManagerUI() {
     if (typeof state.pendingFinalErrorTimerId === "number") {
       try { window.clearTimeout(state.pendingFinalErrorTimerId); } catch {}
     }
+    const bufferedStatus = detectCodexCliRuntimeStatusText(state.buffer || "");
+    const bufferedClassification = classifyCodexCliErrorText(state.buffer || "");
+    const bufferedErrorKey = bufferedClassification ? buildCodexCliErrorKey(bufferedClassification) : "";
+    if (
+      bufferedStatus?.phase === "working" ||
+      bufferedStatus?.phase === "reconnecting" ||
+      bufferedClassification?.phase !== "final" ||
+      bufferedErrorKey !== errorKey
+    ) {
+      codexErrorScanByTabRef.current[id] = {
+        ...state,
+        pendingFinalErrorKey: undefined,
+        pendingFinalErrorKind: undefined,
+        pendingFinalError: undefined,
+        pendingFinalErrorAt: undefined,
+        pendingFinalErrorTimerId: undefined,
+      };
+      const reason = bufferedStatus?.phase
+        ? `runtime-${bufferedStatus.phase}`
+        : bufferedClassification?.phase
+          ? `classification-${bufferedClassification.phase}`
+          : "classification-missing";
+      notifyLog(`codexError.pendingFinal.drop tab=${id} source=${source} reason=${reason}`);
+      return;
+    }
     codexErrorScanByTabRef.current[id] = {
       ...state,
       pendingFinalErrorKey: undefined,
@@ -4145,11 +4211,11 @@ export default function CodexFlowManagerUI() {
       return;
     }
     notifyLog(`codexError.pendingFinal.flush tab=${id} source=${source} key=${errorKey}`);
-    handleCodexCliErrorDetected(id, state.pendingFinalError, errorKey);
+    handleCodexCliErrorDetected(id, bufferedClassification, errorKey);
   }
 
   /**
-   * 中文说明：在已有 PTY 输出流上低成本扫描 Codex CLI 错误文本。
+   * 在已有 PTY 输出流上低成本扫描 Codex CLI 错误文本。
    */
   function processCodexPtyErrorChunk(ptyId: string, chunk: string) {
     if (!ptyId || typeof chunk !== "string" || chunk.length === 0) return;
@@ -4211,6 +4277,30 @@ export default function CodexFlowManagerUI() {
       return;
     }
     if (timerState.status === "failed") {
+      if (chunkRuntimeStatus?.phase === "working") {
+        restoreFailedAgentTurnToWorking(tabId, "pty-runtime-status");
+        const restoredScanState = codexErrorScanByTabRef.current[tabId] || previous;
+        if (typeof restoredScanState.pendingFinalErrorTimerId === "number") {
+          try { window.clearTimeout(restoredScanState.pendingFinalErrorTimerId); } catch {}
+        }
+        codexErrorScanByTabRef.current[tabId] = {
+          ...restoredScanState,
+          buffer: cleanedChunk.slice(-CODEX_ERROR_SCAN_MAX_BUFFER_LENGTH),
+          lastReconnectErrorKey: undefined,
+          lastFinalErrorKey: undefined,
+          lastReconnectStatusAt: undefined,
+          pendingErrorKey: undefined,
+          pendingErrorKind: undefined,
+          autoContinueTimerId: undefined,
+          pendingFinalErrorKey: undefined,
+          pendingFinalErrorKind: undefined,
+          pendingFinalError: undefined,
+          pendingFinalErrorAt: undefined,
+          pendingFinalErrorTimerId: undefined,
+        };
+        notifyLog(`codexError.failed.working tab=${tabId}`);
+        return;
+      }
       if (chunkRuntimeStatus?.phase !== "reconnecting") return;
       const nextBuffer = `${previous.buffer || ""}${cleanedChunk}`.slice(-CODEX_ERROR_SCAN_MAX_BUFFER_LENGTH);
       const reconnectClassification = classifyCodexCliErrorText(`${cleanedChunk}\n${timerState.errorMessage || ""}`) || {
@@ -4865,13 +4955,13 @@ export default function CodexFlowManagerUI() {
     });
   }, [projects]);
   /**
-   * 中文说明：判断 child 是否处于 parent 路径边界内（包含完全相同的路径）。
+   * 判断 child 是否处于 parent 路径边界内（包含完全相同的路径）。
    */
   const pathStartsWithBoundary = useCallback((child: string, parent: string): boolean => {
     return pathMatchesProjectScope(child, parent);
   }, []);
   /**
-   * 中文说明：基于历史 dirKey 解析“最具体”的项目归属。
+   * 基于历史 dirKey 解析“最具体”的项目归属。
    * - 若同一会话同时命中父项目与子项目，优先归属到更具体的子项目；
    * - 无命中时返回空，交给后续 hash 与兜底逻辑处理。
    */
@@ -4894,7 +4984,7 @@ export default function CodexFlowManagerUI() {
     return target?.project || null;
   }, [historyProjectCandidates, selectedProjectId]);
   /**
-   * 中文说明：根据当前选中项目与目录树关系，解析历史范围对应的项目集合。
+   * 根据当前选中项目与目录树关系，解析历史范围对应的项目集合。
    */
   const resolveHistoryScopeProjectIds = useCallback((projectId: string, scope: HistorySearchScope): string[] => {
     const currentId = String(projectId || "").trim();
@@ -5005,7 +5095,7 @@ export default function CodexFlowManagerUI() {
     (async () => {
       const next: Record<string, string[]> = {};
       /**
-       * 中文说明：将单个 Gemini projectHash 归属到指定项目。
+       * 将单个 Gemini projectHash 归属到指定项目。
        */
       const addOwner = (hash: string, projectId: string) => {
         const key = String(hash || "").trim().toLowerCase();
@@ -5016,7 +5106,7 @@ export default function CodexFlowManagerUI() {
         next[key] = [...prev, ownerId];
       };
       /**
-       * 中文说明：为单个项目路径补齐 Gemini projectHash 候选。
+       * 为单个项目路径补齐 Gemini projectHash 候选。
        */
       const addProjectPathHashes = async (projectId: string, rawPath?: string) => {
         const text = String(rawPath || "").trim();
@@ -5051,7 +5141,7 @@ export default function CodexFlowManagerUI() {
 
     (async () => {
       /**
-       * 中文说明：将项目路径加入当前历史范围对应的 Gemini hash 候选集合。
+       * 将项目路径加入当前历史范围对应的 Gemini hash 候选集合。
        */
       const addCandidate = async (rawPath?: string) => {
         const text = typeof rawPath === "string" ? rawPath.trim() : "";
@@ -5116,7 +5206,7 @@ export default function CodexFlowManagerUI() {
     return Array.from(mp.values()).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, []);
   /**
-   * 中文说明：将项目实体转换为历史归属标签，供列表展示与动作路由复用。
+   * 将项目实体转换为历史归属标签，供列表展示与动作路由复用。
    */
   const createHistoryProjectMatch = useCallback((project: Project): HistoryProjectMatch => {
     return {
@@ -5126,7 +5216,7 @@ export default function CodexFlowManagerUI() {
     };
   }, [hiddenProjectIdSet]);
   /**
-   * 中文说明：缓存单个 Gemini projectHash 的项目归属，避免同一会话重复做异步推断。
+   * 缓存单个 Gemini projectHash 的项目归属，避免同一会话重复做异步推断。
    */
   const upsertProjectGeminiHashOwner = useCallback((hash: string, projectId: string): void => {
     const key = String(hash || "").trim().toLowerCase();
@@ -5144,7 +5234,7 @@ export default function CodexFlowManagerUI() {
     });
   }, []);
   /**
-   * 中文说明：基于给定的 Gemini 归属缓存推断单条历史记录所属项目，用于同步渲染与快速动作判断。
+   * 基于给定的 Gemini 归属缓存推断单条历史记录所属项目，用于同步渲染与快速动作判断。
    */
   const resolveHistorySessionProjectMatchWithOwners = useCallback((session: HistorySession, owners: Record<string, string[]>): HistoryProjectMatch | null => {
     const bestPathMatch = resolveHistoryProjectByDirKey(session.dirKey || "");
@@ -5171,13 +5261,13 @@ export default function CodexFlowManagerUI() {
     return createHistoryProjectMatch(target);
   }, [createHistoryProjectMatch, historyScopeProjectIdSet, projectsById, resolveHistoryProjectByDirKey, selectedProjectId]);
   /**
-   * 中文说明：为单条历史记录推断其所属项目，用于跨项目搜索结果跳转与标签展示。
+   * 为单条历史记录推断其所属项目，用于跨项目搜索结果跳转与标签展示。
    */
   const resolveHistorySessionProjectMatch = useCallback((session: HistorySession): HistoryProjectMatch | null => {
     return resolveHistorySessionProjectMatchWithOwners(session, projectGeminiHashOwners);
   }, [projectGeminiHashOwners, resolveHistorySessionProjectMatchWithOwners]);
   /**
-   * 中文说明：按需计算 Gemini 会话的项目归属，修复首次点击时 projectHash 映射尚未就绪的竞态。
+   * 按需计算 Gemini 会话的项目归属，修复首次点击时 projectHash 映射尚未就绪的竞态。
    */
   const resolveHistorySessionProjectMatchAsync = useCallback(async (session: HistorySession): Promise<HistoryProjectMatch | null> => {
     const immediate = resolveHistorySessionProjectMatchWithOwners(session, projectGeminiHashOwnersRef.current);
@@ -5216,7 +5306,7 @@ export default function CodexFlowManagerUI() {
     return next;
   }, [historySessions, resolveHistorySessionProjectMatch]);
   /**
-   * 中文说明：按 filePath 或 id 在当前历史列表中定位单条会话，供同步/异步动作解析复用。
+   * 按 filePath 或 id 在当前历史列表中定位单条会话，供同步/异步动作解析复用。
    */
   const findHistorySessionEntry = useCallback((filePath?: string, preferredSession?: HistorySession | null): HistorySession | undefined => {
     if (preferredSession) return preferredSession;
@@ -5226,7 +5316,7 @@ export default function CodexFlowManagerUI() {
       || historySessionsRef.current.find((item) => item.id === key);
   }, []);
   /**
-   * 中文说明：为历史详情/恢复动作解析目标会话与目标项目；若无法确认归属，则返回空项目，避免误落到错误仓库。
+   * 为历史详情/恢复动作解析目标会话与目标项目；若无法确认归属，则返回空项目，避免误落到错误仓库。
    */
   const resolveHistoryActionTarget = useCallback((
     filePath?: string,
@@ -5247,7 +5337,7 @@ export default function CodexFlowManagerUI() {
     };
   }, [findHistorySessionEntry, historySessionProjectMetaMap, projectsById, resolveHistorySessionProjectMatch, selectedProject, selectedProjectId]);
   /**
-   * 中文说明：为用户动作异步解析历史目标项目；同步命中失败时再按需补算 Gemini projectHash 归属。
+   * 为用户动作异步解析历史目标项目；同步命中失败时再按需补算 Gemini projectHash 归属。
    */
   const resolveHistoryActionTargetAsync = useCallback(async (
     filePath?: string,
@@ -5271,7 +5361,7 @@ export default function CodexFlowManagerUI() {
     };
   }, [findHistorySessionEntry, historySessionProjectMetaMap, projectsById, resolveHistorySessionProjectMatch, resolveHistorySessionProjectMatchAsync, selectedProject, selectedProjectId]);
   /**
-   * 中文说明：将侧栏项目选中态同步到历史会话的真实归属，供跨项目跳转与继续会话复用。
+   * 将侧栏项目选中态同步到历史会话的真实归属，供跨项目跳转与继续会话复用。
    */
   const syncHistoryTargetProjectSelection = useCallback((project: Project | null, projectMatch?: HistoryProjectMatch | null): void => {
     if (!project) return;
@@ -5281,7 +5371,7 @@ export default function CodexFlowManagerUI() {
     revealProjectRowInSidebar(project.id);
   }, [revealProjectRowInSidebar, selectedProjectId, showHiddenProjects]);
   /**
-   * 中文说明：打开指定历史记录，并在需要时切换左侧项目到其真实归属。
+   * 打开指定历史记录，并在需要时切换左侧项目到其真实归属。
    */
   const openHistorySession = useCallback(async (session: HistorySession, groupKey?: string | null): Promise<void> => {
     try { suppressAutoSelectRef.current = false; } catch {}
@@ -5630,7 +5720,7 @@ export default function CodexFlowManagerUI() {
   }, [terminalMode, wslDistro]);
 
   /**
-   * 中文说明：获取标签页真实执行环境。
+   * 获取标签页真实执行环境。
    * - 若标签页已实际打开 PTY，则优先使用该 PTY 绑定的环境；
    * - 否则回退到该 Provider 当前配置。
    */
@@ -5639,7 +5729,7 @@ export default function CodexFlowManagerUI() {
   }, [getProviderEnv]);
 
   /**
-   * 中文说明：执行已排队的 Codex 自动 continue，发送前再次校验标签页、设置与尝试次数。
+   * 执行已排队的 Codex 自动 continue，发送前再次校验标签页、设置与尝试次数。
    */
   const sendCodexAutoContinue = useCallback(async (tabId: string, errorKey: string): Promise<void> => {
     const id = String(tabId || "").trim();
@@ -5710,7 +5800,7 @@ export default function CodexFlowManagerUI() {
   ]);
 
   /**
-   * 中文说明：用户从右键菜单立即发送 Codex continue，绕过自动 continue 开关但保留发送前环境校验。
+   * 用户从右键菜单立即发送 Codex continue，绕过自动 continue 开关但保留发送前环境校验。
    */
   const sendCodexManualContinue = useCallback(async (tabId: string): Promise<void> => {
     const id = String(tabId || "").trim();
@@ -5770,7 +5860,7 @@ export default function CodexFlowManagerUI() {
   ]);
 
   /**
-   * 中文说明：取消指定标签页已安排的 Codex 自动 continue，同时清除状态条倒计时展示。
+   * 取消指定标签页已安排的 Codex 自动 continue，同时清除状态条倒计时展示。
    */
   const cancelCodexScheduledContinue = useCallback((tabId: string, source: string): void => {
     const id = String(tabId || "").trim();
@@ -5804,7 +5894,7 @@ export default function CodexFlowManagerUI() {
   }, [clearCodexErrorAutoContinueTimer, notifyLog]);
 
   /**
-   * 中文说明：按当前设置为可恢复 Codex 错误安排一次自动 continue。
+   * 按当前设置为可恢复 Codex 错误安排一次自动 continue。
    */
   const scheduleCodexAutoContinue = useCallback((tabId: string, classification: CodexCliErrorClassification, errorKey: string): {
     scheduledAt: number;
@@ -5915,7 +6005,7 @@ export default function CodexFlowManagerUI() {
   }, []);
 
   /**
-   * 中文说明：构造某个标签页真正打开 PTY 时使用的环境变量。
+   * 构造某个标签页真正打开 PTY 时使用的环境变量。
    * - 默认始终保留 provider 完成通知链路需要的 env；
    * - `Gemini + Windows/Pwsh` 始终注入 Windows 外部编辑器桥接；
    * - `Gemini + WSL` 预先注入 WSL 外部编辑器桥接，但仅在超长文本命中阈值时才真正启用；
@@ -6042,7 +6132,7 @@ export default function CodexFlowManagerUI() {
   }, [buildProviderBaseStartupCmd, buildProviderStartupCmd, codexTraceEnabled]);
 
   /**
-   * 中文说明：按目标 Provider 的真实终端环境，编译 worktree 首次启动要注入的初始提示词。
+   * 按目标 Provider 的真实终端环境，编译 worktree 首次启动要注入的初始提示词。
    * - 项目内路径统一转相对路径，保证不同 worktree 可复用；
    * - 项目外绝对路径保留目标终端对应的 Windows / WSL 样式。
    */
@@ -6404,7 +6494,7 @@ export default function CodexFlowManagerUI() {
   }, []);
 
   /**
-   * 中文说明：将“同一 bootId 内有效”的输入草稿与 worktree 创建草稿写入本地，供渲染刷新后恢复。
+   * 将“同一 bootId 内有效”的输入草稿与 worktree 创建草稿写入本地，供渲染刷新后恢复。
    */
   const rendererDraftRecoverySaveTimerRef = useRef<number | null>(null);
   useEffect(() => {
@@ -6791,7 +6881,7 @@ export default function CodexFlowManagerUI() {
             },
           });
         } else if (res.status === "failed" || res.source !== "network") {
-          // 中文说明：静默更新检查的降级路径属于“正常可用但无网络结果”的场景，避免在未开启调试时污染控制台。
+          // 静默更新检查的降级路径属于“正常可用但无网络结果”的场景，避免在未开启调试时污染控制台。
           uiLog(`Silent update check fallback: ${String(res.error || res.source || "")}`);
         }
       } catch {}
@@ -6896,7 +6986,7 @@ export default function CodexFlowManagerUI() {
   }, [pendingCompletions, tabsByProject]);
 
   /**
-   * 中文说明：按项目聚合仍处于 working 状态的标签页数量，用于驱动项目行数量徽标的动态提示。
+   * 按项目聚合仍处于 working 状态的标签页数量，用于驱动项目行数量徽标的动态提示。
    */
   const workingByProject = useMemo(() => {
     const map: Record<string, number> = {};
@@ -7122,7 +7212,7 @@ export default function CodexFlowManagerUI() {
 
   async function openConsoleForProject(project: Project) {
     if (!project) return;
-    // 中文说明：普通新建终端是点击热路径，直接使用已保存环境；环境修复由设置加载/显式切换/PTY 启动兜底承担。
+    // 普通新建终端是点击热路径，直接使用已保存环境；环境修复由设置加载/显式切换/PTY 启动兜底承担。
     const env = getProviderEnv(activeProviderId);
     const startupCmd = buildProviderStartupCmd(activeProviderId, env);
     const tabName = buildConsoleTabNameForEnv(env, project.id);
@@ -7246,7 +7336,7 @@ export default function CodexFlowManagerUI() {
   async function openNewConsole() {
     const project = selectedProject;
     if (!project) return;
-    // 中文说明：普通新增标签页优先保证按钮响应，避免启动前环境/CLI 检测阻塞交互。
+    // 普通新增标签页优先保证按钮响应，避免启动前环境/CLI 检测阻塞交互。
     const env = getProviderEnv(activeProviderId);
     const startupCmd = buildProviderStartupCmd(activeProviderId, env);
     const tabName = buildConsoleTabNameForEnv(env, project.id);
@@ -7661,7 +7751,7 @@ export default function CodexFlowManagerUI() {
     let cancelled = false;
 
     (async () => {
-      // 中文说明：通过 ref 读取最新范围描述，避免“全部会话”下仅同步左侧项目时误触发整页历史重载。
+      // 通过 ref 读取最新范围描述，避免“全部会话”下仅同步左侧项目时误触发整页历史重载。
       const descriptor = historyScopeDescriptorRef.current;
       if (!descriptor.primaryProject && descriptor.effectiveScope !== "all_sessions") {
         setHistorySessions([]);
@@ -8112,7 +8202,7 @@ export default function CodexFlowManagerUI() {
   }, [inputFullscreenByTab, inputFullscreenClosingTabs, requestInputFullscreenClose, requestInputFullscreenOpen]);
 
   /**
-   * 中文说明：将输入区内容发送到当前标签页终端，并在首条发送时启动“Working 计时”。
+   * 将输入区内容发送到当前标签页终端，并在首条发送时启动“Working 计时”。
    */
   async function sendCommand() {
     if (!activeTab) return;
@@ -8186,14 +8276,14 @@ export default function CodexFlowManagerUI() {
   }
 
   /**
-   * 中文说明：关闭“进行中标签页关闭确认”弹窗并清空上下文。
+   * 关闭“进行中标签页关闭确认”弹窗并清空上下文。
    */
   function dismissCloseWorkingTabConfirm() {
     setCloseWorkingTabConfirm({ open: false, tabId: null, projectId: null, tabName: "", isWorking: false, hasPromptInput: false });
   }
 
   /**
-   * 中文说明：判断标签页输入框是否仍有未发送文本或任意 Chip。
+   * 判断标签页输入框是否仍有未发送文本或任意 Chip。
    */
   function hasPendingPromptInputForTab(tabId: string): boolean {
     const draft = String(draftByTab[tabId] || "").trim();
@@ -8202,7 +8292,7 @@ export default function CodexFlowManagerUI() {
   }
 
   /**
-   * 中文说明：关闭指定标签页，并清理与该标签页关联的 PTY、通知和计时状态。
+   * 关闭指定标签页，并清理与该标签页关联的 PTY、通知和计时状态。
    */
   function closeTab(id: string, projectIdOverride?: string) {
     const tabId = String(id || "").trim();
@@ -8282,7 +8372,7 @@ export default function CodexFlowManagerUI() {
   }
 
   /**
-   * 中文说明：请求关闭标签页；若为手动关闭且标签处于 working 状态或输入框有未发送内容，则先弹出确认框。
+   * 请求关闭标签页；若为手动关闭且标签处于 working 状态或输入框有未发送内容，则先弹出确认框。
    */
   function requestCloseTab(id: string, source: "manual" | "auto" = "manual") {
     const tabId = String(id || "").trim();
@@ -8312,7 +8402,7 @@ export default function CodexFlowManagerUI() {
   }
 
   /**
-   * 中文说明：确认关闭需要二次确认的标签页。
+   * 确认关闭需要二次确认的标签页。
    */
   function confirmCloseWorkingTab() {
     const tabId = String(closeWorkingTabConfirm.tabId || "").trim();
@@ -8369,7 +8459,7 @@ export default function CodexFlowManagerUI() {
   }, [dirTreeStore.labelById]);
 
   /**
-   * 中文说明：解析“创建 worktree”默认备注基名。
+   * 解析“创建 worktree”默认备注基名。
    * 优先级：外部显式值（含空串） > 当前项目备注名 > 项目名。
    */
   const resolveDefaultWorktreeRemarkBaseName = useCallback((project: Project, explicitValue?: string): string => {
@@ -8583,7 +8673,7 @@ export default function CodexFlowManagerUI() {
   }, [dirTreeStore.parentById, ensureBuildRunConfigLoaded]);
 
   /**
-   * 中文说明：统一使用应用内提示弹窗展示 Build/Run 相关错误，避免原生 alert 破坏弹窗交互与焦点状态。
+   * 统一使用应用内提示弹窗展示 Build/Run 相关错误，避免原生 alert 破坏弹窗交互与焦点状态。
    */
   const showBuildRunNotice = useCallback((action: BuildRunAction, message: string) => {
     const text = String(message || "").trim();
@@ -8744,7 +8834,7 @@ export default function CodexFlowManagerUI() {
   }, [parseWorktreePostSetupItemsDraft, t, worktreePostSetupDialog]);
 
   /**
-   * 中文说明：切换 Build/Run 配置保存范围，并在切回“继承父项目”时同步对齐草稿内容。
+   * 切换 Build/Run 配置保存范围，并在切回“继承父项目”时同步对齐草稿内容。
    */
   const switchBuildRunDialogSaveScope = useCallback(async (nextScope: "self" | "parent") => {
     const snapshot = buildRunDialog;
@@ -9243,7 +9333,7 @@ export default function CodexFlowManagerUI() {
     if (instances.length === 0) return;
 
     /**
-     * 中文说明：以统一结构重置“创建进度”面板状态，避免字段遗漏导致 UI 状态不一致。
+     * 以统一结构重置“创建进度”面板状态，避免字段遗漏导致 UI 状态不一致。
      */
     const createWorktreeProgressInitialState = (nextTaskId: string): WorktreeCreateProgressState => ({
       open: true,
@@ -9328,7 +9418,7 @@ export default function CodexFlowManagerUI() {
     let stopPostCreate = false;
 
     /**
-     * 中文说明：去重追加警告，避免重复提示相同信息。
+     * 去重追加警告，避免重复提示相同信息。
      */
     const addWarning = (text: string): void => {
       const msg = String(text || "").trim();
@@ -9337,7 +9427,7 @@ export default function CodexFlowManagerUI() {
     };
 
     /**
-     * 中文说明：为新建子 worktree 自动写入 `序号.备注名` 备注；备注基名为空时跳过。
+     * 为新建子 worktree 自动写入 `序号.备注名` 备注；备注基名为空时跳过。
      */
     const assignAutoRemarkLabelForWorktree = (projectId: string): void => {
       const pid = String(projectId || "").trim();
@@ -9351,7 +9441,7 @@ export default function CodexFlowManagerUI() {
     };
 
     /**
-     * 中文说明：更新单个 worktree 的“后续逻辑”状态（启动中/成功/失败），供进度面板集中展示。
+     * 更新单个 worktree 的“后续逻辑”状态（启动中/成功/失败），供进度面板集中展示。
      */
     const updatePostState = (worktreeKey: string, patch: { status: "idle" | "running" | "success" | "error"; error?: string; projectId?: string; tabId?: string }): void => {
       const key = String(worktreeKey || "").trim();
@@ -9374,7 +9464,7 @@ export default function CodexFlowManagerUI() {
     };
 
     /**
-     * 中文说明：若任务进入取消态，则停止分发/执行后续启动逻辑。
+     * 若任务进入取消态，则停止分发/执行后续启动逻辑。
      */
     const stopPostCreateIfCanceled = (taskStatus: WorktreeCreateTaskStatus): void => {
       if (taskStatus === "canceling" || taskStatus === "canceled") {
@@ -9383,7 +9473,7 @@ export default function CodexFlowManagerUI() {
     };
 
     /**
-     * 中文说明：当后续流程被取消时，统一将对应条目标记为“已取消”并终止执行。
+     * 当后续流程被取消时，统一将对应条目标记为“已取消”并终止执行。
      */
     const haltPostCreateIfCanceled = (worktreeKey: string, projectId?: string): boolean => {
       if (!stopPostCreate) return false;
@@ -9396,7 +9486,7 @@ export default function CodexFlowManagerUI() {
     };
 
     /**
-     * 中文说明：单个 worktree 创建成功后，立即并发执行后续逻辑（入库、挂树、启动对应引擎）。
+     * 单个 worktree 创建成功后，立即并发执行后续逻辑（入库、挂树、启动对应引擎）。
      */
     const runPostCreateForWorktreeAsync = async (state: WorktreeCreateTaskItemSnapshot): Promise<void> => {
       const worktreeKey = String(state?.key || "").trim();
@@ -9471,7 +9561,7 @@ export default function CodexFlowManagerUI() {
     };
 
     /**
-     * 中文说明：为新出现的成功项分发后续并发任务（同一 key 只分发一次）。
+     * 为新出现的成功项分发后续并发任务（同一 key 只分发一次）。
      */
     const dispatchPostCreateJobs = (states: WorktreeCreateTaskItemSnapshot[]): void => {
       if (stopPostCreate) return;
@@ -9845,7 +9935,7 @@ export default function CodexFlowManagerUI() {
   }, [openGitRepoInitDialog, openWorktreeCreateDialog, probeGitInfoForProject, quickCreateWorktree, t]);
 
   /**
-   * 中文说明：统计指定项目仍在运行的终端代理数量（以 tab 是否仍绑定 PTY 为准）。
+   * 统计指定项目仍在运行的终端代理数量（以 tab 是否仍绑定 PTY 为准）。
    */
   const countRunningTerminalAgentsByProjectId = useCallback((projectId: string): number => {
     const pid = String(projectId || "").trim();
@@ -9860,7 +9950,7 @@ export default function CodexFlowManagerUI() {
   }, []);
 
   /**
-   * 中文说明：关闭“删除/重置前终端代理提醒”弹窗，并将用户选择回写给等待中的 Promise。
+   * 关闭“删除/重置前终端代理提醒”弹窗，并将用户选择回写给等待中的 Promise。
    */
   const resolveWorktreeDeleteResetTerminalAgentsConfirm = useCallback((proceed: boolean) => {
     const resolver = worktreeBlockedDialogResolverRef.current;
@@ -9870,7 +9960,7 @@ export default function CodexFlowManagerUI() {
   }, []);
 
   /**
-   * 中文说明：若当前项目仍存在终端代理，则在“删除/重置 worktree”前弹出提醒（取消/继续）。
+   * 若当前项目仍存在终端代理，则在“删除/重置 worktree”前弹出提醒（取消/继续）。
    * @returns 用户是否选择继续删除/重置
    */
   const confirmWorktreeDeleteAndResetByTerminalAgents = useCallback(async (project: Project): Promise<boolean> => {
@@ -9893,7 +9983,7 @@ export default function CodexFlowManagerUI() {
   }, [countRunningTerminalAgentsByProjectId]);
 
   /**
-   * 中文说明：关闭“合并前终端代理提醒”弹窗，并将用户选择回写给等待中的 Promise。
+   * 关闭“合并前终端代理提醒”弹窗，并将用户选择回写给等待中的 Promise。
    */
   const resolveWorktreeRecycleTerminalAgentsConfirm = useCallback((proceed: boolean) => {
     const resolver = worktreeRecycleTerminalAgentsDialogResolverRef.current;
@@ -9903,7 +9993,7 @@ export default function CodexFlowManagerUI() {
   }, []);
 
   /**
-   * 中文说明：若当前项目仍存在终端代理，则在“合并(worktree 回收)”前弹出确认（取消/继续）。
+   * 若当前项目仍存在终端代理，则在“合并(worktree 回收)”前弹出确认（取消/继续）。
    * @returns 用户是否选择继续合并
    */
   const confirmWorktreeRecycleByTerminalAgents = useCallback(async (project: Project): Promise<boolean> => {
@@ -9926,7 +10016,7 @@ export default function CodexFlowManagerUI() {
   }, [countRunningTerminalAgentsByProjectId]);
 
   /**
-   * 中文说明：计算“删除/重置偏好”的仓库维度 key。
+   * 计算“删除/重置偏好”的仓库维度 key。
    * - 优先使用主 worktree 路径（同仓库多个子 worktree 共用一份记忆）；
    * - 回退到当前项目路径，保证异常场景下仍可用。
    */
@@ -9940,7 +10030,7 @@ export default function CodexFlowManagerUI() {
   }, [gitInfoByProjectId]);
 
   /**
-   * 中文说明：加载删除弹窗里“重置到分支”的可选分支列表，并推断默认目标分支。
+   * 加载删除弹窗里“重置到分支”的可选分支列表，并推断默认目标分支。
    * - 优先使用创建记录中的基分支作为默认值；
    * - 若创建记录缺失，则退回到目标基 worktree 当前分支或首个可选分支；
    * - 加载失败时不阻断“删除”动作，仅禁用“重置”动作并显示提示。
@@ -10064,7 +10154,7 @@ export default function CodexFlowManagerUI() {
       const metaRes: any = await (window as any).host?.gitWorktree?.getMeta?.(project.winPath);
       const meta = metaRes && metaRes.ok ? metaRes.meta : null;
 
-      // 中文说明：创建记录缺失或路径已失效时，不阻断流程：优先从 git worktree 信息推断可用的默认操作落点，并允许用户手动选择分支。
+      // 创建记录缺失或路径已失效时，不阻断流程：优先从 git worktree 信息推断可用的默认操作落点，并允许用户手动选择分支。
       let repoMainPath = String(meta?.repoMainPath || "").trim();
       let cachedWtBranch = "";
       let fallbackRepoPath = project.winPath;
@@ -10115,7 +10205,7 @@ export default function CodexFlowManagerUI() {
         branches[0] ||
         "";
 
-      // 中文说明：源分支默认取创建记录；若该分支已不存在，则尝试读取 worktree 当前分支；仍不可用则留空让用户选择。
+      // 源分支默认取创建记录；若该分支已不存在，则尝试读取 worktree 当前分支；仍不可用则留空让用户选择。
       let inferredWtBranch = "";
       if (metaWtBranch && !branchSet.has(metaWtBranch)) {
         try {
@@ -10150,7 +10240,7 @@ export default function CodexFlowManagerUI() {
   }, []);
 
   /**
-   * 中文说明：校验并应用用户手动输入的分叉点引用（提交号/引用名）。
+   * 校验并应用用户手动输入的分叉点引用（提交号/引用名）。
    */
   const validateAndSelectForkPointRef = useCallback(async (raw: string) => {
     const dlg = worktreeRecycleDialog;
@@ -10218,7 +10308,7 @@ export default function CodexFlowManagerUI() {
   }, [t, worktreeRecycleDialog]);
 
   /**
-   * 中文说明：当选择“仅分叉点之后”回收时，自动解析并置顶展示分叉点候选（创建记录/自动推断）。
+   * 当选择“仅分叉点之后”回收时，自动解析并置顶展示分叉点候选（创建记录/自动推断）。
    */
   useEffect(() => {
     if (!worktreeRecycleDialog.open) return;
@@ -10312,7 +10402,7 @@ export default function CodexFlowManagerUI() {
   ]);
 
   /**
-   * 中文说明：加载分叉点候选提交列表（可搜索）。
+   * 加载分叉点候选提交列表（可搜索）。
    */
   useEffect(() => {
     if (!worktreeRecycleDialog.open) return;
@@ -10411,7 +10501,7 @@ export default function CodexFlowManagerUI() {
 		      return;
 		    }
 
-	      // 中文说明：仅当用户在“主 worktree 脏”弹窗中确认继续时才启用自动 stash/恢复。
+	      // 仅当用户在“主 worktree 脏”弹窗中确认继续时才启用自动 stash/恢复。
 	      const autoStashBaseWorktree = opts?.autoStashBaseWorktree === true;
 
 		    setWorktreeRecycleDialog((prev) => ({ ...prev, running: true, error: undefined }));
@@ -10890,7 +10980,7 @@ export default function CodexFlowManagerUI() {
 	  }, [gitWorktreeAutoCommitEnabled, showGitActionErrorDialog, t]);
 
   /**
-   * 中文说明：移除项目的“自定义 Provider 目录记录”。
+   * 移除项目的“自定义 Provider 目录记录”。
    * - 若该项目仅由目录记录产生，则会从项目列表中移除（等同于“删除该项目条目”）。
    * - 若该项目已存在内置会话，则仅清空目录记录，项目仍保留。
    */
@@ -10909,7 +10999,7 @@ export default function CodexFlowManagerUI() {
   }, [removeProjectFromUIList, upsertProjectInList]);
 
   /**
-   * 中文说明：扫描项目目录下存在的项目级规则文件（AGENTS/CLAUDE/GEMINI）。
+   * 扫描项目目录下存在的项目级规则文件（AGENTS/CLAUDE/GEMINI）。
    */
   const scanProjectRuleEntries = useCallback(async (project: Project | null): Promise<ProjectRuleMenuEntry[]> => {
     const root = String(project?.winPath || "").trim();
@@ -10933,7 +11023,7 @@ export default function CodexFlowManagerUI() {
   }, []);
 
   /**
-   * 中文说明：打开项目右键菜单，并异步加载“项目级规则文件”可编辑入口。
+   * 打开项目右键菜单，并异步加载“项目级规则文件”可编辑入口。
    */
   const openProjectContextMenu = useCallback((project: Project, x: number, y: number) => {
     setProjectCtxMenu({ show: true, x, y, project });
@@ -10948,7 +11038,7 @@ export default function CodexFlowManagerUI() {
   }, [scanProjectRuleEntries]);
 
   /**
-   * 中文说明：打开项目级规则文件进行编辑（系统默认编辑器）。
+   * 打开项目级规则文件进行编辑（系统默认编辑器）。
    */
   const editProjectRuleFile = useCallback(async (filePath: string) => {
     const target = String(filePath || "").trim();
@@ -10964,7 +11054,7 @@ export default function CodexFlowManagerUI() {
   }, [t]);
 
   /**
-   * 中文说明：打开历史记录“删除到回收站”确认弹窗（用于悬停快捷键 Delete/Del）。
+   * 打开历史记录“删除到回收站”确认弹窗（用于悬停快捷键 Delete/Del）。
    */
   const openHistoryDeleteConfirm = useCallback((item: HistorySession | null, groupKey: string | null) => {
     if (!item) return;
@@ -10973,7 +11063,7 @@ export default function CodexFlowManagerUI() {
   }, []);
 
   /**
-   * 中文说明：判断当前是否存在打开的应用内 Dialog（用于避免悬停快捷键在弹窗期间误触）。
+   * 判断当前是否存在打开的应用内 Dialog（用于避免悬停快捷键在弹窗期间误触）。
    */
   const hasAnyOpenDialog = useCallback((): boolean => {
     try {
@@ -10985,7 +11075,7 @@ export default function CodexFlowManagerUI() {
   }, []);
 
   /**
-   * 中文说明：判断键盘事件是否应忽略悬停快捷键（IME/组合键/弹窗打开/指定输入区域等）。
+   * 判断键盘事件是否应忽略悬停快捷键（IME/组合键/弹窗打开/指定输入区域等）。
    */
   const shouldIgnoreHoverShortcutEvent = useCallback((event: KeyboardEvent): boolean => {
     if (!event) return true;
@@ -11003,7 +11093,7 @@ export default function CodexFlowManagerUI() {
 
   useEffect(() => {
     /**
-     * 中文说明：悬停快捷键处理器。
+     * 悬停快捷键处理器。
      * - 项目列表：H=隐藏/取消隐藏；D=删除 worktree 或移除目录记录
      * - 历史列表：Delete/Del=删除历史对话（删除到回收站）
      */
@@ -12509,14 +12599,14 @@ export default function CodexFlowManagerUI() {
     }
   };
   /**
-   * 中文说明：解析当前详情面板所选历史记录，便于在无当前项目时仍提供正确的项目上下文。
+   * 解析当前详情面板所选历史记录，便于在无当前项目时仍提供正确的项目上下文。
    */
   const selectedHistorySessionForDetail = useMemo(() => {
     if (!selectedHistoryId) return null;
     return historySessions.find((item) => item.id === selectedHistoryId) || null;
   }, [historySessions, selectedHistoryId]);
   /**
-   * 中文说明：为历史详情计算项目根路径；当前项目范围下允许回退到已选项目，避免旧会话因归属推断不完整而丢失上下文。
+   * 为历史详情计算项目根路径；当前项目范围下允许回退到已选项目，避免旧会话因归属推断不完整而丢失上下文。
    */
   const selectedHistoryDetailProject = useMemo(() => {
     if (!selectedHistorySessionForDetail) return selectedProject;
@@ -14583,7 +14673,7 @@ export default function CodexFlowManagerUI() {
             });
 
             /**
-             * 中文说明：将“创建状态”映射为可视化文案。
+             * 将“创建状态”映射为可视化文案。
              */
             const toCreateStatusLabel = (createStatus: WorktreeCreateTaskItemStatus): string => {
               if (createStatus === "creating") return t("projects:worktreeCreating", "创建中…") as string;
@@ -14593,7 +14683,7 @@ export default function CodexFlowManagerUI() {
             };
 
             /**
-             * 中文说明：将“后续流程状态”映射为可视化文案。
+             * 将“后续流程状态”映射为可视化文案。
              */
             const toPostStatusLabel = (postStatus: "idle" | "running" | "success" | "error"): string => {
               if (postStatus === "running") return t("projects:worktreeCreatePostStarting", "后续处理中…") as string;
@@ -14603,7 +14693,7 @@ export default function CodexFlowManagerUI() {
             };
 
             /**
-             * 中文说明：按状态返回对应样式类名，便于在并发列表中快速定位异常。
+             * 按状态返回对应样式类名，便于在并发列表中快速定位异常。
              */
             const toStatusClassName = (value: "creating" | "success" | "error" | "canceled" | "idle" | "running"): string => {
               if (value === "success") return "text-emerald-700 bg-emerald-50 border-emerald-200";
@@ -16208,7 +16298,7 @@ type HistoryUserInputScrollRequest = {
 };
 
 /**
- * 中文说明：渲染历史详情中的图片块。
+ * 渲染历史详情中的图片块。
  * - 主视图改为“路径 + 小图”紧凑排布，避免历史详情被大图撑开；
  * - 悬停与点击交互统一复用输入框 chips 的图片预览行为。
  */
@@ -16558,7 +16648,7 @@ type HistoryRenderOptions = {
 };
 
 /**
- * 中文说明：构造历史详情每条消息的稳定 messageKey。
+ * 构造历史详情每条消息的稳定 messageKey。
  * 设计：使用 “sessionId + 原始消息序号” 来避免筛选/搜索导致的索引漂移，从而防止 React 复用错误节点。
  */
 function buildHistoryMessageKey(sessionId: string, originalIndex: number): string {
@@ -16566,7 +16656,7 @@ function buildHistoryMessageKey(sessionId: string, originalIndex: number): strin
 }
 
 /**
- * 中文说明：对高频输入做轻量防抖，避免每次按键都立即触发重型搜索与高亮计算。
+ * 对高频输入做轻量防抖，避免每次按键都立即触发重型搜索与高亮计算。
  */
 function useDebouncedValue<TValue>(value: TValue, delayMs: number): TValue {
   const [debouncedValue, setDebouncedValue] = useState<TValue>(value);
@@ -16587,7 +16677,7 @@ function useDebouncedValue<TValue>(value: TValue, delayMs: number): TValue {
 }
 
 /**
- * 中文说明：渲染历史详情头部时间信息。
+ * 渲染历史详情头部时间信息。
  */
 function renderHistoryHeader(session: HistorySession) {
   if (!session) return null;
@@ -16599,7 +16689,7 @@ function renderHistoryHeader(session: HistorySession) {
 }
 
 /**
- * 中文说明：渲染单条历史消息卡片。
+ * 渲染单条历史消息卡片。
  * 关键点：必须使用稳定 messageKey 作为 DOM 标识，避免筛选/搜索后的节点复用错位。
  */
 function HistoryMessageCard({ view, options }: { view: HistoryMessageView; options?: HistoryRenderOptions }) {
@@ -16625,7 +16715,7 @@ function HistoryMessageCard({ view, options }: { view: HistoryMessageView; optio
 }
 
 /**
- * 中文说明：渲染非虚拟化的历史消息列表。
+ * 渲染非虚拟化的历史消息列表。
  * 用于需要完整 DOM 的场景，保留 DOM 高亮与逐条定位行为。
  */
 function renderHistoryMessageList(messages: HistoryMessageView[], options?: HistoryRenderOptions) {
@@ -16639,7 +16729,7 @@ function renderHistoryMessageList(messages: HistoryMessageView[], options?: Hist
 }
 
 /**
- * 中文说明：估算单条历史消息在详情面板中的初始高度。
+ * 估算单条历史消息在详情面板中的初始高度。
  * 目的：为虚拟列表提供稳定首帧布局，真实高度会在消息挂载后自动校正。
  */
 function estimateHistoryMessageHeight(view: HistoryMessageView): number {
@@ -16657,7 +16747,7 @@ function estimateHistoryMessageHeight(view: HistoryMessageView): number {
 }
 
 /**
- * 中文说明：渲染历史详情的消息块列表。
+ * 渲染历史详情的消息块列表。
  * 关键点：精确搜索保留完整 DOM；常规浏览与大结果快速搜索可切换为虚拟列表。
  */
 function renderHistoryBlocks(session: HistorySession, messages: HistoryMessageView[], options?: HistoryRenderOptions) {
@@ -16672,7 +16762,7 @@ function renderHistoryBlocks(session: HistorySession, messages: HistoryMessageVi
 
 
 /**
- * 中文说明：按类型筛选与关键字过滤历史消息，并生成“命中索引”。
+ * 按类型筛选与关键字过滤历史消息，并生成“命中索引”。
  * - messages：返回带稳定 messageKey 的消息视图（基于原始序号），用于渲染与 DOM 查找；
  * - matches：用于“上一个/下一个”跳转的命中列表；文本命中与 DOM 高亮共用稳定的 messageKey 顺序与 matchId。
  */
@@ -16702,7 +16792,7 @@ function filterHistoryMessages(
   let matchCounter = 0;
 
   /**
-   * 中文说明：按消息内的文本顺序分配稳定命中 ID，确保数据层导航与 DOM 高亮可对齐。
+   * 按消息内的文本顺序分配稳定命中 ID，确保数据层导航与 DOM 高亮可对齐。
    */
   const captureTextMatches = (messageKey: string, value: string, state: { nextTextIndex: number }): boolean => {
     if (!normalizedSearch) return false;
@@ -16770,7 +16860,7 @@ function filterHistoryMessages(
 }
 
 /**
- * 中文说明：规整 history.read 返回的消息数组，避免异常返回结构让详情加载流程中断。
+ * 规整 history.read 返回的消息数组，避免异常返回结构让详情加载流程中断。
  */
 function normalizeHistoryReadMessages(res: any): HistoryMessage[] {
   const rawMessages = Array.isArray(res?.messages) ? res.messages : [];
@@ -17170,7 +17260,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
     let attempts = 0;
 
     /**
-     * 中文说明：等待虚拟列表滚动并完成挂载后，多帧尝试定位当前命中，确保离屏结果也能稳定高亮。
+     * 等待虚拟列表滚动并完成挂载后，多帧尝试定位当前命中，确保离屏结果也能稳定高亮。
      */
     const tryActivateMatch = () => {
       if (cancelled) return;
@@ -17377,7 +17467,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
   }, [cancelHistoryDetailBottomScroll, messageIndexByKey, userInputMessageKeys]);
 
   /**
-   * 中文说明：在当前可见的 USER Input 锚点之间循环切换。
+   * 在当前可见的 USER Input 锚点之间循环切换。
    */
   const goToNextUserInput = useCallback(() => {
     if (!userInputMessageKeys.length) return;
@@ -17389,7 +17479,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
   }, [activateUserInputIndex, userInputMessageKeys.length]);
 
   /**
-   * 中文说明：在当前可见的 USER Input 锚点之间反向循环切换。
+   * 在当前可见的 USER Input 锚点之间反向循环切换。
    */
   const goToPrevUserInput = useCallback(() => {
     if (!userInputMessageKeys.length) return;
@@ -17411,7 +17501,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
   }), [activeDetailMessageKey, registerMessageRef, projectWinPath, inlineImageState]);
 
   /**
-   * 中文说明：将历史详情滚动区滚动到顶部。
+   * 将历史详情滚动区滚动到顶部。
    */
   const scrollHistoryDetailToTop = useCallback(() => {
     cancelHistoryDetailBottomScroll();
@@ -17421,7 +17511,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
   }, [cancelHistoryDetailBottomScroll]);
 
   /**
-   * 中文说明：将历史详情滚动区滚动到底部。
+   * 将历史详情滚动区滚动到底部。
    */
   const scrollHistoryDetailToBottom = useCallback(() => {
     cancelHistoryDetailBottomScroll();
@@ -17528,7 +17618,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
   }, [cancelHistoryDetailBottomScroll, filteredMessages.length, useVirtualizedHistory]);
 
   /**
-   * 中文说明：点击历史详情正文时让滚动区获得焦点，以便接收快捷键。
+   * 点击历史详情正文时让滚动区获得焦点，以便接收快捷键。
    */
   const focusHistoryDetailViewport = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     cancelHistoryDetailBottomScroll();
@@ -17544,7 +17634,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
   }, [cancelHistoryDetailBottomScroll]);
 
   /**
-   * 中文说明：在历史详情滚动区内处理 Ctrl + Home / Ctrl + End 快捷键。
+   * 在历史详情滚动区内处理 Ctrl + Home / Ctrl + End 快捷键。
    */
   const handleHistoryDetailBoundaryShortcut = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
     const viewport = detailScrollAreaRef.current;
