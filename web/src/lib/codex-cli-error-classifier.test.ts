@@ -151,6 +151,37 @@ describe("codex-cli-error-classifier（Codex TUI 错误识别）", () => {
     expect(detectCodexCliRuntimeStatusText(text)?.phase).toBe("working");
   });
 
+  it("新的 Working 状态会压住旧的 Concurrency 错误", () => {
+    const text = `
+      stream disconnected before completion: Concurrency limit exceeded for user, please retry later
+      Working (13m 06s  esc to interrupt)
+    `;
+
+    expect(classifyCodexCliErrorText(text)).toBeNull();
+    expect(detectCodexCliRuntimeStatusText(text)?.phase).toBe("working");
+  });
+
+  it("源码 diff 中的 Concurrency 样例不会被误判为运行时错误", () => {
+    const text = `
+      diff --git a/web/src/lib/codex-cli-error-classifier.test.ts b/web/src/lib/codex-cli-error-classifier.test.ts
+      +      text: "stream disconnected before completion: Concurrency limit exceeded for user, please retry later",
+      +      pattern: /concurrency limit exceeded/i,
+      Working (13m 06s  esc to interrupt)
+    `;
+
+    expect(classifyCodexCliErrorText(text)).toBeNull();
+    expect(detectCodexCliRuntimeStatusText(text)?.phase).toBe("working");
+  });
+
+  it("搜索结果中的 Concurrency 样例不会被误判为运行时错误", () => {
+    const text = `
+      web/src/lib/codex-cli-error-classifier.ts:83:    pattern: /concurrency limit exceeded/i,
+      web/src/lib/codex-cli-error-classifier.test.ts:76:      text: "stream disconnected before completion: Concurrency limit exceeded for user, please retry later",
+    `;
+
+    expect(classifyCodexCliErrorText(text)).toBeNull();
+  });
+
   it("Working 后出现的新错误仍识别为最终失败", () => {
     const text = `
       Reconnecting... 1/5 (4m 18s  esc to interrupt)

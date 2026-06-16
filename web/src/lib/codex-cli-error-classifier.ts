@@ -129,6 +129,8 @@ const CODEX_FINAL_HISTORY_LINE_PATTERN =
   /^(?:unexpected status\s+\d{3}|exceeded retry limit|Conversation interrupted|Goal budget reached|you['’]ve hit your usage limit|usage limit(?:ed)?(?:\s+reached)?|selected model is at capacity|model is at capacity|currently experiencing high demand|400\s+Bad Request|403\s+Forbidden|413\s+(?:Payload Too Large|Request Entity Too Large)|sign in with ChatGPT)\b/i;
 const EXPLICIT_FINAL_ERROR_PATTERN =
   /(?:exceeded retry limit|selected model is at capacity|you['’]ve hit your usage limit|usage limit(?:ed)?(?:\s+reached)?|currently experiencing high demand|400\s+Bad Request|<h1>\s*400\s+Bad Request\s*<\/h1>|unexpected status\s+413\b|413\s+Payload Too Large|413\s+Request Entity Too Large|<h1>\s*413\s+(?:Payload Too Large|Request Entity Too Large)\s*<\/h1>)/i;
+const SOURCE_LOCATION_LINE_PATTERN = /^(?:(?:[A-Za-z]:)?[./\\\w@ -]+\.(?:ts|tsx|js|jsx|json|cjs|mjs|md|css|scss|html|yml|yaml|txt|cs|shader|uxml|uss):\d+(?::\d+)?:)/i;
+const SOURCE_LITERAL_LINE_PATTERN = /\b(?:pattern|text|kind|matchedText|label|expect|toBe|toContain)\s*[:(=]/i;
 
 /**
  * 去除终端 ANSI/控制序列，并保留足够的换行信息用于错误文本识别。
@@ -200,6 +202,27 @@ function clipMatchedText(text: string): string {
   const normalized = text.replace(/\s+/g, " ").trim();
   if (normalized.length <= MAX_MATCHED_TEXT_LENGTH) return normalized;
   return `${normalized.slice(0, MAX_MATCHED_TEXT_LENGTH - 1)}…`;
+}
+
+/**
+ * 读取指定位置所在的单行文本，用于判断匹配内容是否来自源码、diff 或搜索结果。
+ */
+function readLineAtIndex(text: string, index: number): string {
+  const safeIndex = Math.max(0, Number(index) || 0);
+  const lineStart = Math.max(0, text.lastIndexOf("\n", Math.max(0, safeIndex - 1)) + 1);
+  const lineEnd = text.indexOf("\n", safeIndex);
+  return text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd).trim();
+}
+
+/**
+ * 判断匹配是否更像源码/diff/搜索结果里的错误样例，而不是 Codex CLI 运行时真正吐出的错误。
+ */
+function isLikelySourceOrDiffErrorExample(text: string, errorIndex: number): boolean {
+  const lineText = readLineAtIndex(text, errorIndex);
+  if (!lineText) return false;
+  if (/^[+-]\s/.test(lineText)) return true;
+  if (SOURCE_LOCATION_LINE_PATTERN.test(lineText)) return true;
+  return SOURCE_LITERAL_LINE_PATTERN.test(lineText) && /["'`/]/.test(lineText);
 }
 
 /**
@@ -311,7 +334,8 @@ function findLastRuleMatch(text: string, rule: CodexCliErrorRule): RegExpExecArr
   let lastMatch: RegExpExecArray | null = null;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(text)) !== null) {
-    lastMatch = match;
+    if (!isLikelySourceOrDiffErrorExample(text, match.index || 0))
+      lastMatch = match;
     if (match[0] === "") pattern.lastIndex += 1;
   }
   return lastMatch;
