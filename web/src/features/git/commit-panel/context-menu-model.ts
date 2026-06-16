@@ -13,6 +13,10 @@ export type CommitTreeSharedMenuActionId =
   | "delete"
   | "addToVcs"
   | "ignore"
+  | "newChangelist"
+  | "removeChangelist"
+  | "setActiveChangelist"
+  | "editChangelist"
   | "createPatch"
   | "copyPatch"
   | "shelve"
@@ -48,7 +52,13 @@ type CommitTreeSharedSelectionSnapshot = Pick<
   | "canIgnore"
   | "canShowHistory"
   | "canShelve"
->;
+> & Partial<Pick<
+  CommitSelectionContext,
+  | "canEditList"
+  | "canDeleteList"
+  | "canSetActiveList"
+  | "changeListsEnabled"
+>>;
 
 /**
  * 保持与参考实现一致的提交树共享菜单的删除入口显示规则。
@@ -110,7 +120,7 @@ function createSubmenuNode(
 
 /**
  * 按参考实现提交工具窗口 `MultipleLocalChangeListsBrowser` 的结构构建主提交树共享右键菜单。
- * 这里故意不输出 changelist 管理项，只保留 commit tool window 实际会出现的公共动作与共享子菜单。
+ * changelist 管理段位于文件删除/添加段之后、补丁与搁置段之前。
  */
 export function buildCommitTreeSharedMenuSections(args: {
   selection: CommitTreeSharedSelectionSnapshot;
@@ -124,6 +134,15 @@ export function buildCommitTreeSharedMenuSections(args: {
   const showAddToVcs = args.showAddToVcs ?? selection.canAddToVcs;
   const showDelete = args.showDelete ?? true;
   const showEditSource = args.showEditSource ?? true;
+  const showChangeListActions = selection.changeListsEnabled === true;
+  const changeListActions = showChangeListActions
+    ? [
+        createActionNode("newChangelist"),
+        ...(selection.canDeleteList ? [createActionNode("removeChangelist")] : []),
+        ...(selection.canSetActiveList ? [createActionNode("setActiveChangelist")] : []),
+        ...(selection.canEditList ? [createActionNode("editChangelist", { shortcut: "Ctrl+R, R" })] : []),
+      ]
+    : [];
 
   return [
     [
@@ -147,6 +166,7 @@ export function buildCommitTreeSharedMenuSections(args: {
         ? [createActionNode("ignore")]
         : []),
     ],
+    ...(changeListActions.length > 0 ? [changeListActions] : []),
     [
       createActionNode("createPatch", { disabled: !selection.canShowDiff }),
       createActionNode("copyPatch", { disabled: !selection.canShowDiff, shortcut: "F24" }),
