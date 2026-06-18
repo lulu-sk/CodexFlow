@@ -94,6 +94,18 @@ const TERMINAL_WINDOW_RESIZE_STABLE_SAMPLE_COUNT = 2;
 const TERMINAL_WINDOW_RESIZE_SESSION_IDLE_MS = 1800;
 const TERMINAL_WINDOW_RESIZE_SESSION_MAX_MS = 9000;
 const TERMINAL_HOST_LAYOUT_ANCESTOR_LIMIT = 12;
+const NON_TEXT_INPUT_TYPES = new Set([
+  "button",
+  "checkbox",
+  "color",
+  "file",
+  "hidden",
+  "image",
+  "radio",
+  "range",
+  "reset",
+  "submit",
+]);
 
 /**
  * 渲染进程侧的 PTY 接口抽象，便于将 TerminalManager 从具体的 window.host.pty 解耦以实现复用。
@@ -161,6 +173,65 @@ export default class TerminalManager {
   private logScrollDiagnostic(message: string): void {
     if (!this.dbgEnabled()) return;
     try { void (window as any).host?.utils?.perfLogCritical?.(`[terminal.scroll-debug tm] ${message}`); } catch {}
+  }
+
+  /**
+   * 中文说明：判断当前元素是否是页面侧可编辑控件，用于避免终端自动聚焦抢走输入框光标。
+   */
+  private isPageEditableElement(element: Element | null | undefined): boolean {
+    if (!element || typeof (element as any).closest !== "function") return false;
+    try {
+      if ((element as HTMLElement).closest(".xterm, .cf-terminal-chrome")) return false;
+      const editable = (element as HTMLElement).closest("input, textarea, select, [contenteditable], [role='textbox']");
+      if (!editable) return false;
+      if (editable instanceof HTMLInputElement) {
+        const type = String(editable.type || "text").toLowerCase();
+        return !NON_TEXT_INPUT_TYPES.has(type);
+      }
+      if (editable instanceof HTMLTextAreaElement || editable instanceof HTMLSelectElement) return true;
+      const contentEditable = editable.getAttribute("contenteditable");
+      if (contentEditable !== null) {
+        const normalizedContentEditable = contentEditable.trim().toLowerCase();
+        if (normalizedContentEditable !== "false") return true;
+      }
+      return editable.getAttribute("role") === "textbox";
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 中文说明：判断是否应保留现有页面输入焦点；若用户正在输入框中编辑，终端刷新/挂载不能抢焦点。
+   */
+  private shouldPreserveCurrentEditableFocus(tabId: string): boolean {
+    try {
+      const active = document.activeElement as HTMLElement | null;
+      if (!active || active === document.body || active === document.documentElement) return false;
+      const container = this.containers[tabId];
+      if (container && container.contains(active)) return false;
+      return this.isPageEditableElement(active);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 中文说明：在不会打断页面输入框编辑时聚焦终端。
+   */
+  private focusAdapterIfSafe(tabId: string, source: string): boolean {
+    if (this.shouldPreserveCurrentEditableFocus(tabId)) {
+      this.dlog(`focus.skip tab=${tabId} source=${source} reason=editable-active`);
+      this.logScrollDiagnostic(`focus.skip tab=${tabId} source=${source} reason=editable-active`);
+      return false;
+    }
+    try {
+      const adapter = this.adapters[tabId];
+      if (typeof adapter?.focus !== "function") return false;
+      adapter.focus();
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -2769,16 +2840,18 @@ export default class TerminalManager {
     } catch {}
     // 精确度量并立即同步尺寸
     try { this.scheduleResizeSync(tabId, true); } catch {}
-    // 切换后主动聚焦并强制刷新，消解输入法合成/宽字符残影
-    try { this.adapters[tabId]?.focus?.(); } catch {}
+    // 切换后主动聚焦并强制刷新；若用户正在页面输入框中编辑，则保留输入框光标。
+    const focusedTerminal = this.focusAdapterIfSafe(tabId, "activated");
     // 关键：恢复（或对齐修复）滚动位置，避免隐藏/显示后滚动条指示错误
     try { this.restoreScrollSnapshot(tabId, "activated"); } catch {}
     const pid = this.getPtyId(tabId);
     if (pid) {
       try {
         this.hostPty.resume?.(pid);
-        this.hostPty.write(pid, "\u001b[I");
-        this.dlog(`tabActivate.injectFocusGain tab=${tabId} pty=${pid}`);
+        if (focusedTerminal) {
+          this.hostPty.write(pid, "\u001b[I");
+          this.dlog(`tabActivate.injectFocusGain tab=${tabId} pty=${pid}`);
+        }
       } catch (err) {
         this.dlog(`tabActivate.injectFocusGain.error tab=${tabId} pty=${pid} err=${(err as Error)?.message || err}`);
       }
@@ -2830,7 +2903,7 @@ export default class TerminalManager {
     const adapter = this.adapters[tabId];
     if (!adapter) return;
     try { this.scheduleResizeSync(tabId, true); } catch {}
-    try { adapter.focus?.(); } catch {}
+    this.focusAdapterIfSafe(tabId, "attach");
 
     // Install a ResizeObserver on the host element to reliably detect layout changes
     // (e.g. window restore/maximize or side panel toggles) and trigger terminal resize.

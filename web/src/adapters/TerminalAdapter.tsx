@@ -2863,7 +2863,6 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
       // 2) 等字体加载完成后再次精确 fitAndPin 并强制 refresh，消除度量误差引发的光标错位/重叠
       const doFit = () => { try { dlog('[adapter] doFit'); fitAndPin(true); } catch {} };
       doFit();
-      try { term!.focus(); } catch {}
       try {
         if ((document as any).fonts?.ready) {
           (document as any).fonts.ready.then(() => {
