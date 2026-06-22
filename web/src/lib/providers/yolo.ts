@@ -7,7 +7,7 @@ export type YoloProviderId = BuiltInAgentProviderId;
 
 export const BUILT_IN_YOLO_PROVIDER_IDS: readonly YoloProviderId[] = BUILT_IN_AGENT_PROVIDER_IDS;
 
-type ProviderStartupItem = {
+export type ProviderStartupItem = {
   id?: string;
   startupCmd?: string;
 };
@@ -89,6 +89,16 @@ export function isAnyOtherBuiltInYoloPresetEnabled(items: readonly ProviderStart
     const item = list.find((it) => String(it?.id || "").trim() === providerId);
     return isYoloPresetEnabled(providerId, item?.startupCmd);
   });
+}
+
+/**
+ * 判断 Antigravity 是否需要单独确认继承其它内置引擎的 YOLO 预设。
+ */
+export function shouldPromptAntigravityYoloInheritance(items: readonly ProviderStartupItem[] | null | undefined): boolean {
+  const list = Array.isArray(items) ? items : [];
+  const antigravityItem = list.find((item) => String(item?.id || "").trim() === "antigravity");
+  if (isYoloPresetEnabled("antigravity", antigravityItem?.startupCmd)) return false;
+  return isAnyOtherBuiltInYoloPresetEnabled(list, "antigravity");
 }
 
 /**
