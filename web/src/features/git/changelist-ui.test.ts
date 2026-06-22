@@ -77,6 +77,14 @@ function createStatusSnapshot(): GitStatusSnapshot {
 describe("changelist ui helpers", () => {
   it("默认列表显示名应兼容历史英文名并输出本地化标签", () => {
     expect(resolveDisplayChangeListName({ id: "default", name: "default" })).toBe("默认");
+    expect(resolveDisplayChangeListName(
+      { id: "default", name: "默认" },
+      () => "Default",
+    )).toBe("Default");
+    expect(buildChangeListSelectOptions(
+      [{ id: "default", name: "默认", fileCount: 0, files: [] }],
+      () => "Default",
+    )).toEqual([{ value: "default", label: "Default" }]);
     expect(buildChangeListSelectOptions([
       { id: "default", name: "default", fileCount: 0, files: [] },
       { id: "feature", name: "功能开发", fileCount: 0, files: [] },

@@ -10,6 +10,7 @@ import type {
 import { resolveGitText } from "./git-i18n";
 
 const DEFAULT_CHANGE_LIST_ID = "default";
+type GitChangeListTextResolver = (key: string, fallback: string, values?: Record<string, unknown>) => string;
 
 /**
  * 统一归一化 changelist 相关路径，避免不同分隔符导致映射键不一致。
@@ -19,23 +20,29 @@ function normalizeChangeListPath(pathText: string): string {
 }
 
 /**
- * 返回 changelist 的最终显示名；默认列表会兼容历史英文名并统一显示为中文标签。
+ * 返回 changelist 的最终显示名；默认列表会兼容内置中英文名并按当前语言显示。
  */
-export function resolveDisplayChangeListName(list: Pick<GitChangeList, "id" | "name">): string {
+export function resolveDisplayChangeListName(
+  list: Pick<GitChangeList, "id" | "name">,
+  resolveText: GitChangeListTextResolver = resolveGitText,
+): string {
   const id = String(list.id || "").trim();
   const name = String(list.name || "").trim();
-  if (id === DEFAULT_CHANGE_LIST_ID && (!name || /^default$/i.test(name)))
-    return resolveGitText("changelist.defaultName", "默认");
+  if (id === DEFAULT_CHANGE_LIST_ID && (!name || /^default$/i.test(name) || name === "默认"))
+    return resolveText("changelist.defaultName", "默认");
   return name || id;
 }
 
 /**
  * 构建目标 changelist 下拉项；显示层只暴露名称，值层始终绑定稳定 id。
  */
-export function buildChangeListSelectOptions(lists: GitChangeList[]): Array<{ value: string; label: string }> {
+export function buildChangeListSelectOptions(
+  lists: GitChangeList[],
+  resolveText: GitChangeListTextResolver = resolveGitText,
+): Array<{ value: string; label: string }> {
   return lists.map((list) => ({
     value: list.id,
-    label: resolveDisplayChangeListName(list),
+    label: resolveDisplayChangeListName(list, resolveText),
   }));
 }
 

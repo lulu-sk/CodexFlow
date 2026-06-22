@@ -2578,6 +2578,12 @@
       "frozen": "冻结",
       "outdatedFiles": "{{count}} 个过期文件"
     },
+    "summary": {
+      "zeroFiles": "0 个文件",
+      "directoriesAndFiles": "{{directoryCount}} 个目录，{{fileCount}} 个文件",
+      "directoriesOnly": "{{directoryCount}} 个目录",
+      "filesOnly": "{{fileCount}} 个文件"
+    },
     "conflictActions": {
       "unstage": {
         "icon": "重置",

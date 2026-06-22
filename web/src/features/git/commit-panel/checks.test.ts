@@ -43,6 +43,24 @@ describe("commit checks", () => {
     ]);
   });
 
+  it("传入当前界面翻译函数时默认作者提示应使用对应语言", () => {
+    const checks = runBeforeCommitChecks({
+      message: "feat: test",
+      cleanupMessage: false,
+      explicitAuthor: "",
+      defaultAuthor: "Alice <alice@example.com>",
+      authorDate: "",
+      resolveText: (_key, _fallback, values) => `Default author: ${String(values?.author || "")}`,
+    });
+
+    expect(checks).toEqual([
+      expect.objectContaining({
+        id: "author-default",
+        message: "Default author: Alice <alice@example.com>",
+      }),
+    ]);
+  });
+
   it("可按调用场景隐藏空提交信息错误，仅保留其余检查结果", () => {
     const checks = runBeforeCommitChecks({
       message: "   ",
