@@ -120,9 +120,9 @@ import {
   enableBuiltInYoloPresetItems,
   enableYoloPresetForProvider,
   isAnyBuiltInYoloPresetEnabled,
-  isAnyOtherBuiltInYoloPresetEnabled,
   isYoloPresetEnabled,
   resolveStartupCmdWithYolo,
+  shouldPromptAntigravityYoloInheritance,
 } from "@/lib/providers/yolo";
 import { injectCodexTraceEnv } from "@/providers/codex/commands";
 import { buildClaudeResumeStartupCmd } from "@/providers/claude/commands";
@@ -487,6 +487,10 @@ type YoloPromptDialogState = {
   loading: boolean;
   handled: boolean;
 };
+
+type AntigravityYoloPromptChoice = "enabled" | "disabled";
+
+type AntigravityYoloPromptResolver = (choice: AntigravityYoloPromptChoice) => void;
 
 type TabPointerDragState = {
   pointerId: number;
@@ -5640,6 +5644,7 @@ export default function CodexFlowManagerUI() {
   const [blockingNotice, setBlockingNotice] = useState<BlockingNotice | null>(null);
   const [yoloPromptDialog, setYoloPromptDialog] = useState<YoloPromptDialogState>(() => ({ open: false, loading: false, handled: false }));
   const [antigravityYoloPromptDialog, setAntigravityYoloPromptDialog] = useState<YoloPromptDialogState>(() => ({ open: false, loading: false, handled: false }));
+  const antigravityYoloPromptResolversRef = useRef<AntigravityYoloPromptResolver[]>([]);
   const [startupChecksComplete, setStartupChecksComplete] = useState(false);
 
   const themeMode = useThemeController(themeSetting);
@@ -5761,6 +5766,16 @@ export default function CodexFlowManagerUI() {
   }, [activeProviderId, providerEnvById, providerItems, wslDistro]);
 
   /**
+   * 唤醒所有等待 Antigravity YOLO 确认结果的启动流程。
+   */
+  const resolvePendingAntigravityYoloPrompts = useCallback((choice: AntigravityYoloPromptChoice): void => {
+    const resolvers = antigravityYoloPromptResolversRef.current.splice(0);
+    for (const resolve of resolvers) {
+      try { resolve(choice); } catch {}
+    }
+  }, []);
+
+  /**
    * 记录 Antigravity YOLO 继承提示已被用户处理，避免升级后反复打扰。
    */
   const dismissAntigravityYoloPrompt = useCallback(async (): Promise<void> => {
@@ -5768,7 +5783,39 @@ export default function CodexFlowManagerUI() {
       await window.host.onboarding.update({ antigravityYoloPromptHandled: true });
     } catch {}
     setAntigravityYoloPromptDialog({ open: false, loading: false, handled: true });
-  }, []);
+    resolvePendingAntigravityYoloPrompts("disabled");
+  }, [resolvePendingAntigravityYoloPrompts]);
+
+  /**
+   * 启动 Antigravity 前确认是否继承其它引擎已开启的 YOLO 预设。
+   *
+   * @returns 用户选择后应使用的 provider 配置；无需提示或选择关闭时返回当前配置。
+   */
+  const ensureAntigravityYoloChoiceBeforeLaunch = useCallback(async (providerId: string): Promise<ProviderItem[] | null> => {
+    if (String(providerId || "").trim().toLowerCase() !== "antigravity") return providerItemsRef.current;
+    if (antigravityYoloPromptDialog.loading) return null;
+    const items = Array.isArray(providerItemsRef.current) ? providerItemsRef.current : [];
+    if (!shouldPromptAntigravityYoloInheritance(items)) return items;
+
+    try {
+      const stateRes = await window.host.onboarding.get();
+      if (stateRes?.ok && stateRes.state?.antigravityYoloPromptHandled) {
+        setAntigravityYoloPromptDialog({ open: false, loading: false, handled: true });
+        return providerItemsRef.current;
+      }
+    } catch {}
+
+    const latestItems = Array.isArray(providerItemsRef.current) ? providerItemsRef.current : [];
+    if (!shouldPromptAntigravityYoloInheritance(latestItems)) return latestItems;
+
+    const choice = await new Promise<AntigravityYoloPromptChoice>((resolve) => {
+      antigravityYoloPromptResolversRef.current.push(resolve);
+      setAntigravityYoloPromptDialog({ open: true, loading: false, handled: false });
+    });
+
+    if (choice !== "enabled") return providerItemsRef.current;
+    return enableYoloPresetForProvider(providerItemsRef.current, "antigravity");
+  }, [antigravityYoloPromptDialog.loading]);
 
   /**
    * 排队持久化当前 Provider 状态，避免快速切换时旧写入覆盖新选择。
@@ -6177,6 +6224,20 @@ export default function CodexFlowManagerUI() {
   }, [providerItems, codexCmd]);
 
   /**
+   * 使用指定 Provider 配置构造基础启动命令，供启动前刚更新 YOLO 预设的场景使用。
+   *
+   * @param providerId Provider 唯一标识
+   * @param items Provider 配置列表
+   */
+  const buildProviderBaseStartupCmdFromItems = useCallback((providerId: string, items: readonly ProviderItem[]): string => {
+    const item = items.find((x) => x.id === providerId) ?? { id: providerId };
+    const resolved = resolveProvider(item);
+    if (providerId === "codex")
+      return resolved.startupCmd || codexCmd || "codex";
+    return resolved.startupCmd;
+  }, [codexCmd]);
+
+  /**
    * 构造某个 Provider 的启动命令（Codex 会按调试开关注入 trace 环境变量）。
    *
    * @param providerId Provider 唯一标识
@@ -6188,6 +6249,20 @@ export default function CodexFlowManagerUI() {
       return injectCodexTraceEnv({ cmd: baseCmd, traceEnabled: codexTraceEnabled, terminalMode: env.terminal as any });
     return baseCmd;
   }, [buildProviderBaseStartupCmd, codexTraceEnabled]);
+
+  /**
+   * 使用指定 Provider 配置构造最终启动命令。
+   *
+   * @param providerId Provider 唯一标识
+   * @param env 实际执行环境
+   * @param items Provider 配置列表
+   */
+  const buildProviderStartupCmdFromItems = useCallback((providerId: string, env: Required<ProviderEnv>, items: readonly ProviderItem[]): string => {
+    const baseCmd = buildProviderBaseStartupCmdFromItems(providerId, items);
+    if (providerId === "codex")
+      return injectCodexTraceEnv({ cmd: baseCmd, traceEnabled: codexTraceEnabled, terminalMode: env.terminal as any });
+    return baseCmd;
+  }, [buildProviderBaseStartupCmdFromItems, codexTraceEnabled]);
 
   /**
    * 构造 worktree 创建面板用的 Provider 启动命令（可临时覆盖 YOLO，不写入全局设置）。
@@ -7284,14 +7359,17 @@ export default function CodexFlowManagerUI() {
 
   async function openConsoleForProject(project: Project) {
     if (!project) return;
+    const providerId = activeProviderId;
+    const launchProviderItems = await ensureAntigravityYoloChoiceBeforeLaunch(providerId);
+    if (!launchProviderItems) return;
     // 普通新建终端是点击热路径，直接使用已保存环境；环境修复由设置加载/显式切换/PTY 启动兜底承担。
-    const env = getProviderEnv(activeProviderId);
-    const startupCmd = buildProviderStartupCmd(activeProviderId, env);
+    const env = getProviderEnv(providerId);
+    const startupCmd = buildProviderStartupCmdFromItems(providerId, env, launchProviderItems);
     const tabName = buildConsoleTabNameForEnv(env, project.id);
     const tab: ConsoleTab = {
       id: uid(),
       name: String(tabName),
-      providerId: activeProviderId,
+      providerId,
       windowId: currentWindowId,
       logs: [],
       createdAt: Date.now(),
@@ -7333,7 +7411,7 @@ export default function CodexFlowManagerUI() {
         tabsByProjectRef.current = renamedTabsByProject;
         setTabsByProject(renamedTabsByProject);
       }
-      await notifyPtyFallbackIfNeeded({ providerId: activeProviderId, requestedEnv: env, actualEnv, fallbackReason: openRes.fallbackReason });
+      await notifyPtyFallbackIfNeeded({ providerId, requestedEnv: env, actualEnv, fallbackReason: openRes.fallbackReason });
       tabExecEnvByTabRef.current[tab.id] = actualEnv;
       geminiWindowsEditorReadyByTabRef.current[tab.id] = launchEnv.geminiWindowsEditorReady;
       geminiWslEditorReadyByTabRef.current[tab.id] = launchEnv.geminiWslEditorReady;
@@ -7347,10 +7425,10 @@ export default function CodexFlowManagerUI() {
     }
 
     // 内置代理引擎：即便会话记录落盘存在延迟，也先在 UI 侧标记，避免“自定义目录记录可移除”误判。
-    if (isBuiltInSessionProviderId(activeProviderId)) {
+    if (isBuiltInSessionProviderId(providerId)) {
       markProjectHasBuiltInSessions(project.id);
     } else {
-      void recordCustomProviderDirIfNeeded(project, activeProviderId);
+      void recordCustomProviderDirIfNeeded(project, providerId);
     }
 
     if (ptyId) {
@@ -7408,15 +7486,18 @@ export default function CodexFlowManagerUI() {
   async function openNewConsole() {
     const project = selectedProject;
     if (!project) return;
+    const providerId = activeProviderId;
+    const launchProviderItems = await ensureAntigravityYoloChoiceBeforeLaunch(providerId);
+    if (!launchProviderItems) return;
     // 普通新增标签页优先保证按钮响应，避免启动前环境/CLI 检测阻塞交互。
-    const env = getProviderEnv(activeProviderId);
-    const startupCmd = buildProviderStartupCmd(activeProviderId, env);
+    const env = getProviderEnv(providerId);
+    const startupCmd = buildProviderStartupCmdFromItems(providerId, env, launchProviderItems);
     const tabName = buildConsoleTabNameForEnv(env, project.id);
     const tab: ConsoleTab = {
       id: uid(),
       // 默认使用当前设置中的终端名称
       name: String(tabName),
-      providerId: activeProviderId,
+      providerId,
       windowId: currentWindowId,
       logs: [],
       createdAt: Date.now(),
@@ -7460,7 +7541,7 @@ export default function CodexFlowManagerUI() {
         tabsByProjectRef.current = renamedTabsByProject;
         setTabsByProject(renamedTabsByProject);
       }
-      await notifyPtyFallbackIfNeeded({ providerId: activeProviderId, requestedEnv: env, actualEnv, fallbackReason: openRes.fallbackReason });
+      await notifyPtyFallbackIfNeeded({ providerId, requestedEnv: env, actualEnv, fallbackReason: openRes.fallbackReason });
       tabExecEnvByTabRef.current[tab.id] = actualEnv;
       geminiWindowsEditorReadyByTabRef.current[tab.id] = launchEnv.geminiWindowsEditorReady;
       geminiWslEditorReadyByTabRef.current[tab.id] = launchEnv.geminiWslEditorReady;
@@ -7475,10 +7556,10 @@ export default function CodexFlowManagerUI() {
     }
 
     // 内置代理引擎：即便会话记录落盘存在延迟，也先在 UI 侧标记，避免“自定义目录记录可移除”误判。
-    if (isBuiltInSessionProviderId(activeProviderId)) {
+    if (isBuiltInSessionProviderId(providerId)) {
       markProjectHasBuiltInSessions(project.id);
     } else {
-      void recordCustomProviderDirIfNeeded(project, activeProviderId);
+      void recordCustomProviderDirIfNeeded(project, providerId);
     }
 
     if (ptyId) {
@@ -9239,6 +9320,15 @@ export default function CodexFlowManagerUI() {
   const closeWorktreeCreateDialog = useCallback(() => {
     setWorktreeCreatePromptFullscreenOpen(false);
     setWorktreeCreateDialog((prev) => ({ ...prev, open: false, creating: false, error: undefined }));
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      const resolvers = antigravityYoloPromptResolversRef.current.splice(0);
+      for (const resolve of resolvers) {
+        try { resolve("disabled"); } catch {}
+      }
+    };
   }, []);
 
   /**
@@ -11846,7 +11936,7 @@ export default function CodexFlowManagerUI() {
             setAntigravityYoloPromptDialog({ open: false, loading: false, handled: true });
             return;
           }
-          if (!isAnyOtherBuiltInYoloPresetEnabled(items, "antigravity")) return;
+          if (!shouldPromptAntigravityYoloInheritance(items)) return;
           setAntigravityYoloPromptDialog({ open: true, loading: false, handled: false });
         } catch {}
       })();
@@ -16373,8 +16463,11 @@ export default function CodexFlowManagerUI() {
               onClick={async () => {
                 setAntigravityYoloPromptDialog((prev) => ({ ...prev, loading: true }));
                 const ok = await enableAntigravityYoloPresetAndPersist();
-                if (!ok)
+                if (ok) {
+                  resolvePendingAntigravityYoloPrompts("enabled");
+                } else {
                   setAntigravityYoloPromptDialog((prev) => ({ ...prev, loading: false }));
+                }
               }}
             >
               {antigravityYoloPromptDialog.loading ? (

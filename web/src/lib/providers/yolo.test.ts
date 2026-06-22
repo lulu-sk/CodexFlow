@@ -6,6 +6,7 @@ import {
   isAnyBuiltInYoloPresetEnabled,
   isAnyOtherBuiltInYoloPresetEnabled,
   isYoloPresetEnabled,
+  shouldPromptAntigravityYoloInheritance,
 } from "./yolo";
 
 describe("providers/yolo（YOLO 预设工具）", () => {
@@ -50,6 +51,23 @@ describe("providers/yolo（YOLO 预设工具）", () => {
       { id: "codex", startupCmd: "codex" },
       { id: "antigravity", startupCmd: "agy --dangerously-skip-permissions" },
     ], "antigravity")).toBe(false);
+  });
+
+  it("只有其它内置引擎已启用且 Antigravity 未启用时才需要继承确认", () => {
+    expect(shouldPromptAntigravityYoloInheritance([
+      { id: "codex", startupCmd: "codex --yolo" },
+      { id: "antigravity", startupCmd: "agy" },
+    ])).toBe(true);
+
+    expect(shouldPromptAntigravityYoloInheritance([
+      { id: "codex", startupCmd: "codex --yolo" },
+      { id: "antigravity", startupCmd: "agy --dangerously-skip-permissions" },
+    ])).toBe(false);
+
+    expect(shouldPromptAntigravityYoloInheritance([
+      { id: "codex", startupCmd: "codex" },
+      { id: "antigravity", startupCmd: "agy" },
+    ])).toBe(false);
   });
 
   it("可只为单个内置引擎启用 YOLO 预设", () => {
