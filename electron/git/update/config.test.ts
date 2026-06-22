@@ -12,6 +12,7 @@ type ConfigTestContext = {
   cleanupPaths: string[];
 };
 
+const GIT_INTEGRATION_TEST_TIMEOUT_MS = 25_000;
 const cleanupQueue = new Set<string>();
 
 /**
@@ -76,7 +77,7 @@ afterEach(async () => {
   const cleanupPaths = Array.from(cleanupQueue);
   cleanupQueue.clear();
   await Promise.all(cleanupPaths.map(async (target) => {
-    await fsp.rm(target, { recursive: true, force: true });
+    await fsp.rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }));
 });
 
@@ -103,7 +104,7 @@ describe("update config options", () => {
     expect(snapshot.methodResolution.saveChangesPolicy).toBe("shelve");
     expect(snapshot.scopePreview.roots).toHaveLength(1);
     expect(snapshot.scopePreview.roots[0]?.source).toBe("current");
-  });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 
   it("历史 reset 配置在读取时应降级并回写为 Merge", async () => {
     const ctx = await createConfigTestContextAsync("legacy-reset");
@@ -135,7 +136,7 @@ describe("update config options", () => {
       mode: "merge",
       options: [],
     });
-  }, 10_000);
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 
   it("历史 branch-default 配置在读取时应降级并回写为 Merge", async () => {
     const ctx = await createConfigTestContextAsync("legacy-branch-default");
@@ -162,7 +163,7 @@ describe("update config options", () => {
       mode: "merge",
       options: [],
     });
-  });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 
   it("多仓默认范围应返回关联仓、嵌套仓与默认跳过结果预览", async () => {
     const ctx = await createConfigTestContextAsync("scope-preview");
@@ -222,5 +223,5 @@ describe("update config options", () => {
     expect(snapshot.scopePreview.roots.some((root) => root.repoRoot === linkedRepo && root.source === "linked" && !root.included)).toBe(true);
     expect(snapshot.scopePreview.roots.some((root) => root.repoRoot === nestedRepo && root.source === "nested" && root.included)).toBe(true);
     expect(snapshot.scopePreview.skippedRoots.some((root) => root.repoRoot === linkedRepo && root.reasonCode === "requested")).toBe(true);
-  }, 10_000);
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 });

@@ -216,13 +216,10 @@ function hasCustomDirRecord(p: Project | null | undefined): boolean {
 
 // 防抖：短时间内的并发调用合并为一次
 let __scanPromise: Promise<Project[]> | null = null;
-let __scanStamp = 0;
 export async function scanProjectsAsync(_roots?: string[], verbose = false): Promise<Project[]> {
-  const now = Date.now();
-  if (__scanPromise && (now - __scanStamp) < 1500) {
+  if (__scanPromise) {
     return __scanPromise;
   }
-  __scanStamp = now;
   __scanPromise = (async () => {
   const store = loadStore();
   const logPath = path.join(app.getPath('userData'), 'scan-log.txt');
@@ -607,7 +604,12 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
   if (cleaned.length !== store.length) { try { await saveStoreAsync(cleaned); } catch {} }
   return cleaned;
   })();
-  try { const res = await __scanPromise; return res; } finally { /* 保持 window 期内复用 */ }
+  try {
+    const res = await __scanPromise;
+    return res;
+  } finally {
+    __scanPromise = null;
+  }
 }
 
 export type AddProjectOptions = {

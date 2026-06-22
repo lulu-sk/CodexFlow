@@ -286,6 +286,7 @@ type RendererRecoveryState = {
   unresponsiveTimer: ReturnType<typeof setTimeout> | null;
   recoverInFlight: boolean;
 };
+type MainTaskPriority = "ui" | "git-read" | "git-write" | "background";
 
 const TAB_DRAG_PREVIEW_MIN_WIDTH = 144;
 const TAB_DRAG_PREVIEW_MAX_WIDTH = 228;
@@ -296,11 +297,137 @@ const GIT_WORKBENCH_SNAPSHOT_MAX_ENTRIES = 3;
 const GIT_WORKBENCH_SNAPSHOT_IDLE_TTL_MS = 2 * 60 * 60 * 1000;
 const GIT_WORKBENCH_SNAPSHOT_TRIM_INTERVAL_MS = 5 * 60 * 1000;
 const GIT_WORKBENCH_SNAPSHOT_DELETE_TOMBSTONE_MS = 30 * 1000;
+const GIT_FEATURE_READ_CONCURRENCY = 3;
+const GIT_FEATURE_READ_QUEUE_LIMIT = 24;
+const GIT_FEATURE_READ_QUEUE_TIMEOUT_MS = 15_000;
 const tabDragPreviewWindowsById = new Map<string, TabDragPreviewWindowEntry>();
 const tabDragPreviewWindowIdByOwner = new Map<string, string>();
 const gitWorkbenchSnapshotsByKey = new Map<string, GitWorkbenchSnapshotEntry>();
 const gitWorkbenchSnapshotDeletedTabIds = new Map<string, number>();
+const gitFeatureReadActions = new Set<string>([
+  "branch.popup",
+  "changes.conflictMerge.get",
+  "changes.conflictResolver.get",
+  "changes.ignoreTargets",
+  "console.get",
+  "diff.get",
+  "diff.openPath",
+  "diff.patch",
+  "log.availability",
+  "log.details",
+  "log.details.availability",
+  "log.get",
+  "log.messageDraft",
+  "log.rebasePlan.get",
+  "log.resolveFileHistoryPath",
+  "push.preview",
+  "repo.detect",
+  "shelf.list",
+  "stash.list",
+  "status.get",
+  "status.getIgnored",
+  "update.options.get",
+  "update.trackedBranchPreview",
+  "worktree.list",
+]);
+let gitFeatureReadRunning = 0;
+const gitFeatureReadQueue: Array<{
+  action: string;
+  requestId: number;
+  enqueuedAt: number;
+  timeout: ReturnType<typeof setTimeout>;
+  reject: (error: Error) => void;
+  run: () => void;
+}> = [];
 let cachedAppBrandIconDataUrl: string | null | undefined;
+
+/**
+ * 判定 Git 动作所属任务优先级，用于把高频读取限制在后台队列里。
+ */
+function resolveGitFeatureTaskPriority(action: string): MainTaskPriority {
+  return gitFeatureReadActions.has(action) ? "git-read" : "git-write";
+}
+
+/**
+ * 调度排队中的 Git 读取任务，限制并发，避免快速切换页面时堆出大量 Git 子进程。
+ */
+function pumpGitFeatureReadQueue(): void {
+  while (gitFeatureReadRunning < GIT_FEATURE_READ_CONCURRENCY && gitFeatureReadQueue.length > 0) {
+    const item = gitFeatureReadQueue.shift();
+    if (!item) continue;
+    gitFeatureReadRunning += 1;
+    item.run();
+  }
+}
+
+/**
+ * 取消尚未开始的 Git 读取任务，避免过期请求稍后才启动。
+ */
+function cancelQueuedGitFeatureReadRequest(requestId: number, reason?: string): boolean {
+  const normalizedRequestId = Math.max(0, Math.floor(Number(requestId) || 0));
+  if (!normalizedRequestId) return false;
+  const index = gitFeatureReadQueue.findIndex((item) => item.requestId === normalizedRequestId);
+  if (index < 0) return false;
+  const [item] = gitFeatureReadQueue.splice(index, 1);
+  if (!item) return false;
+  try { clearTimeout(item.timeout); } catch {}
+  item.reject(new Error(String(reason || "").trim() || "Git 读取请求已取消"));
+  return true;
+}
+
+/**
+ * 在主进程侧限制 Git 读取请求并发；写操作不排队，保证提交/推送等用户命令不被读任务拖住。
+ */
+async function runGitFeatureWithScheduler<T>(action: string, requestId: number, task: () => Promise<T>): Promise<T> {
+  if (resolveGitFeatureTaskPriority(action) !== "git-read")
+    return await task();
+  if (gitFeatureReadRunning < GIT_FEATURE_READ_CONCURRENCY) {
+    gitFeatureReadRunning += 1;
+    try {
+      return await task();
+    } finally {
+      gitFeatureReadRunning = Math.max(0, gitFeatureReadRunning - 1);
+      pumpGitFeatureReadQueue();
+    }
+  }
+  if (gitFeatureReadQueue.length >= GIT_FEATURE_READ_QUEUE_LIMIT) {
+    const dropped = gitFeatureReadQueue.shift();
+    if (dropped) {
+      try { clearTimeout(dropped.timeout); } catch {}
+      dropped.reject(new Error("Git 读取请求已被更新的请求替换"));
+    }
+    logWhiteScreenDiagnostic(`[git.scheduler] drop stale read action=${clampLogValue(dropped?.action || "", 80)} queue=${gitFeatureReadQueue.length}`);
+  }
+  return await new Promise<T>((resolve, reject) => {
+    let started = false;
+    const timeout = setTimeout(() => {
+      if (started) return;
+      const index = gitFeatureReadQueue.findIndex((item) => item.run === run);
+      if (index >= 0) gitFeatureReadQueue.splice(index, 1);
+      reject(new Error("Git 读取请求排队超时，请稍后重试"));
+    }, GIT_FEATURE_READ_QUEUE_TIMEOUT_MS);
+    try { (timeout as any).unref?.(); } catch {}
+    const run = () => {
+      started = true;
+      clearTimeout(timeout);
+      void task()
+        .then(resolve, reject)
+        .finally(() => {
+          gitFeatureReadRunning = Math.max(0, gitFeatureReadRunning - 1);
+          pumpGitFeatureReadQueue();
+        });
+    };
+    gitFeatureReadQueue.push({
+      action,
+      requestId: Math.max(0, Math.floor(Number(requestId) || 0)),
+      enqueuedAt: Date.now(),
+      timeout,
+      reject,
+      run,
+    });
+    pumpGitFeatureReadQueue();
+  });
+}
 
 /**
  * 构造 Git 工作台热会话缓存键，按 tab 与仓库根隔离跨窗口快照。
@@ -695,8 +822,9 @@ type GpuRecoverySnapshot = {
 
 const RENDERER_RECOVERY_WINDOW_MS = 120_000;
 const RENDERER_RECOVERY_MAX_RELOADS = 2;
-const RENDERER_UNRESPONSIVE_TIMEOUT_MS = 12_000;
+const RENDERER_UNRESPONSIVE_TIMEOUT_MS = 7_000;
 const RENDERER_RECOVERY_IN_FLIGHT_TIMEOUT_MS = 15_000;
+const RENDERER_LIGHT_MODE_DURATION_MS = 60_000;
 
 const GPU_RECOVERY_FILE = "gpu-recovery.json";
 const GPU_RECOVERY_WINDOW_MS = 30 * 60_000;
@@ -1679,6 +1807,21 @@ function clearRendererRecoveryState(win: BrowserWindow): void {
 }
 
 /**
+ * 通知渲染层短时降级重任务，先尝试让页面恢复响应，再进入 reload/recreate 兜底。
+ */
+function requestRendererLightMode(win: BrowserWindow, reason: string): void {
+  try {
+    if (win.isDestroyed()) return;
+    const wc = win.webContents;
+    if (!wc || wc.isDestroyed()) return;
+    wc.send("renderer.lightMode", {
+      reason: clampLogValue(reason, 160),
+      durationMs: RENDERER_LIGHT_MODE_DURATION_MS,
+    });
+  } catch {}
+}
+
+/**
  * 中文说明：裁剪恢复尝试记录，仅保留最近时间窗内的数据。
  */
 function pruneRendererRecoveryAttempts(state: RendererRecoveryState, now: number): void {
@@ -1800,6 +1943,7 @@ function installMainWindowSelfHealHooks(win: BrowserWindow): void {
     });
     wc.on("unresponsive", () => {
       logWhiteScreenDiagnostic("[WC] unresponsive");
+      requestRendererLightMode(win, "webContents.unresponsive");
       const state = getRendererRecoveryState(win);
       if (state.unresponsiveTimer) return;
       state.unresponsiveTimer = setTimeout(() => {
@@ -3507,17 +3651,33 @@ ipcMain.handle("gitFeature.call", async (event, args: { action: string; payload?
     if (!action) return { ok: false, error: "missing action" };
     const cfg = settings.getSettings() as any;
     const gitPath = String(cfg?.gitWorktree?.gitPath || "").trim() || "git";
-    return await dispatchGitFeatureAction({
-      action,
-      payload: args?.payload,
-      gitPath,
-      userDataPath: app.getPath("userData"),
-      requestId: Math.max(0, Math.floor(Number(args?.requestId) || 0)),
-      emitProgress: (payload) => {
-        try {
-          event.sender.send("gitFeature.progress", payload);
-        } catch {}
-      },
+    const requestId = Math.max(0, Math.floor(Number(args?.requestId) || 0));
+    if (action === "request.cancel") {
+      const targetRequestId = Math.max(0, Math.floor(Number(args?.payload?.targetRequestId ?? args?.payload?.requestId) || 0));
+      const queuedCancelled = cancelQueuedGitFeatureReadRequest(targetRequestId, String(args?.payload?.reason || "").trim());
+      if (queuedCancelled) {
+        return {
+          ok: true,
+          data: {
+            targetRequestId,
+            cancelled: true,
+          },
+        };
+      }
+    }
+    return await runGitFeatureWithScheduler(action, requestId, async () => {
+      return await dispatchGitFeatureAction({
+        action,
+        payload: args?.payload,
+        gitPath,
+        userDataPath: app.getPath("userData"),
+        requestId,
+        emitProgress: (payload) => {
+          try {
+            event.sender.send("gitFeature.progress", payload);
+          } catch {}
+        },
+      });
     });
   } catch (e: any) {
     return { ok: false, error: String(e?.message || e) };

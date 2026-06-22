@@ -12,6 +12,8 @@ type PtyDataPayload = { id: string; data: string };
 type PtyExitPayload = { id: string; exitCode?: number };
 
 const PRELOAD_SLOW_INVOKE_WARN_MS = 700;
+const RENDERER_LIGHT_MODE_DOM_EVENT = "cf:renderer-light-mode";
+const SYM_RENDERER_LIGHT_MODE_LISTENER = Symbol.for("codexflow:rendererLightModeListener");
 
 /**
  * 读取单调时间，用于计算渲染侧 IPC 等待耗时。
@@ -59,6 +61,30 @@ function installInvokeTimingDiagnostics(): void {
 }
 
 installInvokeTimingDiagnostics();
+
+/**
+ * 安装渲染轻量模式桥接器，把主进程恢复策略转为页面内事件。
+ */
+function ensureRendererLightModeBridge(): void {
+  try {
+    const g: any = process as any;
+    if (g[SYM_RENDERER_LIGHT_MODE_LISTENER]) return;
+    const listener = (_: unknown, payload: { reason?: string; durationMs?: number }) => {
+      try {
+        window.dispatchEvent(new CustomEvent(RENDERER_LIGHT_MODE_DOM_EVENT, {
+          detail: {
+            reason: String(payload?.reason || "").trim(),
+            durationMs: Math.max(5_000, Math.min(120_000, Number(payload?.durationMs) || 60_000)),
+          },
+        }));
+      } catch {}
+    };
+    g[SYM_RENDERER_LIGHT_MODE_LISTENER] = listener;
+    ipcRenderer.on("renderer.lightMode", listener);
+  } catch {}
+}
+
+ensureRendererLightModeBridge();
 
 // ---- PTY 事件分发（关键性能修复）----
 //

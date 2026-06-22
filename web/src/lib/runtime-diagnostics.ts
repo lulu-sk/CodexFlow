@@ -7,6 +7,8 @@ const RENDERER_HEARTBEAT_WARN_DRIFT_MS = 700;
 const RENDERER_HEARTBEAT_MIN_LOG_GAP_MS = 3000;
 const RENDERER_LONG_TASK_WARN_MS = 200;
 const RENDERER_LONG_TASK_MIN_LOG_GAP_MS = 1500;
+const RENDERER_LIGHT_MODE_EVENT = "cf:renderer-light-mode";
+const RENDERER_LIGHT_MODE_DURATION_MS = 60_000;
 
 let rendererDiagnosticsEnabled = false;
 
@@ -34,6 +36,20 @@ function logRendererDiagnostic(message: string): void {
 }
 
 /**
+ * 通知页面进入短时轻量模式，让 Git 图谱等重任务主动降级，避免卡死扩大。
+ */
+function requestRendererLightMode(reason: string): void {
+  try {
+    window.dispatchEvent(new CustomEvent(RENDERER_LIGHT_MODE_EVENT, {
+      detail: {
+        reason: clampLogValue(reason, 120),
+        durationMs: RENDERER_LIGHT_MODE_DURATION_MS,
+      },
+    }));
+  } catch {}
+}
+
+/**
  * 从主进程调试配置同步诊断开关。
  */
 async function refreshRendererDiagnosticsEnabled(): Promise<void> {
@@ -57,6 +73,7 @@ function installHeartbeatProbe(): void {
       const driftMs = now - expectedAt;
       expectedAt = now + RENDERER_HEARTBEAT_INTERVAL_MS;
       if (driftMs < RENDERER_HEARTBEAT_WARN_DRIFT_MS) return;
+      requestRendererLightMode(`eventLoop.blocked driftMs=${Math.round(driftMs)}`);
       if (now - lastLoggedAt < RENDERER_HEARTBEAT_MIN_LOG_GAP_MS) return;
       lastLoggedAt = now;
       logRendererDiagnostic(`eventLoop.blocked driftMs=${Math.round(driftMs)} intervalMs=${RENDERER_HEARTBEAT_INTERVAL_MS} visibility=${document.visibilityState}`);
@@ -80,6 +97,7 @@ function installLongTaskProbe(): void {
         for (const entry of list.getEntries()) {
           const durationMs = Number(entry.duration || 0);
           if (durationMs < RENDERER_LONG_TASK_WARN_MS) continue;
+          requestRendererLightMode(`longTask durationMs=${Math.round(durationMs)}`);
           const now = nowMs();
           if (now - lastLoggedAt < RENDERER_LONG_TASK_MIN_LOG_GAP_MS) continue;
           lastLoggedAt = now;

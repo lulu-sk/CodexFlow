@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildGitLogBranchesDashboard,
+  buildGitLogVisiblePlaceholderPack,
   buildGitLogVisiblePack,
   createDefaultGitLogBranchesDashboardState,
   loadGitLogBranchesDashboardState,
@@ -148,6 +149,21 @@ describe("git log visible pack", () => {
       expect.objectContaining({ from: 0, to: 0, style: "solid" }),
     ]);
     expect(pack.graphCells[1]?.incomingFromLane).toBe(0);
+  });
+
+  it("占位图谱应保持列表行数并退化为单轨，保证完整图谱计算前列表可交互", () => {
+    const items = [
+      createLogItem({ hash: "head", parents: ["mid"] }),
+      createLogItem({ hash: "mid", parents: ["base"] }),
+      createLogItem({ hash: "base", parents: [] }),
+    ];
+    const pack = buildGitLogVisiblePlaceholderPack(items, { pending: true });
+
+    expect(pack.items).toBe(items);
+    expect(pack.pending).toBe(true);
+    expect(pack.graphCells).toHaveLength(items.length);
+    expect(pack.graphCells.every((cell) => cell.lane === 0 && cell.maxLane === 0)).toBe(true);
+    expect(pack.graphColumnWidth).toBeCloseTo(resolveLogGraphWidth(0), 4);
   });
 
   it("branches dashboard 应只暴露日志真正需要的最小仓库上下文", () => {

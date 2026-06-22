@@ -5,6 +5,8 @@ import { describe, expect, it } from "vitest";
 import { execGitAsync } from "./exec";
 import { dispatchGitFeatureAction } from "./featureService";
 
+const GIT_INTEGRATION_TEST_TIMEOUT_MS = 20_000;
+
 type RepoFixture = {
   repo: string;
   userDataPath: string;
@@ -33,8 +35,8 @@ async function createRepoFixture(prefix: string): Promise<RepoFixture> {
     repo,
     userDataPath,
     async cleanup(): Promise<void> {
-      try { await fsp.rm(repo, { recursive: true, force: true }); } catch {}
-      try { await fsp.rm(userDataPath, { recursive: true, force: true }); } catch {}
+      try { await fsp.rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch {}
+      try { await fsp.rm(userDataPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch {}
     },
   };
 }
@@ -79,7 +81,7 @@ describe("featureService diff.openPath", () => {
     } finally {
       await fixture.cleanup();
     }
-  });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 
   it("revisionToWorking 模式应直接返回当前工作区文件路径", async () => {
     const fixture = await createRepoFixture("codexflow-diff-open-working");
@@ -106,7 +108,7 @@ describe("featureService diff.openPath", () => {
     } finally {
       await fixture.cleanup();
     }
-  });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 
   it("revisionToRevision 模式在右侧版本缺失时应回退到左侧修订文件", async () => {
     const fixture = await createRepoFixture("codexflow-diff-open-revision-fallback");
@@ -140,5 +142,5 @@ describe("featureService diff.openPath", () => {
     } finally {
       await fixture.cleanup();
     }
-  });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 });

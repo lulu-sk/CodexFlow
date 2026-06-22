@@ -41,6 +41,8 @@ export type GitExecOptions = {
   stdin?: string | Buffer;
   /** 是否允许超过常规 30 分钟上限；仅用于 worktree 创建/清理等明确的大任务。 */
   allowLongTimeout?: boolean;
+  /** 可选取消信号；触发后会尽快终止子进程并返回 aborted。 */
+  signal?: AbortSignal;
 };
 
 /**
@@ -84,6 +86,7 @@ export async function execGitAsync(opts: GitExecOptions): Promise<GitExecResult>
     envPatch: opts?.envPatch,
     stdin: opts?.stdin,
     allowLongTimeout: opts?.allowLongTimeout,
+    signal: opts?.signal,
   });
 }
 
@@ -92,8 +95,6 @@ export type GitSpawnOptions = GitExecOptions & {
   onStdout?: (chunk: string) => void;
   /** stderr 数据到达时回调（用于流式日志展示）。 */
   onStderr?: (chunk: string) => void;
-  /** 可选取消信号；触发后会尽快终止子进程并返回 aborted。 */
-  signal?: AbortSignal;
 };
 
 export type GitSpawnStdoutToFileOptions = GitExecOptions & {

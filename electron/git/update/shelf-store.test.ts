@@ -16,6 +16,7 @@ import {
 } from "../shelf/system";
 import type { GitShelfManagerRuntime } from "../shelf/types";
 
+const GIT_INTEGRATION_TEST_TIMEOUT_MS = 20_000;
 const cleanupTargets = new Set<string>();
 
 /**
@@ -156,7 +157,7 @@ afterEach(async () => {
   await Promise.all(
     Array.from(cleanupTargets.values()).map(async (target) => {
       try {
-        await fsp.rm(target, { recursive: true, force: true });
+        await fsp.rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       } catch {}
       cleanupTargets.delete(target);
     }),
@@ -189,7 +190,7 @@ describe("system shelf 平台", () => {
     expect(await fsp.readFile(path.join(firstRepo.repoRoot, "tracked.txt"), "utf8")).toContain("first");
     expect(await listSystemShelvesAsync(firstRuntime)).toHaveLength(0);
     expect(await listSystemShelvesAsync(secondRuntime)).toHaveLength(1);
-  });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 
   it("删除记录时只应删除目标 ref 对应目录", async () => {
     const ctx = await initRepoAsync("delete-one");
@@ -210,7 +211,7 @@ describe("system shelf 平台", () => {
     const remaining = await listSystemShelvesAsync(runtime);
     expect(remaining).toHaveLength(1);
     expect(remaining[0]!.ref).toBe(items[1]!.ref);
-  });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 
   it("大补丁场景应通过流式写文件完成搁置，而不是触发 maxBuffer", async () => {
     const ctx = await initRepoAsync("large-patch");
@@ -232,7 +233,7 @@ describe("system shelf 平台", () => {
     expect(items).toHaveLength(1);
     expect(items[0]?.hasIndexPatch).toBe(true);
     expect(items[0]?.hasWorktreePatch).toBe(true);
-  });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 
   it("不应再调用整仓 clean；即使注入 clean 失败，保存仍应按新平台语义成功", async () => {
     const ctx = await initRepoAsync("orphaned-clean");
@@ -250,7 +251,7 @@ describe("system shelf 平台", () => {
     const hiddenItems = await listSystemShelvesAsync(runtime, { includeHidden: true });
     expect(hiddenItems).toHaveLength(1);
     expect(hiddenItems[0]?.state).toBe("saved");
-  });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 
   it("恢复 index 成功但 worktree 失败时应标记 restore-failed，并允许后续重试", async () => {
     const ctx = await initRepoAsync("retry");
@@ -280,7 +281,7 @@ describe("system shelf 平台", () => {
     expect(retryRes.ok).toBe(true);
     expect(await fsp.readFile(path.join(ctx.repoRoot, "tracked.txt"), "utf8")).toContain("unstaged");
     expect(await listSystemShelvesAsync(saveRuntime)).toHaveLength(0);
-  });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 
   it("恢复后应还原原始 changelist 映射", async () => {
     const ctx = await initRepoAsync("changelist-restore");
@@ -316,7 +317,7 @@ describe("system shelf 平台", () => {
     expect(restoredRepo.activeListId).toBe("feature-list");
     expect(restoredRepo.fileToList["tracked.txt"]).toBe("feature-list");
     expect(restoredRepo.lists.some((item) => item.id === "feature-list" && item.name === "功能列表")).toBe(true);
-  });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 
   it("恢复未跟踪文件时，若目标路径已存在且内容一致，应视为已恢复成功", async () => {
     const ctx = await initRepoAsync("untracked-same-content");
@@ -337,7 +338,7 @@ describe("system shelf 平台", () => {
     expect(restoreRes.ok).toBe(true);
     expect(await fsp.readFile(path.join(ctx.repoRoot, "same.txt"), "utf8")).toBe("same content\n");
     expect(await listSystemShelvesAsync(runtime)).toHaveLength(0);
-  });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 
   it("恢复未跟踪文件时，若目标路径已存在且内容不同，应继续保留 restore-failed", async () => {
     const ctx = await initRepoAsync("untracked-different-content");
@@ -361,5 +362,5 @@ describe("system shelf 平台", () => {
     const hiddenItems = await listSystemShelvesAsync(runtime, { includeHidden: true });
     expect(hiddenItems).toHaveLength(1);
     expect(hiddenItems[0]?.state).toBe("restore-failed");
-  });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 });

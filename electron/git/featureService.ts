@@ -562,6 +562,7 @@ async function runGitExecAsync(
     argv: normalizedArgv,
     timeoutMs,
     envPatch,
+    signal: ctx.abortSignal,
   });
   gitConsoleStore.appendCompletedEntry({
     cwd,
@@ -662,6 +663,7 @@ async function runGitExecQuietAsync(
     argv: buildNormalizedGitArgv(argv),
     timeoutMs,
     envPatch,
+    signal: ctx.abortSignal,
   });
 }
 

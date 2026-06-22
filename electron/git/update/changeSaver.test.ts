@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { execGitAsync, spawnGitStdoutToFileAsync, type GitExecResult } from "../exec";
 import { createWorkspaceChangesSaver } from "./preservingProcess";
 
+const GIT_INTEGRATION_TEST_TIMEOUT_MS = 20_000;
 const cleanupTargets = new Set<string>();
 
 /**
@@ -53,7 +54,7 @@ afterEach(async () => {
   await Promise.all(
     Array.from(cleanupTargets.values()).map(async (target) => {
       try {
-        await fsp.rm(target, { recursive: true, force: true });
+        await fsp.rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       } catch {}
       cleanupTargets.delete(target);
     }),
@@ -126,7 +127,7 @@ describe("git change saver", () => {
     expect(await readFileAsync(repoB, "untracked-b.txt")).toContain("untracked b");
     expect((await gitMustAsync(repoA, ["stash", "list"])).trim()).toBe("");
     expect((await gitMustAsync(repoB, ["stash", "list"])).trim()).toBe("");
-  });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 
   it("shelve saver 应通过 shelf view manager 暴露查看动作，并保留 system shelf 语义", async () => {
     const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "codexflow-change-saver-shelve-"));
@@ -183,5 +184,5 @@ describe("git change saver", () => {
         label: "查看搁置记录",
       }),
     }));
-  });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 });

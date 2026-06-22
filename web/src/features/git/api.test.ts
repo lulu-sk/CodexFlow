@@ -2,10 +2,22 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import * as api from "./api";
 
 afterEach(() => {
+  api.__resetGitFeatureApiForTests();
   delete (globalThis as any).window;
 });
 
 describe("git api alignment", () => {
+  /**
+   * 构造可手动释放的 Promise，用于模拟仍在进行中的 IPC 请求。
+   */
+  function createDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((next) => {
+      resolve = next;
+    });
+    return { promise, resolve };
+  }
+
   it("不应再导出 update 专用 shelf API", () => {
     expect("getUpdateShelvesAsync" in api).toBe(false);
     expect("restoreUpdateShelveAsync" in api).toBe(false);
@@ -122,6 +134,84 @@ describe("git api alignment", () => {
         repoPath: "/repo",
         commitAndPush: { previewProtectedOnly: true },
       }),
+    }));
+  });
+
+  it("连续 Git 读请求应取消同键旧请求，避免后台读取堆积", async () => {
+    const firstStatus = createDeferred<{ ok: boolean }>();
+    let firstStatusRequestId = 0;
+    const call = vi.fn(async (args: any) => {
+      if (args?.action === "status.get" && !firstStatusRequestId) {
+        firstStatusRequestId = Number(args.requestId || 0);
+        return await firstStatus.promise;
+      }
+      return { ok: true };
+    });
+    (globalThis as any).window = {
+      host: {
+        gitFeature: { call },
+      },
+    };
+
+    const first = api.getStatusAsync("/repo");
+    await Promise.resolve();
+    const second = api.getStatusAsync("/repo");
+    await Promise.resolve();
+
+    expect(call).toHaveBeenCalledWith(expect.objectContaining({
+      action: "request.cancel",
+      payload: expect.objectContaining({
+        targetRequestId: firstStatusRequestId,
+      }),
+      requestId: 0,
+    }));
+    firstStatus.resolve({ ok: true });
+    await Promise.all([first, second]);
+  });
+
+  it("Git 写请求不应触发旧请求取消，避免误伤提交/暂存等真实操作", async () => {
+    const call = vi.fn(async () => ({ ok: true }));
+    (globalThis as any).window = {
+      host: {
+        gitFeature: { call },
+      },
+    };
+
+    await api.stageFilesAsync("/repo", ["a.txt"]);
+    await api.stageFilesAsync("/repo", ["b.txt"]);
+
+    expect(call).toHaveBeenCalledTimes(2);
+    expect(call).not.toHaveBeenCalledWith(expect.objectContaining({
+      action: "request.cancel",
+    }));
+  });
+
+  it("日志分页读取应按 cursor 区分取消键，避免加载更多时取消首屏或相邻页", async () => {
+    const call = vi.fn(async () => ({ ok: true }));
+    const filters = {
+      text: "",
+      caseSensitive: false,
+      matchMode: "fuzzy" as const,
+      branch: "",
+      author: "",
+      dateFrom: "",
+      dateTo: "",
+      path: "",
+      revision: "",
+      followRenames: false,
+    };
+    (globalThis as any).window = {
+      host: {
+        gitFeature: { call },
+      },
+    };
+
+    await api.getLogAsync("/repo", 0, 200, filters);
+    await api.getLogAsync("/repo", 200, 200, filters);
+
+    expect(call).toHaveBeenCalledTimes(2);
+    expect(call).not.toHaveBeenCalledWith(expect.objectContaining({
+      action: "request.cancel",
     }));
   });
 });
