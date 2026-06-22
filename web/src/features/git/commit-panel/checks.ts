@@ -6,6 +6,8 @@ import type { GitPostCommitPushResult } from "../types";
 import type { GitCommitIntent } from "./commit-workflow";
 import { resolveGitText } from "../git-i18n";
 
+type GitCommitCheckTextResolver = (key: string, fallback: string, values?: Record<string, unknown>) => string;
+
 export type GitCommitCheckLevel = "error" | "warning" | "info";
 
 export type GitCommitCheck = {
@@ -23,6 +25,7 @@ export type GitCommitBeforeCheckArgs = {
   defaultAuthor: string;
   authorDate: string;
   showEmptyMessageError?: boolean;
+  resolveText?: GitCommitCheckTextResolver;
 };
 
 export type GitCommitPostCheckArgs = {
@@ -48,6 +51,7 @@ export function normalizeCommitMessageForPolicy(message: string, cleanupMessage:
  */
 export function runBeforeCommitChecks(args: GitCommitBeforeCheckArgs): GitCommitCheck[] {
   const checks: GitCommitCheck[] = [];
+  const resolveText = args.resolveText || resolveGitText;
   const normalizedMessage = normalizeCommitMessageForPolicy(args.message, args.cleanupMessage);
   const explicitAuthor = String(args.explicitAuthor || "").trim();
   const defaultAuthor = String(args.defaultAuthor || "").trim();
@@ -59,8 +63,8 @@ export function runBeforeCommitChecks(args: GitCommitBeforeCheckArgs): GitCommit
       level: "error",
       blocking: true,
       message: args.cleanupMessage
-        ? resolveGitText("commit.checks.emptyAfterCleanup", "清理提交消息后内容为空，请输入有效的提交信息。")
-        : resolveGitText("commit.checks.emptyMessage", "提交信息不能为空。"),
+        ? resolveText("commit.checks.emptyAfterCleanup", "清理提交消息后内容为空，请输入有效的提交信息。")
+        : resolveText("commit.checks.emptyMessage", "提交信息不能为空。"),
     });
   }
 
@@ -69,7 +73,7 @@ export function runBeforeCommitChecks(args: GitCommitBeforeCheckArgs): GitCommit
       id: "author-date-invalid",
       level: "error",
       blocking: true,
-      message: resolveGitText("commit.checks.authorDateInvalid", "作者时间格式无效，请使用有效的日期时间。"),
+      message: resolveText("commit.checks.authorDateInvalid", "作者时间格式无效，请使用有效的日期时间。"),
     });
   }
 
@@ -78,14 +82,14 @@ export function runBeforeCommitChecks(args: GitCommitBeforeCheckArgs): GitCommit
       id: "author-missing",
       level: "error",
       blocking: true,
-      message: resolveGitText("commit.checks.authorMissing", "未配置默认作者，请先设置 Git user.name / user.email，或在提交选项里填写作者。"),
+      message: resolveText("commit.checks.authorMissing", "未配置默认作者，请先设置 Git user.name / user.email，或在提交选项里填写作者。"),
     });
   } else if (!explicitAuthor && defaultAuthor) {
     checks.push({
       id: "author-default",
       level: "info",
       blocking: false,
-      message: resolveGitText("commit.checks.defaultAuthor", "默认作者：{{author}}", { author: defaultAuthor }),
+      message: resolveText("commit.checks.defaultAuthor", "默认作者：{{author}}", { author: defaultAuthor }),
     });
   }
 

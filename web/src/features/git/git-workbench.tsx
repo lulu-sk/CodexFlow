@@ -3856,8 +3856,9 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
       defaultAuthor: defaultCommitAuthor,
       authorDate: sanitized.authorDate,
       showEmptyMessageError: false,
+      resolveText: gt,
     });
-  }, [commitAdvancedOptionsState, commitMessage, defaultCommitAuthor]);
+  }, [commitAdvancedOptionsState, commitMessage, defaultCommitAuthor, gt]);
   const blockingCommitCheck = useMemo<GitCommitCheck | null>(() => {
     return findBlockingCommitCheck(commitChecks);
   }, [commitChecks]);
@@ -4809,9 +4810,9 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   const displayChangeLists = useMemo(() => {
     return (status?.changeLists?.lists || []).map((one) => ({
       ...one,
-      name: resolveDisplayChangeListName(one),
+      name: resolveDisplayChangeListName(one, gt),
     }));
-  }, [status?.changeLists?.lists]);
+  }, [gt, status?.changeLists?.lists]);
   const activeChangeListId = useMemo<string>(() => {
     return String(status?.changeLists?.activeListId || "").trim();
   }, [status?.changeLists?.activeListId]);
@@ -11873,6 +11874,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
       defaultAuthor: defaultCommitAuthor,
       authorDate: sanitizedOptions.authorDate,
       entries: args.entries,
+      resolveText: gt,
       resolvePayloadAsync: resolveCommitWorkflowPayloadAsync,
     });
     if (!workflowRes.ok) {
@@ -11981,6 +11983,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
     defaultCommitAuthor,
     ensureMergePrecheckConfirmedAsync,
     finalizeGitNotice,
+    gt,
     openConflictResolverDialog,
     openPushAfterCommitAsync,
     refreshAllAsync,
@@ -12629,7 +12632,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
       if (action === "move") {
         if (!selectedEntryPaths.length) return;
         const lists = resolveMoveDialogLists(displayChangeLists, actionSelectedEntries);
-        const options = buildChangeListSelectOptions(lists);
+        const options = buildChangeListSelectOptions(lists, gt);
         const form = await openActionDialogAsync({
           title: gt("actionDialogs.moveToChangelist.title", "移动到变更列表"),
           description: gt("actionDialogs.moveToChangelist.description", "选择目标变更列表"),
@@ -12914,7 +12917,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
               key: "targetListId",
               label: gt("actionDialogs.deleteChangeList.targetLabel", "目标列表"),
               type: "select",
-              options: buildChangeListSelectOptions(candidates),
+              options: buildChangeListSelectOptions(candidates, gt),
               required: true,
             }],
             defaults: { targetListId: candidates[0]?.id || "" },

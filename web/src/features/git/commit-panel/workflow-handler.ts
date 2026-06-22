@@ -8,6 +8,8 @@ import type { CommitWorkflowPayload, GitCommitIntent } from "./commit-workflow";
 import { buildPostCommitChecks, findBlockingCommitCheck, runBeforeCommitChecks, type GitCommitCheck } from "./checks";
 import { shouldPersistLastCommitMessage } from "./message-policy";
 
+type GitCommitWorkflowTextResolver = (key: string, fallback: string, values?: Record<string, unknown>) => string;
+
 export type PrepareGitCommitWorkflowArgs = {
   message: string;
   intent: GitCommitIntent;
@@ -16,6 +18,7 @@ export type PrepareGitCommitWorkflowArgs = {
   defaultAuthor: string;
   authorDate: string;
   entries?: GitStatusEntry[];
+  resolveText?: GitCommitWorkflowTextResolver;
   resolvePayloadAsync: (args: {
     message: string;
     intent: GitCommitIntent;
@@ -45,6 +48,7 @@ export async function prepareGitCommitWorkflowAsync(
     explicitAuthor: args.explicitAuthor,
     defaultAuthor: args.defaultAuthor,
     authorDate: args.authorDate,
+    resolveText: args.resolveText,
   });
   const blockingCheck = findBlockingCommitCheck(checks);
   if (blockingCheck) {
@@ -73,7 +77,7 @@ export async function prepareGitCommitWorkflowAsync(
   if (!String(payloadRes.payload.message || "").trim()) {
     return {
       ok: false,
-      error: resolveGitText("commit.checks.emptyMessage", "提交信息不能为空。"),
+      error: (args.resolveText || resolveGitText)("commit.checks.emptyMessage", "提交信息不能为空。"),
       checks,
       blockingCheck: null,
     };

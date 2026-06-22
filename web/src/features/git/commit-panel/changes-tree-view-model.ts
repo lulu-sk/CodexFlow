@@ -102,8 +102,8 @@ function resolveGroupSortWeight(group: Pick<ChangeEntryGroup, "kind" | "changeLi
 /**
  * 统一构建 group renderer/search/copy 共用的显示载荷。
  */
-function buildGroupRenderPayload(group: ChangeEntryGroup): CommitTreeRenderPayload {
-  const countText = group.summary ? formatCommitTreeGroupSummary(group.summary) : undefined;
+function buildGroupRenderPayload(group: ChangeEntryGroup, translate?: GitTranslate): CommitTreeRenderPayload {
+  const countText = group.summary ? formatCommitTreeGroupSummary(group.summary, translate) : undefined;
   return {
     textPresentation: group.label,
     countText,
@@ -164,6 +164,8 @@ export function formatCommitTreeGroupSummary(summary: CommitTreeGroupSummary | u
   if (!summary) return translate ? translate("commitTree.summary.zeroFiles", "0 个文件") : "0 个文件";
   const directoryCount = Math.max(0, Math.floor(summary.directoryCount));
   const fileCount = Math.max(0, Math.floor(summary.fileCount));
+  if (directoryCount <= 0 && fileCount <= 0)
+    return translate ? translate("commitTree.summary.zeroFiles", "0 个文件") : "0 个文件";
   if (directoryCount > 0 && fileCount > 0) {
     return translate
       ? translate("commitTree.summary.directoriesAndFiles", "{{directoryCount}} 个目录，{{fileCount}} 个文件", { directoryCount, fileCount })
@@ -231,7 +233,7 @@ export function buildChangeEntryGroups(args: BuildChangeEntryGroupsArgs): Change
       sortWeight: resolveGroupSortWeight(withSummary),
       stableId: withSummary.key,
       selectionFlags: buildGroupSelectionFlags(withSummary),
-      renderPayload: buildGroupRenderPayload(withSummary),
+      renderPayload: buildGroupRenderPayload(withSummary, gt),
       sourceKind: withSummary.sourceKind || "status",
       sourceId: withSummary.sourceId || withSummary.key,
       actionGroupId: withSummary.actionGroupId || COMMIT_TREE_ACTION_GROUPS.mainPopup,

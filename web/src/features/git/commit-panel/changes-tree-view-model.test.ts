@@ -379,6 +379,33 @@ describe("commit panel tree view model", () => {
     expect(formatCommitTreeGroupSummary(summary, translate)).toBe("2 个目录，4 个文件");
   });
 
+  it("分组渲染摘要应使用传入翻译函数，避免英文界面残留中文数量单位", () => {
+    const translate = (key: string, fallback: string, values?: Record<string, unknown>): string => {
+      if (key === "commitTree.summary.zeroFiles") return "0 files";
+      if (key === "commitTree.summary.directoriesAndFiles")
+        return `${String(values?.directoryCount || 0)} directories, ${String(values?.fileCount || 0)} files`;
+      return resolveGitTextWith(
+        (_innerKey, options) => String(options.defaultValue || ""),
+        key,
+        fallback,
+        values,
+      );
+    };
+    const groups = buildChangeEntryGroups({
+      entries: [
+        { path: "src/a.ts", x: "?", y: "?", staged: false, unstaged: true, untracked: true, ignored: false, renamed: false, deleted: false, statusText: "Untracked", changeListId: "default" },
+        { path: "src/b.ts", x: "?", y: "?", staged: false, unstaged: true, untracked: true, ignored: false, renamed: false, deleted: false, statusText: "Untracked", changeListId: "default" },
+      ],
+      ignoredEntries: [],
+      changeLists: [{ id: "default", name: "Default" }],
+      options: { stagingAreaEnabled: false, changeListsEnabled: true },
+      translate,
+    });
+
+    expect(groups.find((group) => group.kind === "changelist")?.renderPayload?.countText).toBe("0 files");
+    expect(groups.find((group) => group.kind === "unversioned")?.renderPayload?.countText).toBe("1 directories, 2 files");
+  });
+
   it("helper node 状态应统一进入 view model，而不是由 UI 零散拼接", () => {
     expect(buildCommitTreeGroupState({
       updating: true,

@@ -2695,6 +2695,12 @@
       "frozen": "Frozen",
       "outdatedFiles": "{{count}} outdated files"
     },
+    "summary": {
+      "zeroFiles": "0 files",
+      "directoriesAndFiles": "{{directoryCount}} directories, {{fileCount}} files",
+      "directoriesOnly": "{{directoryCount}} directories",
+      "filesOnly": "{{fileCount}} files"
+    },
     "conflictActions": {
       "unstage": {
         "icon": "Reset",
