@@ -32,7 +32,7 @@ export type Project = {
   worktreePostSetup?: WorktreePostSetupConfig;
   createdAt: number;
   lastOpenedAt?: number;
-  /** 是否已确认存在内置三引擎（codex/claude/gemini）的会话记录。 */
+  /** 是否已确认存在内置代理引擎（codex/claude/gemini/antigravity）的会话记录。 */
   hasBuiltInSessions?: boolean;
   /** 自定义引擎无法从会话文件反推 cwd 时，用于“保留该目录”的显式记录。 */
   dirRecord?: ProjectDirRecord;
@@ -620,7 +620,7 @@ export type AddProjectOptions = {
  *
  * 说明：
  * - 默认行为仅记录项目本身；当提供 dirRecord 时，会写入“自定义引擎目录记录”，用于自定义引擎无法被会话扫描反推 cwd 的场景。
- * - 若该项目已被确认存在内置三引擎会话（hasBuiltInSessions=true），则不会写入 dirRecord，避免出现“可移除目录记录”误导。
+ * - 若该项目已被确认存在内置代理引擎会话（hasBuiltInSessions=true），则不会写入 dirRecord，避免出现“可移除目录记录”误导。
  */
 export function addProjectByWinPath(winPath: string, options?: AddProjectOptions): Project | null {
   try {

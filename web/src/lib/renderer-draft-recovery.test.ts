@@ -50,8 +50,8 @@ describe("renderer-draft-recovery（渲染刷新草稿恢复）", () => {
           promptDraft: "请先看截图",
           useYolo: false,
           useMultipleModels: true,
-          singleProviderId: "gemini",
-          multiCounts: { codex: 0, claude: 1, gemini: 2 },
+          singleProviderId: "antigravity",
+          multiCounts: { codex: 0, claude: 1, gemini: 2, antigravity: 3 },
         },
       },
     });
@@ -59,6 +59,8 @@ describe("renderer-draft-recovery（渲染刷新草稿恢复）", () => {
     const restored = loadRendererDraftRecovery({ currentBootId: "boot-1" });
     expect(restored?.tabInputsByTab["tab-1"]?.draft).toBe("继续修这个问题");
     expect(restored?.worktreeCreateDraftByRepoId["repo-1"]?.promptDraft).toBe("请先看截图");
+    expect(restored?.worktreeCreateDraftByRepoId["repo-1"]?.singleProviderId).toBe("antigravity");
+    expect(restored?.worktreeCreateDraftByRepoId["repo-1"]?.multiCounts.antigravity).toBe(3);
 
     const restoredChips = restoreRecoveryPathChips(restored?.worktreeCreateDraftByRepoId["repo-1"]?.promptChips);
     expect(restoredChips).toHaveLength(1);

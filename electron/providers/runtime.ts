@@ -39,7 +39,7 @@ export function resolveProviderRuntimeEnvFromSettings(cfg: AppSettings, provider
  * - 优先读取 providers.items 对应条目的 startupCmd（空/仅空白则视为未设置）
  * - 内置兜底：
  *   - codex：cfg.codexCmd（再回退到 "codex"）
- *   - claude/gemini：使用各自的默认命令
+ *   - claude/gemini/antigravity：使用各自的默认命令
  * - 其它自定义 Provider：缺失时返回空字符串
  */
 export function resolveProviderStartupCmdFromSettings(cfg: AppSettings, providerId: string): string {
@@ -52,6 +52,7 @@ export function resolveProviderStartupCmdFromSettings(cfg: AppSettings, provider
 
   if (pid === "claude") return "claude";
   if (pid === "gemini") return "gemini";
+  if (pid === "antigravity") return "agy";
   if (pid === "codex") {
     const legacy = typeof (cfg as any)?.codexCmd === "string" ? String((cfg as any).codexCmd).trim() : "";
     return legacy || "codex";

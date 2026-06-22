@@ -143,6 +143,44 @@
       }
     }
   },
+  "antigravityUsage": {
+    "loading": "Loading usage…",
+    "unavailable": "Usage unavailable",
+    "title": "Usage",
+    "empty": "No usage data",
+    "usageUnknown": "Usage unknown",
+    "unknownGroup": "Unknown group",
+    "resetAt": "Resets {time}",
+    "groups": {
+      "gemini": "Gemini Models",
+      "claudeGpt": "Claude and GPT models"
+    },
+    "windows": {
+      "weekly": "Weekly Limit"
+    },
+    "sourceApp": "Antigravity App",
+    "sourceAgy": "AGY",
+    "sourceLaunchedAgy": "Temporary AGY",
+    "sourceIde": "Antigravity IDE",
+    "sourceLocal": "Local service",
+    "rawSourceQuotaSummary": "Quota summary",
+    "rawSourceUserStatus": "User status",
+    "rawSourceModelConfig": "Model config",
+    "errors": {
+      "default": {
+        "title": "Unable to fetch Antigravity usage",
+        "hint": "Make sure Antigravity or AGY is signed in, then try again"
+      },
+      "cliNotFound": {
+        "title": "AGY CLI not found",
+        "hint": "Install Antigravity CLI or set ANTIGRAVITY_CLI_PATH, then try again"
+      },
+      "localService": {
+        "title": "Antigravity local service not detected",
+        "hint": "Open Antigravity / AGY, or refresh again later"
+      }
+    }
+  },
   "notifications": {
     "taskCompleted": "{tab} completed",
     "taskCompletedWithProject": "{tab} · {project}",

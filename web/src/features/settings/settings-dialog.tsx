@@ -22,6 +22,7 @@ import {
   getGlobalRuleFilePath,
   getProviderRuleFileName,
   normalizeEngineRootPaths,
+  trimTrailingPathSeparators,
   type BuiltInRuleProviderId,
 } from "@/lib/engine-rules";
 import { cn, formatBytes } from "@/lib/utils";
@@ -79,6 +80,10 @@ import { getCodexCliErrorKindLabel } from "@/lib/codex-cli-error-classifier";
 type TerminalMode = NonNullable<AppSettings["terminal"]>;
 type SendMode = "write_only" | "write_and_enter";
 type PathStyle = "absolute" | "relative";
+type SessionRootsProviderId = BuiltInRuleProviderId | "antigravity";
+type RenderEngineRootsOptions = {
+  showRuleActions?: boolean;
+};
 type NotificationPrefs = {
   badge: boolean;
   system: boolean;
@@ -246,6 +251,23 @@ type AutoProfilesInfo = {
 
 type WorktreeProfileDirInfo = AutoProfileDirInfo;
 type WorktreeProfilesInfo = AutoProfilesInfo;
+
+/**
+ * 规范只读会话根路径列表，保留原始目录语义并去除重复项。
+ */
+function normalizeReadOnlySessionRootPaths(recordedPaths: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of Array.isArray(recordedPaths) ? recordedPaths : []) {
+    const normalized = trimTrailingPathSeparators(String(item || ""));
+    if (!normalized) continue;
+    const key = normalized.replace(/\\/g, "/").toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(normalized);
+  }
+  return out;
+}
 
 type SectionKey = "basic" | "providers" | "gitWorktree" | "notifications" | "terminal" | "networkAccount" | "data";
 
@@ -427,7 +449,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   /**
    * 保存前清理 Provider items：
    * - Terminal：强制清空启动命令（始终仅打开 shell）
-   * - 内置三引擎：若识别到 YOLO 预设，则规范化为固定命令字符串
+   * - 内置代理引擎：若识别到 YOLO 预设，则规范化为固定命令字符串
    */
   const sanitizeProviderItemsForSave = useCallback((items: ProviderItem[]): ProviderItem[] => {
     const out: ProviderItem[] = [];
@@ -621,6 +643,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   const [codexRoots, setCodexRoots] = useState<string[]>([]);
   const [claudeRoots, setClaudeRoots] = useState<string[]>([]);
   const [geminiRoots, setGeminiRoots] = useState<string[]>([]);
+  const [antigravityRoots, setAntigravityRoots] = useState<string[]>([]);
   const [lang, setLang] = useState<string>(values.locale || "en");
   const [theme, setTheme] = useState<ThemeSetting>(normalizeThemeSetting(values.theme));
   const [multiInstanceEnabled, setMultiInstanceEnabled] = useState<boolean>(!!values.multiInstanceEnabled);
@@ -818,10 +841,12 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   /**
    * 拉取指定引擎的会话根路径列表，并规范为真实“引擎根路径”用于展示与操作。
    */
-  const fetchSessionRoots = useCallback(async (providerId: BuiltInRuleProviderId): Promise<string[]> => {
+  const fetchSessionRoots = useCallback(async (providerId: SessionRootsProviderId): Promise<string[]> => {
     try {
       if (window.host.settings.sessionRoots) {
         const roots = await window.host.settings.sessionRoots({ providerId });
+        if (providerId === "antigravity")
+          return normalizeReadOnlySessionRootPaths(Array.isArray(roots) ? roots : []);
         return normalizeEngineRootPaths(providerId, Array.isArray(roots) ? roots : []);
       }
       if (providerId === "codex") {
@@ -900,7 +925,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   /**
    * 渲染引擎根路径列表（含紧凑操作入口：编辑规则/编辑配置/打开目录）。
    */
-  const renderEngineRoots = useCallback((providerId: BuiltInRuleProviderId, roots: string[], emptyTextKey: string) => {
+  const renderEngineRoots = useCallback((providerId: BuiltInRuleProviderId | null, roots: string[], emptyTextKey: string, options?: RenderEngineRootsOptions) => {
+    const showRuleActions = options?.showRuleActions !== false;
     if (roots.length <= 0) {
       return <div className="text-xs text-slate-400">{t(emptyTextKey)}</div>;
     }
@@ -911,7 +937,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
             <li key={root} className="flex items-center gap-2" title={root}>
               <span className="flex-1 min-w-0 truncate">{root}</span>
               <div className="shrink-0 flex items-center gap-1">
-                {providerId === "codex" ? (
+                {showRuleActions && providerId === "codex" ? (
                   <Button
                     size="xs"
                     variant="ghost"
@@ -921,14 +947,16 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                     {t("settings:engineRoots.actions.editConfig")}
                   </Button>
                 ) : null}
-                <Button
-                  size="xs"
-                  variant="ghost"
-                  className="h-6 px-2"
-                  onClick={() => { void editGlobalRuleFile(providerId, root); }}
-                >
-                  {t("settings:engineRoots.actions.editRule")}
-                </Button>
+                {showRuleActions && providerId ? (
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    className="h-6 px-2"
+                    onClick={() => { void editGlobalRuleFile(providerId, root); }}
+                  >
+                    {t("settings:engineRoots.actions.editRule")}
+                  </Button>
+                ) : null}
                 <Button
                   size="xs"
                   variant="ghost"
@@ -1026,18 +1054,21 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     if (!open) return;
     (async () => {
       try {
-        const [codex, claude, gemini] = await Promise.all([
+        const [codex, claude, gemini, antigravity] = await Promise.all([
           fetchSessionRoots("codex"),
           fetchSessionRoots("claude"),
           fetchSessionRoots("gemini"),
+          fetchSessionRoots("antigravity"),
         ]);
         setCodexRoots(codex);
         setClaudeRoots(claude);
         setGeminiRoots(gemini);
+        setAntigravityRoots(antigravity);
       } catch {
         setCodexRoots([]);
         setClaudeRoots([]);
         setGeminiRoots([]);
+        setAntigravityRoots([]);
       }
       try {
         const result: any = await (window.host as any).wsl?.listDistros?.();
@@ -2713,6 +2744,15 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
             </Card>
             <Card>
               <CardHeader>
+                <CardTitle>{t("settings:antigravityRoots.label")}</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <p className="text-sm text-slate-500">{t("settings:antigravityRoots.help")}</p>
+                {renderEngineRoots(null, antigravityRoots, "settings:antigravityRoots.empty", { showRuleActions: false })}
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader>
                 <CardTitle>{t("settings:historyCleanup.label")}</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -3025,6 +3065,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     codexRoots,
     claudeRoots,
     geminiRoots,
+    antigravityRoots,
     renderEngineRoots,
     openSessionRootPath,
     // 字体与显示相关依赖，确保“显示所有字体”等交互即时生效

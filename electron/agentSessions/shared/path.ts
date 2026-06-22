@@ -141,7 +141,7 @@ export function dirKeyFromCwd(dirPath: string): string {
       const info = uncToWsl(d);
       if (info) d = info.wslPath;
     } else {
-      const m = d.match(/^([a-zA-Z]):(?:\\(.*))?$/);
+      const m = d.match(/^([a-zA-Z]):(?:[\\/](.*))?$/);
       if (m) {
         const rest = String(m[2] || "").replace(/\\/g, "/");
         d = rest ? `/mnt/${m[1].toLowerCase()}/${rest}` : `/mnt/${m[1].toLowerCase()}`;

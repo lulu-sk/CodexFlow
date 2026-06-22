@@ -25,7 +25,7 @@ describe("worktree-create-prefs（创建面板偏好持久化）", () => {
       useYolo: false,
       useMultipleModels: true,
       singleProviderId: "claude",
-      multiCounts: { codex: 1, claude: 2, gemini: 0 },
+      multiCounts: { codex: 1, claude: 2, gemini: 0, antigravity: 0 },
     };
     saveWorktreeCreatePrefs(repoProjectId, prefs);
 
@@ -49,7 +49,7 @@ describe("worktree-create-prefs（创建面板偏好持久化）", () => {
       useYolo: true,
       useMultipleModels: true,
       singleProviderId: "gemini",
-      multiCounts: { codex: 0, claude: 1, gemini: 2 },
+      multiCounts: { codex: 0, claude: 1, gemini: 2, antigravity: 1 },
     });
 
     clearWorktreeCreateTransientPrefs(repoProjectId, { remarkBaseName: "默认备注" });
@@ -63,7 +63,7 @@ describe("worktree-create-prefs（创建面板偏好持久化）", () => {
       useYolo: true,
       useMultipleModels: true,
       singleProviderId: "gemini",
-      multiCounts: { codex: 0, claude: 1, gemini: 2 },
+      multiCounts: { codex: 0, claude: 1, gemini: 2, antigravity: 1 },
     });
   });
 });

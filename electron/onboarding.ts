@@ -8,12 +8,24 @@ import { getBaseUserDataDir } from "./featureFlags";
 export type OnboardingState = {
   /** 是否已经处理过启动时 YOLO 权限模式推荐提示。 */
   yoloPromptHandled?: boolean;
+  /** 用户在启动时 YOLO 推荐提示中的明确选择。 */
+  yoloPreference?: "enabled" | "disabled";
+  /** 是否已经处理过 Antigravity 继承 YOLO 的一次性确认提示。 */
+  antigravityYoloPromptHandled?: boolean;
 };
 
 const ONBOARDING_FILE_NAME = "onboarding.json";
 const DEFAULT_STATE: OnboardingState = {
   yoloPromptHandled: false,
+  antigravityYoloPromptHandled: false,
 };
+
+/**
+ * 归一化 YOLO 偏好字段。
+ */
+function normalizeYoloPreference(value: unknown): OnboardingState["yoloPreference"] {
+  return value === "enabled" || value === "disabled" ? value : undefined;
+}
 
 /**
  * 解析并归一化引导状态。
@@ -24,6 +36,8 @@ function normalizeState(raw: unknown): OnboardingState {
     return {
       ...DEFAULT_STATE,
       yoloPromptHandled: obj.yoloPromptHandled === true,
+      yoloPreference: normalizeYoloPreference(obj.yoloPreference),
+      antigravityYoloPromptHandled: obj.antigravityYoloPromptHandled === true,
     };
   } catch {
     return { ...DEFAULT_STATE };

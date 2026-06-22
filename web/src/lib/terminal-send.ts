@@ -6,7 +6,7 @@ import type { TerminalMode } from "./shell";
 /**
  * 终端输入发送工具：
  * - 负责构造 Bracketed Paste 序列（ESC[200~ ... ESC[201~）
- * - 负责 Provider 归一化与 Gemini 的“粘贴后延迟回车”策略
+ * - 负责 Provider 归一化与 Gemini/Antigravity 的“粘贴后延迟回车”策略
  *
  * 说明
  * - Gemini CLI 将 `\r` 识别为 `return`（默认提交），将 `\n` 识别为 `enter`（默认不绑定）。
@@ -41,6 +41,16 @@ export function normalizeProviderId(providerId?: string | null): string {
  */
 export function isGeminiProvider(providerId?: string | null): boolean {
   return normalizeProviderId(providerId) === "gemini";
+}
+
+/**
+ * 判断当前 provider 是否复用 Gemini 类 CLI 输入策略。
+ * @param providerId providerId
+ * @returns 是否需要 Gemini 类粘贴保护
+ */
+export function isGeminiLikeProvider(providerId?: string | null): boolean {
+  const normalized = normalizeProviderId(providerId);
+  return normalized === "gemini" || normalized === "antigravity";
 }
 
 /**
@@ -82,10 +92,10 @@ export function buildBracketedPastePayload(text: string): string {
 /**
  * 计算“粘贴结束 → 自动回车”的延迟（ms）。
  * @param providerId providerId
- * @returns 延迟毫秒数（非 Gemini 返回 0）
+ * @returns 延迟毫秒数（非 Gemini 类 Provider 返回 0）
  */
 export function getPasteEnterDelayMs(providerId?: string | null): number {
-  return isGeminiProvider(providerId) ? GEMINI_PASTE_ENTER_DELAY_MS : 0;
+  return isGeminiLikeProvider(providerId) ? GEMINI_PASTE_ENTER_DELAY_MS : 0;
 }
 
 /**
@@ -94,7 +104,7 @@ export function getPasteEnterDelayMs(providerId?: string | null): number {
  * 中文说明：
  * - 这个时间不代表“最终提交延迟”，而是“哪怕终端已经出现回显，也至少要再等这么久”；
  * - 目的是避免超长文本在 PowerShell / ConPTY / 非可信终端链路中，出现“paste 已显示，但 CLI 尚未真正进入可提交状态”的抢跑问题；
- * - 目前仅对 Gemini，以及 Windows/PowerShell 下的 Codex / Claude 启用更保守的动态等待。
+ * - 目前仅对 Gemini 类 Provider，以及 Windows/PowerShell 下的 Codex / Claude 启用更保守的动态等待。
  *
  * @param args.providerId providerId
  * @param args.terminalMode 当前终端类型
@@ -110,7 +120,7 @@ export function getPasteSubmitMinWaitMs(args: {
   const length = Math.max(0, Math.floor(Number(args.textLength) || 0));
   const chunks = Math.max(1, Math.ceil(length / 2048));
 
-  if (providerId === "gemini")
+  if (providerId === "gemini" || providerId === "antigravity")
     return Math.min(2400, 140 + chunks * 110);
 
   if (providerId === "claude" && args.terminalMode && args.terminalMode !== "wsl")

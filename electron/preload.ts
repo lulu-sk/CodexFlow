@@ -598,7 +598,7 @@ contextBridge.exposeInMainWorld('host', {
     }) => {
       return await ipcRenderer.invoke('history.list', args);
     },
-    read: async (args: { filePath: string; providerId?: "codex" | "claude" | "gemini"; forceParse?: boolean }) => {
+    read: async (args: { filePath: string; providerId?: "codex" | "claude" | "gemini" | "antigravity"; forceParse?: boolean }) => {
       return await ipcRenderer.invoke('history.read', args);
     },
     findEmptySessions: async () => {
@@ -650,7 +650,7 @@ contextBridge.exposeInMainWorld('host', {
       if (res && res.ok && Array.isArray(res.roots)) return res.roots as string[];
       return [] as string[];
     },
-    sessionRoots: async (args: { providerId: "codex" | "claude" | "gemini" }) => {
+    sessionRoots: async (args: { providerId: "codex" | "claude" | "gemini" | "antigravity" }) => {
       const res = await ipcRenderer.invoke('settings.sessionRoots', args);
       if (res && res.ok && Array.isArray(res.roots)) return res.roots as string[];
       return [] as string[];
@@ -660,7 +660,7 @@ contextBridge.exposeInMainWorld('host', {
     get: async () => {
       return await ipcRenderer.invoke("onboarding.get");
     },
-    update: async (partial: { yoloPromptHandled?: boolean }) => {
+    update: async (partial: { yoloPromptHandled?: boolean; yoloPreference?: "enabled" | "disabled"; antigravityYoloPromptHandled?: boolean }) => {
       return await ipcRenderer.invoke("onboarding.update", partial);
     },
   },
@@ -722,6 +722,11 @@ contextBridge.exposeInMainWorld('host', {
       return await ipcRenderer.invoke('gemini.usage');
     }
   }
+  , antigravity: {
+    getUsage: async () => {
+      return await ipcRenderer.invoke('antigravity.usage');
+    }
+  }
   , notifications: {
     setBadgeCount: (count: number) => {
       ipcRenderer.send('notifications:setBadge', { count });
@@ -733,7 +738,7 @@ contextBridge.exposeInMainWorld('host', {
     showAgentCompletion: (payload: { tabId: string; tabName?: string; projectName?: string; preview?: string; title: string; body: string; appTitle?: string }) => {
       ipcRenderer.send('notifications:agentComplete', payload);
     },
-    // 监听主进程转发的外部完成通知（Codex/Gemini/Claude hook -> JSONL 桥接）。
+    // 监听主进程转发的外部完成通知（Codex/Gemini/Claude/Antigravity hook -> JSONL 桥接）。
     onExternalAgentComplete: (handler: (payload: any) => void) => {
       const listener = (_: unknown, payload: any) => handler(payload);
       ipcRenderer.on('notifications:externalAgentComplete', listener);

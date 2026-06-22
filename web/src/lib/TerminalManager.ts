@@ -19,6 +19,7 @@ import {
   getPasteEnterDelayMs,
   getPasteSubmitMinWaitMs,
   isClaudeProvider,
+  isGeminiLikeProvider,
   isGeminiProvider,
   stripTrailingNewlines,
   writeBracketedPaste,
@@ -785,7 +786,7 @@ export default class TerminalManager {
    */
   private shouldTraceSendDiagnostics(providerId?: string | null): boolean {
     const normalized = String(providerId || "").trim().toLowerCase();
-    return normalized === "codex" || normalized === "gemini";
+    return normalized === "codex" || normalized === "gemini" || normalized === "antigravity";
   }
 
   /**
@@ -1060,7 +1061,7 @@ export default class TerminalManager {
     const placeholderMarkers =
       provider === "codex"
         ? [this.buildCodexScreenAckMarker(normalized)]
-        : provider === "gemini"
+        : provider === "gemini" || provider === "antigravity"
           ? [this.buildGeminiScreenAckMarker(normalized)]
           : provider === "claude"
             ? this.buildClaudeScreenAckMarkers(normalized)
@@ -2558,7 +2559,7 @@ export default class TerminalManager {
     const adapter = this.adapters[tabId];
     const ptyId = this.getPtyId(tabId);
     const traceId = this.shouldTraceSendDiagnostics(options?.providerId) ? this.nextSendTraceId(options?.providerId) : null;
-    if (ptyId && isGeminiProvider(options?.providerId)) {
+    if (ptyId && isGeminiLikeProvider(options?.providerId)) {
       const chunkPlan = this.createGeminiPasteChunkPlan(String(text ?? ""));
       if (chunkPlan.chunks.length > 1) {
         const streamWriter = this.createGeminiStreamedPasteWriter(ptyId, traceId);
@@ -2621,7 +2622,7 @@ export default class TerminalManager {
       ? "gemini-windows-editor"
       : this.shouldUseGeminiWslEditorStrategy(options?.providerId, options?.terminalMode, options?.geminiWslEditorReady, text)
       ? "gemini-wsl-editor"
-      : isGeminiProvider(options?.providerId)
+      : isGeminiLikeProvider(options?.providerId)
       ? "gemini-paste-quiet"
       : this.shouldUseClaudeWindowsSubmitStrategy(options?.providerId, options?.terminalMode, text)
         ? "claude-paste-quiet"
@@ -2644,7 +2645,7 @@ export default class TerminalManager {
       if (this.sendGeminiWslTextAndEnter(tabId, ptyId, text, adapter, options, traceId))
         return;
     }
-    if (isGeminiProvider(options?.providerId)) {
+    if (isGeminiLikeProvider(options?.providerId)) {
       await this.sendGeminiTextAndEnter(ptyId, text, adapter, options, traceId);
       return;
     }

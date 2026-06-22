@@ -4,7 +4,7 @@
 <!-- Badges -->
 <a href="https://github.com/lulu-sk/CodexFlow/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/lulu-sk/CodexFlow?style=for-the-badge&logo=undertale&logoColor=red&color=orange"/></a>
 <a href="https://github.com/lulu-sk/CodexFlow/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/lulu-sk/CodexFlow/total?style=for-the-badge&label=Downloads"/></a>
-<img alt="Platform" src="https://img.shields.io/badge/Windows%2011+WSL-Recommended-blue?style=for-the-badge&logo=windows"/>
+<img alt="Platform" src="https://img.shields.io/badge/Windows%2011-WSL%20%2F%20PowerShell%207%20Recommended-blue?style=for-the-badge&logo=windows"/>
 <img alt="Electron" src="https://img.shields.io/badge/Electron-App-informational?style=for-the-badge&logo=electron"/>
 <img alt="React" src="https://img.shields.io/badge/React-18-informational?style=for-the-badge&logo=react"/>
 <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Apache--2.0-success?style=for-the-badge"/></a>
@@ -18,9 +18,9 @@
 
 # CodexFlow
 
-> 为 **AI 编程代理** 打造的"统一工作台"——一键切换 **Codex / Claude / Gemini**（及自定义引擎），按**项目目录**组织会话与历史，通过 **Git Worktree** 并行多任务，Markdown 渲染浏览与继续历史对话，并给CLI提供图形输入框，支持**粘贴图片 / 拖拽文件 / @项目文件 / 全屏输入**高效 Prompt。
+> 为 **AI 编程代理** 打造的"统一工作台"——一键切换 **Codex / Claude / Gemini / Antigravity CLI**（及自定义引擎），按**项目目录**组织会话与历史，通过 **Git Worktree** 并行多任务，用完整 **Git 面板**审查代码，Markdown 渲染浏览与继续历史对话，并为 CLI 提供图形输入框，支持**粘贴图片 / 拖拽文件 / @项目文件 / 全屏输入**，让 Prompt 编写更高效。
 
-- 平台建议：**Windows 11 + WSL(默认发行版 Ubuntu-24.04)**；已装 WSL 且引擎在 WSL 可用时体验最佳。**PowerShell 模式**(PS5 / PS7 / CMD)同样可用。
+- 平台建议：**Windows 11 + WSL** 与 **Windows 11 + PowerShell 7** 都推荐。
 - 项目结构：**UI 宿主与最小终端桥接**(Electron + React + Vite + node-pty + xterm)。
 
 ---
@@ -46,21 +46,23 @@
 
 ## ✨ 核心特性
 
-1. **多引擎统一工作台（Codex / Claude / Gemini / Terminal + 自定义引擎）**
-   顶栏一键切换引擎；内置引擎支持**用量展示**与**完成通知**（任务栏徽标/系统通知/提示音）。每个引擎可独立配置**启动命令**、**亮/暗图标**与**运行环境**（WSL / Windows / Windows PowerShell / PowerShell 7 / 指定 WSL 发行版），并支持自定义引擎扩展。
+1. **多引擎统一工作台（Codex / Claude / Gemini / Antigravity CLI / Terminal + 自定义引擎）**
+   顶栏一键切换引擎；内置引擎支持**用量展示**与**完成通知**（任务栏徽标/系统通知/提示音）。每个引擎可独立配置**启动命令**（`codex`、`claude`、`gemini`、`agy` 或自定义命令）、**亮/暗图标**与**运行环境**（WSL / PowerShell 7 / Windows PowerShell / CMD / 指定 WSL 发行版），并支持自定义引擎扩展。
 2. **跨引擎历史中心**
-   只读增量索引多引擎(Codex / Claude / Gemini)原生会话记录（Windows + WSL 路径全读取），按项目目录聚合展示，可一键新增会话；支持筛选、快速搜索与时间分组预览。详情页支持 **Markdown 渲染**（代码高亮）与**页内查找高亮**，高效历史记录查询。
+   只读增量索引多引擎（Codex / Claude / Gemini / Antigravity CLI）原生会话记录（Windows + WSL 路径全读取），按项目目录聚合展示，可一键新增会话；支持筛选、快速搜索与时间分组预览。详情页支持 **Markdown 渲染**（代码高亮）与**页内查找高亮**，高效历史记录查询。
 3. **原生 Git worktree 并行工作流（为并行 Agent 设计，推荐用法）**
-   以分支为入口（分支徽标 `⎇`）一键创建/复用 worktree：支持**单**或**多引擎(Codex / Claude / Gemini)混合并行工作**（并发进度面板、取消、回滚清理）。完成后支持一键回收，形成“创建 → 运行 → 合并 → 清理”的闭环。
-4. **为CLI提供图形输入框：@文件 / @规则 / 图片 / 拖拽**
+   以分支为入口（分支徽标 `⎇`）一键创建/复用 worktree：支持**单**或**多引擎（Codex / Claude / Gemini / Antigravity CLI）混合并行工作**（并发进度面板、取消、回滚清理）。完成后支持一键回收，形成“创建 → 运行 → 合并 → 清理”的闭环。
+4. **完整 Git 面板：审查、提交与历史**
+   不离开 CodexFlow 就能处理本地改动：查看左右对比差异、精确暂存、编写提交、拉取/获取/推送、检查分支与 worktree、浏览提交图谱，并查看提交详情中的变更文件和补丁上下文。它能把 Agent 产出的改动变成清晰的“审查 → 提交”流程，而不是一堆终端命令。
+5. **为 CLI 提供图形输入框：@文件 / @规则 / 图片 / 拖拽**
    输入框支持**粘贴图片（内联预览）**、拖拽文件/目录、`@` 快速选择项目文件/目录；**AGENTS.md / CLAUDE.md / GEMINI.md** 支持快捷编辑与引用；支持全屏展开编辑，适配长 Prompt。
-5. **一键继续历史会话**
+6. **一键继续历史会话**
    兼容不同 CLI 的继续策略；处理 WSL/Windows 路径差异；支持在应用内或外部控制台一键继续对话。
-6. **引擎完成通知**
+7. **引擎完成通知**
    系统通知、提示音、任务栏徽标与项目定位打通：引擎完成后可直接回到对应项目与标签页，不错过完成消息。
-7. **用量与账号管理**
+8. **用量与账号管理**
    顶栏实时监控各引擎配额/用量；支持多账号配置与快速切换（按引擎维度独立管理历史与会话）。
-8. **高完成度体验与深度可定制**
+9. **高完成度体验与深度可定制**
    亮/暗/跟随系统主题；终端字体、主题与滚动条等外观定制；项目排序/隐藏/拖拽分组与备注名；网络代理支持。
 
 ------
@@ -79,21 +81,21 @@
 ### 4) 一键继续 + 输入增强（@文件/@规则 + 拖拽 + 粘贴图片）
 ![继续会话与输入增强](assets/screenshots/resume-input-enhancement.gif)
 
-### 5) 设置与引擎（自定义引擎、图标、执行环境）
+### 5) Git 面板（改动、差异、分支、提交日志、提交详情）
+![Git 面板](assets/screenshots/git-panel.png)
+
+### 6) 设置与引擎（Codex、Claude、Gemini、Antigravity CLI、自定义引擎）
 ![设置与引擎](assets/screenshots/settings-engines.png)
-
-
 
 ---
 
 ## 🚀 快速开始
 
 ### 环境准备
-- **Windows 11**,安装 **WSL**(默认发行版 `Ubuntu-24.04`,在设置可修改；未配置或无效时将回退到系统默认 WSL 发行版)。
-- 至少有一个 AI 编程代理 CLI 可在 WSL 或 PowerShell 中运行(如 `codex`、`claude` 或 `gemini`)。
-- codex建议选择 **WSL 终端模式**；**PowerShell 模式**(PS5 / PS7)同样可用。
+- 推荐 **Windows 11 + WSL** 或 **Windows 11 + PowerShell 7**。
+- 至少有一个 AI 编程代理 CLI 可在 WSL 或 PowerShell 中运行（例如 `codex`、`claude`、`gemini` 或 Antigravity CLI `agy`）。
 
-### 环境准备教程
+### WSL 环境准备教程
 - [在 Windows 安装 WSL(Ubuntu)并在 WSL 安装 Codex CLI](./docs/setup-wsl-codex.zh-CN.md)
 
 ### 安装
@@ -101,8 +103,8 @@
 - 若暂无发布,可按下文"开发与构建"在本地打包。
 
 ### 初次使用
-1. 点击界面右上角的 **设置**(齿轮)配置执行环境：选择 **WSL / PowerShell**、指定正确的 WSL 发行版后保存。
-2. 在顶部栏选择所需引擎(Codex / Claude / Gemini / Terminal / 自定义)。
+1. 点击界面右上角的 **设置**（齿轮）配置执行环境：选择 **WSL / PowerShell 7 / Windows PowerShell / CMD**，需要 WSL 时指定正确的发行版后保存。
+2. 在顶部栏选择所需引擎（Codex / Claude / Gemini / Antigravity CLI / Terminal / 自定义）。
 3. 选择(或添加)一个项目目录,点击 **+** 新建会话。
 4. 在终端中登录或使用 API 凭据,按需完成初始设置。
 5. 在输入框中粘贴图片、@项目文件、@规则文件、拖拽文件,开始你的对话与协作。
@@ -113,6 +115,7 @@
 - **历史一键继续**：在历史列表中选中任意对话,点击"继续"以延续上下文——所有引擎均支持。
 - **历史筛选与复制**：支持筛选并直接复制所见内容,历史支持 Markdown 渲染方便阅读。
 - **输入增强**：粘贴图片自动内联预览；使用全屏模式编写长 Prompt。
+- **Git 面板**：Agent 改了什么先看清楚，再选择要提交的内容；分支历史、提交信息和推送都能在同一个面板里完成。
 - **Worktree 工作流**：从项目侧边栏创建 worktree,并行运行 Agent,然后将成果合并回基分支。
 - **多项目切换**：左侧项目区显示活跃会话数,利于多任务掌控。
 - **多实例(Profile)**：先在设置里开启"实验性功能"(需重启),之后可直接再次启动应用实现多开；如需固定 profile,可使用 `--profile <name>`(如 `CodexFlow.exe --profile work`)。
@@ -220,7 +223,11 @@ npm run i18n:check
     bridge.ts                   # Codex CLI 桥接(认证、用量、频率限制)
     authBackups.ts              # 多账号备份与切换
     config.ts                   # Codex config.toml 管理
+  antigravity/
+    usage.ts                    # Antigravity CLI 用量快照探测
+    notifications.ts            # Antigravity 完成通知支持
   agentSessions/
+    antigravity/                # Antigravity CLI 会话发现与解析
     claude/                     # Claude 会话发现与解析
     gemini/                     # Gemini 会话发现与解析
   providers/
@@ -241,6 +248,7 @@ npm run i18n:check
     i18n/setup.ts
     adapters/TerminalAdapter.tsx
     features/
+      git/                      # Git 面板：改动、分支、提交图谱、更新流程
       settings/settings-dialog.tsx
       history/
         renderers/history-markdown.tsx   # Markdown + Shiki 渲染
@@ -251,6 +259,7 @@ npm run i18n:check
         codex-status.tsx                 # Codex 用量面板
         claude-status.tsx                # Claude 用量面板
         gemini-status.tsx                # Gemini 用量面板
+        antigravity-status.tsx           # Antigravity 用量面板
       ui/*
     lib/
       providers/                # 引擎定义与 YOLO 预设
@@ -260,6 +269,7 @@ npm run i18n:check
       shell.ts                  # Shell 命令构建器
       dir-tree-dnd.ts           # 目录树拖拽排序
     providers/
+      antigravity/commands.ts
       codex/commands.ts
       claude/commands.ts
       gemini/commands.ts
@@ -280,11 +290,12 @@ npm run i18n:check
 ## ⚙️ 运行时要点与索引
 
 * 发行版默认：`distro = 'Ubuntu-24.04'`
-* 终端模式：`terminal = 'wsl' | 'windows' | 'pwsh'`(PowerShell 5 / PowerShell 7 / CMD 自动检测)
-* 引擎命令：每个引擎独立存储启动命令(如 `codex`、`claude`、`gemini`),可选 YOLO 预设
+* 终端模式：`terminal = 'wsl' | 'pwsh' | 'windows' | 'cmd'`（WSL、PowerShell 7、Windows PowerShell 5 或 CMD）
+* 引擎命令：每个引擎独立存储启动命令（如 `codex`、`claude`、`gemini`、`agy`），可选 YOLO 预设
 
 * WSL：`bash -lc "<engineCmd>"`
-* Windows：在 PowerShell(或 pwsh / cmd)中执行
+* PowerShell 7：可用时通过 `pwsh` 执行
+* Windows PowerShell / CMD：用于兼容已有 Windows 环境
 * 项目路径示例：`wslPath = '/mnt/c/Users/you/code/demo'`
 * 历史索引：`electron/indexer.ts` 后台增量索引所有引擎的会话并写入本地缓存；渲染端经 IPC 访问,支持分页加载
 * 文件索引：`electron/fileIndex.ts` 使用 **ripgrep** 进行初次全量扫描,配合 **chokidar** 增量更新(建议将 ripgrep 放至 `vendor/bin/rg.exe`)。搜索在主进程执行以避免大仓库卡顿
@@ -300,7 +311,8 @@ npm run i18n:check
 3. 窗口缩放：终端内容自动铺满(FitAddon 生效)
 4. 切换引擎：在顶部栏选择不同引擎,验证新会话正常启动
 5. 可选：从侧边栏创建 worktree,验证 Agent 在新 worktree 目录中启动
-6. 可选：若已安装 `codex`,执行 `codex .` 应能启动并输出日志
+6. 可选：打开 Git 面板，确认所选项目的本地改动、差异、分支和提交历史可正常加载
+7. 可选：若已安装 CLI，执行 `codex .` 或 `agy` 应能启动并输出日志
 
 ---
 

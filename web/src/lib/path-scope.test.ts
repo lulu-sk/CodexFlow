@@ -14,6 +14,10 @@ describe("normalizePathScopeKey", () => {
     expect(normalizePathScopeKey("C:\\")).toBe("/mnt/c");
     expect(normalizePathScopeKey("C:")).toBe("/mnt/c");
   });
+
+  it("支持将正斜杠 Windows 项目路径规范化为 /mnt/<drive> 子目录", () => {
+    expect(normalizePathScopeKey("J:/Projects/Projects/example")).toBe("/mnt/j/projects/projects/example");
+  });
 });
 
 describe("pathMatchesProjectScope", () => {

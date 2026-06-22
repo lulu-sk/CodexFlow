@@ -4,7 +4,7 @@
 import { findBestMatchingDirKeyScope, pathMatchesDirKeyScope } from "./agentSessions/shared/path";
 
 export type HistoryScopeMode = "current_project" | "project_group" | "all_sessions";
-export type HistoryScopeProviderId = "codex" | "claude" | "gemini";
+export type HistoryScopeProviderId = "codex" | "claude" | "gemini" | "antigravity";
 
 export type HistoryScopeFilterItem = {
   providerId?: HistoryScopeProviderId | string;

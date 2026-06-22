@@ -14,8 +14,10 @@ import type { HistorySummary, Message, MessageContent, RuntimeShell } from "./hi
 import settings from "./settings";
 import { getClaudeRootCandidatesFastAsync, discoverClaudeSessionFiles } from "./agentSessions/claude/discovery";
 import { getGeminiRootCandidatesFastAsync, discoverGeminiSessionFiles } from "./agentSessions/gemini/discovery";
+import { getAntigravityRootCandidatesFastAsync, discoverAntigravitySessionFiles } from "./agentSessions/antigravity/discovery";
 import { parseClaudeSessionFile } from "./agentSessions/claude/parser";
 import { parseGeminiSessionFile, deriveGeminiProjectHashCandidatesFromPath } from "./agentSessions/gemini/parser";
+import { parseAntigravitySessionFile } from "./agentSessions/antigravity/parser";
 import { filterCodexHistoryPreviewText } from "./agentSessions/shared/preview";
 import { extractTaggedPrefix } from "./agentSessions/shared/taggedPrefix";
 import {
@@ -28,7 +30,7 @@ import {
 let chokidar: any = null;
 try { chokidar = require("chokidar"); } catch {}
 
-type ProviderId = "codex" | "claude" | "gemini";
+type ProviderId = "codex" | "claude" | "gemini" | "antigravity";
 type FileSig = { mtimeMs: number; size: number };
 type IndexSummary = HistorySummary & { providerId: ProviderId; dirKey: string; projectHash?: string };
 type Details = {
@@ -247,7 +249,7 @@ function stripDetailsForPersist(details: Details): Details {
 }
 
 // 中文说明：历史索引语义调整后提升版本，强制丢弃旧的 index/details 缓存，避免继续沿用错误 dirKey。
-const VERSION = "v15";
+const VERSION = "v16";
 
 /**
  * 读取 Claude Code 的 Agent 历史开关（默认 false）。
@@ -414,9 +416,10 @@ function getExistingRootsByProvider(): Record<ProviderId, string[]> {
       codex: Array.isArray(raw?.codex) ? raw.codex : [],
       claude: Array.isArray(raw?.claude) ? raw.claude : [],
       gemini: Array.isArray(raw?.gemini) ? raw.gemini : [],
+      antigravity: Array.isArray(raw?.antigravity) ? raw.antigravity : [],
     };
   } catch {
-    return { codex: [], claude: [], gemini: [] };
+    return { codex: [], claude: [], gemini: [], antigravity: [] };
   }
 }
 
@@ -435,7 +438,7 @@ function getIndexedClaudeAgentHistorySetting(): boolean {
  * 基于已探测 roots 或路径特征推断指定历史文件所属 Provider。
  */
 function resolveProviderIdFromRoots(filePath: string, providerHint?: ProviderId): ProviderId {
-  if (providerHint === "codex" || providerHint === "claude" || providerHint === "gemini") return providerHint;
+  if (providerHint === "codex" || providerHint === "claude" || providerHint === "gemini" || providerHint === "antigravity") return providerHint;
   try {
     const f = canonicalKey(filePath);
     const rootsByProvider = getExistingRootsByProvider();
@@ -444,6 +447,7 @@ function resolveProviderIdFromRoots(filePath: string, providerHint?: ProviderId)
       ...rootsByProvider.codex.map((root) => ({ providerId: "codex" as const, root })),
       ...rootsByProvider.claude.map((root) => ({ providerId: "claude" as const, root })),
       ...rootsByProvider.gemini.map((root) => ({ providerId: "gemini" as const, root })),
+      ...rootsByProvider.antigravity.map((root) => ({ providerId: "antigravity" as const, root })),
     ];
     for (const entry of entries) {
       const rootKey = canonicalKey(entry.root);
@@ -454,6 +458,7 @@ function resolveProviderIdFromRoots(filePath: string, providerHint?: ProviderId)
     }
     if (best) return best.providerId;
     if (f.includes("/.claude/")) return "claude";
+    if (f.includes("/.gemini/antigravity-cli/")) return "antigravity";
     if (f.includes("/.gemini/")) return "gemini";
   } catch {}
   return "codex";
@@ -471,10 +476,21 @@ function shouldIndexProviderFile(providerId: ProviderId, filePath: string): bool
       return base.endsWith(".jsonl") || base.endsWith(".ndjson");
     }
     if (providerId === "gemini") return base.startsWith("session-") && (base.endsWith(".jsonl") || base.endsWith(".json"));
+    if (providerId === "antigravity") return base.endsWith(".db") && !base.endsWith(".db-wal") && !base.endsWith(".db-shm");
     return false;
   } catch {
     return false;
   }
+}
+
+/**
+ * 将 Antigravity SQLite sidecar 文件归一到主 DB 文件。
+ */
+function normalizeAntigravityWatchPath(filePath: string): string {
+  const raw = String(filePath || "").trim();
+  if (!raw) return "";
+  if (/\.db-(?:wal|shm)$/i.test(raw)) return raw.replace(/\.db-(?:wal|shm)$/i, ".db");
+  return raw;
 }
 
 /**
@@ -504,6 +520,7 @@ function resolveAccessibleHistoryFilePath(filePath: string, sourcePath?: string)
 async function parseDetailsForProvider(providerId: ProviderId, filePath: string, stat: fs.Stats): Promise<Details> {
   if (providerId === "claude") return await parseClaudeSessionFile(filePath, stat, { summaryOnly: true, maxLines: getIndexedClaudeAgentHistorySetting() ? 400 : 200 } as any);
   if (providerId === "gemini") return await parseGeminiSessionFile(filePath, stat, { summaryOnly: true } as any);
+  if (providerId === "antigravity") return await parseAntigravitySessionFile(filePath, stat, { summaryOnly: true } as any);
   return await parseCodexDetails(filePath, stat, { summaryOnly: true });
 }
 
@@ -584,6 +601,7 @@ function deriveRefreshRootFromSource(providerId: ProviderId, sourcePath?: string
     const dir = path.dirname(p);
     if (providerId === "codex") return path.join(dir, "sessions");
     if ((providerId === "claude" || providerId === "gemini") && path.basename(dir).toLowerCase() === "hooks") return path.dirname(dir);
+    if (providerId === "antigravity" && path.basename(dir).toLowerCase() === "hooks") return path.join(path.dirname(dir), "conversations");
     return "";
   } catch {
     return "";
@@ -654,11 +672,13 @@ async function flushFastRefreshQueue(): Promise<void> {
       }
 
       for (const entry of roots) {
-        if (entry.providerId !== "codex") continue;
+        if (entry.providerId !== "codex" && entry.providerId !== "antigravity") continue;
         try {
-          const recent = await listRecentCodexSessionFiles(entry.root);
+          const recent = entry.providerId === "antigravity"
+            ? (await discoverAntigravitySessionFiles(entry.root)).slice(-FAST_REFRESH_RECENT_FILE_LIMIT)
+            : await listRecentCodexSessionFiles(entry.root);
           for (const fp of recent) {
-            try { await upsertIndexedFile(fp, "codex"); } catch {}
+            try { await upsertIndexedFile(fp, entry.providerId); } catch {}
           }
         } catch {}
       }
@@ -677,7 +697,7 @@ async function flushFastRefreshQueue(): Promise<void> {
 export function requestHistoryFastRefresh(req: HistoryFastRefreshRequest): void {
   try {
     const rawProvider = String(req?.providerId || "codex").trim().toLowerCase();
-    const providerId: ProviderId = rawProvider === "claude" || rawProvider === "gemini" ? rawProvider : "codex";
+    const providerId: ProviderId = rawProvider === "claude" || rawProvider === "gemini" || rawProvider === "antigravity" ? rawProvider : "codex";
     const st = getFastRefreshState();
 
     const explicitFile = resolveAccessibleHistoryFilePath(String(req?.filePath || "").trim(), req?.sourcePath);
@@ -1403,38 +1423,45 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
     const codexRootCandidates = await getSessionsRootCandidatesFastAsync();
     const claudeRootCandidates = await getClaudeRootCandidatesFastAsync();
     const geminiRootCandidates = await getGeminiRootCandidatesFastAsync();
+    const antigravityRootCandidates = await getAntigravityRootCandidatesFastAsync();
 
     const uniq = (xs: string[]) => Array.from(new Set(xs.filter(Boolean)));
     const rootsByProviderAll: Record<ProviderId, string[]> = {
       codex: uniq(codexRootCandidates.map((c) => c.path)),
       claude: uniq(claudeRootCandidates.map((c) => c.path)),
       gemini: uniq(geminiRootCandidates.map((c) => c.path)),
+      antigravity: uniq(antigravityRootCandidates.map((c) => c.path)),
     };
     const rootsByProviderExisting: Record<ProviderId, string[]> = {
       codex: uniq(codexRootCandidates.filter((c) => c.exists).map((c) => c.path)),
       claude: uniq(claudeRootCandidates.filter((c) => c.exists).map((c) => c.path)),
       gemini: uniq(geminiRootCandidates.filter((c) => c.exists).map((c) => c.path)),
+      antigravity: uniq(antigravityRootCandidates.filter((c) => c.exists).map((c) => c.path)),
     };
     const rootsByProviderMissing: Record<ProviderId, string[]> = {
       codex: uniq(codexRootCandidates.filter((c) => !c.exists).map((c) => c.path)),
       claude: uniq(claudeRootCandidates.filter((c) => !c.exists).map((c) => c.path)),
       gemini: uniq(geminiRootCandidates.filter((c) => !c.exists).map((c) => c.path)),
+      antigravity: uniq(antigravityRootCandidates.filter((c) => !c.exists).map((c) => c.path)),
     };
 
     const rootsExisting = uniq([
       ...rootsByProviderExisting.codex,
       ...rootsByProviderExisting.claude,
       ...rootsByProviderExisting.gemini,
+      ...rootsByProviderExisting.antigravity,
     ]);
     const rootsMissing = uniq([
       ...rootsByProviderMissing.codex,
       ...rootsByProviderMissing.claude,
       ...rootsByProviderMissing.gemini,
+      ...rootsByProviderMissing.antigravity,
     ]);
 
     perfLogger.log(`[roots] codex.existing=${JSON.stringify(rootsByProviderExisting.codex)} codex.missing=${JSON.stringify(rootsByProviderMissing.codex)}`);
     perfLogger.log(`[roots] claude.existing=${JSON.stringify(rootsByProviderExisting.claude)} claude.missing=${JSON.stringify(rootsByProviderMissing.claude)}`);
     perfLogger.log(`[roots] gemini.existing=${JSON.stringify(rootsByProviderExisting.gemini)} gemini.missing=${JSON.stringify(rootsByProviderMissing.gemini)}`);
+    perfLogger.log(`[roots] antigravity.existing=${JSON.stringify(rootsByProviderExisting.antigravity)} antigravity.missing=${JSON.stringify(rootsByProviderMissing.antigravity)}`);
 
     try {
       // 兼容旧字段：roots 仍指向 Codex sessions roots（供 settings.codexRoots 等旧逻辑复用）
@@ -1493,7 +1520,11 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
       try { addFiles("gemini", await discoverGeminiSessionFiles(root)); } catch {}
     })));
 
-    perfLogger.log(`[files] codex=${files.filter((f) => f.providerId === "codex").length} claude=${files.filter((f) => f.providerId === "claude").length} gemini=${files.filter((f) => f.providerId === "gemini").length} total=${files.length}`);
+    await Promise.all(rootsByProviderExisting.antigravity.map((root) => scanLimit(async () => {
+      try { addFiles("antigravity", await discoverAntigravitySessionFiles(root)); } catch {}
+    })));
+
+    perfLogger.log(`[files] codex=${files.filter((f) => f.providerId === "codex").length} claude=${files.filter((f) => f.providerId === "claude").length} gemini=${files.filter((f) => f.providerId === "gemini").length} antigravity=${files.filter((f) => f.providerId === "antigravity").length} total=${files.length}`);
 
     const ix: PersistIndex = g.__indexer.index;
     const det: PersistDetails = g.__indexer.details;
@@ -1503,6 +1534,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
       ...rootsByProviderExisting.codex.map((root) => ({ providerId: "codex" as ProviderId, root })),
       ...rootsByProviderExisting.claude.map((root) => ({ providerId: "claude" as ProviderId, root })),
       ...rootsByProviderExisting.gemini.map((root) => ({ providerId: "gemini" as ProviderId, root })),
+      ...rootsByProviderExisting.antigravity.map((root) => ({ providerId: "antigravity" as ProviderId, root })),
     ];
 
     const normPath = (p: string): string => {
@@ -1525,6 +1557,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
         }
         if (best) return best.providerId;
         if (f.includes("/.claude/")) return "claude";
+        if (f.includes("/.gemini/antigravity-cli/")) return "antigravity";
         if (f.includes("/.gemini/")) return "gemini";
         if (f.includes("/.codex/")) return "codex";
       } catch {}
@@ -1543,6 +1576,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
           return base.endsWith(".jsonl") || base.endsWith(".ndjson");
         }
         if (providerId === "gemini") return base.startsWith("session-") && (base.endsWith(".jsonl") || base.endsWith(".json"));
+        if (providerId === "antigravity") return base.endsWith(".db") && !base.endsWith(".db-wal") && !base.endsWith(".db-shm");
         return false;
       } catch {
         return false;
@@ -1614,6 +1648,9 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
           }
         } catch {}
         return parsed as any;
+      }
+      if (providerId === "antigravity") {
+        return await parseAntigravitySessionFile(fp, stat, opts as any) as any;
       }
       return await parseCodexDetails(fp, stat, opts);
     };
@@ -1792,25 +1829,27 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
        */
       async function upsertFromWatch(fp: string): Promise<void> {
         try {
-          const providerId = resolveProviderIdForFile(fp);
-          if (!shouldIndexFile(providerId, fp)) return;
-          const stat = await fsp.stat(fp).catch(() => null as any);
+          const rawProviderId = resolveProviderIdForFile(fp);
+          const normalizedFp = rawProviderId === "antigravity" ? normalizeAntigravityWatchPath(fp) : fp;
+          const providerId = rawProviderId === "antigravity" ? "antigravity" : resolveProviderIdForFile(normalizedFp);
+          if (!shouldIndexFile(providerId, normalizedFp)) return;
+          const stat = await fsp.stat(normalizedFp).catch(() => null as any);
           if (!stat) return;
-          const k = canonicalKey(fp);
+          const k = canonicalKey(normalizedFp);
           const sig: FileSig = { mtimeMs: stat.mtimeMs, size: stat.size };
           // 先解析 details 并直接构造 summary，零额外 IO
-          const details = await parseDetailsByProvider(providerId, fp, stat, { summaryOnly: true });
+          const details = await parseDetailsByProvider(providerId, normalizedFp, stat, { summaryOnly: true });
           if (providerId === "claude" && shouldIgnoreClaudeSession(details as any, claudeCodeReadAgentHistory)) {
             const existed = !!ix.files[k] || !!det.files[k];
             try { getDetailsCache().delete(k); } catch {}
             if (ix.files[k]) delete ix.files[k];
             if (det.files[k]) delete det.files[k];
             ix.savedAt = Date.now(); det.savedAt = Date.now(); saveIndex(ix); saveDetails(det);
-            if (existed) safeWindowSend(win, "history:index:remove", { filePath: fp }, { tag: "indexer", suppressMs: 1000 });
+            if (existed) safeWindowSend(win, "history:index:remove", { filePath: normalizedFp }, { tag: "indexer", suppressMs: 1000 });
             return;
           }
           const slimDetails = stripDetailsForPersist(details);
-          const dirResolution = analyzeDirKeyResolution(fp, details.cwd, details.dirKey);
+          const dirResolution = analyzeDirKeyResolution(normalizedFp, details.cwd, details.dirKey);
           try { getDetailsCache().delete(k); } catch {}
           det.files[k] = { sig, details: slimDetails };
           const summary: IndexSummary = {
@@ -1818,14 +1857,14 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
             id: details.id,
             title: details.title,
             date: details.date,
-            filePath: fp,
+            filePath: normalizedFp,
             rawDate: details.rawDate,
             dirKey: dirResolution.resolvedDirKey,
             preview: details.preview,
             projectHash: (details as any).projectHash,
             resumeMode: details.resumeMode,
             resumeId: details.resumeId,
-            runtimeShell: details.runtimeShell && details.runtimeShell !== 'unknown' ? details.runtimeShell : detectRuntimeShell(fp),
+            runtimeShell: details.runtimeShell && details.runtimeShell !== 'unknown' ? details.runtimeShell : detectRuntimeShell(normalizedFp),
           } as any;
           ix.files[k] = { sig, summary };
           ix.savedAt = Date.now(); det.savedAt = Date.now(); saveIndex(ix); saveDetails(det);
@@ -1835,11 +1874,11 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
               if (dirResolution.hasCwd) {
                 if (idxDbgEnabled()) {
                   perfLogger.log(
-                    `[history.indexer.schedule-fallback] file=${JSON.stringify(fp)} phase="watch" cwd=${JSON.stringify(dirResolution.normalizedCwd)} dirKey=${JSON.stringify(summary.dirKey)} fallbackDir=${JSON.stringify(dirResolution.fallbackDirKey)}`,
+                    `[history.indexer.schedule-fallback] file=${JSON.stringify(normalizedFp)} phase="watch" cwd=${JSON.stringify(dirResolution.normalizedCwd)} dirKey=${JSON.stringify(summary.dirKey)} fallbackDir=${JSON.stringify(dirResolution.fallbackDirKey)}`,
                   );
                 }
               }
-              await scheduleReparse(fp, 2000, dirResolution.hasCwd ? 'dirKey=fallback(change)' : 'no-cwd(change)');
+              await scheduleReparse(normalizedFp, 2000, dirResolution.hasCwd ? 'dirKey=fallback(change)' : 'no-cwd(change)');
             }
           } catch {}
         } catch {}
@@ -1894,15 +1933,22 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
        */
       function enqueueWatchChange(fp: string): void {
         try {
-          const k = canonicalKey(fp);
+          const providerId = resolveProviderIdForFile(fp);
+          const normalizedFp = providerId === "antigravity" ? normalizeAntigravityWatchPath(fp) : fp;
+          const k = canonicalKey(normalizedFp);
           const st = getWatchQueueState();
-          st.queue.set(k, { filePath: fp, dueAt: Date.now() + WATCH_DEBOUNCE_MS });
+          st.queue.set(k, { filePath: normalizedFp, dueAt: Date.now() + WATCH_DEBOUNCE_MS });
           scheduleWatchFlush();
         } catch {}
       }
 
       const onUnlink = (fp: string) => {
         try {
+          const providerId = resolveProviderIdForFile(fp);
+          if (providerId === "antigravity" && /\.db-(?:wal|shm)$/i.test(String(fp || ""))) {
+            try { getWatchQueueState().queue.delete(canonicalKey(normalizeAntigravityWatchPath(fp))); } catch {}
+            return;
+          }
           try { getWatchQueueState().queue.delete(canonicalKey(fp)); } catch {}
           const k = canonicalKey(fp);
           const removed = ix.files[k]?.summary;
@@ -1926,6 +1972,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
           if (providerId === "codex") return ["*.jsonl"];
           if (providerId === "claude") return ["*.jsonl", "*.ndjson"];
           if (providerId === "gemini") return ["session-*.jsonl", "session-*.json"];
+          if (providerId === "antigravity") return ["*.db", "*.db-wal", "*.db-shm"];
           return ["*.jsonl"];
         };
 
@@ -1958,6 +2005,11 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
             const pats = patternsForProvider(entry.providerId);
             for (const pat of pats) {
               try {
+                if (entry.providerId === "antigravity") {
+                  out.push(path.join(r, pat));
+                  out.push(r.replace(/\\/g, "/").replace(/\/+$/g, "") + `/${pat}`);
+                  continue;
+                }
                 // 同时提供反斜杠样式与 POSIX 样式的 glob，提升 UNC/Windows 兼容性
                 const back = path.join(r, "**", pat);
                 out.push(back);

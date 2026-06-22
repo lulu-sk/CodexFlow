@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
-export type YoloProviderId = "codex" | "claude" | "gemini";
+import { BUILT_IN_AGENT_PROVIDER_IDS, isBuiltInAgentProviderId, type BuiltInAgentProviderId } from "./ids";
 
-export const BUILT_IN_YOLO_PROVIDER_IDS: readonly YoloProviderId[] = ["codex", "claude", "gemini"];
+export type YoloProviderId = BuiltInAgentProviderId;
+
+export const BUILT_IN_YOLO_PROVIDER_IDS: readonly YoloProviderId[] = BUILT_IN_AGENT_PROVIDER_IDS;
 
 type ProviderStartupItem = {
   id?: string;
@@ -14,32 +16,36 @@ type ProviderStartupItem = {
  * 判断指定 Provider 是否支持 YOLO 预设命令。
  */
 export function isYoloSupportedProviderId(providerId: string): providerId is YoloProviderId {
-  return providerId === "codex" || providerId === "claude" || providerId === "gemini";
+  return isBuiltInAgentProviderId(providerId);
 }
 
 /**
- * 获取内置三引擎的 YOLO 预设启动命令。
+ * 获取内置代理引擎的 YOLO 预设启动命令。
  * - Codex：codex --yolo
  * - Claude：claude --dangerously-skip-permissions
  * - Gemini：gemini --yolo
+ * - Antigravity：agy --dangerously-skip-permissions
  */
 export function getYoloPresetStartupCmd(providerId: string): string | null {
   if (providerId === "codex") return "codex --yolo";
   if (providerId === "claude") return "claude --dangerously-skip-permissions";
   if (providerId === "gemini") return "gemini --yolo";
+  if (providerId === "antigravity") return "agy --dangerously-skip-permissions";
   return null;
 }
 
 /**
- * 获取内置三引擎的“非 YOLO”基础启动命令。
+ * 获取内置代理引擎的“非 YOLO”基础启动命令。
  * - Codex：codex
  * - Claude：claude
  * - Gemini：gemini
+ * - Antigravity：agy
  */
 export function getNonYoloStartupCmd(providerId: string): string | null {
   if (providerId === "codex") return "codex";
   if (providerId === "claude") return "claude";
   if (providerId === "gemini") return "gemini";
+  if (providerId === "antigravity") return "agy";
   return null;
 }
 
@@ -62,7 +68,7 @@ export function isYoloPresetEnabled(providerId: string, startupCmd: string | nul
 }
 
 /**
- * 判断内置三引擎中是否已有任意一个启用 YOLO 预设。
+ * 判断内置代理引擎中是否已有任意一个启用 YOLO 预设。
  */
 export function isAnyBuiltInYoloPresetEnabled(items: readonly ProviderStartupItem[] | null | undefined): boolean {
   const list = Array.isArray(items) ? items : [];
@@ -73,7 +79,20 @@ export function isAnyBuiltInYoloPresetEnabled(items: readonly ProviderStartupIte
 }
 
 /**
- * 将内置三引擎的启动命令统一切换为 YOLO 预设，同时保留其它 Provider 配置。
+ * 判断除指定 Provider 外，是否已有其它内置代理引擎启用 YOLO 预设。
+ */
+export function isAnyOtherBuiltInYoloPresetEnabled(items: readonly ProviderStartupItem[] | null | undefined, excludedProviderId: string): boolean {
+  const excluded = String(excludedProviderId || "").trim();
+  const list = Array.isArray(items) ? items : [];
+  return BUILT_IN_YOLO_PROVIDER_IDS.some((providerId) => {
+    if (providerId === excluded) return false;
+    const item = list.find((it) => String(it?.id || "").trim() === providerId);
+    return isYoloPresetEnabled(providerId, item?.startupCmd);
+  });
+}
+
+/**
+ * 将内置代理引擎的启动命令统一切换为 YOLO 预设，同时保留其它 Provider 配置。
  */
 export function enableBuiltInYoloPresetItems<T extends ProviderStartupItem>(items: readonly T[] | null | undefined): T[] {
   const source = Array.isArray(items) ? items : [];
@@ -95,6 +114,26 @@ export function enableBuiltInYoloPresetItems<T extends ProviderStartupItem>(item
     next.push({ id: providerId, startupCmd: preset } as T);
   }
 
+  return next;
+}
+
+/**
+ * 只为单个内置代理引擎启用 YOLO 预设，保留其它 Provider 配置。
+ */
+export function enableYoloPresetForProvider<T extends ProviderStartupItem>(items: readonly T[] | null | undefined, targetProviderId: string): T[] {
+  const providerId = String(targetProviderId || "").trim();
+  const preset = getYoloPresetStartupCmd(providerId);
+  const source = Array.isArray(items) ? items : [];
+  const next = source.map((item) => ({ ...item })) as T[];
+  if (!preset) return next;
+
+  const existing = next.find((item) => String(item?.id || "").trim() === providerId);
+  if (existing) {
+    existing.startupCmd = preset;
+    return next;
+  }
+
+  next.push({ id: providerId, startupCmd: preset } as T);
   return next;
 }
 
