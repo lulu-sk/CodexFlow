@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
+import { BUILT_IN_AGENT_PROVIDER_IDS, isBuiltInAgentProviderId, type BuiltInAgentProviderId } from "@/lib/providers/ids";
+
 /**
  * worktree 创建面板（“从分支创建 worktree”）的轻量持久化。
  *
@@ -13,7 +15,7 @@
 const WORKTREE_CREATE_PREFS_STORAGE_KEY = "codexflow.worktreeCreatePrefs.v1";
 const WORKTREE_CREATE_PREFS_VERSION = 1 as const;
 
-export type GitWorktreeProviderId = "codex" | "claude" | "gemini";
+export type GitWorktreeProviderId = BuiltInAgentProviderId;
 
 export type PersistedWorktreePromptChip = {
   chipKind?: "file" | "image" | "rule";
@@ -63,11 +65,11 @@ function toNonEmptyString(value: unknown): string {
 }
 
 /**
- * 中文说明：归一化 ProviderId，非内置三引擎则回退为 codex。
+ * 中文说明：归一化 ProviderId，非内置代理引擎则回退为 codex。
  */
 function normalizeProviderId(value: unknown): GitWorktreeProviderId {
   const v = toNonEmptyString(value).toLowerCase();
-  if (v === "codex" || v === "claude" || v === "gemini") return v as GitWorktreeProviderId;
+  if (isBuiltInAgentProviderId(v)) return v;
   return "codex";
 }
 
@@ -81,15 +83,14 @@ function clampCount(value: unknown): number {
 }
 
 /**
- * 中文说明：归一化 multiCounts，确保三个引擎键齐全。
+ * 中文说明：归一化 multiCounts，确保内置引擎键齐全。
  */
 function normalizeMultiCounts(input: unknown): Record<GitWorktreeProviderId, number> {
   const obj = (input && typeof input === "object") ? (input as any) : {};
-  return {
-    codex: clampCount(obj.codex),
-    claude: clampCount(obj.claude),
-    gemini: clampCount(obj.gemini),
-  };
+  const out = {} as Record<GitWorktreeProviderId, number>;
+  for (const providerId of BUILT_IN_AGENT_PROVIDER_IDS)
+    out[providerId] = clampCount(obj[providerId]);
+  return out;
 }
 
 /**

@@ -122,6 +122,51 @@ describe("TerminalManager（长文本发送策略）", () => {
     tm.disposeAll(false);
   });
 
+  it("Antigravity 会复用 Gemini 类回显等待与延迟回车策略", async () => {
+    vi.useFakeTimers();
+    const adapter: any = createAdapterStub();
+    const hostPty = createHostPtyStub();
+    createTerminalAdapterMock.mockReturnValue(adapter);
+
+    const ptyByTab: Record<string, string> = { "tab-antigravity": "pty-antigravity" };
+    const tm = new TerminalManager((tabId) => ptyByTab[tabId], hostPty as any, {});
+    tm.ensurePersistentContainer("tab-antigravity");
+    tm.setPty("tab-antigravity", "pty-antigravity");
+
+    const text = "第一行\n第二行";
+    await tm.sendTextAndEnter("tab-antigravity", text, { providerId: "antigravity" });
+
+    expect(adapter.paste).toHaveBeenCalledWith(text);
+    expect(hostPty.write).not.toHaveBeenCalledWith(
+      "pty-antigravity",
+      `${BRACKETED_PASTE_START}${text}${BRACKETED_PASTE_END}`,
+    );
+
+    const minWaitMs = getPasteSubmitMinWaitMs({ providerId: "antigravity", textLength: text.length });
+
+    hostPty.emitData("pty-antigravity", "第一行");
+    vi.advanceTimersByTime(31);
+    expect(hostPty.write).not.toHaveBeenCalledWith("pty-antigravity", "\r");
+
+    hostPty.emitData("pty-antigravity", "第二行");
+    vi.advanceTimersByTime(31);
+    expect(hostPty.write).not.toHaveBeenCalledWith("pty-antigravity", "\r");
+
+    const remainMinWaitMs = Math.max(0, minWaitMs - 62);
+    if (remainMinWaitMs > 0) {
+      vi.advanceTimersByTime(remainMinWaitMs);
+      expect(hostPty.write).not.toHaveBeenCalledWith("pty-antigravity", "\r");
+    }
+
+    vi.advanceTimersByTime(GEMINI_PASTE_ENTER_DELAY_MS - 1);
+    expect(hostPty.write).not.toHaveBeenCalledWith("pty-antigravity", "\r");
+
+    vi.advanceTimersByTime(1);
+    expect(hostPty.write).toHaveBeenCalledWith("pty-antigravity", "\r");
+
+    tm.disposeAll(false);
+  });
+
   it("Gemini 在 Windows/Pwsh 下会优先走 Ctrl+G 外部编辑器桥接后再发送 Enter", async () => {
     vi.useFakeTimers();
     const adapter: any = createAdapterStub();
@@ -396,6 +441,46 @@ describe("TerminalManager（长文本发送策略）", () => {
     expect(endIndex).toBe(payloadWrites.length - 1);
     expect(payloadWrites.slice(startIndex + 1, endIndex).join("")).toBe(text);
     expect(hostPty.write).toHaveBeenCalledWith("pty-gemini-huge", "\r");
+
+    tm.disposeAll(false);
+  });
+
+  it("Antigravity 超长 write_only 文本会复用 Gemini 类分块 bracketed paste", async () => {
+    vi.useFakeTimers();
+    const adapter: any = createAdapterStub();
+    const hostPty = createHostPtyStub();
+    createTerminalAdapterMock.mockReturnValue(adapter);
+
+    const ptyByTab: Record<string, string> = { "tab-antigravity-huge-write": "pty-antigravity-huge-write" };
+    const tm = new TerminalManager((tabId) => ptyByTab[tabId], hostPty as any, {});
+    tm.ensurePersistentContainer("tab-antigravity-huge-write");
+    tm.setPty("tab-antigravity-huge-write", "pty-antigravity-huge-write");
+
+    const text = `${"超长文本".repeat(3500)}最后尾巴1234567890`;
+    await tm.sendText("tab-antigravity-huge-write", text, {
+      providerId: "antigravity",
+      terminalMode: "pwsh" as any,
+    });
+
+    const getPayloadWrites = () =>
+      hostPty.write.mock.calls
+        .filter((call) => call[0] === "pty-antigravity-huge-write" && call[1] !== "\r")
+        .map((call) => String(call[1]));
+
+    expect(adapter.paste).not.toHaveBeenCalled();
+    expect(getPayloadWrites().filter((value: string) => value === BRACKETED_PASTE_START)).toHaveLength(1);
+    expect(getPayloadWrites().filter((value: string) => value === BRACKETED_PASTE_END)).toHaveLength(0);
+
+    vi.runAllTimers();
+
+    const payloadWrites = getPayloadWrites();
+    const startIndex = payloadWrites.indexOf(BRACKETED_PASTE_START);
+    const endIndex = payloadWrites.lastIndexOf(BRACKETED_PASTE_END);
+    expect(payloadWrites.filter((value: string) => value === BRACKETED_PASTE_START)).toHaveLength(1);
+    expect(payloadWrites.filter((value: string) => value === BRACKETED_PASTE_END)).toHaveLength(1);
+    expect(startIndex).toBe(0);
+    expect(endIndex).toBe(payloadWrites.length - 1);
+    expect(payloadWrites.slice(startIndex + 1, endIndex).join("")).toBe(text);
 
     tm.disposeAll(false);
   });
@@ -751,6 +836,62 @@ describe("TerminalManager（长文本发送策略）", () => {
 
     vi.advanceTimersByTime(1);
     expect(hostPty.write).toHaveBeenCalledWith("pty-gemini-ack", "\r");
+
+    tm.disposeAll(false);
+  });
+
+  it("Antigravity 在运行中持续输出时，会等待局部屏幕 ACK 后再发送 Enter", async () => {
+    vi.useFakeTimers();
+    const adapter: any = createAdapterStub();
+    const hostPty = createHostPtyStub();
+    createTerminalAdapterMock.mockReturnValue(adapter);
+
+    let snapshotText = "";
+    adapter.readCursorTextSnapshot.mockImplementation(() => {
+      if (!snapshotText) return null;
+      return {
+        bufferType: "alternate",
+        cursorAbsY: 23,
+        startAbsY: 22,
+        endAbsY: 23,
+        lines: [snapshotText],
+        text: snapshotText,
+      };
+    });
+
+    const ptyByTab: Record<string, string> = { "tab-antigravity-ack": "pty-antigravity-ack" };
+    const tm = new TerminalManager((tabId) => ptyByTab[tabId], hostPty as any, {});
+    tm.ensurePersistentContainer("tab-antigravity-ack");
+    tm.setPty("tab-antigravity-ack", "pty-antigravity-ack");
+
+    const text = "1\n2\n3\n4\n5\n6";
+    const minWaitMs = getPasteSubmitMinWaitMs({ providerId: "antigravity", textLength: text.length });
+    await tm.sendTextAndEnter("tab-antigravity-ack", text, { providerId: "antigravity" });
+
+    hostPty.emitData("pty-antigravity-ack", "模型仍在持续输出");
+    vi.advanceTimersByTime(40);
+    expect(hostPty.write).not.toHaveBeenCalledWith("pty-antigravity-ack", "\r");
+
+    snapshotText = "[Pasted Text: 6 lines]";
+    hostPty.emitData("pty-antigravity-ack", "输出还在继续");
+    vi.advanceTimersByTime(40);
+    expect(hostPty.write).not.toHaveBeenCalledWith("pty-antigravity-ack", "\r");
+
+    hostPty.emitData("pty-antigravity-ack", "输出继续刷新");
+    vi.advanceTimersByTime(40);
+    expect(hostPty.write).not.toHaveBeenCalledWith("pty-antigravity-ack", "\r");
+
+    const remainMinWaitMs = Math.max(0, minWaitMs - 120);
+    if (remainMinWaitMs > 0) {
+      vi.advanceTimersByTime(remainMinWaitMs);
+      expect(hostPty.write).not.toHaveBeenCalledWith("pty-antigravity-ack", "\r");
+    }
+
+    vi.advanceTimersByTime(GEMINI_PASTE_ENTER_DELAY_MS - 1);
+    expect(hostPty.write).not.toHaveBeenCalledWith("pty-antigravity-ack", "\r");
+
+    vi.advanceTimersByTime(1);
+    expect(hostPty.write).toHaveBeenCalledWith("pty-antigravity-ack", "\r");
 
     tm.disposeAll(false);
   });

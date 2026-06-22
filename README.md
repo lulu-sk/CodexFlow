@@ -4,7 +4,7 @@
 <!-- Badges -->
 <a href="https://github.com/lulu-sk/CodexFlow/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/lulu-sk/CodexFlow?style=for-the-badge&logo=undertale&logoColor=red&color=orange"/></a>
 <a href="https://github.com/lulu-sk/CodexFlow/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/lulu-sk/CodexFlow/total?style=for-the-badge&label=Downloads"/></a>
-<img alt="Platform" src="https://img.shields.io/badge/Windows%2011+WSL-Recommended-blue?style=for-the-badge&logo=windows"/>
+<img alt="Platform" src="https://img.shields.io/badge/Windows%2011-WSL%20%2F%20PowerShell%207%20Recommended-blue?style=for-the-badge&logo=windows"/>
 <img alt="Electron" src="https://img.shields.io/badge/Electron-App-informational?style=for-the-badge&logo=electron"/>
 <img alt="React" src="https://img.shields.io/badge/React-18-informational?style=for-the-badge&logo=react"/>
 <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Apache--2.0-success?style=for-the-badge"/></a>
@@ -18,9 +18,9 @@
 
 # CodexFlow
 
-> A "Unified Workbench" crafted for **AI Coding Agents** — switch between **Codex / Claude / Gemini** (and custom engines) in one click, organize sessions and history by **project directories**, run parallel tasks with **Git Worktree**, browse and resume conversations with Markdown rendering, and provide a graphical input box for CLI with support for **pasting images / dragging files / @project files / full-screen input** for efficient prompting.
+> A "Unified Workbench" crafted for **AI Coding Agents** — switch between **Codex / Claude / Gemini / Antigravity CLI** (and custom engines) in one click, organize sessions and history by **project directories**, run parallel tasks with **Git Worktree**, review code in a full **Git panel**, browse and resume conversations with Markdown rendering, and provide a graphical input box for CLI with **pasted images / dragged files / @project files / full-screen input** for more efficient prompting.
 
-- **Platform Recommendation**: **Windows 11 + WSL (Default Distro: Ubuntu-24.04)**; provides the best experience when WSL is installed and engines are available within it. **PowerShell Mode** (PS5 / PS7 / CMD) is also fully supported.
+- **Platform Recommendation**: **Windows 11 + WSL** and **Windows 11 + PowerShell 7** are both recommended.
 - **Project Structure**: **UI Host with a Minimal Terminal Bridge** (Electron + React + Vite + node-pty + xterm).
 
 ---
@@ -46,21 +46,23 @@
 
 ## ✨ Core Features
 
-1. **Unified Multi-Engine Workbench (Codex / Claude / Gemini / Terminal + Custom)**
-   Switch engines instantly via the top bar. Built-in engines support **usage monitoring** and **completion notifications** (taskbar badges/system notifications/alert sounds). Each engine can be independently configured with **startup commands**, **light/dark icons**, and **execution environments** (WSL / Windows / Windows PowerShell / PowerShell 7 / specific WSL distro), with support for custom engine extensions.
+1. **Unified Multi-Engine Workbench (Codex / Claude / Gemini / Antigravity CLI / Terminal + Custom)**
+   Switch engines instantly via the top bar. Built-in engines support **usage monitoring** and **completion notifications** (taskbar badges/system notifications/alert sounds). Each engine can be independently configured with **startup commands** (`codex`, `claude`, `gemini`, `agy`, or your own command), **light/dark icons**, and **execution environments** (WSL / PowerShell 7 / Windows PowerShell / CMD / specific WSL distro), with support for custom engine extensions.
 2. **Cross-Engine History Center**
-   Read-only incremental indexing of native session records across multiple engines (Codex / Claude / Gemini) with full support for both Windows and WSL paths. Sessions are aggregated by project directory with one-click creation of new sessions. Features include filtering, quick search, and time-grouped previews. The detail view supports **Markdown rendering** (with syntax highlighting) and **in-page search highlighting** for efficient history lookups.
+   Read-only incremental indexing of native session records across multiple engines (Codex / Claude / Gemini / Antigravity CLI) with full support for both Windows and WSL paths. Sessions are aggregated by project directory with one-click creation of new sessions. Features include filtering, quick search, and time-grouped previews. The detail view supports **Markdown rendering** (with syntax highlighting) and **in-page search highlighting** for efficient history lookups.
 3. **Native Git Worktree Parallel Workflow (Designed for Parallel Agents, Recommended)**
-   Create or reuse worktrees directly from branches (branch badge `⎇`). Supports **single or hybrid parallel workflows** across multiple engines (Codex / Claude / Gemini) with a concurrent progress panel, cancellation, and rollback cleanup. Provides a seamless loop of "Create → Run → Merge → Clean" after task completion.
-4. **GUI Input for CLI: @Files / @Rules / Images / Drag-and-Drop**
+   Create or reuse worktrees directly from branches (branch badge `⎇`). Supports **single or hybrid parallel workflows** across multiple engines (Codex / Claude / Gemini / Antigravity CLI) with a concurrent progress panel, cancellation, and rollback cleanup. Provides a seamless loop of "Create → Run → Merge → Clean" after task completion.
+4. **Complete Git Panel for Review, Commit, and History**
+   Work with local changes without leaving CodexFlow: review side-by-side diffs, stage precise changes, write commits, pull/fetch/push, inspect branches and worktrees, browse the commit graph, and open commit details with changed files and patch context. It turns agent output into a clean review-to-commit workflow instead of a pile of terminal commands.
+5. **GUI Input for CLI: @Files / @Rules / Images / Drag-and-Drop**
    The input box supports **pasting images (with inline previews)**, dragging files/directories, and `@` quick selection for project files/directories. **AGENTS.md / CLAUDE.md / GEMINI.md** can be quickly edited and referenced. Supports full-screen expansion for crafting long and complex prompts.
-5. **One-Click Resume for History Sessions**
+6. **One-Click Resume for History Sessions**
    Compatible with various CLI resume strategies; handles WSL/Windows path differences gracefully. Allows resuming conversations within the app or in an external console with one click.
-6. **Engine Completion Notifications**
+7. **Engine Completion Notifications**
    Integrated system notifications, alert sounds, and taskbar badges with project-level navigation. When an engine finishes its task, you can jump directly back to the corresponding project and tab, ensuring you never miss a completion message.
-7. **Usage & Account Management**
+8. **Usage & Account Management**
    Real-time monitoring of quotas and usage for each engine in the top bar. Supports multi-account configuration and quick switching (independent management of history and sessions per engine).
-8. **Polished Experience & Deep Customization**
+9. **Polished Experience & Deep Customization**
    Supports Light/Dark/System-matching themes. Customizable terminal fonts, themes, scrollbars, and overall appearance. Project management includes sorting, hiding, drag-and-drop grouping, and custom nicknames. Full network proxy support is also included.
 
 ------
@@ -79,7 +81,10 @@
 ### 4) One-Click Resume + Input Enhancement (@Files/@Rules + Drag + Paste Image)
 ![Resume and Input Enhancement](assets/screenshots/resume-input-enhancement.gif)
 
-### 5) Settings & Engines (Custom Engines, Icons, Execution Environment)
+### 5) Git Panel (Changes, Diffs, Branches, Commit Log, Commit Details)
+![Git Panel](assets/screenshots/git-panel.png)
+
+### 6) Settings & Engines (Codex, Claude, Gemini, Antigravity CLI, Custom Engines)
 ![Settings and Engines](assets/screenshots/settings-engines.png)
 
 ---
@@ -87,11 +92,10 @@
 ## 🚀 Quick Start
 
 ### Environment Preparation
-- **Windows 11** with **WSL** installed (Default distro `Ubuntu-24.04`, configurable in settings; falls back to system default if specified distro is invalid).
-- At least one AI Programming Agent CLI runnable in WSL or PowerShell (e.g., `codex`, `claude`, or `gemini`).
-- For `codex`, **WSL Terminal Mode** is recommended; **PowerShell Mode** (PS5 / PS7) is also available.
+- Recommended: **Windows 11 + WSL** or **Windows 11 + PowerShell 7**.
+- At least one AI Programming Agent CLI runnable in WSL or PowerShell (for example `codex`, `claude`, `gemini`, or Antigravity CLI `agy`).
 
-### Setup Tutorials
+### WSL Setup Tutorial
 - [Install WSL (Ubuntu) and Codex CLI on Windows](./docs/setup-wsl-codex.en.md)
 
 ### Installation
@@ -99,8 +103,8 @@
 - Otherwise, follow the "Development & Build" section below to package it locally.
 
 ### First-Time Use
-1. Click the **Settings** (gear icon) in the top right to configure the environment: Select **WSL / PowerShell**, specify the correct WSL distro, and save.
-2. Choose your desired engine from the top bar (Codex / Claude / Gemini / Terminal / Custom).
+1. Click the **Settings** (gear icon) in the top right to configure the environment: Select **WSL / PowerShell 7 / Windows PowerShell / CMD**, specify the correct WSL distro when needed, and save.
+2. Choose your desired engine from the top bar (Codex / Claude / Gemini / Antigravity CLI / Terminal / Custom).
 3. Select (or add) a project directory and click **+** to start a new session.
 4. Log in or provide API credentials in the terminal as required.
 5. Paste images, use `@` for project files or rules, drag files in, and start your collaborative coding journey.
@@ -111,6 +115,7 @@
 - **One-Click Resume**: Select any conversation from the history list and click "Continue" to pick up where you left off — supported across all engines.
 - **Filter & Copy History**: Supports filtering and direct copying of rendered content; Markdown rendering makes history easy to read.
 - **Input Boosters**: Pasted images automatically show inline previews; use full-screen mode for composing long prompts.
+- **Git Panel**: See exactly what the agent changed, choose what to commit, and handle branch history, commit messages, and pushes from one panel.
 - **Worktree Workflow**: Create worktrees from the project sidebar to run agents in parallel, then merge results back to the base branch.
 - **Multi-Project Management**: The left sidebar shows active session counts, helping you keep track of multiple tasks.
 - **Multiple Instances (Profiles)**: Enable "Experimental Features" in settings (requires restart) to open multiple application instances. For a persistent profile, use `--profile <name>` (e.g., `CodexFlow.exe --profile work`).
@@ -211,7 +216,11 @@ npm run i18n:check
     bridge.ts                   # Codex CLI bridge (auth, usage, rate limits)
     authBackups.ts              # Multi-account backup & switching
     config.ts                   # Codex config.toml management
+  antigravity/
+    usage.ts                    # Antigravity CLI usage snapshot detection
+    notifications.ts            # Antigravity completion notification support
   agentSessions/
+    antigravity/                # Antigravity CLI session discovery & parsing
     claude/                     # Claude session discovery & parsing
     gemini/                     # Gemini session discovery & parsing
   providers/
@@ -232,6 +241,7 @@ npm run i18n:check
     i18n/setup.ts
     adapters/TerminalAdapter.tsx
     features/
+      git/                      # Git panel: changes, branches, log graph, update flows
       settings/settings-dialog.tsx
       history/
         renderers/history-markdown.tsx   # Markdown + Shiki rendering
@@ -242,6 +252,7 @@ npm run i18n:check
         codex-status.tsx                 # Codex usage panel
         claude-status.tsx                # Claude usage panel
         gemini-status.tsx                # Gemini usage panel
+        antigravity-status.tsx           # Antigravity usage panel
       ui/*
     lib/
       providers/                # Engine definitions & YOLO presets
@@ -251,6 +262,7 @@ npm run i18n:check
       shell.ts                  # Shell command builder
       dir-tree-dnd.ts           # Directory tree drag-and-drop sorting
     providers/
+      antigravity/commands.ts
       codex/commands.ts
       claude/commands.ts
       gemini/commands.ts
@@ -271,11 +283,12 @@ npm run i18n:check
 ## ⚙️ Runtime Notes & Indexes
 
 * **Default Distro**: `distro = 'Ubuntu-24.04'`
-* **Terminal Mode**: `terminal = 'wsl' | 'windows' | 'pwsh'` (PowerShell 5 / PowerShell 7 / CMD auto-detected)
-* **Engine Commands**: Each engine independently stores its startup command (e.g., `codex`, `claude`, `gemini`), with optional YOLO presets.
+* **Terminal Mode**: `terminal = 'wsl' | 'pwsh' | 'windows' | 'cmd'` (WSL, PowerShell 7, Windows PowerShell 5, or CMD).
+* **Engine Commands**: Each engine independently stores its startup command (e.g., `codex`, `claude`, `gemini`, `agy`), with optional YOLO presets.
 * **Execution**:
   * **WSL**: `bash -lc "<engineCmd>"`
-  * **Windows**: Executed within PowerShell (or pwsh / cmd).
+  * **PowerShell 7**: Executed with `pwsh` when available.
+  * **Windows PowerShell / CMD**: Compatibility modes for existing Windows setups.
 * **Project Path Example**: `wslPath = '/mnt/c/Users/you/code/demo'`
 * **History Indexing**: `electron/indexer.ts` performs background incremental indexing of all engine sessions and writes to a local cache; accessible via IPC with support for paginated loading.
 * **File Indexing**: `electron/fileIndex.ts` uses **ripgrep** for initial full scans and **chokidar** for incremental updates (recommended to place ripgrep in `vendor/bin/rg.exe`). Search is performed in the main process to avoid UI lag.
@@ -291,7 +304,8 @@ npm run i18n:check
 3. Window Scaling: Verify terminal content automatically fits the window (FitAddon active).
 4. Switch Engines: Select different engines from the top bar and verify new sessions start correctly.
 5. (Optional) Create a worktree from the sidebar and verify the agent starts in the new worktree directory.
-6. (Optional) If `codex` is installed, run `codex .` and verify it starts and outputs logs.
+6. (Optional) Open the Git panel and verify local changes, diffs, branches, and commit history load for the selected project.
+7. (Optional) If a CLI is installed, run `codex .` or `agy` and verify it starts and outputs logs.
 
 ---
 

@@ -7,7 +7,7 @@
     },
     "providers": {
       "title": "自定义引擎",
-      "desc": "配置 Codex / Claude / Gemini / Terminal，并可新增自定义引擎（图标 + 启动命令 + 环境隔离）。"
+      "desc": "配置 Codex / Claude / Gemini / Antigravity / Terminal，并可新增自定义引擎（图标 + 启动命令 + 环境隔离）。"
     },
     "gitWorktree": {
       "title": "git worktree",
@@ -90,7 +90,7 @@
       "name": "名称",
       "nameHelp": "自定义引擎可修改名称；内置引擎名称由界面语言决定。",
       "startupCmd": "启动命令",
-      "startupCmdPlaceholder": "例如：codex / claude / gemini",
+      "startupCmdPlaceholder": "例如：codex / claude / gemini / agy",
       "startupCmdTerminalPlaceholder": "Terminal 不支持启动命令",
       "startupCmdHelp": "会在新建控制台时自动执行；可根据安装方式填写完整命令。",
       "startupCmdHelpLocked": "已启用 YOLO：启动命令已锁定。",
@@ -99,9 +99,15 @@
       "yoloHelp": "启用后将锁定启动命令为预设（危险）；取消则恢复默认命令。",
       "yoloPrompt": {
         "title": "开启 YOLO 权限模式？",
-        "desc": "推荐开启后再使用 agent，可以更顺畅地运行而不被权限询问打断。请注意，这会降低安全边界，存在误操作与越权风险。我们会同时为 Codex、Claude、Gemini 开启 YOLO，并且仅提醒一次，后续可在设置中修改。",
+        "desc": "推荐开启后再使用 agent，可以更顺畅地运行而不被权限询问打断。请注意，这会降低安全边界，存在误操作与越权风险。我们会同时为 Codex、Claude、Gemini、Antigravity 开启 YOLO，并且仅提醒一次，后续可在设置中修改。",
         "primary": "开启并继续",
         "secondary": "暂不启用"
+      },
+      "antigravityYoloPrompt": {
+        "title": "为 Antigravity 开启 YOLO？",
+        "desc": "你已经为其它内置引擎开启过 YOLO。Antigravity 是新增引擎，危险权限需要你单独确认，不会自动开启。",
+        "primary": "为 Antigravity 开启",
+        "secondary": "保持关闭"
       },
       "icon": "图标",
       "iconLight": "亮色图标",
@@ -389,6 +395,11 @@
     "label": ".gemini 根路径（只读）",
     "help": "显示磁盘上检测到的 .gemini 根目录，方便排查问题。",
     "empty": "未检测到 .gemini 根路径"
+  },
+  "antigravityRoots": {
+    "label": "Antigravity 会话根路径（只读）",
+    "help": "显示磁盘上检测到的 Antigravity CLI 会话数据目录，仅用于查看和打开目录。",
+    "empty": "未检测到 Antigravity 会话根路径"
   },
   "appData": {
     "label": "应用数据目录",

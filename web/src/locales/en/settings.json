@@ -7,7 +7,7 @@
     },
     "providers": {
       "title": "Custom Engine",
-      "desc": "Configure Codex / Claude / Gemini / Terminal, and add custom engines (icon + startup command + isolated environment)."
+      "desc": "Configure Codex / Claude / Gemini / Antigravity / Terminal, and add custom engines (icon + startup command + isolated environment)."
     },
     "gitWorktree": {
       "title": "git worktree",
@@ -90,7 +90,7 @@
       "name": "Name",
       "nameHelp": "Custom engines can rename; built-in names follow UI language.",
       "startupCmd": "Startup command",
-      "startupCmdPlaceholder": "e.g. codex / claude / gemini",
+      "startupCmdPlaceholder": "e.g. codex / claude / gemini / agy",
       "startupCmdTerminalPlaceholder": "Not available for Terminal",
       "startupCmdHelp": "Executed when creating a new console; you can provide a full command if needed.",
       "startupCmdHelpLocked": "YOLO is enabled: the startup command is locked.",
@@ -99,9 +99,15 @@
       "yoloHelp": "When enabled, the startup command is locked to a preset (dangerous); disabling restores the default command.",
       "yoloPrompt": {
         "title": "Enable YOLO permission mode?",
-        "desc": "We recommend enabling this before using agents so they can run smoothly without permission prompts. This lowers the safety boundary and carries a risk of mistakes or overreach. We will enable YOLO for Codex, Claude, and Gemini, ask only once, and you can change it later in Settings.",
+        "desc": "We recommend enabling this before using agents so they can run smoothly without permission prompts. This lowers the safety boundary and carries a risk of mistakes or overreach. We will enable YOLO for Codex, Claude, Gemini, and Antigravity, ask only once, and you can change it later in Settings.",
         "primary": "Enable and continue",
         "secondary": "Not now"
+      },
+      "antigravityYoloPrompt": {
+        "title": "Enable YOLO for Antigravity?",
+        "desc": "You already enabled YOLO for another built-in engine. Antigravity is new, so this dangerous permission needs a separate confirmation and will not be enabled automatically.",
+        "primary": "Enable for Antigravity",
+        "secondary": "Keep off"
       },
       "icon": "Icon",
       "iconLight": "Light icon",
@@ -389,6 +395,11 @@
     "label": ".gemini roots (read-only)",
     "help": "Reference directories detected on disk. Useful for troubleshooting.",
     "empty": "No .gemini roots detected"
+  },
+  "antigravityRoots": {
+    "label": "Antigravity session roots (read-only)",
+    "help": "Detected Antigravity CLI session data directories. Use this only to inspect or open the folder.",
+    "empty": "No Antigravity session roots detected"
   },
   "appData": {
     "label": "App data directory",

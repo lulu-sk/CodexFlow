@@ -8,6 +8,7 @@ import { createWorktreesAsync, type CreatedWorktree } from "./worktreeOps";
 import type { WorktreePostSetupConfig } from "./worktreePostSetup";
 import { estimateWorktreeTimeoutAsync, type WorktreeTimeoutEstimate } from "./worktreeTimeout";
 import { deleteWorktreeMeta } from "../stores/worktreeMetaStore";
+import { isBuiltInAgentProviderId, type BuiltInAgentProviderId } from "../providers/ids";
 
 export type WorktreeCreateTaskStatus = "running" | "canceling" | "canceled" | "success" | "error";
 
@@ -16,7 +17,7 @@ export type WorktreeCreateTaskItemStatus = "creating" | "success" | "error" | "c
 export type WorktreeCreateTaskItemSnapshot = {
   /** 条目唯一 key（优先使用 worktreePath 归一化 key）。 */
   key: string;
-  providerId: "codex" | "claude" | "gemini";
+  providerId: BuiltInAgentProviderId;
   worktreePath: string;
   wtBranch: string;
   index: number;
@@ -32,7 +33,7 @@ export type WorktreeCreateTaskSnapshot = {
   taskId: string;
   repoDir: string;
   baseBranch: string;
-  instances: Array<{ providerId: "codex" | "claude" | "gemini"; count: number }>;
+  instances: Array<{ providerId: BuiltInAgentProviderId; count: number }>;
   copyRules: boolean;
   status: WorktreeCreateTaskStatus;
   createdAt: number;
@@ -89,7 +90,7 @@ export class WorktreeCreateTaskManager {
   public startOrReuse(args: {
     repoDir: string;
     baseBranch: string;
-    instances: Array<{ providerId: "codex" | "claude" | "gemini"; count: number }>;
+    instances: Array<{ providerId: BuiltInAgentProviderId; count: number }>;
     gitPath?: string;
     copyRules?: boolean;
     postSetup?: WorktreePostSetupConfig;
@@ -98,8 +99,8 @@ export class WorktreeCreateTaskManager {
     const baseBranch = String(args?.baseBranch || "").trim();
     const instancesRaw = Array.isArray(args?.instances) ? args.instances : [];
     const instances = instancesRaw
-      .map((x) => ({ providerId: x.providerId, count: Math.max(0, Math.floor(Number(x.count) || 0)) }))
-      .filter((x) => x.count > 0);
+      .map((x) => ({ providerId: String(x.providerId || "").trim().toLowerCase(), count: Math.max(0, Math.floor(Number(x.count) || 0)) }))
+      .filter((x): x is { providerId: BuiltInAgentProviderId; count: number } => isBuiltInAgentProviderId(x.providerId) && x.count > 0);
     if (!repoDir) return { ok: false, error: "missing repoDir" };
     if (!baseBranch) return { ok: false, error: "missing baseBranch" };
     if (instances.length === 0) return { ok: false, error: "missing instances" };
@@ -201,7 +202,7 @@ export class WorktreeCreateTaskManager {
    * 中文说明：插入或更新单个 worktree 的进度状态，并同步汇总计数。
    */
   private upsertWorktreeState(taskId: string, args: {
-    providerId: "codex" | "claude" | "gemini";
+    providerId: BuiltInAgentProviderId;
     worktreePath: string;
     wtBranch: string;
     index: number;
@@ -300,7 +301,7 @@ export class WorktreeCreateTaskManager {
    */
   private async runCreateTask(
     taskId: string,
-    args: { repoDir: string; baseBranch: string; instances: Array<{ providerId: "codex" | "claude" | "gemini"; count: number }>; gitPath?: string; copyRules?: boolean; postSetup?: WorktreePostSetupConfig }
+    args: { repoDir: string; baseBranch: string; instances: Array<{ providerId: BuiltInAgentProviderId; count: number }>; gitPath?: string; copyRules?: boolean; postSetup?: WorktreePostSetupConfig }
   ): Promise<void> {
     const t = this.tasks.get(taskId);
     if (!t) return;

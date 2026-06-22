@@ -67,11 +67,12 @@ describe("providers/runtime（主进程 Provider 默认值解析）", () => {
     expect(resolveProviderStartupCmdFromSettings(cfg, "codex")).toBe("codex-x");
   });
 
-  it("resolveProviderStartupCmdFromSettings 内置兜底：codex/claude/gemini", () => {
+  it("resolveProviderStartupCmdFromSettings 内置兜底：codex/claude/gemini/antigravity", () => {
     const cfg = { terminal: "wsl", distro: "Ubuntu-24.04", codexCmd: "codex-x", historyRoot: "~/.codex/sessions" } as any;
     expect(resolveProviderStartupCmdFromSettings(cfg, "codex")).toBe("codex-x");
     expect(resolveProviderStartupCmdFromSettings(cfg, "claude")).toBe("claude");
     expect(resolveProviderStartupCmdFromSettings(cfg, "gemini")).toBe("gemini");
+    expect(resolveProviderStartupCmdFromSettings(cfg, "antigravity")).toBe("agy");
   });
 
   it("resolveProviderRuntimeEnvFromSettings 优先读取 providers.env，缺失时回退到 legacy 字段", () => {

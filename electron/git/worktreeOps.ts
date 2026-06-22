@@ -14,6 +14,7 @@ import { buildRestoreCommandsForWorktreeStateSnapshot, cleanupWorktreeStateSnaps
 import { estimateWorktreeTimeoutAsync, formatWorktreeTimeoutEstimate, type WorktreeTimeoutEstimate } from "./worktreeTimeout";
 import { applyWorktreePostSetupAsync, type WorktreePostSetupConfig } from "./worktreePostSetup";
 import { buildNextWorktreeMeta, deleteWorktreeMeta, getWorktreeMeta, setWorktreeMeta, type WorktreeMeta } from "../stores/worktreeMetaStore";
+import type { BuiltInAgentProviderId } from "../providers/ids";
 
 export type GitWorktreeBranchInfo = {
   ok: boolean;
@@ -28,7 +29,7 @@ export type GitWorktreeBranchInfo = {
 export type CreateWorktreesRequest = {
   repoDir: string;
   baseBranch: string;
-  instances: Array<{ providerId: "codex" | "claude" | "gemini"; count: number }>;
+  instances: Array<{ providerId: BuiltInAgentProviderId; count: number }>;
   gitPath?: string;
   copyRules?: boolean;
   /** 创建成功后应用的项目级保留项与命令。 */
@@ -41,7 +42,7 @@ export type CreateWorktreesRequest = {
   onItemCreated?: (item: CreatedWorktree) => void;
   /** 单个 worktree 创建失败时回调（用于 UI 逐项标记失败）。 */
   onItemFailed?: (args: {
-    providerId: "codex" | "claude" | "gemini";
+    providerId: BuiltInAgentProviderId;
     repoMainPath: string;
     worktreePath: string;
     baseBranch: string;
@@ -50,15 +51,15 @@ export type CreateWorktreesRequest = {
     error: string;
   }) => void;
   /** 在尝试创建某个 worktree 前回调（用于捕获“中断时的目标目录/分支”）。 */
-  onWorktreePlanned?: (args: { providerId: "codex" | "claude" | "gemini"; repoMainPath: string; worktreePath: string; baseBranch: string; wtBranch: string; index: number }) => void;
+  onWorktreePlanned?: (args: { providerId: BuiltInAgentProviderId; repoMainPath: string; worktreePath: string; baseBranch: string; wtBranch: string; index: number }) => void;
   /** 单个 worktree 创建阶段变化回调（用于 UI 展示慢在哪一步）。 */
-  onItemProgress?: (args: { providerId: "codex" | "claude" | "gemini"; repoMainPath: string; worktreePath: string; baseBranch: string; wtBranch: string; index: number; detail: string }) => void;
+  onItemProgress?: (args: { providerId: BuiltInAgentProviderId; repoMainPath: string; worktreePath: string; baseBranch: string; wtBranch: string; index: number; detail: string }) => void;
   /** 创建超时估算完成后回调，供后台任务快照和 UI 等待兜底复用。 */
   onTimeoutEstimated?: (estimate: WorktreeTimeoutEstimate) => void;
 };
 
 export type CreatedWorktree = {
-  providerId: "codex" | "claude" | "gemini";
+  providerId: BuiltInAgentProviderId;
   repoMainPath: string;
   worktreePath: string;
   baseBranch: string;
@@ -578,7 +579,7 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
    * 创建计划项（每一项对应一个目标 worktree）。
    */
   type WorktreeCreatePlan = {
-    providerId: "codex" | "claude" | "gemini";
+    providerId: BuiltInAgentProviderId;
     index: number;
     targetDir: string;
     wtBranch: string;

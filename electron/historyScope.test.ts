@@ -90,4 +90,34 @@ describe("electron/historyScope.historyItemBelongsToScope", () => {
       },
     )).toBe(true);
   });
+
+  it("antigravity 使用正确 dirKey 时命中当前项目", () => {
+    expect(historyItemBelongsToScope(
+      {
+        providerId: "antigravity",
+        dirKey: "/mnt/j/projects/projects/example",
+        filePath: "/home/user/.gemini/antigravity-cli/conversations/session.db",
+      },
+      {
+        scope: "current_project",
+        currentProjectNeedles: ["/mnt/j/projects/projects/example"],
+        allProjectNeedles: ["/mnt/j/projects/projects/example"],
+      },
+    )).toBe(true);
+  });
+
+  it("antigravity 只有 conversations 目录时不会误归到当前项目", () => {
+    expect(historyItemBelongsToScope(
+      {
+        providerId: "antigravity",
+        dirKey: "/home/user/.gemini/antigravity-cli/conversations",
+        filePath: "/home/user/.gemini/antigravity-cli/conversations/session.db",
+      },
+      {
+        scope: "current_project",
+        currentProjectNeedles: ["/mnt/j/projects/projects/example"],
+        allProjectNeedles: ["/mnt/j/projects/projects/example"],
+      },
+    )).toBe(false);
+  });
 });

@@ -143,6 +143,44 @@
       }
     }
   },
+  "antigravityUsage": {
+    "loading": "正在同步用量…",
+    "unavailable": "用量信息不可用",
+    "title": "用量",
+    "empty": "暂无用量信息",
+    "usageUnknown": "用量未知",
+    "unknownGroup": "未知模型组",
+    "resetAt": "重置时间 {time}",
+    "groups": {
+      "gemini": "Gemini 模型",
+      "claudeGpt": "Claude 和 GPT 模型"
+    },
+    "windows": {
+      "weekly": "每周额度"
+    },
+    "sourceApp": "Antigravity App",
+    "sourceAgy": "AGY",
+    "sourceLaunchedAgy": "临时 AGY",
+    "sourceIde": "Antigravity IDE",
+    "sourceLocal": "本地服务",
+    "rawSourceQuotaSummary": "额度摘要",
+    "rawSourceUserStatus": "账号状态",
+    "rawSourceModelConfig": "模型配置",
+    "errors": {
+      "default": {
+        "title": "无法获取 Antigravity 用量",
+        "hint": "请确认 Antigravity 或 AGY 已登录后重试"
+      },
+      "cliNotFound": {
+        "title": "未检测到 AGY CLI",
+        "hint": "请安装 Antigravity CLI，或设置 ANTIGRAVITY_CLI_PATH 后重试"
+      },
+      "localService": {
+        "title": "未检测到 Antigravity 本地服务",
+        "hint": "请打开 Antigravity / AGY，或稍后再次刷新"
+      }
+    }
+  },
   "notifications": {
     "taskCompleted": "{tab} 已完成",
     "taskCompletedWithProject": "{tab} · {project} 已完成",

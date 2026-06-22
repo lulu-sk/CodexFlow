@@ -14,7 +14,9 @@ const RENDERER_DRAFT_RECOVERY_STORAGE_KEY = "codexflow.rendererDraftRecovery.v1"
 const RENDERER_DRAFT_RECOVERY_VERSION = 1 as const;
 const RENDERER_DRAFT_RECOVERY_MAX_TEXT_LENGTH = 1_200_000;
 
-export type RecoveryProviderId = "codex" | "claude" | "gemini";
+import { BUILT_IN_AGENT_PROVIDER_IDS, isBuiltInAgentProviderId, type BuiltInAgentProviderId } from "@/lib/providers/ids";
+
+export type RecoveryProviderId = BuiltInAgentProviderId;
 
 export type PersistedRecoveryPathChip = {
   chipKind?: "file" | "image" | "rule";
@@ -100,12 +102,12 @@ function toNonEmptyString(value: unknown): string {
 }
 
 /**
- * 中文说明：归一化 ProviderId；非内置三引擎统一回退为 `codex`。
+ * 中文说明：归一化 ProviderId；非内置代理引擎统一回退为 `codex`。
  */
 function normalizeRecoveryProviderId(value: unknown): RecoveryProviderId {
   const normalized = toNonEmptyString(value).toLowerCase();
-  if (normalized === "codex" || normalized === "claude" || normalized === "gemini")
-    return normalized as RecoveryProviderId;
+  if (isBuiltInAgentProviderId(normalized))
+    return normalized;
   return "codex";
 }
 
@@ -120,15 +122,14 @@ function clampRecoveryCount(value: unknown): number {
 }
 
 /**
- * 中文说明：归一化多模型实例计数，确保三个引擎键始终齐全。
+ * 中文说明：归一化多模型实例计数，确保内置代理引擎键始终齐全。
  */
 function normalizeRecoveryMultiCounts(value: unknown): Record<RecoveryProviderId, number> {
   const obj = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-  return {
-    codex: clampRecoveryCount(obj.codex),
-    claude: clampRecoveryCount(obj.claude),
-    gemini: clampRecoveryCount(obj.gemini),
-  };
+  const out = {} as Record<RecoveryProviderId, number>;
+  for (const providerId of BUILT_IN_AGENT_PROVIDER_IDS)
+    out[providerId] = clampRecoveryCount(obj[providerId]);
+  return out;
 }
 
 /**

@@ -25,6 +25,10 @@ describe("dirKeyFromCwd", () => {
     expect(dirKeyFromCwd("C:\\")).toBe("/mnt/c");
     expect(dirKeyFromCwd("C:")).toBe("/mnt/c");
   });
+
+  it("将正斜杠 Windows 项目路径规范化为 /mnt/<drive> 子目录", () => {
+    expect(dirKeyFromCwd("J:/Projects/Projects/example")).toBe("/mnt/j/projects/projects/example");
+  });
 });
 
 describe("pathMatchesDirKeyScope", () => {

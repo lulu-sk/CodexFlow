@@ -69,7 +69,8 @@ import { applyHistoryFindHighlights, clearHistoryFindHighlights, setActiveHistor
 import { toWSLForInsert } from "@/lib/wsl";
 import { extractGeminiProjectHashFromPath, deriveGeminiProjectHashCandidatesFromPath } from "@/lib/gemini-hash";
 import { normalizeProvidersSettings } from "@/lib/providers/normalize";
-import { isBuiltInSessionProviderId, openaiIconUrl, openaiDarkIconUrl, claudeIconUrl, geminiIconUrl } from "@/lib/providers/builtins";
+import { isBuiltInSessionProviderId, openaiIconUrl, openaiDarkIconUrl, claudeIconUrl, geminiIconUrl, antigravityIconUrl } from "@/lib/providers/builtins";
+import { BUILT_IN_AGENT_PROVIDER_IDS, isBuiltInAgentProviderId, type BuiltInAgentProviderId } from "@/lib/providers/ids";
 import { resolveProvider } from "@/lib/providers/resolve";
 import { injectCodexTraceEnv } from "@/providers/codex/commands";
 import { buildClaudeResumeStartupCmd } from "@/providers/claude/commands";
@@ -145,7 +146,7 @@ type DirLabelDialogState = {
   draft: string;
 };
 
-type GitWorktreeProviderId = "codex" | "claude" | "gemini";
+type GitWorktreeProviderId = BuiltInAgentProviderId;
 type ExternalGitToolId = "rider" | "sourcetree" | "fork" | "gitkraken" | "custom";
 
 type WorktreeProviderCounts = Record<GitWorktreeProviderId, number>;
@@ -342,6 +343,12 @@ const CODEX_NOTIFY_ENV_KEYS = {
   providerId: "CODEXFLOW_NOTIFY_PROVIDER_ID",
 } as const;
 
+const ANTIGRAVITY_NOTIFY_ENV_KEYS = {
+  tabId: "ANTIGRAVITY_CODEXFLOW_TAB_ID",
+  envLabel: "ANTIGRAVITY_CODEXFLOW_ENV_LABEL",
+  providerId: "ANTIGRAVITY_CODEXFLOW_PROVIDER_ID",
+} as const;
+
 /**
  * 构建 ProviderItem 的 id -> item 索引，避免在标签渲染时重复线性扫描。
  */
@@ -408,6 +415,22 @@ function buildCodexNotifyEnv(tabId: string, providerId: string, envLabel: string
 }
 
 /**
+ * 中文说明：构造 Antigravity 后续通知桥可复用的环境变量。
+ */
+function buildAntigravityNotifyEnv(tabId: string, providerId: string, envLabel: string): Record<string, string> {
+  const pid = String(providerId || "").trim().toLowerCase();
+  if (pid !== "antigravity") return {};
+  const tid = String(tabId || "").trim();
+  if (!tid) return {};
+  const label = String(envLabel || "").trim();
+  return {
+    [ANTIGRAVITY_NOTIFY_ENV_KEYS.tabId]: tid,
+    [ANTIGRAVITY_NOTIFY_ENV_KEYS.envLabel]: label,
+    [ANTIGRAVITY_NOTIFY_ENV_KEYS.providerId]: pid,
+  };
+}
+
+/**
  * 中文说明：构造 Provider 完成通知链路所需的环境变量（按 providerId 注入）。
  */
 function buildProviderNotifyEnv(tabId: string, providerId: string, envLabel: string): Record<string, string> {
@@ -415,6 +438,7 @@ function buildProviderNotifyEnv(tabId: string, providerId: string, envLabel: str
   if (pid === "codex") return buildCodexNotifyEnv(tabId, pid, envLabel);
   if (pid === "gemini") return buildGeminiNotifyEnv(tabId, pid, envLabel);
   if (pid === "claude") return buildClaudeNotifyEnv(tabId, pid, envLabel);
+  if (pid === "antigravity") return buildAntigravityNotifyEnv(tabId, pid, envLabel);
   return {};
 }
 
@@ -440,7 +464,7 @@ type MessageContent = {
 };
 type HistoryMessage = { role: string; content: MessageContent[] };
 type HistorySession = {
-  providerId: "codex" | "claude" | "gemini";
+  providerId: "codex" | "claude" | "gemini" | "antigravity";
   id: string;
   title: string;
   date: string; // ISO
@@ -984,7 +1008,7 @@ function sumWorktreeProviderCounts(counts: Partial<WorktreeProviderCounts> | nul
   try {
     const c = counts && typeof counts === "object" ? counts : {};
     const n = (x: any) => Math.max(0, Math.floor(Number(x) || 0));
-    return n((c as any).codex) + n((c as any).claude) + n((c as any).gemini);
+    return BUILT_IN_AGENT_PROVIDER_IDS.reduce((sum, providerId) => sum + n((c as any)[providerId]), 0);
   } catch {
     return 0;
   }
@@ -993,14 +1017,14 @@ function sumWorktreeProviderCounts(counts: Partial<WorktreeProviderCounts> | nul
 /**
  * 根据“worktree 创建”面板的引擎选择，生成实例队列（用于与复用子 worktree 做 1:1 分配）。
  * - 单选模式：始终返回 1 个实例（与现有面板行为保持一致）
- * - 并行混合模式：按 codex/claude/gemini 顺序展开计数
+ * - 并行混合模式：按内置引擎顺序展开计数
  */
 function buildWorktreeProviderQueue(args: {
   useMultipleModels: boolean;
   singleProviderId: GitWorktreeProviderId;
   multiCounts: Partial<WorktreeProviderCounts> | null | undefined;
 }): GitWorktreeProviderId[] {
-  const order: GitWorktreeProviderId[] = ["codex", "claude", "gemini"];
+  const order: readonly GitWorktreeProviderId[] = BUILT_IN_AGENT_PROVIDER_IDS;
   if (args.useMultipleModels) {
     const c = args.multiCounts && typeof args.multiCounts === "object" ? args.multiCounts : {};
     const out: GitWorktreeProviderId[] = [];
@@ -1011,7 +1035,7 @@ function buildWorktreeProviderQueue(args: {
     return out;
   }
   const single = String(args.singleProviderId || "codex").trim().toLowerCase();
-  if (single === "codex" || single === "claude" || single === "gemini") return [single as GitWorktreeProviderId];
+  if (isBuiltInAgentProviderId(single)) return [single];
   return ["codex"];
 }
 
@@ -1019,12 +1043,13 @@ function buildWorktreeProviderQueue(args: {
  * 将实例队列（providerId 列表）聚合为主进程 worktree 创建 API 所需的 instances 结构。
  */
 function collapseWorktreeProviderQueueToInstances(queue: GitWorktreeProviderId[]): Array<{ providerId: GitWorktreeProviderId; count: number }> {
-  const counts: Record<GitWorktreeProviderId, number> = { codex: 0, claude: 0, gemini: 0 };
+  const counts = {} as Record<GitWorktreeProviderId, number>;
+  for (const providerId of BUILT_IN_AGENT_PROVIDER_IDS) counts[providerId] = 0;
   for (const pid of Array.isArray(queue) ? queue : []) {
-    if (pid === "codex" || pid === "claude" || pid === "gemini") counts[pid]++;
+    if (isBuiltInAgentProviderId(pid)) counts[pid]++;
   }
   const out: Array<{ providerId: GitWorktreeProviderId; count: number }> = [];
-  for (const pid of ["codex", "claude", "gemini"] as const) {
+  for (const pid of BUILT_IN_AGENT_PROVIDER_IDS) {
     if (counts[pid] > 0) out.push({ providerId: pid, count: counts[pid] });
   }
   return out;
@@ -1186,9 +1211,9 @@ function buildProviderStartupCmdWithInitialPrompt(args: {
       const argv = baseArgv.length > 0 ? baseArgv : ["claude"];
       return buildCmdCall([...argv, flattenedPrompt]);
     }
-    if (args.providerId === "gemini") {
+    if (args.providerId === "gemini" || args.providerId === "antigravity") {
       const baseArgv = splitCommandLineToArgv(base);
-      const argv = baseArgv.length > 0 ? baseArgv : ["gemini"];
+      const argv = baseArgv.length > 0 ? baseArgv : [args.providerId === "antigravity" ? "agy" : "gemini"];
       const hasI = argv.includes("-i") || argv.includes("--interactive");
       return buildCmdCall(hasI ? [...argv, flattenedPrompt] : [...argv, "-i", flattenedPrompt]);
     }
@@ -1201,9 +1226,9 @@ function buildProviderStartupCmdWithInitialPrompt(args: {
       const argv = baseArgv.length > 0 ? baseArgv : ["claude"];
       return buildPowerShellCall([...argv, prompt]);
     }
-    if (args.providerId === "gemini") {
+    if (args.providerId === "gemini" || args.providerId === "antigravity") {
       const baseArgv = splitCommandLineToArgv(base);
-      const argv = baseArgv.length > 0 ? baseArgv : ["gemini"];
+      const argv = baseArgv.length > 0 ? baseArgv : [args.providerId === "antigravity" ? "agy" : "gemini"];
       const hasI = argv.includes("-i") || argv.includes("--interactive");
       return buildPowerShellCall(hasI ? [...argv, prompt] : [...argv, "-i", prompt]);
     }
@@ -1211,7 +1236,7 @@ function buildProviderStartupCmdWithInitialPrompt(args: {
     return `${base} ${powerShellArgToken(prompt)}`.trim();
   }
 
-  if (args.providerId === "gemini") {
+  if (args.providerId === "gemini" || args.providerId === "antigravity") {
     const hasI = base.includes(" -i ") || /\s-i\s/.test(base) || /\s--interactive\s/.test(base);
     return hasI ? `${base} ${bashSingleQuote(prompt)}`.trim() : `${base} -i ${bashSingleQuote(prompt)}`.trim();
   }
@@ -2063,6 +2088,7 @@ export {
   GEMINI_NOTIFY_ENV_KEYS,
   CLAUDE_NOTIFY_ENV_KEYS,
   CODEX_NOTIFY_ENV_KEYS,
+  ANTIGRAVITY_NOTIFY_ENV_KEYS,
   PROJECT_SORT_STORAGE_KEY,
   INPUT_FULLSCREEN_TRANSITION_MS,
   OSC_NOTIFICATION_PREFIX,

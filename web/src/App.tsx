@@ -64,9 +64,10 @@ import { ProviderSwitcher } from "@/components/topbar/provider-switcher";
 import { emitCodexRateRefresh } from "@/lib/codex-status";
 import { emitClaudeUsageRefresh } from "@/lib/claude-status";
 import { emitGeminiUsageRefresh } from "@/lib/gemini-status";
+import { emitAntigravityUsageRefresh } from "@/lib/antigravity-status";
 import { checkForUpdate, type UpdateCheckErrorType } from "@/lib/about";
 import TerminalManager from "@/lib/TerminalManager";
-import { isGeminiProvider, writeBracketedPaste, writeBracketedPasteAndEnter } from "@/lib/terminal-send";
+import { isGeminiLikeProvider, isGeminiProvider, writeBracketedPaste, writeBracketedPasteAndEnter } from "@/lib/terminal-send";
 import { oscBufferDefaults, trimOscBuffer } from "@/lib/oscNotificationBuffer";
 import { collectRetainedAgentTurnTabIds, pruneAgentTurnHistory, pruneAgentTurnTimers } from "@/lib/agent-turn-timer";
 import {
@@ -112,12 +113,21 @@ import {
   resolveWorktreeManagementParentProjectId as resolveWorktreeManagementParentProjectIdFromStore,
 } from "@/lib/worktree-management";
 import { normalizeProvidersSettings } from "@/lib/providers/normalize";
-import { isBuiltInSessionProviderId, openaiIconUrl, openaiDarkIconUrl, claudeIconUrl, geminiIconUrl } from "@/lib/providers/builtins";
+import { isBuiltInSessionProviderId, openaiIconUrl, openaiDarkIconUrl, claudeIconUrl, geminiIconUrl, antigravityIconUrl } from "@/lib/providers/builtins";
+import { BUILT_IN_AGENT_PROVIDER_IDS, isBuiltInAgentProviderId } from "@/lib/providers/ids";
 import { resolveProvider } from "@/lib/providers/resolve";
-import { enableBuiltInYoloPresetItems, isAnyBuiltInYoloPresetEnabled, resolveStartupCmdWithYolo } from "@/lib/providers/yolo";
+import {
+  enableBuiltInYoloPresetItems,
+  enableYoloPresetForProvider,
+  isAnyBuiltInYoloPresetEnabled,
+  isAnyOtherBuiltInYoloPresetEnabled,
+  isYoloPresetEnabled,
+  resolveStartupCmdWithYolo,
+} from "@/lib/providers/yolo";
 import { injectCodexTraceEnv } from "@/providers/codex/commands";
 import { buildClaudeResumeStartupCmd } from "@/providers/claude/commands";
 import { buildGeminiResumeStartupCmd } from "@/providers/gemini/commands";
+import { buildAntigravityResumeStartupCmd } from "@/providers/antigravity/commands";
 import {
   BUILT_IN_RULE_PROVIDER_IDS,
   getProjectRuleFilePath,
@@ -555,6 +565,44 @@ function isTerminalFrontendDebugEnabled(): boolean {
 const STARTUP_GIT_STATUS_BATCH_SIZE = 8;
 
 /**
+ * 将 worktree 创建面板的实例数限制到 UI 允许范围。
+ */
+function clampWorktreeProviderCount(value: unknown): number {
+  const n = Math.floor(Number(value) || 0);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(8, n));
+}
+
+/**
+ * 归一化 worktree 创建面板的单选引擎。
+ */
+function normalizeWorktreeProviderId(value: unknown): GitWorktreeProviderId {
+  const id = String(value || "").trim().toLowerCase();
+  return isBuiltInAgentProviderId(id) ? id : "codex";
+}
+
+/**
+ * 创建内置引擎计数表，可按需给某个引擎设置默认数量。
+ */
+function createWorktreeProviderCounts(defaultProviderId?: GitWorktreeProviderId, defaultCount = 0): WorktreeProviderCounts {
+  const out = {} as WorktreeProviderCounts;
+  for (const providerId of BUILT_IN_AGENT_PROVIDER_IDS)
+    out[providerId] = providerId === defaultProviderId ? clampWorktreeProviderCount(defaultCount) : 0;
+  return out;
+}
+
+/**
+ * 归一化 worktree 创建面板的多引擎计数，保证所有内置引擎键齐全。
+ */
+function normalizeWorktreeProviderCounts(input: unknown): WorktreeProviderCounts {
+  const obj = input && typeof input === "object" ? input as any : {};
+  const out = {} as WorktreeProviderCounts;
+  for (const providerId of BUILT_IN_AGENT_PROVIDER_IDS)
+    out[providerId] = clampWorktreeProviderCount(obj[providerId]);
+  return out;
+}
+
+/**
  * 中文说明：将耗时（毫秒）格式化为带单位文本（如 `2s`、`1m 05s`、`1h 02m 05s`）。
  */
 function formatElapsedClock(elapsedMs: number): string {
@@ -955,15 +1003,8 @@ export default function CodexFlowManagerUI() {
     for (const [repoIdRaw, item] of Object.entries(source)) {
       const repoId = String(repoIdRaw || "").trim();
       if (!repoId || !item) continue;
-      const multiCounts = {
-        codex: Math.max(0, Math.min(8, Math.floor(Number((item.multiCounts as any)?.codex) || 0))),
-        claude: Math.max(0, Math.min(8, Math.floor(Number((item.multiCounts as any)?.claude) || 0))),
-        gemini: Math.max(0, Math.min(8, Math.floor(Number((item.multiCounts as any)?.gemini) || 0))),
-      } as WorktreeProviderCounts;
-      const singleProviderId: GitWorktreeProviderId =
-        item.singleProviderId === "codex" || item.singleProviderId === "claude" || item.singleProviderId === "gemini"
-          ? item.singleProviderId
-          : "codex";
+      const multiCounts = normalizeWorktreeProviderCounts(item.multiCounts);
+      const singleProviderId = normalizeWorktreeProviderId(item.singleProviderId);
       out[repoId] = {
         baseBranch: String(item.baseBranch || "").trim(),
         remarkBaseName: normalizeWorktreeRemarkBaseName(item.remarkBaseName),
@@ -1022,7 +1063,7 @@ export default function CodexFlowManagerUI() {
     useYolo: true,
     useMultipleModels: false,
     singleProviderId: "codex",
-    multiCounts: { codex: 1, claude: 0, gemini: 0 },
+    multiCounts: createWorktreeProviderCounts("codex", 1),
 	    creating: false,
 	    error: undefined,
 	  }));
@@ -1117,15 +1158,8 @@ export default function CodexFlowManagerUI() {
 		   * 从 worktreeCreateDialog 状态提取可持久化偏好（用于“每个项目独立记录上次设置”）。
 		   */
 		  const buildWorktreeCreatePrefsFromDialog = useCallback((state: WorktreeCreateDialogState): WorktreeCreatePrefs => {
-		    const singleProviderId: GitWorktreeProviderId =
-		      (state.singleProviderId === "codex" || state.singleProviderId === "claude" || state.singleProviderId === "gemini")
-		        ? state.singleProviderId
-		        : "codex";
-		    const multiCounts: WorktreeProviderCounts = {
-		      codex: Math.max(0, Math.min(8, Math.floor(Number((state.multiCounts as any)?.codex) || 0))),
-		      claude: Math.max(0, Math.min(8, Math.floor(Number((state.multiCounts as any)?.claude) || 0))),
-		      gemini: Math.max(0, Math.min(8, Math.floor(Number((state.multiCounts as any)?.gemini) || 0))),
-		    };
+		    const singleProviderId = normalizeWorktreeProviderId(state.singleProviderId);
+		    const multiCounts = normalizeWorktreeProviderCounts(state.multiCounts);
 		    return {
 		      baseBranch: String(state.baseBranch || "").trim(),
 		      remarkBaseName: normalizeWorktreeRemarkBaseName(state.remarkBaseName),
@@ -2825,7 +2859,7 @@ export default function CodexFlowManagerUI() {
     const id = String(tabId || "").trim();
     if (!id) return;
     const now = Date.now();
-    
+
     // 获取当前状态，避免在 updater 内部执行副作用
     const current = agentTurnTimerByTabRef.current[id];
     if (!current || current.status !== "working") return;
@@ -4056,10 +4090,11 @@ export default function CodexFlowManagerUI() {
     }
     showCompletionNotification(tabId, cleanedPreview);
     void playCompletionChime();
-    // 无论通知开关如何，均请求刷新 Codex 用量（由顶部栏组件自行做 1 分钟冷却）
+    // 无论通知开关如何，均请求刷新各内置引擎用量（由顶部栏组件自行做 1 分钟冷却）
     try { emitCodexRateRefresh('agent-complete'); } catch {}
     try { emitClaudeUsageRefresh('agent-complete'); } catch {}
     try { emitGeminiUsageRefresh('agent-complete'); } catch {}
+    try { emitAntigravityUsageRefresh('agent-complete'); } catch {}
 
     // worktree 自动提交：每次 agent 完成输出后，若有变更则提交一次（仅对非主 worktree 生效）
     try {
@@ -4615,7 +4650,9 @@ export default function CodexFlowManagerUI() {
     }
     delete ptyListenersRef.current[ptyId];
     delete ptyNotificationBuffersRef.current[ptyId];
-    if (tabId) resetCodexErrorScanForTab(tabId, "pty-unregister");
+    if (tabId) {
+      resetCodexErrorScanForTab(tabId, "pty-unregister");
+    }
     delete ptyToTabRef.current[ptyId];
     notifyLog(`unregisterPtyListener pty=${ptyId}`);
   }
@@ -5181,7 +5218,7 @@ export default function CodexFlowManagerUI() {
    */
   const mapHistoryListItemToSession = useCallback((it: any): HistorySession => {
     return {
-      providerId: (it?.providerId === "claude" || it?.providerId === "gemini") ? it.providerId : "codex",
+      providerId: (it?.providerId === "claude" || it?.providerId === "gemini" || it?.providerId === "antigravity") ? it.providerId : "codex",
       id: String(it?.id || ""),
       title: typeof it?.rawDate === "string" ? String(it.rawDate) : String(it?.title || ""),
       date: normalizeMsToIso(it?.date),
@@ -5562,12 +5599,14 @@ export default function CodexFlowManagerUI() {
     { id: "codex" },
     { id: "claude" },
     { id: "gemini" },
+    { id: "antigravity" },
   ]);
   const providerItemById = useMemo(() => buildProviderItemIndex(providerItems), [providerItems]);
   const [providerEnvById, setProviderEnvById] = useState<Record<string, Required<ProviderEnv>>>(() => ({
     codex: { terminal: "wsl", distro: "Ubuntu-24.04" },
     claude: { terminal: "wsl", distro: "Ubuntu-24.04" },
     gemini: { terminal: "wsl", distro: "Ubuntu-24.04" },
+    antigravity: { terminal: "wsl", distro: "Ubuntu-24.04" },
   }));
   const activeProviderIdRef = useRef(activeProviderId);
   const providerItemsRef = useRef(providerItems);
@@ -5600,6 +5639,7 @@ export default function CodexFlowManagerUI() {
   const pendingResumeRequestKeysRef = useRef<Set<string>>(new Set());
   const [blockingNotice, setBlockingNotice] = useState<BlockingNotice | null>(null);
   const [yoloPromptDialog, setYoloPromptDialog] = useState<YoloPromptDialogState>(() => ({ open: false, loading: false, handled: false }));
+  const [antigravityYoloPromptDialog, setAntigravityYoloPromptDialog] = useState<YoloPromptDialogState>(() => ({ open: false, loading: false, handled: false }));
   const [startupChecksComplete, setStartupChecksComplete] = useState(false);
 
   const themeMode = useThemeController(themeSetting);
@@ -5631,7 +5671,7 @@ export default function CodexFlowManagerUI() {
   }, []);
 
   /**
-   * 统一写入 YOLO 启用结果：将内置三引擎切换到预设命令，并持久化“一次性提示”状态。
+   * 统一写入 YOLO 启用结果：将内置代理引擎切换到预设命令，并持久化“一次性提示”状态。
    */
   const applyBuiltInYoloPresetAndPersist = useCallback(async (): Promise<boolean> => {
     try {
@@ -5643,6 +5683,7 @@ export default function CodexFlowManagerUI() {
       if (!nextEnvById.codex) nextEnvById.codex = { terminal: codexEnv.terminal, distro: codexEnv.distro };
       if (!nextEnvById.claude) nextEnvById.claude = { terminal: codexEnv.terminal, distro: codexEnv.distro };
       if (!nextEnvById.gemini) nextEnvById.gemini = { terminal: codexEnv.terminal, distro: codexEnv.distro };
+      if (!nextEnvById.antigravity) nextEnvById.antigravity = { terminal: codexEnv.terminal, distro: codexEnv.distro };
       const nextProviders = { activeId: activeProviderId, items: nextItems, env: nextEnvById };
       await window.host.settings.update({
         providers: nextProviders as any,
@@ -5653,7 +5694,7 @@ export default function CodexFlowManagerUI() {
       setProviderItems(nextItems);
       setProviderEnvById(nextEnvById);
       setCodexCmd(codexResolved.startupCmd || "codex");
-      await window.host.onboarding.update({ yoloPromptHandled: true });
+      await window.host.onboarding.update({ yoloPromptHandled: true, yoloPreference: "enabled" });
       setYoloPromptDialog({ open: false, loading: false, handled: true });
       return true;
     } catch (e) {
@@ -5667,7 +5708,7 @@ export default function CodexFlowManagerUI() {
    */
   const dismissYoloPrompt = useCallback(async (): Promise<void> => {
     try {
-      await window.host.onboarding.update({ yoloPromptHandled: true });
+      await window.host.onboarding.update({ yoloPromptHandled: true, yoloPreference: "disabled" });
     } catch {}
     setYoloPromptDialog({ open: false, loading: false, handled: true });
   }, []);
@@ -5690,6 +5731,44 @@ export default function CodexFlowManagerUI() {
       console.warn("settings.update providers failed", e);
     }
   }, [wslDistro]);
+
+  /**
+   * 仅为 Antigravity 写入 YOLO 预设，并记录这次危险权限继承确认已处理。
+   */
+  const enableAntigravityYoloPresetAndPersist = useCallback(async (): Promise<boolean> => {
+    try {
+      const nextItems = enableYoloPresetForProvider(providerItems, "antigravity");
+      const codexItem = nextItems.find((x) => x.id === "codex");
+      const codexResolved = resolveProvider(codexItem ?? { id: "codex" });
+      const codexEnv = providerEnvById.codex || { terminal: "wsl", distro: wslDistro };
+      const nextProviders = { activeId: activeProviderId, items: nextItems, env: providerEnvById };
+      await window.host.settings.update({
+        providers: nextProviders as any,
+        terminal: codexEnv.terminal,
+        distro: codexEnv.distro,
+        codexCmd: codexResolved.startupCmd || "codex",
+      } as any);
+      setProviderItems(nextItems);
+      await window.host.onboarding.update({
+        antigravityYoloPromptHandled: true,
+      });
+      setAntigravityYoloPromptDialog({ open: false, loading: false, handled: true });
+      return true;
+    } catch (e) {
+      console.warn("enableAntigravityYoloPresetAndPersist failed", e);
+      return false;
+    }
+  }, [activeProviderId, providerEnvById, providerItems, wslDistro]);
+
+  /**
+   * 记录 Antigravity YOLO 继承提示已被用户处理，避免升级后反复打扰。
+   */
+  const dismissAntigravityYoloPrompt = useCallback(async (): Promise<void> => {
+    try {
+      await window.host.onboarding.update({ antigravityYoloPromptHandled: true });
+    } catch {}
+    setAntigravityYoloPromptDialog({ open: false, loading: false, handled: true });
+  }, []);
 
   /**
    * 排队持久化当前 Provider 状态，避免快速切换时旧写入覆盖新选择。
@@ -6525,10 +6604,7 @@ export default function CodexFlowManagerUI() {
         for (const [repoIdRaw, draftState] of Object.entries(worktreeCreateDraftByRepoIdRef.current || {})) {
           const repoId = String(repoIdRaw || "").trim();
           if (!repoId || !draftState) continue;
-          const singleProviderId: GitWorktreeProviderId =
-            draftState.singleProviderId === "codex" || draftState.singleProviderId === "claude" || draftState.singleProviderId === "gemini"
-              ? draftState.singleProviderId
-              : "codex";
+          const singleProviderId = normalizeWorktreeProviderId(draftState.singleProviderId);
           worktreeCreateDraftByRepoId[repoId] = {
             baseBranch: String(draftState.baseBranch || "").trim(),
             remarkBaseName: normalizeWorktreeRemarkBaseName(draftState.remarkBaseName),
@@ -6538,11 +6614,7 @@ export default function CodexFlowManagerUI() {
             useYolo: !!draftState.useYolo,
             useMultipleModels: !!draftState.useMultipleModels,
             singleProviderId,
-            multiCounts: {
-              codex: Math.max(0, Math.min(8, Math.floor(Number((draftState.multiCounts as any)?.codex) || 0))),
-              claude: Math.max(0, Math.min(8, Math.floor(Number((draftState.multiCounts as any)?.claude) || 0))),
-              gemini: Math.max(0, Math.min(8, Math.floor(Number((draftState.multiCounts as any)?.gemini) || 0))),
-            },
+            multiCounts: normalizeWorktreeProviderCounts(draftState.multiCounts),
           };
         }
 
@@ -6915,13 +6987,13 @@ export default function CodexFlowManagerUI() {
     return () => { try { off && off(); } catch {} };
   }, [focusTabFromNotification]);
 
-  // 监听主进程转发的外部完成通知（Codex/Gemini/Claude，JSONL 桥接）
+  // 监听主进程转发的外部完成通知（Codex/Gemini/Claude/Antigravity，JSONL 桥接）
   useEffect(() => {
     let off: (() => void) | undefined;
     try {
       off = window.host.notifications?.onExternalAgentComplete?.((payload: ExternalAgentCompletePayload) => {
         const providerId = String(payload?.providerId || "").trim().toLowerCase();
-        if (providerId && providerId !== "codex" && providerId !== "gemini" && providerId !== "claude") return;
+        if (providerId && providerId !== "codex" && providerId !== "gemini" && providerId !== "claude" && providerId !== "antigravity") return;
         const preview = String(payload?.preview || "");
         const normalizeOptions: CompletionPreviewNormalizeOptions = {};
         if (typeof payload?.previewEscapedWhitespace === "boolean")
@@ -7183,7 +7255,7 @@ export default function CodexFlowManagerUI() {
   }, []);
 
   /**
-   * 标记某个项目已开始/存在内置三引擎会话（用于抑制“移除目录记录”误判）。
+   * 标记某个项目已开始/存在内置代理引擎会话（用于抑制“移除目录记录”误判）。
    */
   const markProjectHasBuiltInSessions = useCallback((projectId: string) => {
     const id = String(projectId || "").trim();
@@ -7274,7 +7346,7 @@ export default function CodexFlowManagerUI() {
       return;
     }
 
-    // 内置三引擎：即便会话记录落盘存在延迟，也先在 UI 侧标记，避免“自定义目录记录可移除”误判。
+    // 内置代理引擎：即便会话记录落盘存在延迟，也先在 UI 侧标记，避免“自定义目录记录可移除”误判。
     if (isBuiltInSessionProviderId(activeProviderId)) {
       markProjectHasBuiltInSessions(project.id);
     } else {
@@ -7402,7 +7474,7 @@ export default function CodexFlowManagerUI() {
       return;
     }
 
-    // 内置三引擎：即便会话记录落盘存在延迟，也先在 UI 侧标记，避免“自定义目录记录可移除”误判。
+    // 内置代理引擎：即便会话记录落盘存在延迟，也先在 UI 侧标记，避免“自定义目录记录可移除”误判。
     if (isBuiltInSessionProviderId(activeProviderId)) {
       markProjectHasBuiltInSessions(project.id);
     } else {
@@ -7996,7 +8068,7 @@ export default function CodexFlowManagerUI() {
 
   function compileTextFromChipsAndDraft(tabId: string): string {
     const targetTab = tabs.find((tab) => tab.id === tabId) || null;
-    const isGeminiTab = targetTab?.providerId === "gemini";
+    const isGeminiTab = targetTab?.providerId === "gemini" || targetTab?.providerId === "antigravity";
     const execEnv = targetTab ? getTabExecEnv(tabId, targetTab.providerId) : { terminal: terminalMode, distro: wslDistro };
     const execTerminal = execEnv.terminal as any;
     const chips = chipsByTab[tabId] || [];
@@ -8241,7 +8313,7 @@ export default function CodexFlowManagerUI() {
     } catch {
       // 兜底：避免 Gemini 直接写入 `\n` 被吞，统一使用 bracketed paste +（可选）延迟回车
       try {
-        if (isGeminiProvider(activeTab.providerId)) {
+        if (isGeminiLikeProvider(activeTab.providerId)) {
           const write = (data: string) => { try { window.host.pty.write(pid, data); } catch {} };
           if (sendMode === "write_and_enter") writeBracketedPasteAndEnter(write, text, { providerId: activeTab.providerId });
           else writeBracketedPaste(write, text);
@@ -9077,10 +9149,7 @@ export default function CodexFlowManagerUI() {
     // 为 @ 引用准备文件索引根（避免用户未选中该项目时，@ 搜索仍指向旧项目）
     try { await setActiveFileIndexRoot(repoProject.winPath); } catch {}
 
-	    const defaultProvider: GitWorktreeProviderId =
-	      (activeProviderId === "codex" || activeProviderId === "claude" || activeProviderId === "gemini")
-	        ? (activeProviderId as any)
-	        : "codex";
+	    const defaultProvider = normalizeWorktreeProviderId(activeProviderId);
 
 	    // 读取“按项目隔离”的上次设置：优先内存缓存（保留 fromPaste 图片），其次 localStorage（过滤 fromPaste）
 	    const cached = worktreeCreateDraftByRepoIdRef.current[repoId] || null;
@@ -9112,9 +9181,9 @@ export default function CodexFlowManagerUI() {
 	          : null);
 
 	    const singleProviderId: GitWorktreeProviderId = restored?.singleProviderId || defaultProvider;
-	    const multiCountsDefault: WorktreeProviderCounts = { codex: defaultProvider === "codex" ? 1 : 0, claude: defaultProvider === "claude" ? 1 : 0, gemini: defaultProvider === "gemini" ? 1 : 0 };
-	    const multiCountsSource: WorktreeProviderCounts = restored?.multiCounts || multiCountsDefault;
-	    const multiCounts: WorktreeProviderCounts = { ...multiCountsSource };
+	    const multiCountsDefault = createWorktreeProviderCounts(defaultProvider, 1);
+	    const multiCountsSource = restored?.multiCounts || multiCountsDefault;
+	    const multiCounts = normalizeWorktreeProviderCounts(multiCountsSource);
 	    // 兜底：多模型模式若合计为 0，则默认给 singleProviderId 置 1，避免面板打开即不可用
 	    if (restored?.useMultipleModels && sumWorktreeProviderCounts(multiCounts) === 0) {
 	      multiCounts[singleProviderId] = 1;
@@ -9226,7 +9295,7 @@ export default function CodexFlowManagerUI() {
       return { ok: false, error: String(e?.message || e) };
     }
 
-    // 内置三引擎：即便会话记录落盘存在延迟，也先在 UI 侧标记，避免“自定义目录记录可移除”误判。
+    // 内置代理引擎：即便会话记录落盘存在延迟，也先在 UI 侧标记，避免“自定义目录记录可移除”误判。
     if (isBuiltInSessionProviderId(providerId)) {
       markProjectHasBuiltInSessions(project.id);
     } else {
@@ -9495,8 +9564,8 @@ export default function CodexFlowManagerUI() {
       updatePostState(worktreeKey, { status: "running", error: undefined });
       try {
         const providerIdRaw = String(state?.providerId || "").trim().toLowerCase();
-        const providerId = (providerIdRaw === "codex" || providerIdRaw === "claude" || providerIdRaw === "gemini")
-          ? (providerIdRaw as GitWorktreeProviderId)
+        const providerId = isBuiltInAgentProviderId(providerIdRaw)
+          ? providerIdRaw
           : null;
         const worktreePath = String(state?.worktreePath || "").trim();
         if (!providerId || !worktreePath) {
@@ -9670,10 +9739,7 @@ export default function CodexFlowManagerUI() {
     const repoId = String(repoProject?.id || "").trim();
     if (!repoId) return;
 
-    const defaultProvider: GitWorktreeProviderId =
-      (activeProviderId === "codex" || activeProviderId === "claude" || activeProviderId === "gemini")
-        ? (activeProviderId as any)
-        : "codex";
+    const defaultProvider = normalizeWorktreeProviderId(activeProviderId);
 
     // 优先使用已缓存的分支信息，失败则回退到分支列表
     const git = gitInfoByProjectId[repoId];
@@ -11683,14 +11749,21 @@ export default function CodexFlowManagerUI() {
   const yoloPromptTitle = t("settings:providers.fields.yoloPrompt.title", "开启 YOLO 权限模式？");
   const yoloPromptDescription = t(
     "settings:providers.fields.yoloPrompt.desc",
-    "推荐开启后再使用 agent，可以更顺畅地运行而不被权限询问打断。请注意，这会降低安全边界，存在误操作与越权风险。我们会同时为 Codex、Claude、Gemini 开启 YOLO，并且仅提醒一次，后续可在设置中修改。",
+    "推荐开启后再使用 agent，可以更顺畅地运行而不被权限询问打断。请注意，这会降低安全边界，存在误操作与越权风险。我们会同时为 Codex、Claude、Gemini、Antigravity 开启 YOLO，并且仅提醒一次，后续可在设置中修改。",
   );
   const yoloPromptPrimary = t("settings:providers.fields.yoloPrompt.primary", "开启并继续");
   const yoloPromptSecondary = t("settings:providers.fields.yoloPrompt.secondary", "暂不启用");
+  const antigravityYoloPromptTitle = t("settings:providers.fields.antigravityYoloPrompt.title", "为 Antigravity 开启 YOLO？");
+  const antigravityYoloPromptDescription = t(
+    "settings:providers.fields.antigravityYoloPrompt.desc",
+    "你已经为其它内置引擎开启过 YOLO。Antigravity 是新增引擎，危险权限需要你单独确认，不会自动开启。",
+  );
+  const antigravityYoloPromptPrimary = t("settings:providers.fields.antigravityYoloPrompt.primary", "为 Antigravity 开启");
+  const antigravityYoloPromptSecondary = t("settings:providers.fields.antigravityYoloPrompt.secondary", "保持关闭");
 
   /**
    * 启动后一次性展示 YOLO 推荐提示：
-   * - 仅在未被询问过、且内置三引擎都未开启 YOLO 时出现；
+   * - 仅在未被询问过、且内置代理引擎都未开启 YOLO 时出现；
    * - 避开 detached-tab 窗口，防止多窗口重复提示；
    * - 不与更新提示同时抢位。
    */
@@ -11704,6 +11777,7 @@ export default function CodexFlowManagerUI() {
           if (!startupChecksComplete) return;
           if (updateDialog.show || noUpdateDialog || updateErrorDialog.show || legacyResumePrompt || blockingNotice) return;
           if (yoloPromptDialog.open || yoloPromptDialog.loading || yoloPromptDialog.handled) return;
+          if (antigravityYoloPromptDialog.open || antigravityYoloPromptDialog.loading) return;
           const stateRes = await window.host.onboarding.get();
           if (!stateRes?.ok) return;
           if (cancelled) return;
@@ -11713,7 +11787,7 @@ export default function CodexFlowManagerUI() {
           }
           const items = Array.isArray(providerItems) ? providerItems : [];
           if (isAnyBuiltInYoloPresetEnabled(items)) {
-            await window.host.onboarding.update({ yoloPromptHandled: true });
+            await window.host.onboarding.update({ yoloPromptHandled: true, yoloPreference: "enabled" });
             setYoloPromptDialog({ open: false, loading: false, handled: true });
             return;
           }
@@ -11732,9 +11806,69 @@ export default function CodexFlowManagerUI() {
     noUpdateDialog,
     startupChecksComplete,
     providerItems,
+    antigravityYoloPromptDialog.loading,
+    antigravityYoloPromptDialog.open,
     updateDialog.show,
     updateErrorDialog.show,
     yoloPromptDialog.handled,
+    yoloPromptDialog.loading,
+    yoloPromptDialog.open,
+  ]);
+
+  /**
+   * 升级后 Antigravity 继承 YOLO 的一次性确认：
+   * - 只有其它内置代理已经使用 YOLO，且 Antigravity 还未启用 YOLO 时才提示；
+   * - 仅在用户选择 Antigravity 或打开设置页时触发，避免升级后无关打扰；
+   * - 危险权限不静默扩大到新增引擎，必须由用户确认。
+   */
+  useEffect(() => {
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          if (cancelled) return;
+          if (isDetachedTabWindow) return;
+          if (!startupChecksComplete) return;
+          if (activeProviderId !== "antigravity" && !settingsOpen) return;
+          if (updateDialog.show || noUpdateDialog || updateErrorDialog.show || legacyResumePrompt || blockingNotice) return;
+          if (yoloPromptDialog.open || yoloPromptDialog.loading) return;
+          if (antigravityYoloPromptDialog.open || antigravityYoloPromptDialog.loading || antigravityYoloPromptDialog.handled) return;
+          const stateRes = await window.host.onboarding.get();
+          if (!stateRes?.ok) return;
+          if (cancelled) return;
+          if (stateRes.state?.antigravityYoloPromptHandled) {
+            setAntigravityYoloPromptDialog({ open: false, loading: false, handled: true });
+            return;
+          }
+          const items = Array.isArray(providerItems) ? providerItems : [];
+          if (isYoloPresetEnabled("antigravity", items.find((item) => item.id === "antigravity")?.startupCmd)) {
+            await window.host.onboarding.update({ antigravityYoloPromptHandled: true });
+            setAntigravityYoloPromptDialog({ open: false, loading: false, handled: true });
+            return;
+          }
+          if (!isAnyOtherBuiltInYoloPresetEnabled(items, "antigravity")) return;
+          setAntigravityYoloPromptDialog({ open: true, loading: false, handled: false });
+        } catch {}
+      })();
+    }, 2200);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [
+    activeProviderId,
+    antigravityYoloPromptDialog.handled,
+    antigravityYoloPromptDialog.loading,
+    antigravityYoloPromptDialog.open,
+    blockingNotice,
+    isDetachedTabWindow,
+    legacyResumePrompt,
+    noUpdateDialog,
+    providerItems,
+    settingsOpen,
+    startupChecksComplete,
+    updateDialog.show,
+    updateErrorDialog.show,
     yoloPromptDialog.loading,
     yoloPromptDialog.open,
   ]);
@@ -12281,7 +12415,7 @@ export default function CodexFlowManagerUI() {
 	   */
 	  const resolveHistoryProviderId = (session?: HistorySession | null): HistorySession["providerId"] => {
 	    const id = session?.providerId;
-	    if (id === "claude" || id === "gemini" || id === "codex") return id;
+	    if (id === "claude" || id === "gemini" || id === "antigravity" || id === "codex") return id;
 	    return "codex";
 	  };
 
@@ -12308,6 +12442,7 @@ export default function CodexFlowManagerUI() {
 	   * - Codex：优先 resume <id>，失败回退 experimental_resume
 	   * - Claude：优先 --resume <sessionId>，失败回退 --continue
 	   * - Gemini：优先 --resume <sessionId>，缺失则 --resume latest
+	   * - Antigravity：优先 --conversation <conversationId>
 	   */
 	  const buildResumeStartup = (filePath: string, mode: TerminalMode, options?: { forceLegacyCli?: boolean }): ResumeStartup => {
 	    const session = findSessionForFile(filePath);
@@ -12337,6 +12472,14 @@ export default function CodexFlowManagerUI() {
       const providerCmd = resolveProvider(providerItemById["gemini"] ?? { id: "gemini" }).startupCmd || "gemini";
       const startupCmd = buildGeminiResumeStartupCmd({ cmd: providerCmd, terminalMode: mode, sessionId });
       return { providerId: "gemini", startupCmd, session, resumeLabel: sessionId || "latest" };
+    }
+
+    // ---- Antigravity ----
+    if (providerId === "antigravity") {
+      const conversationId = String(session?.resumeId || "").trim() || null;
+      const providerCmd = resolveProvider(providerItemById["antigravity"] ?? { id: "antigravity" }).startupCmd || "agy";
+      const startupCmd = buildAntigravityResumeStartupCmd({ cmd: providerCmd, terminalMode: mode, conversationId });
+      return { providerId: "antigravity", startupCmd, session, resumeLabel: conversationId || "agy" };
     }
 
     // ---- Codex ----
@@ -13451,7 +13594,7 @@ export default function CodexFlowManagerUI() {
                 );
               }
             }
-            // “移除目录记录”：仅对自定义引擎记录的目录开放；内置三引擎会话目录不展示该选项
+            // “移除目录记录”：仅对自定义引擎记录的目录开放；内置代理引擎会话目录不展示该选项
             if (proj && proj.dirRecord && proj.dirRecord.kind === "custom_provider" && proj.hasBuiltInSessions !== true) {
               menuItems.push(
                 <button
@@ -14342,9 +14485,15 @@ export default function CodexFlowManagerUI() {
                         </div>
                     </div>
 
-                    <div className="grid grid-cols-3 gap-2">
-                      {(["codex", "claude", "gemini"] as const).map((pid) => {
-                          const icon = pid === "codex" ? (themeMode === "dark" ? openaiDarkIconUrl : openaiIconUrl) : pid === "claude" ? claudeIconUrl : geminiIconUrl;
+                    <div className="grid grid-cols-4 gap-2">
+                      {BUILT_IN_AGENT_PROVIDER_IDS.map((pid) => {
+                          const icon = pid === "codex"
+                            ? (themeMode === "dark" ? openaiDarkIconUrl : openaiIconUrl)
+                            : pid === "claude"
+                              ? claudeIconUrl
+                              : pid === "gemini"
+                                ? geminiIconUrl
+                                : antigravityIconUrl;
                           const isMulti = worktreeCreateDialog.useMultipleModels;
                           const count = Math.max(0, Math.floor(Number(worktreeCreateDialog.multiCounts?.[pid]) || 0));
                           const enabledInMulti = count > 0;
@@ -16185,6 +16334,53 @@ export default function CodexFlowManagerUI() {
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               ) : null}
               {yoloPromptPrimary}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={antigravityYoloPromptDialog.open}
+        onOpenChange={(open) => {
+          if (open) return;
+          if (antigravityYoloPromptDialog.loading) return;
+          void dismissAntigravityYoloPrompt();
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{antigravityYoloPromptTitle}</DialogTitle>
+            <DialogDescription>{antigravityYoloPromptDescription}</DialogDescription>
+          </DialogHeader>
+          <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-slate-700 dark:border-amber-400/30 dark:bg-amber-500/10 dark:text-amber-50">
+            <div className="flex items-start gap-2">
+              <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-300" />
+              <span>{t("settings:providers.fields.yoloHelp", "启用后将锁定启动命令为预设（危险）；取消则恢复默认命令。")}</span>
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button
+              variant="outline"
+              data-cf-dialog-cancel="true"
+              onClick={() => void dismissAntigravityYoloPrompt()}
+              disabled={antigravityYoloPromptDialog.loading}
+            >
+              {antigravityYoloPromptSecondary}
+            </Button>
+            <Button
+              data-cf-dialog-primary="true"
+              disabled={antigravityYoloPromptDialog.loading}
+              onClick={async () => {
+                setAntigravityYoloPromptDialog((prev) => ({ ...prev, loading: true }));
+                const ok = await enableAntigravityYoloPresetAndPersist();
+                if (!ok)
+                  setAntigravityYoloPromptDialog((prev) => ({ ...prev, loading: false }));
+              }}
+            >
+              {antigravityYoloPromptDialog.loading ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : null}
+              {antigravityYoloPromptPrimary}
             </Button>
           </div>
         </DialogContent>

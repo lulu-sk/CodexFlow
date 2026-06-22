@@ -3,6 +3,7 @@ import {
   CODEX_NOTIFY_ENV_KEYS,
   CLAUDE_NOTIFY_ENV_KEYS,
   GEMINI_NOTIFY_ENV_KEYS,
+  ANTIGRAVITY_NOTIFY_ENV_KEYS,
   buildProviderNotifyEnv,
   areEquivalentCompletionPreviews,
   hasMeaningfulCompletionPreview,
@@ -149,6 +150,15 @@ describe("app-shared（完成通知：识别与环境变量注入）", () => {
       [CODEX_NOTIFY_ENV_KEYS.tabId]: "tab-3",
       [CODEX_NOTIFY_ENV_KEYS.envLabel]: "Ubuntu-24.04",
       [CODEX_NOTIFY_ENV_KEYS.providerId]: "codex",
+    });
+  });
+
+  it("buildProviderNotifyEnv：Antigravity 注入 ANTIGRAVITY_CODEXFLOW_*", () => {
+    const env = buildProviderNotifyEnv("tab-4", "antigravity", "Ubuntu-24.04");
+    expect(env).toEqual({
+      [ANTIGRAVITY_NOTIFY_ENV_KEYS.tabId]: "tab-4",
+      [ANTIGRAVITY_NOTIFY_ENV_KEYS.envLabel]: "Ubuntu-24.04",
+      [ANTIGRAVITY_NOTIFY_ENV_KEYS.providerId]: "antigravity",
     });
   });
 
