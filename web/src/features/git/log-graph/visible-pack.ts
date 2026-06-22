@@ -14,6 +14,8 @@ export type GitLogVisiblePack = {
   graphCells: GitGraphCell[];
   maxLane: number;
   graphColumnWidth: number;
+  pending?: boolean;
+  degraded?: boolean;
 };
 
 export type GitLogBranchesDashboardSelectionAction = "filter" | "navigate";
@@ -58,6 +60,32 @@ export type GitLogBranchesDashboard = {
 };
 
 const GIT_LOG_BRANCHES_DASHBOARD_STORAGE_KEY = "cf.gitWorkbench.logBranchesDashboard.v1";
+
+/**
+ * 构建单行占位图谱单元，只保留最小字段，避免轻量模式还同步跑完整文件历史图谱。
+ */
+function createPlaceholderGraphCell(item: GitLogItem, index: number, total: number): GitGraphCell {
+  const hash = String(item.hash || "").trim();
+  return {
+    lane: 0,
+    color: "var(--cf-text-muted)",
+    tracks: [],
+    edges: index + 1 < total
+      ? [{
+          from: 0,
+          to: 0,
+          color: "var(--cf-text-muted)",
+          style: "solid",
+          targetHash: String(item.parents?.[0] || ""),
+        }]
+      : [],
+    incomingFromLane: index > 0 ? 0 : null,
+    incomingFromLanes: index > 0 ? [0] : [],
+    nodeKind: "default",
+    maxLane: 0,
+    commitHash: hash,
+  };
+}
 
 /**
  * 构建日志分支 dashboard 默认设置，首次进入默认不显示概览，但仍保留“选择即筛选”作为默认交互语义。
@@ -227,11 +255,13 @@ export function buildGitLogVisiblePack(args: {
   items: GitLogItem[];
   graphItems?: GitLogItem[];
   fileHistoryMode: boolean;
+  emitRuntimeProbe?: boolean;
 }): GitLogVisiblePack {
   const items = Array.isArray(args.items) ? args.items : [];
   const graphItems = Array.isArray(args.graphItems) ? args.graphItems : items;
   const graphCells = args.fileHistoryMode ? buildFileHistoryGraphCells(items) : buildLogGraphCells(items, graphItems);
-  emitGitLogGraphRuntimeProbe(items, graphItems, graphCells, args.fileHistoryMode);
+  if (args.emitRuntimeProbe !== false)
+    emitGitLogGraphRuntimeProbe(items, graphItems, graphCells, args.fileHistoryMode);
   let maxLane = 1;
   for (const cell of graphCells) {
     const lane = Number(cell?.maxLane ?? 0);
@@ -243,6 +273,27 @@ export function buildGitLogVisiblePack(args: {
     graphCells,
     maxLane,
     graphColumnWidth: resolveLogGraphWidth(maxLane),
+  };
+}
+
+/**
+ * 快速构建日志图谱占位数据，只保留单列节点与上下连接线，让列表先可交互。
+ */
+export function buildGitLogVisiblePlaceholderPack(
+  itemsInput: GitLogItem[],
+  options?: {
+    pending?: boolean;
+    degraded?: boolean;
+  },
+): GitLogVisiblePack {
+  const items = Array.isArray(itemsInput) ? itemsInput : [];
+  return {
+    items,
+    graphCells: items.map((item, index) => createPlaceholderGraphCell(item, index, items.length)),
+    maxLane: 0,
+    graphColumnWidth: resolveLogGraphWidth(0),
+    pending: options?.pending === true,
+    degraded: options?.degraded === true,
   };
 }
 

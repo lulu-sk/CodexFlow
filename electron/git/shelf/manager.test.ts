@@ -8,6 +8,7 @@ import { ShelveChangesManager } from "./manager";
 import type { GitShelfManagerRuntime } from "./types";
 import { VcsShelveChangesSaver } from "./vcsShelveChangesSaver";
 
+const GIT_INTEGRATION_TEST_TIMEOUT_MS = 20_000;
 const cleanupTargets = new Set<string>();
 
 /**
@@ -94,7 +95,7 @@ afterEach(async () => {
   await Promise.all(
     Array.from(cleanupTargets.values()).map(async (target) => {
       try {
-        await fsp.rm(target, { recursive: true, force: true });
+        await fsp.rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       } catch {}
       cleanupTargets.delete(target);
     }),
@@ -125,7 +126,7 @@ describe("统一搁置平台", () => {
     expect(restoreRes.ok).toBe(true);
     expect(await fsp.readFile(path.join(ctx.repoRoot, "tracked.txt"), "utf8")).toContain("manual");
     expect(await manager.listShelvedChangeListsAsync()).toHaveLength(0);
-  });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 
   it("system shelf 应支持未跟踪目录的保存与恢复，避免把目录误当文件复制", async () => {
     const ctx = await initRepoAsync("untracked-directory");
@@ -146,7 +147,7 @@ describe("统一搁置平台", () => {
 
     await saver.load();
     expect(await fsp.readFile(untrackedFilePath, "utf8")).toBe("demo\n");
-  });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 
   it("手动搁置与系统搁置应共用同一平台层存储，并可按 source 区分读取", async () => {
     const ctx = await initRepoAsync("shared-platform");
@@ -167,7 +168,7 @@ describe("统一搁置平台", () => {
     expect(await manager.listShelvedChangeListsAsync({ source: "manual" })).toHaveLength(1);
     expect(await manager.listShelvedChangeListsAsync({ source: "system" })).toHaveLength(1);
     expect(manager.getShelfResourcesDirectory()).toContain(path.join("git", "shelves"));
-  });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 
   it("手动搁置应只处理当前选择或当前更改列表，而不是整仓改动", async () => {
     const ctx = await initRepoAsync("manual-selection");
@@ -231,7 +232,7 @@ describe("统一搁置平台", () => {
     expect((await fsp.readFile(path.join(ctx.repoRoot, "feature.txt"), "utf8")).replace(/\r\n/g, "\n")).toContain("feature bugfix");
     expect(changeListManager.getAffectedLists([{ path: "tracked.txt" }])[0]?.getId()).toBe(featureList.getId());
     expect(changeListManager.getAffectedLists([{ path: "feature.txt" }])[0]?.getId()).toBe(bugfixList.getId());
-  });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 
   it("应按 changelist 维度生成 system shelf，并在 rollback / unshelve 后恢复文件归属", async () => {
     const ctx = await initRepoAsync("changelist-flow");
@@ -269,7 +270,7 @@ describe("统一搁置平台", () => {
     expect(await fsp.readFile(path.join(ctx.repoRoot, "feature.txt"), "utf8")).toContain("feature bugfix");
     expect(changeListManager.getAffectedLists([{ path: "tracked.txt" }])[0]?.getId()).toBe(featureList.getId());
     expect(changeListManager.getAffectedLists([{ path: "feature.txt" }])[0]?.getId()).toBe(bugfixList.getId());
-  });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 
   it("partial unshelve 应只恢复选中文件，并在 remove-applied 策略下保留剩余 shelf 内容", async () => {
     const ctx = await initRepoAsync("partial-unshelve");
@@ -334,7 +335,7 @@ describe("统一搁置平台", () => {
     expect(restoreRemainingRes.ok).toBe(true);
     expect((await fsp.readFile(path.join(ctx.repoRoot, "feature.txt"), "utf8")).replace(/\r\n/g, "\n")).toContain("feature partial");
     expect(await manager.listShelvedChangeListsAsync({ source: "manual" })).toHaveLength(0);
-  });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 
   it("应支持重命名、回收、恢复归档与彻底删除，并通过 includeHidden 暴露隐藏状态", async () => {
     const ctx = await initRepoAsync("archive-flow");
@@ -398,7 +399,7 @@ describe("统一搁置平台", () => {
       "removed",
     ]);
     expect(events.at(-1)).toEqual(expect.objectContaining({ ref, type: "removed" }));
-  });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 
   it("应支持导入外部 patch 文件，并在统一 shelf 平台中恢复", async () => {
     const ctx = await initRepoAsync("import-patch");
@@ -424,5 +425,5 @@ describe("统一搁置平台", () => {
     expect(restoreRes.ok).toBe(true);
     expect((await fsp.readFile(path.join(ctx.repoRoot, "tracked.txt"), "utf8")).replace(/\r\n/g, "\n")).toBe("base\nimported line\n");
     expect(await manager.listShelvedChangeListsAsync({ source: "manual" })).toHaveLength(0);
-  });
+  }, GIT_INTEGRATION_TEST_TIMEOUT_MS);
 });

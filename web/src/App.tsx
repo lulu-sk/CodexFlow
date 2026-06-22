@@ -6904,6 +6904,7 @@ export default function CodexFlowManagerUI() {
 
   // Load settings and projects on mount
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       try {
         const s = await window.host.settings.get();
@@ -6989,27 +6990,32 @@ export default function CodexFlowManagerUI() {
       try {
         const res: any = await window.host.projects.list();
         if (res && res.ok && Array.isArray(res.projects)) {
-          setProjects(res.projects);
-          setSelectedProjectId((prev) => (res.projects.some((p: any) => p.id === prev) ? prev : ""));
+          if (!cancelled) {
+            setProjects(res.projects);
+            setSelectedProjectId((prev) => (res.projects.some((p: any) => p.id === prev) ? prev : ""));
+          }
         } else {
           console.warn('projects.list returned', res);
         }
       } catch (e) {
         console.warn('projects.list failed', e);
-      }
-      try {
-        const res: any = await window.host.projects.scan();
-        if (res && res.ok && Array.isArray(res.projects)) {
-          setProjects(res.projects);
-          setSelectedProjectId((prev) => (res.projects.some((p: any) => p.id === prev) ? prev : ""));
-        } else {
-          console.warn('projects.scan returned', res);
-        }
-      } catch (e) {
-        console.warn('projects.scan failed', e);
       } finally {
-        setProjectsHydrated(true);
+        if (!cancelled) setProjectsHydrated(true);
       }
+      void (async () => {
+        try {
+          const res: any = await window.host.projects.scan();
+          if (cancelled) return;
+          if (res && res.ok && Array.isArray(res.projects)) {
+            setProjects(res.projects);
+            setSelectedProjectId((prev) => (res.projects.some((p: any) => p.id === prev) ? prev : ""));
+          } else {
+            console.warn('projects.scan returned', res);
+          }
+        } catch (e) {
+          if (!cancelled) console.warn('projects.scan failed', e);
+        }
+      })();
       // 启动静默检查更新（仅提示）
       try {
         const cur = await window.host.app.getVersion();
@@ -7036,6 +7042,9 @@ export default function CodexFlowManagerUI() {
         setStartupChecksComplete(true);
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [uiLog]);
 
   // 监听主进程语言变更事件，保持本地 locale 状态同步（用于设置面板默认值等）

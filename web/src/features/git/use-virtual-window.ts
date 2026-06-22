@@ -11,6 +11,16 @@ export type VirtualWindowState = {
 };
 
 /**
+ * 估算首帧可渲染行数，避免容器尺寸尚未测量时一次性渲染全部项目。
+ */
+function resolveInitialVirtualEnd(itemCount: number, overscan: number): number {
+  const safeCount = Math.max(0, Math.floor(Number(itemCount) || 0));
+  if (safeCount <= 0) return 0;
+  const initialRows = Math.max(12, Math.floor(Number(overscan) || 0) * 2 + 36);
+  return Math.min(safeCount, initialRows);
+}
+
+/**
  * 根据滚动容器尺寸计算虚拟列表窗口，避免一次渲染全部行。
  */
 export function useVirtualWindow(
@@ -29,7 +39,7 @@ export function useVirtualWindow(
   const containerNode = containerRef.current;
   const [windowState, setWindowState] = useState<VirtualWindowState>({
     start: 0,
-    end: Math.max(0, itemCount),
+    end: resolveInitialVirtualEnd(itemCount, overscan),
     top: 0,
     bottom: 0,
   });
@@ -82,8 +92,8 @@ export function useVirtualWindow(
 
   useEffect(() => {
     setWindowState((prev) => {
-      if (prev.start < itemCount) return prev;
-      const end = Math.min(itemCount, Math.max(1, overscan * 2));
+      if (prev.start < itemCount && prev.end > prev.start) return prev;
+      const end = resolveInitialVirtualEnd(itemCount, overscan);
       return {
         start: 0,
         end,

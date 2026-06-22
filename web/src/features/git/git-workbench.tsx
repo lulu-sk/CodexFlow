@@ -190,11 +190,11 @@ import { GitLogGraphCell } from "./log-graph/cell";
 import type { GitGraphCell } from "./log-graph/model";
 import {
   buildGitLogBranchesDashboard,
-  buildGitLogVisiblePack,
   loadGitLogBranchesDashboardState,
   saveGitLogBranchesDashboardState,
   type GitLogBranchesDashboardState,
 } from "./log-graph/visible-pack";
+import { useGitLogVisiblePack } from "./log-graph/use-visible-pack";
 import {
   buildCommitPatchPathspecs,
   buildCommitDetailsRequestKey,
@@ -5890,6 +5890,10 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   const gitActivityCountRef = useRef<number>(0);
   const gitConsoleRefreshTimerRef = useRef<number | null>(null);
   const gitConsoleLiveRefreshTimerRef = useRef<number | null>(null);
+  const logDecorationPillCacheRef = useRef<{
+    contextKey: string;
+    map: Map<string, { decorations: string; pills: GitDecorationPill[] }>;
+  }>({ contextKey: "", map: new Map() });
   const logHeaderScrollRef = useRef<HTMLDivElement>(null);
   const logScrollSyncLockRef = useRef<boolean>(false);
   const logVirtual = useVirtualWindow(logItems.length, LOG_ROW_HEIGHT, VIRTUAL_OVERSCAN, `${bottomTab}:${bottomCollapsed ? 1 : 0}:${diffFullscreen ? 1 : 0}`);
@@ -6151,13 +6155,11 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
       : selectedCommitHashes;
     return buildCommitSelectionSignature(requestHashes);
   }, [orderedSelectedCommitHashesNewestFirst, selectedCommitHashes]);
-  const logVisiblePack = useMemo(() => {
-    return buildGitLogVisiblePack({
-      items: logItems,
-      graphItems: logGraphItems,
-      fileHistoryMode: isFileHistoryMode,
-    });
-  }, [isFileHistoryMode, logGraphItems, logItems]);
+  const logVisiblePack = useGitLogVisiblePack({
+    items: logItems,
+    graphItems: logGraphItems,
+    fileHistoryMode: isFileHistoryMode,
+  });
   const logBranchesDashboard = useMemo(
     () => buildGitLogBranchesDashboard(branchPopup, logBranchesDashboardState),
     [branchPopup, logBranchesDashboardState],
@@ -6363,16 +6365,33 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
     selectedDetailNodeKeys,
   ]);
 
+  const logDecorationContextKey = useMemo<string>(() => {
+    return `${String(repoBranch || "").trim()}\n${JSON.stringify(branchPopup?.repositories || [])}\n${JSON.stringify(branchPopup?.groups || {})}`;
+  }, [branchPopup?.groups, branchPopup?.repositories, repoBranch]);
   const logDecorationPillsByHash = useMemo<Map<string, GitDecorationPill[]>>(() => {
-    const map = new Map<string, GitDecorationPill[]>();
-    for (const item of logItems) {
-      map.set(
-        item.hash,
-        buildLogDecorationPills(String(item.decorations || ""), branchPopup, String(repoBranch || "")),
-      );
+    const cache = logDecorationPillCacheRef.current;
+    if (cache.contextKey !== logDecorationContextKey) {
+      cache.contextKey = logDecorationContextKey;
+      cache.map = new Map();
     }
-    return map;
-  }, [branchPopup, logItems, repoBranch]);
+    const nextMap = new Map<string, { decorations: string; pills: GitDecorationPill[] }>();
+    for (const item of logItems) {
+      const hash = String(item.hash || "").trim();
+      if (!hash) continue;
+      const decorations = String(item.decorations || "");
+      const cached = cache.map.get(hash);
+      if (cached && cached.decorations === decorations) {
+        nextMap.set(hash, cached);
+        continue;
+      }
+      nextMap.set(hash, {
+        decorations,
+        pills: buildLogDecorationPills(decorations, branchPopup, String(repoBranch || "")),
+      });
+    }
+    cache.map = nextMap;
+    return new Map(Array.from(nextMap, ([hash, entry]) => [hash, entry.pills]));
+  }, [branchPopup, logDecorationContextKey, logItems, repoBranch]);
 
   /**
    * 基于当前日志内容估算短列最佳宽度，减少作者/时间/哈希/引用列的无效留白。

@@ -89,8 +89,26 @@ const SILENT_GIT_ACTIVITY_ACTIONS = new Set<string>([
   "update.options.get",
   "update.options.set",
 ]);
+const STALE_CANCEL_GIT_ACTIONS = new Set<string>([
+  "branch.popup",
+  "console.get",
+  "diff.get",
+  "diff.openPath",
+  "diff.patch",
+  "log.availability",
+  "log.details",
+  "log.details.availability",
+  "log.get",
+  "push.preview",
+  "shelf.list",
+  "stash.list",
+  "status.get",
+  "status.getIgnored",
+  "worktree.list",
+]);
 
 let gitFeatureActivitySeq = 0;
+const latestGitRequestByKey = new Map<string, number>();
 const gitFeatureProgressBridgeState: {
   installed: boolean;
 } = (globalThis as any).__cf_git_feature_progress_bridge_state__ || ((globalThis as any).__cf_git_feature_progress_bridge_state__ = {
@@ -145,6 +163,61 @@ function isConsoleAction(action: string): boolean {
  */
 function shouldEmitGitFeatureActivity(action: string): boolean {
   return !SILENT_GIT_ACTIVITY_ACTIONS.has(action);
+}
+
+/**
+ * 生成可取消读请求的稳定键，同一仓库同一类刷新只保留最新请求。
+ */
+function buildStaleCancelableGitRequestKey(action: string, payload?: any): string {
+  if (!STALE_CANCEL_GIT_ACTIONS.has(action)) return "";
+  const repoPath = String(payload?.repoPath || payload?.repoRoot || "").trim().replace(/\\/g, "/").toLowerCase();
+  const path = String(payload?.path || "").trim();
+  const mode = String(payload?.mode || "").trim();
+  const cursor = action === "log.get" ? Math.max(0, Math.floor(Number(payload?.cursor) || 0)) : "";
+  const filters = action === "log.get" ? JSON.stringify(payload?.filters || {}) : "";
+  const hash = String(payload?.hash || "").trim();
+  const hashes = Array.isArray(payload?.hashes) ? payload.hashes.map((one: unknown) => String(one || "").trim()).filter(Boolean).join(",") : "";
+  const shelfRef = String(payload?.shelfRef || "").trim();
+  return [action, repoPath, path, mode, cursor, filters, hash, hashes, shelfRef].join("|");
+}
+
+/**
+ * 取消同键旧请求，避免快速切换提交、筛选或页面时后台 Git 读任务堆积。
+ */
+function cancelPreviousStaleGitRequest(requestKey: string, nextRequestId: number): void {
+  if (!requestKey) return;
+  const previousRequestId = latestGitRequestByKey.get(requestKey) || 0;
+  latestGitRequestByKey.set(requestKey, nextRequestId);
+  if (!previousRequestId || previousRequestId === nextRequestId) return;
+  try {
+    void window.host.gitFeature?.call({
+      action: "request.cancel",
+      payload: {
+        targetRequestId: previousRequestId,
+        reason: "已有更新的 Git 读取请求",
+      },
+      requestId: 0,
+    });
+  } catch {}
+}
+
+/**
+ * 清理已完成请求的最新标记，避免映射长期增长。
+ */
+function clearLatestGitRequestMarker(requestKey: string, requestId: number): void {
+  if (!requestKey) return;
+  if (latestGitRequestByKey.get(requestKey) === requestId)
+    latestGitRequestByKey.delete(requestKey);
+}
+
+/**
+ * 重置 Git API 模块内部状态，仅用于隔离单元测试之间的模块级缓存。
+ */
+export function __resetGitFeatureApiForTests(): void {
+  gitFeatureActivitySeq = 0;
+  latestGitRequestByKey.clear();
+  gitFeatureActivityListeners.clear();
+  gitFeatureProgressBridgeState.installed = false;
 }
 
 /**
@@ -332,6 +405,8 @@ export async function callGitFeatureAsync<T>(action: string, payload?: any): Pro
   const normalizedAction = String(action || "").trim();
   const requestId = gitFeatureActivitySeq + 1;
   gitFeatureActivitySeq = requestId;
+  const staleRequestKey = buildStaleCancelableGitRequestKey(normalizedAction, payload);
+  cancelPreviousStaleGitRequest(staleRequestKey, requestId);
   const message = resolveGitFeatureActivityMessage(normalizedAction, payload);
   const emitActivity = shouldEmitGitFeatureActivity(normalizedAction);
   const consoleAction = isConsoleAction(normalizedAction);
@@ -364,6 +439,7 @@ export async function callGitFeatureAsync<T>(action: string, payload?: any): Pro
         ok: normalizedResponse.ok,
       });
     }
+    clearLatestGitRequestMarker(staleRequestKey, requestId);
     return normalizedResponse;
   } catch (e: any) {
     if (emitActivity) {
@@ -376,6 +452,7 @@ export async function callGitFeatureAsync<T>(action: string, payload?: any): Pro
         ok: false,
       });
     }
+    clearLatestGitRequestMarker(staleRequestKey, requestId);
     return { ok: false, error: String(e?.message || e), meta: { requestId } };
   }
 }
