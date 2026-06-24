@@ -54,7 +54,7 @@ function formatSubagentNotificationText(raw: string): string {
  * - `<permissions instructions>...</permissions instructions>` -> `instructions`
  * - `<environment_context>...</environment_context>` -> `environment_context`
  * - `<subagent_notification>...</subagent_notification>` -> `subagent_notification`
- * - `# AGENTS.md instructions for ...`（含可选 `<instructions>...</instructions>`）-> `instructions`
+ * - `# AGENTS.md instructions`（可选 `for ...`，含可选 `<instructions>...</instructions>`）-> `instructions`
  */
 export function extractTaggedPrefix(source: string): { rest: string; picked: TaggedPrefixPick[] } {
   const src = String(source || "");
@@ -128,8 +128,8 @@ export function extractTaggedPrefix(source: string): { rest: string; picked: Tag
     return { rest: "", picked };
   }
 
-  const agentsPrefix = "# agents.md instructions for";
-  if (lower.startsWith(agentsPrefix)) {
+  const agentsHeaderPattern = /^#[ \t]*agents\.md instructions(?:[ \t]+for\b[^\r\n]*)?[ \t]*(?:\r?\n|$)/i;
+  if (agentsHeaderPattern.test(s2)) {
     const openTag = "<instructions>";
     const closeTag = "</instructions>";
     const openIdx = lower.indexOf(openTag);

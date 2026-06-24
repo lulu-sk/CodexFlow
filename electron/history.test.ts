@@ -310,6 +310,52 @@ describe("electron/history.listHistory", () => {
 });
 
 describe("electron/history.readHistoryFile", () => {
+  it("将不带 for 后缀的 AGENTS.md instructions 解析为说明分类", async () => {
+    const filePath = await createHistoryJsonlFile([
+      {
+        timestamp: "2026-03-06T00:00:00.000Z",
+        type: "session_meta",
+        payload: {
+          id: "session-agents-instructions",
+          cwd: "/workspace/project",
+        },
+      },
+      {
+        timestamp: "2026-03-06T00:00:01.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: "# AGENTS.md instructions\n\n<INSTRUCTIONS>\n规则内容\n</INSTRUCTIONS>",
+            },
+          ],
+        },
+      },
+      {
+        timestamp: "2026-03-06T00:00:02.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "真正的用户问题" }],
+        },
+      },
+    ]);
+
+    const parsed = await readHistoryFile(filePath, { maxLines: 0 });
+    const instructionItem = parsed.messages
+      .flatMap((message) => message.content || [])
+      .find((item) => item.type === "instructions");
+    const allTexts = collectTexts(parsed.messages);
+
+    expect(instructionItem?.text).toBe("\n规则内容\n");
+    expect(allTexts).not.toContain("# AGENTS.md instructions\n\n<INSTRUCTIONS>\n规则内容\n</INSTRUCTIONS>");
+    expect(allTexts).toContain("真正的用户问题");
+  });
+
   it("将 subagent_notification 解析为通知消息并格式化换行", async () => {
     const filePath = await createHistoryJsonlFile([
       {

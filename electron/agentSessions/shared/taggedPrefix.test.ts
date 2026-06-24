@@ -40,5 +40,28 @@ describe("extractTaggedPrefix", () => {
     expect(res.picked[0]?.text).toContain("第二行");
     expect(res.picked[0]?.text).not.toContain("\\n");
   });
-});
 
+  it("识别不带 for 后缀的 AGENTS.md instructions 头", () => {
+    const src = "# AGENTS.md instructions\n\n<INSTRUCTIONS>\n规则内容\n</INSTRUCTIONS>";
+    const res = extractTaggedPrefix(src);
+
+    expect(res.rest).toBe("");
+    expect(res.picked).toEqual([{ type: "instructions", text: "\n规则内容\n" }]);
+  });
+
+  it("继续识别带路径的 AGENTS.md instructions 头", () => {
+    const src = "# AGENTS.md instructions for G:\\Projects\\Demo\n\n<INSTRUCTIONS>\n规则内容\n</INSTRUCTIONS>\n剩余内容";
+    const res = extractTaggedPrefix(src);
+
+    expect(res.rest).toBe("剩余内容");
+    expect(res.picked).toEqual([{ type: "instructions", text: "\n规则内容\n" }]);
+  });
+
+  it("不把 AGENTS.md instructions 后的任意标题说明误判为系统说明", () => {
+    const src = "# AGENTS.md instructions draft\n\n普通用户内容";
+    const res = extractTaggedPrefix(src);
+
+    expect(res.rest).toBe(src);
+    expect(res.picked).toEqual([]);
+  });
+});
