@@ -217,6 +217,7 @@ import {
   resolveLogActionOperationFailureFeedback,
   resolveGitWorkbenchBootstrapRefresh,
   resolvePartialCommitValidationDiffMode,
+  normalizeGitConsoleClipboardText,
   shouldFinalizeCherryPickByCommit,
   shouldRefreshAfterClosingOperationProblem,
   shouldSkipCommitDetailsRequest,
@@ -936,7 +937,6 @@ const LOG_PAGE_SIZE = 200;
 const LOG_BRANCH_GROUP_MAX_VISIBLE = 2;
 const LOG_TAG_GROUP_MAX_VISIBLE = 1;
 const GIT_CONSOLE_VIEW_LIMIT = 250;
-const GIT_CONSOLE_COPY_LIMIT = 500;
 const DEFAULT_BOTTOM_HEIGHT = 260;
 const DEFAULT_LEFT_PANEL_WIDTH = 360;
 const DEFAULT_BRANCH_PANEL_WIDTH = 220;
@@ -3176,6 +3176,27 @@ type ToolbarDropdownSubmenuProps = {
   panelClassName?: string;
   children: React.ReactNode;
 };
+
+/**
+ * 判断文本选区是否落在指定容器内。
+ */
+function isSelectionInsideElement(selection: Selection | null | undefined, element: HTMLElement | null | undefined): boolean {
+  if (!selection || !element || selection.rangeCount <= 0) return false;
+  for (let index = 0; index < selection.rangeCount; index += 1) {
+    const range = selection.getRangeAt(index);
+    if (element.contains(range.commonAncestorContainer)) return true;
+    if (element.contains(range.startContainer) || element.contains(range.endContainer)) return true;
+  }
+  return false;
+}
+
+/**
+ * 判断节点是否位于指定选择器对应的祖先元素内。
+ */
+function isNodeInsideClosestSelector(node: Node | null | undefined, selector: string): boolean {
+  const element = node instanceof Element ? node : node?.parentElement;
+  return !!element?.closest?.(selector);
+}
 
 /**
  * 工具栏下拉菜单专用子菜单，尺寸与普通下拉项保持一致，不复用右键菜单样式。
@@ -6365,6 +6386,23 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
     selectedDetailNodeKeys,
   ]);
 
+  /**
+   * 判断当前浏览器文本选区是否属于 Git 工作台中可直接复制的文本区域。
+   */
+  const hasGitTextSelection = useCallback((selection: Selection | null | undefined, target: HTMLElement | null): boolean => {
+    if (!selection || selection.isCollapsed || !normalizeGitConsoleClipboardText(selection.toString())) return false;
+    if (isSelectionInsideElement(selection, consoleListRef.current)) return true;
+    if (isSelectionInsideElement(selection, logVirtual.containerRef.current)) return true;
+    if (isSelectionInsideElement(selection, commitTreeContainerRef.current)) return true;
+    if (isSelectionInsideElement(selection, detailTreeContainerRef.current)) return true;
+    if (isSelectionInsideElement(selection, branchPanelContainerRef.current)) return true;
+    const anchorNode = selection.anchorNode;
+    const focusNode = selection.focusNode;
+    if (isNodeInsideClosestSelector(anchorNode, ".cf-git-log-row, .cf-git-console, .cf-git-pane, .cf-git-bottom-panel")) return true;
+    if (isNodeInsideClosestSelector(focusNode, ".cf-git-log-row, .cf-git-console, .cf-git-pane, .cf-git-bottom-panel")) return true;
+    return !!target?.closest?.(".cf-git-log-row, .cf-git-console, .cf-git-pane, .cf-git-bottom-panel");
+  }, [logVirtual.containerRef]);
+
   const logDecorationContextKey = useMemo<string>(() => {
     return `${String(repoBranch || "").trim()}\n${JSON.stringify(branchPopup?.repositories || [])}\n${JSON.stringify(branchPopup?.groups || {})}`;
   }, [branchPopup?.groups, branchPopup?.repositories, repoBranch]);
@@ -7510,7 +7548,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
     let entries = gitConsoleItems;
     let fetchError = "";
     if (repoRoot) {
-      const res = await getGitConsoleAsync(repoRoot, GIT_CONSOLE_COPY_LIMIT, { includeLongText: true });
+      const res = await getGitConsoleAsync(repoRoot, 0, { includeLongText: true, preserveAllEntries: true });
       if (res.ok && res.data) {
         entries = Array.isArray(res.data.items) ? res.data.items : [];
       } else {
@@ -12065,6 +12103,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   const selectCommitHash = useCallback(
     (hash: string, event: React.MouseEvent): void => {
       if (!hash) return;
+      if (hasGitTextSelection(window.getSelection?.(), event.currentTarget as HTMLElement)) return;
       if (event.shiftKey && selectedCommitHashes.length > 0) {
         const last = selectedCommitHashes[selectedCommitHashes.length - 1];
         const from = logItems.findIndex((x) => x.hash === last);
@@ -12082,7 +12121,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
       }
       setSelectedCommitHashes([hash]);
     },
-    [logItems, selectedCommitHashes],
+    [hasGitTextSelection, logItems, selectedCommitHashes],
   );
 
   /**
@@ -15020,6 +15059,14 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
         return;
       }
       if (ctrl && !event.altKey && !event.shiftKey && key === "c") {
+        const selection = window.getSelection?.();
+        const selectionText = normalizeGitConsoleClipboardText(selection?.toString() || "");
+        if (selectionText && hasGitTextSelection(selection, target)) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          void window.host?.utils?.copyText?.(selectionText);
+          return;
+        }
         if (isTextEditable) return;
         const text = buildActiveGitCopyText(target);
         if (!text) return;
@@ -15058,6 +15105,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
     buildActiveGitCopyText,
     commitVisibleRowKeys,
     detailVisibleNodeKeys,
+    hasGitTextSelection,
     runBranchTreeActionAsync,
     runChangeMenuActionAsync,
     runFlowActionAsync,
@@ -15066,6 +15114,25 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
     selectedCommitTreeKeys.length,
     selectedDetailNodeKeys.length,
   ]);
+
+  /**
+   * 兜底处理 Git 工作台内的原生复制事件，保证真实文本选区优先且剪贴板文本不含控制分隔符。
+   */
+  useEffect(() => {
+    if (!active) return;
+    const onCopy = (event: ClipboardEvent) => {
+      if (event.defaultPrevented) return;
+      const selection = window.getSelection?.();
+      const target = event.target as HTMLElement | null;
+      const selectionText = normalizeGitConsoleClipboardText(selection?.toString() || "");
+      if (!selectionText || !hasGitTextSelection(selection, target)) return;
+      event.preventDefault();
+      event.clipboardData?.setData("text/plain", selectionText);
+      if (!event.clipboardData) void window.host?.utils?.copyText?.(selectionText);
+    };
+    document.addEventListener("copy", onCopy, true);
+    return () => document.removeEventListener("copy", onCopy, true);
+  }, [active, hasGitTextSelection]);
 
   /**
    * 分支弹窗键盘导航（上下/回车/Esc）。

@@ -170,6 +170,7 @@ function shouldEmitGitFeatureActivity(action: string): boolean {
  */
 function buildStaleCancelableGitRequestKey(action: string, payload?: any): string {
   if (!STALE_CANCEL_GIT_ACTIONS.has(action)) return "";
+  if (action === "console.get" && payload?.preserveAllEntries === true) return "";
   const repoPath = String(payload?.repoPath || payload?.repoRoot || "").trim().replace(/\\/g, "/").toLowerCase();
   const path = String(payload?.path || "").trim();
   const mode = String(payload?.mode || "").trim();
@@ -1203,12 +1204,13 @@ export async function removeWorktreeAsync(repoPath: string, payload: { path: str
 export async function getGitConsoleAsync(
   repoPath: string,
   limit: number = 200,
-  options?: { includeLongText?: boolean },
+  options?: { includeLongText?: boolean; preserveAllEntries?: boolean },
 ): Promise<GitFeatureResponse<{ repoRoot?: string; items: GitConsoleEntry[] }>> {
   return await callGitFeatureAsync("console.get", {
     repoPath,
     limit,
     includeLongText: options?.includeLongText === true,
+    preserveAllEntries: options?.preserveAllEntries === true,
   });
 }
 

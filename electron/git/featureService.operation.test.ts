@@ -159,12 +159,12 @@ async function getStatusSnapshotAsync(userDataPath: string, repo: string): Promi
 /**
  * 读取指定仓库的 Git 控制台记录，便于验证 Pull 是否真的走了独立命令链。
  */
-async function listConsoleEntriesAsync(userDataPath: string, repo: string): Promise<GitConsoleEntry[]> {
+async function listConsoleEntriesAsync(userDataPath: string, repo: string, limit: number = 200): Promise<GitConsoleEntry[]> {
   const res = await dispatchGitFeatureAction({
     action: "console.get",
     payload: {
       repoPath: repo,
-      limit: 200,
+      limit,
       includeLongText: true,
     },
     userDataPath,

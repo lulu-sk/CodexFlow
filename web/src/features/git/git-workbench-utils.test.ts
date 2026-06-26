@@ -796,4 +796,45 @@ describe("git workbench utils", () => {
     expect(text).toContain("exitCode: 1");
     expect(text).toContain("fatal: bad revision");
   });
+
+  it("Git 控制台复制文本应保留所有条目", () => {
+    const text = buildGitConsoleCopyText([
+      createConsoleEntry({ id: 1, command: "git status", stdout: "first" }),
+      createConsoleEntry({ id: 2, command: "git log --oneline", stdout: "second" }),
+      createConsoleEntry({ id: 3, command: "git diff --stat", stdout: "third" }),
+    ]);
+
+    expect(text).toContain("$ git status");
+    expect(text).toContain("first");
+    expect(text).toContain("$ git log --oneline");
+    expect(text).toContain("second");
+    expect(text).toContain("$ git diff --stat");
+    expect(text).toContain("third");
+  });
+
+  it("Git 控制台选中文本的复制结果应直接保留原文", () => {
+    expect(buildGitConsoleCopyText([
+      createConsoleEntry({
+        command: "git show",
+        stdout: "97fd661a82fd1dc25fbf9efd242b0628b8bc22af",
+      }),
+    ])).toContain("97fd661a82fd1dc25fbf9efd242b0628b8bc22af");
+  });
+
+  it("Git 控制台复制文本应清理 NUL 与 RS 控制字符", () => {
+    const text = buildGitConsoleCopyText([
+      createConsoleEntry({
+        command: "git log",
+        stdout: "97fd661a82fd1dc25fbf9efd242b0628b8bc22af\u0000后续内容",
+        stderr: "warn\u001e第二段",
+      }),
+    ]);
+
+    expect(text).not.toContain("\u0000");
+    expect(text).not.toContain("\u001e");
+    expect(text).toContain("97fd661a82fd1dc25fbf9efd242b0628b8bc22af");
+    expect(text).toContain("后续内容");
+    expect(text).toContain("warn");
+    expect(text).toContain("第二段");
+  });
 });

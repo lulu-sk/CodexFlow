@@ -53,6 +53,18 @@ function formatGitCommandForConsole(gitPath: string, argv: string[]): string {
 }
 
 /**
+ * 判断控制台记录是否归属于指定仓库路径，兼容以仓库子目录作为 cwd 的 Git 命令。
+ */
+function isEntryInRepoScope(entry: GitConsoleEntry, repoRootAbs: string, repoRootKey: string): boolean {
+  if (!repoRootKey) return true;
+  if (entry.repoRootKey === repoRootKey) return true;
+  const entryKey = entry.repoRootKey || toFsPathKey(entry.cwd);
+  if (entryKey === repoRootKey) return true;
+  if (entryKey.startsWith(`${repoRootKey}/`)) return true;
+  return !!repoRootAbs && !entry.repoRootKey && entry.cwd === repoRootAbs;
+}
+
+/**
  * 管理 Git 控制台内存记录。
  * - 存储层保留较长文本，保证“复制日志”尽量拿到完整输出；
  * - 列表层默认再做一次轻量裁剪，避免大文本直接进入渲染树。
@@ -154,14 +166,14 @@ export class GitConsoleStore {
    * 按仓库读取控制台记录；默认返回适合 UI 展示的短文本。
    */
   listEntries(repoRootOrPath: string, limitInput: number, mode: GitConsoleListMode = "view"): GitConsoleEntry[] {
-    const limit = Math.max(20, Math.min(500, Math.floor(Number(limitInput) || 200)));
+    const normalizedLimit = Number(limitInput);
+    const rawLimit = Number.isFinite(normalizedLimit) ? Math.floor(normalizedLimit) : 200;
+    const limit = rawLimit <= 0 ? 0 : Math.max(20, Math.min(500, rawLimit));
     const abs = toFsPathAbs(String(repoRootOrPath || "").trim());
     const key = toFsPathKey(abs);
-    const source = key
-      ? this.entries.filter((entry) => entry.repoRootKey === key || (!entry.repoRootKey && entry.cwd === abs))
-      : this.entries;
-    const start = Math.max(0, source.length - limit);
-    return source.slice(start).map((entry) => this.cloneEntryForMode(entry, mode));
+    const source = key ? this.entries.filter((entry) => isEntryInRepoScope(entry, abs, key)) : this.entries;
+    const sliced = limit > 0 ? source.slice(Math.max(0, source.length - limit)) : source;
+    return sliced.map((entry) => this.cloneEntryForMode(entry, mode));
   }
 
   /**
@@ -179,7 +191,7 @@ export class GitConsoleStore {
     let removed = 0;
     for (let idx = this.entries.length - 1; idx >= 0; idx -= 1) {
       const hit = this.entries[idx];
-      if (hit.repoRootKey === key || (!hit.repoRootKey && hit.cwd === abs)) {
+      if (isEntryInRepoScope(hit, abs, key)) {
         this.entries.splice(idx, 1);
         removed += 1;
       }
