@@ -11123,7 +11123,10 @@ export async function dispatchGitFeatureAction(args: GitFeatureActionArgs): Prom
 
     if (action === "console.get") {
       const repoPath = String(args.payload?.repoPath || "").trim();
-      const limit = Math.max(20, Math.min(500, Math.floor(Number(args.payload?.limit) || 200)));
+      const normalizedLimit = Number(args.payload?.limit);
+      const limit = Number.isFinite(normalizedLimit)
+        ? (Math.floor(normalizedLimit) <= 0 ? 0 : Math.max(20, Math.min(500, Math.floor(normalizedLimit))))
+        : 200;
       const mode = args.payload?.includeLongText === true ? "copy" : "view";
       const repoRoot = repoPath ? resolveConsoleRepoPath(repoPath) : "";
       return {

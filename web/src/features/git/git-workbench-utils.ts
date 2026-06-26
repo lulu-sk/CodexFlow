@@ -650,14 +650,25 @@ export function buildGitConsoleCopyText(entries: GitConsoleEntry[]): string {
         String(entry.cwd || "").trim(),
       ].filter(Boolean).join(" ");
       return [
-        header,
-        entry.running ? "" : `exitCode: ${exitCode}`,
-        `$ ${String(entry.command || "").trim()}`,
-        String(entry.stdout || ""),
-        String(entry.stderr || ""),
-        String(entry.error || ""),
+        normalizeGitConsoleClipboardText(header),
+        entry.running ? "" : normalizeGitConsoleClipboardText(`exitCode: ${exitCode}`),
+        normalizeGitConsoleClipboardText(`$ ${String(entry.command || "").trim()}`),
+        normalizeGitConsoleClipboardText(String(entry.stdout || "")),
+        normalizeGitConsoleClipboardText(String(entry.stderr || "")),
+        normalizeGitConsoleClipboardText(String(entry.error || "")),
       ].filter((one) => one.length > 0).join("\n");
     })
     .filter(Boolean)
     .join("\n\n");
+}
+
+/**
+ * 把 Git 控制台文本规整为可安全复制的纯文本，避免 NUL / RS 这类控制字符截断剪贴板。
+ */
+export function normalizeGitConsoleClipboardText(text: string): string {
+  return String(text || "")
+    .replace(/%x(?:00|1e)/gi, " ")
+    .replace(/\x00|\x1e/g, "\n")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
 }

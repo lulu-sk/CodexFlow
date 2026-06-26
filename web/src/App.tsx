@@ -73,7 +73,6 @@ import { collectRetainedAgentTurnTabIds, pruneAgentTurnHistory, pruneAgentTurnTi
 import {
   classifyCodexCliErrorText,
   detectCodexCliRuntimeStatusText,
-  buildCodexCliErrorNotificationKey,
   getCodexCliErrorKindLabel,
   shouldDelayCodexCliFinalErrorForReconnect,
   stripAnsiForCodexErrorScan,
@@ -427,7 +426,8 @@ type AgentTurnTimerState = {
 
 type CodexErrorScanState = {
   buffer: string;
-  notifiedErrorKeys?: string[];
+  lastReconnectErrorKey?: string;
+  lastFinalErrorKey?: string;
   lastReconnectStatusAt?: number;
   pendingErrorKey?: string;
   pendingErrorKind?: CodexCliErrorKind;
@@ -443,7 +443,6 @@ type CodexErrorScanState = {
 const CODEX_ERROR_SCAN_MAX_BUFFER_LENGTH = 16 * 1024;
 const CODEX_RECONNECT_DETAIL_GRACE_MS = 10_000;
 const CODEX_RECONNECT_AFTER_ERROR_GRACE_MS = 10_000;
-const CODEX_ERROR_SCAN_NOTIFIED_KEYS_LIMIT = 64;
 
 /**
  * 中文说明：生成 Codex 错误去重键，避免同一段终端输出反复触发处理。
@@ -451,44 +450,6 @@ const CODEX_ERROR_SCAN_NOTIFIED_KEYS_LIMIT = 64;
 function buildCodexCliErrorKey(classification: CodexCliErrorClassification): string {
   const attempt = classification.reconnectAttempt ? `:${classification.reconnectAttempt}/${classification.reconnectMaxAttempts || "?"}` : "";
   return `${classification.phase}:${classification.kind}${attempt}:${classification.matchedText}`;
-}
-
-/**
- * 中文说明：判断某个 Codex 错误键是否已经在本轮里通知过。
- */
-function hasNotifiedCodexErrorKey(state: CodexErrorScanState | undefined, errorKey: string): boolean {
-  if (!state || !errorKey) return false;
-  return (
-    Array.isArray(state.notifiedErrorKeys) && state.notifiedErrorKeys.includes(errorKey)
-  );
-}
-/**
- * 中文说明：记录已经通知过的 Codex 错误键，并限制保存长度。
- */
-function pushNotifiedCodexErrorKey(state: CodexErrorScanState, errorKey: string): string[] {
-  const current = Array.isArray(state.notifiedErrorKeys) ? state.notifiedErrorKeys.filter((key) => key && key !== errorKey) : [];
-  current.push(errorKey);
-  return current.length > CODEX_ERROR_SCAN_NOTIFIED_KEYS_LIMIT
-    ? current.slice(-CODEX_ERROR_SCAN_NOTIFIED_KEYS_LIMIT)
-    : current;
-}
-
-/**
- * 中文说明：记录一次已经对用户可见的 Codex 错误，避免同一错误在重绘/回放后再次弹出。
- */
-function rememberCodexErrorNotification(
-  scanByTabRef: React.MutableRefObject<Record<string, CodexErrorScanState>>,
-  tabId: string,
-  errorKey: string,
-): void {
-  const id = String(tabId || "").trim();
-  if (!id || !errorKey) return;
-  const state = scanByTabRef.current[id];
-  if (!state) return;
-  scanByTabRef.current[id] = {
-    ...state,
-    notifiedErrorKeys: pushNotifiedCodexErrorKey(state, errorKey),
-  };
 }
 
 type CompletionEventSource = "osc" | "external" | "manual" | "unknown";
@@ -2848,7 +2809,6 @@ export default function CodexFlowManagerUI() {
     const id = String(tabId || "").trim();
     if (!id) return;
     const state = codexErrorScanByTabRef.current[id];
-    const shouldClearNotifiedErrorKeys = source === "user-send";
     if (state && typeof state.autoContinueTimerId === "number") {
       try { window.clearTimeout(state.autoContinueTimerId); } catch {}
       notifyLog(`codexError.scan.resetTimer tab=${id} source=${source}`);
@@ -2859,27 +2819,8 @@ export default function CodexFlowManagerUI() {
     }
     if (options?.keepAttempts && state) {
       codexErrorScanByTabRef.current[id] = {
-        ...state,
         buffer: "",
         autoContinueAttempts: state.autoContinueAttempts || 0,
-        notifiedErrorKeys: state.notifiedErrorKeys,
-        lastReconnectStatusAt: undefined,
-        pendingErrorKey: undefined,
-        pendingErrorKind: undefined,
-        autoContinueTimerId: undefined,
-        pendingFinalErrorKey: undefined,
-        pendingFinalErrorKind: undefined,
-        pendingFinalError: undefined,
-        pendingFinalErrorAt: undefined,
-        pendingFinalErrorTimerId: undefined,
-      };
-      return;
-    }
-    if (state) {
-      codexErrorScanByTabRef.current[id] = {
-        buffer: "",
-        autoContinueAttempts: 0,
-        notifiedErrorKeys: shouldClearNotifiedErrorKeys ? undefined : state.notifiedErrorKeys,
       };
       return;
     }
@@ -4228,7 +4169,6 @@ export default function CodexFlowManagerUI() {
       applyPending({ ...current, [id]: (current[id] ?? 0) + 1 });
     }
     showCompletionNotification(id, notificationBody);
-    rememberCodexErrorNotification(codexErrorScanByTabRef, id, errorKey);
     if (foreground && activeMatch)
       acknowledgeAgentTurnFailure(id, "visible-final-error");
     notifyLog(`codexError.detected tab=${id} kind=${classification.kind} retryable=${classification.retryable ? "1" : "0"} auto=${autoContinue ? "1" : "0"}`);
@@ -4272,7 +4212,7 @@ export default function CodexFlowManagerUI() {
     }
     const bufferedStatus = detectCodexCliRuntimeStatusText(state.buffer || "");
     const bufferedClassification = classifyCodexCliErrorText(state.buffer || "");
-    const bufferedErrorKey = bufferedClassification ? buildCodexCliErrorNotificationKey(bufferedClassification) : "";
+    const bufferedErrorKey = bufferedClassification ? buildCodexCliErrorKey(bufferedClassification) : "";
     if (
       bufferedStatus?.phase === "working" ||
       bufferedStatus?.phase === "reconnecting" ||
@@ -4302,6 +4242,7 @@ export default function CodexFlowManagerUI() {
       pendingFinalError: undefined,
       pendingFinalErrorAt: undefined,
       pendingFinalErrorTimerId: undefined,
+      lastFinalErrorKey: errorKey,
     };
     const timerState = agentTurnTimerByTabRef.current[id];
     if (!timerState || timerState.status !== "working") {
@@ -4338,11 +4279,13 @@ export default function CodexFlowManagerUI() {
         try { window.clearTimeout(previous.pendingFinalErrorTimerId); } catch {}
       }
       if (idleClassification?.phase === "final") {
-        const errorKey = buildCodexCliErrorNotificationKey(idleClassification);
+        const errorKey = buildCodexCliErrorKey(idleClassification);
         codexErrorScanByTabRef.current[tabId] = {
           ...previous,
           buffer: "",
+          lastReconnectErrorKey: undefined,
           lastReconnectStatusAt: undefined,
+          lastFinalErrorKey: errorKey,
           pendingFinalErrorKey: undefined,
           pendingFinalErrorKind: undefined,
           pendingFinalError: undefined,
@@ -4350,7 +4293,7 @@ export default function CodexFlowManagerUI() {
           pendingFinalErrorTimerId: undefined,
         };
         clearAgentTurnReconnecting(tabId, "idle-final-error");
-        if (!hasNotifiedCodexErrorKey(previous, errorKey))
+        if (previous.lastFinalErrorKey !== errorKey)
           handleCodexCliErrorDetected(tabId, idleClassification, errorKey);
         notifyLog(`codexError.idle.final tab=${tabId} kind=${idleClassification.kind}`);
         return;
@@ -4358,6 +4301,7 @@ export default function CodexFlowManagerUI() {
       codexErrorScanByTabRef.current[tabId] = {
         ...previous,
         buffer: "",
+        lastReconnectErrorKey: undefined,
         lastReconnectStatusAt: undefined,
         pendingFinalErrorKey: undefined,
         pendingFinalErrorKind: undefined,
@@ -4381,6 +4325,8 @@ export default function CodexFlowManagerUI() {
         codexErrorScanByTabRef.current[tabId] = {
           ...restoredScanState,
           buffer: cleanedChunk.slice(-CODEX_ERROR_SCAN_MAX_BUFFER_LENGTH),
+          lastReconnectErrorKey: undefined,
+          lastFinalErrorKey: undefined,
           lastReconnectStatusAt: undefined,
           pendingErrorKey: undefined,
           pendingErrorKind: undefined,
@@ -4411,7 +4357,7 @@ export default function CodexFlowManagerUI() {
         reconnectAttempt: reconnectClassification.reconnectAttempt || chunkRuntimeStatus.reconnectAttempt,
         reconnectMaxAttempts: reconnectClassification.reconnectMaxAttempts || chunkRuntimeStatus.reconnectMaxAttempts,
       };
-      const reconnectErrorKey = buildCodexCliErrorNotificationKey(normalizedReconnectClassification);
+      const reconnectErrorKey = buildCodexCliErrorKey(normalizedReconnectClassification);
       restoreFailedAgentTurnToReconnecting(tabId, normalizedReconnectClassification, "pty-runtime-status");
       const restoredScanState = codexErrorScanByTabRef.current[tabId] || previous;
       if (typeof restoredScanState.pendingFinalErrorTimerId === "number") {
@@ -4420,6 +4366,7 @@ export default function CodexFlowManagerUI() {
       codexErrorScanByTabRef.current[tabId] = {
         ...restoredScanState,
         buffer: nextBuffer,
+        lastReconnectErrorKey: reconnectErrorKey,
         lastReconnectStatusAt: now,
         pendingErrorKey: undefined,
         pendingErrorKind: undefined,
@@ -4430,7 +4377,7 @@ export default function CodexFlowManagerUI() {
         pendingFinalErrorAt: undefined,
         pendingFinalErrorTimerId: undefined,
       };
-      if (!hasNotifiedCodexErrorKey(previous, reconnectErrorKey))
+      if (previous.lastReconnectErrorKey !== reconnectErrorKey)
         handleCodexCliReconnectDetected(tabId, normalizedReconnectClassification);
       notifyLog(`codexError.failed.reconnecting tab=${tabId} kind=${normalizedReconnectClassification.kind}`);
       return;
@@ -4443,6 +4390,8 @@ export default function CodexFlowManagerUI() {
       ? {
         ...previous,
         buffer: "",
+        lastReconnectErrorKey: undefined,
+        lastReconnectStatusAt: undefined,
         pendingFinalErrorKey: undefined,
         pendingFinalErrorKind: undefined,
         pendingFinalError: undefined,
@@ -4468,7 +4417,7 @@ export default function CodexFlowManagerUI() {
           reconnectAttempt: chunkRuntimeStatus.reconnectAttempt,
           reconnectMaxAttempts: chunkRuntimeStatus.reconnectMaxAttempts,
         };
-        const reconnectErrorKey = buildCodexCliErrorNotificationKey(reconnectClassification);
+        const reconnectErrorKey = buildCodexCliErrorKey(reconnectClassification);
         codexErrorScanByTabRef.current[tabId] = {
           ...latestScanState,
           buffer: nextBuffer,
@@ -4477,9 +4426,9 @@ export default function CodexFlowManagerUI() {
           pendingFinalError: undefined,
           pendingFinalErrorAt: undefined,
           pendingFinalErrorTimerId: undefined,
-          notifiedErrorKeys: pushNotifiedCodexErrorKey(latestScanState, reconnectErrorKey),
+          lastReconnectErrorKey: reconnectErrorKey,
         };
-        if (!hasNotifiedCodexErrorKey(previous, reconnectErrorKey))
+        if (previous.lastReconnectErrorKey !== reconnectErrorKey)
           handleCodexCliReconnectDetected(tabId, reconnectClassification);
         notifyLog(`codexError.pendingFinal.reconnecting tab=${tabId} kind=${reconnectClassification.kind} ageMs=${pendingAgeMs}`);
         return;
@@ -4503,7 +4452,7 @@ export default function CodexFlowManagerUI() {
       return;
     }
 
-    const errorKey = buildCodexCliErrorNotificationKey(classification);
+    const errorKey = buildCodexCliErrorKey(classification);
     if (classification.phase === "reconnecting") {
       if (typeof previous.pendingFinalErrorTimerId === "number") {
         try { window.clearTimeout(previous.pendingFinalErrorTimerId); } catch {}
@@ -4511,14 +4460,14 @@ export default function CodexFlowManagerUI() {
       codexErrorScanByTabRef.current[tabId] = {
         ...latestScanState,
         buffer: nextBuffer,
+        lastReconnectErrorKey: errorKey,
         pendingFinalErrorKey: undefined,
         pendingFinalErrorKind: undefined,
         pendingFinalError: undefined,
         pendingFinalErrorAt: undefined,
         pendingFinalErrorTimerId: undefined,
-        notifiedErrorKeys: pushNotifiedCodexErrorKey(latestScanState, errorKey),
       };
-      if (hasNotifiedCodexErrorKey(previous, errorKey)) return;
+      if (previous.lastReconnectErrorKey === errorKey) return;
       handleCodexCliReconnectDetected(tabId, classification);
       return;
     }
@@ -4549,9 +4498,9 @@ export default function CodexFlowManagerUI() {
     codexErrorScanByTabRef.current[tabId] = {
       ...latestScanState,
       buffer: nextBuffer,
-      notifiedErrorKeys: pushNotifiedCodexErrorKey(latestScanState, errorKey),
+      lastFinalErrorKey: errorKey,
     };
-    if (hasNotifiedCodexErrorKey(previous, errorKey)) return;
+    if (previous.lastFinalErrorKey === errorKey) return;
     handleCodexCliErrorDetected(tabId, classification, errorKey);
   }
 
@@ -5944,6 +5893,8 @@ export default function CodexFlowManagerUI() {
     codexErrorScanByTabRef.current[id] = {
       ...state,
       buffer: "",
+      lastReconnectErrorKey: undefined,
+      lastFinalErrorKey: undefined,
       pendingErrorKey: undefined,
       pendingErrorKind: undefined,
       autoContinueTimerId: undefined,
@@ -5999,6 +5950,8 @@ export default function CodexFlowManagerUI() {
     codexErrorScanByTabRef.current[id] = {
       ...state,
       buffer: "",
+      lastReconnectErrorKey: undefined,
+      lastFinalErrorKey: undefined,
       pendingErrorKey: undefined,
       pendingErrorKind: undefined,
       autoContinueTimerId: undefined,

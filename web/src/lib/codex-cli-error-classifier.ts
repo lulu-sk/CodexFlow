@@ -178,16 +178,6 @@ export function shouldDelayCodexCliFinalErrorForReconnect(classification: CodexC
 }
 
 /**
- * 生成 Codex 错误通知去重键。
- * 说明：只保留错误类别和错误文本本身，忽略 phase 与重连次数，避免同一条错误在重绘或回放时重复弹出。
- */
-export function buildCodexCliErrorNotificationKey(classification: Pick<CodexCliErrorClassification, "kind" | "matchedText">): string {
-  const kind = String(classification?.kind || "").trim();
-  const text = normalizeCodexCliErrorText(String(classification?.matchedText || "")).toLowerCase();
-  return `${kind}:${text}`;
-}
-
-/**
  * 返回 Codex 错误类别对应的英文识别文本，用于设置面板与状态展示。
  */
 export function getCodexCliErrorKindLabel(kind: CodexCliErrorKind | undefined): string {

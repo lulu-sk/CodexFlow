@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyCodexCliErrorText,
-  buildCodexCliErrorNotificationKey,
   detectCodexCliRuntimeStatusText,
   getCodexCliErrorKindLabel,
   isCodexCliErrorAutoRetryable,
@@ -194,20 +193,6 @@ describe("codex-cli-error-classifier（Codex TUI 错误识别）", () => {
     const result = classifyCodexCliErrorText(text);
     expect(result?.kind).toBe("serviceUnavailable");
     expect(result?.phase).toBe("final");
-  });
-
-  it("同一错误在 final 和 reconnecting 阶段会生成相同的通知键", () => {
-    const finalResult = classifyCodexCliErrorText(
-      "unexpected status 503 Service Unavailable: openai_error, url: http://example.test/v1/responses",
-    );
-    const reconnectingResult = classifyCodexCliErrorText(`
-      Reconnecting... 1/5 (4m 18s  esc to interrupt)
-        unexpected status 503 Service Unavailable: openai_error, url: http://example.test/v1/responses
-    `);
-
-    expect(finalResult?.phase).toBe("final");
-    expect(reconnectingResult?.phase).toBe("reconnecting");
-    expect(buildCodexCliErrorNotificationKey(finalResult!)).toBe(buildCodexCliErrorNotificationKey(reconnectingResult!));
   });
 
   it("Codex 最终历史错误行会压住旧的 Reconnecting 状态", () => {
