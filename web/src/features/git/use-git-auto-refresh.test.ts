@@ -69,6 +69,7 @@ function TestHarness(props: {
   refreshStatusAsync?: (options?: { debounceMs?: number }) => Promise<void>;
   refreshRefsAsync?: (options?: { debounceMs?: number }) => Promise<void>;
   refreshWorktreesAsync?: (options?: { debounceMs?: number }) => Promise<void>;
+  isRefreshBusy?: () => boolean;
 }): JSX.Element | null {
   useGitAutoRefresh(props);
   return null;
@@ -559,6 +560,108 @@ describe("useGitAutoRefresh", () => {
       await flushMicrotasksAsync();
     });
     expect(refreshAllAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it("整仓刷新中的 index 元数据事件应视为自噪音", async () => {
+    const hostApis = createHostApis();
+    const refreshAllAsync = vi.fn(async (_options?: { keepLog?: boolean; debounceMs?: number }) => {});
+    const refreshStatusAsync = vi.fn(async (_options?: { debounceMs?: number }) => {});
+    Object.defineProperty(window, "host", {
+      configurable: true,
+      writable: true,
+      value: {
+        fileIndex: hostApis.fileIndex,
+        gitRepoWatch: hostApis.gitRepoWatch,
+      },
+    });
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root!.render(React.createElement(TestHarness, {
+        active: true,
+        repoRoot: "/repo-a",
+        refreshAllAsync,
+        refreshStatusAsync,
+        isRefreshBusy: () => true,
+      }));
+      await flushMicrotasksAsync();
+    });
+
+    await act(async () => {
+      hostApis.emitRepoWatch({ repoRoot: "/repo-a", reason: "index", paths: ["/repo-a/.git/index"] });
+      await flushMicrotasksAsync();
+    });
+
+    expect(refreshStatusAsync).not.toHaveBeenCalled();
+    expect(refreshAllAsync).not.toHaveBeenCalled();
+  });
+
+  it("相同 roots 的重新渲染不能清空刷新中的自噪音窗口", async () => {
+    const hostApis = createHostApis();
+    const statusResolvers: Array<() => void> = [];
+    const refreshAllAsync = vi.fn(async (_options?: { keepLog?: boolean; debounceMs?: number }) => {});
+    const refreshStatusAsync = vi.fn(async (_options?: { debounceMs?: number }) => {
+      await new Promise<void>((resolve) => {
+        statusResolvers.push(resolve);
+      });
+    });
+    Object.defineProperty(window, "host", {
+      configurable: true,
+      writable: true,
+      value: {
+        fileIndex: hostApis.fileIndex,
+        gitRepoWatch: hostApis.gitRepoWatch,
+      },
+    });
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root!.render(React.createElement(TestHarness, {
+        active: true,
+        repoRoot: "/repo-a",
+        repoRoots: ["/repo-a"],
+        refreshAllAsync,
+        refreshStatusAsync,
+      }));
+      await flushMicrotasksAsync();
+    });
+
+    await act(async () => {
+      hostApis.emitFileIndex({ root: "/repo-a" });
+      await flushMicrotasksAsync();
+    });
+    expect(refreshStatusAsync).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      root!.render(React.createElement(TestHarness, {
+        active: true,
+        repoRoot: "/repo-a",
+        repoRoots: ["/repo-a"],
+        refreshAllAsync,
+        refreshStatusAsync,
+      }));
+      await flushMicrotasksAsync();
+    });
+
+    await act(async () => {
+      hostApis.emitRepoWatch({ repoRoot: "/repo-a", reason: "index", paths: ["/repo-a/.git/index"] });
+      await flushMicrotasksAsync();
+    });
+
+    expect(refreshStatusAsync).toHaveBeenCalledTimes(1);
+    expect(refreshAllAsync).not.toHaveBeenCalled();
+
+    await act(async () => {
+      for (const resolve of statusResolvers)
+        resolve();
+      await flushMicrotasksAsync();
+    });
   });
 
   it("刷新中的非 index 元数据事件仍应在静默窗口后补一次刷新", async () => {

@@ -102,8 +102,6 @@ const STALE_CANCEL_GIT_ACTIONS = new Set<string>([
   "push.preview",
   "shelf.list",
   "stash.list",
-  "status.get",
-  "status.getIgnored",
   "worktree.list",
 ]);
 

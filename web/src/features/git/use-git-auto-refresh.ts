@@ -12,6 +12,7 @@ type UseGitAutoRefreshArgs = {
   refreshStatusAsync?: (options?: { debounceMs?: number }) => Promise<void>;
   refreshRefsAsync?: (options?: { debounceMs?: number }) => Promise<void>;
   refreshWorktreesAsync?: (options?: { debounceMs?: number }) => Promise<void>;
+  isRefreshBusy?: () => boolean;
 };
 
 const GIT_AUTO_REFRESH_SELF_NOISE_COOLDOWN_MS = 2000;
@@ -171,6 +172,8 @@ function mergeRefreshKind(
 export function useGitAutoRefresh(args: UseGitAutoRefreshArgs): void {
   const registrationIdRef = useRef<number>(0);
   const rootsKeyRef = useRef<string>("");
+  const isRefreshBusyRef = useRef(args.isRefreshBusy);
+  isRefreshBusyRef.current = args.isRefreshBusy;
   if (registrationIdRef.current <= 0) {
     gitAutoRefreshRegistrationSeq += 1;
     registrationIdRef.current = gitAutoRefreshRegistrationSeq;
@@ -206,6 +209,15 @@ export function useGitAutoRefresh(args: UseGitAutoRefreshArgs): void {
     inactiveDirtyKind: null,
     inactiveDirtyDebounceMs: 0,
   });
+  const roots = Array.from(new Set(
+    [args.repoRoot, ...(args.repoRoots || [])]
+      .map(normalizeGitAutoRefreshRoot)
+      .filter(Boolean),
+  ));
+  const rootsKey = buildGitAutoRefreshRootsKey(roots);
+  const hasRefreshStatusAsync = !!args.refreshStatusAsync;
+  const hasRefreshRefsAsync = !!args.refreshRefsAsync;
+  const hasRefreshWorktreesAsync = !!args.refreshWorktreesAsync;
 
   useEffect(() => {
     return () => {
@@ -214,12 +226,6 @@ export function useGitAutoRefresh(args: UseGitAutoRefreshArgs): void {
   }, []);
 
   useEffect(() => {
-    const roots = Array.from(new Set(
-      [args.repoRoot, ...(args.repoRoots || [])]
-        .map(normalizeGitAutoRefreshRoot)
-        .filter(Boolean),
-    ));
-    const rootsKey = buildGitAutoRefreshRootsKey(roots);
     const activeRootSet = new Set(roots);
     const refreshState = refreshStateRef.current;
     if (rootsKeyRef.current !== rootsKey) {
@@ -307,11 +313,11 @@ export function useGitAutoRefresh(args: UseGitAutoRefreshArgs): void {
      */
     const resolveRefreshKind = (source: "fileIndex" | "repoWatch", reason?: string): GitAutoRefreshKind => {
       if (source === "fileIndex")
-        return args.refreshStatusAsync ? "status" : "full";
+        return hasRefreshStatusAsync ? "status" : "full";
       const normalizedReason = String(reason || "").trim();
-      if (source === "repoWatch" && String(reason || "").trim() === "worktrees" && args.refreshWorktreesAsync)
+      if (source === "repoWatch" && String(reason || "").trim() === "worktrees" && hasRefreshWorktreesAsync)
         return "worktrees";
-      if ((normalizedReason === "index" || normalizedReason === "exclude") && args.refreshStatusAsync)
+      if ((normalizedReason === "index" || normalizedReason === "exclude") && hasRefreshStatusAsync)
         return "status";
       if (
         (normalizedReason === "head"
@@ -320,7 +326,7 @@ export function useGitAutoRefresh(args: UseGitAutoRefreshArgs): void {
           || normalizedReason === "merge"
           || normalizedReason === "cherry-pick"
           || normalizedReason === "revert")
-        && args.refreshRefsAsync
+        && hasRefreshRefsAsync
       )
         return "refs";
       return "full";
@@ -339,7 +345,14 @@ export function useGitAutoRefresh(args: UseGitAutoRefreshArgs): void {
         upsertGitAutoRefreshRootRegistration(registrationIdRef.current, roots, false);
         return;
       }
-      const inSuppressedWindow = !!refreshState.runningKind || Date.now() < refreshState.suppressedUntil;
+      const workbenchRefreshBusy = (() => {
+        try {
+          return isRefreshBusyRef.current?.() === true;
+        } catch {
+          return false;
+        }
+      })();
+      const inSuppressedWindow = !!refreshState.runningKind || workbenchRefreshBusy || Date.now() < refreshState.suppressedUntil;
       const normalizedReason = String(reason || "").trim();
       if (inSuppressedWindow && source === "repoWatch" && normalizedReason === "index")
         return;
@@ -391,11 +404,10 @@ export function useGitAutoRefresh(args: UseGitAutoRefreshArgs): void {
     };
   }, [
     args.active,
-    args.refreshRefsAsync,
-    args.refreshStatusAsync,
-    args.refreshWorktreesAsync,
-    args.repoRoot,
-    args.repoRoots,
+    hasRefreshRefsAsync,
+    hasRefreshStatusAsync,
+    hasRefreshWorktreesAsync,
+    rootsKey,
     refreshRefsRunner,
     refreshRunner,
     refreshStatusRunner,
