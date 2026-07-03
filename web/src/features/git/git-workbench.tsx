@@ -7031,6 +7031,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
     refreshStatusAsync: refreshStatusForAutoRefreshAsync,
     refreshRefsAsync: refreshRefsForAutoRefreshAsync,
     refreshWorktreesAsync: refreshWorktreeItemsForAutoRefreshAsync,
+    isRefreshBusy: refreshAllController.isBusy,
   });
 
   /**

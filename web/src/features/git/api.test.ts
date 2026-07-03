@@ -137,14 +137,43 @@ describe("git api alignment", () => {
     }));
   });
 
-  it("连续 Git 读请求应取消同键旧请求，避免后台读取堆积", async () => {
-    const firstStatus = createDeferred<{ ok: boolean }>();
-    let firstStatusRequestId = 0;
+  it("连续可取消 Git 读请求应取消同键旧请求，避免后台读取堆积", async () => {
+    const firstDiff = createDeferred<{ ok: boolean }>();
+    let firstDiffRequestId = 0;
     const call = vi.fn(async (args: any) => {
-      if (args?.action === "status.get" && !firstStatusRequestId) {
-        firstStatusRequestId = Number(args.requestId || 0);
-        return await firstStatus.promise;
+      if (args?.action === "diff.get" && !firstDiffRequestId) {
+        firstDiffRequestId = Number(args.requestId || 0);
+        return await firstDiff.promise;
       }
+      return { ok: true };
+    });
+    (globalThis as any).window = {
+      host: {
+        gitFeature: { call },
+      },
+    };
+
+    const first = api.getDiffAsync("/repo", { path: "src/a.ts", mode: "working" });
+    await Promise.resolve();
+    const second = api.getDiffAsync("/repo", { path: "src/a.ts", mode: "working" });
+    await Promise.resolve();
+
+    expect(call).toHaveBeenCalledWith(expect.objectContaining({
+      action: "request.cancel",
+      payload: expect.objectContaining({
+        targetRequestId: firstDiffRequestId,
+      }),
+      requestId: 0,
+    }));
+    firstDiff.resolve({ ok: true });
+    await Promise.all([first, second]);
+  });
+
+  it("连续状态刷新不应取消旧 status.get 请求", async () => {
+    const firstStatus = createDeferred<{ ok: boolean }>();
+    const call = vi.fn(async (args: any) => {
+      if (args?.action === "status.get")
+        return await firstStatus.promise;
       return { ok: true };
     });
     (globalThis as any).window = {
@@ -158,12 +187,8 @@ describe("git api alignment", () => {
     const second = api.getStatusAsync("/repo");
     await Promise.resolve();
 
-    expect(call).toHaveBeenCalledWith(expect.objectContaining({
+    expect(call).not.toHaveBeenCalledWith(expect.objectContaining({
       action: "request.cancel",
-      payload: expect.objectContaining({
-        targetRequestId: firstStatusRequestId,
-      }),
-      requestId: 0,
     }));
     firstStatus.resolve({ ok: true });
     await Promise.all([first, second]);
