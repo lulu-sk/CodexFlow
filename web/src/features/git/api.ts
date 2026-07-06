@@ -62,6 +62,8 @@ export type GitFeatureResponse<T = any> = {
   error?: string;
   meta?: {
     requestId: number;
+    staleReadRequest?: boolean;
+    silent?: boolean;
   };
 };
 
@@ -107,6 +109,7 @@ const STALE_CANCEL_GIT_ACTIONS = new Set<string>([
 
 let gitFeatureActivitySeq = 0;
 const latestGitRequestByKey = new Map<string, number>();
+const STALE_GIT_READ_REQUEST_REASON = "已有更新的 Git 读取请求";
 const gitFeatureProgressBridgeState: {
   installed: boolean;
 } = (globalThis as any).__cf_git_feature_progress_bridge_state__ || ((globalThis as any).__cf_git_feature_progress_bridge_state__ = {
@@ -193,11 +196,31 @@ function cancelPreviousStaleGitRequest(requestKey: string, nextRequestId: number
       action: "request.cancel",
       payload: {
         targetRequestId: previousRequestId,
-        reason: "已有更新的 Git 读取请求",
+        reason: STALE_GIT_READ_REQUEST_REASON,
       },
       requestId: 0,
     });
   } catch {}
+}
+
+/**
+ * 判断错误是否来自旧 Git 读取请求取消。
+ */
+export function isStaleGitReadRequestError(raw: unknown, options?: { allowAbort?: boolean }): boolean {
+  const text = String((raw as any)?.message || raw || "").trim();
+  if (text === STALE_GIT_READ_REQUEST_REASON || text.endsWith(`: ${STALE_GIT_READ_REQUEST_REASON}`)) return true;
+  if (options?.allowAbort !== true) return false;
+  const lowerText = text.toLowerCase();
+  return lowerText === "aborted" || lowerText === "error: aborted";
+}
+
+/**
+ * 判断响应是否是旧 Git 读取请求取消，供界面层静默丢弃。
+ */
+export function isStaleGitReadRequestResponse(response: GitFeatureResponse | null | undefined): boolean {
+  if (!response) return false;
+  if (response.meta?.staleReadRequest === true) return true;
+  return isStaleGitReadRequestError(response.error);
 }
 
 /**
@@ -420,11 +443,16 @@ export async function callGitFeatureAsync<T>(action: string, payload?: any): Pro
   }
   try {
     const res = await window.host.gitFeature?.call({ action: normalizedAction, payload, requestId });
-    const normalizedResponse = res
+    const rawResponse = res as GitFeatureResponse<T> | undefined;
+    const rawResponseStale = isStaleGitReadRequestError(rawResponse?.error, { allowAbort: !!staleRequestKey });
+    const normalizedResponse: GitFeatureResponse<T> = rawResponse
       ? ({
-          ...(res as GitFeatureResponse<T>),
+          ...rawResponse,
+          ...(rawResponseStale ? { error: STALE_GIT_READ_REQUEST_REASON } : {}),
           meta: {
+            ...(rawResponse.meta || {}),
             requestId,
+            ...(rawResponseStale ? { staleReadRequest: true, silent: true } : {}),
           },
         } satisfies GitFeatureResponse<T>)
       : { ok: false, error: resolveGitText("activity.errors.featureUnavailable", "Git 功能不可用"), meta: { requestId } };
@@ -452,7 +480,19 @@ export async function callGitFeatureAsync<T>(action: string, payload?: any): Pro
       });
     }
     clearLatestGitRequestMarker(staleRequestKey, requestId);
-    return { ok: false, error: String(e?.message || e), meta: { requestId } };
+    const errorText = String(e?.message || e);
+    if (isStaleGitReadRequestError(errorText, { allowAbort: !!staleRequestKey })) {
+      return {
+        ok: false,
+        error: STALE_GIT_READ_REQUEST_REASON,
+        meta: {
+          requestId,
+          staleReadRequest: true,
+          silent: true,
+        },
+      };
+    }
+    return { ok: false, error: errorText, meta: { requestId } };
   }
 }
 

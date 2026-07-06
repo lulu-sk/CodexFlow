@@ -93,6 +93,7 @@ import {
   getLogDetailsActionAvailabilityAsync,
   getLogMessageDraftAsync,
   importShelvePatchFilesAsync,
+  isStaleGitReadRequestError,
   getPushPreviewAsync,
   getShelvesAsync,
   getStashListAsync,
@@ -224,7 +225,7 @@ import {
   shouldAutoPreviewCommitSelection,
   shouldShowDiffPartialCommit,
 } from "./git-workbench-utils";
-import { toErrorText } from "./error-text";
+import { toErrorText as formatRawGitErrorText } from "./error-text";
 import { resolveGitUpdateMethodLabel } from "./git-i18n";
 import {
   buildCommitDetailsContextMenuGroups,
@@ -762,6 +763,14 @@ function gitWorkbenchText(key: string, fallback: string, values?: Record<string,
     defaultValue: fallback,
     ...(values || {}),
   })), values);
+}
+
+/**
+ * 统一格式化 Git 错误；旧读取请求取消属于内部调度结果，不展示给用户。
+ */
+function toErrorText(raw: unknown, fallback: string): string {
+  if (isStaleGitReadRequestError(raw)) return "";
+  return formatRawGitErrorText(raw, fallback);
 }
 
 /**

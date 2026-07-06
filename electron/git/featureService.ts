@@ -813,6 +813,22 @@ function toGitEditorCommand(execPath: string, scriptPath: string): string {
 }
 
 /**
+ * 生成 Git 编辑器脚本环境，确保打包后的 Electron 可执行文件按 Node 脚本模式运行。
+ */
+function buildGitEditorScriptEnvPatch(
+  sequenceEditorScriptPath: string,
+  commitEditorScriptPath: string,
+  extraEnv?: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  return {
+    ...(extraEnv || {}),
+    ELECTRON_RUN_AS_NODE: "1",
+    GIT_SEQUENCE_EDITOR: toGitEditorCommand(process.execPath, sequenceEditorScriptPath),
+    GIT_EDITOR: toGitEditorCommand(process.execPath, commitEditorScriptPath),
+  };
+}
+
+/**
  * 删除路径（不存在时忽略），用于清理临时脚本目录。
  */
 async function removePathIfExistsAsync(targetPath: string): Promise<void> {
@@ -9306,13 +9322,15 @@ async function runInteractiveRebasePlanActionAsync(
   let artifacts: GitInteractiveRebaseEditorArtifacts | null = null;
   try {
     artifacts = await createGitInteractiveRebaseEditorArtifactsAsync(ctx, todoRows, queueItems);
-    const envPatch: NodeJS.ProcessEnv = {
-      CODEXFLOW_GIT_REBASE_TODO_FILE: artifacts.todoFilePath,
-      CODEXFLOW_GIT_REBASE_QUEUE_FILE: artifacts.queueFilePath,
-      CODEXFLOW_GIT_REBASE_QUEUE_STATE_FILE: artifacts.queueStateFilePath,
-      GIT_SEQUENCE_EDITOR: toGitEditorCommand(process.execPath, artifacts.sequenceEditorScriptPath),
-      GIT_EDITOR: toGitEditorCommand(process.execPath, artifacts.commitEditorScriptPath),
-    };
+    const envPatch = buildGitEditorScriptEnvPatch(
+      artifacts.sequenceEditorScriptPath,
+      artifacts.commitEditorScriptPath,
+      {
+        CODEXFLOW_GIT_REBASE_TODO_FILE: artifacts.todoFilePath,
+        CODEXFLOW_GIT_REBASE_QUEUE_FILE: artifacts.queueFilePath,
+        CODEXFLOW_GIT_REBASE_QUEUE_STATE_FILE: artifacts.queueStateFilePath,
+      },
+    );
     const argv = plan.rootMode
       ? ["rebase", "-i", "--root", "--no-autosquash"]
       : ["rebase", "-i", "--no-autosquash", String(plan.baseHash || "")];
@@ -9820,12 +9838,14 @@ async function runLogActionAsync(ctx: GitFeatureContext, repoRoot: string, paylo
     let artifacts: GitRewordEditorArtifacts | null = null;
     try {
       artifacts = await createGitRewordEditorArtifactsAsync(ctx, message, target);
-      const envPatch: NodeJS.ProcessEnv = {
-        GIT_SEQUENCE_EDITOR: toGitEditorCommand(process.execPath, artifacts.sequenceEditorScriptPath),
-        GIT_EDITOR: toGitEditorCommand(process.execPath, artifacts.commitEditorScriptPath),
-        GIT_REWORD_TARGET: artifacts.targetPrefix,
-        GIT_REWORD_MESSAGE_FILE: artifacts.messageFilePath,
-      };
+      const envPatch = buildGitEditorScriptEnvPatch(
+        artifacts.sequenceEditorScriptPath,
+        artifacts.commitEditorScriptPath,
+        {
+          GIT_REWORD_TARGET: artifacts.targetPrefix,
+          GIT_REWORD_MESSAGE_FILE: artifacts.messageFilePath,
+        },
+      );
       const baseArgv = targetParents.length === 0 ? ["rebase", "-i", "--root"] : ["rebase", "-i", `${target}^`];
       const rebaseRes = await runGitSpawnAsync(ctx, repoRoot, baseArgv, 300_000, envPatch);
       if (!rebaseRes.ok) {
