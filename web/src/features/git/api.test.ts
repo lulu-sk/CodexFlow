@@ -18,6 +18,24 @@ describe("git api alignment", () => {
     return { promise, resolve };
   }
 
+  /**
+   * 构造空日志筛选条件，用于触发可取消的日志读取请求。
+   */
+  function createEmptyLogFilters() {
+    return {
+      text: "",
+      caseSensitive: false,
+      matchMode: "fuzzy" as const,
+      branch: "",
+      author: "",
+      dateFrom: "",
+      dateTo: "",
+      path: "",
+      revision: "",
+      followRenames: false,
+    };
+  }
+
   it("不应再导出 update 专用 shelf API", () => {
     expect("getUpdateShelvesAsync" in api).toBe(false);
     expect("restoreUpdateShelveAsync" in api).toBe(false);
@@ -194,6 +212,60 @@ describe("git api alignment", () => {
     await Promise.all([first, second]);
   });
 
+  it("旧 Git 读请求取消应返回静默标记，避免界面显示为错误", async () => {
+    const call = vi.fn(async () => {
+      throw new Error("已有更新的 Git 读取请求");
+    });
+    (globalThis as any).window = {
+      host: {
+        gitFeature: { call },
+      },
+    };
+
+    const result = await api.getLogAsync("/repo", 0, 200, createEmptyLogFilters());
+
+    expect(result.ok).toBe(false);
+    expect(result.meta?.staleReadRequest).toBe(true);
+    expect(result.meta?.silent).toBe(true);
+    expect(api.isStaleGitReadRequestResponse(result)).toBe(true);
+  });
+
+  it("旧 Git 读请求返回 aborted 时应按内部取消静默处理", async () => {
+    const call = vi.fn(async () => ({ ok: false, error: "aborted" }));
+    (globalThis as any).window = {
+      host: {
+        gitFeature: { call },
+      },
+    };
+
+    const result = await api.getLogAsync("/repo", 0, 200, createEmptyLogFilters());
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("已有更新的 Git 读取请求");
+    expect(result.meta?.staleReadRequest).toBe(true);
+    expect(result.meta?.silent).toBe(true);
+    expect(api.isStaleGitReadRequestResponse(result)).toBe(true);
+  });
+
+  it("旧 Git 读请求抛出 aborted 时应按内部取消静默处理", async () => {
+    const call = vi.fn(async () => {
+      throw new Error("aborted");
+    });
+    (globalThis as any).window = {
+      host: {
+        gitFeature: { call },
+      },
+    };
+
+    const result = await api.getLogAsync("/repo", 0, 200, createEmptyLogFilters());
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("已有更新的 Git 读取请求");
+    expect(result.meta?.staleReadRequest).toBe(true);
+    expect(result.meta?.silent).toBe(true);
+    expect(api.isStaleGitReadRequestResponse(result)).toBe(true);
+  });
+
   it("Git 写请求不应触发旧请求取消，避免误伤提交/暂存等真实操作", async () => {
     const call = vi.fn(async () => ({ ok: true }));
     (globalThis as any).window = {
@@ -211,20 +283,26 @@ describe("git api alignment", () => {
     }));
   });
 
+  it("Git 写请求返回 aborted 不应误标为旧读请求取消", async () => {
+    const call = vi.fn(async () => ({ ok: false, error: "aborted" }));
+    (globalThis as any).window = {
+      host: {
+        gitFeature: { call },
+      },
+    };
+
+    const result = await api.stageFilesAsync("/repo", ["a.txt"]);
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("aborted");
+    expect(result.meta?.staleReadRequest).toBeUndefined();
+    expect(result.meta?.silent).toBeUndefined();
+    expect(api.isStaleGitReadRequestResponse(result)).toBe(false);
+  });
+
   it("日志分页读取应按 cursor 区分取消键，避免加载更多时取消首屏或相邻页", async () => {
     const call = vi.fn(async () => ({ ok: true }));
-    const filters = {
-      text: "",
-      caseSensitive: false,
-      matchMode: "fuzzy" as const,
-      branch: "",
-      author: "",
-      dateFrom: "",
-      dateTo: "",
-      path: "",
-      revision: "",
-      followRenames: false,
-    };
+    const filters = createEmptyLogFilters();
     (globalThis as any).window = {
       host: {
         gitFeature: { call },

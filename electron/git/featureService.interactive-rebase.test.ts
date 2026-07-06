@@ -457,6 +457,9 @@ describe("featureService interactive rebase", () => {
             completed: true,
           }),
         );
+        const rewrittenSubjects = String(await gitAsync(fixture.repo, ["log", "--format=%s", "--reverse"])).trim().split(/\r?\n/);
+        expect(rewrittenSubjects).toContain("one rewritten from log action");
+        expect(rewrittenSubjects).not.toContain("one");
 
         const rewrittenHeadHash = String(await gitAsync(fixture.repo, ["rev-parse", "HEAD"])).trim();
         const deleteRes = await dispatchGitFeatureAction({
