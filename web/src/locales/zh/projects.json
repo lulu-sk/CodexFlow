@@ -160,7 +160,7 @@
   "worktreePostSetupItemsPlaceholder": ".env.local\n.config/local",
   "worktreePostSetupItemsHint": "每行一个项目内相对路径；node_modules、.git、dist 不会被复制。",
   "worktreePostSetupCommandLabel": "创建后执行命令",
-  "worktreePostSetupCommandPlaceholder": "npm ci && npm rebuild better-sqlite3",
+  "worktreePostSetupCommandPlaceholder": "npm ci",
   "worktreePostSetupCommandHint": "命令会在新工作区目录内执行；留空则不执行。",
   "worktreePostSetupApplyAfterReset": "重置后重新应用保留项和命令",
   "worktreePostSetupPreview": "将保留",

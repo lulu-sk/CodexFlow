@@ -149,11 +149,12 @@ npm run build
 * 构建前的 `postinstall` 会将主进程编译到 `dist/electron`,并重建原生模块(如 `node-pty`)。
 * Windows 可执行 `build-release.bat`(传入 `skip-install` 可跳过重新安装依赖)。
 * 若更新了 `/electron/*` 源码,请重新执行 `npm i` 或手动运行 `npx tsc -p tsconfig.json` 以刷新 `dist/electron`；如 `node-pty` 报 ABI 不匹配,可运行 `npm run postinstall` 以重建原生依赖。
+* 原生模块 ABI 会自动切换：`npm run test` 会为 Node 准备 `better-sqlite3`，Electron 开发命令会恢复 Electron 兼容的原生模块。
 
 ### 常用脚本
 
 ```bash
-npm run test        # 使用 Vitest 执行单元测试
+npm run test        # 准备 Node ABI 并使用 Vitest 执行单元测试
 npm run i18n:report # 检查与英文基线的语言键差异
 npm run i18n:check  # CI 使用的严格语言键校验
 ```

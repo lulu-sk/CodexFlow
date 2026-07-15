@@ -160,7 +160,7 @@
   "worktreePostSetupItemsPlaceholder": ".env.local\n.config/local",
   "worktreePostSetupItemsHint": "One project-relative path per line. node_modules, .git, and dist are not copied.",
   "worktreePostSetupCommandLabel": "Command after creation",
-  "worktreePostSetupCommandPlaceholder": "npm ci && npm rebuild better-sqlite3",
+  "worktreePostSetupCommandPlaceholder": "npm ci",
   "worktreePostSetupCommandHint": "Runs in the new worktree directory. Leave blank to skip.",
   "worktreePostSetupApplyAfterReset": "Re-apply post-setup after reset",
   "worktreePostSetupPreview": "Will retain",

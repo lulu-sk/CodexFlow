@@ -148,10 +148,11 @@ npm run build
 * The `postinstall` script compiles the main process to `dist/electron` and rebuilds native modules (like `node-pty`) before packaging.
 * On Windows, you can run `build-release.bat` (passing `skip-install` to skip reinstalling dependencies).
 * If you modify `/electron/*` source code, rerun `npm i` or manually run `npx tsc -p tsconfig.json` to refresh `dist/electron`. If `node-pty` reports an ABI mismatch, run `npm run postinstall` to rebuild native dependencies.
+* Native module ABIs switch automatically: `npm run test` prepares `better-sqlite3` for Node, while Electron development commands restore Electron-compatible native modules.
 
 ### Common Scripts
 ```bash
-npm run test        # Run unit tests with Vitest
+npm run test        # Prepare the Node ABI and run unit tests with Vitest
 npm run i18n:report # Check key differences against the English baseline
 npm run i18n:check  # Strict key validation used in CI
 ```

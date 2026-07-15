@@ -18,7 +18,8 @@ Thank you for your interest in CodexFlow. Please read this guide to keep contrib
 ## Developer Workflow
 
 - Install: `npm i` (compiles Electron main to `dist/electron` and rebuilds native deps).
-- Dev: `npm run dev` (start Vite and Electron together).
+- Dev: `npm run dev` (restore Electron-compatible native modules, then start Vite and Electron together).
+- Test: `npm run test` (rebuild `better-sqlite3` for Node before running Vitest; do not invoke Vitest directly).
 - Build: `npm run build` (equivalent to `npm run build:web && electron-builder`).
 - Rebuild main only: `npx tsc -p tsconfig.electron.json`.
 - Electron version changes or ABI issues: `npm run postinstall` to rebuild native modules such as `node-pty`.

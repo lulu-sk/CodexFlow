@@ -15559,7 +15559,7 @@ export default function CodexFlowManagerUI() {
                   <Input
                     value={worktreePostSetupDialog.commandDraft}
                     onChange={(e: any) => setWorktreePostSetupDialog((prev) => ({ ...prev, commandDraft: e.target.value, error: undefined }))}
-                    placeholder={t("projects:worktreePostSetupCommandPlaceholder", "npm ci && npm rebuild better-sqlite3") as string}
+                    placeholder={t("projects:worktreePostSetupCommandPlaceholder", "npm ci") as string}
                     className="h-8 font-mono text-[11px]"
                     disabled={worktreePostSetupDialog.saving}
                   />
