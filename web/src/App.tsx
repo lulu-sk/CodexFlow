@@ -4884,7 +4884,7 @@ export default function CodexFlowManagerUI() {
   const [historyCtxMenu, setHistoryCtxMenu] = useState<{ show: boolean; x: number; y: number; item: HistorySession | null; groupKey: string | null }>({ show: false, x: 0, y: 0, item: null, groupKey: null });
   const historyCtxMenuRef = useRef<HTMLDivElement | null>(null);
   // 历史删除确认（应用内对话框，替代 window.confirm，避免同步阻塞导致的焦点/指针异常）
-  const [confirmDelete, setConfirmDelete] = useState<{ open: boolean; item: HistorySession | null; groupKey: string | null }>({ open: false, item: null, groupKey: null });
+  const [confirmDelete, setConfirmDelete] = useState<{ open: boolean; item: HistorySession | null; groupKey: string | null; deleting: boolean }>({ open: false, item: null, groupKey: null, deleting: false });
   // 标签关闭确认：手动关闭 working 标签页或带未发送输入内容的标签页时弹出。
   const [closeWorkingTabConfirm, setCloseWorkingTabConfirm] = useState<CloseWorkingTabConfirmState>({
     open: false,
@@ -11258,7 +11258,7 @@ export default function CodexFlowManagerUI() {
    */
   const openHistoryDeleteConfirm = useCallback((item: HistorySession | null, groupKey: string | null) => {
     if (!item) return;
-    setConfirmDelete({ open: true, item, groupKey });
+    setConfirmDelete({ open: true, item, groupKey, deleting: false });
     setHistoryCtxMenu((m) => ({ ...m, show: false }));
   }, []);
 
@@ -13262,6 +13262,7 @@ export default function CodexFlowManagerUI() {
 
       {/* 历史删除确认弹窗（非阻塞） */}
       <Dialog open={confirmDelete.open} onOpenChange={(v) => {
+        if (!v && confirmDelete.deleting) return;
         setConfirmDelete((m) => ({ ...m, open: v }));
         if (!v) {
           try { document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); } catch {}
@@ -13288,12 +13289,13 @@ export default function CodexFlowManagerUI() {
             </DialogDescription>
           </DialogHeader>
           <div className="flex justify-end gap-2 pt-2">
-            <Button variant="outline" onClick={() => setConfirmDelete((m) => ({ ...m, open: false }))}>{t('common:cancel')}</Button>
-            <Button className="border border-red-200 text-red-600 hover:bg-red-50 dark:border-[var(--cf-red-light)] dark:text-[var(--cf-red)] dark:hover:bg-[var(--cf-red-light)]" variant="secondary" onClick={async () => {
+            <Button variant="outline" disabled={confirmDelete.deleting} onClick={() => setConfirmDelete((m) => ({ ...m, open: false }))}>{t('common:cancel')}</Button>
+            <Button data-cf-dialog-primary="true" disabled={confirmDelete.deleting} className="border border-red-200 text-red-600 hover:bg-red-50 dark:border-[var(--cf-red-light)] dark:text-[var(--cf-red)] dark:hover:bg-[var(--cf-red-light)]" variant="secondary" onClick={async () => {
               try {
                 const it = confirmDelete.item; const fallbackKey = it ? historyTimelineGroupKey(it, new Date()) : HISTORY_UNKNOWN_GROUP_KEY;
                 const key = confirmDelete.groupKey || fallbackKey;
                 if (!it?.filePath) { setConfirmDelete((m) => ({ ...m, open: false })); return; }
+                setConfirmDelete((m) => ({ ...m, deleting: true }));
                 const res: any = await window.host.history.trash({ filePath: it.filePath });
                 if (!(res && res.ok)) { alert(String(t('history:cannotDelete', { error: res && res.error ? res.error : 'unknown' }))); setConfirmDelete((m) => ({ ...m, open: false })); return; }
                 setHistorySessions((cur) => {
@@ -13334,13 +13336,14 @@ export default function CodexFlowManagerUI() {
               } catch (err: any) {
                 alert(String(t('history:deleteFailed', { error: String(err) })));
               } finally {
-                setConfirmDelete((m) => ({ ...m, open: false }));
+                setConfirmDelete({ open: false, item: null, groupKey: null, deleting: false });
                 // 释放可能残留的指针捕获
                 try { document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); } catch {}
                 try { document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true } as any)); } catch {}
               }
             }}>
-              <Trash2 className="mr-2 h-4 w-4" /> {t('settings:cleanupConfirm.confirm')}
+              {confirmDelete.deleting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Trash2 className="mr-2 h-4 w-4" />}
+              {confirmDelete.deleting ? t('history:deletingPermanently') : t('settings:cleanupConfirm.confirm')}
             </Button>
           </div>
         </DialogContent>

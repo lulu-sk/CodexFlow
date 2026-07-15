@@ -5019,7 +5019,8 @@ ipcMain.handle('history.trashMany', async (_e, { filePaths }: { filePaths: strin
         if ((r as any).notFound) notFoundCount++; else okCount++;
       } else failCount++;
     }
-    await cleanupCodexStateForDeletedPathsSafely(Array.from(codexStateCleanupPaths), 'history.trashMany');
+    // SQLite 状态清理属于删除后的辅助收尾，不应阻塞删除结果返回与界面反馈。
+    void cleanupCodexStateForDeletedPathsSafely(Array.from(codexStateCleanupPaths), 'history.trashMany');
 
     return { ok: true, results, summary: { ok: okCount, notFound: notFoundCount, failed: failCount } } as any;
   } catch (e: any) {
@@ -5051,7 +5052,8 @@ ipcMain.handle('history.trash', async (_e, { filePath }: { filePath: string }) =
     // 候选均不存在则视为成功（无需删除）
     const anyExists = deleteCandidates.some((c) => { try { return fs.existsSync(c); } catch { return false; } });
     if (!anyExists) {
-      await cleanupCodexStateForDeletedPathsSafely([p0, ...deleteCandidates], 'history.trash.notFound');
+      // 即使文件已不存在，也在后台清理可能残留的 Codex 状态。
+      void cleanupCodexStateForDeletedPathsSafely([p0, ...deleteCandidates], 'history.trash.notFound');
       return { ok: true, notFound: true } as any;
     }
     // 依次尝试候选：永久删除
@@ -5078,7 +5080,8 @@ ipcMain.handle('history.trash', async (_e, { filePath }: { filePath: string }) =
       try { return fs.existsSync(cand); } catch { return false; }
     });
     if (deletedAny && remaining.length === 0) {
-      await cleanupCodexStateForDeletedPathsSafely([p0, ...deleteCandidates], 'history.trash');
+      // 历史文件、索引和缓存均已处理完成，SQLite 收尾无需继续占用删除弹窗。
+      void cleanupCodexStateForDeletedPathsSafely([p0, ...deleteCandidates], 'history.trash');
       return { ok: true };
     }
     const details = [...failed.map(f => `${f.cand}: ${String(f.err)}`), ...remaining.map((cand) => `${cand}: still_exists`)].join('; ');
