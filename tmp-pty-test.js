@@ -1,4 +1,4 @@
-﻿const pty = require('@lydell/node-pty');
+const pty = require('node-pty');
 const shell = process.env.SHELL_FOR_TEST || 'powershell.exe';
 const proc = pty.spawn(shell, ['-NoLogo'], { name: 'xterm-256color', cols: 120, rows: 30 });
 proc.onData((data) => {

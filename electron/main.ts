@@ -2921,7 +2921,7 @@ ipcMain.handle('pty:open', async (_event, args: {
   // 中文说明：打开 PTY 是标签页点击热路径；这里不做 WSL 枚举/CLI 检测，直接按请求环境启动。
   const requestedTerminal = args?.terminal ? normalizeTerminal(args.terminal) : undefined;
   const requestedDistro = String(args?.distro || "").trim();
-  const opened = ptyManager.openWSLConsole({
+  const opened = await ptyManager.openWSLConsole({
     terminal: requestedTerminal,
     distro: requestedDistro,
     wslPath: args?.wslPath,
@@ -2960,6 +2960,22 @@ ipcMain.handle('pty:backlog', async (_e, args: { id: string; maxChars?: number }
 
 ipcMain.on('pty:write', (_e, { id, data }: { id: string; data: string }) => {
   ptyManager.write(id, data);
+});
+
+ipcMain.on('pty:ready', (_e, payload: {
+  id?: unknown;
+  colors?: { foreground?: unknown; background?: unknown };
+}) => {
+  const id = String(payload?.id || "").trim();
+  const colors = {
+    foreground: typeof payload?.colors?.foreground === "string"
+      ? payload.colors.foreground.slice(0, 32)
+      : undefined,
+    background: typeof payload?.colors?.background === "string"
+      ? payload.colors.background.slice(0, 32)
+      : undefined,
+  };
+  ptyManager.ready(id, colors);
 });
 
 ipcMain.on('pty:resize', (_e, { id, cols, rows }: { id: string; cols: number; rows: number }) => {

@@ -4,12 +4,21 @@
 import os from 'node:os';
 import settings from './settings.js';
 import { resolveWindowsShell, type TerminalMode } from './shells.js';
-import type { IPty } from '@lydell/node-pty';
-import * as pty from '@lydell/node-pty';
+import type { IPty } from 'node-pty';
+import * as pty from 'node-pty';
 import { BrowserWindow } from 'electron';
 import { perfLogger } from './log.js';
 import { getDebugConfig } from './debugConfig.js';
 import { safeWindowSend } from './ipcSafe';
+import {
+  applyTerminalCapabilityEnvironment,
+  normalizeTerminalCapabilitySettings,
+  sanitizeInheritedTerminalColorEnvironment,
+} from './terminalCapabilities';
+import {
+  type TerminalPaletteColors,
+} from './wslConpty.js';
+import { spawnIsolatedWslConpty } from './wslConptyProxy.js';
 
 // 终端日志总开关（主进程）。默认关闭，由统一调试配置控制，也可通过 IPC 置位。
 let TERM_DEBUG = (() => { try { return !!(getDebugConfig().terminal.pty.debug); } catch { return false; } })();
@@ -26,6 +35,8 @@ const PTY_IPC_FLUSH_MS = 16;
 // 中文说明：单个 PTY 在一次 flush 窗口内允许积累的最大字符数（超过则裁剪旧数据）。
 // 目的：避免渲染卡顿/不可见时 IPC 队列与字符串拼接无上限增长，最终导致白屏/崩溃。
 const PTY_IPC_MAX_PENDING_CHARS = 280_000;
+// 旧渲染进程未发送 ready 时仍允许原生终端启动，避免永久停在空 shell。
+const PTY_STARTUP_READY_FALLBACK_MS = 2_000;
 
 /**
  * 将字符串转换为 Bash 单引号安全字面量。
@@ -174,6 +185,15 @@ type PtyIpcPendingState = {
   droppedChars: number;
 };
 
+type PtyPendingWindowsStartupState = {
+  timer: NodeJS.Timeout | null;
+  attempt: NodeJS.Immediate | null;
+  startupNotice: string;
+  startupCmd: string;
+  mode: "windows" | "pwsh" | "cmd";
+  frontendReady: boolean;
+};
+
 export type PtyOpenResult = {
   id: string;
   terminal: TerminalMode;
@@ -185,6 +205,8 @@ export class PTYManager {
   private sessions = new Map<string, IPty>();
   private backlogs = new Map<string, PtyBacklogBuffer>();
   private ipcPendingById = new Map<string, PtyIpcPendingState>();
+  private pendingWindowsStartupById = new Map<string, PtyPendingWindowsStartupState>();
+  private pausedPtyIds = new Set<string>();
   private getWindows: () => BrowserWindow[];
 
   constructor(getWindows: () => BrowserWindow[]) {
@@ -330,6 +352,7 @@ export class PTYManager {
     const hadSession = this.sessions.has(key);
     // 先 flush，避免短命令最后一段输出卡在合并队列中。
     try { this.flushPtyData(key); } catch {}
+    this.clearPendingWindowsStartup(key);
     this.sessions.delete(key);
     try { this.clearPendingPtyData(key); } catch {}
     try { this.backlogs.get(key)?.clear(); } catch {}
@@ -337,6 +360,69 @@ export class PTYManager {
     if (hadSession) {
       this.sendToRenderer('pty:exit', { id: key, exitCode });
     }
+  }
+
+  /** 登记 Windows 原生终端的启动命令，等待 xterm 双向连接稳定后执行。 */
+  private queuePendingWindowsStartup(
+    id: string,
+    state: Pick<PtyPendingWindowsStartupState, "startupNotice" | "startupCmd" | "mode">,
+  ): void {
+    if (!state.startupNotice && !state.startupCmd)
+      return;
+    const timer = setTimeout(() => {
+      const pending = this.pendingWindowsStartupById.get(id);
+      if (!pending)
+        return;
+      pending.frontendReady = true;
+      this.schedulePendingWindowsStartup(id, "fallback");
+    }, PTY_STARTUP_READY_FALLBACK_MS);
+    try { timer.unref(); } catch {}
+    this.pendingWindowsStartupById.set(id, {
+      ...state,
+      timer,
+      attempt: null,
+      frontendReady: false,
+    });
+  }
+
+  /** 在当前一轮 IPC 消息处理完成后尝试释放原生终端启动命令。 */
+  private schedulePendingWindowsStartup(id: string, source: "ready" | "resume" | "fallback"): void {
+    const pending = this.pendingWindowsStartupById.get(id);
+    if (!pending?.frontendReady || pending.attempt)
+      return;
+    pending.attempt = setImmediate(() => {
+      const current = this.pendingWindowsStartupById.get(id);
+      if (!current)
+        return;
+      current.attempt = null;
+      if (!current.frontendReady || this.pausedPtyIds.has(id))
+        return;
+      this.pendingWindowsStartupById.delete(id);
+      if (current.timer)
+        clearTimeout(current.timer);
+      const proc = this.sessions.get(id);
+      if (!proc)
+        return;
+      if (current.startupNotice) {
+        try { proc.write(current.startupNotice); } catch {}
+      }
+      if (!current.startupCmd)
+        return;
+      proc.write(`${current.startupCmd}\r`);
+      dlog(`[pty] startupCmd executed source=${source} id=${id} shell=${current.mode}`);
+    });
+    try { pending.attempt.unref(); } catch {}
+  }
+
+  /** 清理尚未执行的原生终端启动命令及其计时器。 */
+  private clearPendingWindowsStartup(id: string): void {
+    const pending = this.pendingWindowsStartupById.get(id);
+    if (pending?.timer)
+      clearTimeout(pending.timer);
+    if (pending?.attempt)
+      clearImmediate(pending.attempt);
+    this.pendingWindowsStartupById.delete(id);
+    this.pausedPtyIds.delete(id);
   }
 
   /**
@@ -368,7 +454,7 @@ export class PTYManager {
    * 打开一个 PTY 会话。
    * - 允许通过 opts.terminal 覆盖全局 settings.terminal，用于实现 Provider 级别环境隔离。
    */
-  openWSLConsole(opts: { terminal?: TerminalMode; distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string; env?: Record<string, string> }): PtyOpenResult {
+  async openWSLConsole(opts: { terminal?: TerminalMode; distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string; env?: Record<string, string> }): Promise<PtyOpenResult> {
     const distro = opts.distro || 'Ubuntu-22.04';
     const wslPath = opts.wslPath || '~';
     const winPath = String(opts.winPath || '').trim();
@@ -380,8 +466,23 @@ export class PTYManager {
 
     const id = uid();
 
-    let env = { ...process.env } as Record<string, string>;
+    let env = sanitizeInheritedTerminalColorEnvironment(
+      { ...process.env } as Record<string, string>,
+    );
     env = mergeExtraEnv(env, opts.env);
+    const terminalCapabilities = normalizeTerminalCapabilitySettings(
+      settings.getTerminalCapabilitySettings(),
+    );
+    env = applyTerminalCapabilityEnvironment(env, terminalCapabilities);
+    const capabilityEnvKeys: string[] = [];
+    if (terminalCapabilities.normalizeTerm && String(env.TERM || "").trim())
+      capabilityEnvKeys.push("TERM");
+    if (
+      terminalCapabilities.trueColor
+      && !Object.prototype.hasOwnProperty.call(env, "NO_COLOR")
+      && String(env.COLORTERM || "").trim()
+    )
+      capabilityEnvKeys.push("COLORTERM");
 
     // 根据设置选择 WSL 或 Windows 本地终端
     let termMode = (opts.terminal || settings.getSettings().terminal || 'wsl');
@@ -421,18 +522,29 @@ export class PTYManager {
           args.push('--cd', wslPath);
         }
       }
-      if (os.platform() === 'win32' && opts.env && Object.keys(opts.env).length > 0) {
-        const keys = Object.keys(opts.env).map((k) => String(k || "").trim()).filter(Boolean);
+      if (os.platform() === 'win32') {
+        const keys = [
+          ...Object.keys(opts.env || {}),
+          ...capabilityEnvKeys,
+        ].map((key) => String(key || "").trim()).filter(Boolean);
         if (keys.length > 0) env.WSLENV = appendWslEnv(env.WSLENV, keys);
       }
       try {
-        proc = pty.spawn(shell, args, {
-          name: 'xterm-256color',
-          cols,
-          rows,
-          cwd: undefined,
-          env
+        const wslPty = await spawnIsolatedWslConpty({
+          file: shell,
+          args,
+          ptyOptions: {
+            name: 'xterm-256color',
+            cols,
+            rows,
+            cwd: undefined,
+            env,
+          },
+          onFallback: (reason) => dlog(`[pty] bundled ConPTY fallback to system ConPTY: ${reason}`),
+          onDiagnostic: (message) => dlog(`[pty] WSL protocol id=${id} ${message}`),
         });
+        proc = wslPty;
+        dlog(`[pty] WSL ConPTY backend=${wslPty.backend} host=isolated`);
       } catch (error: any) {
         const resolved = resolveWindowsShell('windows');
         termMode = 'windows';
@@ -463,32 +575,41 @@ export class PTYManager {
       this.cleanupExitedSession(id, evt?.exitCode);
     });
 
-    // 关键修复：延迟执行 startupCmd，确保前端有足够时间订阅 'pty:data' 事件
-    // 使用 setImmediate 让前端的 IPC 订阅先完成，避免早期输出（包括 OSC 通知）丢失
+    // Windows 原生终端等待前端绑定和首次 resize 稳定；WSL 在隔离宿主内独立门控。
     if (startupNotice || startupCmd) {
       const isWin = os.platform() === 'win32';
       const mode = isWin ? (termMode || 'wsl') : 'posix';
       const isWinShell = mode === 'windows' || mode === 'pwsh' || mode === 'cmd';
-      setImmediate(() => {
-        const p = this.sessions.get(id);
-        if (!p) return; // PTY 可能已关闭
-        if (startupNotice) {
-          try { p.write(startupNotice); } catch {}
-        }
-        if (!startupCmd) return;
-        if (isWinShell) {
-          // Windows 本地 shell 中直接执行命令（cwd 已设置）
-          p.write(`${startupCmd}\r`);
-          dlog(`[pty] startupCmd executed (windows) id=${id} shell=${mode}`);
-        } else if (isWin) {
-          // WSL：通过 bash -lc 执行
-          p.write(`bash -lc ${bashSingleQuote(startupCmd)}\r`);
-          dlog(`[pty] startupCmd executed (wsl) id=${id}`);
-        } else {
-          p.write(`${startupCmd}\r`);
-          dlog(`[pty] startupCmd executed (posix) id=${id}`);
-        }
-      });
+      if (isWinShell) {
+        this.queuePendingWindowsStartup(id, {
+          startupNotice,
+          startupCmd,
+          mode,
+        });
+      } else {
+        setImmediate(() => {
+          const p = this.sessions.get(id);
+          if (!p) return;
+          if (startupNotice) {
+            try { p.write(startupNotice); } catch {}
+          }
+          if (!startupCmd) return;
+          if (isWin) {
+            const command = `bash -lc ${bashSingleQuote(startupCmd)}\r`;
+            const frontendAwarePty = p as IPty & { writeWhenFrontendReady?: (data: string) => void };
+            if (typeof frontendAwarePty.writeWhenFrontendReady === 'function') {
+              frontendAwarePty.writeWhenFrontendReady(command);
+              dlog(`[pty] startupCmd queued until frontend ready (wsl) id=${id}`);
+            } else {
+              p.write(command);
+              dlog(`[pty] startupCmd executed (wsl-conpty) id=${id}`);
+            }
+          } else {
+            p.write(`${startupCmd}\r`);
+            dlog(`[pty] startupCmd executed (posix) id=${id}`);
+          }
+        });
+      }
     }
 
     return { id, terminal: termMode as TerminalMode, distro, fallbackReason };
@@ -502,6 +623,27 @@ export class PTYManager {
   write(id: string, data: string) {
     const p = this.sessions.get(id);
     if (p) p.write(data);
+  }
+
+  /**
+   * 通知 PTY：xterm.js 已完成双向绑定；WSL 同步主题色，原生终端释放启动门控。
+   * @param id PTY 会话 id
+   * @param colors 当前终端主题的前景色与背景色
+   */
+  ready(id: string, colors?: Partial<TerminalPaletteColors>): void {
+    const key = String(id || '').trim();
+    const pendingWindowsStartup = this.pendingWindowsStartupById.get(key);
+    if (pendingWindowsStartup) {
+      pendingWindowsStartup.frontendReady = true;
+      this.schedulePendingWindowsStartup(key, "ready");
+    }
+    const p = this.sessions.get(key) as (
+      IPty & { markFrontendReady?: (colors?: Partial<TerminalPaletteColors>) => void }
+    ) | undefined;
+    if (typeof p?.markFrontendReady !== 'function')
+      return;
+    p.markFrontendReady(colors);
+    dlog(`[pty] frontend ready id=${key} mode=wsl-conpty`);
   }
 
   /**
@@ -539,6 +681,7 @@ export class PTYManager {
       try { p.kill(); } catch { /* noop */ }
       this.sessions.delete(id);
     }
+    this.clearPendingWindowsStartup(id);
     // 中文说明：关闭时尽量把最后的 pending 输出发送出去，避免 UI 看到“少一截”。
     try { this.flushPtyData(id); } catch {}
     try { this.clearPendingPtyData(id); } catch {}
@@ -553,6 +696,8 @@ export class PTYManager {
    */
   pause(id: string) {
     const p = this.sessions.get(id);
+    if (this.pendingWindowsStartupById.has(id))
+      this.pausedPtyIds.add(id);
     dlog(`[pty] pause id=${id}`);
     try { p?.pause(); } catch {}
   }
@@ -565,6 +710,8 @@ export class PTYManager {
     const p = this.sessions.get(id);
     dlog(`[pty] resume id=${id}`);
     try { p?.resume(); } catch {}
+    this.pausedPtyIds.delete(id);
+    this.schedulePendingWindowsStartup(id, "resume");
   }
 
   // 与前端清屏同步，通知 ConPTY 清除其内部缓冲（仅 Windows/ConPTY 有效，其他平台为 no-op）
@@ -584,6 +731,7 @@ export class PTYManager {
   disposeAll() {
     for (const [id, p] of Array.from(this.sessions.entries())) {
       try { p.kill(); } catch {}
+      this.clearPendingWindowsStartup(id);
       this.sessions.delete(id);
       // 中文说明：同 close(id)，在全量清理时也尽量 flush 尾部输出。
       try { this.flushPtyData(id); } catch {}

@@ -32,7 +32,7 @@
     "typecheck:web": "tsc -p web/tsconfig.typecheck.json"
   },
   "dependencies": {
-    "@lydell/node-pty": "^1.1.0",
+    "node-pty": "1.1.0",
     "better-sqlite3": "^11.10.0",
     "chokidar": "^3.6.0",
     "iconv-lite": "^0.6.3",
@@ -98,14 +98,23 @@
       "web/dist/**",
       "package.json",
       "LICENSE",
-      "NOTICE"
+      "NOTICE",
+      "!node_modules/node-pty/deps/**",
+      "!node_modules/node-pty/lib/**/*.map",
+      "!node_modules/node-pty/lib/**/*.test.js",
+      "!node_modules/node-pty/node_modules/node-addon-api/**",
+      "!node_modules/node-pty/scripts/**",
+      "!node_modules/node-pty/src/**",
+      "!node_modules/node-pty/third_party/**",
+      "!node_modules/node-pty/**/*.pdb"
     ],
     "compression": "maximum",
     "directories": {
       "buildResources": "build"
     },
     "asarUnpack": [
-      "node_modules/@lydell/node-pty/build/Release/**",
+      "node_modules/node-pty/build/Release/**",
+      "node_modules/node-pty/prebuilds/**",
       "node_modules/better-sqlite3/build/Release/**"
     ],
     "extraResources": [
@@ -125,6 +134,23 @@
       }
     ],
     "win": {
+      "files": [
+        "dist/electron/**",
+        "web/dist/**",
+        "package.json",
+        "LICENSE",
+        "NOTICE",
+        "!node_modules/node-pty/deps/**",
+        "!node_modules/node-pty/lib/**/*.map",
+        "!node_modules/node-pty/lib/**/*.test.js",
+        "!node_modules/node-pty/node_modules/node-addon-api/**",
+        "!node_modules/node-pty/scripts/**",
+        "!node_modules/node-pty/src/**",
+        "!node_modules/node-pty/third_party/**",
+        "!node_modules/node-pty/**/*.pdb",
+        "!node_modules/node-pty/prebuilds/darwin-*/**",
+        "!node_modules/node-pty/prebuilds/win32-arm64/**"
+      ],
       "icon": "build/icon.ico",
       "publisherName": [
         "Lulu"

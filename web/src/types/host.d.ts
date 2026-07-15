@@ -88,6 +88,13 @@ export type ProvidersSettings = {
 export type AppSettings = {
   terminal?: TerminalMode;
   terminalTheme?: TerminalThemeId;
+  /** 内置终端向 CLI 声明的兼容性与颜色能力。 */
+  terminalCapabilities?: {
+    /** 缺失或为 dumb 时补齐 TERM=xterm-256color。 */
+    normalizeTerm?: boolean;
+    /** 缺失且未声明 NO_COLOR 时补齐 COLORTERM=truecolor。 */
+    trueColor?: boolean;
+  };
   distro: string;
   codexCmd: string;
   providers?: ProvidersSettings;
@@ -410,6 +417,8 @@ export interface PtyAPI {
   /** 读取 PTY 的尾部输出缓存（用于渲染进程 reload/HMR 后恢复终端滚动区）。 */
   backlog?: (id: string, args?: { maxChars?: number }) => Promise<{ ok: boolean; data?: string; error?: string }>;
   write(id: string, data: string): void;
+  /** 通知主进程 xterm.js 已完成双向绑定，并同步当前终端主题色。 */
+  ready?: (id: string, colors?: { foreground: string; background: string }) => void;
   resize(id: string, cols: number, rows: number): void;
   close(id: string): void;
   onData(id: string, handler: (data: string) => void): () => void;

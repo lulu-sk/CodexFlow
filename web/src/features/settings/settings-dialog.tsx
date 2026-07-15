@@ -90,6 +90,10 @@ type NotificationPrefs = {
   sound: boolean;
   subagent: boolean;
 };
+type TerminalCapabilitiesPrefs = {
+  normalizeTerm: boolean;
+  trueColor: boolean;
+};
 type ExternalGitToolId = "rider" | "sourcetree" | "fork" | "gitkraken" | "custom";
 type GitWorktreePrefs = {
   gitPath: string;
@@ -179,6 +183,7 @@ export type SettingsDialogProps = {
     defaultIde: IdeOpenPrefs;
     terminalFontFamily: string;
     terminalTheme: TerminalThemeId;
+    terminalCapabilities: TerminalCapabilitiesPrefs;
     claudeCodeReadAgentHistory: boolean;
     multiInstanceEnabled: boolean;
     gitWorktree: GitWorktreePrefs;
@@ -201,6 +206,7 @@ export type SettingsDialogProps = {
     defaultIde: IdeOpenPrefs;
     terminalFontFamily: string;
     terminalTheme: TerminalThemeId;
+    terminalCapabilities: TerminalCapabilitiesPrefs;
     claudeCodeReadAgentHistory: boolean;
     multiInstanceEnabled: boolean;
     gitWorktree: GitWorktreePrefs;
@@ -648,6 +654,10 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   const [theme, setTheme] = useState<ThemeSetting>(normalizeThemeSetting(values.theme));
   const [multiInstanceEnabled, setMultiInstanceEnabled] = useState<boolean>(!!values.multiInstanceEnabled);
   const [terminalTheme, setTerminalTheme] = useState<TerminalThemeId>(values.terminalTheme);
+  const [terminalCapabilities, setTerminalCapabilities] = useState<TerminalCapabilitiesPrefs>({
+    normalizeTerm: values.terminalCapabilities?.normalizeTerm !== false,
+    trueColor: values.terminalCapabilities?.trueColor === true,
+  });
   const [systemTheme, setSystemTheme] = useState<ThemeMode>(() => resolveSystemTheme());
   const [availableDistros, setAvailableDistros] = useState<string[]>([]);
   const [terminalFontFamily, setTerminalFontFamily] = useState<string>(normalizeTerminalFontFamily(values.terminalFontFamily));
@@ -781,6 +791,10 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     setGitWorktreeCopyRulesOnCreate(values.gitWorktree?.copyRulesOnCreate !== false);
     setTerminalFontFamily(normalizeTerminalFontFamily(values.terminalFontFamily));
     setTerminalTheme(normalizeTerminalTheme(values.terminalTheme));
+    setTerminalCapabilities({
+      normalizeTerm: values.terminalCapabilities?.normalizeTerm !== false,
+      trueColor: values.terminalCapabilities?.trueColor === true,
+    });
   }, [open]);
 
   /**
@@ -2612,6 +2626,57 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                 </CardContent>
               </Card>
 
+              <Card>
+                <details className="group">
+                  <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-6 py-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--cf-accent)] [&::-webkit-details-marker]:hidden">
+                    <div className="min-w-0">
+                      <CardTitle>{t("settings:terminalCapabilities.label")}</CardTitle>
+                      <p className="mt-1 text-sm font-normal text-slate-500 dark:text-[var(--cf-text-secondary)]">
+                        {t("settings:terminalCapabilities.help")}
+                      </p>
+                    </div>
+                    <ChevronDown className="h-4 w-4 shrink-0 text-slate-500 transition-transform duration-200 group-open:rotate-180 motion-reduce:transition-none" />
+                  </summary>
+                  <CardContent className="space-y-3 border-t border-slate-200/70 pt-4 dark:border-[var(--cf-border)]">
+                    <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200/70 bg-white/60 px-3 py-3 shadow-sm transition-colors hover:bg-slate-50 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:text-[var(--cf-text-primary)] dark:hover:bg-[var(--cf-surface-hover)] motion-reduce:transition-none">
+                      <input
+                        type="checkbox"
+                        className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)] dark:checked:bg-[var(--cf-accent)] dark:focus-visible:ring-[var(--cf-accent)]/40"
+                        checked={terminalCapabilities.normalizeTerm}
+                        onChange={(event) => setTerminalCapabilities((current) => ({ ...current, normalizeTerm: event.target.checked }))}
+                      />
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium text-slate-800 dark:text-[var(--cf-text-primary)]">
+                          {t("settings:terminalCapabilities.normalizeTerm.label")}
+                        </div>
+                        <p className="text-xs text-slate-500 dark:text-[var(--cf-text-secondary)]">
+                          {t("settings:terminalCapabilities.normalizeTerm.desc")}
+                        </p>
+                      </div>
+                    </label>
+                    <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200/70 bg-white/60 px-3 py-3 shadow-sm transition-colors hover:bg-slate-50 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:text-[var(--cf-text-primary)] dark:hover:bg-[var(--cf-surface-hover)] motion-reduce:transition-none">
+                      <input
+                        type="checkbox"
+                        className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)] dark:checked:bg-[var(--cf-accent)] dark:focus-visible:ring-[var(--cf-accent)]/40"
+                        checked={terminalCapabilities.trueColor}
+                        onChange={(event) => setTerminalCapabilities((current) => ({ ...current, trueColor: event.target.checked }))}
+                      />
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium text-slate-800 dark:text-[var(--cf-text-primary)]">
+                          {t("settings:terminalCapabilities.trueColor.label")}
+                        </div>
+                        <p className="text-xs text-slate-500 dark:text-[var(--cf-text-secondary)]">
+                          {t("settings:terminalCapabilities.trueColor.desc")}
+                        </p>
+                      </div>
+                    </label>
+                    <p className="text-xs text-slate-500 dark:text-[var(--cf-text-secondary)]">
+                      {t("settings:terminalCapabilities.note")}
+                    </p>
+                  </CardContent>
+                </details>
+              </Card>
+
             </div>
           ),
         };
@@ -3106,6 +3171,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     t,
     terminalFontFamily,
     terminalTheme,
+    terminalCapabilities,
     themeLabel,
     systemThemeLabel,
     providersActiveId,
@@ -3299,6 +3365,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                           },
 	                        terminalFontFamily: normalizeTerminalFontFamily(terminalFontFamily),
 	                        terminalTheme,
+                          terminalCapabilities,
 	                        claudeCodeReadAgentHistory,
 	                      });
                       onOpenChange(false);
