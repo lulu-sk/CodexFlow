@@ -9,6 +9,7 @@ import {
 } from '@/adapters/TerminalAdapter';
 import { isWindowsLikeTerminal, type TerminalMode } from '@/lib/shell';
 import {
+  getTerminalTheme,
   normalizeTerminalAppearance,
   type TerminalAppearance,
 } from '@/lib/terminal-appearance';
@@ -114,6 +115,8 @@ const NON_TEXT_INPUT_TYPES = new Set([
 export interface HostPtyAPI {
   onData: (id: string, handler: (data: string) => void) => (() => void);
   write: (id: string, data: string) => void;
+  /** 通知主进程 xterm.js 已完成双向绑定，并同步当前终端主题色。 */
+  ready?: (id: string, colors?: { foreground: string; background: string }) => void;
   resize: (id: string, cols: number, rows: number) => void;
   close: (id: string) => void;
   // 可选：暂停/恢复数据流及清屏（与 ConPTY 同步）
@@ -2525,10 +2528,25 @@ export default class TerminalManager {
     for (const [tabId, adapter] of Object.entries(this.adapters)) {
       if (!adapter) continue;
       try { adapter.setAppearance(next); } catch {}
+      if (themeChanged) {
+        const ptyId = this.getPtyId(tabId);
+        if (ptyId) {
+          try { this.notifyPtyFrontendReady(ptyId); } catch {}
+        }
+      }
       if (fontChanged) {
         try { this.scheduleResizeSync(tabId, true); } catch {}
       }
     }
+  }
+
+  /** 通知主进程前端已经绑定，并把当前主题的默认前景色与背景色一并同步。 */
+  private notifyPtyFrontendReady(ptyId: string): void {
+    const palette = getTerminalTheme(this.appearance.theme).palette;
+    this.hostPty.ready?.(ptyId, {
+      foreground: palette.foreground,
+      background: palette.background,
+    });
   }
 
   /**
@@ -2542,10 +2560,11 @@ export default class TerminalManager {
     try { this.inputUnsubByTab[tabId]?.(); } catch {}
     this.unsubByTab[tabId] = this.hostPty.onData(ptyId, (data) => adapter!.write(data));
     this.inputUnsubByTab[tabId] = adapter.onData((data) => this.hostPty.write(ptyId, data));
-    // 首次绑定后立即同步一次（走统一的去重/阈值/防抖逻辑，立即 flush）
+    // 先发出首次 resize 的 pause/resize，再通知 ready；主进程会等对应 resume 后启动原生 Codex。
     if (!options?.skipInitialResize) {
       try { this.scheduleResizeSync(tabId, true); } catch {}
     }
+    try { this.notifyPtyFrontendReady(ptyId); } catch {}
   }
 
   /**

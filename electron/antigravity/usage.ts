@@ -6,7 +6,7 @@ import path from "node:path";
 import http from "node:http";
 import https from "node:https";
 import { execFile } from "node:child_process";
-import * as pty from "@lydell/node-pty";
+import * as pty from "node-pty";
 import { perfLogger } from "../log";
 
 export type AntigravityUsageWindow = {

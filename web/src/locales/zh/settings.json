@@ -249,6 +249,19 @@
       "fira": "Fira Code"
     }
   },
+  "terminalCapabilities": {
+    "label": "高级终端兼容性",
+    "help": "控制内置终端向命令行程序声明的交互与颜色能力。",
+    "normalizeTerm": {
+      "label": "增强终端兼容性（推荐）",
+      "desc": "当 TERM 缺失或为 dumb 时补齐 xterm-256color；不会覆盖其他有效值。"
+    },
+    "trueColor": {
+      "label": "24 位真彩色",
+      "desc": "在未设置 COLORTERM 且没有 NO_COLOR 时声明 truecolor；不会覆盖用户已有值。"
+    },
+    "note": "保存后仅影响新打开的终端，现有终端保持不变。"
+  },
   "loading": "加载中…",
   "codexTrace": {
     "label": "Codex TUI 调试",

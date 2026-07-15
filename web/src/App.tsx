@@ -112,6 +112,10 @@ import {
   listManagedWorktreeChildIds as listManagedWorktreeChildIdsFromStore,
   resolveWorktreeManagementParentProjectId as resolveWorktreeManagementParentProjectIdFromStore,
 } from "@/lib/worktree-management";
+import {
+  areProviderEnvironmentsEqual,
+  isCurrentProviderEnvironmentRequest,
+} from "@/lib/providers/environment";
 import { normalizeProvidersSettings } from "@/lib/providers/normalize";
 import { isBuiltInSessionProviderId, openaiIconUrl, openaiDarkIconUrl, claudeIconUrl, geminiIconUrl, antigravityIconUrl } from "@/lib/providers/builtins";
 import { BUILT_IN_AGENT_PROVIDER_IDS, isBuiltInAgentProviderId } from "@/lib/providers/ids";
@@ -1740,6 +1744,7 @@ export default function CodexFlowManagerUI() {
   const [terminalMode, setTerminalMode] = useState<TerminalMode>('wsl');
   const [terminalFontFamily, setTerminalFontFamily] = useState<string>(DEFAULT_TERMINAL_FONT_FAMILY);
   const [terminalTheme, setTerminalTheme] = useState<TerminalThemeId>(DEFAULT_TERMINAL_THEME_ID);
+  const [terminalCapabilities, setTerminalCapabilities] = useState({ normalizeTerm: true, trueColor: false });
   const terminalThemeDef = useMemo(() => getTerminalTheme(terminalTheme), [terminalTheme]);
   const [codexTraceEnabled, setCodexTraceEnabled] = useState(false);
   const initialPtyByTab = useMemo<Record<string, string>>(() => restoredConsoleSession?.ptyByTab || {}, [restoredConsoleSession]);
@@ -6520,17 +6525,43 @@ export default function CodexFlowManagerUI() {
    * @param requestedEnv 用户请求切换到的环境
    */
   const selectActiveProviderEnv = useCallback(async (requestedEnv: Required<ProviderEnv>): Promise<Required<ProviderEnv>> => {
+    const providerId = activeProviderIdRef.current;
     const normalized: Required<ProviderEnv> = {
       terminal: normalizeTerminalMode(requestedEnv.terminal),
       distro: String(requestedEnv.distro || wslDistro || "").trim(),
     };
-    const env = await resolveVisibleProviderEnv(activeProviderId, normalized, { persist: true });
-    const changed = env.terminal !== normalized.terminal
-      || String(env.distro || "").toLowerCase() !== String(normalized.distro || "").toLowerCase();
+    const sequence = providerSwitchSeqRef.current + 1;
+    providerSwitchSeqRef.current = sequence;
+
+    // 先同步内存状态，确保紧接着的新建终端不会读到切换前的环境。
+    const optimisticMap = { ...providerEnvByIdRef.current, [providerId]: normalized };
+    providerEnvByIdRef.current = optimisticMap;
+    setProviderEnvById(optimisticMap);
+    setTerminalMode(normalized.terminal);
+    setWslDistro(normalized.distro);
+
+    // 后台校验不直接写状态；只有最后一次用户选择可以提交校验结果。
+    const env = await resolveVisibleProviderEnv(providerId, normalized, { persist: false, updateState: false });
+    if (!isCurrentProviderEnvironmentRequest(
+      { providerId, sequence },
+      activeProviderIdRef.current,
+      providerSwitchSeqRef.current,
+    ))
+      return env;
+
+    const changed = !areProviderEnvironmentsEqual(env, normalized);
+    if (changed) {
+      const resolvedMap = { ...providerEnvByIdRef.current, [providerId]: env };
+      providerEnvByIdRef.current = resolvedMap;
+      setProviderEnvById(resolvedMap);
+      setTerminalMode(env.terminal);
+      setWslDistro(env.distro);
+    }
+    queueProviderSettingsPersist();
     if (changed)
-      await notifyRuntimeEnvFallback({ providerId: activeProviderId, from: normalized, to: env, source: "envMenu" });
+      await notifyRuntimeEnvFallback({ providerId, from: normalized, to: env, source: "envMenu" });
     return env;
-  }, [activeProviderId, notifyRuntimeEnvFallback, resolveVisibleProviderEnv, wslDistro]);
+  }, [notifyRuntimeEnvFallback, queueProviderSettingsPersist, resolveVisibleProviderEnv, wslDistro]);
 
   // WSL 发行版列表：供环境下拉与设置面板复用（缓存到内存，避免重复请求）
   const [availableDistros, setAvailableDistros] = useState<string[]>([]);
@@ -6939,6 +6970,10 @@ export default function CodexFlowManagerUI() {
           setCodexErrorHandlingPrefs(normalizeCodexErrorHandlingPrefs((s as any).codexErrorHandling));
           setTerminalFontFamily(normalizeTerminalFontFamily((s as any).terminalFontFamily));
           setTerminalTheme(normalizeTerminalTheme((s as any).terminalTheme));
+          setTerminalCapabilities({
+            normalizeTerm: (s as any)?.terminalCapabilities?.normalizeTerm !== false,
+            trueColor: (s as any)?.terminalCapabilities?.trueColor === true,
+          });
           setClaudeCodeReadAgentHistory(!!(s as any)?.claudeCode?.readAgentHistory);
           setMultiInstanceEnabled(!!(s as any)?.experimental?.multiInstanceEnabled);
           // git worktree：默认开启自动提交与规则文件复制
@@ -11426,10 +11461,7 @@ export default function CodexFlowManagerUI() {
                     className="flex items-center justify-between gap-2"
                     onClick={async () => {
                       const nextEnv: Required<ProviderEnv> = { ...getProviderEnv(activeProviderId), distro: name };
-                      const nextMap = { ...providerEnvById, [activeProviderId]: nextEnv };
-                      setProviderEnvById(nextMap);
-                      setWslDistro(name);
-                      await persistProviders({ activeId: activeProviderId, items: providerItems, env: nextMap });
+                      await selectActiveProviderEnv(nextEnv);
                     }}
                   >
                     <span className="truncate">{name}</span>
@@ -16183,6 +16215,7 @@ export default function CodexFlowManagerUI() {
           defaultIde: defaultIdePrefs,
           terminalFontFamily,
           terminalTheme,
+          terminalCapabilities,
           claudeCodeReadAgentHistory,
           gitWorktree: {
             gitPath: gitWorktreeGitPath,
@@ -16203,6 +16236,10 @@ export default function CodexFlowManagerUI() {
           const nextCodexErrorHandling = normalizeCodexErrorHandlingPrefs((v as any).codexErrorHandling);
           const nextFontFamily = normalizeTerminalFontFamily(v.terminalFontFamily);
           const nextTerminalTheme = normalizeTerminalTheme(v.terminalTheme);
+          const nextTerminalCapabilities = {
+            normalizeTerm: v.terminalCapabilities?.normalizeTerm !== false,
+            trueColor: v.terminalCapabilities?.trueColor === true,
+          };
           const nextTheme = normalizeThemeSetting(v.theme);
           const nextClaudeAgentHistory = !!v.claudeCodeReadAgentHistory;
           const nextDefaultIde = normalizeIdeOpenPrefs((v as any).defaultIde);
@@ -16253,6 +16290,7 @@ export default function CodexFlowManagerUI() {
               },
               terminalFontFamily: nextFontFamily,
               terminalTheme: nextTerminalTheme,
+              terminalCapabilities: nextTerminalCapabilities,
               claudeCode: { readAgentHistory: nextClaudeAgentHistory },
             });
           } catch (e) { console.warn('settings.update failed', e); }
@@ -16287,6 +16325,7 @@ export default function CodexFlowManagerUI() {
           setMultiInstanceEnabled(nextMultiInstanceEnabled);
           setTerminalFontFamily(nextFontFamily);
           setTerminalTheme(nextTerminalTheme);
+          setTerminalCapabilities(nextTerminalCapabilities);
           setClaudeCodeReadAgentHistory(nextClaudeAgentHistory);
           setGitWorktreeAutoCommitEnabled(nextGitWorktreeAutoCommitEnabled);
           setGitWorktreeCopyRulesOnCreate(nextGitWorktreeCopyRulesOnCreate);

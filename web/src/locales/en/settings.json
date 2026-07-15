@@ -249,6 +249,19 @@
       "fira": "Fira Code"
     }
   },
+  "terminalCapabilities": {
+    "label": "Advanced terminal compatibility",
+    "help": "Control the interaction and color capabilities reported to command-line programs.",
+    "normalizeTerm": {
+      "label": "Enhanced terminal compatibility (recommended)",
+      "desc": "Set TERM to xterm-256color only when it is missing or dumb. Other valid values are preserved."
+    },
+    "trueColor": {
+      "label": "24-bit true color",
+      "desc": "Report truecolor only when COLORTERM is unset and NO_COLOR is absent. Existing values are preserved."
+    },
+    "note": "Changes apply only to newly opened terminals. Existing terminals are unchanged."
+  },
   "loading": "Loading…",
   "codexTrace": {
     "label": "Codex TUI debugging",

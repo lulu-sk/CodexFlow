@@ -7,6 +7,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 type TerminalMode = 'wsl' | 'windows' | 'pwsh' | 'cmd';
 type OpenArgs = { terminal?: TerminalMode; distro?: string; wslPath?: string; winPath?: string; cols?: number; rows?: number; startupCmd?: string; env?: Record<string, string> };
 type OpenResult = { id: string; terminal?: TerminalMode; distro?: string; fallbackReason?: string };
+type TerminalPaletteColors = { foreground: string; background: string };
 
 type PtyDataPayload = { id: string; data: string };
 type PtyExitPayload = { id: string; exitCode?: number };
@@ -342,6 +343,9 @@ contextBridge.exposeInMainWorld('host', {
     },
     write: (id: string, data: string) => {
       ipcRenderer.send('pty:write', { id, data });
+    },
+    ready: (id: string, colors?: TerminalPaletteColors) => {
+      ipcRenderer.send('pty:ready', { id, colors });
     },
     resize: (id: string, cols: number, rows: number) => {
       ipcRenderer.send('pty:resize', { id, cols, rows });

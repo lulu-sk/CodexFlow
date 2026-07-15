@@ -9,6 +9,11 @@ import { getSessionsRootsFastAsync, listDistros } from './wsl.js';
 import { hasPwsh, normalizeTerminal, type TerminalMode } from './shells.js';
 import type { TerminalThemeId } from '@/types/terminal-theme';
 import type { DistroInfo } from './wsl';
+import {
+  DEFAULT_TERMINAL_CAPABILITIES,
+  normalizeTerminalCapabilitySettings,
+  type TerminalCapabilitySettings,
+} from './terminalCapabilities';
 
 export type NotificationSettings = {
   /** 任务完成时是否在任务栏显示徽标计数 */
@@ -144,6 +149,8 @@ export type AppSettings = {
   terminal?: TerminalMode;
   /** 终端配色主题 */
   terminalTheme?: TerminalThemeId;
+  /** 内置终端向 CLI 声明的兼容性与颜色能力。 */
+  terminalCapabilities?: TerminalCapabilitySettings;
   /** WSL 发行版名称（当 terminal=wsl 时生效） */
   distro: string;
   /** 启动 CodexFlow 的命令（渲染层会做包装） */
@@ -218,6 +225,9 @@ const DEFAULT_WSL_DISTRO = 'Ubuntu-24.04';
 const DISTRO_CACHE_TTL_MS = 30_000;
 let cachedDistros: DistroInfo[] | null = null;
 let cachedDistrosAt = 0;
+let cachedTerminalCapabilitySettings: Required<TerminalCapabilitySettings> = {
+  ...DEFAULT_TERMINAL_CAPABILITIES,
+};
 const DEFAULT_NOTIFICATIONS: NotificationSettings = {
   badge: true,
   system: true,
@@ -645,6 +655,7 @@ function mergeWithDefaults(raw: Partial<AppSettings>, preloadedDistros?: DistroI
   const defaults: AppSettings = {
     terminal: 'wsl',
     terminalTheme: DEFAULT_TERMINAL_THEME,
+    terminalCapabilities: { ...DEFAULT_TERMINAL_CAPABILITIES },
     distro: pickPreferredDistro('', distros),
     // 渲染层会按“每标签独立 tmux 会话”包装该命令；默认仅保存基础命令
     codexCmd: 'codex',
@@ -715,6 +726,7 @@ function mergeWithDefaults(raw: Partial<AppSettings>, preloadedDistros?: DistroI
   merged.distro = pickPreferredDistro(merged.distro, distros);
   merged.theme = normalizeTheme((raw as any)?.theme ?? merged.theme);
   merged.terminalTheme = normalizeTerminalTheme((raw as any)?.terminalTheme ?? merged.terminalTheme);
+  merged.terminalCapabilities = normalizeTerminalCapabilitySettings((raw as any)?.terminalCapabilities);
   merged.providers = normalizeProviders(merged, distros);
   merged.claudeCode = normalizeClaudeCodeSettings((merged as any).claudeCode);
   merged.gitWorktree = normalizeGitWorktreeSettings((raw as any)?.gitWorktree);
@@ -740,13 +752,24 @@ export function getSettings(): AppSettings {
   try {
     const p = getStorePath();
     const distros = loadDistroList();
-    if (!fs.existsSync(p)) return mergeWithDefaults({}, distros);
-    const raw = fs.readFileSync(p, 'utf8');
-    const parsed = JSON.parse(raw || '{}') as Partial<AppSettings>;
-    return mergeWithDefaults(parsed, distros);
+    const parsed = fs.existsSync(p)
+      ? JSON.parse(fs.readFileSync(p, 'utf8') || '{}') as Partial<AppSettings>
+      : {};
+    const next = mergeWithDefaults(parsed, distros);
+    cachedTerminalCapabilitySettings = normalizeTerminalCapabilitySettings(next.terminalCapabilities);
+    return next;
   } catch (e) {
-    return defaultSettings();
+    const next = defaultSettings();
+    cachedTerminalCapabilitySettings = normalizeTerminalCapabilitySettings(next.terminalCapabilities);
+    return next;
   }
+}
+
+/**
+ * 返回内存中的终端能力设置，供 PTY 打开热路径使用。
+ */
+export function getTerminalCapabilitySettings(): Required<TerminalCapabilitySettings> {
+  return { ...cachedTerminalCapabilitySettings };
 }
 
 export function updateSettings(partial: Partial<AppSettings>) {
@@ -754,6 +777,13 @@ export function updateSettings(partial: Partial<AppSettings>) {
     const distros = loadDistroList();
     const cur = mergeWithDefaults(getSettings(), distros);
     const mergedRaw: Partial<AppSettings> = Object.assign({}, cur, partial);
+    // 对 terminalCapabilities 做浅层合并，避免只更新单个开关时重置另一个开关。
+    try {
+      const current = normalizeTerminalCapabilitySettings((cur as any)?.terminalCapabilities);
+      const patch = (partial as any)?.terminalCapabilities;
+      if (patch && typeof patch === "object")
+        (mergedRaw as any).terminalCapabilities = { ...current, ...patch };
+    } catch {}
     // 对 dragDrop 做浅层合并，避免渲染层只更新单个字段时覆盖其它子字段
     try {
       const curDrag = (cur as any)?.dragDrop && typeof (cur as any).dragDrop === "object" ? (cur as any).dragDrop : {};
@@ -806,6 +836,7 @@ export function updateSettings(partial: Partial<AppSettings>) {
     } catch {}
     const next = mergeWithDefaults(mergedRaw, distros);
     fs.writeFileSync(getStorePath(), JSON.stringify(next, null, 2), 'utf8');
+    cachedTerminalCapabilitySettings = normalizeTerminalCapabilitySettings(next.terminalCapabilities);
     return next;
   } catch (e) {
     return getSettings();
@@ -873,6 +904,12 @@ export async function ensureFirstRunTerminalSelection(): Promise<AppSettings> {
   }
 }
 
-export default { getSettings, updateSettings, hasSettingsStore, hasSavedRuntimeEnvSelection };
+export default {
+  getSettings,
+  getTerminalCapabilitySettings,
+  updateSettings,
+  hasSettingsStore,
+  hasSavedRuntimeEnvSelection,
+};
 
 
