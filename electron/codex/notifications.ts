@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
-import fs from "node:fs";
+import { promises as fsp } from "node:fs";
 import path from "node:path";
 import { BrowserWindow } from "electron";
 import { perfLogger } from "../log";
@@ -71,6 +71,7 @@ const recentCodexSubagentNotifies: RecentCodexSubagentNotify[] = [];
 let codexNotifyTimer: NodeJS.Timeout | null = null;
 let codexNotifyPolling = false;
 let codexNotifyWindowGetter: (() => BrowserWindow | null) | null = null;
+let codexNotifyBridgeGeneration = 0;
 let codexNotifyStateDecisionReader: (entry: CodexNotifyStateEntry, sourcePath?: string) => CodexNotifyStateDecision = getCodexNotifyStateDecision;
 
 /**
@@ -121,7 +122,8 @@ async function listCodexNotifyFiles(): Promise<string[]> {
 /**
  * 中文说明：同步通知源列表，保留已有读取偏移。
  */
-function syncCodexNotifySources(paths: string[]): void {
+async function syncCodexNotifySources(paths: string[], generation = codexNotifyBridgeGeneration): Promise<void> {
+  if (generation !== codexNotifyBridgeGeneration) return;
   const normalized = new Set<string>();
   for (const p of paths) {
     const key = String(p || "").replace(/\\/g, "/").toLowerCase();
@@ -135,17 +137,18 @@ function syncCodexNotifySources(paths: string[]): void {
     }
   }
 
-  for (const p of paths) {
+  await Promise.all(paths.map(async (p) => {
     const key = String(p || "").replace(/\\/g, "/").toLowerCase();
-    if (!key || codexNotifySources.has(key)) continue;
+    if (!key || codexNotifySources.has(key)) return;
     let offset = 0;
     try {
-      const st = fs.statSync(p);
+      const st = await fsp.stat(p);
       if (st && st.isFile && st.isFile()) offset = typeof st.size === "number" ? st.size : 0;
     } catch {}
+    if (generation !== codexNotifyBridgeGeneration) return;
     codexNotifySources.set(key, { filePath: p, offset, remainder: "" });
     try { logCodexNotification(`notify source added path=${p} offset=${offset}`); } catch {}
-  }
+  }));
 }
 
 /**
@@ -176,6 +179,12 @@ function normalizeCodexNotifyPreviewForDedupe(preview: string): string {
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
+}
+
+/** 判断通知来源是否来自 Windows 可访问的 WSL UNC 路径。 */
+function isWslNotifySourcePath(sourcePath?: string): boolean {
+  const normalized = String(sourcePath || "").trim().replace(/\//g, "\\");
+  return /^\\\\wsl(?:\.localhost|\$)\\/i.test(normalized);
 }
 
 /**
@@ -281,7 +290,7 @@ function buildCodexNotifyDispatch(entry: CodexNotifyEntry, now = Date.now(), sou
   const explicitAgent = completionKind === "agent" || hookEventName === "Stop";
   const isLegacyNotify = !hookEventName && !completionKind;
   const legacySubagentPreview = isLegacySubagentCompletionPreview(payload.preview);
-  const stateDecision = threadId
+  const stateDecision = threadId && !isWslNotifySourcePath(sourcePath)
     ? codexNotifyStateDecisionReader({ threadId, cwd, sqliteHome }, sourcePath)
     : {};
 
@@ -312,9 +321,9 @@ function buildCodexNotifyDispatch(entry: CodexNotifyEntry, now = Date.now(), sou
 /**
  * 中文说明：从通知文件读取新增内容并解析为事件列表。
  */
-function readCodexNotifyEntries(source: CodexNotifySource): CodexNotifyEntry[] {
+async function readCodexNotifyEntries(source: CodexNotifySource): Promise<CodexNotifyEntry[]> {
   try {
-    const st = fs.statSync(source.filePath);
+    const st = await fsp.stat(source.filePath);
     if (!st || !st.isFile || !st.isFile()) return [];
     const size = typeof st.size === "number" ? st.size : 0;
     if (size < source.offset) {
@@ -332,12 +341,16 @@ function readCodexNotifyEntries(source: CodexNotifySource): CodexNotifyEntry[] {
       logCodexNotification(`notify tail read: path=${source.filePath} len=${length}`);
     }
 
-    const fd = fs.openSync(source.filePath, "r");
+    const fd = await fsp.open(source.filePath, "r");
     const buf = Buffer.alloc(length);
-    try { fs.readSync(fd, buf, 0, length, start); } finally { try { fs.closeSync(fd); } catch {} }
-    source.offset = start + length;
+    let bytesRead = 0;
+    try {
+      const result = await fd.read(buf, 0, length, start);
+      bytesRead = result.bytesRead;
+    } finally { try { await fd.close(); } catch {} }
+    source.offset = start + bytesRead;
 
-    const text = source.remainder + buf.toString("utf8");
+    const text = source.remainder + buf.subarray(0, bytesRead).toString("utf8");
     const lines = text.split(/\r?\n/);
     source.remainder = lines.pop() || "";
     const out: CodexNotifyEntry[] = [];
@@ -357,6 +370,7 @@ function readCodexNotifyEntries(source: CodexNotifySource): CodexNotifyEntry[] {
 function emitCodexNotify(entry: CodexNotifyEntry, sourcePath?: string): void {
   const win = codexNotifyWindowGetter ? codexNotifyWindowGetter() : null;
   try {
+    // 快速刷新只入队并异步扫描近期文件，不会在当前调用栈执行文件 I/O。
     requestHistoryFastRefresh({
       providerId: "codex",
       sourcePath,
@@ -383,15 +397,21 @@ function emitCodexNotify(entry: CodexNotifyEntry, sourcePath?: string): void {
  */
 async function pollCodexNotifyFiles(): Promise<void> {
   if (codexNotifyPolling) return;
+  const generation = codexNotifyBridgeGeneration;
   codexNotifyPolling = true;
   try {
     for (const source of Array.from(codexNotifySources.values())) {
-      const entries = readCodexNotifyEntries(source);
+      if (generation !== codexNotifyBridgeGeneration) return;
+      const entries = await readCodexNotifyEntries(source);
+      if (generation !== codexNotifyBridgeGeneration) return;
       if (!entries.length) continue;
-      for (const entry of entries) emitCodexNotify(entry, source.filePath);
+      for (const entry of entries) {
+        if (generation !== codexNotifyBridgeGeneration) return;
+        emitCodexNotify(entry, source.filePath);
+      }
     }
   } finally {
-    codexNotifyPolling = false;
+    if (generation === codexNotifyBridgeGeneration) codexNotifyPolling = false;
   }
 }
 
@@ -399,11 +419,22 @@ async function pollCodexNotifyFiles(): Promise<void> {
  * 中文说明：启动 Codex 通知桥接（重复调用只刷新源列表）。
  */
 export async function startCodexNotificationBridge(getWindow: () => BrowserWindow | null): Promise<void> {
+  const generation = codexNotifyBridgeGeneration;
   codexNotifyWindowGetter = getWindow;
   const paths = await listCodexNotifyFiles();
-  syncCodexNotifySources(paths);
+  if (generation !== codexNotifyBridgeGeneration) return;
+  await syncCodexNotifySources(paths, generation);
+  if (generation !== codexNotifyBridgeGeneration) return;
   try {
-    const watchList = paths.map((p) => `${p}${fs.existsSync(p) ? "" : " (missing)"}`);
+    const watchList = await Promise.all(paths.map(async (p) => {
+      try {
+        const st = await fsp.stat(p);
+        return `${p}${st.isFile() ? "" : " (missing)"}`;
+      } catch {
+        return `${p} (missing)`;
+      }
+    }));
+    if (generation !== codexNotifyBridgeGeneration) return;
     logCodexNotification(`notify bridge watch=${watchList.join(" | ") || "none"}`);
   } catch {}
   if (codexNotifyTimer) return;
@@ -417,6 +448,7 @@ export async function startCodexNotificationBridge(getWindow: () => BrowserWindo
  * 中文说明：停止 Codex 通知桥接。
  */
 export function stopCodexNotificationBridge(): void {
+  codexNotifyBridgeGeneration += 1;
   if (codexNotifyTimer) {
     try { clearInterval(codexNotifyTimer); } catch {}
   }

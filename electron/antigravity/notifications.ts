@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
-import fs from "node:fs";
+import { promises as fsp } from "node:fs";
 import path from "node:path";
 import { BrowserWindow } from "electron";
 import { perfLogger } from "../log";
@@ -225,11 +225,13 @@ type AntigravityNotifySource = {
   offset: number;
   remainder: string;
 };
+type WriteFileResult = { ok: boolean; changed: boolean };
 
 const antigravityNotifySources = new Map<string, AntigravityNotifySource>();
 let antigravityNotifyTimer: NodeJS.Timeout | null = null;
 let antigravityNotifyPolling = false;
 let antigravityNotifyWindowGetter: (() => BrowserWindow | null) | null = null;
+let antigravityNotifyBridgeGeneration = 0;
 let inflight: Promise<void> | null = null;
 
 /**
@@ -242,37 +244,41 @@ function logAntigravityNotification(message: string): void {
 /**
  * 确保目录存在。
  */
-function ensureDir(dirPath: string): void {
-  try { fs.mkdirSync(dirPath, { recursive: true }); } catch {}
+async function ensureDir(dirPath: string): Promise<void> {
+  try { await fsp.mkdir(dirPath, { recursive: true }); } catch {}
 }
 
 /**
  * 仅在内容变化时写入文件，避免频繁刷新 hook 脚本修改时间。
  */
-function writeFileIfChanged(filePath: string, content: string): boolean {
+async function writeFileIfChanged(filePath: string, content: string): Promise<WriteFileResult> {
   try {
-    if (fs.existsSync(filePath)) {
-      const current = fs.readFileSync(filePath, "utf8");
-      if (current === content) return false;
-    }
-  } catch {}
+    const current = await fsp.readFile(filePath, "utf8");
+    if (current === content) return { ok: true, changed: false };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") return { ok: false, changed: false };
+  }
   try {
-    ensureDir(path.dirname(filePath));
-    fs.writeFileSync(filePath, content, "utf8");
-    return true;
+    await ensureDir(path.dirname(filePath));
+    await fsp.writeFile(filePath, content, "utf8");
+    return { ok: true, changed: true };
   } catch (error) {
     logAntigravityNotification(`write script failed path=${filePath} error=${String(error)}`);
-    return false;
+    return { ok: false, changed: false };
   }
 }
 
 /**
  * 安全读取 JSON 配置文件，空文件按空对象处理。
  */
-function readJsonFile(filePath: string): any | null {
+async function readJsonFile(filePath: string): Promise<any | null> {
   try {
-    if (!fs.existsSync(filePath)) return {};
-    const raw = fs.readFileSync(filePath, "utf8");
+    let raw = "";
+    try {
+      raw = await fsp.readFile(filePath, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+    }
     return raw.trim() ? JSON.parse(raw) : {};
   } catch (error) {
     logAntigravityNotification(`read hooks failed path=${filePath} error=${String(error)}`);
@@ -283,10 +289,10 @@ function readJsonFile(filePath: string): any | null {
 /**
  * 将 JSON 配置按 2 空格缩进写回。
  */
-function writeJsonFile(filePath: string, data: any): boolean {
+async function writeJsonFile(filePath: string, data: any): Promise<boolean> {
   try {
-    ensureDir(path.dirname(filePath));
-    fs.writeFileSync(filePath, JSON.stringify(data ?? {}, null, 2) + "\n", "utf8");
+    await ensureDir(path.dirname(filePath));
+    await fsp.writeFile(filePath, JSON.stringify(data ?? {}, null, 2) + "\n", "utf8");
     return true;
   } catch (error) {
     logAntigravityNotification(`write hooks failed path=${filePath} error=${String(error)}`);
@@ -458,11 +464,13 @@ async function ensureAntigravityNotificationsAtRoot(candidate: SessionsRootCandi
   const scriptPath = path.join(rootPath, "hooks", ANTIGRAVITY_HOOK_FILENAME);
   const hooksJsonPath = resolveAntigravityHooksJsonPath(rootPath);
   const command = buildAntigravityHookCommand(scriptPath, hooksJsonPath);
-  const scriptChanged = writeFileIfChanged(scriptPath, ANTIGRAVITY_HOOK_SCRIPT);
-  const current = readJsonFile(hooksJsonPath);
+  const scriptResult = await writeFileIfChanged(scriptPath, ANTIGRAVITY_HOOK_SCRIPT);
+  if (!scriptResult.ok) return;
+  const scriptChanged = scriptResult.changed;
+  const current = await readJsonFile(hooksJsonPath);
   if (current == null) return;
   const { next, changed } = ensureAntigravityHooksFile(current, command);
-  const hooksChanged = changed ? writeJsonFile(hooksJsonPath, next) : false;
+  const hooksChanged = changed ? await writeJsonFile(hooksJsonPath, next) : false;
   if (scriptChanged || hooksChanged)
     logAntigravityNotification(`ensure notifications root=${rootPath} script=${scriptChanged ? "1" : "0"} hooks=${hooksChanged ? "1" : "0"}`);
 }
@@ -503,7 +511,8 @@ async function listAntigravityNotifyFiles(): Promise<string[]> {
 /**
  * 同步通知源列表，并保留已有读取偏移。
  */
-function syncAntigravityNotifySources(paths: string[]): void {
+async function syncAntigravityNotifySources(paths: string[], generation = antigravityNotifyBridgeGeneration): Promise<void> {
+  if (generation !== antigravityNotifyBridgeGeneration) return;
   const normalized = new Set<string>();
   for (const p of paths) {
     const key = String(p || "").replace(/\\/g, "/").toLowerCase();
@@ -515,17 +524,18 @@ function syncAntigravityNotifySources(paths: string[]): void {
       logAntigravityNotification(`notify source removed path=${source.filePath}`);
     }
   }
-  for (const p of paths) {
+  await Promise.all(paths.map(async (p) => {
     const key = String(p || "").replace(/\\/g, "/").toLowerCase();
-    if (!key || antigravityNotifySources.has(key)) continue;
+    if (!key || antigravityNotifySources.has(key)) return;
     let offset = 0;
     try {
-      const st = fs.statSync(p);
+      const st = await fsp.stat(p);
       if (st && st.isFile && st.isFile()) offset = typeof st.size === "number" ? st.size : 0;
     } catch {}
+    if (generation !== antigravityNotifyBridgeGeneration) return;
     antigravityNotifySources.set(key, { filePath: p, offset, remainder: "" });
     logAntigravityNotification(`notify source added path=${p} offset=${offset}`);
-  }
+  }));
 }
 
 /**
@@ -618,21 +628,35 @@ function resolveAntigravityRootFromTranscriptPath(transcriptPath?: string): stri
 /**
  * 定位 Antigravity 会话 SQLite DB；hook 只给 sessionId 时，用本地 conversations 目录补足。
  */
-function resolveAntigravityConversationDbPath(entry: AntigravityNotifyEntry, sourcePath?: string): string {
+function listAntigravityConversationDbCandidates(entry: AntigravityNotifyEntry, sourcePath?: string): string[] {
   const sessionId = sanitizeAntigravitySessionId(entry.sessionId);
-  if (!sessionId) return "";
+  if (!sessionId) return [];
   const roots = [
     resolveAntigravityRootFromNotifyPath(sourcePath),
     resolveAntigravityRootFromTranscriptPath(entry.transcriptPath),
   ].filter(Boolean);
-  for (const root of roots) {
-    const dbPath = path.join(root, "conversations", `${sessionId}.db`);
+  return roots.map((root) => path.join(root, "conversations", `${sessionId}.db`));
+}
+
+/**
+ * 根据通知内容返回一个会话 DB 候选路径；仅做字符串处理，不访问 WSL 文件系统。
+ */
+function resolveAntigravityConversationDbPath(entry: AntigravityNotifyEntry, sourcePath?: string): string {
+  return listAntigravityConversationDbCandidates(entry, sourcePath)[0] || "";
+}
+
+/**
+ * 异步选择实际存在的 Antigravity 会话 DB，避免主进程同步访问 UNC 路径。
+ */
+async function resolveAntigravityConversationDbPathAsync(entry: AntigravityNotifyEntry, sourcePath?: string): Promise<string> {
+  const candidates = listAntigravityConversationDbCandidates(entry, sourcePath);
+  for (const candidate of candidates) {
     try {
-      const st = fs.statSync(dbPath);
-      if (st && st.isFile && st.isFile()) return dbPath;
+      const st = await fsp.stat(candidate);
+      if (st.isFile()) return candidate;
     } catch {}
   }
-  return roots[0] ? path.join(roots[0], "conversations", `${sessionId}.db`) : "";
+  return candidates[0] || "";
 }
 
 /**
@@ -673,11 +697,11 @@ function extractLastAssistantPreview(details: Awaited<ReturnType<typeof parseAnt
 async function hydrateAntigravityNotifyPreview(entry: AntigravityNotifyEntry, sourcePath?: string): Promise<AntigravityNotifyEntry> {
   const currentPreview = String(entry.preview || "").trim();
   if (currentPreview && !isAntigravityStatusPreview(currentPreview)) return entry;
-  const dbPath = resolveAntigravityConversationDbPath(entry, sourcePath);
+  const dbPath = await resolveAntigravityConversationDbPathAsync(entry, sourcePath);
   if (!dbPath) return entry;
   try {
-    const stat = fs.statSync(dbPath);
-    if (!stat || !stat.isFile || !stat.isFile()) return entry;
+    const stat = await fsp.stat(dbPath);
+    if (!stat || !stat.isFile()) return entry;
     const details = await parseAntigravitySessionFile(dbPath, stat, { summaryOnly: false });
     const preview = extractLastAssistantPreview(details);
     if (!preview) return currentPreview && isAntigravityStatusPreview(currentPreview) ? { ...entry, preview: "" } : entry;
@@ -692,9 +716,9 @@ async function hydrateAntigravityNotifyPreview(entry: AntigravityNotifyEntry, so
 /**
  * 从通知文件读取新增 JSONL 内容。
  */
-function readAntigravityNotifyEntries(source: AntigravityNotifySource): AntigravityNotifyEntry[] {
+async function readAntigravityNotifyEntries(source: AntigravityNotifySource): Promise<AntigravityNotifyEntry[]> {
   try {
-    const st = fs.statSync(source.filePath);
+    const st = await fsp.stat(source.filePath);
     if (!st || !st.isFile || !st.isFile()) return [];
     const size = typeof st.size === "number" ? st.size : 0;
     if (size < source.offset) {
@@ -712,12 +736,16 @@ function readAntigravityNotifyEntries(source: AntigravityNotifySource): Antigrav
       logAntigravityNotification(`notify tail read: path=${source.filePath} len=${length}`);
     }
 
-    const fd = fs.openSync(source.filePath, "r");
+    const fd = await fsp.open(source.filePath, "r");
     const buf = Buffer.alloc(length);
-    try { fs.readSync(fd, buf, 0, length, start); } finally { try { fs.closeSync(fd); } catch {} }
-    source.offset = start + length;
+    let bytesRead = 0;
+    try {
+      const result = await fd.read(buf, 0, length, start);
+      bytesRead = result.bytesRead;
+    } finally { try { await fd.close(); } catch {} }
+    source.offset = start + bytesRead;
 
-    const text = source.remainder + buf.toString("utf8");
+    const text = source.remainder + buf.subarray(0, bytesRead).toString("utf8");
     const lines = text.split(/\r?\n/);
     source.remainder = lines.pop() || "";
     const out: AntigravityNotifyEntry[] = [];
@@ -734,8 +762,10 @@ function readAntigravityNotifyEntries(source: AntigravityNotifySource): Antigrav
 /**
  * 将 Antigravity hook 通知转发给渲染进程，并触发历史快速刷新。
  */
-async function emitAntigravityNotify(entry: AntigravityNotifyEntry, sourcePath?: string): Promise<void> {
+async function emitAntigravityNotify(entry: AntigravityNotifyEntry, sourcePath?: string, generation = antigravityNotifyBridgeGeneration): Promise<void> {
+  if (generation !== antigravityNotifyBridgeGeneration) return;
   entry = await hydrateAntigravityNotifyPreview(entry, sourcePath);
+  if (generation !== antigravityNotifyBridgeGeneration) return;
   const win = antigravityNotifyWindowGetter ? antigravityNotifyWindowGetter() : null;
   try {
     requestHistoryFastRefresh({
@@ -778,15 +808,21 @@ async function emitAntigravityNotify(entry: AntigravityNotifyEntry, sourcePath?:
  */
 async function pollAntigravityNotifyFiles(): Promise<void> {
   if (antigravityNotifyPolling) return;
+  const generation = antigravityNotifyBridgeGeneration;
   antigravityNotifyPolling = true;
   try {
     for (const source of Array.from(antigravityNotifySources.values())) {
-      const entries = readAntigravityNotifyEntries(source);
+      if (generation !== antigravityNotifyBridgeGeneration) return;
+      const entries = await readAntigravityNotifyEntries(source);
+      if (generation !== antigravityNotifyBridgeGeneration) return;
       if (!entries.length) continue;
-      for (const entry of entries) await emitAntigravityNotify(entry, source.filePath);
+      for (const entry of entries) {
+        if (generation !== antigravityNotifyBridgeGeneration) return;
+        await emitAntigravityNotify(entry, source.filePath, generation);
+      }
     }
   } finally {
-    antigravityNotifyPolling = false;
+    if (generation === antigravityNotifyBridgeGeneration) antigravityNotifyPolling = false;
   }
 }
 
@@ -794,11 +830,22 @@ async function pollAntigravityNotifyFiles(): Promise<void> {
  * 启动 Antigravity 通知桥接，重复调用只刷新源列表。
  */
 export async function startAntigravityNotificationBridge(getWindow: () => BrowserWindow | null): Promise<void> {
+  const generation = antigravityNotifyBridgeGeneration;
   antigravityNotifyWindowGetter = getWindow;
   const paths = await listAntigravityNotifyFiles();
-  syncAntigravityNotifySources(paths);
+  if (generation !== antigravityNotifyBridgeGeneration) return;
+  await syncAntigravityNotifySources(paths, generation);
+  if (generation !== antigravityNotifyBridgeGeneration) return;
   try {
-    const watchList = paths.map((p) => `${p}${fs.existsSync(p) ? "" : " (missing)"}`);
+    const watchList = await Promise.all(paths.map(async (p) => {
+      try {
+        const st = await fsp.stat(p);
+        return `${p}${st.isFile() ? "" : " (missing)"}`;
+      } catch {
+        return `${p} (missing)`;
+      }
+    }));
+    if (generation !== antigravityNotifyBridgeGeneration) return;
     logAntigravityNotification(`notify bridge watch=${watchList.join(" | ") || "none"}`);
   } catch {}
   if (antigravityNotifyTimer) return;
@@ -812,6 +859,7 @@ export async function startAntigravityNotificationBridge(getWindow: () => Browse
  * 停止 Antigravity 通知桥接。
  */
 export function stopAntigravityNotificationBridge(): void {
+  antigravityNotifyBridgeGeneration += 1;
   if (antigravityNotifyTimer) {
     try { clearInterval(antigravityNotifyTimer); } catch {}
   }

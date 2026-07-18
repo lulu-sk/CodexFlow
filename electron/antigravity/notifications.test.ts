@@ -99,6 +99,33 @@ describe("electron/antigravity/notifications", () => {
     expect(entry.Stop[0].command).not.toContain("\"");
   });
 
+  it("读取已有 hook 脚本失败时不应改写 hooks.json", async () => {
+    const geminiRoot = createTempDir("antigravity-notify-script-read-error-");
+    tempDirs.push(geminiRoot);
+    const root = path.join(geminiRoot, "antigravity-cli");
+    const scriptPath = path.join(root, "hooks", "codexflow_stop_notify.js");
+    const hooksJsonPath = path.join(geminiRoot, "config", "hooks.json");
+    const originalHooks = JSON.stringify({ "user-hook": { enabled: true } }, null, 2) + "\n";
+    fs.mkdirSync(path.join(root, "conversations"), { recursive: true });
+    fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
+    fs.mkdirSync(path.dirname(hooksJsonPath), { recursive: true });
+    fs.writeFileSync(scriptPath, "user-owned-hook\n", "utf8");
+    fs.writeFileSync(hooksJsonPath, originalHooks, "utf8");
+
+    const readFile = fs.promises.readFile.bind(fs.promises);
+    vi.spyOn(fs.promises, "readFile").mockImplementation(async (...args: Parameters<typeof fs.promises.readFile>) => {
+      if (path.resolve(String(args[0])) === path.resolve(scriptPath))
+        throw Object.assign(new Error("read denied"), { code: "EACCES" });
+      return await (readFile as any)(...args);
+    });
+
+    const mod = await loadAntigravityNotificationsModule(root);
+    await mod.ensureAllAntigravityNotifications();
+
+    expect(fs.readFileSync(hooksJsonPath, "utf8")).toBe(originalHooks);
+    expect(fs.readFileSync(scriptPath, "utf8")).toBe("user-owned-hook\n");
+  });
+
   it("hydrateAntigravityNotifyPreview：hook 正文为空时从会话 DB 补最后一条助手回复", async () => {
     const geminiRoot = createTempDir("antigravity-notify-root-");
     tempDirs.push(geminiRoot);

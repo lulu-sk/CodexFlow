@@ -91,6 +91,40 @@ async function createCodexSessionFile(lines: unknown[]): Promise<string> {
 }
 
 describe("electron/indexer Codex preview", () => {
+  it("停止索引器前会完成异步缓存刷盘且不持久化消息正文", async () => {
+    const filePath = await createCodexSessionFile([
+      {
+        timestamp: "2026-04-29T03:35:01.000Z",
+        type: "session_meta",
+        payload: {
+          id: "session-index-persist",
+          cwd: "/workspace/project",
+        },
+      },
+      {
+        timestamp: "2026-04-29T03:35:02.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "验证索引缓存异步刷盘" }],
+        },
+      },
+    ]);
+
+    await startHistoryIndexer(() => null);
+    await stopHistoryIndexer();
+
+    const index = JSON.parse(await fsp.readFile(path.join(userDataDir, "history.index.v16.json"), "utf8"));
+    const details = JSON.parse(await fsp.readFile(path.join(userDataDir, "history.details.v16.json"), "utf8"));
+    const detailEntry = Object.values(details.files as Record<string, any>)
+      .find((entry: any) => entry?.details?.filePath === filePath) as any;
+
+    expect(Number.isFinite(index.savedAt)).toBe(true);
+    expect(Number.isFinite(details.savedAt)).toBe(true);
+    expect(detailEntry?.details?.messages).toEqual([]);
+  });
+
   it("索引摘要优先使用 thread_name_updated 并跳过 Files mentioned 模板标题", async () => {
     const filePath = await createCodexSessionFile([
       {

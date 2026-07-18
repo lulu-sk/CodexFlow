@@ -58,4 +58,30 @@ describe("electron/gemini/notifications（多行预览保真）", () => {
     expect(script).not.toContain("function collapseWs(input)");
     expect(script).not.toContain("const s = collapseWs(input);");
   });
+
+  it("读取已有 hook 脚本失败时不应改写 settings.json", async () => {
+    const root = createTempDir("gemini-notify-script-read-error-");
+    tempDirs.push(root);
+    const tmpRoot = path.join(root, "tmp");
+    const settingsPath = path.join(root, "settings.json");
+    const scriptPath = path.join(root, "hooks", "codexflow_after_agent_notify.js");
+    const originalSettings = "{\n  \"model\": \"test-model\"\n}\n";
+    fs.mkdirSync(tmpRoot, { recursive: true });
+    fs.writeFileSync(settingsPath, originalSettings, "utf8");
+    fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
+    fs.writeFileSync(scriptPath, "user-owned-hook\n", "utf8");
+
+    const readFile = fs.promises.readFile.bind(fs.promises);
+    vi.spyOn(fs.promises, "readFile").mockImplementation(async (...args: Parameters<typeof fs.promises.readFile>) => {
+      if (path.resolve(String(args[0])) === path.resolve(scriptPath))
+        throw Object.assign(new Error("read denied"), { code: "EACCES" });
+      return await (readFile as any)(...args);
+    });
+
+    const mod = await loadGeminiNotificationsModule(root);
+    await mod.ensureAllGeminiNotifications();
+
+    expect(fs.readFileSync(settingsPath, "utf8")).toBe(originalSettings);
+    expect(fs.readFileSync(scriptPath, "utf8")).toBe("user-owned-hook\n");
+  });
 });
