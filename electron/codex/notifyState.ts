@@ -58,6 +58,12 @@ function normalizeText(value: unknown): string {
   return String(value || "").trim();
 }
 
+/** 判断通知来源是否来自 Windows 可访问的 WSL UNC 路径。 */
+function isWslNotifySourcePath(sourcePath?: string): boolean {
+  const normalized = normalizeText(sourcePath).replace(/\//g, "\\");
+  return /^\\\\wsl(?:\.localhost|\$)\\/i.test(normalized);
+}
+
 /** 判断文件是否存在，失败按不存在处理。 */
 function isExistingFile(filePath: string): boolean {
   try {
@@ -293,6 +299,9 @@ function readThreadGoalStatusFromDb(Database: SqliteCtor, dbPath: string, thread
 export function getCodexNotifyStateDecision(entry: CodexNotifyStateEntry, sourcePath?: string): CodexNotifyStateDecision {
   const threadId = normalizeText(entry.threadId);
   if (!threadId) return {};
+  // WSL UNC 上的 better-sqlite3 是同步调用，访问 \wsl.localhost 还可能触发数秒网络文件系统等待。
+  // WSL hook 已写入显式 completionKind；这里放弃 legacy 状态兜底，避免阻塞 Electron 主事件循环。
+  if (isWslNotifySourcePath(sourcePath)) return {};
   const Database = loadSqlite();
   if (!Database) return {};
 

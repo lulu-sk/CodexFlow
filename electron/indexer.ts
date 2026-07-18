@@ -117,6 +117,16 @@ type FastRefreshState = {
   pendingFiles: Map<string, FastRefreshFileEntry>;
   pendingRoots: Map<string, FastRefreshRootEntry>;
 };
+
+type PersistWriteState = {
+  timer: NodeJS.Immediate | null;
+  running: boolean;
+  pendingIndex: boolean;
+  pendingDetails: boolean;
+  index?: PersistIndex;
+  details?: PersistDetails;
+  waiters: Array<() => void>;
+};
 type HistoryFastRefreshRequest = {
   providerId?: ProviderId | string;
   filePath?: string;
@@ -187,6 +197,156 @@ function clearFastRefreshState(): void {
       pendingRoots: new Map<string, FastRefreshRootEntry>(),
     } as FastRefreshState;
   } catch {}
+}
+
+/**
+ * 获取索引缓存持久化队列状态。
+ */
+function getPersistWriteState(): PersistWriteState {
+  if (!g.__indexer) g.__indexer = {};
+  if (!g.__indexer.persistWriteState) {
+    g.__indexer.persistWriteState = {
+      timer: null,
+      running: false,
+      pendingIndex: false,
+      pendingDetails: false,
+      waiters: [],
+    } as PersistWriteState;
+  }
+  return g.__indexer.persistWriteState as PersistWriteState;
+}
+
+/**
+ * 将索引缓存写入任务合并到下一轮事件循环，避免同一批变更重复序列化大文件。
+ */
+function schedulePersistWrite(index?: PersistIndex, details?: PersistDetails): void {
+  const state = getPersistWriteState();
+  if (index) {
+    state.pendingIndex = true;
+    state.index = index;
+  }
+  if (details) {
+    state.pendingDetails = true;
+    state.details = details;
+  }
+  schedulePersistFlush();
+}
+
+/** 安排一次缓存持久化队列处理，不重复创建事件循环任务。 */
+function schedulePersistFlush(): void {
+  const state = getPersistWriteState();
+  if (state.timer || state.running) return;
+  state.timer = setImmediate(() => {
+    state.timer = null;
+    void flushPersistWrites();
+  });
+}
+
+/** 让出一次事件循环，避免缓存序列化连续占用主线程。 */
+function yieldPersistSerialization(): Promise<void> {
+  return new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+/** 分段序列化索引缓存，避免对整个大对象执行一次长时间 JSON.stringify。 */
+async function serializeIndexForPersist(index: PersistIndex): Promise<string> {
+  const parts: string[] = [
+    "{\"version\":",
+    JSON.stringify(String(index.version || VERSION)),
+    ",\"files\":{"
+  ];
+  const entries = Object.entries(index.files || {});
+  let first = true;
+  for (let i = 0; i < entries.length; i += 1) {
+    const [key, value] = entries[i];
+    let serialized = "null";
+    try { serialized = JSON.stringify(value) ?? "null"; } catch {}
+    if (!first) parts.push(",");
+    first = false;
+    parts.push(JSON.stringify(key), ":", serialized);
+    if ((i + 1) % 32 === 0) await yieldPersistSerialization();
+  }
+  const savedAt = Number(index.savedAt);
+  parts.push("},\"savedAt\":", String(Number.isFinite(savedAt) ? savedAt : 0), "}");
+  return parts.join("");
+}
+
+/** 分段序列化详情缓存，并在每个条目内移除完整消息正文。 */
+async function serializeDetailsForPersist(details: PersistDetails): Promise<string> {
+  const parts: string[] = [
+    "{\"version\":",
+    JSON.stringify(VERSION),
+    ",\"files\":{"
+  ];
+  const entries = Object.entries(details.files || {});
+  let first = true;
+  for (let i = 0; i < entries.length; i += 1) {
+    const [key, entry] = entries[i];
+    if (!entry || !entry.details || !entry.sig) continue;
+    const normalizedEntry = { sig: entry.sig, details: stripDetailsForPersist(entry.details) };
+    let serialized = "null";
+    try { serialized = JSON.stringify(normalizedEntry) ?? "null"; } catch {}
+    if (!first) parts.push(",");
+    first = false;
+    parts.push(JSON.stringify(key), ":", serialized);
+    if ((i + 1) % 32 === 0) await yieldPersistSerialization();
+  }
+  const rawSavedAt = Number(details.savedAt);
+  const savedAt = Number.isFinite(rawSavedAt) && rawSavedAt > 0 ? rawSavedAt : Date.now();
+  parts.push("},\"savedAt\":", String(savedAt), "}");
+  return parts.join("");
+}
+
+/**
+ * 串行异步写入索引和详情缓存；调用方可等待该函数确保退出前刷盘完成。
+ */
+async function flushPersistWrites(): Promise<void> {
+  const state = getPersistWriteState();
+  if (state.running) {
+    await new Promise<void>((resolve) => state.waiters.push(resolve));
+    // 当前批次结束时可能又合并了新的变更；等待方必须把后续批次也刷完。
+    if (state.pendingIndex || state.pendingDetails) await flushPersistWrites();
+    return;
+  }
+  if (!state.pendingIndex && !state.pendingDetails) return;
+  if (state.timer) {
+    try { clearImmediate(state.timer); } catch {}
+    state.timer = null;
+  }
+  state.running = true;
+  try {
+    while (state.pendingIndex || state.pendingDetails) {
+      const writeIndex = state.pendingIndex;
+      const writeDetails = state.pendingDetails;
+      state.pendingIndex = false;
+      state.pendingDetails = false;
+
+      // 先让出一次事件循环，确保通知 IPC 和终端输出优先处理。
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const tasks: Promise<unknown>[] = [];
+      if (writeIndex && state.index) {
+        const currentIndex = state.index;
+        tasks.push(serializeIndexForPersist(currentIndex)
+          .then((body) => fsp.mkdir(path.dirname(indexPath()), { recursive: true })
+            .then(() => fsp.writeFile(indexPath(), body, "utf8")))
+          .catch(() => undefined));
+      }
+      if (writeDetails && state.details) {
+        const currentDetails = state.details;
+        tasks.push(serializeDetailsForPersist(currentDetails)
+          .then((body) => fsp.mkdir(path.dirname(detailsPath()), { recursive: true })
+            .then(() => fsp.writeFile(detailsPath(), body, "utf8")))
+          .catch(() => undefined));
+      }
+      if (tasks.length > 0) await Promise.all(tasks);
+    }
+  } finally {
+    state.running = false;
+    const waiters = state.waiters.splice(0, state.waiters.length);
+    for (const resolve of waiters) {
+      try { resolve(); } catch {}
+    }
+    if (state.pendingIndex || state.pendingDetails) schedulePersistFlush();
+  }
 }
 
 /**
@@ -332,54 +492,52 @@ function idxLog(msg: string) {
   } catch {}
 }
 
-function loadIndex(): PersistIndex {
+async function loadIndex(): Promise<PersistIndex> {
   try {
     const p = indexPath();
-    if (!fs.existsSync(p)) return { version: VERSION, files: {}, savedAt: 0 };
-    const obj = JSON.parse(fs.readFileSync(p, "utf8"));
+    const raw = await fsp.readFile(p, "utf8").catch(() => "");
+    if (!raw) return { version: VERSION, files: {}, savedAt: 0 };
+    const obj = JSON.parse(raw);
     return { version: VERSION, files: obj.files || {}, savedAt: Number(obj.savedAt || 0) } as PersistIndex;
   } catch { return { version: VERSION, files: {}, savedAt: 0 }; }
 }
 
-function saveIndex(ix: PersistIndex) {
-  try { fs.writeFileSync(indexPath(), JSON.stringify(ix, null, 2), "utf8"); } catch {}
+/**
+ * 请求异步保存索引缓存，不在当前调用栈执行文件 I/O。
+ */
+function saveIndex(ix: PersistIndex): void {
+  try { schedulePersistWrite(ix, undefined); } catch {}
 }
 
-function loadDetails(): PersistDetails {
+async function loadDetails(): Promise<PersistDetails> {
   try {
     const p = detailsPath();
-    if (!fs.existsSync(p)) return { version: VERSION, files: {}, savedAt: 0 };
-    const obj = JSON.parse(fs.readFileSync(p, "utf8")) as any;
+    const raw = await fsp.readFile(p, "utf8").catch(() => "");
+    if (!raw) return { version: VERSION, files: {}, savedAt: 0 };
+    const obj = JSON.parse(raw) as any;
     const normalized: PersistDetails = { version: VERSION, files: {}, savedAt: Number(obj.savedAt || 0) };
     let trimmed = false;
     const files = (obj && obj.files) ? obj.files as Record<string, { sig: FileSig; details: Details }> : {};
     for (const [k, entry] of Object.entries(files)) {
       if (!entry || !entry.details || !entry.sig) continue;
-      const slim = stripDetailsForPersist(entry.details);
-      if (Array.isArray((entry.details as any).messages) && (entry.details as any).messages.length > 0) {
+      if (Array.isArray((entry.details as any).messages) && (entry.details as any).messages.length > 0)
         trimmed = true;
-      }
+      const slim = stripDetailsForPersist(entry.details);
       normalized.files[k] = { sig: entry.sig, details: slim };
     }
     if (trimmed) {
+      // 兼容旧版含正文的缓存：先在内存裁剪，再异步回写，避免每次启动重复读取大正文。
       try { saveDetails(normalized); } catch {}
     }
     return normalized;
   } catch { return { version: VERSION, files: {}, savedAt: 0 }; }
 }
 
-function saveDetails(d: PersistDetails) {
-  try {
-    const normalized: PersistDetails = { version: VERSION, files: {}, savedAt: Number(d.savedAt || Date.now()) };
-    const entries = d.files || {};
-    for (const [k, entry] of Object.entries(entries)) {
-      if (!entry || !entry.details || !entry.sig) continue;
-      normalized.files[k] = { sig: entry.sig, details: stripDetailsForPersist(entry.details) };
-    }
-    fs.writeFileSync(detailsPath(), JSON.stringify(normalized, null, 2), "utf8");
-    d.files = normalized.files;
-    d.savedAt = normalized.savedAt;
-  } catch {}
+/**
+ * 请求异步保存详情缓存，并在队列中统一去除消息正文。
+ */
+function saveDetails(d: PersistDetails): void {
+  try { schedulePersistWrite(undefined, d); } catch {}
 }
 
 // 并发限制器
@@ -500,7 +658,6 @@ function resolveAccessibleHistoryFilePath(filePath: string, sourcePath?: string)
   try {
     const raw = String(filePath || "").trim();
     if (!raw) return "";
-    if (fs.existsSync(raw)) return raw;
     if (raw.startsWith("/") && sourcePath && isUNCPath(sourcePath)) {
       const info = uncToWsl(sourcePath);
       if (info?.distro) {
@@ -1381,8 +1538,8 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
       perfLogger.log(`[indexer] cacheVersion=${VERSION} userData=${JSON.stringify(getUserDataDir())}`);
       if (removedLegacyPersistFiles.length > 0) perfLogger.log(`[indexer] purgedLegacyCaches=${JSON.stringify(removedLegacyPersistFiles)}`);
     }
-    g.__indexer.index = loadIndex();
-    g.__indexer.details = loadDetails();
+    g.__indexer.index = await loadIndex();
+    g.__indexer.details = await loadDetails();
     try { getDetailsCache().clear(); } catch {}
     try { clearFastRefreshState(); } catch {}
 
@@ -1591,8 +1748,9 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
     const geminiHashToCwd = new Map<string, string>();
     try {
       const projectsPath = path.join(getUserDataDir(), "projects.json");
-      if (fs.existsSync(projectsPath)) {
-        const raw = JSON.parse(fs.readFileSync(projectsPath, "utf8")) as any;
+      const rawText = await fsp.readFile(projectsPath, "utf8").catch(() => "");
+      if (rawText) {
+        const raw = JSON.parse(rawText) as any;
         const items: any[] = Array.isArray(raw) ? raw : [];
         /**
          * 将项目路径注册进 `hash -> cwd` 映射（用于 Gemini 会话缺失 cwd 时的归属与继续对话）。
@@ -2236,5 +2394,6 @@ export async function stopHistoryIndexer(): Promise<void> {
   try { clearRescanCooldown(); } catch {}
   try { clearWatchQueueState(); } catch {}
   try { clearFastRefreshState(); } catch {}
+  try { await flushPersistWrites(); } catch {}
   try { setIndexerWindowGetter(null); } catch {}
 }

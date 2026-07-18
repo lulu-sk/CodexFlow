@@ -178,4 +178,24 @@ describe("electron/codex/notifications（子代理 legacy notify 防重）", () 
     expect(result.dropReason).toBeUndefined();
     expect(result.payload.completionKind).toBe("agent");
   });
+
+  it("WSL UNC 通知不应在主线程同步查询 Codex SQLite 状态", () => {
+    let called = false;
+    __testing.setCodexNotifyStateDecisionReader(() => {
+      called = true;
+      return { dropReason: "unexpected-state-query" };
+    });
+
+    const result = __testing.buildCodexNotifyDispatch({
+      v: 1,
+      providerId: "codex",
+      tabId: "tab-1",
+      envLabel: "WSL",
+      threadId: "thread-wsl",
+      preview: "legacy 完成通知",
+    }, 1_000, "\\\\wsl.localhost\\Ubuntu\\home\\user\\.codex\\codexflow_after_agent_notify.jsonl");
+
+    expect(called).toBe(false);
+    expect(result.dropReason).toBeUndefined();
+  });
 });

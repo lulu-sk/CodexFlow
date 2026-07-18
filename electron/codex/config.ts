@@ -1,7 +1,7 @@
 ﻿// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
-import fs from "node:fs";
+import { promises as fsp } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -1110,16 +1110,17 @@ function resolveCodexNotifyCommandSpec(configPath: string): CodexNotifyCommandSp
 /**
  * 中文说明：仅在内容变化时写入文本文件，避免无意义覆盖。
  */
-function writeTextFileIfChanged(filePath: string, content: string): { ok: boolean; changed: boolean } {
+async function writeTextFileIfChanged(filePath: string, content: string): Promise<{ ok: boolean; changed: boolean }> {
+  let current: string;
   try {
-    if (fs.existsSync(filePath)) {
-      const current = fs.readFileSync(filePath, "utf8");
-      if (current === content) return { ok: true, changed: false };
-    }
-  } catch {}
+    current = await fsp.readFile(filePath, "utf8");
+    if (current === content) return { ok: true, changed: false };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") return { ok: false, changed: false };
+  }
   try {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, content, "utf8");
+    await fsp.mkdir(path.dirname(filePath), { recursive: true });
+    await fsp.writeFile(filePath, content, "utf8");
     return { ok: true, changed: true };
   } catch {
     return { ok: false, changed: false };
@@ -1129,8 +1130,8 @@ function writeTextFileIfChanged(filePath: string, content: string): { ok: boolea
 /**
  * 中文说明：确保 Codex notify hook 脚本存在且内容最新。
  */
-function ensureCodexNotifyScript(spec: CodexNotifyCommandSpec, source?: string): boolean {
-  const result = writeTextFileIfChanged(spec.scriptPath, spec.scriptBody);
+async function ensureCodexNotifyScript(spec: CodexNotifyCommandSpec, source?: string): Promise<boolean> {
+  const result = await writeTextFileIfChanged(spec.scriptPath, spec.scriptBody);
   if (!result.ok) {
     try { perfLogger.log(`[codex.config] write notify script failed path=${spec.scriptPath} source=${source || "n/a"}`); } catch {}
     return false;
@@ -1251,8 +1252,8 @@ function removeCodexFlowRootNotifyCommand(normalized: string): NormalizeResult {
 /**
  * 中文说明：确保 Codex 新 lifecycle hook 脚本存在且内容最新。
  */
-function ensureCodexHookScript(spec: CodexHookCommandSpec, source?: string): boolean {
-  const result = writeTextFileIfChanged(spec.scriptPath, spec.scriptBody);
+async function ensureCodexHookScript(spec: CodexHookCommandSpec, source?: string): Promise<boolean> {
+  const result = await writeTextFileIfChanged(spec.scriptPath, spec.scriptBody);
   if (!result.ok) {
     try { perfLogger.log(`[codex.config] write lifecycle hook script failed path=${spec.scriptPath} source=${source || "n/a"}`); } catch {}
     return false;
@@ -1610,18 +1611,21 @@ async function ensureNotificationsAtConfigTarget(target: CodexConfigTarget): Pro
   const configPath = target.path;
   const source = target.source;
   if (!configPath) return false;
-  try { fs.mkdirSync(path.dirname(configPath), { recursive: true }); } catch {}
+  try { await fsp.mkdir(path.dirname(configPath), { recursive: true }); } catch {}
 
   let original = "";
   let existed = false;
   try {
-    if (fs.existsSync(configPath)) {
-      original = fs.readFileSync(configPath, "utf8");
-      existed = true;
-    }
+    original = await fsp.readFile(configPath, "utf8");
+    existed = true;
   } catch (error) {
-    try { perfLogger.log(`[codex.config] read failed path=${configPath} source=${source || "n/a"} error=${String(error)}`); } catch {}
-    return false;
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+      original = "";
+      existed = false;
+    } else {
+      try { perfLogger.log(`[codex.config] read failed path=${configPath} source=${source || "n/a"} error=${String(error)}`); } catch {}
+      return false;
+    }
   }
 
   const { normalized, newline } = normalizeLineEndings(original);
@@ -1642,7 +1646,7 @@ async function ensureNotificationsAtConfigTarget(target: CodexConfigTarget): Pro
         supportsSubagentStop: installedLifecycleSupport.supportsSubagentStop,
       };
     const hookSpec = resolveCodexHookCommandSpec(configPath);
-    const hookScriptReady = hookSpec ? ensureCodexHookScript(hookSpec, source) : false;
+    const hookScriptReady = hookSpec ? await ensureCodexHookScript(hookSpec, source) : false;
     const notifyCleanup = removeCodexFlowRootNotifyCommand(updated);
     updated = notifyCleanup.updated;
     changed = changed || notifyCleanup.changed;
@@ -1653,7 +1657,7 @@ async function ensureNotificationsAtConfigTarget(target: CodexConfigTarget): Pro
     }
   } else {
     const notifySpec = resolveCodexNotifyCommandSpec(configPath);
-    const notifyScriptReady = notifySpec ? ensureCodexNotifyScript(notifySpec, source) : false;
+    const notifyScriptReady = notifySpec ? await ensureCodexNotifyScript(notifySpec, source) : false;
     const hookCleanup = removeCodexFlowLifecycleHookBlocks(updated.length > 0 ? updated.split("\n") : []);
     const stateCleanup = removeCodexFlowLifecycleHookStateBlocks(hookCleanup.lines, configPath, hookCleanup.stateRefs);
     updated = stateCleanup.lines.join("\n");
@@ -1673,7 +1677,7 @@ async function ensureNotificationsAtConfigTarget(target: CodexConfigTarget): Pro
   if (!finalContent.endsWith("\n")) finalContent += "\n";
   const serialized = newline === "\r\n" ? finalContent.replace(/\n/g, "\r\n") : finalContent;
   try {
-    fs.writeFileSync(configPath, serialized, "utf8");
+    await fsp.writeFile(configPath, serialized, "utf8");
     try {
       perfLogger.log(`[codex.config] ensure notifications path=${configPath} source=${source || "n/a"} mode=${configMode} version=${support.version || "n/a"} changed=${changed ? "1" : "0"}`);
     } catch {}

@@ -150,6 +150,28 @@ afterEach(() => {
 });
 
 describe("electron/codex/config（tui 通知配置修复）", () => {
+  it("读取 config.toml 失败时不应覆盖现有配置", async () => {
+    const { home, cleanup } = createTempHome();
+    try {
+      const original = "model = \"test-model\"\n";
+      writeCodexConfigToml(home, original);
+      const configPath = path.join(home, ".codex", "config.toml");
+      const readFile = fs.promises.readFile.bind(fs.promises);
+      vi.spyOn(fs.promises, "readFile").mockImplementation(async (...args: Parameters<typeof fs.promises.readFile>) => {
+        if (path.resolve(String(args[0])) === path.resolve(configPath))
+          throw Object.assign(new Error("read denied"), { code: "EACCES" });
+        return await (readFile as any)(...args);
+      });
+
+      const mod = await loadConfigModule("codex 0.133.0");
+      await mod.ensureAllCodexNotifications();
+
+      expect(readCodexConfigToml(home)).toBe(original);
+    } finally {
+      cleanup();
+    }
+  });
+
   it("新版 Codex：使用 Stop/SubagentStop hooks 并移除 CodexFlow 旧 notify", async () => {
     const { home, cleanup } = createTempHome();
     try {

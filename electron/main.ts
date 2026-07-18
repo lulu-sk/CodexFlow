@@ -245,6 +245,18 @@ let DIAG = false;
 let quitConfirmed = false;
 let quitConfirming = false;
 let gpuFallbackActive = false;
+
+type SettingsMaintenanceRequest = {
+  configureProxy: boolean;
+  notifications: boolean;
+  restartIndexer: boolean;
+  refreshCodexAccount: boolean;
+};
+
+let pendingSettingsMaintenance: SettingsMaintenanceRequest | null = null;
+let settingsMaintenanceTimer: NodeJS.Timeout | null = null;
+let settingsMaintenanceRunning = false;
+let settingsMaintenanceStopping = false;
 const MAIN_APP_WINDOW_ID = "main";
 const appWindowMetaByWindow = new WeakMap<BrowserWindow, { windowId: string; windowMode: AppWindowMode }>();
 const rendererRecoveryClosingWindows = new WeakSet<BrowserWindow>();
@@ -1605,6 +1617,97 @@ async function maybeAutoBackupCodexAuthJsonOnAccountRefresh(info: any, runtime: 
   } catch {}
 }
 
+/**
+ * 合并设置变更后的后台维护请求，避免连续保存设置时重复探测 WSL 和重启索引器。
+ */
+function scheduleSettingsMaintenance(request: Partial<SettingsMaintenanceRequest> = {}): void {
+  if (settingsMaintenanceStopping) return;
+  const previous = pendingSettingsMaintenance || {
+    configureProxy: false,
+    notifications: false,
+    restartIndexer: false,
+    refreshCodexAccount: false,
+  };
+  pendingSettingsMaintenance = {
+    configureProxy: previous.configureProxy || request.configureProxy === true,
+    notifications: previous.notifications || request.notifications === true,
+    restartIndexer: previous.restartIndexer || request.restartIndexer === true,
+    refreshCodexAccount: previous.refreshCodexAccount || request.refreshCodexAccount === true,
+  };
+  if (settingsMaintenanceTimer || settingsMaintenanceRunning) return;
+  settingsMaintenanceTimer = setTimeout(() => {
+    settingsMaintenanceTimer = null;
+    void flushSettingsMaintenance();
+  }, 0);
+}
+
+/**
+ * 停止接收设置维护任务，并清除尚未开始的后台工作。
+ */
+function stopSettingsMaintenance(): void {
+  settingsMaintenanceStopping = true;
+  pendingSettingsMaintenance = null;
+  if (!settingsMaintenanceTimer) return;
+  try { clearTimeout(settingsMaintenanceTimer); } catch {}
+  settingsMaintenanceTimer = null;
+}
+
+/**
+ * 在后台执行代理、通知桥和索引器维护，不让 settings IPC 等待外部文件或 WSL 操作。
+ */
+async function flushSettingsMaintenance(): Promise<void> {
+  if (settingsMaintenanceStopping) return;
+  if (settingsMaintenanceRunning) return;
+  if (!pendingSettingsMaintenance) return;
+  settingsMaintenanceRunning = true;
+  try {
+    while (pendingSettingsMaintenance && !settingsMaintenanceStopping) {
+      const request = pendingSettingsMaintenance;
+      pendingSettingsMaintenance = null;
+      if (request.configureProxy) {
+        try { await configureOrUpdateProxy(); } catch {}
+      }
+      if (request.notifications && !settingsMaintenanceStopping) {
+        await Promise.allSettled([
+          ensureAllCodexNotifications(),
+          ensureAllClaudeNotifications(),
+          ensureAllGeminiNotifications(),
+          ensureAllAntigravityNotifications(),
+        ]);
+        if (!settingsMaintenanceStopping) {
+          await Promise.allSettled([
+            startCodexNotificationBridge(() => mainWindow),
+            startClaudeNotificationBridge(() => mainWindow),
+            startGeminiNotificationBridge(() => mainWindow),
+            startAntigravityNotificationBridge(() => mainWindow),
+          ]);
+        }
+      }
+      if (request.refreshCodexAccount && !settingsMaintenanceStopping) {
+        try {
+          const runtime = deriveCodexBridgeDescriptor(settings.getSettings());
+          const bridge = ensureCodexBridge();
+          const info = await bridge.getAccountInfo(true);
+          await maybeAutoBackupCodexAuthJsonOnAccountRefresh(info, runtime);
+        } catch {}
+      }
+      if (request.restartIndexer && !settingsMaintenanceStopping) {
+        try {
+          await startHistoryIndexer(() => mainWindow);
+          if (settingsMaintenanceStopping) {
+            await stopHistoryIndexer();
+          } else {
+            try { mainWindow?.webContents.send("history:index:invalidate", { reason: "settings" }); } catch {}
+          }
+        } catch {}
+      }
+    }
+  } finally {
+    settingsMaintenanceRunning = false;
+    if (pendingSettingsMaintenance && !settingsMaintenanceStopping) scheduleSettingsMaintenance();
+  }
+}
+
 // 统一配置/更新全局代理（支持：自定义/系统代理；并同步给 CLI 及 WSL 环境变量）
 let appliedProxySig = "";
 function redactProxy(uri: string): string {
@@ -2775,8 +2878,22 @@ if (!gotLock) {
     })();
   });
 
+  let indexerStopPromise: Promise<void> | null = null;
+
+  /** 复用同一个索引器停止任务，确保退出流程等待异步缓存刷盘完成。 */
+  const stopIndexerAndWait = (): Promise<void> => {
+    if (!indexerStopPromise) {
+      try {
+        indexerStopPromise = stopHistoryIndexer().catch(() => {});
+      } catch {
+        indexerStopPromise = Promise.resolve();
+      }
+    }
+    return indexerStopPromise;
+  };
+
   const tryStopIndexer = () => {
-    try { stopHistoryIndexer().catch(() => {}); } catch {}
+    void stopIndexerAndWait();
   };
 
   app.on('before-quit', (event) => {
@@ -2807,6 +2924,7 @@ if (!gotLock) {
         }
       }
     } catch {}
+    stopSettingsMaintenance();
     disposeAllPtys();
     cleanupPastedImages().catch(() => {});
     disposeCodexBridges();
@@ -2819,6 +2937,7 @@ if (!gotLock) {
   });
 
   app.on('will-quit', () => {
+    stopSettingsMaintenance();
     try { stopCodexNotificationBridge(); } catch {}
     try { stopClaudeNotificationBridge(); } catch {}
     try { stopGeminiNotificationBridge(); } catch {}
@@ -2834,19 +2953,38 @@ if (!gotLock) {
   });
 
   // Also hook process-level events so that when Node receives termination signals we attempt cleanup.
-  process.on('exit', () => { disposeAllPtys(); disposeCodexBridges(); try { unregisterNotificationIPC({ closeNotifications: true }); } catch {}; tryStopIndexer(); try { unwatchDebugConfig(); } catch {}; });
-  process.on('SIGINT', () => { disposeAllPtys(); cleanupPastedImages().catch(() => {}); disposeCodexBridges(); try { unregisterNotificationIPC({ closeNotifications: true }); } catch {}; tryStopIndexer(); try { unwatchDebugConfig(); } catch {}; process.exit(0); });
-  process.on('SIGTERM', () => { disposeAllPtys(); cleanupPastedImages().catch(() => {}); disposeCodexBridges(); try { unregisterNotificationIPC({ closeNotifications: true }); } catch {}; tryStopIndexer(); try { unwatchDebugConfig(); } catch {}; process.exit(0); });
+  process.on('exit', () => { stopSettingsMaintenance(); disposeAllPtys(); disposeCodexBridges(); try { unregisterNotificationIPC({ closeNotifications: true }); } catch {}; tryStopIndexer(); try { unwatchDebugConfig(); } catch {}; });
+  process.on('SIGINT', () => {
+    stopSettingsMaintenance();
+    disposeAllPtys();
+    cleanupPastedImages().catch(() => {});
+    disposeCodexBridges();
+    try { unregisterNotificationIPC({ closeNotifications: true }); } catch {}
+    try { unwatchDebugConfig(); } catch {}
+    void stopIndexerAndWait().finally(() => process.exit(0));
+  });
+  process.on('SIGTERM', () => {
+    stopSettingsMaintenance();
+    disposeAllPtys();
+    cleanupPastedImages().catch(() => {});
+    disposeCodexBridges();
+    try { unregisterNotificationIPC({ closeNotifications: true }); } catch {}
+    try { unwatchDebugConfig(); } catch {}
+    void stopIndexerAndWait().finally(() => process.exit(0));
+  });
   process.on('uncaughtException', (err) => {
     try { console.error('uncaughtException', err); } catch {}
     if (DIAG) { try { perfLogger.log(`[PROC] uncaughtException ${String((err as any)?.stack || err)}`); } catch {} }
+    stopSettingsMaintenance();
     disposeAllPtys();
     disposeCodexBridges();
     try { unregisterNotificationIPC({ closeNotifications: true }); } catch {}
     try { unwatchDebugConfig(); } catch {}
-    // 为避免再次被当前监听器拦截，移除所有 uncaughtException 监听后在下一轮事件循环抛出
+    // 为避免再次被当前监听器拦截，移除所有 uncaughtException 监听后等待缓存刷盘再抛出
     try { process.removeAllListeners('uncaughtException'); } catch {}
-    try { setImmediate(() => { throw err; }); } catch {}
+    void stopIndexerAndWait().finally(() => {
+      try { setImmediate(() => { throw err; }); } catch {}
+    });
   });
   if (DIAG) process.on('unhandledRejection', (reason: any) => {
     try { perfLogger.log(`[PROC] unhandledRejection ${String((reason as any)?.stack || reason)}`); } catch {}
@@ -6871,14 +7009,7 @@ ipcMain.handle('settings.get', async () => {
   const notifyRuntimeRepair = hasSavedRuntimeEnvSelection();
   try { await ensureFirstRunTerminalSelection(); } catch {}
   try { await ensureSettingsAutodetect(); } catch {}
-  try { await ensureAllCodexNotifications(); } catch {}
-  try { await ensureAllClaudeNotifications(); } catch {}
-  try { await ensureAllGeminiNotifications(); } catch {}
-  try { await ensureAllAntigravityNotifications(); } catch {}
-  try { await startCodexNotificationBridge(() => mainWindow); } catch {}
-  try { await startClaudeNotificationBridge(() => mainWindow); } catch {}
-  try { await startGeminiNotificationBridge(() => mainWindow); } catch {}
-  try { await startAntigravityNotificationBridge(() => mainWindow); } catch {}
+  scheduleSettingsMaintenance({ configureProxy: true, notifications: true });
   let cfg = settings.getSettings() as any;
   try {
     const flags = getFeatureFlags();
@@ -6990,32 +7121,13 @@ ipcMain.handle('settings.update', async (_e, partial: any) => {
       disposeCodexBridgesExcept(nextDescriptor.key);
     }
   } catch {}
-  // 设置更新后尝试刷新代理
-  try { await configureOrUpdateProxy(); } catch {}
-  try { await ensureAllCodexNotifications(); } catch {}
-  try { await ensureAllClaudeNotifications(); } catch {}
-  try { await ensureAllGeminiNotifications(); } catch {}
-  try { await ensureAllAntigravityNotifications(); } catch {}
-  try { await startCodexNotificationBridge(() => mainWindow); } catch {}
-  try { await startClaudeNotificationBridge(() => mainWindow); } catch {}
-  try { await startGeminiNotificationBridge(() => mainWindow); } catch {}
-  try { await startAntigravityNotificationBridge(() => mainWindow); } catch {}
-  // 若刚开启“记录账号”，立即刷新一次账号信息并触发初始备份（便于立刻出现在备份列表）
-  try {
-    if (!prevCodexAccountRecordEnabled && nextCodexAccountRecordEnabled) {
-      const runtime = deriveCodexBridgeDescriptor(next);
-      const bridge = ensureCodexBridge();
-      const info = await bridge.getAccountInfo(true);
-      await maybeAutoBackupCodexAuthJsonOnAccountRefresh(info, runtime);
-    }
-  } catch {}
-  // Claude Code 过滤开关变更：重启历史索引器以立即生效（包含增量移除/新增）。
-  try {
-    if (prevClaudeAgentHistory !== nextClaudeAgentHistory) {
-      startHistoryIndexer(() => mainWindow).catch(() => {});
-      try { mainWindow?.webContents.send('history:index:invalidate', { reason: 'settings' }); } catch {}
-    }
-  } catch {}
+  // 设置维护涉及 WSL/UNC 文件与外部命令，合并后放到后台执行，先返回新的设置快照。
+  scheduleSettingsMaintenance({
+    configureProxy: true,
+    notifications: true,
+    refreshCodexAccount: !prevCodexAccountRecordEnabled && nextCodexAccountRecordEnabled,
+    restartIndexer: prevClaudeAgentHistory !== nextClaudeAgentHistory,
+  });
   let merged = next as any;
   try {
     merged = await resolveVisibleSettingsRuntimeEnvs(merged);

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
-import fs from "node:fs";
+import { promises as fsp } from "node:fs";
 import path from "node:path";
 import { BrowserWindow } from "electron";
 import { perfLogger } from "../log";
@@ -363,6 +363,7 @@ process.exit(0);
 
 type HookItem = { type?: string; command?: string; timeout?: number };
 type HookGroup = { matcher?: string; hooks?: HookItem[] };
+type WriteFileResult = { ok: boolean; changed: boolean };
 
 /**
  * 中文说明：记录 Gemini 通知配置的调试日志。
@@ -374,37 +375,41 @@ function logGeminiNotification(message: string) {
 /**
  * 中文说明：确保目录存在。
  */
-function ensureDir(dirPath: string) {
-  try { fs.mkdirSync(dirPath, { recursive: true }); } catch {}
+async function ensureDir(dirPath: string): Promise<void> {
+  try { await fsp.mkdir(dirPath, { recursive: true }); } catch {}
 }
 
 /**
  * 中文说明：仅在内容变化时写入文件，避免无意义覆盖。
  */
-function writeFileIfChanged(filePath: string, content: string): boolean {
+async function writeFileIfChanged(filePath: string, content: string): Promise<WriteFileResult> {
   try {
-    if (fs.existsSync(filePath)) {
-      const current = fs.readFileSync(filePath, "utf8");
-      if (current === content) return false;
-    }
-  } catch {}
+    const current = await fsp.readFile(filePath, "utf8");
+    if (current === content) return { ok: true, changed: false };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") return { ok: false, changed: false };
+  }
   try {
-    ensureDir(path.dirname(filePath));
-    fs.writeFileSync(filePath, content, "utf8");
-    return true;
+    await ensureDir(path.dirname(filePath));
+    await fsp.writeFile(filePath, content, "utf8");
+    return { ok: true, changed: true };
   } catch (error) {
     logGeminiNotification(`write script failed path=${filePath} error=${String(error)}`);
-    return false;
+    return { ok: false, changed: false };
   }
 }
 
 /**
  * 中文说明：安全读取 JSON 配置；解析失败则返回 null。
  */
-function readJsonFile(filePath: string): any | null {
+async function readJsonFile(filePath: string): Promise<any | null> {
   try {
-    if (!fs.existsSync(filePath)) return {};
-    const raw = fs.readFileSync(filePath, "utf8");
+    let raw = "";
+    try {
+      raw = await fsp.readFile(filePath, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+    }
     return raw.trim() ? JSON.parse(raw) : {};
   } catch (error) {
     logGeminiNotification(`read settings failed path=${filePath} error=${String(error)}`);
@@ -415,11 +420,11 @@ function readJsonFile(filePath: string): any | null {
 /**
  * 中文说明：将对象写回 JSON 文件（统一 2 空格缩进）。
  */
-function writeJsonFile(filePath: string, data: any): boolean {
+async function writeJsonFile(filePath: string, data: any): Promise<boolean> {
   try {
-    ensureDir(path.dirname(filePath));
+    await ensureDir(path.dirname(filePath));
     const body = JSON.stringify(data ?? {}, null, 2) + "\n";
-    fs.writeFileSync(filePath, body, "utf8");
+    await fsp.writeFile(filePath, body, "utf8");
     return true;
   } catch (error) {
     logGeminiNotification(`write settings failed path=${filePath} error=${String(error)}`);
@@ -628,12 +633,14 @@ async function ensureGeminiNotificationsAtRoot(candidate: SessionsRootCandidate)
   const command = buildGeminiHookCommand(rootPath, candidate);
   if (!command) return;
 
-  const scriptChanged = writeFileIfChanged(scriptPath, GEMINI_HOOK_SCRIPT);
-  const current = readJsonFile(settingsPath);
+  const scriptResult = await writeFileIfChanged(scriptPath, GEMINI_HOOK_SCRIPT);
+  if (!scriptResult.ok) return;
+  const scriptChanged = scriptResult.changed;
+  const current = await readJsonFile(settingsPath);
   if (current == null) return;
 
   const { next, changed } = ensureGeminiSettings(current, command);
-  const settingsChanged = changed ? writeJsonFile(settingsPath, next) : false;
+  const settingsChanged = changed ? await writeJsonFile(settingsPath, next) : false;
 
   if (scriptChanged || settingsChanged) {
     logGeminiNotification(`ensure notifications root=${rootPath} script=${scriptChanged ? "1" : "0"} settings=${settingsChanged ? "1" : "0"}`);
@@ -693,6 +700,7 @@ const geminiNotifySources = new Map<string, GeminiNotifySource>();
 let geminiNotifyTimer: NodeJS.Timeout | null = null;
 let geminiNotifyPolling = false;
 let geminiNotifyWindowGetter: (() => BrowserWindow | null) | null = null;
+let geminiNotifyBridgeGeneration = 0;
 
 /**
  * 中文说明：列出需要监听的 Gemini 通知文件路径（Windows/UNC）。
@@ -716,7 +724,8 @@ async function listGeminiNotifyFiles(): Promise<string[]> {
 /**
  * 中文说明：同步通知源列表，保留已有读取偏移。
  */
-function syncGeminiNotifySources(paths: string[]): void {
+async function syncGeminiNotifySources(paths: string[], generation = geminiNotifyBridgeGeneration): Promise<void> {
+  if (generation !== geminiNotifyBridgeGeneration) return;
   const normalized = new Set<string>();
   for (const p of paths) {
     const key = String(p || "").replace(/\\/g, "/").toLowerCase();
@@ -728,17 +737,18 @@ function syncGeminiNotifySources(paths: string[]): void {
       try { logGeminiNotification(`notify source removed path=${source.filePath}`); } catch {}
     }
   }
-  for (const p of paths) {
+  await Promise.all(paths.map(async (p) => {
     const key = String(p || "").replace(/\\/g, "/").toLowerCase();
-    if (!key || geminiNotifySources.has(key)) continue;
+    if (!key || geminiNotifySources.has(key)) return;
     let offset = 0;
     try {
-      const st = fs.statSync(p);
+      const st = await fsp.stat(p);
       if (st && st.isFile && st.isFile()) offset = typeof st.size === "number" ? st.size : 0;
     } catch {}
+    if (generation !== geminiNotifyBridgeGeneration) return;
     geminiNotifySources.set(key, { filePath: p, offset, remainder: "" });
     try { logGeminiNotification(`notify source added path=${p} offset=${offset}`); } catch {}
-  }
+  }));
 }
 
 /**
@@ -759,9 +769,9 @@ function parseGeminiNotifyLine(line: string): GeminiNotifyEntry | null {
 /**
  * 中文说明：从通知文件中读取新增内容并解析为事件列表。
  */
-function readGeminiNotifyEntries(source: GeminiNotifySource): GeminiNotifyEntry[] {
+async function readGeminiNotifyEntries(source: GeminiNotifySource): Promise<GeminiNotifyEntry[]> {
   try {
-    const st = fs.statSync(source.filePath);
+    const st = await fsp.stat(source.filePath);
     if (!st || !st.isFile || !st.isFile()) return [];
     const size = typeof st.size === "number" ? st.size : 0;
     if (size < source.offset) {
@@ -779,12 +789,16 @@ function readGeminiNotifyEntries(source: GeminiNotifySource): GeminiNotifyEntry[
       logGeminiNotification(`notify tail read: path=${source.filePath} len=${length}`);
     }
 
-    const fd = fs.openSync(source.filePath, "r");
+    const fd = await fsp.open(source.filePath, "r");
     const buf = Buffer.alloc(length);
-    try { fs.readSync(fd, buf, 0, length, start); } finally { try { fs.closeSync(fd); } catch {} }
-    source.offset = start + length;
+    let bytesRead = 0;
+    try {
+      const result = await fd.read(buf, 0, length, start);
+      bytesRead = result.bytesRead;
+    } finally { try { await fd.close(); } catch {} }
+    source.offset = start + bytesRead;
 
-    const text = source.remainder + buf.toString("utf8");
+    const text = source.remainder + buf.subarray(0, bytesRead).toString("utf8");
     const lines = text.split(/\r?\n/);
     source.remainder = lines.pop() || "";
     const out: GeminiNotifyEntry[] = [];
@@ -844,15 +858,21 @@ function emitGeminiNotify(entry: GeminiNotifyEntry, sourcePath?: string): void {
  */
 async function pollGeminiNotifyFiles(): Promise<void> {
   if (geminiNotifyPolling) return;
+  const generation = geminiNotifyBridgeGeneration;
   geminiNotifyPolling = true;
   try {
     for (const source of Array.from(geminiNotifySources.values())) {
-      const entries = readGeminiNotifyEntries(source);
+      if (generation !== geminiNotifyBridgeGeneration) return;
+      const entries = await readGeminiNotifyEntries(source);
+      if (generation !== geminiNotifyBridgeGeneration) return;
       if (!entries.length) continue;
-      for (const entry of entries) emitGeminiNotify(entry, source.filePath);
+      for (const entry of entries) {
+        if (generation !== geminiNotifyBridgeGeneration) return;
+        emitGeminiNotify(entry, source.filePath);
+      }
     }
   } finally {
-    geminiNotifyPolling = false;
+    if (generation === geminiNotifyBridgeGeneration) geminiNotifyPolling = false;
   }
 }
 
@@ -860,14 +880,22 @@ async function pollGeminiNotifyFiles(): Promise<void> {
  * 中文说明：启动 Gemini 通知桥接（重复调用只刷新源列表）。
  */
 export async function startGeminiNotificationBridge(getWindow: () => BrowserWindow | null): Promise<void> {
+  const generation = geminiNotifyBridgeGeneration;
   geminiNotifyWindowGetter = getWindow;
   const paths = await listGeminiNotifyFiles();
-  syncGeminiNotifySources(paths);
+  if (generation !== geminiNotifyBridgeGeneration) return;
+  await syncGeminiNotifySources(paths, generation);
+  if (generation !== geminiNotifyBridgeGeneration) return;
   try {
-    const watchList = paths.map((p) => {
-      const exists = fs.existsSync(p);
-      return `${p}${exists ? "" : " (missing)"}`;
-    });
+    const watchList = await Promise.all(paths.map(async (p) => {
+      try {
+        const st = await fsp.stat(p);
+        return `${p}${st.isFile() ? "" : " (missing)"}`;
+      } catch {
+        return `${p} (missing)`;
+      }
+    }));
+    if (generation !== geminiNotifyBridgeGeneration) return;
     logGeminiNotification(`notify bridge watch=${watchList.join(" | ") || "none"}`);
   } catch {}
   if (geminiNotifyTimer) return;
@@ -881,6 +909,7 @@ export async function startGeminiNotificationBridge(getWindow: () => BrowserWind
  * 中文说明：停止 Gemini 通知桥接。
  */
 export function stopGeminiNotificationBridge(): void {
+  geminiNotifyBridgeGeneration += 1;
   if (geminiNotifyTimer) {
     try { clearInterval(geminiNotifyTimer); } catch {}
   }
