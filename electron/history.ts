@@ -2141,35 +2141,47 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
         } catch {}
         if (!mergePathOnlyUserMessageIntoPreviousUserMessage(userMessageEventContent))
           messages.push({ role: 'user', content: userMessageEventContent });
-      } else if (obj.type === 'function_call' || (obj.type === 'response_item' && obj.payload && obj.payload.type === 'function_call')) {
+      } else if (
+        obj.type === 'function_call'
+        || obj.type === 'custom_tool_call'
+        || (obj.type === 'response_item' && obj.payload && (obj.payload.type === 'function_call' || obj.payload.type === 'custom_tool_call'))
+      ) {
         // 工具/函数调用
         const src: any = (obj.type === 'response_item' && obj.payload) ? obj.payload : obj;
         const name = src.name || src.tool || src.function || 'function';
+        const callArguments = src.type === 'custom_tool_call' ? src.input : src.arguments;
         let argsPretty = '';
         try {
-          if (typeof src.arguments === 'string') {
-            try { argsPretty = JSON.stringify(JSON.parse(src.arguments), null, 2); }
-            catch { argsPretty = src.arguments; }
-          } else if (src.arguments) {
-            argsPretty = JSON.stringify(src.arguments, null, 2);
+          if (typeof callArguments === 'string') {
+            try { argsPretty = JSON.stringify(JSON.parse(callArguments), null, 2); }
+            catch { argsPretty = callArguments; }
+          } else if (callArguments) {
+            argsPretty = JSON.stringify(callArguments, null, 2);
           }
         } catch {}
         const text = `name: ${name}\n${argsPretty ? 'arguments:\n' + argsPretty : ''}${(src as any).call_id ? `\ncall_id: ${(src as any).call_id}` : ''}`.trim();
         rememberImagePathsFromText(text);
-        const imagePathCandidates = extractImagePathCandidatesFromFunctionCallArguments((src as any).arguments, text);
+        const imagePathCandidates = extractImagePathCandidatesFromFunctionCallArguments(callArguments, text);
         rememberImagePathsForCallId((src as any).call_id, imagePathCandidates);
         messages.push({ role: 'tool', content: [{ type: 'function_call', text, tags: ['function_call'] }] });
-      } else if (obj.type === 'function_call_output' || (obj.type === 'response_item' && obj.payload && obj.payload.type === 'function_call_output')) {
+      } else if (
+        obj.type === 'function_call_output'
+        || obj.type === 'custom_tool_call_output'
+        || (obj.type === 'response_item' && obj.payload && (obj.payload.type === 'function_call_output' || obj.payload.type === 'custom_tool_call_output'))
+      ) {
         // 工具输出
         const src: any = (obj.type === 'response_item' && obj.payload) ? obj.payload : obj;
         const contentArr: MessageContent[] = [];
         try {
           const outputItems = Array.isArray(src.output) ? src.output : [];
           const callId = String((src as any).call_id || '');
-          for (let index = 0; index < outputItems.length; index += 1) {
-            const item = outputItems[index];
-            const imageItem = createCodexImageContent(item, resolveImagePathHintForCallOutput(callId, index));
-            if (imageItem) contentArr.push(imageItem);
+          let imageIndex = 0;
+          for (const item of outputItems) {
+            const imageItem = createCodexImageContent(item, resolveImagePathHintForCallOutput(callId, imageIndex));
+            if (imageItem) {
+              contentArr.push(imageItem);
+              imageIndex += 1;
+            }
           }
         } catch {}
         let out = '';
