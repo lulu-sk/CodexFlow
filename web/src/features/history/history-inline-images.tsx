@@ -7,7 +7,7 @@ import { useHistoryImageContextMenu } from "@/components/history/history-image-c
 import InteractiveImagePreview from "@/components/ui/interactive-image-preview";
 import { HistoryMarkdown } from "@/features/history/renderers/history-markdown";
 
-const IMAGE_PATH_PATTERN = /@?((?:[A-Za-z]:[\\/]|\/mnt\/[A-Za-z]\/|\/(?:home|root|Users)\/|\\\\[^\\\/\r\n]+\\[^\\\/\r\n]+\\)[^\r\n]*?\.(?:png|jpe?g|webp|gif|bmp|svg))/gi;
+const IMAGE_PATH_PATTERN = /@?((?:[A-Za-z]:[\\/]|\/mnt\/[A-Za-z]\/|\/(?:home|root|Users)\/|\\\\[^\\\/\r\n]+\\[^\\\/\r\n]+\\)[^\r\n"'`]*?\.(?:png|jpe?g|webp|gif|bmp|svg))/gi;
 const IMAGE_OPEN_TAG_PATTERN = /<image\s+name=\[([^\]]+)\]>/gi;
 const IMAGE_CLOSE_TAG_PATTERN = /<\/image>/gi;
 const IMAGE_PLACEHOLDER_PATTERN = /\[(image\s+\d+[^\]]*)\]/gi;
@@ -1107,10 +1107,10 @@ function buildHistoryInlineImageContentFromPath(value?: string): MessageContent 
 /**
  * 中文说明：为路径型 token 合并“后端图片项 + 路径直连预览”的双保险结果。
  * - 若已命中旧缓存中的图片项，优先保留其主图地址；
- * - 同时把当前路径生成的本地预览地址挂成回退，避免旧缓存中的坏图地址导致裂图；
+ * - 优先保留会话内图片数据作为回退，再补充路径兼容地址，避免本地文件失效后出现裂图；
  * - 文本里的真实路径优先作为 `localPath` 展示，保证详情信息稳定。
  */
-function mergeHistoryInlineImageWithPathFallback(
+export function mergeHistoryInlineImageWithPathFallback(
   image: MessageContent,
   pathValue?: string,
 ): MessageContent {
@@ -1119,9 +1119,9 @@ function mergeHistoryInlineImageWithPathFallback(
 
   const primarySrc = String(image?.src || "").trim() || String(pathImage.src || "").trim();
   const fallbackCandidates = [
+    String(image?.fallbackSrc || "").trim(),
     String(pathImage.src || "").trim(),
     String(pathImage.fallbackSrc || "").trim(),
-    String(image?.fallbackSrc || "").trim(),
   ].filter((candidate, index, list) => candidate.length > 0 && candidate !== primarySrc && list.indexOf(candidate) === index);
 
   return {

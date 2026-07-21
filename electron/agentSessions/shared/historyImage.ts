@@ -16,7 +16,7 @@ export type HistoryImageContentOptions = {
   preferDataUrl?: boolean;
 };
 
-const IMAGE_PATH_PATTERN = /@?((?:[A-Za-z]:(?:\\|\/)|\/mnt\/[A-Za-z]\/|\/(?:home|root|Users)\/|\\\\[^\\\/\r\n]+\\[^\\\/\r\n]+\\)[^\r\n]*?\.(?:png|jpe?g|webp|gif|bmp|svg))/gi;
+const IMAGE_PATH_PATTERN = /@?((?:[A-Za-z]:(?:\\|\/)|\/mnt\/[A-Za-z]\/|\/(?:home|root|Users)\/|\\\\[^\\\/\r\n]+\\[^\\\/\r\n]+\\)[^\r\n"'`]*?\.(?:png|jpe?g|webp|gif|bmp|svg))/gi;
 
 /**
  * 中文说明：从文本中提取图片绝对路径候选。

@@ -32,6 +32,14 @@ describe("electron/agentSessions/shared/historyImage", () => {
     expect(extractImagePathCandidatesFromText(text)).toEqual(["C:/demo/assets/example-image.png"]);
   });
 
+  it("提取多路径工具参数时不会把前面的非图片路径拼进图片路径", () => {
+    const text = "Get-Item -LiteralPath 'C:\\workspace\\fixtures\\notes.txt','C:\\workspace\\fixtures\\image-a.png','C:\\workspace\\fixtures\\image-b.png'";
+    expect(extractImagePathCandidatesFromText(text)).toEqual([
+      "C:\\workspace\\fixtures\\image-a.png",
+      "C:\\workspace\\fixtures\\image-b.png",
+    ]);
+  });
+
   (process.platform === "win32" ? it : it.skip)("会把 /mnt 形式的 Windows 图片路径识别为本地文件并生成 Windows 预览地址", async () => {
     const localImagePath = await createTempImageFile("mnt-history-image.png");
     const posixWinPath = localImagePath.replace(/\\/g, "/");

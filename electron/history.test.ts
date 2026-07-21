@@ -627,6 +627,61 @@ describe("electron/history.readHistoryFile", () => {
     ]);
   });
 
+  it("新版 custom_tool_call_output 会按图片顺序恢复缺失路径对应的会话图片", async () => {
+    const localImagePathA = "C:\\workspace\\fixtures\\missing-image-a.png";
+    const localImagePathB = "C:\\workspace\\fixtures\\missing-image-b.png";
+    const dataUrlA = "data:image/png;base64,QUFB";
+    const dataUrlB = "data:image/png;base64,QkJC";
+    const callId = "call-custom-image-output";
+    const escapedImagePathA = localImagePathA.replace(/\\/g, "\\\\");
+    const escapedImagePathB = localImagePathB.replace(/\\/g, "\\\\");
+    const filePath = await createHistoryJsonlFile([
+      {
+        timestamp: "2026-07-21T01:00:00.000Z",
+        type: "session_meta",
+        payload: {
+          id: "session-custom-image-output",
+          cwd: "C:\\workspace\\project",
+        },
+      },
+      {
+        timestamp: "2026-07-21T01:00:01.000Z",
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call",
+          call_id: callId,
+          name: "exec",
+          input: `Get-Item -LiteralPath 'C:\\\\workspace\\\\fixtures\\\\notes.txt','${escapedImagePathA}','${escapedImagePathB}'`,
+        },
+      },
+      {
+        timestamp: "2026-07-21T01:00:02.000Z",
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call_output",
+          call_id: callId,
+          output: [
+            { type: "input_text", text: "工具调用已完成" },
+            { type: "input_image", image_url: dataUrlA },
+            { type: "input_image", image_url: dataUrlB },
+          ],
+        },
+      },
+    ]);
+
+    const parsed = await readHistoryFile(filePath, { maxLines: 0 });
+    const imageItems = parsed.messages
+      .flatMap((message) => message.content || [])
+      .filter((item) => item.type === "image");
+    const normalizedLocalPaths = imageItems.map((item) => String(item.localPath || "").replace(/\\+/g, "\\"));
+
+    expect(imageItems).toHaveLength(2);
+    expect(normalizedLocalPaths).toEqual([localImagePathA, localImagePathB]);
+    expect(imageItems.map((item) => item.src)).toEqual([dataUrlA, dataUrlB]);
+    expect(collectTexts(parsed.messages).join("\n")).not.toContain("base64,QUFB");
+    expect(collectTexts(parsed.messages).join("\n")).not.toContain("base64,QkJC");
+  });
+
   it("会把重复的 event_msg.user_message 合并到上一条等价 user 消息，避免详情块重复", async () => {
     const localImagePath = await createTempImageFile("history-image-merged.png");
     const wslImagePath = toWslImagePath(localImagePath);
