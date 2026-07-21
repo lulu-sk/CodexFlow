@@ -4876,6 +4876,10 @@ export default function CodexFlowManagerUI() {
     setSelectedHistoryDir(null);
     setSelectedHistoryId(null);
     setActiveTab(tabId, { focusMode: 'immediate', allowDuringRename: true, delay: 0, projectId });
+    terminalManagerRef.current?.scrollToBottom(tabId, {
+      followOutput: true,
+      source: "notification-focus",
+    });
     acknowledgeAgentTurnFailure(tabId, "notification-focus");
   }, [acknowledgeAgentTurnFailure, revealProjectRowInSidebar, selectedProjectId, setActiveTab, setCenterMode, setSelectedHistoryDir, setSelectedHistoryId, setSelectedProjectId]);
 
@@ -12773,6 +12777,10 @@ export default function CodexFlowManagerUI() {
             await (window as any).host?.utils?.perfLog?.(`[ui] history.resume pty=${ptyId} tab=${tab.id} - listener registered`);
           } catch {}
           try { tm.setPty(tab.id, ptyId); } catch (err) { console.warn('tm.setPty failed', err); }
+          tm.scrollToBottom(tab.id, {
+            followOutput: true,
+            source: "history-resume",
+          });
         }
         try { window.host.projects.touch(targetProject.id); } catch {}
         // 内存也更新最近使用时间，并抑制历史面板自动切换

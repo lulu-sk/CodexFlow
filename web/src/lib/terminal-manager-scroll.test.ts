@@ -127,6 +127,22 @@ describe("TerminalManager（终端滚动快照）", () => {
     tm.disposeAll(false);
   });
 
+  it("导航触发的稳定滚底会创建适配器并透传跟随选项", () => {
+    const adapter: any = createAdapterStub();
+    createTerminalAdapterMock.mockReturnValue(adapter);
+    const options = {
+      followOutput: true,
+      source: "history-resume",
+    };
+
+    const tm = new TerminalManager(() => undefined, createHostPtyStub() as any, {});
+    tm.scrollToBottom("tab-follow", options);
+
+    expect(createTerminalAdapterMock).toHaveBeenCalledTimes(1);
+    expect(adapter.scrollToBottom).toHaveBeenCalledWith(options);
+    tm.disposeAll(false);
+  });
+
   it("页面输入框已聚焦时，attachToHost 不会抢走输入焦点", () => {
     const adapter: any = createAdapterStub();
     createTerminalAdapterMock.mockReturnValue(adapter);

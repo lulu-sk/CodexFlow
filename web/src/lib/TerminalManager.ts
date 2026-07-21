@@ -6,6 +6,7 @@ import {
   type TerminalAdapterAPI,
   type TerminalCursorTextSnapshot,
   type TerminalScrollSnapshot,
+  type TerminalScrollToBottomOptions,
 } from '@/adapters/TerminalAdapter';
 import { isWindowsLikeTerminal, type TerminalMode } from '@/lib/shell';
 import {
@@ -3036,10 +3037,21 @@ export default class TerminalManager {
     }
   }
 
-  scrollToBottom(tabId: string): void {
-    const adapter = this.adapters[tabId];
+  /**
+   * 将指定终端滚动到底部；导航场景可持续跟随异步输出与尺寸重排直到稳定。
+   * @param tabId 标签页标识
+   * @param options 底部跟随选项
+   */
+  scrollToBottom(tabId: string, options?: TerminalScrollToBottomOptions): void {
+    let adapter = this.adapters[tabId];
+    if (!adapter && options?.followOutput) {
+      try {
+        this.ensurePersistentContainer(tabId);
+        adapter = this.adapters[tabId];
+      } catch {}
+    }
     if (adapter) {
-      try { adapter.scrollToBottom(); } catch {}
+      try { adapter.scrollToBottom(options); } catch {}
     }
   }
 
