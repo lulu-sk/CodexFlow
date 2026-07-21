@@ -88,6 +88,7 @@ const GEMINI_WSL_EDITOR_TRIGGER_DISPATCH_THRESHOLD_MS = 2500;
 const TERMINAL_PTY_RESIZE_STABLE_DELAY_MS = 220;
 const TERMINAL_PTY_RESIZE_MIN_INTERVAL_MS = 320;
 const TERMINAL_PTY_RESIZE_MAX_DEFER_MS = 1200;
+const TERMINAL_PTY_RESIZE_REPLAY_GUARD_MS = 2500;
 const TERMINAL_RESIZE_DEBOUNCE_MS = 150;
 const TERMINAL_WINDOW_RESIZE_FAST_DEBOUNCE_MS = 220;
 const TERMINAL_WINDOW_RESIZE_STABLE_DEBOUNCE_MS = 1280;
@@ -501,6 +502,24 @@ export default class TerminalManager {
    */
   private isWindowResizeSessionActive(tabId: string): boolean {
     return !!this.getActiveWindowResizeSession(tabId);
+  }
+
+  /**
+   * 判断 PTY 是否正处于缩放或刚完成缩放，用于识别终端全屏重绘产生的历史输出回放。
+   * @param tabId tab 标识
+   */
+  isPtyResizeReplayWindowActive(tabId: string): boolean {
+    const id = String(tabId || "").trim();
+    if (!id) return false;
+    if (this.isWindowResizeSessionActive(id)) return true;
+    if (typeof this.pendingTimerByTab[id] === "number") return true;
+    if (typeof this.pendingPtyResizeTimerByTab[id] === "number") return true;
+    if (typeof this.pendingPtyResizeSinceByTab[id] === "number") return true;
+    if (this.resizePtyPauseByTab[id]) return true;
+
+    const lastPtyResizeAt = this.lastPtyResizeAtByTab[id];
+    if (typeof lastPtyResizeAt !== "number") return false;
+    return Math.max(0, this.nowMs() - lastPtyResizeAt) <= TERMINAL_PTY_RESIZE_REPLAY_GUARD_MS;
   }
 
   /**

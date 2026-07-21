@@ -126,7 +126,7 @@ const RECONNECTING_STATUS_PATTERN = /Reconnecting\.\.\.\s+(\d+)\/(\d+)/gi;
 const WORKING_STATUS_PATTERN = /\bWorking\s*\(/gi;
 const CODEX_HISTORY_LINE_MARKER_PATTERN = /(?:^|\n)[^\S\n]*[■▪]\s+/gu;
 const CODEX_FINAL_HISTORY_LINE_PATTERN =
-  /^(?:unexpected status\s+\d{3}|exceeded retry limit|Conversation interrupted|Goal budget reached|you['’]ve hit your usage limit|usage limit(?:ed)?(?:\s+reached)?|selected model is at capacity|model is at capacity|currently experiencing high demand|400\s+Bad Request|403\s+Forbidden|413\s+(?:Payload Too Large|Request Entity Too Large)|sign in with ChatGPT)\b/i;
+  /^(?:unexpected status\s+\d{3}|exceeded retry limit|stream disconnected before completion|Conversation interrupted|Goal budget reached|you['’]ve hit your usage limit|usage limit(?:ed)?(?:\s+reached)?|selected model is at capacity|model is at capacity|currently experiencing high demand|400\s+Bad Request|403\s+Forbidden|413\s+(?:Payload Too Large|Request Entity Too Large)|sign in with ChatGPT)\b/i;
 const EXPLICIT_FINAL_ERROR_PATTERN =
   /(?:exceeded retry limit|selected model is at capacity|you['’]ve hit your usage limit|usage limit(?:ed)?(?:\s+reached)?|currently experiencing high demand|400\s+Bad Request|<h1>\s*400\s+Bad Request\s*<\/h1>|unexpected status\s+413\b|413\s+Payload Too Large|413\s+Request Entity Too Large|<h1>\s*413\s+(?:Payload Too Large|Request Entity Too Large)\s*<\/h1>)/i;
 const SOURCE_LOCATION_LINE_PATTERN = /^(?:(?:[A-Za-z]:)?[./\\\w@ -]+\.(?:ts|tsx|js|jsx|json|cjs|mjs|md|css|scss|html|yml|yaml|txt|cs|shader|uxml|uss):\d+(?::\d+)?:)/i;

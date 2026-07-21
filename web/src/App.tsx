@@ -80,6 +80,10 @@ import {
   type CodexCliErrorKind,
 } from "@/lib/codex-cli-error-classifier";
 import {
+  rememberCodexErrorReplayKey,
+  shouldSuppressCodexErrorResizeReplay,
+} from "@/lib/codex-error-replay-guard";
+import {
   DEFAULT_CODEX_ERROR_HANDLING_PREFS,
   isCodexAutoContinueErrorKind,
   normalizeCodexErrorHandlingPrefs,
@@ -1807,6 +1811,7 @@ export default function CodexFlowManagerUI() {
   const resumeCompletionGuardByTabRef = useRef<Record<string, number>>({});
   const ptyNotificationBuffersRef = useRef<Record<string, string>>({});
   const codexErrorScanByTabRef = useRef<Record<string, CodexErrorScanState>>({});
+  const codexHandledErrorKeysByPtyRef = useRef<Record<string, string[]>>({});
   const ptyListenersRef = useRef<Record<string, () => void>>({});
   const ptyToTabRef = useRef<Record<string, string>>({});
   const hydratedPtyBindingQueueRef = useRef<Array<{ tabId: string; ptyId: string; windowId: string; source: string }>>([]);
@@ -1910,6 +1915,7 @@ export default function CodexFlowManagerUI() {
         }
       }
       codexErrorScanByTabRef.current = {};
+      codexHandledErrorKeysByPtyRef.current = {};
       if (hydratedPtyBindingTimerRef.current !== null) {
         try { window.clearTimeout(hydratedPtyBindingTimerRef.current); } catch {}
         hydratedPtyBindingTimerRef.current = null;
@@ -2808,11 +2814,16 @@ export default function CodexFlowManagerUI() {
   }, [notifyLog]);
 
   /**
-   * 重置指定标签页的 Codex 错误扫描状态，可选择保留自动 continue 尝试次数。
+   * 重置指定标签页的 Codex 错误扫描状态；用户主动发送时同时开启新的错误回放边界。
    */
   const resetCodexErrorScanForTab = useCallback((tabId: string, source: string, options?: { keepAttempts?: boolean }): void => {
     const id = String(tabId || "").trim();
     if (!id) return;
+    if (source === "user-send") {
+      const ptyId = ptyByTabRef.current[id];
+      if (ptyId)
+        delete codexHandledErrorKeysByPtyRef.current[ptyId];
+    }
     const state = codexErrorScanByTabRef.current[id];
     if (state && typeof state.autoContinueTimerId === "number") {
       try { window.clearTimeout(state.autoContinueTimerId); } catch {}
@@ -4140,11 +4151,43 @@ export default function CodexFlowManagerUI() {
   }
 
   /**
+   * 记录 PTY 已经实际处理过的 Codex 错误，供后续缩放重绘去重。
+   */
+  function rememberHandledCodexError(ptyId: string, classification: CodexCliErrorClassification): void {
+    const id = String(ptyId || "").trim();
+    if (!id) return;
+    codexHandledErrorKeysByPtyRef.current[id] = rememberCodexErrorReplayKey(
+      codexHandledErrorKeysByPtyRef.current[id],
+      classification,
+    );
+  }
+
+  /**
+   * 判断当前识别结果是否是 PTY 缩放重绘产生的已处理错误回放。
+   */
+  function shouldSuppressCodexResizeReplay(
+    tabId: string,
+    ptyId: string,
+    classification: CodexCliErrorClassification,
+  ): boolean {
+    const suppressed = shouldSuppressCodexErrorResizeReplay({
+      resizeReplayActive: tm.isPtyResizeReplayWindowActive(tabId),
+      handledErrorKeys: codexHandledErrorKeysByPtyRef.current[ptyId],
+      classification,
+    });
+    if (suppressed)
+      notifyLog(`codexError.resizeReplay.suppress tab=${tabId} pty=${ptyId} kind=${classification.kind}`);
+    return suppressed;
+  }
+
+  /**
    * 处理已识别的 Codex CLI 错误，统一落计时失败、通知用户并按设置安排自动 continue。
    */
   function handleCodexCliErrorDetected(tabId: string, classification: CodexCliErrorClassification, errorKey: string) {
     const id = String(tabId || "").trim();
     if (!id) return;
+    const ptyId = ptyByTabRef.current[id];
+    if (ptyId) rememberHandledCodexError(ptyId, classification);
     const autoContinue = scheduleCodexAutoContinue(id, classification, errorKey);
     failAgentTurnTimer(id, classification, autoContinue);
 
@@ -4185,6 +4228,8 @@ export default function CodexFlowManagerUI() {
   function handleCodexCliReconnectDetected(tabId: string, classification: CodexCliErrorClassification) {
     const id = String(tabId || "").trim();
     if (!id) return;
+    const ptyId = ptyByTabRef.current[id];
+    if (ptyId) rememberHandledCodexError(ptyId, classification);
     markAgentTurnReconnecting(id, classification);
     if (!codexErrorHandlingPrefsRef.current.notifyReconnectErrors) {
       notifyLog(`codexError.reconnecting tab=${id} kind=${classification.kind} notify=0`);
@@ -4280,6 +4325,8 @@ export default function CodexFlowManagerUI() {
     const chunkRuntimeStatus = detectCodexCliRuntimeStatusText(cleanedChunk);
     if (chunkRuntimeStatus?.phase === "idle") {
       const idleClassification = classifyCodexCliErrorText(cleanedChunk);
+      if (idleClassification?.phase === "final" && shouldSuppressCodexResizeReplay(tabId, ptyId, idleClassification))
+        return;
       if (typeof previous.pendingFinalErrorTimerId === "number") {
         try { window.clearTimeout(previous.pendingFinalErrorTimerId); } catch {}
       }
@@ -4362,6 +4409,8 @@ export default function CodexFlowManagerUI() {
         reconnectAttempt: reconnectClassification.reconnectAttempt || chunkRuntimeStatus.reconnectAttempt,
         reconnectMaxAttempts: reconnectClassification.reconnectMaxAttempts || chunkRuntimeStatus.reconnectMaxAttempts,
       };
+      if (shouldSuppressCodexResizeReplay(tabId, ptyId, normalizedReconnectClassification))
+        return;
       const reconnectErrorKey = buildCodexCliErrorKey(normalizedReconnectClassification);
       restoreFailedAgentTurnToReconnecting(tabId, normalizedReconnectClassification, "pty-runtime-status");
       const restoredScanState = codexErrorScanByTabRef.current[tabId] || previous;
@@ -4413,15 +4462,17 @@ export default function CodexFlowManagerUI() {
     if (chunkRuntimeStatus?.phase === "reconnecting" && previous.pendingFinalError && previous.pendingFinalErrorKey) {
       const pendingAgeMs = Math.max(0, now - Number(previous.pendingFinalErrorAt || now));
       if (pendingAgeMs <= CODEX_RECONNECT_AFTER_ERROR_GRACE_MS) {
-        if (typeof previous.pendingFinalErrorTimerId === "number") {
-          try { window.clearTimeout(previous.pendingFinalErrorTimerId); } catch {}
-        }
         const reconnectClassification: CodexCliErrorClassification = {
           ...previous.pendingFinalError,
           phase: "reconnecting",
           reconnectAttempt: chunkRuntimeStatus.reconnectAttempt,
           reconnectMaxAttempts: chunkRuntimeStatus.reconnectMaxAttempts,
         };
+        if (shouldSuppressCodexResizeReplay(tabId, ptyId, reconnectClassification))
+          return;
+        if (typeof previous.pendingFinalErrorTimerId === "number") {
+          try { window.clearTimeout(previous.pendingFinalErrorTimerId); } catch {}
+        }
         const reconnectErrorKey = buildCodexCliErrorKey(reconnectClassification);
         codexErrorScanByTabRef.current[tabId] = {
           ...latestScanState,
@@ -4457,6 +4508,8 @@ export default function CodexFlowManagerUI() {
       return;
     }
 
+    if (shouldSuppressCodexResizeReplay(tabId, ptyId, classification))
+      return;
     const errorKey = buildCodexCliErrorKey(classification);
     if (classification.phase === "reconnecting") {
       if (typeof previous.pendingFinalErrorTimerId === "number") {
@@ -4650,7 +4703,13 @@ export default function CodexFlowManagerUI() {
     ptyNotificationBuffersRef.current[ptyId] = buffer;
   }
 
-  function unregisterPtyListener(ptyId: string | undefined | null) {
+  /**
+   * 解除 PTY 输出监听；仅在会话确定关闭时清除其错误回放历史。
+   */
+  function unregisterPtyListener(
+    ptyId: string | undefined | null,
+    options?: { forgetCodexErrorHistory?: boolean },
+  ): void {
     if (!ptyId) return;
     const tabId = ptyToTabRef.current[ptyId];
     const off = ptyListenersRef.current[ptyId];
@@ -4662,6 +4721,8 @@ export default function CodexFlowManagerUI() {
     if (tabId) {
       resetCodexErrorScanForTab(tabId, "pty-unregister");
     }
+    if (options?.forgetCodexErrorHistory)
+      delete codexHandledErrorKeysByPtyRef.current[ptyId];
     delete ptyToTabRef.current[ptyId];
     notifyLog(`unregisterPtyListener pty=${ptyId}`);
   }
@@ -7251,7 +7312,7 @@ export default function CodexFlowManagerUI() {
       const ptyId = ptyByTabRef.current[tabId];
       if (ptyId) {
         try { window.host.pty.close(ptyId); } catch {}
-        unregisterPtyListener(ptyId);
+        unregisterPtyListener(ptyId, { forgetCodexErrorHistory: true });
         delete ptyByTabRef.current[tabId];
       }
       delete ptyAliveRef.current[tabId];
@@ -8187,7 +8248,7 @@ export default function CodexFlowManagerUI() {
             setPtyAlive((m) => ({ ...m, [tabId]: false }));
             delete ptyByTabRef.current[tabId];
             setPtyByTab((m) => { const n = { ...m }; delete n[tabId]; return n; });
-            unregisterPtyListener(id);
+            unregisterPtyListener(id, { forgetCodexErrorHistory: true });
           } catch {}
         })
       : () => {};
@@ -8514,7 +8575,7 @@ export default function CodexFlowManagerUI() {
     if (pid) {
       try { window.host.pty.close(pid); } catch {}
       delete ptyByTabRef.current[tabId];
-      unregisterPtyListener(pid);
+      unregisterPtyListener(pid, { forgetCodexErrorHistory: true });
     }
     delete tabExecEnvByTabRef.current[tabId];
     delete geminiWindowsEditorReadyByTabRef.current[tabId];
