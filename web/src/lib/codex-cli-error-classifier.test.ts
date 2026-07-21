@@ -140,6 +140,23 @@ describe("codex-cli-error-classifier（Codex TUI 错误识别）", () => {
     expect(result?.reconnectMaxAttempts).toBe(5);
   });
 
+  it("最后一次 Reconnecting 后进入历史区的 stream disconnected 应识别为最终失败", () => {
+    const text = `
+      Reconnecting... 5/5 (5h 16m 19s  esc to interrupt)
+        Stream disconnected before completion: Incomplete response returned, reason: upstream_error
+      › 继续
+      ■ stream disconnected before completion: Incomplete response returned, reason: upstream_error
+      › Explain this codebase
+    `;
+
+    const result = classifyCodexCliErrorText(text);
+    expect(result?.kind).toBe("networkStream");
+    expect(result?.phase).toBe("final");
+    expect(result?.explicitFinal).toBe(true);
+    expect(shouldDelayCodexCliFinalErrorForReconnect(result)).toBe(false);
+    expect(detectCodexCliRuntimeStatusText(text)?.phase).toBe("idle");
+  });
+
   it("新的 Working 状态会压住旧的 Reconnecting 错误", () => {
     const text = `
       Reconnecting... 1/5 (4m 18s  esc to interrupt)
