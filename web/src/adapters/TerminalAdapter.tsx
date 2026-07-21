@@ -14,6 +14,13 @@ import {
   type TerminalAppearance,
 } from "@/lib/terminal-appearance";
 
+export type TerminalScrollToBottomOptions = {
+  /** 跨异步输出与尺寸重排持续保持底部，仅在用户主动滚动或终端释放时取消。 */
+  followOutput?: boolean;
+  /** 诊断来源，仅在终端调试日志中使用。 */
+  source?: string;
+};
+
 export type TerminalAdapterAPI = {
   mount: (el: HTMLElement) => { cols: number; rows: number };
   write: (data: string) => void;
@@ -46,7 +53,8 @@ export type TerminalAdapterAPI = {
   blur?: () => void;
   setAppearance: (appearance: Partial<TerminalAppearance>) => void;
   scrollToTop: () => void;
-  scrollToBottom: () => void;
+  /** 滚动到底部；可选择跨异步输出与尺寸重排持续跟随，直到用户主动滚动。 */
+  scrollToBottom: (options?: TerminalScrollToBottomOptions) => void;
   dispose: () => void;
 };
 
@@ -101,6 +109,15 @@ type ViewportResizeTransaction = {
   outputObserved: boolean;
   restoreCount: number;
   releaseTimer: number | null;
+};
+
+type ViewportBottomFollowRequest = {
+  source: string;
+  startedAt: number;
+  lastActivityAt: number;
+  outputObserved: boolean;
+  stableChecks: number;
+  armed: boolean;
 };
 
 export type TerminalCursorTextSnapshotOptions = {
@@ -178,6 +195,7 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
   let lastViewportBottomDom: TerminalDomScrollState | null = null;
   let lastViewportBottomObservedAt = 0;
   let viewportPointerDragActive = false;
+  let viewportPointerDragScrolled = false;
   let viewportPointerDragUntil = 0;
   // 低版本 Windows（ConPTY < 21376）降级重排开关与状态
   let legacyWinNeedsReflowHack = false;
@@ -204,6 +222,8 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
   const VIEWPORT_RESIZE_BOTTOM_INTENT_GRACE_MS = 1600;
   const VIEWPORT_RESIZE_LAYOUT_CLAMP_TOLERANCE_ROWS = 2;
   const VIEWPORT_DOM_BOTTOM_TOLERANCE_PX = 2;
+  const VIEWPORT_BOTTOM_FOLLOW_QUIET_MS = 900;
+  const VIEWPORT_BOTTOM_FOLLOW_STABLE_CHECKS = 3;
   let userViewportScrollUntil = 0;
   let viewportReconcileRaf: number | null = null;
   let viewportReconcilePendingFrames = 0;
@@ -212,6 +232,8 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
   let viewportReadAnchor: ViewportReadAnchor | null = null;
   let viewportResizeTransaction: ViewportResizeTransaction | null = null;
   let viewportResizeTransactionSeq = 0;
+  let viewportBottomFollowRequest: ViewportBottomFollowRequest | null = null;
+  let viewportBottomFollowTimer: number | null = null;
   let deferredResizeStartedAt: number | null = null;
   let deferredResizeNotifyRaf: number | null = null;
   const deferredResizeListeners = new Set<() => void>();
@@ -380,6 +402,7 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
         termWriteInFlight = Math.max(0, termWriteInFlight - 1);
         pendingWriteDoneSeq += 1;
         lastTermWriteDoneAt = nowMs();
+        touchViewportBottomFollow("write.done", true);
         if (tx) {
           logScrollDiagnostic(`write.done seq=${flushSeq} doneSeq=${pendingWriteDoneSeq} txCurrent=${viewportResizeTransaction === tx ? "1" : "0"} ${formatViewportResizeTransaction(tx)} current=${formatViewportResizeTransaction(viewportResizeTransaction)} ${formatScrollSnapshot(readScrollSnapshot())} ${formatDomScrollState(readDomScrollState())}`);
         }
@@ -405,6 +428,7 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
     if (!term) return;
     const s = String(data || "");
     if (!s) return;
+    touchViewportBottomFollow("write.enqueue", true);
     const tx = viewportResizeTransaction;
     touchViewportResizeTransaction("write.enqueue", true);
     captureViewportReadAnchor("write.enqueue");
@@ -529,11 +553,39 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
   }
 
   /**
+   * 把现有阅读锚点提升为明确的底部锚点，避免后续 resize 恢复旧位置。
+   * @param anchor 待更新的阅读锚点
+   * @param snapshot 当前滚动快照
+   * @param source 提升来源
+   */
+  function pinViewportReadAnchorToBottom(
+    anchor: ViewportReadAnchor,
+    snapshot: TerminalScrollSnapshot | null,
+    source: string,
+  ): void {
+    const baseY = Math.max(0, Number(snapshot?.baseY ?? anchor.baseY ?? 0));
+    anchor.viewportY = baseY;
+    anchor.baseY = baseY;
+    anchor.distanceFromBottom = 0;
+    anchor.ratio = 1;
+    anchor.isAtBottom = true;
+    anchor.createdAt = nowMs();
+    anchor.source = source;
+  }
+
+  /**
    * 创建并登记 resize 重绘事务。
    * @param anchor resize 前捕获的阅读锚点
    */
   function startViewportResizeTransaction(anchor: ViewportReadAnchor): ViewportResizeTransaction {
     const createdAt = nowMs();
+    if (viewportBottomFollowRequest) {
+      pinViewportReadAnchorToBottom(
+        anchor,
+        readScrollSnapshot(),
+        `bottom-follow.${viewportBottomFollowRequest.source}.${anchor.source}`,
+      );
+    }
     viewportReadAnchor = anchor;
     viewportResizeTransaction = {
       id: ++viewportResizeTransactionSeq,
@@ -702,19 +754,51 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
     if (!viewportPointerDragActive) return false;
     if (now <= viewportPointerDragUntil) return true;
     viewportPointerDragActive = false;
+    viewportPointerDragScrolled = false;
     viewportPointerDragUntil = 0;
     return false;
   }
 
   /**
-   * 标记终端 viewport 指针拖拽已经开始。
-   * @param source 触发来源
+   * 判断指针是否按在终端滚动条区域。
+   * @param event 指针事件
+   * @param viewport 终端滚动容器
    */
-  function markViewportPointerDragStart(source: string): void {
+  function isViewportScrollbarPointer(event: PointerEvent, viewport: HTMLDivElement): boolean {
+    try {
+      const rect = viewport.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return false;
+      const nativeScrollbarWidth = Math.max(0, rect.width - viewport.clientWidth);
+      const hitWidth = Math.max(16, nativeScrollbarWidth + 4);
+      return event.clientX >= rect.right - hitWidth && event.clientX <= rect.right + 1;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 标记终端 viewport 滚动条拖拽已经开始。
+   * @param source 触发来源
+   * @param event 指针事件
+   * @param viewport 终端滚动容器
+   */
+  function markViewportPointerDragStart(
+    source: string,
+    event: PointerEvent,
+    viewport: HTMLDivElement,
+  ): void {
+    if (!isViewportScrollbarPointer(event, viewport)) {
+      viewportPointerDragActive = false;
+      viewportPointerDragScrolled = false;
+      viewportPointerDragUntil = 0;
+      logScrollDiagnostic(`viewport.pointer-click source=${source} ${formatScrollSnapshot(readScrollSnapshot())} ${formatDomScrollState(readDomScrollState())}`);
+      return;
+    }
     const now = nowMs();
     viewportPointerDragActive = true;
+    viewportPointerDragScrolled = false;
     viewportPointerDragUntil = now + VIEWPORT_POINTER_DRAG_MAX_MS;
-    markViewportUserScroll(source, VIEWPORT_SCROLLBAR_DRAG_INTENT_WINDOW_MS);
+    logScrollDiagnostic(`viewport.pointer-drag.start source=${source} ${formatScrollSnapshot(readScrollSnapshot())} ${formatDomScrollState(readDomScrollState())}`);
   }
 
   /**
@@ -723,10 +807,14 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
    */
   function markViewportPointerDragEnd(source: string): void {
     if (!viewportPointerDragActive) return;
+    const didScroll = viewportPointerDragScrolled;
     viewportPointerDragActive = false;
+    viewportPointerDragScrolled = false;
     viewportPointerDragUntil = 0;
-    userViewportScrollUntil = Math.max(userViewportScrollUntil, nowMs() + VIEWPORT_SCROLL_INTENT_WINDOW_MS);
-    logScrollDiagnostic(`viewport.pointer-drag.end source=${source} ${formatScrollSnapshot(readScrollSnapshot())} ${formatDomScrollState(readDomScrollState())}`);
+    if (didScroll) {
+      userViewportScrollUntil = Math.max(userViewportScrollUntil, nowMs() + VIEWPORT_SCROLL_INTENT_WINDOW_MS);
+    }
+    logScrollDiagnostic(`viewport.pointer-drag.end source=${source} scrolled=${didScroll ? "1" : "0"} ${formatScrollSnapshot(readScrollSnapshot())} ${formatDomScrollState(readDomScrollState())}`);
   }
 
   /**
@@ -747,6 +835,7 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
     previousMaxTop: number | null,
   ): boolean {
     if (accepted || !changed) return false;
+    if (viewportBottomFollowRequest) return false;
     if (viewportResizeTransaction) return false;
     if (state.maxScrollTop <= 0) return false;
     if (!hasViewportMismatch(snapshot, state)) return false;
@@ -766,6 +855,7 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
    * @param durationMs 用户滚动意图保留时长
    */
   function markViewportUserScroll(source: string, durationMs = VIEWPORT_SCROLL_INTENT_WINDOW_MS): void {
+    cancelViewportBottomFollow(`user.${source}`);
     const now = nowMs();
     userViewportScrollUntil = Math.max(userViewportScrollUntil, now + durationMs);
     viewportReadAnchor = null;
@@ -1117,6 +1207,8 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
     source: string,
   ): { cols: number; rows: number } {
     if (!term || !container) return { cols: 0, rows: 0 };
+    touchViewportBottomFollow(`resize.commit.${source}`);
+    promoteViewportResizeTransactionToBottomFollow(`resize.commit.${source}`);
     const cols = Math.max(2, Math.floor(Number(size?.cols || 0)));
     const rows = Math.max(2, Math.floor(Number(size?.rows || 0)));
     if (!cols || !rows) return { cols: term.cols, rows: term.rows };
@@ -1281,6 +1373,196 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
   }
 
   /**
+   * 判断终端视口是否已经挂载且具有可用尺寸，避免在隐藏标签页中提前结束底部跟随。
+   */
+  function isViewportBottomFollowReady(): boolean {
+    if (!container?.isConnected) return false;
+    try {
+      const viewport = container.querySelector(".xterm-viewport") as HTMLDivElement | null;
+      if (!viewport) return false;
+      return viewport.clientWidth > 0 && viewport.clientHeight > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 让正在进行的 resize 事务服从最新的底部跟随意图，禁止它随后恢复旧阅读锚点。
+   * @param source 提升来源
+   */
+  function promoteViewportResizeTransactionToBottomFollow(source: string): void {
+    if (!viewportBottomFollowRequest) return;
+    const tx = viewportResizeTransaction;
+    if (!tx) {
+      viewportReadAnchor = null;
+      return;
+    }
+    if (tx.mode === "follow-bottom" && tx.anchor.isAtBottom) {
+      viewportReadAnchor = tx.anchor;
+      return;
+    }
+    const now = nowMs();
+    const previousMode = tx.mode;
+    pinViewportReadAnchorToBottom(tx.anchor, readScrollSnapshot(), `bottom-follow.${source}`);
+    tx.mode = "follow-bottom";
+    tx.lastActivityAt = now;
+    tx.observedBaseY = tx.anchor.baseY;
+    tx.observedBaseYChangedAt = now;
+    viewportReadAnchor = tx.anchor;
+    scheduleViewportReconcile(`bottom-follow.promote.${source}`);
+    scheduleViewportResizeReleaseCheck(`bottom-follow.promote.${source}`, true);
+    logScrollDiagnostic(`bottom-follow.promote source=${source} tx=${tx.id} previousMode=${previousMode} ${formatViewportResizeTransaction(tx)} anchor=${formatViewportReadAnchor(tx.anchor)} ${formatScrollSnapshot(readScrollSnapshot())} ${formatDomScrollState(readDomScrollState())}`);
+  }
+
+  /**
+   * 取消当前底部跟随请求，并清理其定时器。
+   * @param source 取消来源
+   */
+  function cancelViewportBottomFollow(source: string): void {
+    const request = viewportBottomFollowRequest;
+    if (viewportBottomFollowTimer !== null) {
+      try { window.clearTimeout(viewportBottomFollowTimer); } catch {}
+      viewportBottomFollowTimer = null;
+    }
+    viewportBottomFollowRequest = null;
+    if (request) {
+      logScrollDiagnostic(`bottom-follow.cancel source=${source} requestSource=${request.source} age=${Math.round(nowMs() - request.startedAt)} output=${request.outputObserved ? "1" : "0"} stable=${request.stableChecks} armed=${request.armed ? "1" : "0"} ${formatScrollSnapshot(readScrollSnapshot())} ${formatDomScrollState(readDomScrollState())}`);
+    }
+  }
+
+  /**
+   * 安排下一次底部跟随校准；重复安排时以最新时机为准。
+   * @param delayMs 延迟毫秒数
+   */
+  function scheduleViewportBottomFollow(delayMs = 0): void {
+    if (!viewportBottomFollowRequest || typeof window === "undefined") return;
+    if (viewportBottomFollowTimer !== null) {
+      try { window.clearTimeout(viewportBottomFollowTimer); } catch {}
+    }
+    viewportBottomFollowTimer = window.setTimeout(() => {
+      viewportBottomFollowTimer = null;
+      runViewportBottomFollow();
+    }, Math.max(0, delayMs));
+  }
+
+  /**
+   * 记录底部跟随期间的新活动，让稳定判定覆盖完整写入与重排周期。
+   * @param source 活动来源
+   * @param outputObserved 是否观察到请求发起后的终端输出
+   */
+  function touchViewportBottomFollow(source: string, outputObserved = false): void {
+    const request = viewportBottomFollowRequest;
+    if (!request) return;
+    request.lastActivityAt = nowMs();
+    request.outputObserved = request.outputObserved || outputObserved;
+    request.stableChecks = 0;
+    request.armed = false;
+    logScrollDiagnostic(`bottom-follow.touch source=${source} requestSource=${request.source} output=${request.outputObserved ? "1" : "0"} ${formatPendingWriteState()}`);
+    scheduleViewportBottomFollow(0);
+  }
+
+  /**
+   * 非用户滚动使终端偏离底部时唤醒待命中的底部跟随。
+   * @param source 漂移来源
+   * @param snapshot 当前 xterm buffer 快照
+   * @param dom 当前 DOM viewport 状态
+   */
+  function wakeViewportBottomFollowOnDrift(
+    source: string,
+    snapshot: TerminalScrollSnapshot | null = readScrollSnapshot(),
+    dom: TerminalDomScrollState | null = readDomScrollState(),
+  ): boolean {
+    if (!viewportBottomFollowRequest) return false;
+    const bufferDrifted = !!snapshot
+      && snapshot.baseY > 0
+      && !isViewportAtStrictBottom(snapshot);
+    const domDrifted = !!dom
+      && dom.maxScrollTop > VIEWPORT_DOM_BOTTOM_TOLERANCE_PX
+      && !isDomViewportAtBottom(dom);
+    if (!bufferDrifted && !domDrifted) return false;
+    logScrollDiagnostic(`bottom-follow.drift source=${source} buffer=${bufferDrifted ? "1" : "0"} dom=${domDrifted ? "1" : "0"} ${formatScrollSnapshot(snapshot)} ${formatDomScrollState(dom)}`);
+    touchViewportBottomFollow(`drift.${source}`);
+    return true;
+  }
+
+  /**
+   * 执行一次底部跟随校准；稳定后进入待命，后续活动会再次唤醒校准。
+   */
+  function runViewportBottomFollow(): void {
+    const request = viewportBottomFollowRequest;
+    if (!request) return;
+    if (!term || !container) {
+      request.stableChecks = 0;
+      request.armed = true;
+      logScrollDiagnostic(`bottom-follow.park source=${request.source} reason=not-mounted`);
+      return;
+    }
+    const now = nowMs();
+    const age = now - request.startedAt;
+    if (!isViewportBottomFollowReady()) {
+      request.stableChecks = 0;
+      request.armed = true;
+      logScrollDiagnostic(`bottom-follow.park source=${request.source} reason=not-visible age=${Math.round(age)}`);
+      return;
+    }
+
+    try {
+      promoteViewportResizeTransactionToBottomFollow(request.source);
+      allowProgrammaticViewportScroll(4);
+      term.scrollToBottom();
+      try { syncViewportHeight(`bottom-follow.${request.source}`); } catch {}
+      syncFollowBottomDomScrollbar(`bottom-follow.${request.source}`);
+    } catch {}
+
+    const snapshot = readScrollSnapshot();
+    const dom = readDomScrollState();
+    const bufferAtBottom = !!snapshot && (snapshot.baseY <= 0 || isViewportAtStrictBottom(snapshot));
+    const domAtBottom = !!dom && (dom.maxScrollTop <= VIEWPORT_DOM_BOTTOM_TOLERANCE_PX || isDomViewportAtBottom(dom));
+    const writeBusy = hasPendingTerminalWriteWork();
+    const resizeBusy = !!viewportResizeTransaction;
+    const stable = bufferAtBottom && domAtBottom && !writeBusy && !resizeBusy;
+    request.stableChecks = stable ? request.stableChecks + 1 : 0;
+
+    const quietFor = now - request.lastActivityAt;
+    if (
+      quietFor >= VIEWPORT_BOTTOM_FOLLOW_QUIET_MS
+      && request.stableChecks >= VIEWPORT_BOTTOM_FOLLOW_STABLE_CHECKS
+    ) {
+      request.armed = true;
+      logScrollDiagnostic(`bottom-follow.armed source=${request.source} age=${Math.round(age)} quiet=${Math.round(quietFor)} output=${request.outputObserved ? "1" : "0"} ${formatScrollSnapshot(snapshot)} ${formatDomScrollState(dom)}`);
+      return;
+    }
+
+    const quietRemaining = Math.max(0, VIEWPORT_BOTTOM_FOLLOW_QUIET_MS - quietFor);
+    const nextDelay = writeBusy || resizeBusy || request.stableChecks < VIEWPORT_BOTTOM_FOLLOW_STABLE_CHECKS
+      ? 32
+      : Math.max(16, Math.min(120, quietRemaining));
+    scheduleViewportBottomFollow(nextDelay);
+  }
+
+  /**
+   * 启动可取消的底部跟随请求，用于导航后跨异步输出与尺寸重排定位到最新内容。
+   * @param options 底部跟随选项
+   */
+  function startViewportBottomFollow(options: TerminalScrollToBottomOptions): void {
+    cancelViewportBottomFollow("replace");
+    const startedAt = nowMs();
+    userViewportScrollUntil = 0;
+    if (!viewportResizeTransaction) viewportReadAnchor = null;
+    viewportBottomFollowRequest = {
+      source: String(options.source || "api").trim() || "api",
+      startedAt,
+      lastActivityAt: startedAt,
+      outputObserved: false,
+      stableChecks: 0,
+      armed: false,
+    };
+    promoteViewportResizeTransactionToBottomFollow(viewportBottomFollowRequest.source);
+    logScrollDiagnostic(`bottom-follow.start source=${viewportBottomFollowRequest.source} ${formatScrollSnapshot(readScrollSnapshot())} ${formatDomScrollState(readDomScrollState())}`);
+    scheduleViewportBottomFollow(0);
+  }
+
+  /**
    * 在释放 resize 事务前强制刷新可见视口，修正 xterm 渲染层与 buffer/DOM 状态偶发脱节。
    * @param anchor 当前 resize 事务锚点
    * @param source 触发来源
@@ -1362,6 +1644,8 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
   function notifyViewportLayoutResizeStart(source: string): void {
     if (!term) return;
     if (isViewportUserScrollActive()) return;
+    touchViewportBottomFollow(`layout-resize.${source}`);
+    promoteViewportResizeTransactionToBottomFollow(`layout-resize.${source}`);
     const snapshot = readScrollSnapshot();
     const dom = readDomScrollState();
     rememberViewportBottomEvidence(snapshot, dom);
@@ -1373,7 +1657,9 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
       return;
     }
 
-    const resolved = resolveLayoutResizeBottomAnchorSnapshot(snapshot, dom);
+    const resolved = viewportBottomFollowRequest && snapshot
+      ? { snapshot, reason: "active-bottom-follow" }
+      : resolveLayoutResizeBottomAnchorSnapshot(snapshot, dom);
     if (!resolved) {
       logScrollDiagnostic(`resize-anchor.layout-skip source=${source} reason=no-bottom-intent ${formatScrollSnapshot(snapshot)} ${formatDomScrollState(dom)}`);
       return;
@@ -1399,6 +1685,8 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
    * @param source 触发来源
    */
   function notifyViewportPtyResizePending(size: { cols: number; rows: number }, source: string): void {
+    touchViewportBottomFollow(`pty-resize.pending.${source}`);
+    promoteViewportResizeTransactionToBottomFollow(`pty-resize.pending.${source}`);
     const snapshot = readScrollSnapshot();
     let tx = viewportResizeTransaction;
     if (!tx && snapshot && snapshot.baseY > 0) {
@@ -1431,6 +1719,8 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
     source: string,
     result: "sent" | "skipped" | "failed",
   ): void {
+    touchViewportBottomFollow(`pty-resize.${result}.${source}`);
+    promoteViewportResizeTransactionToBottomFollow(`pty-resize.${result}.${source}`);
     const tx = viewportResizeTransaction;
     if (!tx) return;
     const now = nowMs();
@@ -1518,7 +1808,9 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
     if (tx.releaseTimer !== null) {
       try { window.clearTimeout(tx.releaseTimer); } catch {}
     }
-    if (terminalResetSettled && tx.mode === "follow-bottom") {
+    if (forceRelease) {
+      logScrollDiagnostic(`resize-anchor.release-without-restore source=${source} ${formatViewportResizeTransaction(tx)} anchor=${formatViewportReadAnchor(tx.anchor)} ${formatScrollSnapshot(snapshot)} ${formatDomScrollState(readDomScrollState())}`);
+    } else if (terminalResetSettled && tx.mode === "follow-bottom") {
       if (isFollowBottomResetEmptyScreenSettled(tx, snapshot)) {
         refreshFollowBottomResetSingleScreen(source);
         logScrollDiagnostic(`resize-anchor.release-terminal-reset-bottom-single-screen source=${source} ${formatViewportResizeTransaction(tx)} anchor=${formatViewportReadAnchor(tx.anchor)} ${formatScrollSnapshot(readScrollSnapshot())} ${formatDomScrollState(readDomScrollState())}`);
@@ -1828,9 +2120,8 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
         try { markViewportUserScroll("wheel"); } catch {}
         viewportReadAnchor = null;
       };
-      const onPointerDownIntent = () => {
-        try { markViewportPointerDragStart("pointerdown"); } catch {}
-        viewportReadAnchor = null;
+      const onPointerDownIntent = (event: PointerEvent) => {
+        try { markViewportPointerDragStart("pointerdown", event, viewport); } catch {}
       };
       const onPointerEndIntent = () => {
         try { markViewportPointerDragEnd("pointerup"); } catch {}
@@ -1850,11 +2141,21 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
         lastViewportScrollTop = state.scrollTop;
         lastViewportScrollMaxTop = state.maxScrollTop;
         const snapshot = readScrollSnapshot();
+        if (changed && isViewportPointerDragActive(now)) {
+          viewportPointerDragScrolled = true;
+          markViewportUserScroll("pointer-drag", VIEWPORT_SCROLLBAR_DRAG_INTENT_WINDOW_MS);
+          logScrollDiagnostic(`dom.scroll.pointer-drag prevTop=${previousTop === null ? "n/a" : Math.round(previousTop)} ${formatScrollSnapshot(snapshot)} ${formatDomScrollState(state)}`);
+          return;
+        }
+        const accepted = canAcceptViewportDomScroll();
+        if (changed && wakeViewportBottomFollowOnDrift("dom.scroll", snapshot, state)) {
+          logScrollDiagnostic(`dom.scroll.bottom-follow prevTop=${previousTop === null ? "n/a" : Math.round(previousTop)} accepted=${accepted ? "1" : "0"} ${formatScrollSnapshot(snapshot)} ${formatDomScrollState(state)}`);
+          return;
+        }
         if (viewportResizeTransaction && hasViewportMismatch(snapshot, state)) {
           logScrollDiagnostic(`dom.scroll.ignored prevTop=${previousTop === null ? "n/a" : Math.round(previousTop)} reason=resize-transaction ${formatViewportResizeTransaction(viewportResizeTransaction)} ${formatScrollSnapshot(snapshot)} ${formatDomScrollState(state)}`);
           return;
         }
-        const accepted = canAcceptViewportDomScroll();
         if (!accepted && shouldInferViewportUserScrollFromDom(snapshot, state, changed, accepted, previousTop, previousMaxTop)) {
           markViewportUserScroll("dom.scroll", VIEWPORT_SCROLLBAR_DRAG_INTENT_WINDOW_MS);
           logScrollDiagnostic(`dom.scroll.infer-user prevTop=${previousTop === null ? "n/a" : Math.round(previousTop)} ${formatScrollSnapshot(snapshot)} ${formatDomScrollState(state)}`);
@@ -1896,6 +2197,7 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
     if (!snapshot) return;
     const dom = readDomScrollState();
     rememberViewportBottomEvidence(snapshot, dom);
+    wakeViewportBottomFollowOnDrift("buffer.scroll", snapshot, dom);
     const now = nowMs();
     const previousY = lastBufferViewportY;
     const changed = previousY === null || Math.abs(snapshot.viewportY - previousY) > 0.1;
@@ -2014,6 +2316,11 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
    */
   const syncScrollbarToSnapshot = (snapshot?: TerminalScrollSnapshot | null, tag = "sync") => {
     if (!term || !container) return;
+    if (viewportBottomFollowRequest) {
+      logScrollDiagnostic(`scrollbar.skip tag=${tag} reason=bottom-follow snapshot=${formatScrollSnapshot(snapshot ?? null)} current=${formatScrollSnapshot(readScrollSnapshot())} ${formatDomScrollState(readDomScrollState())}`);
+      touchViewportBottomFollow(`scrollbar.${tag}`);
+      return;
+    }
     if (viewportResizeTransaction) {
       logScrollDiagnostic(`scrollbar.skip tag=${tag} reason=resize-transaction snapshot=${formatScrollSnapshot(snapshot ?? null)} current=${formatScrollSnapshot(readScrollSnapshot())} ${formatDomScrollState(readDomScrollState())}`);
       return;
@@ -2155,6 +2462,8 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
   // 精确 fit 并将容器高度钉在“整行像素”，消除半行余数导致的上下偏移
   const fitAndPin = (forceRefresh = true): { cols: number; rows: number } => {
     if (!term || !fitAddon || !container) return { cols: 0, rows: 0 };
+    touchViewportBottomFollow("fitAndPin");
+    promoteViewportResizeTransactionToBottomFollow("fitAndPin");
     try {
       const rect0 = container.getBoundingClientRect();
       const parentEl = container.parentElement;
@@ -2314,6 +2623,7 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
                 // 再次 fit 触发一次 buffer.resize，从而对历史缓冲区执行 reflow
                 requestAnimationFrame(() => {
                   try { fitAddon?.fit(); term?.refresh(0, (term as any)?.rows - 1); syncViewportHeight("win.reflow"); } catch {}
+                  touchViewportBottomFollow("win.reflow");
                 });
               } catch {}
             } else {
@@ -2893,6 +3203,7 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
 
       // 返回当前可用网格
       const size = { cols: term!.cols, rows: term!.rows };
+      touchViewportBottomFollow("mount");
       dlog(`[adapter] mount.done size=${size.cols}x${size.rows}`);
       return size;
     },
@@ -2930,6 +3241,8 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
     resize: () => {
       // 每次外部要求 resize 时，执行“fit+pin”并强制 refresh
       if (!term || !fitAddon || !container) return { cols: 0, rows: 0 };
+      touchViewportBottomFollow("adapter.resize");
+      promoteViewportResizeTransactionToBottomFollow("adapter.resize");
       const beforeSize = { cols: term.cols, rows: term.rows };
       const beforeSnapshot = readScrollSnapshot();
       const beforeDom = readDomScrollState();
@@ -2979,6 +3292,12 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
     },
     restoreScrollSnapshot: (snapshot?: TerminalScrollSnapshot | null) => {
       if (!term) ensure();
+      if (viewportBottomFollowRequest) {
+        logScrollDiagnostic(`restore.skip reason=bottom-follow snapshot=${formatScrollSnapshot(snapshot ?? null)} current=${formatScrollSnapshot(readScrollSnapshot())} ${formatDomScrollState(readDomScrollState())}`);
+        promoteViewportResizeTransactionToBottomFollow("restore");
+        touchViewportBottomFollow("restore");
+        return;
+      }
       viewportReadAnchor = null;
       logScrollDiagnostic(`restore.request snapshot=${formatScrollSnapshot(snapshot ?? null)} current=${formatScrollSnapshot(readScrollSnapshot())} ${formatDomScrollState(readDomScrollState())}`);
       try { syncScrollbarToSnapshot(snapshot ?? null, "restore"); } catch {}
@@ -3015,7 +3334,11 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
         term?.scrollToTop();
       } catch {}
     },
-    scrollToBottom: () => {
+    scrollToBottom: (options?: TerminalScrollToBottomOptions) => {
+      if (options?.followOutput) {
+        startViewportBottomFollow(options);
+        return;
+      }
       try {
         viewportReadAnchor = null;
         markViewportUserScroll("api.bottom");
@@ -3024,6 +3347,7 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
     },
     dispose: () => {
       try { dlog('[adapter] dispose'); if (container) container.style.height = ""; } catch {}
+      cancelViewportBottomFollow("dispose");
       // 先取消 pending write，避免在 dispose 后的下一帧仍尝试写入（导致异常或泄漏）。
       try { if (pendingWriteScheduled !== null) cancelAnimationFrame(pendingWriteScheduled); } catch {}
       try { if (viewportReconcileRaf !== null) cancelAnimationFrame(viewportReconcileRaf); } catch {}
