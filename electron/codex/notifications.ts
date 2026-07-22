@@ -167,6 +167,14 @@ function parseCodexNotifyLine(line: string): CodexNotifyEntry | null {
 }
 
 /**
+ * 判断通知是否来自由 CodexFlow 启动并注入标签页标记的 Codex 会话。
+ * Codex 的全局配置会被 Codex Desktop 共用，缺少该标记的事件不得映射到 CodexFlow 标签页。
+ */
+function hasCodexFlowNotifyTabId(entry: CodexNotifyEntry): boolean {
+  return Boolean(String(entry.tabId || "").trim());
+}
+
+/**
  * 中文说明：把 legacy notify 与 lifecycle hook 的预览规整为可比较文本。
  */
 function normalizeCodexNotifyPreviewForDedupe(preview: string): string {
@@ -276,6 +284,8 @@ function buildCodexNotifyDispatch(entry: CodexNotifyEntry, now = Date.now(), sou
     timestamp: entry.timestamp ? String(entry.timestamp) : "",
     eventId: entry.eventId ? String(entry.eventId) : "",
   };
+  if (!hasCodexFlowNotifyTabId(entry))
+    return { payload, dropReason: "missing-codexflow-tab-id" };
   if (typeof entry.previewEscapedWhitespace === "boolean")
     payload.previewEscapedWhitespace = entry.previewEscapedWhitespace;
   const hookEventName = String(entry.hookEventName || "").trim();
@@ -368,7 +378,12 @@ async function readCodexNotifyEntries(source: CodexNotifySource): Promise<CodexN
  * 中文说明：将 Codex 通知事件转发给渲染进程，并提示索引器抢先刷新最近历史。
  */
 function emitCodexNotify(entry: CodexNotifyEntry, sourcePath?: string): void {
-  const win = codexNotifyWindowGetter ? codexNotifyWindowGetter() : null;
+  const providerId = String(entry.providerId || "codex").toLowerCase();
+  if (providerId && providerId !== "codex") return;
+  if (!hasCodexFlowNotifyTabId(entry)) {
+    logCodexNotification(`notify event dropped reason=missing-codexflow-tab-id previewLen=${String(entry.preview || "").length}`);
+    return;
+  }
   try {
     // 快速刷新只入队并异步扫描近期文件，不会在当前调用栈执行文件 I/O。
     requestHistoryFastRefresh({
@@ -376,9 +391,8 @@ function emitCodexNotify(entry: CodexNotifyEntry, sourcePath?: string): void {
       sourcePath,
     });
   } catch {}
+  const win = codexNotifyWindowGetter ? codexNotifyWindowGetter() : null;
   if (!win) return;
-  const providerId = String(entry.providerId || "codex").toLowerCase();
-  if (providerId && providerId !== "codex") return;
   const { payload, dropReason } = buildCodexNotifyDispatch(entry, Date.now(), sourcePath);
   if (dropReason) {
     logCodexNotification(`notify event dropped reason=${dropReason} tab=${payload.tabId || "n/a"} kind=${payload.completionKind || "agent"} previewLen=${payload.preview.length}`);
