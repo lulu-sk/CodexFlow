@@ -7,6 +7,32 @@ describe("electron/codex/notifications（子代理 legacy notify 防重）", () 
     __testing.setCodexNotifyStateDecisionReader();
   });
 
+  it("缺少 CodexFlow 标签页标记的完成事件应丢弃，避免 Codex Desktop 误触发", () => {
+    const result = __testing.buildCodexNotifyDispatch({
+      v: 2,
+      providerId: "codex",
+      envLabel: "PowerShell 7",
+      preview: "外部 Codex 会话完成。",
+      hookEventName: "Stop",
+      completionKind: "agent",
+    }, 1_000);
+
+    expect(result.dropReason).toBe("missing-codexflow-tab-id");
+  });
+
+  it("仅含空白字符的 CodexFlow 标签页标记应丢弃", () => {
+    const result = __testing.buildCodexNotifyDispatch({
+      v: 2,
+      providerId: "codex",
+      tabId: " \t",
+      preview: "外部 Codex 会话完成。",
+      hookEventName: "Stop",
+      completionKind: "agent",
+    }, 1_000);
+
+    expect(result.dropReason).toBe("missing-codexflow-tab-id");
+  });
+
   it("SubagentStop 后紧随的 legacy notify 应被视为重复回放并丢弃", () => {
     const preview = "已完成修复。\n\n验证已通过。";
 

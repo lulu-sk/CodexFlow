@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 /**
@@ -196,10 +197,25 @@ describe("electron/codex/config（tui 通知配置修复）", () => {
       expect(hookScript).toContain("SubagentStop");
       expect(hookScript).toContain("completionKind");
       expect(hookScript).toContain("agentType");
+      expect(hookScript).toContain("if (!tabId.trim())");
+      expect(hookScript).toContain("fs.writeSync(1, JSON.stringify({ continue: true, suppressOutput: true }))");
       expect(hookScript).toContain("input.session_id");
       expect(hookScript).toContain("threadId");
       expect(hookScript).toContain("turnId");
       expect(hookScript).toContain("sqliteHome");
+      const hookScriptPath = path.join(home, ".codex", "codexflow_lifecycle_notify.cjs");
+      for (const tabId of ["", " \t"]) {
+        const hookResult = spawnSync(process.execPath, [hookScriptPath], {
+          cwd: home,
+          env: { ...process.env, CODEXFLOW_NOTIFY_TAB_ID: tabId },
+          input: JSON.stringify({ hook_event_name: "Stop" }),
+          encoding: "utf8",
+          timeout: 5_000,
+        });
+        expect(hookResult.status).toBe(0);
+        expect(hookResult.stdout).toContain('"continue":true');
+      }
+      expect(fs.existsSync(path.join(home, ".codex", "codexflow_after_agent_notify.jsonl"))).toBe(false);
     } finally {
       cleanup();
     }
@@ -387,6 +403,7 @@ describe("electron/codex/config（tui 通知配置修复）", () => {
       expect(script).toContain("CODEXFLOW_NOTIFY_TAB_ID");
       expect(script).toContain("agent-turn-complete");
       expect(script).toContain("previewEscapedWhitespace");
+      expect(script).toMatch(/IsNullOrWhiteSpace\(\$TabId\)|case "\$TAB_ID" in \*\[!\[:space:\]\]\*\) ;; \*\) exit 0 ;; esac/);
     } finally {
       cleanup();
     }
