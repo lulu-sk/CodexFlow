@@ -116,7 +116,7 @@ export type ClaudeCodeSettings = {
 };
 
 export type ProviderItem = {
-  /** Provider 唯一标识（内置：codex/claude/gemini/antigravity；自定义：任意非空字符串） */
+  /** Provider 唯一标识（内置：codex/claude/gemini/antigravity/grok；自定义：任意非空字符串） */
   id: ProviderId;
   /** 展示名称：仅用于自定义 Provider（内置 Provider 优先由渲染层 i18n 决定） */
   displayName?: string;
@@ -124,7 +124,7 @@ export type ProviderItem = {
   iconDataUrl?: string;
   /** 图标（暗色模式，DataURL）；为空则回退到 iconDataUrl 或内置默认暗色图标 */
   iconDataUrlDark?: string;
-  /** 启动命令（例如 codex / claude / gemini / agy），可覆盖内置默认值 */
+  /** 启动命令（例如 codex / claude / gemini / agy / grok），可覆盖内置默认值 */
   startupCmd?: string;
 };
 
@@ -582,6 +582,7 @@ function defaultProviderItems(): ProviderItem[] {
     { id: 'claude' },
     { id: 'gemini' },
     { id: 'antigravity' },
+    { id: 'grok' },
   ];
 }
 
@@ -640,6 +641,7 @@ function normalizeProviders(raw: Partial<AppSettings>, distros: DistroInfo[]): P
   if (!env.claude) env.claude = { terminal: legacyTerminal, distro: legacyDistro };
   if (!env.gemini) env.gemini = { terminal: legacyTerminal, distro: legacyDistro };
   if (!env.antigravity) env.antigravity = { terminal: legacyTerminal, distro: legacyDistro };
+  if (!env.grok) env.grok = { terminal: legacyTerminal, distro: legacyDistro };
 
   // 将 legacyCodexCmd 写入 codex 的 startupCmd 兜底（仅当 providers 未显式覆盖）
   const codexItem = items.find((x) => x.id === 'codex');

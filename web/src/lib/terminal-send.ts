@@ -6,7 +6,7 @@ import type { TerminalMode } from "./shell";
 /**
  * 终端输入发送工具：
  * - 负责构造 Bracketed Paste 序列（ESC[200~ ... ESC[201~）
- * - 负责 Provider 归一化与 Gemini/Antigravity 的“粘贴后延迟回车”策略
+ * - 负责 Provider 归一化与 Gemini/Antigravity/Grok 的“粘贴后延迟回车”策略
  *
  * 说明
  * - Gemini CLI 将 `\r` 识别为 `return`（默认提交），将 `\n` 识别为 `enter`（默认不绑定）。
@@ -44,13 +44,22 @@ export function isGeminiProvider(providerId?: string | null): boolean {
 }
 
 /**
+ * 判断当前 provider 是否为 Grok Build。
+ * @param providerId providerId
+ * @returns 是否 Grok Build
+ */
+export function isGrokProvider(providerId?: string | null): boolean {
+  return normalizeProviderId(providerId) === "grok";
+}
+
+/**
  * 判断当前 provider 是否复用 Gemini 类 CLI 输入策略。
  * @param providerId providerId
  * @returns 是否需要 Gemini 类粘贴保护
  */
 export function isGeminiLikeProvider(providerId?: string | null): boolean {
   const normalized = normalizeProviderId(providerId);
-  return normalized === "gemini" || normalized === "antigravity";
+  return normalized === "gemini" || normalized === "antigravity" || normalized === "grok";
 }
 
 /**
@@ -120,7 +129,7 @@ export function getPasteSubmitMinWaitMs(args: {
   const length = Math.max(0, Math.floor(Number(args.textLength) || 0));
   const chunks = Math.max(1, Math.ceil(length / 2048));
 
-  if (providerId === "gemini" || providerId === "antigravity")
+  if (providerId === "gemini" || providerId === "antigravity" || providerId === "grok")
     return Math.min(2400, 140 + chunks * 110);
 
   if (providerId === "claude" && args.terminalMode && args.terminalMode !== "wsl")

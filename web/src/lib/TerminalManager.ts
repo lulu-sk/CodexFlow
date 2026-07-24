@@ -23,6 +23,7 @@ import {
   isClaudeProvider,
   isGeminiLikeProvider,
   isGeminiProvider,
+  isGrokProvider,
   stripTrailingNewlines,
   writeBracketedPaste,
 } from '@/lib/terminal-send';
@@ -63,6 +64,8 @@ type TerminalSendOptions = {
   geminiWindowsEditorReady?: boolean;
   geminiWslEditorReady?: boolean;
   geminiExternalEditorShortcut?: GeminiExternalEditorShortcut;
+  /** Grok 图片附件路径；每个路径必须作为独立 paste 事件发送。 */
+  attachmentPaths?: string[];
 };
 
 const TERMINAL_SEND_SCREEN_ACK_POLL_MS = 40;
@@ -85,6 +88,9 @@ const GEMINI_WINDOWS_EDITOR_STATUS_TIMEOUT_MS = 15000;
 const GEMINI_EXTERNAL_EDITOR_AUTO_PROBE_TIMEOUT_MS = 3000;
 const GEMINI_WSL_EDITOR_TRIGGER_CHAR_THRESHOLD = 12000;
 const GEMINI_WSL_EDITOR_TRIGGER_DISPATCH_THRESHOLD_MS = 2500;
+const GROK_PASTE_CHIP_DISPLAY_BYTES = 10_000;
+const GROK_PASTE_CHIP_MIN_LINES = 4;
+const GROK_ATTACHMENT_PASTE_GAP_MS = 100;
 const TERMINAL_PTY_RESIZE_STABLE_DELAY_MS = 220;
 const TERMINAL_PTY_RESIZE_MIN_INTERVAL_MS = 320;
 const TERMINAL_PTY_RESIZE_MAX_DEFER_MS = 1200;
@@ -809,7 +815,7 @@ export default class TerminalManager {
    */
   private shouldTraceSendDiagnostics(providerId?: string | null): boolean {
     const normalized = String(providerId || "").trim().toLowerCase();
-    return normalized === "codex" || normalized === "gemini" || normalized === "antigravity";
+    return normalized === "codex" || normalized === "gemini" || normalized === "antigravity" || normalized === "grok";
   }
 
   /**
@@ -1037,6 +1043,27 @@ export default class TerminalManager {
   }
 
   /**
+   * 根据 Grok Build 的官方 paste chip 规则构造屏幕确认标记。
+   */
+  private buildGrokScreenAckMarker(text: string): string | null {
+    const normalized = this.normalizeSendProbeText(text);
+    const lineCount = normalized.split("\n").length;
+    let byteLength = normalized.length;
+    try { byteLength = new TextEncoder().encode(normalized).length; } catch {}
+    if (byteLength > GROK_PASTE_CHIP_DISPLAY_BYTES) {
+      const size = byteLength >= 1_000_000
+        ? `${(byteLength / 1_000_000).toFixed(1)} MB`
+        : byteLength >= 1000
+          ? `${Math.floor(byteLength / 1000)} KB`
+          : `${byteLength} bytes`;
+      return `[Pasted: ${size}]`;
+    }
+    if (lineCount >= GROK_PASTE_CHIP_MIN_LINES)
+      return `[Pasted: ${lineCount} lines]`;
+    return null;
+  }
+
+  /**
    * 中文说明：为 Claude 的长文本粘贴构造局部屏幕 ACK 标记。
    * @param text 已规范化的待发送文本
    * @returns Claude 输入区可能出现的占位符或稳定后缀
@@ -1084,6 +1111,8 @@ export default class TerminalManager {
     const placeholderMarkers =
       provider === "codex"
         ? [this.buildCodexScreenAckMarker(normalized)]
+        : provider === "grok"
+          ? [this.buildGrokScreenAckMarker(normalized)]
         : provider === "gemini" || provider === "antigravity"
           ? [this.buildGeminiScreenAckMarker(normalized)]
           : provider === "claude"
@@ -1421,6 +1450,36 @@ export default class TerminalManager {
         });
       },
     });
+  }
+
+  /**
+   * 将 Grok 图片路径逐个作为独立 bracketed-paste 事件发送。
+   */
+  private async sendGrokAttachments(
+    ptyId: string,
+    adapter: TerminalAdapterAPI | null,
+    attachmentPaths: readonly string[] | null | undefined,
+    traceId?: string | null,
+  ): Promise<number> {
+    const paths = Array.from(new Set((Array.isArray(attachmentPaths) ? attachmentPaths : [])
+      .map((item) => String(item || "").trim())
+      .filter(Boolean)));
+    for (const attachmentPath of paths) {
+      let sent = false;
+      if (adapter && typeof (adapter as any).paste === "function") {
+        try {
+          (adapter as any).paste(attachmentPath);
+          sent = true;
+          this.logSendDiagnostic(traceId, `grok.attachment.mode=adapter.paste chars=${attachmentPath.length}`);
+        } catch {}
+      }
+      if (!sent) {
+        this.hostPty.write(ptyId, buildBracketedPastePayload(attachmentPath));
+        this.logSendDiagnostic(traceId, `grok.attachment.mode=host.bracketed chars=${attachmentPath.length}`);
+      }
+      await new Promise<void>((resolve) => window.setTimeout(resolve, GROK_ATTACHMENT_PASTE_GAP_MS));
+    }
+    return paths.length;
   }
 
   /**
@@ -2588,6 +2647,95 @@ export default class TerminalManager {
   }
 
   /**
+   * 等待终端输出或当前屏幕出现任一指定文本，用于在全屏 TUI 可输入后再自动发送首条消息。
+   *
+   * @param tabId 目标标签页 id
+   * @param markers 可确认就绪的文本标记
+   * @param options 等待超时与输出缓存上限
+   */
+  async waitForOutputText(
+    tabId: string,
+    markers: readonly string[],
+    options?: { timeoutMs?: number; maxBufferChars?: number },
+  ): Promise<boolean> {
+    const ptyId = this.getPtyId(tabId);
+    const targets = Array.from(new Set((Array.isArray(markers) ? markers : [])
+      .map((item) => String(item || "").trim())
+      .filter(Boolean)));
+    if (!ptyId || targets.length === 0) return false;
+
+    const timeoutMs = Math.max(100, Math.min(120_000, Math.floor(Number(options?.timeoutMs) || 20_000)));
+    const maxBufferChars = Math.max(4_096, Math.min(1_000_000, Math.floor(Number(options?.maxBufferChars) || 128_000)));
+    const normalizedTargets = targets.map((item) => item.replace(/\s+/g, " ").trim());
+    const adapter = this.adapters[tabId];
+    let buffer = "";
+
+    const normalizeOutput = (value: string): string => String(value || "")
+      .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, " ")
+      .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    const containsTarget = (value: string): boolean => {
+      const raw = String(value || "");
+      if (!raw) return false;
+      if (targets.some((target) => raw.includes(target))) return true;
+      const normalized = normalizeOutput(raw);
+      return !!normalized && normalizedTargets.some((target) => normalized.includes(target));
+    };
+    const readScreenText = (): string => {
+      if (!adapter || typeof adapter.readCursorTextSnapshot !== "function") return "";
+      try {
+        return String(adapter.readCursorTextSnapshot({
+          linesBefore: 80,
+          linesAfter: 80,
+          maxChars: maxBufferChars,
+        })?.text || "");
+      } catch {
+        return "";
+      }
+    };
+
+    return await new Promise<boolean>((resolve) => {
+      let settled = false;
+      let unsubscribe: (() => void) | null = null;
+      let pollTimer: number | undefined;
+      let timeoutTimer: number | undefined;
+      const finish = (matched: boolean) => {
+        if (settled) return;
+        settled = true;
+        try { unsubscribe?.(); } catch {}
+        if (pollTimer !== undefined) {
+          try { window.clearInterval(pollTimer); } catch {}
+        }
+        if (timeoutTimer !== undefined) {
+          try { window.clearTimeout(timeoutTimer); } catch {}
+        }
+        resolve(matched);
+      };
+      const inspect = (chunk?: string) => {
+        if (settled) return;
+        if (chunk) buffer = `${buffer}${chunk}`.slice(-maxBufferChars);
+        if (containsTarget(buffer) || containsTarget(readScreenText())) finish(true);
+      };
+
+      try {
+        unsubscribe = this.hostPty.onData(ptyId, (data) => inspect(String(data || "")));
+      } catch {}
+      inspect();
+      pollTimer = window.setInterval(() => inspect(), 100);
+      timeoutTimer = window.setTimeout(() => finish(false), timeoutMs);
+
+      if (typeof this.hostPty.backlog === "function") {
+        void this.hostPty.backlog(ptyId, { maxChars: maxBufferChars })
+          .then((result) => {
+            if (result?.ok && result.data) inspect(result.data);
+          })
+          .catch(() => {});
+      }
+    });
+  }
+
+  /**
    * 发送一段文本到指定 tab 对应的终端：
    * - 优先走 xterm 的 paste 通道（若可用，可触发 bracketed paste，避免应用层对逐字输入做清洗）。
    * - Codex 在 Windows/PowerShell 下发送多行正文时，会强制改走显式 bracketed paste，避免退化为普通输入后被拆成多条消息。
@@ -2598,6 +2746,10 @@ export default class TerminalManager {
     const adapter = this.adapters[tabId];
     const ptyId = this.getPtyId(tabId);
     const traceId = this.shouldTraceSendDiagnostics(options?.providerId) ? this.nextSendTraceId(options?.providerId) : null;
+    if (ptyId && isGrokProvider(options?.providerId)) {
+      await this.sendGrokAttachments(ptyId, adapter, options?.attachmentPaths, traceId);
+      if (!String(text ?? "")) return;
+    }
     if (ptyId && isGeminiLikeProvider(options?.providerId)) {
       const chunkPlan = this.createGeminiPasteChunkPlan(String(text ?? ""));
       if (chunkPlan.chunks.length > 1) {
@@ -2657,6 +2809,13 @@ export default class TerminalManager {
     const text = stripTrailingNewlines(String(raw ?? ""));
     const BRACKET_END = '\x1b[201~';
     const traceId = this.shouldTraceSendDiagnostics(options?.providerId) ? this.nextSendTraceId(options?.providerId) : null;
+    if (isGrokProvider(options?.providerId)) {
+      const attachmentCount = await this.sendGrokAttachments(ptyId, adapter, options?.attachmentPaths, traceId);
+      if (!text && attachmentCount > 0) {
+        try { this.hostPty.write(ptyId, "\r"); } catch {}
+        return;
+      }
+    }
     const selectedStrategy = this.shouldUseGeminiWindowsEditorStrategy(options?.providerId, options?.terminalMode, options?.geminiWindowsEditorReady)
       ? "gemini-windows-editor"
       : this.shouldUseGeminiWslEditorStrategy(options?.providerId, options?.terminalMode, options?.geminiWslEditorReady, text)

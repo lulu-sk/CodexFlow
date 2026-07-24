@@ -51,7 +51,7 @@ describe("renderer-draft-recovery（渲染刷新草稿恢复）", () => {
           useYolo: false,
           useMultipleModels: true,
           singleProviderId: "antigravity",
-          multiCounts: { codex: 0, claude: 1, gemini: 2, antigravity: 3 },
+          multiCounts: { codex: 0, claude: 1, gemini: 2, antigravity: 3, grok: 4 },
         },
       },
     });
@@ -61,6 +61,7 @@ describe("renderer-draft-recovery（渲染刷新草稿恢复）", () => {
     expect(restored?.worktreeCreateDraftByRepoId["repo-1"]?.promptDraft).toBe("请先看截图");
     expect(restored?.worktreeCreateDraftByRepoId["repo-1"]?.singleProviderId).toBe("antigravity");
     expect(restored?.worktreeCreateDraftByRepoId["repo-1"]?.multiCounts.antigravity).toBe(3);
+    expect(restored?.worktreeCreateDraftByRepoId["repo-1"]?.multiCounts.grok).toBe(4);
 
     const restoredChips = restoreRecoveryPathChips(restored?.worktreeCreateDraftByRepoId["repo-1"]?.promptChips);
     expect(restoredChips).toHaveLength(1);

@@ -181,6 +181,54 @@
       }
     }
   },
+  "grokUsage": {
+    "loading": "Loading account usage…",
+    "unavailable": "Account usage unavailable",
+    "title": "Account usage",
+    "account": "Grok Build account",
+    "includedQuota": "Included quota",
+    "used": "{percent} used",
+    "amount": "{used} / {limit}",
+    "resetAt": "Resets {time}",
+    "resetNotProvided": "Not provided",
+    "periodWeekly": "Weekly quota",
+    "periodMonthly": "Monthly quota",
+    "periodUnknown": "Account quota",
+    "additionalCredits": "Additional credits",
+    "prepaidBalance": "Purchased balance",
+    "onDemandUsage": "On-demand usage",
+    "onDemandDisabled": "Disabled",
+    "updatedAt": "Updated {time}",
+    "sourceLive": "Live",
+    "sourceCache": "Official Grok cache",
+    "empty": "No account usage data",
+    "errors": {
+      "default": {
+        "title": "Unable to fetch Grok account usage",
+        "hint": "Check your network and Grok Build sign-in, then try again"
+      },
+      "apiKey": {
+        "title": "Account usage is unavailable with an API key",
+        "hint": "This is a Grok Build limitation; view API usage at console.x.ai"
+      },
+      "team": {
+        "title": "Consumer usage is hidden for team accounts",
+        "hint": "Grok Build only exposes this usage to personal OAuth accounts"
+      },
+      "notLoggedIn": {
+        "title": "Grok Build is not signed in with OAuth",
+        "hint": "Run grok login in a terminal, complete browser sign-in, then refresh"
+      },
+      "expired": {
+        "title": "Grok Build sign-in has expired",
+        "hint": "Run grok login again, then refresh"
+      },
+      "notAvailable": {
+        "title": "No account usage is available",
+        "hint": "Grok Build does not currently expose usage for this account or plan"
+      }
+    }
+  },
   "notifications": {
     "taskCompleted": "{tab} completed",
     "taskCompletedWithProject": "{tab} · {project}",

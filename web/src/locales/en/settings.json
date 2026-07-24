@@ -414,6 +414,11 @@
     "help": "Detected Antigravity CLI session data directories. Use this only to inspect or open the folder.",
     "empty": "No Antigravity session roots detected"
   },
+  "grokRoots": {
+    "label": "Grok Build session roots (read-only)",
+    "help": "Detected Grok Build session directories under .grok. Use this only to inspect or open the folder.",
+    "empty": "No Grok Build session roots detected"
+  },
   "appData": {
     "label": "App data directory",
     "desc": "Inspect the current instance (profile) user data footprint and clean it when necessary. Multi-instance mode uses separate directories per profile.",

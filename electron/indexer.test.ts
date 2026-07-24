@@ -41,6 +41,14 @@ vi.mock("./agentSessions/gemini/discovery", async (importOriginal) => {
   };
 });
 
+vi.mock("./agentSessions/grok/discovery", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./agentSessions/grok/discovery")>();
+  return {
+    ...actual,
+    getGrokRootCandidatesFastAsync: vi.fn(async () => []),
+  };
+});
+
 import { getIndexedSummaries, startHistoryIndexer, stopHistoryIndexer } from "./indexer";
 
 const originalCwd = process.cwd();
@@ -115,8 +123,8 @@ describe("electron/indexer Codex preview", () => {
     await startHistoryIndexer(() => null);
     await stopHistoryIndexer();
 
-    const index = JSON.parse(await fsp.readFile(path.join(userDataDir, "history.index.v16.json"), "utf8"));
-    const details = JSON.parse(await fsp.readFile(path.join(userDataDir, "history.details.v16.json"), "utf8"));
+    const index = JSON.parse(await fsp.readFile(path.join(userDataDir, "history.index.v17.json"), "utf8"));
+    const details = JSON.parse(await fsp.readFile(path.join(userDataDir, "history.details.v17.json"), "utf8"));
     const detailEntry = Object.values(details.files as Record<string, any>)
       .find((entry: any) => entry?.details?.filePath === filePath) as any;
 

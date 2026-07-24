@@ -4,6 +4,7 @@
     "claude": "Claude",
     "gemini": "Gemini",
     "antigravity": "Antigravity",
+    "grok": "Grok Build",
     "terminal": "Terminal"
   },
   "customEngine": "自定义引擎",

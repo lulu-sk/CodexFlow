@@ -9,6 +9,7 @@ import { Combobox } from "@/components/ui/combobox";
 import PathChipsInput, { type PathChip } from "@/components/ui/path-chips-input";
 import { retainPreviewUrl, releasePreviewUrl } from "@/lib/previewUrlRegistry";
 import { retainPastedImage, releasePastedImage, requestTrashWinPath } from "@/lib/imageResourceRegistry";
+import { isGeminiImageChip } from "@/lib/gemini-attachments";
 import { normalizePathScopeKey } from "@/lib/path-scope";
 import { setActiveFileIndexRoot } from "@/lib/atSearch";
 import { Badge } from "@/components/ui/badge";
@@ -349,6 +350,12 @@ const ANTIGRAVITY_NOTIFY_ENV_KEYS = {
   providerId: "ANTIGRAVITY_CODEXFLOW_PROVIDER_ID",
 } as const;
 
+const GROK_NOTIFY_ENV_KEYS = {
+  tabId: "GROK_CODEXFLOW_TAB_ID",
+  envLabel: "GROK_CODEXFLOW_ENV_LABEL",
+  providerId: "GROK_CODEXFLOW_PROVIDER_ID",
+} as const;
+
 /**
  * 构建 ProviderItem 的 id -> item 索引，避免在标签渲染时重复线性扫描。
  */
@@ -431,6 +438,21 @@ function buildAntigravityNotifyEnv(tabId: string, providerId: string, envLabel: 
 }
 
 /**
+ * 中文说明：构造 Grok Stop Hook 所需的通知环境变量。
+ */
+function buildGrokNotifyEnv(tabId: string, providerId: string, envLabel: string): Record<string, string> {
+  const pid = String(providerId || "").trim().toLowerCase();
+  if (pid !== "grok") return {};
+  const tid = String(tabId || "").trim();
+  if (!tid) return {};
+  return {
+    [GROK_NOTIFY_ENV_KEYS.tabId]: tid,
+    [GROK_NOTIFY_ENV_KEYS.envLabel]: String(envLabel || "").trim(),
+    [GROK_NOTIFY_ENV_KEYS.providerId]: pid,
+  };
+}
+
+/**
  * 中文说明：构造 Provider 完成通知链路所需的环境变量（按 providerId 注入）。
  */
 function buildProviderNotifyEnv(tabId: string, providerId: string, envLabel: string): Record<string, string> {
@@ -439,6 +461,7 @@ function buildProviderNotifyEnv(tabId: string, providerId: string, envLabel: str
   if (pid === "gemini") return buildGeminiNotifyEnv(tabId, pid, envLabel);
   if (pid === "claude") return buildClaudeNotifyEnv(tabId, pid, envLabel);
   if (pid === "antigravity") return buildAntigravityNotifyEnv(tabId, pid, envLabel);
+  if (pid === "grok") return buildGrokNotifyEnv(tabId, pid, envLabel);
   return {};
 }
 
@@ -464,7 +487,7 @@ type MessageContent = {
 };
 type HistoryMessage = { role: string; content: MessageContent[] };
 type HistorySession = {
-  providerId: "codex" | "claude" | "gemini" | "antigravity";
+  providerId: "codex" | "claude" | "gemini" | "antigravity" | "grok";
   id: string;
   title: string;
   date: string; // ISO
@@ -1153,6 +1176,73 @@ function toWorktreePromptRelPath(args: { pathText: string; projectWinRoot?: stri
 }
 
 /**
+ * 将 Grok 图片 chip 转换为目标终端可直接粘贴的绝对路径。
+ *
+ * @param args 图片 chips、源项目根目录与目标终端类型
+ */
+function resolveGrokAttachmentPaths(args: {
+  chips: PathChip[];
+  projectWinRoot?: string;
+  projectWslRoot?: string;
+  terminalMode?: TerminalMode;
+}): string[] {
+  const chips = Array.isArray(args.chips) ? args.chips : [];
+  const preferWindows = args.terminalMode !== "wsl";
+  const projectWinRoot = String(args.projectWinRoot || "").trim().replace(/[\\/]+$/, "");
+  const projectWslRoot = String(args.projectWslRoot || "").trim().replace(/\/+$/, "");
+  const output: string[] = [];
+  const seen = new Set<string>();
+
+  for (const chip of chips) {
+    if (!isGeminiImageChip(chip)) continue;
+    const chipAny = chip as any;
+    const winPath = String(chipAny?.winPath || "").trim();
+    const wslPath = String(chipAny?.wslPath || "").trim();
+    const fileName = String(chipAny?.fileName || "").trim();
+    let resolved = "";
+
+    if (preferWindows) {
+      if (/^[A-Za-z]:[\\/]/.test(winPath) || winPath.startsWith("\\\\")) {
+        resolved = winPath;
+      } else {
+        const mounted = wslPath.match(/^\/mnt\/([a-zA-Z])\/(.*)$/);
+        if (mounted)
+          resolved = `${mounted[1].toUpperCase()}:\\${mounted[2].replace(/\//g, "\\")}`;
+        else if (winPath && projectWinRoot)
+          resolved = `${projectWinRoot}\\${winPath.replace(/^[\\/]+/, "")}`;
+        else if (wslPath && !wslPath.startsWith("/") && projectWinRoot)
+          resolved = `${projectWinRoot}\\${wslPath.replace(/^[\\/]+/, "").replace(/\//g, "\\")}`;
+        else if (fileName && projectWinRoot)
+          resolved = `${projectWinRoot}\\${fileName.replace(/^[\\/]+/, "")}`;
+        else
+          resolved = winPath || wslPath || fileName;
+      }
+    } else if (wslPath.startsWith("/")) {
+      resolved = wslPath;
+    } else if (wslPath && projectWslRoot) {
+      resolved = `${projectWslRoot}/${wslPath.replace(/^[\\/]+/, "").replace(/\\/g, "/")}`;
+    } else if (/^[A-Za-z]:[\\/]/.test(winPath) || winPath.startsWith("\\\\")) {
+      resolved = toWSLForInsert(winPath);
+    } else if (winPath && projectWslRoot) {
+      resolved = `${projectWslRoot}/${winPath.replace(/^[\\/]+/, "").replace(/\\/g, "/")}`;
+    } else if (fileName && projectWslRoot) {
+      resolved = `${projectWslRoot}/${fileName.replace(/^[\\/]+/, "").replace(/\\/g, "/")}`;
+    } else {
+      resolved = wslPath || winPath || fileName;
+    }
+
+    resolved = String(resolved || "").trim();
+    if (!resolved) continue;
+    const key = preferWindows ? resolved.toLowerCase() : resolved;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(resolved);
+  }
+
+  return output;
+}
+
+/**
  * 将 worktree 创建面板中的 chips + 草稿合并为最终提示词：
  * - 每个 chip 独占一行，并用反引号包裹
  * - 项目内绝对路径会被转换为相对路径，保证对不同 worktree 可复用
@@ -1164,8 +1254,11 @@ function compileWorktreePromptText(args: {
   projectWinRoot?: string;
   projectWslRoot?: string;
   terminalMode?: TerminalMode;
+  /** Grok 图片会通过独立粘贴事件发送，正文中不再重复插入图片路径。 */
+  excludeImageChips?: boolean;
 }): string {
-  const chips = Array.isArray(args.chips) ? args.chips : [];
+  const chips = (Array.isArray(args.chips) ? args.chips : [])
+    .filter((chip) => !args.excludeImageChips || !isGeminiImageChip(chip));
   const draft = String(args.draft || "");
   const parts: string[] = [];
   if (chips.length > 0) {
@@ -2089,6 +2182,7 @@ export {
   CLAUDE_NOTIFY_ENV_KEYS,
   CODEX_NOTIFY_ENV_KEYS,
   ANTIGRAVITY_NOTIFY_ENV_KEYS,
+  GROK_NOTIFY_ENV_KEYS,
   PROJECT_SORT_STORAGE_KEY,
   INPUT_FULLSCREEN_TRANSITION_MS,
   OSC_NOTIFICATION_PREFIX,
@@ -2122,6 +2216,7 @@ export {
   trimSelectedIdsByOrder,
   areStringArraysEqual,
   toWorktreePromptRelPath,
+  resolveGrokAttachmentPaths,
   compileWorktreePromptText,
   buildProviderStartupCmdWithInitialPrompt,
   summarizeForCommitMessage,

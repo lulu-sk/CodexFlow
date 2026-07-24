@@ -24,7 +24,7 @@ import { pathMatchesDirKeyScope, tidyPathCandidate } from "./agentSessions/share
 
 export type RuntimeShell = 'wsl' | 'windows' | 'unknown';
 
-export type ProviderId = 'codex' | 'claude' | 'gemini' | 'antigravity';
+export type ProviderId = 'codex' | 'claude' | 'gemini' | 'antigravity' | 'grok';
 
 export type HistorySummary = {
   providerId: ProviderId;
@@ -583,7 +583,7 @@ type HistoryListCacheEntry = {
 };
 
 // 中文说明：历史归属语义变更后提升版本，强制失效旧的列表缓存，避免继续复用错误归属结果。
-const PARSER_VERSION = 'v16';
+const PARSER_VERSION = 'v17';
 const CACHE_SCHEMA_VERSION = '2';
 
 /**
@@ -593,6 +593,7 @@ function inferHistoryProviderIdFromPath(filePath: string): ProviderId {
   try {
     const fp = String(filePath || '').replace(/\\/g, '/').toLowerCase();
     const base = fp.split('/').pop() || '';
+    if (fp.includes('/.grok/sessions/')) return 'grok';
     if (fp.includes('/.claude/')) return 'claude';
     if (fp.includes('/.gemini/')) return 'gemini';
     if (base.endsWith('.ndjson')) return 'claude';

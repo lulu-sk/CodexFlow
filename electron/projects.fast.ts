@@ -9,8 +9,10 @@ import { app } from "electron";
 import { wslToUNC, isUNCPath, uncToWsl, getCodexRootsFastAsync, normalizeWinPath } from "./wsl";
 import { getClaudeRootCandidatesFastAsync, discoverClaudeSessionFiles } from "./agentSessions/claude/discovery";
 import { getGeminiRootCandidatesFastAsync, discoverGeminiSessionFiles } from "./agentSessions/gemini/discovery";
+import { getGrokRootCandidatesFastAsync, discoverGrokSessionFiles } from "./agentSessions/grok/discovery";
 import { parseClaudeSessionFile } from "./agentSessions/claude/parser";
 import { parseGeminiSessionFile, extractGeminiProjectHashFromPath } from "./agentSessions/gemini/parser";
+import { parseGrokSessionFile } from "./agentSessions/grok/parser";
 import { tidyPathCandidate } from "./agentSessions/shared/path";
 import { perfLogger } from "./log";
 import { getDebugConfig } from "./debugConfig";
@@ -32,7 +34,7 @@ export type Project = {
   worktreePostSetup?: WorktreePostSetupConfig;
   createdAt: number;
   lastOpenedAt?: number;
-  /** 是否已确认存在内置代理引擎（codex/claude/gemini/antigravity）的会话记录。 */
+  /** 是否已确认存在内置代理引擎（codex/claude/gemini/antigravity/grok）的会话记录。 */
   hasBuiltInSessions?: boolean;
   /** 自定义引擎无法从会话文件反推 cwd 时，用于“保留该目录”的显式记录。 */
   dirRecord?: ProjectDirRecord;
@@ -508,6 +510,26 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
               if (!stat) continue;
               const det = await parseGeminiSessionFile(fp, stat, { summaryOnly: true, maxBytes: 2 * 1024 * 1024 });
               if (det?.cwd) await addProjectFromCwd(String(det.cwd), { root, distro });
+            } catch {}
+          }
+        } catch {}
+      })));
+    } catch {}
+  });
+
+  // Grok Build：从 summary.json 中提取官方记录的 cwd 以补全项目列表。
+  await perfLogger.time('projectsFast.enumerateGrok', async () => {
+    try {
+      const roots = (await getGrokRootCandidatesFastAsync()).filter((candidate) => candidate.exists);
+      await Promise.all(roots.map(({ path: root, distro }) => limit(async () => {
+        try {
+          const files = await discoverGrokSessionFiles(root);
+          for (const filePath of files) {
+            try {
+              const stat = await fsp.stat(filePath).catch(() => null as any);
+              if (!stat) continue;
+              const details = await parseGrokSessionFile(filePath, stat, { summaryOnly: true });
+              if (details?.cwd) await addProjectFromCwd(String(details.cwd), { root, distro });
             } catch {}
           }
         } catch {}

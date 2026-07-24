@@ -65,6 +65,7 @@ import { emitCodexRateRefresh } from "@/lib/codex-status";
 import { emitClaudeUsageRefresh } from "@/lib/claude-status";
 import { emitGeminiUsageRefresh } from "@/lib/gemini-status";
 import { emitAntigravityUsageRefresh } from "@/lib/antigravity-status";
+import { emitGrokUsageRefresh } from "@/lib/grok-status";
 import { checkForUpdate, type UpdateCheckErrorType } from "@/lib/about";
 import TerminalManager from "@/lib/TerminalManager";
 import { isGeminiLikeProvider, isGeminiProvider, writeBracketedPaste, writeBracketedPasteAndEnter } from "@/lib/terminal-send";
@@ -121,7 +122,7 @@ import {
   isCurrentProviderEnvironmentRequest,
 } from "@/lib/providers/environment";
 import { normalizeProvidersSettings } from "@/lib/providers/normalize";
-import { isBuiltInSessionProviderId, openaiIconUrl, openaiDarkIconUrl, claudeIconUrl, geminiIconUrl, antigravityIconUrl } from "@/lib/providers/builtins";
+import { isBuiltInSessionProviderId, openaiIconUrl, openaiDarkIconUrl, claudeIconUrl, geminiIconUrl, antigravityIconUrl, grokIconUrl, grokDarkIconUrl } from "@/lib/providers/builtins";
 import { BUILT_IN_AGENT_PROVIDER_IDS, isBuiltInAgentProviderId } from "@/lib/providers/ids";
 import { resolveProvider } from "@/lib/providers/resolve";
 import {
@@ -136,6 +137,7 @@ import { injectCodexTraceEnv } from "@/providers/codex/commands";
 import { buildClaudeResumeStartupCmd } from "@/providers/claude/commands";
 import { buildGeminiResumeStartupCmd } from "@/providers/gemini/commands";
 import { buildAntigravityResumeStartupCmd } from "@/providers/antigravity/commands";
+import { buildGrokResumeStartupCmd } from "@/providers/grok/commands";
 import {
   BUILT_IN_RULE_PROVIDER_IDS,
   getProjectRuleFilePath,
@@ -297,6 +299,7 @@ import {
   parseRawDate,
   parseRecycleStashes,
   pickUuidFromString,
+  resolveGrokAttachmentPaths,
   resolveHistoryTimelineMeta,
   shouldDedupeCrossSourceCompletion,
   shouldDedupeRepeatedExternalCompletion,
@@ -4115,6 +4118,7 @@ export default function CodexFlowManagerUI() {
     try { emitClaudeUsageRefresh('agent-complete'); } catch {}
     try { emitGeminiUsageRefresh('agent-complete'); } catch {}
     try { emitAntigravityUsageRefresh('agent-complete'); } catch {}
+    try { emitGrokUsageRefresh('agent-complete'); } catch {}
 
     // worktree 自动提交：每次 agent 完成输出后，若有变更则提交一次（仅对非主 worktree 生效）
     try {
@@ -5292,7 +5296,7 @@ export default function CodexFlowManagerUI() {
    */
   const mapHistoryListItemToSession = useCallback((it: any): HistorySession => {
     return {
-      providerId: (it?.providerId === "claude" || it?.providerId === "gemini" || it?.providerId === "antigravity") ? it.providerId : "codex",
+      providerId: (it?.providerId === "claude" || it?.providerId === "gemini" || it?.providerId === "antigravity" || it?.providerId === "grok") ? it.providerId : "codex",
       id: String(it?.id || ""),
       title: typeof it?.rawDate === "string" ? String(it.rawDate) : String(it?.title || ""),
       date: normalizeMsToIso(it?.date),
@@ -5674,6 +5678,7 @@ export default function CodexFlowManagerUI() {
     { id: "claude" },
     { id: "gemini" },
     { id: "antigravity" },
+    { id: "grok" },
   ]);
   const providerItemById = useMemo(() => buildProviderItemIndex(providerItems), [providerItems]);
   const [providerEnvById, setProviderEnvById] = useState<Record<string, Required<ProviderEnv>>>(() => ({
@@ -5681,6 +5686,7 @@ export default function CodexFlowManagerUI() {
     claude: { terminal: "wsl", distro: "Ubuntu-24.04" },
     gemini: { terminal: "wsl", distro: "Ubuntu-24.04" },
     antigravity: { terminal: "wsl", distro: "Ubuntu-24.04" },
+    grok: { terminal: "wsl", distro: "Ubuntu-24.04" },
   }));
   const activeProviderIdRef = useRef(activeProviderId);
   const providerItemsRef = useRef(providerItems);
@@ -5759,6 +5765,7 @@ export default function CodexFlowManagerUI() {
       if (!nextEnvById.claude) nextEnvById.claude = { terminal: codexEnv.terminal, distro: codexEnv.distro };
       if (!nextEnvById.gemini) nextEnvById.gemini = { terminal: codexEnv.terminal, distro: codexEnv.distro };
       if (!nextEnvById.antigravity) nextEnvById.antigravity = { terminal: codexEnv.terminal, distro: codexEnv.distro };
+      if (!nextEnvById.grok) nextEnvById.grok = { terminal: codexEnv.terminal, distro: codexEnv.distro };
       const nextProviders = { activeId: activeProviderId, items: nextItems, env: nextEnvById };
       await window.host.settings.update({
         providers: nextProviders as any,
@@ -6376,6 +6383,7 @@ export default function CodexFlowManagerUI() {
       projectWinRoot: args.promptSource.projectWinRoot,
       projectWslRoot: args.promptSource.projectWslRoot,
       terminalMode: env.terminal as any,
+      excludeImageChips: args.providerId === "grok",
     });
   }, [getProviderEnv]);
 
@@ -7171,13 +7179,13 @@ export default function CodexFlowManagerUI() {
     return () => { try { off && off(); } catch {} };
   }, [focusTabFromNotification]);
 
-  // 监听主进程转发的外部完成通知（Codex/Gemini/Claude/Antigravity，JSONL 桥接）
+  // 监听主进程转发的外部完成通知（Codex/Gemini/Claude/Antigravity/Grok，JSONL 桥接）
   useEffect(() => {
     let off: (() => void) | undefined;
     try {
       off = window.host.notifications?.onExternalAgentComplete?.((payload: ExternalAgentCompletePayload) => {
         const providerId = String(payload?.providerId || "").trim().toLowerCase();
-        if (providerId && providerId !== "codex" && providerId !== "gemini" && providerId !== "claude" && providerId !== "antigravity") return;
+        if (providerId && providerId !== "codex" && providerId !== "gemini" && providerId !== "claude" && providerId !== "antigravity" && providerId !== "grok") return;
         const preview = String(payload?.preview || "");
         const normalizeOptions: CompletionPreviewNormalizeOptions = {};
         if (typeof payload?.previewEscapedWhitespace === "boolean")
@@ -8256,18 +8264,37 @@ export default function CodexFlowManagerUI() {
     return () => { try { unsubExit(); } catch {} };
   }, [selectedProjectId]);
 
+  /**
+   * 收集 Grok 图片附件的绝对路径；官方 TUI 要求每张图片作为独立粘贴事件发送。
+   */
+  function collectGrokAttachmentPaths(tabId: string): string[] {
+    const targetTab = tabs.find((tab) => tab.id === tabId) || null;
+    if (targetTab?.providerId !== "grok") return [];
+    const execEnv = getTabExecEnv(tabId, targetTab.providerId);
+    return resolveGrokAttachmentPaths({
+      chips: chipsByTab[tabId] || [],
+      terminalMode: execEnv.terminal as any,
+      projectWinRoot: selectedProject?.winPath,
+      projectWslRoot: selectedProject?.wslPath,
+    });
+  }
+
+  /**
+   * 将当前标签页的路径 Chip 与草稿编译为发送正文。
+   */
   function compileTextFromChipsAndDraft(tabId: string): string {
     const targetTab = tabs.find((tab) => tab.id === tabId) || null;
     const isGeminiTab = targetTab?.providerId === "gemini" || targetTab?.providerId === "antigravity";
+    const isGrokTab = targetTab?.providerId === "grok";
     const execEnv = targetTab ? getTabExecEnv(tabId, targetTab.providerId) : { terminal: terminalMode, distro: wslDistro };
     const execTerminal = execEnv.terminal as any;
     const chips = chipsByTab[tabId] || [];
     const draft = draftByTab[tabId] || "";
     const parts: string[] = [];
     if (chips.length > 0) {
-      parts.push(
-        chips
+      const chipText = chips
           .map((c) => {
+            if (isGrokTab && isGeminiImageChip(c)) return "";
             if (isGeminiTab && isGeminiImageChip(c)) {
               const geminiPath = isWindowsLike(execTerminal)
                 ? String(c.winPath || "").trim()
@@ -8300,8 +8327,9 @@ export default function CodexFlowManagerUI() {
             // 默认 WSL 模式
             return c.wslPath ? ('`' + c.wslPath + '`') : (c.winPath || c.fileName || '');
           })
-          .join("\n")
-      );
+          .filter(Boolean)
+          .join("\n");
+      if (chipText) parts.push(chipText);
     }
     if (draft && draft.trim()) {
       if (parts.length > 0) parts.push("");
@@ -8469,7 +8497,8 @@ export default function CodexFlowManagerUI() {
   async function sendCommand() {
     if (!activeTab) return;
     const text = compileTextFromChipsAndDraft(activeTab.id);
-    if (!text.trim()) return;
+    const attachmentPaths = collectGrokAttachmentPaths(activeTab.id);
+    if (!text.trim() && attachmentPaths.length <= 0) return;
     const pid = ptyByTabRef.current[activeTab.id];
     if (!pid) return;
     const activeEnv = tabExecEnvByTabRef.current[activeTab.id] || getProviderEnv(activeTab.providerId);
@@ -8497,13 +8526,19 @@ export default function CodexFlowManagerUI() {
         geminiWindowsEditorReady: !!geminiWindowsEditorReadyByTabRef.current[activeTab.id],
         geminiWslEditorReady: !!geminiWslEditorReadyByTabRef.current[activeTab.id],
         geminiExternalEditorShortcut: geminiExternalEditorShortcutByTabRef.current[activeTab.id] || "auto",
+        attachmentPaths,
       };
       if (sendMode === 'write_and_enter') await tm.sendTextAndEnter(activeTab.id, text, sendOptions);
       else await tm.sendText(activeTab.id, text, sendOptions);
     } catch {
       // 兜底：避免 Gemini 直接写入 `\n` 被吞，统一使用 bracketed paste +（可选）延迟回车
       try {
-        if (isGeminiLikeProvider(activeTab.providerId)) {
+        if (activeTab.providerId === "grok") {
+          const write = (data: string) => { try { window.host.pty.write(pid, data); } catch {} };
+          for (const attachmentPath of attachmentPaths) writeBracketedPaste(write, attachmentPath);
+          if (text) writeBracketedPaste(write, text);
+          if (sendMode === "write_and_enter") write("\r");
+        } else if (isGeminiLikeProvider(activeTab.providerId)) {
           const write = (data: string) => { try { window.host.pty.write(pid, data); } catch {} };
           if (sendMode === "write_and_enter") writeBracketedPasteAndEnter(write, text, { providerId: activeTab.providerId });
           else writeBracketedPaste(write, text);
@@ -9546,23 +9581,53 @@ export default function CodexFlowManagerUI() {
         source: "worktree",
       });
       if (!prepared.ok) return prepared;
+      const attachmentPaths = providerId === "grok" && args.promptSource
+        ? resolveGrokAttachmentPaths({
+            chips: args.promptSource.chips,
+            terminalMode: prepared.env.terminal as any,
+            projectWinRoot: args.promptSource.projectWinRoot,
+            projectWslRoot: args.promptSource.projectWslRoot,
+          })
+        : [];
       const prompt = buildWorktreePromptForProvider({
         providerId,
         prompt: args.prompt,
         promptSource: args.promptSource,
         envOverride: prepared.env,
       });
-      const startupCmd = buildProviderStartupCmdWithInitialPrompt({ providerId, terminalMode: prepared.env.terminal as any, baseCmd: prepared.startupCmd, prompt });
+      const sendGrokPromptAfterStartup = providerId === "grok" && attachmentPaths.length > 0;
+      const startupCmd = sendGrokPromptAfterStartup
+        ? prepared.startupCmd
+        : buildProviderStartupCmdWithInitialPrompt({ providerId, terminalMode: prepared.env.terminal as any, baseCmd: prepared.startupCmd, prompt });
       const started = await openProviderConsoleInProject({ project, providerId, startupCmd, envOverride: prepared.env });
-      const hasInitialPrompt = String(prompt || "").trim().length > 0;
       const tabId = String(started.tabId || "").trim();
+      if (started.ok && tabId && sendGrokPromptAfterStartup) {
+        const ready = await tm.waitForOutputText(tabId, ["New worktree", "Build anything", "minimal · /help"], { timeoutMs: 30_000 });
+        if (!ready) {
+          return {
+            ok: false,
+            tabId,
+            error: t("projects:grokInitialPromptNotReady", "Grok input was not ready; initial attachments were not sent") as string,
+          };
+        }
+        await tm.sendTextAndEnter(tabId, prompt, {
+          providerId,
+          terminalMode: prepared.env.terminal as any,
+          projectWinRoot: project.winPath,
+          projectWslRoot: project.wslPath,
+          projectName: project.name,
+          distro: prepared.env.terminal === "wsl" ? prepared.env.distro : undefined,
+          attachmentPaths,
+        });
+      }
+      const hasInitialPrompt = String(prompt || "").trim().length > 0 || attachmentPaths.length > 0;
       if (started.ok && tabId && hasInitialPrompt && shouldEnableAgentTimerForProvider(providerId))
         startAgentTurnTimer(tabId);
       return started;
     } catch (e: any) {
       return { ok: false, error: String(e?.message || e) };
     }
-  }, [buildProviderStartupCmdForWorktreeCreate, buildWorktreePromptForProvider, getProviderEnv, openProviderConsoleInProject, prepareProviderLaunch, resolveVisibleProviderEnv, shouldEnableAgentTimerForProvider, startAgentTurnTimer]);
+  }, [buildProviderStartupCmdForWorktreeCreate, buildWorktreePromptForProvider, getProviderEnv, openProviderConsoleInProject, prepareProviderLaunch, resolveVisibleProviderEnv, shouldEnableAgentTimerForProvider, startAgentTurnTimer, t, tm]);
 
   /**
    * 执行创建 worktree，并在每个 worktree 内启动对应引擎 CLI。
@@ -12611,7 +12676,7 @@ export default function CodexFlowManagerUI() {
 	   */
 	  const resolveHistoryProviderId = (session?: HistorySession | null): HistorySession["providerId"] => {
 	    const id = session?.providerId;
-	    if (id === "claude" || id === "gemini" || id === "antigravity" || id === "codex") return id;
+	    if (id === "claude" || id === "gemini" || id === "antigravity" || id === "grok" || id === "codex") return id;
 	    return "codex";
 	  };
 
@@ -12639,6 +12704,7 @@ export default function CodexFlowManagerUI() {
 	   * - Claude：优先 --resume <sessionId>，失败回退 --continue
 	   * - Gemini：优先 --resume <sessionId>，缺失则 --resume latest
 	   * - Antigravity：优先 --conversation <conversationId>
+	   * - Grok：优先 --resume <sessionId>，缺失则 --continue
 	   */
 	  const buildResumeStartup = (filePath: string, mode: TerminalMode, options?: { forceLegacyCli?: boolean }): ResumeStartup => {
 	    const session = findSessionForFile(filePath);
@@ -12676,6 +12742,14 @@ export default function CodexFlowManagerUI() {
       const providerCmd = resolveProvider(providerItemById["antigravity"] ?? { id: "antigravity" }).startupCmd || "agy";
       const startupCmd = buildAntigravityResumeStartupCmd({ cmd: providerCmd, terminalMode: mode, conversationId });
       return { providerId: "antigravity", startupCmd, session, resumeLabel: conversationId || "agy" };
+    }
+
+    // ---- Grok ----
+    if (providerId === "grok") {
+      const sessionId = String(session?.resumeId || "").trim() || null;
+      const providerCmd = resolveProvider(providerItemById["grok"] ?? { id: "grok" }).startupCmd || "grok";
+      const startupCmd = buildGrokResumeStartupCmd({ cmd: providerCmd, terminalMode: mode, sessionId });
+      return { providerId: "grok", startupCmd, session, resumeLabel: sessionId || "continue" };
     }
 
     // ---- Codex ----
@@ -14688,7 +14762,7 @@ export default function CodexFlowManagerUI() {
                         </div>
                     </div>
 
-                    <div className="grid grid-cols-4 gap-2">
+                    <div className="grid grid-cols-5 gap-2">
                       {BUILT_IN_AGENT_PROVIDER_IDS.map((pid) => {
                           const icon = pid === "codex"
                             ? (themeMode === "dark" ? openaiDarkIconUrl : openaiIconUrl)
@@ -14696,7 +14770,9 @@ export default function CodexFlowManagerUI() {
                               ? claudeIconUrl
                               : pid === "gemini"
                                 ? geminiIconUrl
-                                : antigravityIconUrl;
+                                : pid === "antigravity"
+                                  ? antigravityIconUrl
+                                  : (themeMode === "dark" ? grokDarkIconUrl : grokIconUrl);
                           const isMulti = worktreeCreateDialog.useMultipleModels;
                           const count = Math.max(0, Math.floor(Number(worktreeCreateDialog.multiCounts?.[pid]) || 0));
                           const enabledInMulti = count > 0;

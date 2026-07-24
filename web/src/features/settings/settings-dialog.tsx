@@ -80,7 +80,7 @@ import { getCodexCliErrorKindLabel } from "@/lib/codex-cli-error-classifier";
 type TerminalMode = NonNullable<AppSettings["terminal"]>;
 type SendMode = "write_only" | "write_and_enter";
 type PathStyle = "absolute" | "relative";
-type SessionRootsProviderId = BuiltInRuleProviderId | "antigravity";
+type SessionRootsProviderId = BuiltInRuleProviderId | "antigravity" | "grok";
 type RenderEngineRootsOptions = {
   showRuleActions?: boolean;
 };
@@ -650,6 +650,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   const [claudeRoots, setClaudeRoots] = useState<string[]>([]);
   const [geminiRoots, setGeminiRoots] = useState<string[]>([]);
   const [antigravityRoots, setAntigravityRoots] = useState<string[]>([]);
+  const [grokRoots, setGrokRoots] = useState<string[]>([]);
   const [lang, setLang] = useState<string>(values.locale || "en");
   const [theme, setTheme] = useState<ThemeSetting>(normalizeThemeSetting(values.theme));
   const [multiInstanceEnabled, setMultiInstanceEnabled] = useState<boolean>(!!values.multiInstanceEnabled);
@@ -859,7 +860,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     try {
       if (window.host.settings.sessionRoots) {
         const roots = await window.host.settings.sessionRoots({ providerId });
-        if (providerId === "antigravity")
+        if (providerId === "antigravity" || providerId === "grok")
           return normalizeReadOnlySessionRootPaths(Array.isArray(roots) ? roots : []);
         return normalizeEngineRootPaths(providerId, Array.isArray(roots) ? roots : []);
       }
@@ -1068,21 +1069,24 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     if (!open) return;
     (async () => {
       try {
-        const [codex, claude, gemini, antigravity] = await Promise.all([
+        const [codex, claude, gemini, antigravity, grok] = await Promise.all([
           fetchSessionRoots("codex"),
           fetchSessionRoots("claude"),
           fetchSessionRoots("gemini"),
           fetchSessionRoots("antigravity"),
+          fetchSessionRoots("grok"),
         ]);
         setCodexRoots(codex);
         setClaudeRoots(claude);
         setGeminiRoots(gemini);
         setAntigravityRoots(antigravity);
+        setGrokRoots(grok);
       } catch {
         setCodexRoots([]);
         setClaudeRoots([]);
         setGeminiRoots([]);
         setAntigravityRoots([]);
+        setGrokRoots([]);
       }
       try {
         const result: any = await (window.host as any).wsl?.listDistros?.();
@@ -2818,6 +2822,15 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
             </Card>
             <Card>
               <CardHeader>
+                <CardTitle>{t("settings:grokRoots.label")}</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <p className="text-sm text-slate-500">{t("settings:grokRoots.help")}</p>
+                {renderEngineRoots(null, grokRoots, "settings:grokRoots.empty", { showRuleActions: false })}
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader>
                 <CardTitle>{t("settings:historyCleanup.label")}</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -3131,6 +3144,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     claudeRoots,
     geminiRoots,
     antigravityRoots,
+    grokRoots,
     renderEngineRoots,
     openSessionRootPath,
     // 字体与显示相关依赖，确保“显示所有字体”等交互即时生效

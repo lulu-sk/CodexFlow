@@ -628,7 +628,7 @@ contextBridge.exposeInMainWorld('host', {
     }) => {
       return await ipcRenderer.invoke('history.list', args);
     },
-    read: async (args: { filePath: string; providerId?: "codex" | "claude" | "gemini" | "antigravity"; forceParse?: boolean }) => {
+    read: async (args: { filePath: string; providerId?: "codex" | "claude" | "gemini" | "antigravity" | "grok"; forceParse?: boolean }) => {
       return await ipcRenderer.invoke('history.read', args);
     },
     findEmptySessions: async () => {
@@ -680,7 +680,7 @@ contextBridge.exposeInMainWorld('host', {
       if (res && res.ok && Array.isArray(res.roots)) return res.roots as string[];
       return [] as string[];
     },
-    sessionRoots: async (args: { providerId: "codex" | "claude" | "gemini" | "antigravity" }) => {
+    sessionRoots: async (args: { providerId: "codex" | "claude" | "gemini" | "antigravity" | "grok" }) => {
       const res = await ipcRenderer.invoke('settings.sessionRoots', args);
       if (res && res.ok && Array.isArray(res.roots)) return res.roots as string[];
       return [] as string[];
@@ -757,6 +757,11 @@ contextBridge.exposeInMainWorld('host', {
       return await ipcRenderer.invoke('antigravity.usage');
     }
   }
+  , grok: {
+    getUsage: async () => {
+      return await ipcRenderer.invoke('grok.usage');
+    }
+  }
   , notifications: {
     setBadgeCount: (count: number) => {
       ipcRenderer.send('notifications:setBadge', { count });
@@ -768,7 +773,7 @@ contextBridge.exposeInMainWorld('host', {
     showAgentCompletion: (payload: { tabId: string; tabName?: string; projectName?: string; preview?: string; title: string; body: string; appTitle?: string }) => {
       ipcRenderer.send('notifications:agentComplete', payload);
     },
-    // 监听主进程转发的外部完成通知（Codex/Gemini/Claude/Antigravity hook -> JSONL 桥接）。
+    // 监听主进程转发的外部完成通知（Codex/Gemini/Claude/Antigravity/Grok hook -> JSONL 桥接）。
     onExternalAgentComplete: (handler: (payload: any) => void) => {
       const listener = (_: unknown, payload: any) => handler(payload);
       ipcRenderer.on('notifications:externalAgentComplete', listener);
