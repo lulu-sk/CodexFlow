@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { compileWorktreePromptText, toWorktreePromptRelPath } from "./app-shared";
+import { compileWorktreePromptText, resolveGrokAttachmentPaths, toWorktreePromptRelPath } from "./app-shared";
 
 describe("app-shared（worktree 初始提示词编译）", () => {
   it("toWorktreePromptRelPath：将项目内 Windows 绝对路径转换为相对路径", () => {
@@ -63,5 +63,63 @@ describe("app-shared（worktree 初始提示词编译）", () => {
       projectWslRoot: "/mnt/c/repo",
       terminalMode: "wsl",
     })).toBe("`/mnt/d/shared/brief.md`");
+  });
+
+  it("Grok 图片由独立粘贴事件发送，正文只保留普通文件与草稿", () => {
+    expect(compileWorktreePromptText({
+      chips: [
+        {
+          chipKind: "image",
+          type: "image/png",
+          fileName: "screen.png",
+          winPath: "X:\\workspace\\screen.png",
+          wslPath: "/mnt/x/workspace/screen.png",
+        } as any,
+        {
+          chipKind: "file",
+          fileName: "task.md",
+          winPath: "X:\\workspace\\docs\\task.md",
+          wslPath: "/mnt/x/workspace/docs/task.md",
+        } as any,
+      ],
+      draft: "请结合截图处理",
+      projectWinRoot: "X:\\workspace",
+      projectWslRoot: "/mnt/x/workspace",
+      terminalMode: "pwsh",
+      excludeImageChips: true,
+    })).toBe("`docs/task.md`\n\n请结合截图处理");
+  });
+
+  it("resolveGrokAttachmentPaths：按目标终端解析图片绝对路径并去重", () => {
+    const chips = [
+      {
+        chipKind: "image",
+        type: "image/png",
+        fileName: "screen.png",
+        winPath: "X:\\workspace\\screen.png",
+        wslPath: "/mnt/x/workspace/screen.png",
+      } as any,
+      {
+        chipKind: "image",
+        type: "image/png",
+        fileName: "duplicate.png",
+        winPath: "x:\\workspace\\screen.png",
+        wslPath: "/mnt/x/workspace/screen.png",
+      } as any,
+      { chipKind: "file", fileName: "task.md", winPath: "X:\\workspace\\task.md" } as any,
+    ];
+
+    expect(resolveGrokAttachmentPaths({
+      chips,
+      projectWinRoot: "X:\\workspace",
+      projectWslRoot: "/mnt/x/workspace",
+      terminalMode: "pwsh",
+    })).toEqual(["X:\\workspace\\screen.png"]);
+    expect(resolveGrokAttachmentPaths({
+      chips,
+      projectWinRoot: "X:\\workspace",
+      projectWslRoot: "/mnt/x/workspace",
+      terminalMode: "wsl",
+    })).toEqual(["/mnt/x/workspace/screen.png"]);
   });
 });

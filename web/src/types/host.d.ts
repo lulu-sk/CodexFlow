@@ -386,7 +386,7 @@ export type GitUpdateSessionProgressSnapshot = {
 };
 
 export type HistorySummary = {
-  providerId: "codex" | "claude" | "gemini" | "antigravity";
+  providerId: "codex" | "claude" | "gemini" | "antigravity" | "grok";
   id: string;
   title: string;
   date: number | string; // 主进程用 mtimeMs（number），前端常转成 ISO string
@@ -560,7 +560,7 @@ export type IsWorktreeAlignedToMainResult =
   | { ok: false; error?: string };
 
 export type CreatedWorktree = {
-  providerId: "codex" | "claude" | "gemini" | "antigravity";
+  providerId: "codex" | "claude" | "gemini" | "antigravity" | "grok";
   /** 默认操作落点 worktree 路径（通常为主 worktree；若基分支由其他 worktree 持有，则可能为该基 worktree）。 */
   repoMainPath: string;
   worktreePath: string;
@@ -576,7 +576,7 @@ export type WorktreeCreateTaskItemStatus = "creating" | "success" | "error" | "c
 
 export type WorktreeCreateTaskItemSnapshot = {
   key: string;
-  providerId: "codex" | "claude" | "gemini" | "antigravity";
+  providerId: "codex" | "claude" | "gemini" | "antigravity" | "grok";
   worktreePath: string;
   wtBranch: string;
   index: number;
@@ -608,7 +608,7 @@ export type WorktreeCreateTaskSnapshot = {
   taskId: string;
   repoDir: string;
   baseBranch: string;
-  instances: Array<{ providerId: "codex" | "claude" | "gemini" | "antigravity"; count: number }>;
+  instances: Array<{ providerId: "codex" | "claude" | "gemini" | "antigravity" | "grok"; count: number }>;
   copyRules: boolean;
   status: WorktreeCreateTaskStatus;
   createdAt: number;
@@ -705,8 +705,8 @@ export interface GitWorktreeAPI {
   listBranches(repoDir: string): Promise<{ ok: boolean; repoRoot?: string; branches?: string[]; current?: string; detached?: boolean; headSha?: string; error?: string }>;
   initRepo(args: { dir: string }): Promise<InitGitRepositoryResult>;
   getMeta(worktreePath: string): Promise<{ ok: boolean; meta?: WorktreeMeta | null; error?: string }>;
-  create(args: { repoDir: string; baseBranch: string; instances: Array<{ providerId: "codex" | "claude" | "gemini" | "antigravity"; count: number }>; copyRules?: boolean; postSetup?: WorktreePostSetupConfig }): Promise<{ ok: boolean; items?: CreatedWorktree[]; error?: string }>;
-  createTaskStart(args: { repoDir: string; baseBranch: string; instances: Array<{ providerId: "codex" | "claude" | "gemini" | "antigravity"; count: number }>; copyRules?: boolean; postSetup?: WorktreePostSetupConfig }): Promise<{ ok: boolean; taskId?: string; reused?: boolean; error?: string }>;
+  create(args: { repoDir: string; baseBranch: string; instances: Array<{ providerId: "codex" | "claude" | "gemini" | "antigravity" | "grok"; count: number }>; copyRules?: boolean; postSetup?: WorktreePostSetupConfig }): Promise<{ ok: boolean; items?: CreatedWorktree[]; error?: string }>;
+  createTaskStart(args: { repoDir: string; baseBranch: string; instances: Array<{ providerId: "codex" | "claude" | "gemini" | "antigravity" | "grok"; count: number }>; copyRules?: boolean; postSetup?: WorktreePostSetupConfig }): Promise<{ ok: boolean; taskId?: string; reused?: boolean; error?: string }>;
   createTaskGet(args: { taskId: string; from?: number }): Promise<{ ok: boolean; task?: WorktreeCreateTaskSnapshot; append?: string; error?: string }>;
   createTaskCancel(args: { taskId: string }): Promise<{ ok: boolean; alreadyFinished?: boolean; error?: string }>;
   recycleTaskStart(args: { worktreePath: string; baseBranch: string; wtBranch: string; range?: RecycleWorktreeRange; forkBaseRef?: string; mode: "squash" | "rebase"; commitMessage?: string; autoStashBaseWorktree?: boolean }): Promise<{ ok: boolean; taskId?: string; reused?: boolean; error?: string }>;
@@ -777,7 +777,7 @@ export interface HistoryAPI {
     offset?: number;
     historyRoot?: string;
   }): Promise<{ ok: boolean; sessions?: HistorySummary[]; error?: string }>;
-  read(args: { filePath: string; providerId?: "codex" | "claude" | "gemini" | "antigravity"; forceParse?: boolean }): Promise<{ id: string; title: string; date: number; messages: HistoryMessage[]; skippedLines: number; providerId?: "codex" | "claude" | "gemini" | "antigravity" }>;
+  read(args: { filePath: string; providerId?: "codex" | "claude" | "gemini" | "antigravity" | "grok"; forceParse?: boolean }): Promise<{ id: string; title: string; date: number; messages: HistoryMessage[]; skippedLines: number; providerId?: "codex" | "claude" | "gemini" | "antigravity" | "grok" }>;
   findEmptySessions(): Promise<{ ok: boolean; candidates?: Array<{ id: string; title: string; rawDate?: string; date: number; filePath: string; sizeKB?: number }>; error?: string }>;
   trash(args: { filePath: string }): Promise<{ ok: true; notFound?: boolean } | { ok: false; error: string }>;
   trashMany(args: { filePaths: string[] }): Promise<{ ok: boolean; results?: Array<{ filePath: string; ok: boolean; notFound?: boolean; error?: string }>; summary?: { ok: number; notFound: number; failed: number }; error?: string }>;
@@ -793,7 +793,7 @@ export interface SettingsAPI {
   resolveRuntimeEnv?(args: { terminal?: TerminalMode; distro?: string }): Promise<{ ok: boolean; terminal?: TerminalMode; distro?: string; changed?: boolean; reason?: string; availableDistros?: string[]; error?: string }>;
   checkRuntimeCli?(args: { terminal?: TerminalMode; distro?: string; startupCmd?: string }): Promise<{ ok: boolean; cli?: string; terminal?: TerminalMode; distro?: string; reason?: string; error?: string }>;
   codexRoots(): Promise<string[]>;
-  sessionRoots?(args: { providerId: "codex" | "claude" | "gemini" | "antigravity" }): Promise<string[]>;
+  sessionRoots?(args: { providerId: "codex" | "claude" | "gemini" | "antigravity" | "grok" }): Promise<string[]>;
 }
 
 export interface OnboardingAPI {
@@ -986,6 +986,28 @@ export type AntigravityUsageSnapshot = {
   windows: AntigravityUsageWindow[];
 };
 
+export type GrokUsageSnapshot = {
+  providerId: "grok";
+  source: "billing-api" | "billing-cache";
+  collectedAt: number;
+  updatedAt: number;
+  accountEmail: string | null;
+  subscriptionTier: string | null;
+  quota: {
+    usedPercent: number | null;
+    periodType: string | null;
+    periodStartAt: number | null;
+    periodEndAt: number | null;
+    includedUsedCents: number | null;
+    includedLimitCents: number | null;
+    onDemandEnabled: boolean | null;
+    onDemandUsedCents: number | null;
+    onDemandCapCents: number | null;
+    prepaidBalanceCents: number | null;
+    isUnifiedBillingUser: boolean | null;
+  };
+};
+
 export interface CodexAPI {
   getAccountInfo(): Promise<{ ok: boolean; info?: CodexAccountInfo; error?: string }>;
   getRateLimit(): Promise<{ ok: boolean; snapshot?: CodexRateLimitSnapshot; error?: string }>;
@@ -1006,6 +1028,10 @@ export interface AntigravityAPI {
   getUsage(): Promise<{ ok: boolean; snapshot?: AntigravityUsageSnapshot; error?: string }>;
 }
 
+export interface GrokAPI {
+  getUsage(): Promise<{ ok: boolean; snapshot?: GrokUsageSnapshot; error?: string }>;
+}
+
 export type ProjectPreferredIde = BuiltinIdeId;
 
 export interface NotificationsAPI {
@@ -1013,8 +1039,8 @@ export interface NotificationsAPI {
   /** 同步任务栏角标状态；错误优先，其次完成数量，最后运行中提示。 */
   setTaskbarBadgeState?(state: { errorCount?: number; hasError?: boolean; completedCount?: number; runningCount?: number; hasRunningTask?: boolean }): void;
   showAgentCompletion(payload: { tabId: string; tabName?: string; projectName?: string; preview?: string; title: string; body: string; appTitle?: string }): void;
-  /** 监听主进程转发的外部完成通知（如 Codex/Gemini/Claude/Antigravity hook -> JSONL 桥接）。 */
-  onExternalAgentComplete?(handler: (payload: { providerId?: "codex" | "gemini" | "claude" | "antigravity"; tabId?: string; envLabel?: string; preview?: string; previewEscapedWhitespace?: boolean; timestamp?: string; eventId?: string; hookEventName?: string; completionKind?: "agent" | "subagent"; agentType?: string; agentId?: string }) => void): () => void;
+  /** 监听主进程转发的外部完成通知（如 Codex/Gemini/Claude/Antigravity/Grok hook -> JSONL 桥接）。 */
+  onExternalAgentComplete?(handler: (payload: { providerId?: "codex" | "gemini" | "claude" | "antigravity" | "grok"; tabId?: string; envLabel?: string; preview?: string; previewEscapedWhitespace?: boolean; timestamp?: string; eventId?: string; hookEventName?: string; completionKind?: "agent" | "subagent"; agentType?: string; agentId?: string; threadId?: string; turnId?: string; cwd?: string; sqliteHome?: string }) => void): () => void;
   onFocusTab?(handler: (payload: { tabId: string }) => void): () => void;
 }
 
@@ -1262,6 +1288,7 @@ declare global {
       claude: ClaudeAPI;
       gemini: GeminiAPI;
       antigravity: AntigravityAPI;
+      grok: GrokAPI;
       notifications: NotificationsAPI;
       wsl?: WslAPI;
       fileIndex?: FileIndexAPI;

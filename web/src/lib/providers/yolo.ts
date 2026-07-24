@@ -25,12 +25,14 @@ export function isYoloSupportedProviderId(providerId: string): providerId is Yol
  * - Claude：claude --dangerously-skip-permissions
  * - Gemini：gemini --yolo
  * - Antigravity：agy --dangerously-skip-permissions
+ * - Grok：grok --yolo
  */
 export function getYoloPresetStartupCmd(providerId: string): string | null {
   if (providerId === "codex") return "codex --yolo";
   if (providerId === "claude") return "claude --dangerously-skip-permissions";
   if (providerId === "gemini") return "gemini --yolo";
   if (providerId === "antigravity") return "agy --dangerously-skip-permissions";
+  if (providerId === "grok") return "grok --yolo";
   return null;
 }
 
@@ -40,12 +42,14 @@ export function getYoloPresetStartupCmd(providerId: string): string | null {
  * - Claude：claude
  * - Gemini：gemini
  * - Antigravity：agy
+ * - Grok：grok
  */
 export function getNonYoloStartupCmd(providerId: string): string | null {
   if (providerId === "codex") return "codex";
   if (providerId === "claude") return "claude";
   if (providerId === "gemini") return "gemini";
   if (providerId === "antigravity") return "agy";
+  if (providerId === "grok") return "grok";
   return null;
 }
 

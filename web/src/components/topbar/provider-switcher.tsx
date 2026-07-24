@@ -13,6 +13,7 @@ import { CodexUsageHoverCard } from "@/components/topbar/codex-status";
 import { ClaudeUsageHoverCard } from "@/components/topbar/claude-status";
 import { GeminiUsageHoverCard } from "@/components/topbar/gemini-status";
 import { AntigravityUsageHoverCard } from "@/components/topbar/antigravity-status";
+import { GrokUsageHoverCard } from "@/components/topbar/grok-status";
 
 type TerminalMode = NonNullable<AppSettings["terminal"]>;
 
@@ -68,6 +69,7 @@ export const ProviderSwitcher: React.FC<ProviderSwitcherProps> = ({ activeId, pr
         const isClaude = p.id === "claude";
         const isGemini = p.id === "gemini";
         const isAntigravity = p.id === "antigravity";
+        const isGrok = p.id === "grok";
         return (
           <div key={p.id} className="flex items-center">
             {isCodex ? (
@@ -160,6 +162,40 @@ export const ProviderSwitcher: React.FC<ProviderSwitcherProps> = ({ activeId, pr
                       )}
                       title={label}
                       aria-label={label}
+                      onClick={() => onChange(p.id)}
+                    >
+                      {p.iconSrc ? <img src={p.iconSrc} className="h-4 w-4 shrink-0" alt={label} /> : <span className="text-xs">{label[0] || "?"}</span>}
+                      <span className="tabular-nums text-xs text-[var(--cf-text-secondary)]">{percentLabel}</span>
+                    </Button>
+                  )}
+                />
+              ) : (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className={cn("h-8 w-8 rounded-md", selected && "bg-slate-100 dark:bg-slate-800")}
+                  title={label}
+                  aria-label={label}
+                  onClick={() => onChange(p.id)}
+                >
+                  {p.iconSrc ? <img src={p.iconSrc} className="h-4 w-4" alt={label} /> : <span className="text-xs">{label[0] || "?"}</span>}
+                </Button>
+              )
+            ) : isGrok ? (
+              selected ? (
+                <GrokUsageHoverCard
+                  terminalMode={terminalMode}
+                  distro={terminalMode === "wsl" ? distro : undefined}
+                  renderTrigger={({ percentLabel, summaryLabel, usageState }) => (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className={cn(
+                        "h-8 gap-2 px-2.5 border border-[var(--cf-border)] bg-slate-100 text-[var(--cf-text-primary)] dark:bg-slate-800 active:scale-100 shadow-apple-xs dark:shadow-apple-dark-xs",
+                        usageState.error && "text-[var(--cf-red)]",
+                      )}
+                      title={`${label} · ${summaryLabel}`}
+                      aria-label={`${label} · ${summaryLabel}`}
                       onClick={() => onChange(p.id)}
                     >
                       {p.iconSrc ? <img src={p.iconSrc} className="h-4 w-4 shrink-0" alt={label} /> : <span className="text-xs">{label[0] || "?"}</span>}

@@ -4,6 +4,7 @@ import {
   CLAUDE_NOTIFY_ENV_KEYS,
   GEMINI_NOTIFY_ENV_KEYS,
   ANTIGRAVITY_NOTIFY_ENV_KEYS,
+  GROK_NOTIFY_ENV_KEYS,
   buildProviderNotifyEnv,
   areEquivalentCompletionPreviews,
   hasMeaningfulCompletionPreview,
@@ -159,6 +160,15 @@ describe("app-shared（完成通知：识别与环境变量注入）", () => {
       [ANTIGRAVITY_NOTIFY_ENV_KEYS.tabId]: "tab-4",
       [ANTIGRAVITY_NOTIFY_ENV_KEYS.envLabel]: "Ubuntu-24.04",
       [ANTIGRAVITY_NOTIFY_ENV_KEYS.providerId]: "antigravity",
+    });
+  });
+
+  it("buildProviderNotifyEnv：Grok 注入 GROK_CODEXFLOW_*", () => {
+    const env = buildProviderNotifyEnv("tab-5", "grok", "PowerShell");
+    expect(env).toEqual({
+      [GROK_NOTIFY_ENV_KEYS.tabId]: "tab-5",
+      [GROK_NOTIFY_ENV_KEYS.envLabel]: "PowerShell",
+      [GROK_NOTIFY_ENV_KEYS.providerId]: "grok",
     });
   });
 

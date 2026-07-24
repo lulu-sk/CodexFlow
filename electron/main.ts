@@ -19,11 +19,13 @@ import { getSessionsRootsFastAsync } from "./wsl";
 import { getClaudeRootCandidatesFastAsync, discoverClaudeSessionFiles } from "./agentSessions/claude/discovery";
 import { getGeminiRootCandidatesFastAsync, discoverGeminiSessionFiles } from "./agentSessions/gemini/discovery";
 import { getAntigravityRootCandidatesFastAsync, discoverAntigravitySessionFiles } from "./agentSessions/antigravity/discovery";
+import { getGrokRootCandidatesFastAsync, discoverGrokSessionFiles } from "./agentSessions/grok/discovery";
 import { parseClaudeSessionFile } from "./agentSessions/claude/parser";
 import { parseGeminiSessionFile, extractGeminiProjectHashFromPath, deriveGeminiProjectHashCandidatesFromPath } from "./agentSessions/gemini/parser";
 import { parseAntigravitySessionFile } from "./agentSessions/antigravity/parser";
+import { parseGrokSessionFile } from "./agentSessions/grok/parser";
 import { hasNonEmptyIOFromMessages } from "./agentSessions/shared/empty";
-import { expandAntigravityConversationDeleteCandidates } from "./historyDelete";
+import { expandHistoryDeleteCandidates } from "./historyDelete";
 import { historyItemBelongsToScope } from "./historyScope";
 import { perfLogger } from "./log";
 import settings, { ensureSettingsAutodetect, ensureFirstRunTerminalSelection, hasSavedRuntimeEnvSelection, type ThemeSetting as SettingsThemeSetting, type AppSettings, type IdeOpenSettings } from "./settings";
@@ -50,6 +52,8 @@ import { ensureAllClaudeNotifications, startClaudeNotificationBridge, stopClaude
 import { getClaudeUsageSnapshotAsync } from "./claude/usage";
 import { ensureAllGeminiNotifications, startGeminiNotificationBridge, stopGeminiNotificationBridge } from "./gemini/notifications";
 import { ensureAllAntigravityNotifications, startAntigravityNotificationBridge, stopAntigravityNotificationBridge } from "./antigravity/notifications";
+import { ensureAllGrokNotifications, startGrokNotificationBridge, stopGrokNotificationBridge } from "./grok/notifications";
+import { getGrokUsageSnapshotAsync } from "./grok/usage";
 import { getAntigravityUsageSnapshotAsync } from "./antigravity/usage";
 import geminiWindowsEditor from "./gemini/windowsEditor";
 import geminiWslEditor from "./gemini/wslEditor";
@@ -1673,6 +1677,7 @@ async function flushSettingsMaintenance(): Promise<void> {
           ensureAllClaudeNotifications(),
           ensureAllGeminiNotifications(),
           ensureAllAntigravityNotifications(),
+          ensureAllGrokNotifications(),
         ]);
         if (!settingsMaintenanceStopping) {
           await Promise.allSettled([
@@ -1680,6 +1685,7 @@ async function flushSettingsMaintenance(): Promise<void> {
             startClaudeNotificationBridge(() => mainWindow),
             startGeminiNotificationBridge(() => mainWindow),
             startAntigravityNotificationBridge(() => mainWindow),
+            startGrokNotificationBridge(() => mainWindow),
           ]);
         }
       }
@@ -2860,10 +2866,12 @@ if (!gotLock) {
       try { await ensureAllClaudeNotifications(); } catch {}
       try { await ensureAllGeminiNotifications(); } catch {}
       try { await ensureAllAntigravityNotifications(); } catch {}
+      try { await ensureAllGrokNotifications(); } catch {}
       try { await startCodexNotificationBridge(() => mainWindow); } catch {}
       try { await startClaudeNotificationBridge(() => mainWindow); } catch {}
       try { await startGeminiNotificationBridge(() => mainWindow); } catch {}
       try { await startAntigravityNotificationBridge(() => mainWindow); } catch {}
+      try { await startGrokNotificationBridge(() => mainWindow); } catch {}
       if (DIAG) { try { perfLogger.log(`[BOOT] Locale: ${i18n.getCurrentLocale?.()}`); } catch {} }
       try { registerNotificationIPC(() => mainWindow, { appUserModelId, protocolScheme: PROTOCOL_SCHEME, profileId: instanceProfile.profileId }); } catch {}
       // 启动时静默检查更新由渲染进程完成（仅提示，不下载）
@@ -2930,6 +2938,7 @@ if (!gotLock) {
     disposeCodexBridges();
     try { unregisterNotificationIPC({ closeNotifications: true }); } catch {}
     try { stopAntigravityNotificationBridge(); } catch {}
+    try { stopGrokNotificationBridge(); } catch {}
     // 主动关闭文件索引 watcher，避免退出阶段残留句柄
     try { (fileIndex as any).setActiveRoots?.([]); } catch {}
     tryStopIndexer();
@@ -2942,6 +2951,7 @@ if (!gotLock) {
     try { stopClaudeNotificationBridge(); } catch {}
     try { stopGeminiNotificationBridge(); } catch {}
     try { stopAntigravityNotificationBridge(); } catch {}
+    try { stopGrokNotificationBridge(); } catch {}
     disposeAllPtys();
     cleanupPastedImages().catch(() => {});
     disposeCodexBridges();
@@ -4549,7 +4559,7 @@ ipcMain.handle('history.list', async (_e, args: {
     const fallbackPageLimit = Math.max(1, Number(args.limit || 0) || 300);
     const fallbackTargetCount = Math.max(1, Math.max(0, Number(args.offset || 0)) + fallbackPageLimit + 32);
     type FallbackHistorySummary = {
-      providerId: 'codex' | 'claude' | 'gemini' | 'antigravity';
+      providerId: 'codex' | 'claude' | 'gemini' | 'antigravity' | 'grok';
       id: string;
       title: string;
       date: number;
@@ -4579,7 +4589,7 @@ ipcMain.handle('history.list', async (_e, args: {
      * 中文说明：将不同来源的历史摘要规整为渲染端一致使用的结构。
      */
     const normalizeHistorySummary = (item: any): FallbackHistorySummary => ({
-      providerId: item?.providerId === 'claude' || item?.providerId === 'gemini' || item?.providerId === 'antigravity' ? item.providerId : 'codex',
+      providerId: item?.providerId === 'claude' || item?.providerId === 'gemini' || item?.providerId === 'antigravity' || item?.providerId === 'grok' ? item.providerId : 'codex',
       id: String(item?.id || ''),
       title: String(item?.title || ''),
       date: Number(item?.date || 0),
@@ -4677,12 +4687,14 @@ ipcMain.handle('history.list', async (_e, args: {
     /**
      * 中文说明：采集 Claude/Gemini 的回退历史，并按分页预算提前截止，避免先解析完整个 Provider。
      */
-    const collectNonCodexFallbackSummaries = async (providerId: 'claude' | 'gemini' | 'antigravity'): Promise<FallbackHistorySummary[]> => {
+    const collectNonCodexFallbackSummaries = async (providerId: 'claude' | 'gemini' | 'antigravity' | 'grok'): Promise<FallbackHistorySummary[]> => {
       const roots = providerId === 'claude'
         ? (await getClaudeRootCandidatesFastAsync()).filter((item) => item.exists).map((item) => item.path)
         : providerId === 'gemini'
           ? (await getGeminiRootCandidatesFastAsync()).filter((item) => item.exists).map((item) => item.path)
-          : (await getAntigravityRootCandidatesFastAsync()).filter((item) => item.exists).map((item) => item.path);
+          : providerId === 'antigravity'
+            ? (await getAntigravityRootCandidatesFastAsync()).filter((item) => item.exists).map((item) => item.path)
+            : (await getGrokRootCandidatesFastAsync()).filter((item) => item.exists).map((item) => item.path);
       const files: string[] = [];
       for (const root of roots) {
         try {
@@ -4690,7 +4702,9 @@ ipcMain.handle('history.list', async (_e, args: {
             ? await discoverClaudeSessionFiles(root, { includeAgentHistory: includeClaudeAgentHistory })
             : providerId === 'gemini'
               ? await discoverGeminiSessionFiles(root)
-              : await discoverAntigravitySessionFiles(root);
+              : providerId === 'antigravity'
+                ? await discoverAntigravitySessionFiles(root)
+                : await discoverGrokSessionFiles(root);
           files.push(...discovered);
         } catch {}
       }
@@ -4710,7 +4724,9 @@ ipcMain.handle('history.list', async (_e, args: {
               ? await parseClaudeSessionFile(currentFile.filePath, currentFile.stat, { summaryOnly: true })
               : providerId === 'gemini'
                 ? await parseGeminiSessionFile(currentFile.filePath, currentFile.stat, { summaryOnly: true })
-                : await parseAntigravitySessionFile(currentFile.filePath, currentFile.stat, { summaryOnly: true });
+                : providerId === 'antigravity'
+                  ? await parseAntigravitySessionFile(currentFile.filePath, currentFile.stat, { summaryOnly: true })
+                  : await parseGrokSessionFile(currentFile.filePath, currentFile.stat, { summaryOnly: true });
             const summary = normalizeHistorySummary(parsed);
             if (!belongsToScope(summary)) continue;
             results.push(summary);
@@ -4725,13 +4741,14 @@ ipcMain.handle('history.list', async (_e, args: {
      * 中文说明：统一回退到跨 Provider 扫描，并在合并后再做排序/分页。
      */
     const collectFallbackSummaries = async (): Promise<FallbackHistorySummary[]> => {
-      const [codexItems, claudeItems, geminiItems, antigravityItems] = await Promise.all([
+      const [codexItems, claudeItems, geminiItems, antigravityItems, grokItems] = await Promise.all([
         collectCodexFallbackSummaries(),
         collectNonCodexFallbackSummaries('claude'),
         collectNonCodexFallbackSummaries('gemini'),
         collectNonCodexFallbackSummaries('antigravity'),
+        collectNonCodexFallbackSummaries('grok'),
       ]);
-      return dedupeSortHistorySummaries([...codexItems, ...claudeItems, ...geminiItems, ...antigravityItems]).slice(0, fallbackTargetCount);
+      return dedupeSortHistorySummaries([...codexItems, ...claudeItems, ...geminiItems, ...antigravityItems, ...grokItems]).slice(0, fallbackTargetCount);
     };
     const all = getIndexedSummaries();
     // Minimal probe logging (opt-in): only when CODEX_HISTORY_DEBUG=1
@@ -4778,14 +4795,14 @@ ipcMain.handle('history.list', async (_e, args: {
   }
 });
 
-type HistoryReadProviderId = "codex" | "claude" | "gemini" | "antigravity";
+type HistoryReadProviderId = "codex" | "claude" | "gemini" | "antigravity" | "grok";
 
 /**
  * 中文说明：规范化 history.read 的 provider hint，避免无效字符串影响路径推断。
  */
 function normalizeHistoryReadProviderHint(providerHint?: string): HistoryReadProviderId | null {
   const hint = String(providerHint || "").trim().toLowerCase();
-  if (hint === "codex" || hint === "claude" || hint === "gemini" || hint === "antigravity") return hint;
+  if (hint === "codex" || hint === "claude" || hint === "gemini" || hint === "antigravity" || hint === "grok") return hint;
   return null;
 }
 
@@ -4797,6 +4814,7 @@ function inferHistoryReadProviderFromPath(filePath?: string): HistoryReadProvide
   if (!fp) return null;
   const base = fp.split("/").pop() || "";
   if (fp.includes("/.codex/")) return "codex";
+  if (fp.includes("/.grok/sessions/")) return "grok";
   if (fp.includes("/.claude/")) return "claude";
   if (fp.includes("/.gemini/antigravity-cli/")) return "antigravity";
   if (fp.includes("/.gemini/")) return "gemini";
@@ -4929,6 +4947,12 @@ ipcMain.handle('history.read', async (_e, args: { filePath: string; providerId?:
     cacheHistoryReadDetails(lookupPaths, parsed as any);
     return parsed as any;
   }
+  if (providerId === "grok") {
+    const stat = await fsp.stat(filePath);
+    const parsed = await parseGrokSessionFile(filePath, stat, { summaryOnly: false, maxBytes: 64 * 1024 * 1024 });
+    cacheHistoryReadDetails(lookupPaths, parsed as any);
+    return parsed as any;
+  }
 
   const parsed = await history.readHistoryFile(filePath, { maxLines: 0 });
   const withMeta = { ...(parsed as any), providerId: "codex", filePath: requestedFilePath || filePath };
@@ -4967,12 +4991,13 @@ ipcMain.handle('history.findEmptySessions', async () => {
     /**
      * 推断 providerId（优先使用索引字段，其次按路径特征兜底）。
      */
-    const inferProviderId = (summary: any, filePath: string): "codex" | "claude" | "gemini" | "antigravity" => {
+    const inferProviderId = (summary: any, filePath: string): "codex" | "claude" | "gemini" | "antigravity" | "grok" => {
       const hinted = String(summary?.providerId || "").trim().toLowerCase();
-      if (hinted === "codex" || hinted === "claude" || hinted === "gemini" || hinted === "antigravity") return hinted as any;
+      if (hinted === "codex" || hinted === "claude" || hinted === "gemini" || hinted === "antigravity" || hinted === "grok") return hinted as any;
       try {
         const fp = String(filePath || "").replace(/\\/g, "/").toLowerCase();
         const base = fp.split("/").pop() || "";
+        if (fp.includes("/.grok/sessions/")) return "grok";
         if (fp.includes("/.claude/")) return "claude";
         if (fp.includes("/.gemini/antigravity-cli/")) return "antigravity";
         if (fp.includes("/.gemini/")) return "gemini";
@@ -5033,6 +5058,8 @@ ipcMain.handle('history.findEmptySessions', async () => {
             parsed = await parseGeminiSessionFile(resolvedPath, st, { summaryOnly: false, maxBytes: SAFE_MAX_BYTES });
           } else if (providerId === "antigravity") {
             parsed = await parseAntigravitySessionFile(resolvedPath, st, { summaryOnly: false });
+          } else if (providerId === "grok") {
+            parsed = await parseGrokSessionFile(resolvedPath, st, { summaryOnly: false, maxBytes: SAFE_MAX_BYTES });
           } else {
             parsed = await history.readHistoryFile(resolvedPath, { maxLines: 80_000 });
           }
@@ -5055,6 +5082,7 @@ ipcMain.handle('history.findEmptySessions', async () => {
         if (providerId === "claude" && skippedLines > 0) continue;
         // Antigravity DB 若解析过程出现跳过项，说明存在未知/损坏结构，安全起见不纳入清理候选。
         if (providerId === "antigravity" && skippedLines > 0) continue;
+        if (providerId === "grok" && skippedLines > 0) continue;
         // Codex：若文件明显不小，避免仅凭前若干行就判空（安全优先）
         if (providerId === "codex" && sizeBytes > 256 * 1024) continue;
 
@@ -5070,6 +5098,7 @@ ipcMain.handle('history.findEmptySessions', async () => {
 // 批量彻底删除（逐个尝试）
 ipcMain.handle('history.trashMany', async (_e, { filePaths }: { filePaths: string[] }) => {
   try {
+    const grokSessionRoots = (await getGrokRootCandidatesFastAsync().catch(() => [])).map((candidate) => candidate.path);
     const results: { filePath: string; ok: boolean; notFound?: boolean; error?: string }[] = [];
     const codexStateCleanupPaths = new Set<string>();
     let okCount = 0; let notFoundCount = 0; let failCount = 0;
@@ -5110,7 +5139,7 @@ ipcMain.handle('history.trashMany', async (_e, { filePaths }: { filePaths: strin
         }
       }
       push(normSlashes(p0));
-      const deleteCandidates = expandAntigravityConversationDeleteCandidates(candidates);
+      const deleteCandidates = expandHistoryDeleteCandidates(candidates, grokSessionRoots);
       const anyExists = deleteCandidates.some((c) => { try { return fs.existsSync(c); } catch { return false; } });
       if (!anyExists) {
         rememberCodexStateCleanupPaths([p0, ...deleteCandidates]);
@@ -5121,7 +5150,8 @@ ipcMain.handle('history.trashMany', async (_e, { filePaths }: { filePaths: strin
         try {
           if (!fs.existsSync(cand)) { failed.push({ cand, err: 'not_exists' }); continue; }
           try {
-            await fsp.rm(cand, { force: true });
+            const targetStat = await fsp.stat(cand).catch(() => null as fs.Stats | null);
+            await fsp.rm(cand, { force: true, recursive: targetStat?.isDirectory() === true });
             try { const idx = require('./indexer'); if (typeof idx.removeFromIndex === 'function') idx.removeFromIndex(cand); } catch {}
             try { const hist = require('./history').default; await hist.removePathFromCache(cand); } catch {}
             try { const win = BrowserWindow.getFocusedWindow(); win?.webContents.send('history:index:remove', { filePath: cand }); } catch {}
@@ -5135,6 +5165,9 @@ ipcMain.handle('history.trashMany', async (_e, { filePaths }: { filePaths: strin
         try { return fs.existsSync(cand); } catch { return false; }
       });
       if (deletedAny && remaining.length === 0) {
+        try { const idx = require('./indexer'); if (typeof idx.removeFromIndex === 'function') idx.removeFromIndex(p0); } catch {}
+        try { const hist = require('./history').default; await hist.removePathFromCache(p0); } catch {}
+        try { const win = BrowserWindow.getFocusedWindow(); win?.webContents.send('history:index:remove', { filePath: p0 }); } catch {}
         rememberCodexStateCleanupPaths([p0, ...deleteCandidates]);
         return { filePath: p0, ok: true };
       }
@@ -5170,6 +5203,7 @@ ipcMain.handle('history.trashMany', async (_e, { filePaths }: { filePaths: strin
 ipcMain.handle('history.trash', async (_e, { filePath }: { filePath: string }) => {
   try {
     if (!filePath || typeof filePath !== 'string') throw new Error('invalid filePath');
+    const grokSessionRoots = (await getGrokRootCandidatesFastAsync().catch(() => [])).map((candidate) => candidate.path);
     const candidates: string[] = [];
     const push = (p?: string) => { if (p && !candidates.includes(p)) candidates.push(p); };
     const normSlashes = (p: string) => (process.platform === 'win32' ? p.replace(/\//g, '\\') : p);
@@ -5186,7 +5220,7 @@ ipcMain.handle('history.trash', async (_e, { filePath }: { filePath: string }) =
       }
     }
     push(normSlashes(p0));
-    const deleteCandidates = expandAntigravityConversationDeleteCandidates(candidates);
+    const deleteCandidates = expandHistoryDeleteCandidates(candidates, grokSessionRoots);
     // 候选均不存在则视为成功（无需删除）
     const anyExists = deleteCandidates.some((c) => { try { return fs.existsSync(c); } catch { return false; } });
     if (!anyExists) {
@@ -5201,7 +5235,8 @@ ipcMain.handle('history.trash', async (_e, { filePath }: { filePath: string }) =
       try {
         if (!fs.existsSync(cand)) { failed.push({ cand, err: 'not_exists' }); continue; }
         try {
-          await fsp.rm(cand, { force: true });
+          const targetStat = await fsp.stat(cand).catch(() => null as fs.Stats | null);
+          await fsp.rm(cand, { force: true, recursive: targetStat?.isDirectory() === true });
           // 删除成功：同步清理索引与历史缓存，并通知渲染进程移除该项
           try { const idx = require('./indexer'); if (typeof idx.removeFromIndex === 'function') idx.removeFromIndex(cand); } catch {}
           try { const hist = require('./history').default; await hist.removePathFromCache(cand); } catch {}
@@ -5218,6 +5253,9 @@ ipcMain.handle('history.trash', async (_e, { filePath }: { filePath: string }) =
       try { return fs.existsSync(cand); } catch { return false; }
     });
     if (deletedAny && remaining.length === 0) {
+      try { const idx = require('./indexer'); if (typeof idx.removeFromIndex === 'function') idx.removeFromIndex(p0); } catch {}
+      try { const hist = require('./history').default; await hist.removePathFromCache(p0); } catch {}
+      try { const win = BrowserWindow.getFocusedWindow(); win?.webContents.send('history:index:remove', { filePath: p0 }); } catch {}
       // 历史文件、索引和缓存均已处理完成，SQLite 收尾无需继续占用删除弹窗。
       void cleanupCodexStateForDeletedPathsSafely([p0, ...deleteCandidates], 'history.trash');
       return { ok: true };
@@ -6970,7 +7008,7 @@ ipcMain.handle("codex.rateLimit", async () => {
 /**
  * 读取设置中的 Provider 环境（若缺失则回退到全局 terminal/distro）。
  */
-function resolveProviderRuntimeEnv(providerId: "claude" | "gemini"): { terminal: TerminalMode; distro?: string } {
+function resolveProviderRuntimeEnv(providerId: "claude" | "gemini" | "grok"): { terminal: TerminalMode; distro?: string } {
   const cfg = settings.getSettings();
   return resolveProviderRuntimeEnvFromSettings(cfg, providerId);
 }
@@ -6998,6 +7036,16 @@ ipcMain.handle("gemini.usage", async () => {
 ipcMain.handle("antigravity.usage", async () => {
   try {
     const snapshot = await getAntigravityUsageSnapshotAsync();
+    return { ok: true, snapshot };
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+ipcMain.handle("grok.usage", async () => {
+  try {
+    const env = resolveProviderRuntimeEnv("grok");
+    const snapshot = await getGrokUsageSnapshotAsync(env);
     return { ok: true, snapshot };
   } catch (e: any) {
     return { ok: false, error: String(e) };
@@ -7160,7 +7208,7 @@ ipcMain.handle('settings.codexRoots', async () => {
   }
 });
 
-// Read-only: return the detected session roots for a given provider (codex/claude/gemini/antigravity)
+// Read-only: return the detected session roots for a given provider
 ipcMain.handle('settings.sessionRoots', async (_e, args: { providerId?: string }) => {
   const id = String(args?.providerId || 'codex').trim().toLowerCase();
   try {
@@ -7187,6 +7235,10 @@ ipcMain.handle('settings.sessionRoots', async (_e, args: { providerId?: string }
     }
     if (id === 'antigravity') {
       const cands = await getAntigravityRootCandidatesFastAsync();
+      return { ok: true, roots: cands.filter((c) => c.exists).map((c) => c.path) };
+    }
+    if (id === 'grok') {
+      const cands = await getGrokRootCandidatesFastAsync();
       return { ok: true, roots: cands.filter((c) => c.exists).map((c) => c.path) };
     }
     return { ok: true, roots: [] as string[] };

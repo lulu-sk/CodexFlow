@@ -16,6 +16,7 @@ describe("providers/yolo（YOLO 预设工具）", () => {
       { id: "claude", startupCmd: "claude --foo" },
       { id: "gemini", startupCmd: "gemini" },
       { id: "antigravity", startupCmd: "agy" },
+      { id: "grok", startupCmd: "grok" },
       { id: "custom-a", startupCmd: "custom-a --run" },
     ]);
 
@@ -23,6 +24,7 @@ describe("providers/yolo（YOLO 预设工具）", () => {
     expect(items.find((it) => it.id === "claude")?.startupCmd).toBe("claude --dangerously-skip-permissions");
     expect(items.find((it) => it.id === "gemini")?.startupCmd).toBe("gemini --yolo");
     expect(items.find((it) => it.id === "antigravity")?.startupCmd).toBe("agy --dangerously-skip-permissions");
+    expect(items.find((it) => it.id === "grok")?.startupCmd).toBe("grok --yolo");
     expect(items.find((it) => it.id === "custom-a")?.startupCmd).toBe("custom-a --run");
   });
 
@@ -38,6 +40,7 @@ describe("providers/yolo（YOLO 预设工具）", () => {
       { id: "claude", startupCmd: "claude" },
       { id: "gemini", startupCmd: "gemini" },
       { id: "antigravity", startupCmd: "agy" },
+      { id: "grok", startupCmd: "grok" },
     ])).toBe(false);
   });
 

@@ -31,6 +31,7 @@ describe("terminal-send（Bracketed Paste / Gemini 发送策略）", () => {
     expect(getPasteEnterDelayMs("gemini")).toBe(GEMINI_PASTE_ENTER_DELAY_MS);
     expect(getPasteEnterDelayMs("GEMINI")).toBe(GEMINI_PASTE_ENTER_DELAY_MS);
     expect(getPasteEnterDelayMs("antigravity")).toBe(GEMINI_PASTE_ENTER_DELAY_MS);
+    expect(getPasteEnterDelayMs("grok")).toBe(GEMINI_PASTE_ENTER_DELAY_MS);
     expect(getPasteEnterDelayMs("codex")).toBe(0);
     expect(getPasteEnterDelayMs("claude")).toBe(0);
     expect(getPasteEnterDelayMs("unknown")).toBe(0);
@@ -41,6 +42,7 @@ describe("terminal-send（Bracketed Paste / Gemini 发送策略）", () => {
     expect(getPasteSubmitMinWaitMs({ providerId: "codex", terminalMode: "wsl", textLength: 12000 })).toBe(0);
     expect(getPasteSubmitMinWaitMs({ providerId: "gemini", terminalMode: "pwsh", textLength: 512 })).toBeGreaterThan(0);
     expect(getPasteSubmitMinWaitMs({ providerId: "antigravity", terminalMode: "pwsh", textLength: 512 })).toBeGreaterThan(0);
+    expect(getPasteSubmitMinWaitMs({ providerId: "grok", terminalMode: "pwsh", textLength: 512 })).toBeGreaterThan(0);
     expect(getPasteSubmitMinWaitMs({ providerId: "claude", terminalMode: "pwsh", textLength: 512 })).toBeGreaterThan(0);
     expect(getPasteSubmitMinWaitMs({ providerId: "claude", terminalMode: "pwsh", textLength: 12000 }))
       .toBeGreaterThan(getPasteSubmitMinWaitMs({ providerId: "claude", terminalMode: "pwsh", textLength: 512 }));
@@ -70,6 +72,16 @@ describe("terminal-send（Bracketed Paste / Gemini 发送策略）", () => {
     vi.useFakeTimers();
     const writes: string[] = [];
     writeBracketedPasteAndEnter((d) => writes.push(d), "a\nb\n", { providerId: "antigravity" });
+
+    expect(writes).toEqual([`${BRACKETED_PASTE_START}a\nb${BRACKETED_PASTE_END}`]);
+    vi.advanceTimersByTime(GEMINI_PASTE_ENTER_DELAY_MS);
+    expect(writes).toEqual([`${BRACKETED_PASTE_START}a\nb${BRACKETED_PASTE_END}`, "\r"]);
+  });
+
+  it("writeBracketedPasteAndEnter：Grok 复用 Gemini 类延迟回车", () => {
+    vi.useFakeTimers();
+    const writes: string[] = [];
+    writeBracketedPasteAndEnter((d) => writes.push(d), "a\nb\n", { providerId: "grok" });
 
     expect(writes).toEqual([`${BRACKETED_PASTE_START}a\nb${BRACKETED_PASTE_END}`]);
     vi.advanceTimersByTime(GEMINI_PASTE_ENTER_DELAY_MS);

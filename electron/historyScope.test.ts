@@ -8,6 +8,7 @@ const TEST_PARENT_PROJECT = "/mnt/c/users/example-user";
 const TEST_CODEX_CHILD_PROJECT = `${TEST_PARENT_PROJECT}/.codex/worktrees/135b/codexflow`;
 const TEST_CLAUDE_CHILD_PROJECT = `${TEST_PARENT_PROJECT}/projects/monorepo/apps/claude-demo`;
 const TEST_GEMINI_CHILD_PROJECT = `${TEST_PARENT_PROJECT}/projects/monorepo/packages/gemini-demo`;
+const TEST_GROK_CHILD_PROJECT = `${TEST_PARENT_PROJECT}/projects/monorepo/tools/grok-demo`;
 
 /**
  * 中文说明：构造父项目与子项目并存时的历史筛选参数。
@@ -54,6 +55,17 @@ describe("electron/historyScope.historyItemBelongsToScope", () => {
         filePath: "gemini.json",
       },
       createNestedScopeOptions(TEST_GEMINI_CHILD_PROJECT),
+    )).toBe(false);
+  });
+
+  it("grok 嵌套项目历史不会再被父项目吞掉", () => {
+    expect(historyItemBelongsToScope(
+      {
+        providerId: "grok",
+        dirKey: TEST_GROK_CHILD_PROJECT,
+        filePath: "grok-summary.json",
+      },
+      createNestedScopeOptions(TEST_GROK_CHILD_PROJECT),
     )).toBe(false);
   });
 

@@ -414,6 +414,11 @@
     "help": "显示磁盘上检测到的 Antigravity CLI 会话数据目录，仅用于查看和打开目录。",
     "empty": "未检测到 Antigravity 会话根路径"
   },
+  "grokRoots": {
+    "label": "Grok Build 会话根路径（只读）",
+    "help": "显示 .grok 下检测到的 Grok Build 会话目录，仅用于查看和打开目录。",
+    "empty": "未检测到 Grok Build 会话根路径"
+  },
   "appData": {
     "label": "应用数据目录",
     "desc": "查看当前实例（Profile）的用户数据目录占用情况，可按需清理缓存；多实例模式下每个实例都有独立目录。",

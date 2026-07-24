@@ -15,9 +15,11 @@ import settings from "./settings";
 import { getClaudeRootCandidatesFastAsync, discoverClaudeSessionFiles } from "./agentSessions/claude/discovery";
 import { getGeminiRootCandidatesFastAsync, discoverGeminiSessionFiles } from "./agentSessions/gemini/discovery";
 import { getAntigravityRootCandidatesFastAsync, discoverAntigravitySessionFiles } from "./agentSessions/antigravity/discovery";
+import { getGrokRootCandidatesFastAsync, discoverGrokSessionFiles } from "./agentSessions/grok/discovery";
 import { parseClaudeSessionFile } from "./agentSessions/claude/parser";
 import { parseGeminiSessionFile, deriveGeminiProjectHashCandidatesFromPath } from "./agentSessions/gemini/parser";
 import { parseAntigravitySessionFile } from "./agentSessions/antigravity/parser";
+import { parseGrokSessionFile } from "./agentSessions/grok/parser";
 import { filterCodexHistoryPreviewText } from "./agentSessions/shared/preview";
 import { extractTaggedPrefix } from "./agentSessions/shared/taggedPrefix";
 import {
@@ -30,7 +32,7 @@ import {
 let chokidar: any = null;
 try { chokidar = require("chokidar"); } catch {}
 
-type ProviderId = "codex" | "claude" | "gemini" | "antigravity";
+type ProviderId = "codex" | "claude" | "gemini" | "antigravity" | "grok";
 type FileSig = { mtimeMs: number; size: number };
 type IndexSummary = HistorySummary & { providerId: ProviderId; dirKey: string; projectHash?: string };
 type Details = {
@@ -409,7 +411,7 @@ function stripDetailsForPersist(details: Details): Details {
 }
 
 // 中文说明：历史索引语义调整后提升版本，强制丢弃旧的 index/details 缓存，避免继续沿用错误 dirKey。
-const VERSION = "v16";
+const VERSION = "v17";
 
 /**
  * 读取 Claude Code 的 Agent 历史开关（默认 false）。
@@ -575,9 +577,10 @@ function getExistingRootsByProvider(): Record<ProviderId, string[]> {
       claude: Array.isArray(raw?.claude) ? raw.claude : [],
       gemini: Array.isArray(raw?.gemini) ? raw.gemini : [],
       antigravity: Array.isArray(raw?.antigravity) ? raw.antigravity : [],
+      grok: Array.isArray(raw?.grok) ? raw.grok : [],
     };
   } catch {
-    return { codex: [], claude: [], gemini: [], antigravity: [] };
+    return { codex: [], claude: [], gemini: [], antigravity: [], grok: [] };
   }
 }
 
@@ -596,7 +599,7 @@ function getIndexedClaudeAgentHistorySetting(): boolean {
  * 基于已探测 roots 或路径特征推断指定历史文件所属 Provider。
  */
 function resolveProviderIdFromRoots(filePath: string, providerHint?: ProviderId): ProviderId {
-  if (providerHint === "codex" || providerHint === "claude" || providerHint === "gemini" || providerHint === "antigravity") return providerHint;
+  if (providerHint === "codex" || providerHint === "claude" || providerHint === "gemini" || providerHint === "antigravity" || providerHint === "grok") return providerHint;
   try {
     const f = canonicalKey(filePath);
     const rootsByProvider = getExistingRootsByProvider();
@@ -606,6 +609,7 @@ function resolveProviderIdFromRoots(filePath: string, providerHint?: ProviderId)
       ...rootsByProvider.claude.map((root) => ({ providerId: "claude" as const, root })),
       ...rootsByProvider.gemini.map((root) => ({ providerId: "gemini" as const, root })),
       ...rootsByProvider.antigravity.map((root) => ({ providerId: "antigravity" as const, root })),
+      ...rootsByProvider.grok.map((root) => ({ providerId: "grok" as const, root })),
     ];
     for (const entry of entries) {
       const rootKey = canonicalKey(entry.root);
@@ -616,6 +620,7 @@ function resolveProviderIdFromRoots(filePath: string, providerHint?: ProviderId)
     }
     if (best) return best.providerId;
     if (f.includes("/.claude/")) return "claude";
+    if (f.includes("/.grok/sessions/")) return "grok";
     if (f.includes("/.gemini/antigravity-cli/")) return "antigravity";
     if (f.includes("/.gemini/")) return "gemini";
   } catch {}
@@ -635,6 +640,7 @@ function shouldIndexProviderFile(providerId: ProviderId, filePath: string): bool
     }
     if (providerId === "gemini") return base.startsWith("session-") && (base.endsWith(".jsonl") || base.endsWith(".json"));
     if (providerId === "antigravity") return base.endsWith(".db") && !base.endsWith(".db-wal") && !base.endsWith(".db-shm");
+    if (providerId === "grok") return base === "summary.json";
     return false;
   } catch {
     return false;
@@ -678,6 +684,7 @@ async function parseDetailsForProvider(providerId: ProviderId, filePath: string,
   if (providerId === "claude") return await parseClaudeSessionFile(filePath, stat, { summaryOnly: true, maxLines: getIndexedClaudeAgentHistorySetting() ? 400 : 200 } as any);
   if (providerId === "gemini") return await parseGeminiSessionFile(filePath, stat, { summaryOnly: true } as any);
   if (providerId === "antigravity") return await parseAntigravitySessionFile(filePath, stat, { summaryOnly: true } as any);
+  if (providerId === "grok") return await parseGrokSessionFile(filePath, stat, { summaryOnly: true } as any);
   return await parseCodexDetails(filePath, stat, { summaryOnly: true });
 }
 
@@ -759,6 +766,11 @@ function deriveRefreshRootFromSource(providerId: ProviderId, sourcePath?: string
     if (providerId === "codex") return path.join(dir, "sessions");
     if ((providerId === "claude" || providerId === "gemini") && path.basename(dir).toLowerCase() === "hooks") return path.dirname(dir);
     if (providerId === "antigravity" && path.basename(dir).toLowerCase() === "hooks") return path.join(path.dirname(dir), "conversations");
+    if (providerId === "grok") {
+      const normalized = p.replace(/\\/g, "/");
+      const marker = normalized.toLowerCase().lastIndexOf("/.grok/");
+      if (marker >= 0) return path.join(p.slice(0, marker + "/.grok".length), "sessions");
+    }
     return "";
   } catch {
     return "";
@@ -829,10 +841,12 @@ async function flushFastRefreshQueue(): Promise<void> {
       }
 
       for (const entry of roots) {
-        if (entry.providerId !== "codex" && entry.providerId !== "antigravity") continue;
+        if (entry.providerId !== "codex" && entry.providerId !== "antigravity" && entry.providerId !== "grok") continue;
         try {
           const recent = entry.providerId === "antigravity"
             ? (await discoverAntigravitySessionFiles(entry.root)).slice(-FAST_REFRESH_RECENT_FILE_LIMIT)
+            : entry.providerId === "grok"
+              ? (await discoverGrokSessionFiles(entry.root)).slice(-FAST_REFRESH_RECENT_FILE_LIMIT)
             : await listRecentCodexSessionFiles(entry.root);
           for (const fp of recent) {
             try { await upsertIndexedFile(fp, entry.providerId); } catch {}
@@ -854,7 +868,7 @@ async function flushFastRefreshQueue(): Promise<void> {
 export function requestHistoryFastRefresh(req: HistoryFastRefreshRequest): void {
   try {
     const rawProvider = String(req?.providerId || "codex").trim().toLowerCase();
-    const providerId: ProviderId = rawProvider === "claude" || rawProvider === "gemini" || rawProvider === "antigravity" ? rawProvider : "codex";
+    const providerId: ProviderId = rawProvider === "claude" || rawProvider === "gemini" || rawProvider === "antigravity" || rawProvider === "grok" ? rawProvider : "codex";
     const st = getFastRefreshState();
 
     const explicitFile = resolveAccessibleHistoryFilePath(String(req?.filePath || "").trim(), req?.sourcePath);
@@ -1581,6 +1595,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
     const claudeRootCandidates = await getClaudeRootCandidatesFastAsync();
     const geminiRootCandidates = await getGeminiRootCandidatesFastAsync();
     const antigravityRootCandidates = await getAntigravityRootCandidatesFastAsync();
+    const grokRootCandidates = await getGrokRootCandidatesFastAsync();
 
     const uniq = (xs: string[]) => Array.from(new Set(xs.filter(Boolean)));
     const rootsByProviderAll: Record<ProviderId, string[]> = {
@@ -1588,18 +1603,21 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
       claude: uniq(claudeRootCandidates.map((c) => c.path)),
       gemini: uniq(geminiRootCandidates.map((c) => c.path)),
       antigravity: uniq(antigravityRootCandidates.map((c) => c.path)),
+      grok: uniq(grokRootCandidates.map((c) => c.path)),
     };
     const rootsByProviderExisting: Record<ProviderId, string[]> = {
       codex: uniq(codexRootCandidates.filter((c) => c.exists).map((c) => c.path)),
       claude: uniq(claudeRootCandidates.filter((c) => c.exists).map((c) => c.path)),
       gemini: uniq(geminiRootCandidates.filter((c) => c.exists).map((c) => c.path)),
       antigravity: uniq(antigravityRootCandidates.filter((c) => c.exists).map((c) => c.path)),
+      grok: uniq(grokRootCandidates.filter((c) => c.exists).map((c) => c.path)),
     };
     const rootsByProviderMissing: Record<ProviderId, string[]> = {
       codex: uniq(codexRootCandidates.filter((c) => !c.exists).map((c) => c.path)),
       claude: uniq(claudeRootCandidates.filter((c) => !c.exists).map((c) => c.path)),
       gemini: uniq(geminiRootCandidates.filter((c) => !c.exists).map((c) => c.path)),
       antigravity: uniq(antigravityRootCandidates.filter((c) => !c.exists).map((c) => c.path)),
+      grok: uniq(grokRootCandidates.filter((c) => !c.exists).map((c) => c.path)),
     };
 
     const rootsExisting = uniq([
@@ -1607,18 +1625,21 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
       ...rootsByProviderExisting.claude,
       ...rootsByProviderExisting.gemini,
       ...rootsByProviderExisting.antigravity,
+      ...rootsByProviderExisting.grok,
     ]);
     const rootsMissing = uniq([
       ...rootsByProviderMissing.codex,
       ...rootsByProviderMissing.claude,
       ...rootsByProviderMissing.gemini,
       ...rootsByProviderMissing.antigravity,
+      ...rootsByProviderMissing.grok,
     ]);
 
     perfLogger.log(`[roots] codex.existing=${JSON.stringify(rootsByProviderExisting.codex)} codex.missing=${JSON.stringify(rootsByProviderMissing.codex)}`);
     perfLogger.log(`[roots] claude.existing=${JSON.stringify(rootsByProviderExisting.claude)} claude.missing=${JSON.stringify(rootsByProviderMissing.claude)}`);
     perfLogger.log(`[roots] gemini.existing=${JSON.stringify(rootsByProviderExisting.gemini)} gemini.missing=${JSON.stringify(rootsByProviderMissing.gemini)}`);
     perfLogger.log(`[roots] antigravity.existing=${JSON.stringify(rootsByProviderExisting.antigravity)} antigravity.missing=${JSON.stringify(rootsByProviderMissing.antigravity)}`);
+    perfLogger.log(`[roots] grok.existing=${JSON.stringify(rootsByProviderExisting.grok)} grok.missing=${JSON.stringify(rootsByProviderMissing.grok)}`);
 
     try {
       // 兼容旧字段：roots 仍指向 Codex sessions roots（供 settings.codexRoots 等旧逻辑复用）
@@ -1681,7 +1702,11 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
       try { addFiles("antigravity", await discoverAntigravitySessionFiles(root)); } catch {}
     })));
 
-    perfLogger.log(`[files] codex=${files.filter((f) => f.providerId === "codex").length} claude=${files.filter((f) => f.providerId === "claude").length} gemini=${files.filter((f) => f.providerId === "gemini").length} antigravity=${files.filter((f) => f.providerId === "antigravity").length} total=${files.length}`);
+    await Promise.all(rootsByProviderExisting.grok.map((root) => scanLimit(async () => {
+      try { addFiles("grok", await discoverGrokSessionFiles(root)); } catch {}
+    })));
+
+    perfLogger.log(`[files] codex=${files.filter((f) => f.providerId === "codex").length} claude=${files.filter((f) => f.providerId === "claude").length} gemini=${files.filter((f) => f.providerId === "gemini").length} antigravity=${files.filter((f) => f.providerId === "antigravity").length} grok=${files.filter((f) => f.providerId === "grok").length} total=${files.length}`);
 
     const ix: PersistIndex = g.__indexer.index;
     const det: PersistDetails = g.__indexer.details;
@@ -1692,6 +1717,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
       ...rootsByProviderExisting.claude.map((root) => ({ providerId: "claude" as ProviderId, root })),
       ...rootsByProviderExisting.gemini.map((root) => ({ providerId: "gemini" as ProviderId, root })),
       ...rootsByProviderExisting.antigravity.map((root) => ({ providerId: "antigravity" as ProviderId, root })),
+      ...rootsByProviderExisting.grok.map((root) => ({ providerId: "grok" as ProviderId, root })),
     ];
 
     const normPath = (p: string): string => {
@@ -1714,6 +1740,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
         }
         if (best) return best.providerId;
         if (f.includes("/.claude/")) return "claude";
+        if (f.includes("/.grok/sessions/")) return "grok";
         if (f.includes("/.gemini/antigravity-cli/")) return "antigravity";
         if (f.includes("/.gemini/")) return "gemini";
         if (f.includes("/.codex/")) return "codex";
@@ -1734,6 +1761,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
         }
         if (providerId === "gemini") return base.startsWith("session-") && (base.endsWith(".jsonl") || base.endsWith(".json"));
         if (providerId === "antigravity") return base.endsWith(".db") && !base.endsWith(".db-wal") && !base.endsWith(".db-shm");
+        if (providerId === "grok") return base === "summary.json";
         return false;
       } catch {
         return false;
@@ -1809,6 +1837,9 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
       }
       if (providerId === "antigravity") {
         return await parseAntigravitySessionFile(fp, stat, opts as any) as any;
+      }
+      if (providerId === "grok") {
+        return await parseGrokSessionFile(fp, stat, opts as any) as any;
       }
       return await parseCodexDetails(fp, stat, opts);
     };
@@ -2131,6 +2162,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
           if (providerId === "claude") return ["*.jsonl", "*.ndjson"];
           if (providerId === "gemini") return ["session-*.jsonl", "session-*.json"];
           if (providerId === "antigravity") return ["*.db", "*.db-wal", "*.db-shm"];
+          if (providerId === "grok") return ["summary.json"];
           return ["*.jsonl"];
         };
 

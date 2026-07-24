@@ -1011,4 +1011,75 @@ describe("TerminalManager（长文本发送策略）", () => {
 
     tm.disposeAll(false);
   });
+
+  it("waitForOutputText 能跨 PTY 分片识别 Grok 欢迎界面就绪标记", async () => {
+    const adapter: any = createAdapterStub();
+    const hostPty = createHostPtyStub();
+    createTerminalAdapterMock.mockReturnValue(adapter);
+
+    const ptyByTab: Record<string, string> = { "tab-grok-ready": "pty-grok-ready" };
+    const tm = new TerminalManager((tabId) => ptyByTab[tabId], hostPty as any, {});
+    tm.ensurePersistentContainer("tab-grok-ready");
+    tm.setPty("tab-grok-ready", "pty-grok-ready");
+
+    const readyPromise = tm.waitForOutputText("tab-grok-ready", ["New worktree", "Build anything"], { timeoutMs: 1000 });
+    hostPty.emitData("pty-grok-ready", "\x1b[2JNew work");
+    hostPty.emitData("pty-grok-ready", "tree\x1b[0m");
+
+    await expect(readyPromise).resolves.toBe(true);
+    tm.disposeAll(false);
+  });
+
+  it("Grok 会依次粘贴每张图片，再粘贴正文并提交", async () => {
+    vi.useFakeTimers();
+    const adapter: any = createAdapterStub();
+    const hostPty = createHostPtyStub();
+    createTerminalAdapterMock.mockReturnValue(adapter);
+
+    const ptyByTab: Record<string, string> = { "tab-grok-images": "pty-grok-images" };
+    const tm = new TerminalManager((tabId) => ptyByTab[tabId], hostPty as any, {});
+    tm.ensurePersistentContainer("tab-grok-images");
+    tm.setPty("tab-grok-images", "pty-grok-images");
+
+    const sendPromise = tm.sendTextAndEnter("tab-grok-images", "请处理图片", {
+      providerId: "grok",
+      attachmentPaths: ["X:\\fixture\\first.png", "X:\\fixture\\second.png"],
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    await sendPromise;
+
+    expect(adapter.paste.mock.calls.map((call: unknown[]) => call[0])).toEqual([
+      "X:\\fixture\\first.png",
+      "X:\\fixture\\second.png",
+      "请处理图片",
+    ]);
+    expect(hostPty.write).not.toHaveBeenCalledWith("pty-grok-images", "\r");
+
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(hostPty.write).toHaveBeenCalledWith("pty-grok-images", "\r");
+    tm.disposeAll(false);
+  });
+
+  it("Grok 只有图片时也会在图片粘贴完成后提交", async () => {
+    vi.useFakeTimers();
+    const adapter: any = createAdapterStub();
+    const hostPty = createHostPtyStub();
+    createTerminalAdapterMock.mockReturnValue(adapter);
+
+    const ptyByTab: Record<string, string> = { "tab-grok-image-only": "pty-grok-image-only" };
+    const tm = new TerminalManager((tabId) => ptyByTab[tabId], hostPty as any, {});
+    tm.ensurePersistentContainer("tab-grok-image-only");
+    tm.setPty("tab-grok-image-only", "pty-grok-image-only");
+
+    const sendPromise = tm.sendTextAndEnter("tab-grok-image-only", "", {
+      providerId: "grok",
+      attachmentPaths: ["/workspace/only.png"],
+    });
+    await vi.advanceTimersByTimeAsync(200);
+    await sendPromise;
+
+    expect(adapter.paste).toHaveBeenCalledWith("/workspace/only.png");
+    expect(hostPty.write).toHaveBeenCalledWith("pty-grok-image-only", "\r");
+    tm.disposeAll(false);
+  });
 });

@@ -181,6 +181,54 @@
       }
     }
   },
+  "grokUsage": {
+    "loading": "正在同步账号额度…",
+    "unavailable": "账号额度不可用",
+    "title": "账号额度",
+    "account": "Grok Build 账号",
+    "includedQuota": "包含额度",
+    "used": "已使用 {percent}",
+    "amount": "{used} / {limit}",
+    "resetAt": "重置时间 {time}",
+    "resetNotProvided": "未提供",
+    "periodWeekly": "每周额度",
+    "periodMonthly": "每月额度",
+    "periodUnknown": "账号额度",
+    "additionalCredits": "额外额度",
+    "prepaidBalance": "已购余额",
+    "onDemandUsage": "按需用量",
+    "onDemandDisabled": "未启用",
+    "updatedAt": "更新时间 {time}",
+    "sourceLive": "实时",
+    "sourceCache": "Grok 官方缓存",
+    "empty": "暂无账号额度信息",
+    "errors": {
+      "default": {
+        "title": "无法获取 Grok 账号额度",
+        "hint": "请检查网络和 Grok Build 登录状态后重试"
+      },
+      "apiKey": {
+        "title": "API Key 不提供账号额度",
+        "hint": "这是 Grok Build 的官方限制，请前往 console.x.ai 查看 API 用量"
+      },
+      "team": {
+        "title": "团队账号不显示消费者额度",
+        "hint": "Grok Build 官方仅向个人 OAuth 账号开放这项额度信息"
+      },
+      "notLoggedIn": {
+        "title": "Grok Build 未使用网页登录",
+        "hint": "请运行 grok login 完成网页登录，然后刷新"
+      },
+      "expired": {
+        "title": "Grok Build 登录已失效",
+        "hint": "请重新运行 grok login 登录，然后刷新"
+      },
+      "notAvailable": {
+        "title": "当前账号没有可显示的额度",
+        "hint": "该账号或订阅暂未由 Grok Build 提供额度信息"
+      }
+    }
+  },
   "notifications": {
     "taskCompleted": "{tab} 已完成",
     "taskCompletedWithProject": "{tab} · {project} 已完成",
