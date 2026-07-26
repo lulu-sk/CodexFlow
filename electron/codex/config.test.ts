@@ -173,6 +173,151 @@ describe("electron/codex/config（tui 通知配置修复）", () => {
     }
   });
 
+  it("配置已达到目标时再次维护不得重新写入 config.toml", async () => {
+    const { home, cleanup } = createTempHome();
+    try {
+      writeCodexConfigToml(home, [
+        'model_provider = "custom"',
+        "",
+        "[model_providers.custom]",
+        'name = "Custom"',
+        'base_url = "https://example.invalid"',
+        "",
+      ].join("\n"));
+      const mod = await loadConfigModule("codex 0.133.0");
+      await mod.ensureAllCodexNotifications();
+      const configPath = path.join(home, ".codex", "config.toml");
+      const bodyAfterFirstWrite = readCodexConfigToml(home);
+      const renameSpy = vi.spyOn(fs.promises, "rename");
+
+      await mod.ensureAllCodexNotifications();
+
+      const configRenameCount = renameSpy.mock.calls.filter((call) => (
+        path.resolve(String(call[1])) === path.resolve(configPath)
+      )).length;
+      expect(configRenameCount).toBe(0);
+      expect(readCodexConfigToml(home)).toBe(bodyAfterFirstWrite);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("写入新配置前保持旧 config.toml 完整，并通过同目录文件原子替换", async () => {
+    const { home, cleanup } = createTempHome();
+    try {
+      const original = [
+        'model_provider = "custom"',
+        "",
+        "[model_providers.custom]",
+        'name = "Custom"',
+        'base_url = "https://example.invalid"',
+        "",
+      ].join("\n");
+      writeCodexConfigToml(home, original);
+      const configPath = path.join(home, ".codex", "config.toml");
+      const renameFile = fs.promises.rename.bind(fs.promises);
+      let targetBeforeRename = "";
+      let completeTempContent = "";
+      vi.spyOn(fs.promises, "rename").mockImplementation(async (...args: Parameters<typeof fs.promises.rename>) => {
+        const [tempPath, targetPath] = args;
+        if (path.resolve(String(targetPath)) === path.resolve(configPath)) {
+          targetBeforeRename = fs.readFileSync(configPath, "utf8");
+          completeTempContent = fs.readFileSync(String(tempPath), "utf8");
+        }
+        await renameFile(...args);
+      });
+
+      const mod = await loadConfigModule("codex 0.133.0");
+      await mod.ensureAllCodexNotifications();
+
+      expect(targetBeforeRename).toBe(original);
+      expect(completeTempContent).toContain('model_provider = "custom"');
+      expect(completeTempContent).toContain("[model_providers.custom]");
+      expect(completeTempContent).toContain("[[hooks.Stop]]");
+      expect(readCodexConfigToml(home)).toBe(completeTempContent);
+      const residualNames = fs.readdirSync(path.join(home, ".codex")).filter((name) => (
+        name.includes(".codexflow-") || name.endsWith(".codexflow.lock")
+      ));
+      expect(residualNames).toEqual([]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("同一进程中的并发维护请求只执行一次配置修改", async () => {
+    const { home, cleanup } = createTempHome();
+    try {
+      const configPath = path.join(home, ".codex", "config.toml");
+      const renameSpy = vi.spyOn(fs.promises, "rename");
+      const mod = await loadConfigModule("codex 0.133.0");
+
+      await Promise.all([
+        mod.ensureAllCodexNotifications(),
+        mod.ensureAllCodexNotifications(),
+        mod.ensureAllCodexNotifications(),
+      ]);
+
+      const configRenameCount = renameSpy.mock.calls.filter((call) => (
+        path.resolve(String(call[1])) === path.resolve(configPath)
+      )).length;
+      expect(configRenameCount).toBe(1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("其他实例完成相同目标后等待方重新读取并跳过重复修改", async () => {
+    const { home, cleanup } = createTempHome();
+    try {
+      const original = 'model_provider = "custom"\n\n[model_providers.custom]\nname = "Custom"\n';
+      writeCodexConfigToml(home, original);
+      const mod = await loadConfigModule("codex 0.133.0");
+      await mod.ensureAllCodexNotifications();
+      const desired = readCodexConfigToml(home);
+      writeCodexConfigToml(home, original);
+
+      const configDir = path.join(home, ".codex");
+      const configPath = path.join(configDir, "config.toml");
+      const lockPath = path.join(configDir, ".config.toml.codexflow.lock");
+      fs.writeFileSync(lockPath, `${JSON.stringify({ pid: process.pid, token: "other-instance" })}\n`, "utf8");
+      const renameSpy = vi.spyOn(fs.promises, "rename");
+      const pending = mod.ensureAllCodexNotifications();
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 75));
+      expect(fs.existsSync(lockPath)).toBe(true);
+      expect(readCodexConfigToml(home)).toBe(original);
+      writeCodexConfigToml(home, desired);
+      fs.unlinkSync(lockPath);
+      await pending;
+
+      const configRenameCount = renameSpy.mock.calls.filter((call) => (
+        path.resolve(String(call[1])) === path.resolve(configPath)
+      )).length;
+      expect(configRenameCount).toBe(0);
+      expect(readCodexConfigToml(home)).toBe(desired);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("其他实例异常退出后能够清理遗留锁并继续维护配置", async () => {
+    const { home, cleanup } = createTempHome();
+    try {
+      const configDir = path.join(home, ".codex");
+      const lockPath = path.join(configDir, ".config.toml.codexflow.lock");
+      fs.mkdirSync(configDir, { recursive: true });
+      fs.writeFileSync(lockPath, `${JSON.stringify({ pid: 2_147_483_647, token: "stale-instance" })}\n`, "utf8");
+
+      const mod = await loadConfigModule("codex 0.133.0");
+      await mod.ensureAllCodexNotifications();
+
+      expect(readCodexConfigToml(home)).toContain("[[hooks.Stop]]");
+      expect(fs.existsSync(lockPath)).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
   it("新版 Codex：使用 Stop/SubagentStop hooks 并移除 CodexFlow 旧 notify", async () => {
     const { home, cleanup } = createTempHome();
     try {

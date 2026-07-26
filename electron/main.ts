@@ -7057,7 +7057,8 @@ ipcMain.handle('settings.get', async () => {
   const notifyRuntimeRepair = hasSavedRuntimeEnvSelection();
   try { await ensureFirstRunTerminalSelection(); } catch {}
   try { await ensureSettingsAutodetect(); } catch {}
-  scheduleSettingsMaintenance({ configureProxy: true, notifications: true });
+  // 读取设置不触发 Provider 配置写入；启动与 settings.update 已负责相关维护。
+  scheduleSettingsMaintenance({ configureProxy: true });
   let cfg = settings.getSettings() as any;
   try {
     const flags = getFeatureFlags();
