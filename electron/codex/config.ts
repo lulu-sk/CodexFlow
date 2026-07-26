@@ -2,9 +2,10 @@
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
 import { promises as fsp } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { perfLogger } from "../log";
 import { getCodexRootsFastAsync, uncToWsl, execInWslAsync } from "../wsl";
@@ -31,6 +32,11 @@ const CODEX_HOOK_MIN_SUBAGENT_STOP_VERSION = "0.133.0";
 const CODEX_HOOK_TIMEOUT_SECONDS = 5;
 const CODEX_VERSION_PROBE_TIMEOUT_MS = 2500;
 const CODEX_VERSION_CACHE_TTL_MS = 60_000;
+const CODEX_CONFIG_LOCK_WAIT_MS = 5_000;
+const CODEX_CONFIG_LOCK_RETRY_MS = 25;
+const CODEX_CONFIG_INVALID_LOCK_STALE_MS = 5_000;
+const CODEX_CONFIG_WRITE_MAX_ATTEMPTS = 3;
+const ATOMIC_RENAME_MAX_ATTEMPTS = 5;
 
 const CODEX_NOTIFY_SH_SCRIPT = [
   "#!/usr/bin/env sh",
@@ -311,6 +317,9 @@ type CodexConfigTarget = {
   startupCmd?: string;
 };
 type CodexVersionCommand = { command: string; args: string[] };
+type TextFileSnapshot = { content: string; existed: boolean; mode?: number };
+type AtomicTextWriteResult = "written" | "conflict";
+type CodexConfigLockLease = { handle: FileHandle; lockPath: string; token: string };
 
 type ArrayScanState = {
   depth: number;
@@ -326,6 +335,201 @@ function normalizeLineEndings(input: string): { normalized: string; newline: str
   const newline = input.includes("\r\n") ? "\r\n" : "\n";
   const normalized = newline === "\n" ? input : input.replace(/\r\n/g, "\n");
   return { normalized, newline };
+}
+
+/**
+ * 等待指定时长，用于文件锁与 Windows 原子替换的有限重试。
+ */
+async function waitForFileOperation(delayMs: number): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, delayMs)));
+}
+
+/**
+ * 读取文本文件快照；文件不存在时返回明确的未创建状态。
+ */
+async function readTextFileSnapshot(filePath: string): Promise<TextFileSnapshot> {
+  try {
+    const [content, stat] = await Promise.all([
+      fsp.readFile(filePath, "utf8"),
+      fsp.stat(filePath),
+    ]);
+    return {
+      content,
+      existed: true,
+      mode: stat.mode & 0o777,
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT")
+      return { content: "", existed: false };
+    throw error;
+  }
+}
+
+/**
+ * 判断目标文件是否仍与计算新内容时读取的快照一致。
+ */
+function isSameTextFileSnapshot(current: TextFileSnapshot, expected: TextFileSnapshot): boolean {
+  if (current.existed !== expected.existed)
+    return false;
+  return !current.existed || current.content === expected.content;
+}
+
+/**
+ * 判断原子替换失败是否可能由 Windows 的短暂文件占用造成。
+ */
+function isRetryableAtomicRenameError(error: unknown): boolean {
+  const code = String((error as NodeJS.ErrnoException)?.code || "");
+  return code === "EACCES" || code === "EBUSY" || code === "EPERM";
+}
+
+/**
+ * 在不删除旧文件的前提下有限重试原子替换。
+ */
+async function renameTextFileAtomically(tempPath: string, targetPath: string): Promise<void> {
+  for (let attempt = 0; attempt < ATOMIC_RENAME_MAX_ATTEMPTS; attempt++) {
+    try {
+      await fsp.rename(tempPath, targetPath);
+      return;
+    } catch (error) {
+      if (!isRetryableAtomicRenameError(error) || attempt >= ATOMIC_RENAME_MAX_ATTEMPTS - 1)
+        throw error;
+      await waitForFileOperation(CODEX_CONFIG_LOCK_RETRY_MS * (attempt + 1));
+    }
+  }
+}
+
+/**
+ * 将完整文本写入同目录临时文件，再原子替换仍未变化的目标文件。
+ */
+async function replaceTextFileAtomically(
+  filePath: string,
+  content: string,
+  expected: TextFileSnapshot,
+): Promise<AtomicTextWriteResult> {
+  const current = await readTextFileSnapshot(filePath);
+  if (!isSameTextFileSnapshot(current, expected))
+    return "conflict";
+
+  const dir = path.dirname(filePath);
+  await fsp.mkdir(dir, { recursive: true });
+  const tempPath = path.join(dir, `.${path.basename(filePath)}.codexflow-${process.pid}-${randomUUID()}.tmp`);
+  let tempHandle: FileHandle | null = null;
+  let tempExists = false;
+  try {
+    tempHandle = await fsp.open(tempPath, "wx", expected.mode ?? 0o600);
+    tempExists = true;
+    await tempHandle.writeFile(content, "utf8");
+    await tempHandle.sync();
+    await tempHandle.close();
+    tempHandle = null;
+
+    const latest = await readTextFileSnapshot(filePath);
+    if (!isSameTextFileSnapshot(latest, expected))
+      return "conflict";
+
+    await renameTextFileAtomically(tempPath, filePath);
+    tempExists = false;
+    return "written";
+  } finally {
+    if (tempHandle) {
+      try { await tempHandle.close(); } catch {}
+    }
+    if (tempExists) {
+      try { await fsp.unlink(tempPath); } catch {}
+    }
+  }
+}
+
+/**
+ * 判断文件锁记录的进程是否仍然存在。
+ */
+function isProcessRunning(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0)
+    return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code === "EPERM";
+  }
+}
+
+/**
+ * 清理由已退出进程遗留的锁；内容无效的锁仅在超过保护时间后清理。
+ */
+async function removeStaleCodexConfigLock(lockPath: string): Promise<boolean> {
+  try {
+    const [body, stat] = await Promise.all([
+      fsp.readFile(lockPath, "utf8"),
+      fsp.stat(lockPath),
+    ]);
+    let ownerPid = 0;
+    try { ownerPid = Number(JSON.parse(body)?.pid || 0); } catch {}
+    if (ownerPid > 0 && isProcessRunning(ownerPid))
+      return false;
+    if (ownerPid <= 0 && Date.now() - stat.mtimeMs < CODEX_CONFIG_INVALID_LOCK_STALE_MS)
+      return false;
+    const latestBody = await fsp.readFile(lockPath, "utf8");
+    if (latestBody !== body)
+      return false;
+    await fsp.unlink(lockPath);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code === "ENOENT";
+  }
+}
+
+/**
+ * 获取 config.toml 的跨进程独占锁，避免多个 CodexFlow 实例同时改写。
+ */
+async function acquireCodexConfigLock(configPath: string): Promise<CodexConfigLockLease | null> {
+  const dir = path.dirname(configPath);
+  await fsp.mkdir(dir, { recursive: true });
+  const lockPath = path.join(dir, `.${path.basename(configPath)}.codexflow.lock`);
+  const deadline = Date.now() + CODEX_CONFIG_LOCK_WAIT_MS;
+  const token = randomUUID();
+  const lockBody = `${JSON.stringify({ pid: process.pid, token, createdAt: new Date().toISOString() })}\n`;
+
+  while (true) {
+    let handle: FileHandle | null = null;
+    try {
+      handle = await fsp.open(lockPath, "wx", 0o600);
+      await handle.writeFile(lockBody, "utf8");
+      return { handle, lockPath, token };
+    } catch (error) {
+      if (handle) {
+        try { await handle.close(); } catch {}
+        // 句柄关闭后其他实例可能已接管同一路径，只删除仍属于本次尝试的完整锁内容。
+        try {
+          const currentBody = await fsp.readFile(lockPath, "utf8");
+          if (currentBody === lockBody)
+            await fsp.unlink(lockPath);
+        } catch {}
+      }
+      if ((error as NodeJS.ErrnoException)?.code !== "EEXIST")
+        throw error;
+      if (await removeStaleCodexConfigLock(lockPath))
+        continue;
+      if (Date.now() >= deadline)
+        return null;
+      const jitterMs = Math.floor(Math.random() * CODEX_CONFIG_LOCK_RETRY_MS);
+      await waitForFileOperation(CODEX_CONFIG_LOCK_RETRY_MS + jitterMs);
+    }
+  }
+}
+
+/**
+ * 释放本次持有的 config.toml 锁，避免误删其他实例后来创建的锁。
+ */
+async function releaseCodexConfigLock(lease: CodexConfigLockLease): Promise<void> {
+  try { await lease.handle.close(); } catch {}
+  try {
+    const body = await fsp.readFile(lease.lockPath, "utf8");
+    let token = "";
+    try { token = String(JSON.parse(body)?.token || ""); } catch {}
+    if (token === lease.token)
+      await fsp.unlink(lease.lockPath);
+  } catch {}
 }
 
 function splitInlineComment(line: string): { code: string; comment: string } {
@@ -1117,20 +1321,19 @@ function resolveCodexNotifyCommandSpec(configPath: string): CodexNotifyCommandSp
  * 中文说明：仅在内容变化时写入文本文件，避免无意义覆盖。
  */
 async function writeTextFileIfChanged(filePath: string, content: string): Promise<{ ok: boolean; changed: boolean }> {
-  let current: string;
-  try {
-    current = await fsp.readFile(filePath, "utf8");
-    if (current === content) return { ok: true, changed: false };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") return { ok: false, changed: false };
+  for (let attempt = 0; attempt < CODEX_CONFIG_WRITE_MAX_ATTEMPTS; attempt++) {
+    try {
+      const snapshot = await readTextFileSnapshot(filePath);
+      if (snapshot.existed && snapshot.content === content)
+        return { ok: true, changed: false };
+      const writeResult = await replaceTextFileAtomically(filePath, content, snapshot);
+      if (writeResult === "written")
+        return { ok: true, changed: true };
+    } catch {
+      return { ok: false, changed: false };
+    }
   }
-  try {
-    await fsp.mkdir(path.dirname(filePath), { recursive: true });
-    await fsp.writeFile(filePath, content, "utf8");
-    return { ok: true, changed: true };
-  } catch {
-    return { ok: false, changed: false };
-  }
+  return { ok: false, changed: false };
 }
 
 /**
@@ -1616,84 +1819,103 @@ function appendCodexLifecycleHookBlocks(
 async function ensureNotificationsAtConfigTarget(target: CodexConfigTarget): Promise<boolean> {
   const configPath = target.path;
   const source = target.source;
-  if (!configPath) return false;
-  try { await fsp.mkdir(path.dirname(configPath), { recursive: true }); } catch {}
-
-  let original = "";
-  let existed = false;
-  try {
-    original = await fsp.readFile(configPath, "utf8");
-    existed = true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
-      original = "";
-      existed = false;
-    } else {
-      try { perfLogger.log(`[codex.config] read failed path=${configPath} source=${source || "n/a"} error=${String(error)}`); } catch {}
-      return false;
-    }
-  }
-
-  const { normalized, newline } = normalizeLineEndings(original);
-  const support = await probeCodexCliHookSupport(target);
-  let updated = normalized;
-  let changed = false;
-  let configMode = support.supportsStop ? "hooks" : "legacy";
-
-  const installedLifecycleSupport = detectCodexFlowLifecycleHookSupport(updated);
-  const shouldUseLifecycleHooks = support.supportsStop || (!support.version && installedLifecycleSupport.supportsStop);
-  if (shouldUseLifecycleHooks) {
-    configMode = support.supportsStop ? "hooks" : "hooks-existing";
-    const effectiveSupport: CodexCliHookSupport = support.supportsStop
-      ? support
-      : {
-        ...support,
-        supportsStop: true,
-        supportsSubagentStop: installedLifecycleSupport.supportsSubagentStop,
-      };
-    const hookSpec = resolveCodexHookCommandSpec(configPath);
-    const hookScriptReady = hookSpec ? await ensureCodexHookScript(hookSpec, source) : false;
-    const notifyCleanup = removeCodexFlowRootNotifyCommand(updated);
-    updated = notifyCleanup.updated;
-    changed = changed || notifyCleanup.changed;
-    if (hookSpec && hookScriptReady) {
-      const hookResult = appendCodexLifecycleHookBlocks(updated, configPath, hookSpec, effectiveSupport);
-      updated = hookResult.updated;
-      changed = changed || hookResult.changed;
-    }
-  } else {
-    const notifySpec = resolveCodexNotifyCommandSpec(configPath);
-    const notifyScriptReady = notifySpec ? await ensureCodexNotifyScript(notifySpec, source) : false;
-    const hookCleanup = removeCodexFlowLifecycleHookBlocks(updated.length > 0 ? updated.split("\n") : []);
-    const stateCleanup = removeCodexFlowLifecycleHookStateBlocks(hookCleanup.lines, configPath, hookCleanup.stateRefs);
-    updated = stateCleanup.lines.join("\n");
-    changed = changed || hookCleanup.changed || stateCleanup.changed;
-    const tuiResult = updateNotificationsSection(updated);
-    updated = tuiResult.updated;
-    changed = changed || tuiResult.changed;
-    if (notifySpec && notifyScriptReady) {
-      const notifyResult = updateRootNotifyCommand(updated, notifySpec.commandArgv);
-      updated = notifyResult.updated;
-      changed = changed || notifyResult.changed;
-    }
-  }
-  if (!changed && existed) return false;
-
-  let finalContent = updated;
-  if (!finalContent.endsWith("\n")) finalContent += "\n";
-  const serialized = newline === "\r\n" ? finalContent.replace(/\n/g, "\r\n") : finalContent;
-  try {
-    await fsp.writeFile(configPath, serialized, "utf8");
-    try {
-      perfLogger.log(`[codex.config] ensure notifications path=${configPath} source=${source || "n/a"} mode=${configMode} version=${support.version || "n/a"} changed=${changed ? "1" : "0"}`);
-    } catch {}
-    return true;
-  } catch (error) {
-    try { perfLogger.log(`[codex.config] write failed path=${configPath} source=${source || "n/a"} error=${String(error)}`); } catch {}
+  if (!configPath)
     return false;
+  const support = await probeCodexCliHookSupport(target);
+  let lockLease: CodexConfigLockLease | null = null;
+  try {
+    lockLease = await acquireCodexConfigLock(configPath);
+  } catch (error) {
+    try { perfLogger.log(`[codex.config] lock failed path=${configPath} source=${source || "n/a"} error=${String(error)}`); } catch {}
+    return false;
+  }
+  if (!lockLease) {
+    try { perfLogger.log(`[codex.config] lock timeout path=${configPath} source=${source || "n/a"}`); } catch {}
+    return false;
+  }
+
+  try {
+    for (let attempt = 0; attempt < CODEX_CONFIG_WRITE_MAX_ATTEMPTS; attempt++) {
+      let snapshot: TextFileSnapshot;
+      try {
+        snapshot = await readTextFileSnapshot(configPath);
+      } catch (error) {
+        try { perfLogger.log(`[codex.config] read failed path=${configPath} source=${source || "n/a"} error=${String(error)}`); } catch {}
+        return false;
+      }
+
+      const { normalized, newline } = normalizeLineEndings(snapshot.content);
+      let updated = normalized;
+      let changed = false;
+      let configMode = support.supportsStop ? "hooks" : "legacy";
+      const installedLifecycleSupport = detectCodexFlowLifecycleHookSupport(updated);
+      const shouldUseLifecycleHooks = support.supportsStop || (!support.version && installedLifecycleSupport.supportsStop);
+      if (shouldUseLifecycleHooks) {
+        configMode = support.supportsStop ? "hooks" : "hooks-existing";
+        const effectiveSupport: CodexCliHookSupport = support.supportsStop
+          ? support
+          : {
+            ...support,
+            supportsStop: true,
+            supportsSubagentStop: installedLifecycleSupport.supportsSubagentStop,
+          };
+        const hookSpec = resolveCodexHookCommandSpec(configPath);
+        const hookScriptReady = hookSpec ? await ensureCodexHookScript(hookSpec, source) : false;
+        const notifyCleanup = removeCodexFlowRootNotifyCommand(updated);
+        updated = notifyCleanup.updated;
+        changed = changed || notifyCleanup.changed;
+        if (hookSpec && hookScriptReady) {
+          const hookResult = appendCodexLifecycleHookBlocks(updated, configPath, hookSpec, effectiveSupport);
+          updated = hookResult.updated;
+          changed = changed || hookResult.changed;
+        }
+      } else {
+        const notifySpec = resolveCodexNotifyCommandSpec(configPath);
+        const notifyScriptReady = notifySpec ? await ensureCodexNotifyScript(notifySpec, source) : false;
+        const hookCleanup = removeCodexFlowLifecycleHookBlocks(updated.length > 0 ? updated.split("\n") : []);
+        const stateCleanup = removeCodexFlowLifecycleHookStateBlocks(hookCleanup.lines, configPath, hookCleanup.stateRefs);
+        updated = stateCleanup.lines.join("\n");
+        changed = changed || hookCleanup.changed || stateCleanup.changed;
+        const tuiResult = updateNotificationsSection(updated);
+        updated = tuiResult.updated;
+        changed = changed || tuiResult.changed;
+        if (notifySpec && notifyScriptReady) {
+          const notifyResult = updateRootNotifyCommand(updated, notifySpec.commandArgv);
+          updated = notifyResult.updated;
+          changed = changed || notifyResult.changed;
+        }
+      }
+      if (!changed && snapshot.existed)
+        return false;
+
+      let finalContent = updated;
+      if (!finalContent.endsWith("\n"))
+        finalContent += "\n";
+      const serialized = newline === "\r\n" ? finalContent.replace(/\n/g, "\r\n") : finalContent;
+      if (snapshot.existed && serialized === snapshot.content)
+        return false;
+
+      try {
+        const writeResult = await replaceTextFileAtomically(configPath, serialized, snapshot);
+        if (writeResult === "conflict")
+          continue;
+        try {
+          perfLogger.log(`[codex.config] ensure notifications path=${configPath} source=${source || "n/a"} mode=${configMode} version=${support.version || "n/a"} changed=1`);
+        } catch {}
+        return true;
+      } catch (error) {
+        try { perfLogger.log(`[codex.config] write failed path=${configPath} source=${source || "n/a"} error=${String(error)}`); } catch {}
+        return false;
+      }
+    }
+    try { perfLogger.log(`[codex.config] concurrent update retry exhausted path=${configPath} source=${source || "n/a"}`); } catch {}
+    return false;
+  } finally {
+    await releaseCodexConfigLock(lockLease);
   }
 }
 
+// 同一进程中的相同维护请求直接复用，避免重复枚举和修改同一目标。
 let inflight: Promise<void> | null = null;
 
 export async function ensureAllCodexNotifications(): Promise<void> {
