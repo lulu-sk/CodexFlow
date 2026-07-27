@@ -148,6 +148,7 @@
   "worktreeReuseEmpty": "暂无可复用的子 worktree",
   "worktreeReuseSummary": "复用 {reuse}，新建 {create}",
   "worktreeMissingBaseBranch": "未能读取到基分支",
+  "worktreeInitialCommitRequired": "当前仓库尚无首次提交。请先在主工作区完成首次提交，再创建工作树。",
   "grokInitialPromptNotReady": "Grok 未进入可输入界面，因此尚未发送初始图片附件。",
   "worktreeCreateFailed": "创建 worktree 失败：{{error}}",
   "worktreeCreateWarnings": "操作已完成，但存在警告：\n{{warnings}}",

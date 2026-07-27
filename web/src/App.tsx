@@ -1071,6 +1071,7 @@ export default function CodexFlowManagerUI() {
 	    branches: [],
 	    baseBranch: "",
 	    loadingBranches: false,
+	    requiresInitialCommit: false,
 	    remarkBaseName: "",
 	    selectedChildWorktreeIds: [],
 	    promptChips: [],
@@ -9421,6 +9422,7 @@ export default function CodexFlowManagerUI() {
 	      branches: [],
 	      baseBranch: restored?.baseBranch || "",
 	      loadingBranches: true,
+	      requiresInitialCommit: false,
 	      remarkBaseName,
 	      selectedChildWorktreeIds: restored?.selectedChildWorktreeIds || [],
 	      promptChips: restored?.promptChips || [],
@@ -9438,6 +9440,7 @@ export default function CodexFlowManagerUI() {
 	      if (!(res && res.ok)) throw new Error(res?.error || "failed");
 	      const branches = Array.isArray(res.branches) ? res.branches.map((x: any) => String(x || "").trim()).filter(Boolean) : [];
 	      const current = String(res.current || "").trim();
+	      const unborn = res.unborn === true;
 	      setWorktreeCreateDialog((prev) => {
 	        if (!prev.open || prev.repoProjectId !== repoId) return prev;
 	        const preferred = String(prev.baseBranch || "").trim();
@@ -9447,13 +9450,16 @@ export default function CodexFlowManagerUI() {
 	          branches,
 	          baseBranch,
           loadingBranches: false,
-          error: baseBranch ? undefined : (t("projects:worktreeMissingBaseBranch", "未能读取到基分支") as string),
+          requiresInitialCommit: unborn,
+          error: unborn
+            ? (t("projects:worktreeInitialCommitRequired", "当前仓库尚无首次提交。请先在主工作区完成首次提交，再创建工作树。") as string)
+            : (baseBranch ? undefined : (t("projects:worktreeMissingBaseBranch", "未能读取到基分支") as string)),
         };
       });
     } catch (e: any) {
       setWorktreeCreateDialog((prev) => {
         if (!prev.open || prev.repoProjectId !== repoId) return prev;
-        return { ...prev, branches: [], baseBranch: "", loadingBranches: false, error: String(e?.message || e) };
+        return { ...prev, branches: [], baseBranch: "", loadingBranches: false, requiresInitialCommit: false, error: String(e?.message || e) };
       });
     }
 	  }, [activeProviderId, resolveDefaultWorktreeRemarkBaseName, resolveWorktreeManagementParentProjectId, restoreWorktreePromptChips, t]);
@@ -10005,16 +10011,20 @@ export default function CodexFlowManagerUI() {
 
     const defaultProvider = normalizeWorktreeProviderId(activeProviderId);
 
-    // 优先使用已缓存的分支信息，失败则回退到分支列表
+    // 快速创建仍需读取最新分支状态，避免绕过“首次提交”安全检查。
     const git = gitInfoByProjectId[repoId];
     let baseBranch = String(git?.branch || "").trim();
-    if (!baseBranch) {
-      try {
-        const res: any = await (window as any).host?.gitWorktree?.listBranches?.(repoProject.winPath);
+    try {
+      const res: any = await (window as any).host?.gitWorktree?.listBranches?.(repoProject.winPath);
+      if (res?.unborn === true) {
+        await openWorktreeCreateDialog(repoProject);
+        return;
+      }
+      if (!baseBranch) {
         const branches = Array.isArray(res?.branches) ? res.branches.map((x: any) => String(x || "").trim()).filter(Boolean) : [];
         baseBranch = String(res?.current || "").trim() || branches[0] || "";
-      } catch {}
-    }
+      }
+    } catch {}
     if (!baseBranch) {
       // 无法自动解析基分支时回退到创建面板（保持 UI 风格一致，并让用户可手动选择）
       void openWorktreeCreateDialog(repoProject);
@@ -14680,13 +14690,15 @@ export default function CodexFlowManagerUI() {
                   <div className="space-y-2.5 py-1">
                 {worktreeCreateDialog.error ? (
                   <div
+                    role="alert"
+                    aria-live="polite"
                     className={`rounded-md border px-3 py-1.5 text-[11px] font-medium flex items-center gap-2 ${
                       createCount > 0
                         ? "border-red-200 bg-red-50 text-red-800"
                         : "border-amber-200 bg-amber-50 text-amber-900"
                     }`}
                   >
-                    <TriangleAlert className="h-3.5 w-3.5" />
+                    <TriangleAlert className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                     <span className="break-words">
                       {worktreeCreateDialog.error}
                       {createCount === 0 ? (t("projects:worktreeCreateErrorCreateOnly", "（仅影响新建）") as string) : null}
@@ -14969,6 +14981,18 @@ export default function CodexFlowManagerUI() {
                 </ScrollArea>
 
                 <div className="flex justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-800/50 mt-2 shrink-0">
+                  {worktreeCreateDialog.requiresInitialCommit ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 text-xs"
+                      onClick={async () => {
+                        try { await (window as any).host?.gitWorktree?.openExternalTool?.(repo.winPath); } catch {}
+                      }}
+                    >
+                      {t("projects:gitOpenExternalTool", "打开外部 Git 工具") as string}
+                    </Button>
+                  ) : null}
                   <Button variant="outline" size="sm" className="h-8 text-xs" onClick={closeWorktreeCreateDialog} disabled={worktreeCreateDialog.creating}>
                     {t("common:cancel", "取消") as string}
                   </Button>

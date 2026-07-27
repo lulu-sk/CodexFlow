@@ -21,6 +21,8 @@ export type GitWorktreeBranchInfo = {
   repoRoot?: string;
   branches?: string[];
   current?: string;
+  /** 当前分支是否尚未产生首次提交。 */
+  unborn?: boolean;
   detached?: boolean;
   headSha?: string;
   error?: string;
@@ -376,6 +378,8 @@ export async function listLocalBranchesAsync(args: { repoDir: string; gitPath?: 
   const cur = await execGitAsync({ gitPath, argv: ["-C", repoRoot, "symbolic-ref", "--short", "-q", "HEAD"], timeoutMs });
   const current = String(cur.stdout || "").trim();
   const detached = !(cur.ok && current);
+  const headCommit = await execGitAsync({ gitPath, argv: ["-C", repoRoot, "rev-parse", "-q", "--verify", "HEAD^{commit}"], timeoutMs });
+  const unborn = !!current && !headCommit.ok;
   const headSha = detached
     ? (() => {
         // detached 时给一个完整 HEAD hash 兜底，展示层再决定是否缩写
@@ -387,7 +391,7 @@ export async function listLocalBranchesAsync(args: { repoDir: string; gitPath?: 
   const sha = detached ? await execGitAsync({ gitPath, argv: ["-C", repoRoot, "rev-parse", "HEAD"], timeoutMs }) : null;
   const resolvedSha = sha && sha.ok ? String(sha.stdout || "").trim() : headSha;
 
-  return { ok: true, repoRoot, branches, current: current || undefined, detached, headSha: resolvedSha || undefined };
+  return { ok: true, repoRoot, branches, current: current || undefined, unborn, detached, headSha: resolvedSha || undefined };
 }
 
 /**
@@ -453,10 +457,29 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
 
   /**
    * 记录“创建时基分支 HEAD（提交号）”作为后续回收的默认分叉点边界。
-   * - 失败不影响创建主流程（回收时会回退到 merge-base 推断）。
+   * - 未产生首次提交时拒绝创建，避免生成无共同祖先、无法安全回收的孤立分支。
    */
-  const baseRefAtCreate = await execGitAsync({ gitPath, argv: ["-C", repoRoot, "rev-parse", baseBranch], timeoutMs: 8000 });
+  const baseRefAtCreate = await execGitAsync({
+    gitPath,
+    argv: ["-C", repoRoot, "rev-parse", "-q", "--verify", `${baseBranch}^{commit}`],
+    timeoutMs: 8000,
+  });
   const baseRefAtCreateSha = baseRefAtCreate.ok ? String(baseRefAtCreate.stdout || "").trim() : "";
+
+  if (!baseRefAtCreate.ok) {
+    const current = await execGitAsync({ gitPath, argv: ["-C", repoRoot, "symbolic-ref", "--short", "-q", "HEAD"], timeoutMs: 8000 });
+    if (current.ok && String(current.stdout || "").trim() === baseBranch) {
+      const head = await execGitAsync({ gitPath, argv: ["-C", repoRoot, "rev-parse", "-q", "--verify", "HEAD^{commit}"], timeoutMs: 8000 });
+      if (!head.ok) {
+        const msg = "Initial commit required before creating a worktree";
+        log(`失败：${msg}\n`);
+        return { ok: false, error: msg };
+      }
+    }
+    const msg = formatGitFailure(baseRefAtCreate, `base branch not found: ${baseBranch}`);
+    log(`失败：${msg}\n`);
+    return { ok: false, error: msg };
+  }
 
   const wtListRes = await execGitAsync({ gitPath, argv: ["-C", repoRoot, "worktree", "list", "--porcelain"], timeoutMs: listTimeoutMs });
   if (!wtListRes.ok) {
@@ -671,10 +694,11 @@ export async function createWorktreesAsync(req: CreateWorktreesRequest): Promise
       const abortedBeforeRun = checkAborted();
       if (abortedBeforeRun) return abortedBeforeRun;
 
-      log(`\n[${plan.providerId}#${plan.index}] $ git -C "${repoRoot}" worktree add -b "${plan.wtBranch}" "${plan.targetDir}" "${String(req.baseBranch || "").trim()}"\n`);
+      const worktreeAddArgs = ["-C", repoRoot, "worktree", "add", "-b", plan.wtBranch, plan.targetDir, baseBranch];
+      log(`\n[${plan.providerId}#${plan.index}] $ git -C "${repoRoot}" worktree add -b "${plan.wtBranch}" "${plan.targetDir}" "${baseBranch}"\n`);
       const add = await spawnGitAsync({
         gitPath,
-        argv: ["-C", repoRoot, "worktree", "add", "-b", plan.wtBranch, plan.targetDir, req.baseBranch],
+        argv: worktreeAddArgs,
         timeoutMs: worktreeAddTimeoutMs,
         allowLongTimeout: true,
         onStdout: (chunk) => log(`[${plan.providerId}#${plan.index}] ${chunk}`),
@@ -858,6 +882,36 @@ async function isNonMainWorktreeRootAsync(args: { dir: string; gitPath?: string;
 }
 
 /**
+ * 清理由旧版通知 hook 在 Windows worktree 根目录误建的 CONOUT$ 文件。
+ *
+ * 仅删除未被 Git 跟踪、内容为空或符合 OSC 9 通知格式的文件，避免触碰用户数据。
+ */
+async function cleanupLegacyConoutNotificationFileAsync(args: { dir: string; gitPath?: string; timeoutMs: number }): Promise<void> {
+  if (process.platform !== "win32") return;
+  let artifactName = "";
+  try {
+    const names = await fsp.readdir(args.dir);
+    artifactName = names.find((name) => name.toUpperCase() === "CONOUT$") || "";
+  } catch {}
+  if (!artifactName) return;
+
+  const tracked = await execGitAsync({
+    gitPath: args.gitPath,
+    argv: ["-C", args.dir, "ls-files", "--cached", "--", artifactName],
+    timeoutMs: args.timeoutMs,
+  });
+  if (!tracked.ok || String(tracked.stdout || "").trim()) return;
+
+  const artifactPath = path.join(args.dir, artifactName);
+  try {
+    const content = await fsp.readFile(artifactPath);
+    const isGeneratedNotification = content.length === 0 || content.subarray(0, 4).equals(Buffer.from("\u001b]9;", "utf8"));
+    if (!isGeneratedNotification) return;
+    await fsp.rm(artifactPath, { force: true });
+  } catch {}
+}
+
+/**
  * 若 worktree 有变更，则执行 add -A 并提交一次（无变更则不提交）。
  *
  * 规则：仅对“非主 worktree 根目录”生效；其它目录按 no-op 处理（ok=true, committed=false）。
@@ -877,6 +931,8 @@ export async function autoCommitWorktreeIfDirtyAsync(args: {
   const eligible = await isNonMainWorktreeRootAsync({ dir: wt, gitPath, timeoutMs });
   if (!eligible.ok) return { ok: false, committed: false, error: eligible.error || "autoCommit eligibility check failed" };
   if (!eligible.eligible) return { ok: true, committed: false };
+
+  await cleanupLegacyConoutNotificationFileAsync({ dir: wt, gitPath, timeoutMs });
 
   const st = await execGitAsync({ gitPath, argv: ["-C", wt, "status", "--porcelain"], timeoutMs });
   if (st.ok && String(st.stdout || "").trim().length === 0) return { ok: true, committed: false };

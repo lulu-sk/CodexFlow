@@ -59,6 +59,7 @@ describe("electron/claude/notifications（多行预览保真）", () => {
     expect(script).toContain('return s.replace(/[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f-\\u009f]/g, " ");');
     expect(script).not.toContain("function collapseWs(input)");
     expect(script).not.toContain("const s = collapseWs(input);");
+    expect(script).not.toContain('"CONOUT$"');
   });
 
   it("读取 settings.json 失败时不应覆盖现有配置", async () => {

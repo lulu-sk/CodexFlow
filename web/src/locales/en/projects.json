@@ -148,6 +148,7 @@
   "worktreeReuseEmpty": "No reusable child worktrees.",
   "worktreeReuseSummary": "Reuse {reuse}, create {create}",
   "worktreeMissingBaseBranch": "Failed to read base branch",
+  "worktreeInitialCommitRequired": "This repository has no initial commit. Create the initial commit in the main workspace before creating a worktree.",
   "grokInitialPromptNotReady": "Grok did not reach an input-ready screen, so the initial attachments were not sent.",
   "worktreeCreateFailed": "Failed to create worktree: {{error}}",
   "worktreeCreateWarnings": "Completed, but warnings occurred:\n{{warnings}}",
