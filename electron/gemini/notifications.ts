@@ -303,7 +303,8 @@ function writeOscToControllingTty(oscText) {
 
   const errors = [];
   if (process.platform === "win32") {
-    const targets = ["\\\\.\\CONOUT$", "CONOUT$"];
+    // 裸 CONOUT$ 在新版 Node.js 中可能被当作普通文件写入当前项目目录。
+    const targets = ["\\\\.\\CONOUT$"];
     const modes = ["w", "r+"];
     for (const p of targets) {
       for (const mode of modes) {

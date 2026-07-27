@@ -57,6 +57,7 @@ describe("electron/gemini/notifications（多行预览保真）", () => {
     expect(script).toContain('return s.replace(/[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f-\\u009f]/g, " ");');
     expect(script).not.toContain("function collapseWs(input)");
     expect(script).not.toContain("const s = collapseWs(input);");
+    expect(script).not.toContain('"CONOUT$"');
   });
 
   it("读取已有 hook 脚本失败时不应改写 settings.json", async () => {

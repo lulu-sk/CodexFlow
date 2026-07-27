@@ -702,7 +702,7 @@ export type InitGitRepositoryResult = {
 
 export interface GitWorktreeAPI {
   statusBatch(dirs: string[]): Promise<{ ok: boolean; items?: GitDirInfo[]; error?: string }>;
-  listBranches(repoDir: string): Promise<{ ok: boolean; repoRoot?: string; branches?: string[]; current?: string; detached?: boolean; headSha?: string; error?: string }>;
+  listBranches(repoDir: string): Promise<{ ok: boolean; repoRoot?: string; branches?: string[]; current?: string; unborn?: boolean; detached?: boolean; headSha?: string; error?: string }>;
   initRepo(args: { dir: string }): Promise<InitGitRepositoryResult>;
   getMeta(worktreePath: string): Promise<{ ok: boolean; meta?: WorktreeMeta | null; error?: string }>;
   create(args: { repoDir: string; baseBranch: string; instances: Array<{ providerId: "codex" | "claude" | "gemini" | "antigravity" | "grok"; count: number }>; copyRules?: boolean; postSetup?: WorktreePostSetupConfig }): Promise<{ ok: boolean; items?: CreatedWorktree[]; error?: string }>;
