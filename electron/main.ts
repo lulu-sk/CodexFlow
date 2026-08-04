@@ -14,7 +14,7 @@ import opentype from 'opentype.js';
 import iconv from 'iconv-lite';
 import projects, { IMPLEMENTATION_NAME as PROJECTS_IMPL } from "./projects/index";
 import history, { purgeHistoryCacheIfOutdated } from "./history";
-import { startHistoryIndexer, getIndexedSummaries, getIndexedDetails, getLastIndexerRoots, getLastIndexerRootsByProvider, stopHistoryIndexer, cacheDetails, getCachedDetails } from "./indexer";
+import { ensureHistoryIndexLoaded, startHistoryIndexer, getIndexedSummaries, getIndexedDetails, getLastIndexerRoots, getLastIndexerRootsByProvider, stopHistoryIndexer, cacheDetails, getCachedDetails } from "./indexer";
 import { getSessionsRootsFastAsync } from "./wsl";
 import { getClaudeRootCandidatesFastAsync, discoverClaudeSessionFiles } from "./agentSessions/claude/discovery";
 import { getGeminiRootCandidatesFastAsync, discoverGeminiSessionFiles } from "./agentSessions/gemini/discovery";
@@ -2832,6 +2832,8 @@ if (!gotLock) {
     try { i18n.registerI18nIPC(); } catch {}
     // 构建应用菜单（包含 Toggle Developer Tools）
     try { setupAppMenu(); } catch {}
+    // 尽早预读持久化历史摘要；不等待结果，避免延迟窗口创建。
+    void ensureHistoryIndexLoaded().catch(() => undefined);
     // 启动时清理上一次会话遗留的粘贴临时图片（崩溃/强杀兜底）
     try { await cleanupPastedImagesFromPreviousSessionOnBoot(); } catch {}
     try { createWindow(); } catch (e) { if (DIAG) { try { perfLogger.log(`[BOOT] createWindow error: ${String(e)}`); } catch {} } }
@@ -4447,6 +4449,9 @@ ipcMain.handle('history.list', async (_e, args: {
   historyRoot?: string;
 }) => {
   try {
+    // 首次列表请求只等待持久化摘要索引，不等待后台目录扫描。
+    // 这样应用重开后可立即显示上次缓存，再由索引器增量修正。
+    await ensureHistoryIndexLoaded();
     const scope = args?.scope === 'project_group' || args?.scope === 'all_sessions' ? args.scope : 'current_project';
     // 尝试优先使用索引器（不阻塞 UI）
     const canon = (p?: string): string => {

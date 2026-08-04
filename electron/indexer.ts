@@ -505,6 +505,26 @@ async function loadIndex(): Promise<PersistIndex> {
 }
 
 /**
+ * 预读持久化历史索引，并让并发请求复用同一次磁盘读取。
+ *
+ * 该方法只加载列表摘要，不扫描会话目录；因此可在窗口创建前启动，
+ * 也可由 history.list 在首次请求时短暂等待，避免错误进入重型回退扫描。
+ */
+export async function ensureHistoryIndexLoaded(): Promise<void> {
+  if (!g.__indexer) g.__indexer = {};
+  if (g.__indexer.indexLoaded === true) return;
+  if (!g.__indexer.indexLoadPromise) {
+    g.__indexer.indexLoadPromise = (async () => {
+      g.__indexer.index = await loadIndex();
+      g.__indexer.indexLoaded = true;
+    })().finally(() => {
+      g.__indexer.indexLoadPromise = null;
+    });
+  }
+  await g.__indexer.indexLoadPromise;
+}
+
+/**
  * 请求异步保存索引缓存，不在当前调用栈执行文件 I/O。
  */
 function saveIndex(ix: PersistIndex): void {
@@ -1552,7 +1572,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
       perfLogger.log(`[indexer] cacheVersion=${VERSION} userData=${JSON.stringify(getUserDataDir())}`);
       if (removedLegacyPersistFiles.length > 0) perfLogger.log(`[indexer] purgedLegacyCaches=${JSON.stringify(removedLegacyPersistFiles)}`);
     }
-    g.__indexer.index = await loadIndex();
+    await ensureHistoryIndexLoaded();
     g.__indexer.details = await loadDetails();
     try { getDetailsCache().clear(); } catch {}
     try { clearFastRefreshState(); } catch {}
@@ -1856,6 +1876,15 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
       }
       return Array.from(mp.values());
     })();
+    // 先按文件更新时间倒序排队：冷启动没有缓存时，也应优先解析并展示最新会话。
+    // stat 结果在后续解析中直接复用，避免为排序重复读取文件元数据。
+    const statLimit = pLimit(16);
+    const recentFirstFiles = (await Promise.all(uniqFiles.map((item) => statLimit(async () => {
+      const stat = await fsp.stat(item.filePath).catch(() => null as any);
+      return stat ? { ...item, stat } : null;
+    }))))
+      .filter((item): item is ProviderFile & { stat: fs.Stats } => !!item)
+      .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
 
     const workLimit = pLimit(8);
     let updatedSummaries = 0;
@@ -1863,7 +1892,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
     const batch: IndexSummary[] = [];
     const flush = () => {
       if (batch.length === 0) return;
-      const items = batch.splice(0, batch.length);
+      const items = batch.splice(0, batch.length).sort((a, b) => b.date - a.date);
       safeWindowSend(win, "history:index:add", { items }, { tag: "indexer", suppressMs: 1000 });
     };
 
@@ -1945,11 +1974,9 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
       } catch {}
     }
 
-    await Promise.all(uniqFiles.map(({ providerId, filePath: fp }) => workLimit(async () => {
+    await Promise.all(recentFirstFiles.map(({ providerId, filePath: fp, stat }) => workLimit(async () => {
       try {
         if (!shouldIndexFile(providerId, fp)) return;
-        const stat = await fsp.stat(fp).catch(() => null as any);
-        if (!stat) return;
         const k = canonicalKey(fp);
         const sig: FileSig = { mtimeMs: stat.mtimeMs, size: stat.size };
         const prev = ix.files[k]?.sig;
