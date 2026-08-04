@@ -49,7 +49,7 @@ vi.mock("./agentSessions/grok/discovery", async (importOriginal) => {
   };
 });
 
-import { getIndexedSummaries, startHistoryIndexer, stopHistoryIndexer } from "./indexer";
+import { ensureHistoryIndexLoaded, getIndexedSummaries, startHistoryIndexer, stopHistoryIndexer } from "./indexer";
 
 const originalCwd = process.cwd();
 const tempDirs: string[] = [];
@@ -99,6 +99,32 @@ async function createCodexSessionFile(lines: unknown[]): Promise<string> {
 }
 
 describe("electron/indexer Codex preview", () => {
+  it("首次列表请求可直接加载持久化摘要索引", async () => {
+    const cachedFilePath = path.join(os.tmpdir(), "codexflow-cached-session.jsonl");
+    const cacheKey = cachedFilePath.replace(/\\/g, "/").toLowerCase();
+    await fsp.writeFile(path.join(userDataDir, "history.index.v17.json"), JSON.stringify({
+      version: "v17",
+      savedAt: Date.now(),
+      files: {
+        [cacheKey]: {
+          sig: { mtimeMs: 2, size: 1 },
+          summary: {
+            providerId: "codex",
+            id: "cached-session",
+            title: "缓存会话",
+            date: 2,
+            filePath: cachedFilePath,
+            dirKey: "/workspace/project",
+          },
+        },
+      },
+    }), "utf8");
+
+    await ensureHistoryIndexLoaded();
+
+    expect(getIndexedSummaries().map((item) => item.id)).toEqual(["cached-session"]);
+  });
+
   it("停止索引器前会完成异步缓存刷盘且不持久化消息正文", async () => {
     const filePath = await createCodexSessionFile([
       {
