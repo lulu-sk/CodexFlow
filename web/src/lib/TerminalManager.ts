@@ -3124,6 +3124,13 @@ export default class TerminalManager {
             this.logScrollDiagnostic(`ro.cb tab=${tabId} host=${Math.round(r.width)}x${Math.round(r.height)} parent=${pr ? `${Math.round(pr.width)}x${Math.round(pr.height)}` : 'n/a'} ${this.formatHostRect(tabId)}`);
             if (this.isWindowResizeSessionActive(tabId)) {
               this.markWindowResizeActivity(tabId, "ro");
+            } else {
+              const previousRect = this.lastHostRectByTab[tabId];
+              const nextRect = this.readHostRectSnapshot(tabId);
+              if (!this.isSameHostRectSnapshot(previousRect, nextRect)) {
+                this.notifyAdapterLayoutResizeStart(tabId, "ro-layout");
+              }
+              if (nextRect) this.lastHostRectByTab[tabId] = nextRect;
             }
           }
         } catch {}

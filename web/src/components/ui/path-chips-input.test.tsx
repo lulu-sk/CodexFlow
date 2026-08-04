@@ -170,6 +170,26 @@ function Harness(props: { initialDraft?: string; initialChips?: PathChip[] }): R
 }
 
 /**
+ * 中文说明：固定布局需将附件和文本限制在输入区内部，避免影响外部终端尺寸。
+ */
+function StableLayoutHarness(props: { initialChips?: PathChip[] }): React.ReactElement {
+  const [draft, setDraft] = useState("");
+  const [chips, setChips] = useState<PathChip[]>(props.initialChips ?? []);
+  return (
+    <div className="h-[7.5rem]">
+      <PathChipsInput
+        draft={draft}
+        onDraftChange={setDraft}
+        chips={chips}
+        onChipsChange={setChips}
+        multiline
+        stableLayout
+      />
+    </div>
+  );
+}
+
+/**
  * 中文说明：从容器中获取实际编辑器（当前组件在测试里使用 textarea）。
  */
 function getEditor(host: HTMLElement): HTMLTextAreaElement | HTMLInputElement {
@@ -295,6 +315,41 @@ describe("PathChipsInput 路径 Chip 构造", () => {
 
     expect(merged).toHaveLength(1);
     expect(merged[0].id).toBe(first?.id);
+  });
+});
+
+describe("PathChipsInput 固定布局", () => {
+  let cleanup: (() => void) | null = null;
+
+  afterEach(() => {
+    try { cleanup?.(); } catch {}
+    cleanup = null;
+  });
+
+  it("多附件时应把滚动限制在附件托盘内", async () => {
+    const mounted = createMountedRoot();
+    cleanup = mounted.unmount;
+    const chips = Array.from({ length: 12 }, (_, index) => createPathChip({
+      id: `stable-chip-${index}`,
+      fileName: `attachment-${index}.txt`,
+      winPath: `C:\\Example\\attachment-${index}.txt`,
+    }));
+
+    await act(async () => {
+      mounted.root.render(<StableLayoutHarness initialChips={chips} />);
+    });
+
+    const root = mounted.host.querySelector('[data-path-chips-input="true"]');
+    const tray = mounted.host.querySelector('[data-attachment-tray="true"]');
+    const editor = getEditor(mounted.host);
+
+    expect(root?.getAttribute("data-stable-layout")).toBe("true");
+    expect(root?.className).toContain("h-full");
+    expect(root?.className).toContain("overflow-hidden");
+    expect(tray?.className).toContain("max-h-12");
+    expect(tray?.className).toContain("overflow-y-auto");
+    expect(editor.className).toContain("min-h-0");
+    expect(editor.className).toContain("overflow-y-auto");
   });
 });
 

@@ -3299,8 +3299,8 @@ export default function CodexFlowManagerUI() {
         <div className="relative group/agent-timer inline-block">
           <div
             className={working
-              ? "text-[10px] sm:text-xs text-slate-500/80 dark:text-slate-400/70 px-2 py-0.5 flex items-center gap-2 select-none cursor-default hover:text-slate-600 dark:hover:text-slate-300 transition-colors"
-              : "text-[10px] sm:text-xs text-slate-500/80 dark:text-slate-400/70 px-2 py-0.5 flex items-center gap-2 select-none cursor-default transition-colors"}
+              ? "-translate-y-[6px] text-[10px] sm:text-xs text-slate-500/80 dark:text-slate-400/70 px-2 py-0.5 flex items-center gap-2 select-none cursor-default hover:text-slate-600 dark:hover:text-slate-300 transition-colors"
+              : "-translate-y-[6px] text-[10px] sm:text-xs text-slate-500/80 dark:text-slate-400/70 px-2 py-0.5 flex items-center gap-2 select-none cursor-default transition-colors"}
             onContextMenu={(event) => {
               openAgentTurnContextMenu(event, id);
             }}
@@ -12528,7 +12528,6 @@ export default function CodexFlowManagerUI() {
             const isInputFullscreen = !!inputFullscreenByTab[tab.id];
             const isInputClosing = !!inputFullscreenClosingTabs[tab.id];
             const showFullscreenInput = isInputFullscreen || isInputClosing;
-            const hasAgentTimer = !!agentTurnTimerByTab[tab.id];
             const fullscreenState = isInputClosing ? "closing" : "open";
             const inputPlaceholder = t('terminal:inputPlaceholder') as string;
             const sendLabel = t('terminal:send') as string;
@@ -12570,7 +12569,9 @@ export default function CodexFlowManagerUI() {
                             data-state={fullscreenState}
                           className="relative flex flex-1 flex-col rounded-[26px] bg-[var(--cf-surface-solid)] shadow-apple-lg animate-[cfFullscreenPanelEnter_260ms_cubic-bezier(0.4,0,0.2,1)_both] data-[state=closing]:animate-[cfFullscreenPanelExit_220ms_cubic-bezier(0.4,0,0.2,1)_forwards]"
                           >
-                            {renderAgentTurnStatusBar(tab.id, "px-4 pt-0.5 pb-0.5")}
+                            <div className="h-5 shrink-0">
+                              {renderAgentTurnStatusBar(tab.id, "px-4 pt-0.5 pb-0.5")}
+                            </div>
                             <PathChipsInput
                               placeholder={inputPlaceholder}
                               chips={chipsByTab[tab.id] || []}
@@ -12618,9 +12619,11 @@ export default function CodexFlowManagerUI() {
                       </div>
                     ) : null}
                     {!isInputFullscreen ? (
-                      <div className={`${hasAgentTimer ? "mt-0.5" : "mt-3"} w-full`}>
-                        <div className="relative w-full">
-                          {renderAgentTurnStatusBar(tab.id)}
+                      <div className="relative z-30 mt-0.5 h-[8.75rem] shrink-0 w-full">
+                        <div className="relative flex h-full min-h-0 w-full flex-col">
+                          <div className="relative z-30 h-5 shrink-0 overflow-visible">
+                            {renderAgentTurnStatusBar(tab.id, "mb-0.5 px-1")}
+                          </div>
                           <PathChipsInput
                             placeholder={inputPlaceholder}
                             chips={chipsByTab[tab.id] || []}
@@ -12638,7 +12641,8 @@ export default function CodexFlowManagerUI() {
                             runEnv={tabExecEnv.terminal}
                             multiline
                             onKeyDown={(e: any) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { void sendCommand(); e.preventDefault(); } }}
-                            className=""
+                            stableLayout
+                            className="flex flex-1 min-h-0 flex-col overflow-hidden"
                           />
 
                           <div className="absolute right-2 bottom-2 flex flex-row gap-2">
