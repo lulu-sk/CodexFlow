@@ -13,6 +13,7 @@ import TerminalManager from "./TerminalManager";
 describe("TerminalManager（终端滚动快照）", () => {
   afterEach(() => {
     try { createTerminalAdapterMock.mockReset(); } catch {}
+    vi.unstubAllGlobals();
   });
 
   /**
@@ -161,5 +162,83 @@ describe("TerminalManager（终端滚动快照）", () => {
     host.remove();
     input.remove();
     tm.disposeAll(false);
+  });
+
+  it("普通布局尺寸变化时会提前保存底部锚点，尺寸未变时不会重复通知", () => {
+    const notifyLayoutResizeStart = vi.fn();
+    const adapter: any = createAdapterStub({ notifyLayoutResizeStart });
+    createTerminalAdapterMock.mockReturnValue(adapter);
+
+    let triggerResizeObserver: (() => void) | undefined;
+    class ResizeObserverMock {
+      private readonly callback: ResizeObserverCallback;
+
+      /**
+       * 保存观察回调，供测试模拟普通布局尺寸变化。
+       * @param callback 尺寸观察回调
+       */
+      constructor(callback: ResizeObserverCallback) {
+        this.callback = callback;
+        triggerResizeObserver = () => this.callback([], this as unknown as ResizeObserver);
+      }
+
+      /** 开始观察测试元素。 */
+      observe(): void {}
+
+      /** 停止观察单个测试元素。 */
+      unobserve(): void {}
+
+      /** 停止全部测试观察。 */
+      disconnect(): void {}
+    }
+    vi.stubGlobal("ResizeObserver", ResizeObserverMock);
+    vi.stubGlobal("requestAnimationFrame", vi.fn(() => 1));
+
+    let hostHeight = 600;
+    let parentHeight = 600;
+    const parent = document.createElement("div");
+    const host = document.createElement("div");
+    parent.appendChild(host);
+    document.body.appendChild(parent);
+    vi.spyOn(host, "getBoundingClientRect").mockImplementation(() => ({
+      x: 0,
+      y: 0,
+      top: 0,
+      right: 800,
+      bottom: hostHeight,
+      left: 0,
+      width: 800,
+      height: hostHeight,
+      toJSON: () => ({}),
+    }));
+    vi.spyOn(parent, "getBoundingClientRect").mockImplementation(() => ({
+      x: 0,
+      y: 0,
+      top: 0,
+      right: 800,
+      bottom: parentHeight,
+      left: 0,
+      width: 800,
+      height: parentHeight,
+      toJSON: () => ({}),
+    }));
+
+    const tm = new TerminalManager(() => undefined, createHostPtyStub() as any, {});
+    tm.attachToHost("tab-layout", host);
+
+    triggerResizeObserver?.();
+    expect(notifyLayoutResizeStart).not.toHaveBeenCalled();
+
+    hostHeight = 480;
+    parentHeight = 480;
+    triggerResizeObserver?.();
+    expect(notifyLayoutResizeStart).toHaveBeenCalledTimes(1);
+    expect(notifyLayoutResizeStart).toHaveBeenCalledWith("ro-layout");
+
+    triggerResizeObserver?.();
+    expect(notifyLayoutResizeStart).toHaveBeenCalledTimes(1);
+
+    tm.disposeAll(false);
+    parent.remove();
   });
 });

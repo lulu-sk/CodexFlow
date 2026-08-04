@@ -62,6 +62,8 @@ export interface PathChipsInputProps extends Omit<React.InputHTMLAttributes<HTML
   draftInputClassName?: string;
   /** 是否为滚动条预留左右对称边距，仅在全屏输入时开启以保持视觉等宽 */
   balancedScrollbarGutter?: boolean;
+  /** 是否使用固定高度布局；附件和长文本仅在输入区内部滚动，避免挤压外部内容。 */
+  stableLayout?: boolean;
   /** 拖拽添加的资源不在当前项目目录时提醒（默认开启） */
   warnOutsideProjectDrop?: boolean;
   /** 更新“目录外资源提醒”开关（用于弹窗内“一键不再提醒”即时生效） */
@@ -566,6 +568,7 @@ export default function PathChipsInput({
   onKeyDown: externalOnKeyDown,
   draftInputClassName,
   balancedScrollbarGutter = false,
+  stableLayout = false,
   warnOutsideProjectDrop = true,
   onWarnOutsideProjectDropChange,
   ...rest
@@ -623,7 +626,9 @@ export default function PathChipsInput({
     base,
     "transition-all duration-apple ease-apple select-none hover:border-[var(--cf-border-strong)] text-[var(--cf-text-primary)]",
     // 减小顶部内边距，靠近容器上边缘；保留底部内边距保证输入区呼吸感
-    multiline ? "flex flex-col min-h-[7.5rem] pt-0.5 pb-2" : "min-h-10 pt-0.5 pb-1",
+    multiline
+      ? (stableLayout ? "flex h-full min-h-0 flex-col overflow-hidden pt-0.5 pb-2" : "flex flex-col min-h-[7.5rem] pt-0.5 pb-2")
+      : "min-h-10 pt-0.5 pb-1",
     className
   );
 
@@ -1501,6 +1506,8 @@ export default function PathChipsInput({
     <>
       <div
         ref={rootRef}
+        data-path-chips-input="true"
+        data-stable-layout={stableLayout ? "true" : "false"}
         className={containerClass}
         onClick={() => { try { inputRef.current?.focus(); } catch {} }}
 	        onDragOver={(e) => { try { e.preventDefault(); e.dataTransfer!.dropEffect = 'copy'; } catch {} }}
@@ -1541,8 +1548,15 @@ export default function PathChipsInput({
 		        }}
 		        {...rest}
 	      >
-        {/* Chips 采用常规文档流放置在输入区上方，最小可见间隙 2px */}
-        <div ref={chipsRef} className="mt-px mb-0.5 flex flex-wrap items-start gap-0.5">
+        {/* 固定布局下，附件托盘在输入区内部滚动，避免多个附件改变外部终端尺寸。 */}
+        <div
+          ref={chipsRef}
+          data-attachment-tray="true"
+          className={cn(
+            "mt-px mb-0.5 flex flex-wrap items-start gap-0.5",
+            stableLayout ? "max-h-12 shrink-0 overflow-y-auto overscroll-contain pr-1" : "",
+          )}
+        >
           {chips.map((chip, idx) => {
             const chipKey = buildChipStableKey(chip, `${idx}`);
             const chipAny = chip as PathChip;
@@ -1690,11 +1704,11 @@ export default function PathChipsInput({
             rows={3}
             // 说明：
             // - resize-none 禁用手动拖拽；whitespace-pre-wrap + break-words 实现中文/长词自动换行；
-            // - leading-5 提升可读性；min-h 保持与容器协调；pb-10 给右下角发送按钮留出垂直空间；
+            // - leading-5 提升可读性；固定布局时文本只在自身区域滚动；pb-10 给右下角发送按钮留出垂直空间；
             style={balancedScrollbarGutter ? ({ scrollbarGutter: 'stable both-edges' } as any) : undefined}
             className={cn(
               "block flex-1 w-full min-w-[8rem] outline-none bg-[var(--cf-surface-solid)] placeholder:text-[var(--cf-text-muted)] text-[var(--cf-text-primary)] select-text resize-none whitespace-pre-wrap break-words leading-5",
-              "py-0.5 pb-10 min-h-[1.5rem]",
+              stableLayout ? "min-h-0 overflow-y-auto py-0.5 pb-10" : "py-0.5 pb-10 min-h-[1.5rem]",
               draftInputClassName,
             )}
             placeholder={chips.length === 0 ? (rest as any)?.placeholder : undefined}
