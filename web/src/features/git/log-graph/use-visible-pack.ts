@@ -33,18 +33,18 @@ function buildGitLogVisiblePackSignature(
   graphItems: GitLogItem[] | undefined,
   fileHistoryMode: boolean,
 ): string {
-  const visibleHead = items.slice(0, 3).map((item) => item.hash).join(",");
-  const visibleTail = items.slice(-3).map((item) => item.hash).join(",");
-  const graphHead = (graphItems || []).slice(0, 3).map((item) => item.hash).join(",");
-  const graphTail = (graphItems || []).slice(-3).map((item) => item.hash).join(",");
+  /**
+   * 将图谱布局实际依赖的提交字段编码为稳定签名片段。
+   */
+  const serialize = (source: GitLogItem[] | undefined): string => (source || []).map((item) => [
+    String(item.hash || ""),
+    Array.isArray(item.parents) ? item.parents.join(",") : "",
+    String(item.decorations || ""),
+  ].join("\u0001")).join("\u0002");
   return [
     fileHistoryMode ? "file" : "log",
-    items.length,
-    visibleHead,
-    visibleTail,
-    graphItems?.length || 0,
-    graphHead,
-    graphTail,
+    serialize(items),
+    serialize(graphItems),
   ].join("|");
 }
 
@@ -124,7 +124,7 @@ export function useGitLogVisiblePack(args: {
     return () => {
       window.removeEventListener(GIT_LOG_GRAPH_LIGHT_MODE_EVENT, onLightMode as EventListener);
     };
-  }, [items]);
+  }, [signature]);
 
   useEffect(() => {
     const requestId = requestSeqRef.current + 1;
@@ -206,7 +206,7 @@ export function useGitLogVisiblePack(args: {
       try { worker.terminate(); } catch {}
       if (workerRef.current === worker) workerRef.current = null;
     };
-  }, [args.fileHistoryMode, graphItems, items, retrySeq, signature]);
+  }, [args.fileHistoryMode, retrySeq, signature]);
 
   useEffect(() => {
     return () => {

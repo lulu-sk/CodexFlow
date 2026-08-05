@@ -1307,7 +1307,7 @@ describe("featureService dedicated file history", () => {
         .map((entry) => String(entry.command || ""))
         .filter((command) => command.includes(" log ") || command.includes(" diff-tree ") || command.includes(" show "));
       expect(commands.some((command) => command.includes(" log ") && command.includes("--follow"))).toBe(false);
-      expect(commands.some((command) => command.includes(" diff-tree --no-commit-id --name-status -r -M"))).toBe(true);
+      expect(commands.some((command) => command.includes(" diff-tree --root --no-commit-id --name-status -r -M"))).toBe(true);
     } finally {
       await fixture.cleanup();
     }

@@ -123,7 +123,7 @@ describe("featureService commit details actions", () => {
     const escapedHash = hash.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const patterns = [
       new RegExp(`\\bshow -s --date=iso-strict\\b.* ${escapedHash}$`),
-      new RegExp(`\\bdiff-tree --no-commit-id --name-status -r -M ${escapedHash}$`),
+      new RegExp(`\\bdiff-tree --root --no-commit-id --name-status -r -M ${escapedHash}$`),
       new RegExp(`\\bshow --numstat --format= ${escapedHash}$`),
       new RegExp(`\\bbranch --contains ${escapedHash}$`),
       new RegExp(`\\btag --contains ${escapedHash}$`),
@@ -165,6 +165,41 @@ describe("featureService commit details actions", () => {
     });
     expect(res.ok).toBe(true);
   }
+
+  it(
+    "log.details 应正确返回根提交的文件列表与行统计",
+    async () => {
+      const repo = await fsp.mkdtemp(path.join(os.tmpdir(), "codexflow-details-root-repo-"));
+      const userDataPath = await fsp.mkdtemp(path.join(os.tmpdir(), "codexflow-details-root-userdata-"));
+      try {
+        await gitAsync(repo, ["init", "-b", "master"]);
+        await gitAsync(repo, ["config", "user.name", "CodexFlow"]);
+        await gitAsync(repo, ["config", "user.email", "codexflow@example.com"]);
+        await writeFileAsync(repo, "README.md", "first line\nsecond line\n");
+        await gitAsync(repo, ["add", "README.md"]);
+        await gitAsync(repo, ["commit", "-m", "root"]);
+        const rootHash = (await gitAsync(repo, ["rev-parse", "HEAD"])).trim();
+
+        const res = await dispatchGitFeatureAction({
+          action: "log.details",
+          payload: { repoPath: repo, hashes: [rootHash] },
+          userDataPath,
+        });
+
+        expect(res.ok).toBe(true);
+        expect(res.data?.mode).toBe("single");
+        expect(res.data?.detail?.parents).toEqual([]);
+        expect(res.data?.detail?.files).toEqual([
+          { status: "A", path: "README.md" },
+        ]);
+        expect(res.data?.detail?.lineStats).toEqual({ additions: 2, deletions: 0 });
+      } finally {
+        try { await fsp.rm(repo, { recursive: true, force: true }); } catch {}
+        try { await fsp.rm(userDataPath, { recursive: true, force: true }); } catch {}
+      }
+    },
+    { timeout: 120_000 },
+  );
 
   it(
     "log.details 对同一提交应复用缓存与在途请求，避免 amend/详情面板重复执行 Git 详情查询",

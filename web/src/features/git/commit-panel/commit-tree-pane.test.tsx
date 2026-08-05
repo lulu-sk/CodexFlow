@@ -125,6 +125,7 @@ function renderCommitTreePane(input: {
   groupExpanded?: Record<string, boolean>;
   treeExpanded?: Record<string, boolean>;
   activeChangeListId?: string;
+  busy?: boolean;
   localChangesConfig?: { stagingAreaEnabled: boolean; changeListsEnabled: boolean };
   onInvokeEntryAction?: (entry: GitStatusEntry, intent: "doubleClick" | "f4" | "enter" | "singleClick") => void;
   onInvokeHoverAction?: (node: any, action: CommitTreeNodeAction) => void;
@@ -155,6 +156,7 @@ function renderCommitTreePane(input: {
         activeChangeListId={input.activeChangeListId || "default"}
         selectedDiffableEntry={input.selectedDiffableEntry}
         ignoredLoading={false}
+        busy={input.busy}
         containerRef={containerRef}
         onActivate={() => {}}
         onSelectRow={() => {}}
@@ -186,6 +188,53 @@ describe("CommitTreePane", () => {
   afterEach(() => {
     try { cleanup?.(); } catch {}
     cleanup = null;
+  });
+
+  it("刷新期间应保留已有树内容，并只显示加载层", () => {
+    const entry = createEntry({ path: "src/app.ts" });
+    const rendered = renderCommitTreePane({
+      groups: [createGroup({
+        key: "cl:default",
+        label: "默认",
+        entries: [entry],
+        kind: "changelist",
+        changeListId: "default",
+        treeRows: [{
+          node: {
+            key: "node:src/app.ts",
+            name: "app.ts",
+            fullPath: "src/app.ts",
+            isFile: true,
+            filePaths: ["src/app.ts"],
+            fileCount: 1,
+            count: 1,
+            kind: "file",
+            children: [],
+            entry,
+          },
+          depth: 0,
+        }],
+        treeNodes: [{
+          key: "node:src/app.ts",
+          name: "app.ts",
+          fullPath: "src/app.ts",
+          isFile: true,
+          filePaths: ["src/app.ts"],
+          fileCount: 1,
+          count: 1,
+          kind: "file",
+          children: [],
+          entry,
+        }],
+      })],
+      statusEntryByPath: new Map([["src/app.ts", entry]]),
+      busy: true,
+    });
+    cleanup = rendered.cleanup;
+
+    expect(rendered.host.textContent).toContain("app.ts");
+    expect(rendered.host.querySelector('[data-testid="commit-tree-loading-overlay"]')).not.toBeNull();
+    expect(rendered.host.querySelector('[data-testid="commit-node-node:src/app.ts"]')).not.toBeNull();
   });
 
   it("应展示空 changelist，并标记当前活动列表", () => {
