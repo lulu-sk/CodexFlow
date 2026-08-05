@@ -92,6 +92,7 @@ import { WorktreeRecycleTaskManager } from "./git/worktreeRecycleTasks";
 import { loadDirTreeStore, saveDirTreeStore } from "./stores/dirTreeStore";
 import { getDirBuildRunConfig, setDirBuildRunConfig } from "./stores/buildRunStore";
 import { getWorktreeMeta } from "./stores/worktreeMetaStore";
+import { buildRiderExecutableCandidates, parseRiderRegistryInstallLocations } from "./riderPaths";
 import {
   findProjectPreferredIdeForTargetPath,
   getProjectPreferredIde,
@@ -907,6 +908,9 @@ function logIdeOpenTrace(message: string): void {
 
 type CursorOpenStrategy = "auto" | "protocol" | "command";
 let cursorPreferredStrategy: CursorOpenStrategy = "auto";
+const RIDER_EXECUTABLE_PATHS_CACHE_TTL_MS = 60_000;
+let riderExecutablePathsCache: { paths: string[]; expiresAt: number } | null = null;
+let riderExecutablePathsPromise: Promise<string[]> | null = null;
 
 type RuntimeEnvRepairEntry = {
   providerId?: string;
@@ -4351,7 +4355,14 @@ ipcMain.handle("gitWorktree.openExternalTool", async (_e, args: { dir: string })
       launched = await spawnDetachedShellSafe(cmd, { windowsHide: false });
     } else if (toolId === "rider") {
       if (platform === "darwin") launched = await trySpawn("open", ["-a", "Rider", dir]);
-      else if (platform === "win32") launched = (await trySpawn("rider64.exe", [dir])) || (await trySpawn("rider.exe", [dir])) || (await spawnDetachedShellSafe(`rider \"${dir}\"`, { windowsHide: false }));
+      else if (platform === "win32") {
+        for (const executable of await getRiderExecutablePaths()) {
+          if (await trySpawn(executable, [dir])) {
+            launched = true;
+            break;
+          }
+        }
+      }
       else launched = await trySpawn("rider", [dir]);
     } else if (toolId === "sourcetree") {
       if (platform === "darwin") launched = await trySpawn("open", ["-a", "SourceTree", dir]);
@@ -6016,6 +6027,113 @@ async function tryOpenPathAtPositionWithCustomCommand(
 }
 
 /**
+ * 查询 Windows 卸载注册表中的 Rider 安装目录。
+ * 旧版 Toolbox 脚本可能仍在 PATH 中，但注册表通常保留当前安装位置。
+ */
+async function queryRiderRegistryInstallLocations(): Promise<string[]> {
+  if (process.platform !== "win32") return [];
+  const hives = [
+    "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+    "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+    "HKLM\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+  ];
+  /**
+   * 查询单个卸载注册表根，并在超时或读取失败时返回空结果。
+   */
+  const query = (hive: string): Promise<string> => new Promise((resolve) => {
+    try {
+      (execFile as any)(
+        "reg.exe",
+        ["query", hive, "/s", "/v", "InstallLocation"],
+        {
+          encoding: "buffer",
+          windowsHide: true,
+          maxBuffer: 4 * 1024 * 1024,
+          timeout: 5_000,
+        },
+        (error: any, stdout: Buffer | string) => {
+          if (error) {
+            resolve("");
+            return;
+          }
+          try {
+            resolve(decodeRegOutput(stdout));
+          } catch {
+            resolve(String(stdout || ""));
+          }
+        },
+      );
+    } catch {
+      resolve("");
+    }
+  });
+
+  const rawOutputs = await Promise.all(hives.map((hive) => query(hive)));
+  const locations: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of rawOutputs) {
+    for (const location of parseRiderRegistryInstallLocations(raw)) {
+      const key = location.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      locations.push(location);
+    }
+  }
+  return locations;
+}
+
+/**
+ * 获取当前可用的 Rider 可执行文件，并过滤已卸载版本留下的无效路径。
+ * 结果短期缓存，兼顾重复点击性能与安装、升级 Rider 后自动恢复。
+ */
+async function getRiderExecutablePaths(): Promise<string[]> {
+  if (process.platform !== "win32") return [];
+  const now = Date.now();
+  if (riderExecutablePathsCache && riderExecutablePathsCache.expiresAt > now)
+    return riderExecutablePathsCache.paths;
+  if (riderExecutablePathsPromise) return await riderExecutablePathsPromise;
+
+  riderExecutablePathsPromise = (async () => {
+    const pathValue = String(process.env.Path || process.env.PATH || "");
+    const pathEntries = pathValue.split(";").map((entry) => entry.trim()).filter(Boolean);
+    const registryInstallLocations = await queryRiderRegistryInstallLocations();
+    const candidates = buildRiderExecutableCandidates({
+      platform: process.platform,
+      pathEntries,
+      registryInstallLocations,
+      environment: process.env,
+    });
+    const existing = candidates.filter((candidate) => {
+      try {
+        return fs.statSync(candidate).isFile();
+      } catch {
+        return false;
+      }
+    });
+    logIdeOpenTrace(
+      `rider.discovery candidates=${candidates.length} existing=${existing.length} registry=${registryInstallLocations.length}`,
+    );
+    for (const candidate of existing)
+      logIdeOpenTrace(`rider.discovery.path path="${clampLogValue(candidate)}"`);
+    return existing;
+  })().catch((error) => {
+    logIdeOpenTrace(`rider.discovery.fail error="${clampLogValue(error)}"`);
+    return [];
+  });
+
+  try {
+    const paths = await riderExecutablePathsPromise;
+    riderExecutablePathsCache = {
+      paths,
+      expiresAt: Date.now() + RIDER_EXECUTABLE_PATHS_CACHE_TTL_MS,
+    };
+    return paths;
+  } finally {
+    riderExecutablePathsPromise = null;
+  }
+}
+
+/**
  * 中文说明：判定命令候选是否为绝对路径。
  */
 function isAbsoluteCommandPath(cmd: string): boolean {
@@ -6383,24 +6501,18 @@ async function tryOpenPathAtPositionWithRider(targetPath: string, line: number):
       if (ok) return true;
     } catch {}
   } else if (platform === "win32") {
-    try {
-      const ok = await spawnDetachedSafe("rider64.exe", ["--line", lineArg, p], {
-        windowsHide: false,
-        timeoutMs: 1600,
-        minAliveMs: 0,
-        acceptExit0BeforeMinAliveMs: true,
-      });
-      if (ok) return true;
-    } catch {}
-    try {
-      const ok = await spawnDetachedSafe("rider.exe", ["--line", lineArg, p], {
-        windowsHide: false,
-        timeoutMs: 1600,
-        minAliveMs: 0,
-        acceptExit0BeforeMinAliveMs: true,
-      });
-      if (ok) return true;
-    } catch {}
+    const candidates = await getRiderExecutablePaths();
+    for (const executable of candidates) {
+      try {
+        const ok = await tryLaunchEditorCommand(
+          { file: executable, args: ["--line", lineArg, p] },
+          2200,
+        );
+        if (ok) return true;
+      } catch {}
+    }
+    logIdeOpenTrace(`rider.fail candidates=${candidates.length} path="${clampLogValue(p)}"`);
+    return false;
   } else {
     try {
       const ok = await spawnDetachedSafe("rider", ["--line", lineArg, p], {
