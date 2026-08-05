@@ -634,6 +634,18 @@ contextBridge.exposeInMainWorld('host', {
     findEmptySessions: async () => {
       return await ipcRenderer.invoke('history.findEmptySessions');
     },
+    getCodexRelationPlan: async (args: { filePath: string }) => {
+      return await ipcRenderer.invoke('history.codexRelationPlan', args);
+    },
+    deleteCodexRelation: async (args: { filePath: string; version: string; mode: "current" | "tree" }) => {
+      return await ipcRenderer.invoke('history.deleteCodexRelation', args);
+    },
+    findOrphanedCodexSubagents: async () => {
+      return await ipcRenderer.invoke('history.findOrphanedCodexSubagents');
+    },
+    deleteOrphanedCodexSubagents: async (args: { filePaths: string[] }) => {
+      return await ipcRenderer.invoke('history.deleteOrphanedCodexSubagents', args);
+    },
     trash: async (args: { filePath: string }) => {
       return await ipcRenderer.invoke('history.trash', args);
     },

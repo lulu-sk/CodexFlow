@@ -93,5 +93,20 @@
   "legacyResumeExternalHint": "The command opens in the {env} console and only uses version 0.31.0 for this resume.",
   "legacyResumeCancel": "Cancel",
   "legacyResumeConfirm": "Resume with 0.31.0",
-  "legacyResumeWorking": "Switching…"
+  "legacyResumeWorking": "Switching…",
+  "mainAgent": "Main agent",
+  "subagent": "Subagent",
+  "fromParent": "From: {parent}",
+  "currentSession": "Current session",
+  "checkingRelations": "Checking related sessions…",
+  "relationCheckFailed": "Unable to verify this Codex session's relationships. Deletion has been stopped to prevent mistakes; cancel and try again.",
+  "relationDeleteTitle": "Delete related sessions?",
+  "relationDeleteDesc": "Found {count} sessions in the same main-agent tree. Choose what to delete; this cannot be undone.",
+  "relationDeleteFromSubagent": "Deleting all related sessions also includes the parent, sibling, and descendant sessions.",
+  "deleteCurrentOnly": "Delete current only",
+  "deleteRelationTree": "Delete all related sessions",
+  "externalReferenceWarning": "{count} forked sessions outside this tree still reference these sessions. Deleting the whole tree is disabled to protect those references, but you can still delete only the current session.",
+  "externalReferenceBlocked": "Deletion of all related sessions was blocked because forked histories outside the tree still reference them.",
+  "relationPlanChanged": "Related sessions changed while the dialog was open. The operation was cancelled to prevent accidental deletion; please open the delete dialog again.",
+  "relationPartialFailure": "Some sessions could not be deleted ({count}). Only successfully deleted sessions were removed from the list."
 }

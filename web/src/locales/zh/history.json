@@ -93,5 +93,20 @@
   "legacyResumeExternalHint": "将在 {env} 控制台中执行，并只对本次会话启用 0.31.0 版本。",
   "legacyResumeCancel": "取消",
   "legacyResumeConfirm": "使用 0.31.0 继续",
-  "legacyResumeWorking": "正在切换…"
+  "legacyResumeWorking": "正在切换…",
+  "mainAgent": "主代理",
+  "subagent": "子代理",
+  "fromParent": "来自：{parent}",
+  "currentSession": "当前会话",
+  "checkingRelations": "正在检查关联会话…",
+  "relationCheckFailed": "无法确认这条 Codex 会话的关联关系。为避免误删，本次操作已停止；请取消后重试。",
+  "relationDeleteTitle": "删除关联会话？",
+  "relationDeleteDesc": "已找到 {count} 个属于同一主代理树的会话。请选择删除范围；删除后无法恢复。",
+  "relationDeleteFromSubagent": "删除全部关联会话会同时包含父会话、同级会话和下级会话。",
+  "deleteCurrentOnly": "仅删除当前会话",
+  "deleteRelationTree": "删除全部关联会话",
+  "externalReferenceWarning": "检测到 {count} 个树外分叉历史仍引用这些会话。为防止破坏引用，暂不能删除全部关联会话，但仍可仅删除当前会话。",
+  "externalReferenceBlocked": "检测到树外分叉历史引用，已阻止删除全部关联会话。",
+  "relationPlanChanged": "关联会话在确认期间发生了变化。为避免误删，本次操作已取消，请重新打开删除确认。",
+  "relationPartialFailure": "部分会话删除失败（{count} 个），列表仅移除了实际删除成功的会话。"
 }

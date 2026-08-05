@@ -17,6 +17,7 @@ import { createHistoryImageContent, extractImagePathCandidatesFromText } from '.
 import { deriveGeminiProjectHashCandidatesFromPath, extractGeminiProjectHashFromPath } from './agentSessions/gemini/parser';
 import { filterCodexHistoryPreviewText } from './agentSessions/shared/preview';
 import { pathMatchesDirKeyScope, tidyPathCandidate } from "./agentSessions/shared/path";
+import { extractCodexSessionRelationship, type CodexSessionRelationship } from "./codexSessionRelations";
 
 /**
  * History 读取模块: 支持逐行解析 JSONL, list/read 接口
@@ -39,6 +40,7 @@ export type HistorySummary = {
   resumeMode?: 'modern' | 'legacy' | 'unknown';
   resumeId?: string;
   runtimeShell?: RuntimeShell;
+  codexRelationship?: CodexSessionRelationship;
 };
 // 消息内容：支持可选 tags（用于嵌套类型筛选，例如 message.input_text）
 export type MessageContent = {
@@ -352,6 +354,15 @@ function normalizeHistoryPreviewText(value: unknown): string {
 }
 
 /**
+ * 仅为 Codex 现代 session_meta 暴露主代理/子代理关系；其它 Provider 保持无关系字段。
+ */
+function extractHistoryCodexRelationship(providerId: ProviderId, parsed: unknown): CodexSessionRelationship | undefined {
+  if (providerId !== 'codex') return undefined;
+  const relationship = extractCodexSessionRelationship(parsed);
+  return relationship.kind === 'unknown' ? undefined : relationship;
+}
+
+/**
  * 中文说明：识别 Codex 自动注入的上下文块，避免把 AGENTS/环境信息误当成会话标题。
  */
 function isSyntheticCodexContextText(value: string): boolean {
@@ -583,7 +594,7 @@ type HistoryListCacheEntry = {
 };
 
 // 中文说明：历史归属语义变更后提升版本，强制失效旧的列表缓存，避免继续复用错误归属结果。
-const PARSER_VERSION = 'v17';
+const PARSER_VERSION = 'v18';
 const CACHE_SCHEMA_VERSION = '2';
 
 /**
@@ -1294,6 +1305,7 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
               resumeMode,
               resumeId,
               runtimeShell,
+              codexRelationship: extractHistoryCodexRelationship(providerId, parsed),
             };
             if (!seenAll.has(key)) { summariesAll.push(basic); seenAll.add(key); }
             if (belongs && !seenBelongs.has(key)) { summaries.push(basic); seenBelongs.add(key); }
@@ -1548,6 +1560,7 @@ export async function listHistorySplit(project: { wslPath?: string; winPath?: st
                 resumeMode,
                 resumeId,
                 runtimeShell,
+                codexRelationship: extractHistoryCodexRelationship(providerId, parsed),
               });
             } catch {}
           }
@@ -2339,13 +2352,30 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
 // ---------------------------
 
 
-export async function removePathFromCache(filePath: string) {
+/**
+ * 批量移除历史列表缓存中的文件路径，避免关联删除时重复读写同一个缓存文件。
+ */
+export async function removePathsFromCache(filePaths: readonly string[]) {
   try {
+    const targets = new Set(
+      (filePaths || [])
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+        .map((item) => {
+          const normalized = item.replace(/\\/g, "/");
+          return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+        }),
+    );
+    if (targets.size === 0) return;
     const all = loadHistoryCache();
     let changed = false;
     const cleaned = (all || []).map((e) => {
       const before = Array.isArray(e.list) ? e.list.length : 0;
-      const list = (e.list || []).filter((item) => String(item.filePath) !== String(filePath));
+      const list = (e.list || []).filter((item) => {
+        const normalized = String(item.filePath || "").replace(/\\/g, "/");
+        const key = process.platform === "win32" ? normalized.toLowerCase() : normalized;
+        return !targets.has(key);
+      });
       if (list.length !== before) changed = true;
       return { ...e, list } as HistoryListCacheEntry;
     });
@@ -2353,4 +2383,11 @@ export async function removePathFromCache(filePath: string) {
   } catch {}
 }
 
-export default { listHistory, listHistorySplit, readHistoryFile, computeHistoryRoots, debugInfo, removePathFromCache, purgeHistoryCacheIfOutdated };
+/**
+ * 移除单个历史列表缓存路径；兼容旧调用方并复用批量实现。
+ */
+export async function removePathFromCache(filePath: string) {
+  await removePathsFromCache([filePath]);
+}
+
+export default { listHistory, listHistorySplit, readHistoryFile, computeHistoryRoots, debugInfo, removePathFromCache, removePathsFromCache, purgeHistoryCacheIfOutdated };
