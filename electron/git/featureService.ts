@@ -3594,7 +3594,7 @@ async function collectDedicatedFileHistoryEntriesAsync(
  * 读取单个提交的变更文件列表，并尽量识别重命名后保留旧路径信息。
  */
 async function getCommitChangedFilesAsync(ctx: GitFeatureContext, repoRoot: string, hash: string): Promise<GitCommitChangedFile[]> {
-  const res = await runGitExecAsync(ctx, repoRoot, ["diff-tree", "--no-commit-id", "--name-status", "-r", "-M", hash], 12_000);
+  const res = await runGitExecAsync(ctx, repoRoot, ["diff-tree", "--root", "--no-commit-id", "--name-status", "-r", "-M", hash], 12_000);
   if (!res.ok) return [];
   return parseCommitChangedFiles(res.stdout);
 }

@@ -658,7 +658,8 @@ export function CommitTreePane(props: CommitTreePaneProps): React.ReactElement {
       <div
         ref={virtual.containerRef}
         data-testid="commit-tree-scroll"
-        className="min-h-0 h-full overflow-auto cf-scroll-area outline-none"
+        className="relative min-h-0 h-full overflow-auto cf-scroll-area outline-none"
+        aria-busy={busy || undefined}
         tabIndex={0}
         onFocus={onActivate}
         onBlur={(event) => {
@@ -783,7 +784,7 @@ export function CommitTreePane(props: CommitTreePaneProps): React.ReactElement {
           }
         }}
       >
-        {busy ? (
+        {busy && renderRows.length === 0 ? (
           <div className="cf-git-empty-panel flex h-full items-center justify-center gap-2 px-4 text-center text-xs text-[var(--cf-text-secondary)]">
             <Loader2 className="h-4 w-4 animate-spin" />
             {gt("commitTree.loading", "正在刷新变更树")}
@@ -1084,6 +1085,18 @@ export function CommitTreePane(props: CommitTreePaneProps): React.ReactElement {
             <div style={{ height: virtual.windowState.bottom }} />
           </div>
         )}
+        {busy && renderRows.length > 0 ? (
+          <div
+            data-testid="commit-tree-loading-overlay"
+            role="status"
+            className="pointer-events-auto absolute inset-0 z-10 flex cursor-wait items-start justify-center pt-2"
+          >
+            <div className="flex items-center gap-2 rounded-apple-sm border border-[var(--cf-border)] bg-[var(--cf-surface-solid)] px-2 py-1 text-[11px] text-[var(--cf-text-secondary)] shadow-apple-sm">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              {gt("commitTree.loading", "正在刷新变更树")}
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );
