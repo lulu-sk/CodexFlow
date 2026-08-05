@@ -49,7 +49,7 @@ vi.mock("./agentSessions/grok/discovery", async (importOriginal) => {
   };
 });
 
-import { ensureHistoryIndexLoaded, getIndexedSummaries, startHistoryIndexer, stopHistoryIndexer } from "./indexer";
+import { ensureHistoryIndexLoaded, getIndexedCodexSessionRecords, getIndexedSummaries, isCodexRelationIndexReady, requestHistoryFastRefresh, startHistoryIndexer, stopHistoryIndexer } from "./indexer";
 
 const originalCwd = process.cwd();
 const tempDirs: string[] = [];
@@ -99,11 +99,34 @@ async function createCodexSessionFile(lines: unknown[]): Promise<string> {
 }
 
 describe("electron/indexer Codex preview", () => {
+  it("仅在首轮索引完成后允许使用关系快照", async () => {
+    expect(isCodexRelationIndexReady()).toBe(false);
+
+    await startHistoryIndexer(() => null);
+    expect(isCodexRelationIndexReady()).toBe(true);
+
+    await stopHistoryIndexer();
+    expect(isCodexRelationIndexReady()).toBe(false);
+  });
+
+  it("Codex 增量刷新完成前会暂时阻止使用旧关系快照", async () => {
+    const filePath = await createCodexSessionFile([{
+      type: "session_meta",
+      payload: { id: "relation-refresh-session", cwd: "/workspace/project", source: "cli" },
+    }]);
+    await startHistoryIndexer(() => null);
+    expect(isCodexRelationIndexReady()).toBe(true);
+
+    requestHistoryFastRefresh({ providerId: "codex", filePath });
+    expect(isCodexRelationIndexReady()).toBe(false);
+    await vi.waitFor(() => expect(isCodexRelationIndexReady()).toBe(true), { timeout: 2_000 });
+  });
+
   it("首次列表请求可直接加载持久化摘要索引", async () => {
     const cachedFilePath = path.join(os.tmpdir(), "codexflow-cached-session.jsonl");
     const cacheKey = cachedFilePath.replace(/\\/g, "/").toLowerCase();
-    await fsp.writeFile(path.join(userDataDir, "history.index.v17.json"), JSON.stringify({
-      version: "v17",
+    await fsp.writeFile(path.join(userDataDir, "history.index.v18.json"), JSON.stringify({
+      version: "v18",
       savedAt: Date.now(),
       files: {
         [cacheKey]: {
@@ -149,8 +172,8 @@ describe("electron/indexer Codex preview", () => {
     await startHistoryIndexer(() => null);
     await stopHistoryIndexer();
 
-    const index = JSON.parse(await fsp.readFile(path.join(userDataDir, "history.index.v17.json"), "utf8"));
-    const details = JSON.parse(await fsp.readFile(path.join(userDataDir, "history.details.v17.json"), "utf8"));
+    const index = JSON.parse(await fsp.readFile(path.join(userDataDir, "history.index.v18.json"), "utf8"));
+    const details = JSON.parse(await fsp.readFile(path.join(userDataDir, "history.details.v18.json"), "utf8"));
     const detailEntry = Object.values(details.files as Record<string, any>)
       .find((entry: any) => entry?.details?.filePath === filePath) as any;
 
@@ -358,5 +381,45 @@ describe("electron/indexer Codex preview", () => {
     expect(summaries).toHaveLength(1);
     expect(summaries[0].title).toBe("你作为调度者，最终目标是完整推进测试与验收工作");
     expect(summaries[0].preview).toBe("你作为调度者，最终目标是完整推进测试与验收工作");
+  });
+
+  it("会从内存索引返回包含签名和父子关系的 Codex 会话快照", async () => {
+    const filePath = await createCodexSessionFile([
+      {
+        timestamp: "2026-04-29T03:35:01.000Z",
+        type: "session_meta",
+        payload: {
+          id: "session-index-subagent",
+          cwd: "/workspace/project",
+          source: {
+            subagent: {
+              thread_spawn: {
+                parent_thread_id: "session-index-parent",
+                agent_nickname: "researcher",
+                agent_role: "research",
+                depth: 1,
+              },
+            },
+          },
+        },
+      },
+    ]);
+
+    await startHistoryIndexer(() => null);
+    const record = getIndexedCodexSessionRecords().find((item) => item.id === "session-index-subagent");
+
+    expect(record).toMatchObject({
+      id: "session-index-subagent",
+      filePath,
+      relationship: {
+        kind: "subagent",
+        parentThreadId: "session-index-parent",
+        agentNickname: "researcher",
+        agentRole: "research",
+        agentDepth: 1,
+      },
+    });
+    expect(record?.mtimeMs).toBeGreaterThan(0);
+    expect(record?.size).toBeGreaterThan(0);
   });
 });

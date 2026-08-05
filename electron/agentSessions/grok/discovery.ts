@@ -6,6 +6,7 @@ import path from "node:path";
 import { promises as fsp } from "node:fs";
 import type { SessionsRootCandidate } from "../../wsl";
 import { execInWslAsync, getDistroHomeSubPathUNCAsync, listDistrosAsync, wslToUNC } from "../../wsl";
+import { isHistoryDeleteStagingName } from "../../historyFastDelete";
 
 type GrokDiscoverySummary = {
   hidden?: unknown;
@@ -117,10 +118,12 @@ export async function discoverGrokSessionFiles(root: string): Promise<string[]> 
   const projects = await fsp.readdir(baseRoot, { withFileTypes: true }).catch(() => [] as import("node:fs").Dirent[]);
   for (const project of projects) {
     if (!project.isDirectory()) continue;
+    if (isHistoryDeleteStagingName(project.name)) continue;
     const projectDir = path.join(baseRoot, project.name);
     const sessions = await fsp.readdir(projectDir, { withFileTypes: true }).catch(() => [] as import("node:fs").Dirent[]);
     for (const session of sessions) {
       if (!session.isDirectory()) continue;
+      if (isHistoryDeleteStagingName(session.name)) continue;
       const summaryPath = path.join(projectDir, session.name, "summary.json");
       if (await shouldIncludeGrokSummary(summaryPath)) sessionFiles.push(summaryPath);
     }

@@ -50,6 +50,7 @@ import {
   TerminalSquare,
   ExternalLink,
   GitMerge,
+  Loader2,
 } from "lucide-react";
 import { getBuiltInProviders, isBuiltInProviderId } from "@/lib/providers/builtins";
 import { resolveProvider } from "@/lib/providers/resolve";
@@ -65,7 +66,7 @@ import {
 import { resolveFirstAvailableFont, parseFontFamilyList } from "@/lib/font-utils";
 import { resolveSystemTheme, subscribeSystemTheme, type ThemeMode, type ThemeSetting } from "@/lib/theme";
 import type { TerminalThemeId } from "@/types/terminal-theme";
-import type { AppSettings, ProviderEnv, ProviderItem } from "@/types/host";
+import type { AppSettings, OrphanedCodexSubagentCandidate, ProviderEnv, ProviderItem } from "@/types/host";
 import {
   CODEX_AUTO_CONTINUE_ERROR_KINDS,
   CODEX_ERROR_AUTO_CONTINUE_ATTEMPTS_MIN,
@@ -226,6 +227,10 @@ type CleanupResult = {
   ok: number;
   notFound: number;
   failed: number;
+};
+
+type OrphanedSubagentCleanupResult = CleanupResult & {
+  skipped: number;
 };
 
 type AppDataInfo = {
@@ -704,6 +709,14 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   const [cleanupResult, setCleanupResult] = useState<CleanupResult | null>(null);
   const [cleanupWarningOpen, setCleanupWarningOpen] = useState(false);
   const [cleanupFeedback, setCleanupFeedback] = useState<{ open: boolean; message: string; isError: boolean }>({ open: false, message: "", isError: false });
+  const [orphanedSubagentScanning, setOrphanedSubagentScanning] = useState(false);
+  const [orphanedSubagentOpen, setOrphanedSubagentOpen] = useState(false);
+  const [orphanedSubagentList, setOrphanedSubagentList] = useState<OrphanedCodexSubagentCandidate[]>([]);
+  const [orphanedSubagentSelectedPaths, setOrphanedSubagentSelectedPaths] = useState<Set<string>>(() => new Set());
+  const [orphanedSubagentRunning, setOrphanedSubagentRunning] = useState(false);
+  const [orphanedSubagentWarningOpen, setOrphanedSubagentWarningOpen] = useState(false);
+  const [orphanedSubagentResult, setOrphanedSubagentResult] = useState<OrphanedSubagentCleanupResult | null>(null);
+  const [orphanedSubagentFeedback, setOrphanedSubagentFeedback] = useState<{ open: boolean; message: string; isError: boolean }>({ open: false, message: "", isError: false });
   const [storageInfo, setStorageInfo] = useState<AppDataInfo | null>(null);
   const [storageLoading, setStorageLoading] = useState(false);
   const [storageClearing, setStorageClearing] = useState(false);
@@ -1114,6 +1127,10 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     }
   }, [cleanupOpen]);
 
+  useEffect(() => {
+    if (!orphanedSubagentOpen) setOrphanedSubagentWarningOpen(false);
+  }, [orphanedSubagentOpen]);
+
   const handleCleanupExecute = useCallback(async () => {
     if (cleanupList.length === 0) {
       setCleanupWarningOpen(false);
@@ -1158,6 +1175,65 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
       setCleanupWarningOpen(false);
     }
   }, [cleanupList, t]);
+
+  /**
+   * 扫描父会话已不存在的 Codex 子代理，并默认选中全部安全候选。
+   */
+  const handleScanOrphanedSubagents = useCallback(async () => {
+    setOrphanedSubagentScanning(true);
+    setOrphanedSubagentResult(null);
+    try {
+      const response = await window.host.history.findOrphanedCodexSubagents();
+      if (!response?.ok) throw new Error(response?.error || "scan failed");
+      const candidates = Array.isArray(response.candidates) ? response.candidates : [];
+      setOrphanedSubagentList(candidates);
+      setOrphanedSubagentSelectedPaths(new Set(candidates.map((item) => item.filePath)));
+      setOrphanedSubagentOpen(true);
+    } catch {
+      setOrphanedSubagentFeedback({
+        open: true,
+        message: String(t("settings:orphanedSubagents.scanFailed")),
+        isError: true,
+      });
+    } finally {
+      setOrphanedSubagentScanning(false);
+    }
+  }, [t]);
+
+  /**
+   * 删除用户选中的孤立子代理；主进程会再次扫描并跳过关系已恢复的会话。
+   */
+  const handleDeleteOrphanedSubagents = useCallback(async () => {
+    const filePaths = Array.from(orphanedSubagentSelectedPaths);
+    if (filePaths.length === 0) {
+      setOrphanedSubagentWarningOpen(false);
+      return;
+    }
+    setOrphanedSubagentRunning(true);
+    setOrphanedSubagentWarningOpen(false);
+    setOrphanedSubagentOpen(false);
+    try {
+      const response = await window.host.history.deleteOrphanedCodexSubagents({ filePaths });
+      if (!response?.ok) throw new Error(response?.error || "delete failed");
+      const summary: OrphanedSubagentCleanupResult = response.summary || { ok: 0, notFound: 0, failed: 0, skipped: 0 };
+      setOrphanedSubagentResult(summary);
+      setOrphanedSubagentList([]);
+      setOrphanedSubagentSelectedPaths(new Set());
+      setOrphanedSubagentFeedback({
+        open: true,
+        message: String(t("settings:orphanedSubagents.result", summary)),
+        isError: false,
+      });
+    } catch {
+      setOrphanedSubagentFeedback({
+        open: true,
+        message: String(t("settings:orphanedSubagents.deleteFailed")),
+        isError: true,
+      });
+    } finally {
+      setOrphanedSubagentRunning(false);
+    }
+  }, [orphanedSubagentSelectedPaths, t]);
 
   const refreshAppDataInfo = useCallback(async () => {
     const api = (window as any).host?.storage?.getAppDataInfo;
@@ -2877,6 +2953,31 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
             </Card>
             <Card>
               <CardHeader>
+                <CardTitle>{t("settings:orphanedSubagents.label")}</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <p className="text-sm text-slate-500">{t("settings:orphanedSubagents.desc")}</p>
+                <div className="flex flex-wrap items-center gap-3">
+                  <Button
+                    variant="secondary"
+                    className="border border-red-200 text-red-600 hover:bg-red-50 dark:border-[var(--cf-red-light)] dark:text-[var(--cf-red)] dark:hover:bg-[var(--cf-red-light)]"
+                    disabled={orphanedSubagentScanning || orphanedSubagentRunning}
+                    onClick={() => { void handleScanOrphanedSubagents(); }}
+                  >
+                    {orphanedSubagentScanning
+                      ? t("settings:orphanedSubagents.scanning")
+                      : t("settings:orphanedSubagents.scan")}
+                  </Button>
+                  {orphanedSubagentResult && (
+                    <span className="text-xs text-slate-600 dark:text-slate-400">
+                      {t("settings:orphanedSubagents.result", orphanedSubagentResult)}
+                    </span>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader>
                 <CardTitle>{t("settings:appData.label")}</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -3140,6 +3241,9 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     cleanupResult,
     cleanupRunning,
     cleanupScanning,
+    orphanedSubagentResult,
+    orphanedSubagentRunning,
+    orphanedSubagentScanning,
     codexRoots,
     claudeRoots,
     geminiRoots,
@@ -3182,6 +3286,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     refreshAppDataInfo,
     refreshAutoProfilesInfo,
     refreshWorktreeProfilesInfo,
+    handleScanOrphanedSubagents,
     t,
     terminalFontFamily,
     terminalTheme,
@@ -3671,6 +3776,136 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
           )}
           <div className="flex justify-end pt-4">
             <Button onClick={() => setCleanupFeedback((prev) => ({ ...prev, open: false }))}>
+              {t("common:ok")}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={orphanedSubagentOpen} onOpenChange={setOrphanedSubagentOpen}>
+        <DialogContent className="w-[80vw] max-w-4xl">
+          <DialogHeader>
+            <DialogTitle>{t("settings:orphanedSubagents.dialogTitle")}</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-slate-500 dark:text-slate-400">
+            {t("settings:orphanedSubagents.dialogDesc", {
+              count: orphanedSubagentList.length,
+              selected: orphanedSubagentSelectedPaths.size,
+            })}
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={orphanedSubagentList.length === 0 || orphanedSubagentRunning}
+              onClick={() => setOrphanedSubagentSelectedPaths(new Set(orphanedSubagentList.map((item) => item.filePath)))}
+            >
+              {t("settings:orphanedSubagents.selectAll")}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={orphanedSubagentSelectedPaths.size === 0 || orphanedSubagentRunning}
+              onClick={() => setOrphanedSubagentSelectedPaths(new Set())}
+            >
+              {t("settings:orphanedSubagents.clearSelection")}
+            </Button>
+          </div>
+          <div className="max-h-[56vh] overflow-auto rounded-lg border border-slate-200 bg-slate-50 text-xs dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)]">
+            {orphanedSubagentList.length > 0 ? (
+              <div className="divide-y divide-slate-200 dark:divide-slate-700">
+                {orphanedSubagentList.map((item) => {
+                  const checked = orphanedSubagentSelectedPaths.has(item.filePath);
+                  const agentLabel = [item.agentRole, item.agentNickname].filter(Boolean).join(" · ")
+                    || t("settings:orphanedSubagents.unknownAgent");
+                  const parentTail = item.parentThreadId.slice(-8);
+                  return (
+                    <label
+                      key={item.filePath}
+                      className="flex cursor-pointer items-start gap-3 px-3 py-2.5 transition-colors hover:bg-white dark:hover:bg-slate-800/70"
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-1 h-4 w-4 shrink-0 accent-slate-700"
+                        checked={checked}
+                        disabled={orphanedSubagentRunning}
+                        onChange={(event) => {
+                          setOrphanedSubagentSelectedPaths((current) => {
+                            const next = new Set(current);
+                            if (event.target.checked) next.add(item.filePath);
+                            else next.delete(item.filePath);
+                            return next;
+                          });
+                        }}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium text-slate-800 dark:text-slate-100" title={item.title}>
+                          {item.title}
+                        </span>
+                        <span className="mt-0.5 block truncate text-[11px] text-slate-600 dark:text-slate-400">
+                          {agentLabel} · {t("settings:orphanedSubagents.parentId", { id: `…${parentTail}` })}
+                        </span>
+                        <span className="mt-0.5 block truncate font-mono text-[10px] text-slate-500" title={item.filePath}>
+                          {new Date(item.date).toLocaleString()} · {typeof item.sizeKB === "number" ? `${item.sizeKB} KB` : "—"} · {item.filePath}
+                        </span>
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="p-5 text-center text-slate-500">{t("settings:orphanedSubagents.empty")}</div>
+            )}
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" disabled={orphanedSubagentRunning} onClick={() => setOrphanedSubagentOpen(false)}>
+              {t("common:cancel")}
+            </Button>
+            <Button
+              variant="danger"
+              disabled={orphanedSubagentSelectedPaths.size === 0 || orphanedSubagentRunning}
+              onClick={() => setOrphanedSubagentWarningOpen(true)}
+            >
+              <Trash2 className="mr-2 h-4 w-4" />
+              {t("settings:orphanedSubagents.deleteSelected", { count: orphanedSubagentSelectedPaths.size })}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={orphanedSubagentWarningOpen} onOpenChange={setOrphanedSubagentWarningOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>{t("settings:orphanedSubagents.warningTitle")}</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-slate-500 dark:text-slate-400">
+            {t("settings:orphanedSubagents.warningDesc", { count: orphanedSubagentSelectedPaths.size })}
+          </p>
+          <div className="flex justify-end gap-2 pt-4">
+            <Button variant="outline" disabled={orphanedSubagentRunning} onClick={() => setOrphanedSubagentWarningOpen(false)}>
+              {t("common:cancel")}
+            </Button>
+            <Button variant="danger" disabled={orphanedSubagentRunning} onClick={() => { void handleDeleteOrphanedSubagents(); }}>
+              {orphanedSubagentRunning ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Trash2 className="mr-2 h-4 w-4" />}
+              {orphanedSubagentRunning
+                ? t("settings:orphanedSubagents.deleting")
+                : t("settings:orphanedSubagents.warningConfirm")}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={orphanedSubagentFeedback.open} onOpenChange={(openState) => setOrphanedSubagentFeedback((prev) => ({ ...prev, open: openState }))}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>
+              {orphanedSubagentFeedback.isError
+                ? t("settings:orphanedSubagents.feedbackErrorTitle")
+                : t("settings:orphanedSubagents.feedbackSuccessTitle")}
+            </DialogTitle>
+          </DialogHeader>
+          <p className={cn("text-sm", orphanedSubagentFeedback.isError ? "text-red-600" : "text-slate-600 dark:text-slate-400")}>
+            {orphanedSubagentFeedback.message}
+          </p>
+          <div className="flex justify-end pt-4">
+            <Button onClick={() => setOrphanedSubagentFeedback((prev) => ({ ...prev, open: false }))}>
               {t("common:ok")}
             </Button>
           </div>

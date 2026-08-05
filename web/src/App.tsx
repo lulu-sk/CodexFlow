@@ -109,6 +109,7 @@ import {
 import { VirtualizedList, type VirtualizedListHandle } from "@/features/history/virtualized-list";
 import { buildHistoryUserInputMessageKeys } from "@/features/history/user-input-anchors";
 import { applyHistoryFindHighlights, clearHistoryFindHighlights, setActiveHistoryFindMatch } from "@/features/history/find/history-find";
+import { buildHistorySessionTree, flattenHistorySessionDescendants, historySessionTreeSome } from "@/features/history/session-tree";
 import { toWSLForInsert } from "@/lib/wsl";
 import { probeWinPathKind, type WinPathProbeResult } from "@/lib/dragDrop";
 import { extractGeminiProjectHashFromPath, deriveGeminiProjectHashCandidatesFromPath } from "@/lib/gemini-hash";
@@ -241,6 +242,7 @@ import type {
   WorktreeCreateTaskStatus,
   WorktreeRecycleTaskSnapshot,
   WorktreeRecycleTaskStatus,
+  CodexRelationDeletePlan,
 } from "@/types/host";
 import type { TerminalThemeId } from "@/types/terminal-theme";
 
@@ -4951,10 +4953,20 @@ export default function CodexFlowManagerUI() {
 
   const [historyQuery, setHistoryQuery] = useState("");
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+  const [expandedHistoryAgentTrees, setExpandedHistoryAgentTrees] = useState<Record<string, boolean>>({});
   const [historyCtxMenu, setHistoryCtxMenu] = useState<{ show: boolean; x: number; y: number; item: HistorySession | null; groupKey: string | null }>({ show: false, x: 0, y: 0, item: null, groupKey: null });
   const historyCtxMenuRef = useRef<HTMLDivElement | null>(null);
   // 历史删除确认（应用内对话框，替代 window.confirm，避免同步阻塞导致的焦点/指针异常）
-  const [confirmDelete, setConfirmDelete] = useState<{ open: boolean; item: HistorySession | null; groupKey: string | null; deleting: boolean }>({ open: false, item: null, groupKey: null, deleting: false });
+  const [confirmDelete, setConfirmDelete] = useState<{
+    open: boolean;
+    item: HistorySession | null;
+    groupKey: string | null;
+    deleting: boolean;
+    deletingMode: "current" | "tree" | null;
+    planning: boolean;
+    relationCheckFailed: boolean;
+    plan: CodexRelationDeletePlan | null;
+  }>({ open: false, item: null, groupKey: null, deleting: false, deletingMode: null, planning: false, relationCheckFailed: false, plan: null });
   // 标签关闭确认：手动关闭 working 标签页或带未发送输入内容的标签页时弹出。
   const [closeWorkingTabConfirm, setCloseWorkingTabConfirm] = useState<CloseWorkingTabConfirmState>({
     open: false,
@@ -5184,6 +5196,8 @@ export default function CodexFlowManagerUI() {
       const titleSource = (session.title || '').toLowerCase();
       const pathSource = (session.filePath || '').toLowerCase();
       const previewSource = (session.preview || '').toLowerCase();
+      const agentNicknameSource = (session.codexRelationship?.agentNickname || '').toLowerCase();
+      const agentRoleSource = (session.codexRelationship?.agentRole || '').toLowerCase();
       const normalizedQuery = q.replace(/\\/g, '/');
       const relaxedQuery = normalizedQuery.replace(/\/+$/g, '');
       const normalizedTitle = titleSource.replace(/\\/g, '/');
@@ -5193,6 +5207,8 @@ export default function CodexFlowManagerUI() {
         titleSource.includes(q) ||
         pathSource.includes(q) ||
         previewSource.includes(q) ||
+        agentNicknameSource.includes(q) ||
+        agentRoleSource.includes(q) ||
         normalizedTitle.includes(normalizedQuery) ||
         normalizedPath.includes(normalizedQuery) ||
         normalizedPreview.includes(normalizedQuery) ||
@@ -5310,6 +5326,16 @@ export default function CodexFlowManagerUI() {
       resumeMode: normalizeResumeMode(it?.resumeMode),
       resumeId: typeof it?.resumeId === "string" ? it.resumeId : undefined,
       runtimeShell: it?.runtimeShell === "windows" ? "windows" : (it?.runtimeShell === "wsl" ? "wsl" : "unknown"),
+      codexRelationship: it?.codexRelationship && typeof it.codexRelationship === "object"
+        && (it.codexRelationship.kind === "main" || it.codexRelationship.kind === "subagent" || it.codexRelationship.kind === "unknown")
+        ? {
+          kind: it.codexRelationship.kind,
+          parentThreadId: typeof it.codexRelationship.parentThreadId === "string" ? it.codexRelationship.parentThreadId : undefined,
+          agentNickname: typeof it.codexRelationship.agentNickname === "string" ? it.codexRelationship.agentNickname : undefined,
+          agentRole: typeof it.codexRelationship.agentRole === "string" ? it.codexRelationship.agentRole : undefined,
+          agentDepth: typeof it.codexRelationship.agentDepth === "number" ? it.codexRelationship.agentDepth : undefined,
+        }
+        : undefined,
     };
   }, []);
   /**
@@ -11396,11 +11422,126 @@ export default function CodexFlowManagerUI() {
   /**
    * 打开历史记录“删除到回收站”确认弹窗（用于悬停快捷键 Delete/Del）。
    */
-  const openHistoryDeleteConfirm = useCallback((item: HistorySession | null, groupKey: string | null) => {
+  const openHistoryDeleteConfirm = useCallback(async (item: HistorySession | null, groupKey: string | null) => {
     if (!item) return;
-    setConfirmDelete({ open: true, item, groupKey, deleting: false });
     setHistoryCtxMenu((m) => ({ ...m, show: false }));
+    const shouldPlan = item.providerId === "codex"
+      && !!item.filePath
+      && (item.codexRelationship?.kind === "main" || item.codexRelationship?.kind === "subagent");
+    setConfirmDelete({ open: true, item, groupKey, deleting: false, deletingMode: null, planning: shouldPlan, relationCheckFailed: false, plan: null });
+    if (!shouldPlan || !item.filePath) return;
+    try {
+      const response = await window.host.history.getCodexRelationPlan({ filePath: item.filePath });
+      const plan = response?.ok && response.plan?.supported ? response.plan : null;
+      setConfirmDelete((current) => {
+        if (!current.open || current.item?.filePath !== item.filePath) return current;
+        return { ...current, planning: false, relationCheckFailed: !plan, plan };
+      });
+    } catch {
+      setConfirmDelete((current) => {
+        if (!current.open || current.item?.filePath !== item.filePath) return current;
+        return { ...current, planning: false, relationCheckFailed: true, plan: null };
+      });
+    }
   }, []);
+
+  /**
+   * 根据主进程返回的真实删除结果更新列表、缓存与当前选中会话。
+   */
+  const applyDeletedHistoryResults = useCallback((
+    results: Array<{ filePath: string; ok: boolean }>,
+    fallbackItem: HistorySession,
+    groupKey: string,
+  ) => {
+    const deletedPathKeys = new Set(
+      results
+        .filter((result) => result.ok)
+        .map((result) => String(result.filePath || "").replace(/\\/g, "/").toLowerCase())
+        .filter(Boolean),
+    );
+    if (deletedPathKeys.size === 0) return;
+    setHistorySessions((current) => {
+      const list = current.filter((session) => {
+        const key = String(session.filePath || "").replace(/\\/g, "/").toLowerCase();
+        return !key || !deletedPathKeys.has(key);
+      });
+      const projectKey = historyScopeDescriptor.cacheKey;
+      if (projectKey) {
+        setHistoryCache(projectKey, {
+          sessions: list,
+          hasMore: historyHasMoreRef.current,
+          nextOffset: historyNextOffsetRef.current,
+        });
+      }
+      const selectedWasDeleted = current.some((session) => {
+        if (session.id !== selectedHistoryId) return false;
+        const key = String(session.filePath || "").replace(/\\/g, "/").toLowerCase();
+        return !!key && deletedPathKeys.has(key);
+      });
+      if (selectedWasDeleted || selectedHistoryId === fallbackItem.id && !list.some((session) => session.id === fallbackItem.id)) {
+        const nowRef = new Date();
+        const keyOf = (session?: HistorySession) => historyTimelineGroupKey(session, nowRef);
+        const restInGroup = list
+          .filter((session) => keyOf(session) === groupKey)
+          .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        if (restInGroup.length > 0) {
+          setSelectedHistoryId(restInGroup[0].id);
+        } else {
+          const firstKey = Array.from(new Set(list.map((session) => keyOf(session))))[0] || null;
+          setSelectedHistoryDir(firstKey);
+          const firstInGroup = firstKey
+            ? list.filter((session) => keyOf(session) === firstKey)
+              .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0]
+            : undefined;
+          setSelectedHistoryId(firstInGroup?.id || null);
+        }
+        setCenterMode('history');
+      }
+      return list;
+    });
+  }, [historyScopeDescriptor.cacheKey, selectedHistoryId, setHistoryCache]);
+
+  /**
+   * 执行普通单会话删除或带版本复核的 Codex 关联删除。
+   */
+  const executeHistoryDelete = useCallback(async (mode: "current" | "tree") => {
+    const item = confirmDelete.item;
+    const plan = confirmDelete.plan;
+    if (!item?.filePath) {
+      setConfirmDelete((current) => ({ ...current, open: false }));
+      return;
+    }
+    const fallbackKey = historyTimelineGroupKey(item, new Date());
+    const groupKey = confirmDelete.groupKey || fallbackKey;
+    setConfirmDelete((current) => ({ ...current, deleting: true, deletingMode: mode }));
+    try {
+      const response = plan?.version
+        ? await window.host.history.deleteCodexRelation({ filePath: item.filePath, version: plan.version, mode })
+        : await window.host.history.trash({ filePath: item.filePath });
+      if (!response?.ok) {
+        const code = 'code' in response ? response.code : undefined;
+        const message = code === "stale_plan"
+          ? t('history:relationPlanChanged')
+          : code === "external_references"
+            ? t('history:externalReferenceBlocked')
+            : t('history:cannotDelete', { error: response && 'error' in response ? response.error || 'unknown' : 'unknown' });
+        alert(String(message));
+        return;
+      }
+      const results = 'results' in response && Array.isArray(response.results)
+        ? response.results
+        : [{ filePath: item.filePath, ok: true }];
+      applyDeletedHistoryResults(results, item, groupKey);
+      const failedCount = results.filter((result) => !result.ok).length;
+      if (failedCount > 0) alert(String(t('history:relationPartialFailure', { count: failedCount })));
+    } catch (error: any) {
+      alert(String(t('history:deleteFailed', { error: String(error) })));
+    } finally {
+      setConfirmDelete({ open: false, item: null, groupKey: null, deleting: false, deletingMode: null, planning: false, relationCheckFailed: false, plan: null });
+      try { document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); } catch {}
+      try { document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true } as any)); } catch {}
+    }
+  }, [applyDeletedHistoryResults, confirmDelete.groupKey, confirmDelete.item, confirmDelete.plan, t]);
 
   /**
    * 判断当前是否存在打开的应用内 Dialog（用于避免悬停快捷键在弹窗期间误触）。
@@ -13048,6 +13189,8 @@ export default function CodexFlowManagerUI() {
     ).project;
   }, [historyScopeDescriptor.effectiveScope, resolveHistoryActionTarget, selectedHistorySessionForDetail, selectedProject]);
 
+  const historySessionTree = useMemo(() => buildHistorySessionTree(historySessions), [historySessions]);
+
   const timelineGroups = useMemo<HistoryTimelineGroup[]>(() => {
     const baseNow = historyNow;
     const mp = new Map<string, HistoryTimelineGroup>();
@@ -13068,7 +13211,7 @@ export default function CodexFlowManagerUI() {
           return t('history:groupUnknown') as string;
       }
     };
-    for (const s of historySessions) {
+    for (const { session: s } of historySessionTree.roots) {
       const meta = resolveHistoryTimelineMeta(s, baseNow);
       const key = meta.key;
       const group =
@@ -13096,7 +13239,7 @@ export default function CodexFlowManagerUI() {
       g.sessions.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
     }
     return sorted;
-  }, [historySessions, todayKey, monthFormatter, t, historyNow]);
+  }, [historySessionTree, todayKey, monthFormatter, t, historyNow]);
 
   const filteredTimelineGroups = useMemo(() => {
     const q = historyQuery.trim().toLowerCase();
@@ -13104,9 +13247,17 @@ export default function CodexFlowManagerUI() {
     return timelineGroups.filter((g) => {
       if ((g.label || '').toLowerCase().includes(q)) return true;
       if ((g.latestTitle || '').toLowerCase().includes(q)) return true;
-      return g.sessions.some((s) => sessionMatchesQuery(s, q));
+      return g.sessions.some((s) => {
+        const node = historySessionTree.byId.get(String(s.id || '').trim().toLowerCase());
+        return !!node && historySessionTreeSome(node, (session) => sessionMatchesQuery(session, q));
+      });
     });
-  }, [timelineGroups, historyQuery, sessionMatchesQuery]);
+  }, [timelineGroups, historyQuery, sessionMatchesQuery, historySessionTree]);
+  const historySessionById = useMemo(() => {
+    const sessions = new Map<string, HistorySession>();
+    for (const session of historySessions) sessions.set(String(session.id || "").trim().toLowerCase(), session);
+    return sessions;
+  }, [historySessions]);
   const shouldShowHistoryProjectLabel = historyScopeDescriptor.effectiveScope !== "current_project";
   const historyScopeOptions = useMemo<HistoryScopeOption[]>(() => ([
     {
@@ -13206,8 +13357,14 @@ export default function CodexFlowManagerUI() {
           {filteredTimelineGroups.map((g) => {
             const inGroup = g.sessions;
             const q = historyQuery.trim().toLowerCase();
-            const match = q ? inGroup.find((s) => sessionMatchesQuery(s, q)) : null;
-            const target = match || inGroup[0] || null;
+            const rootNodes = inGroup.flatMap((session) => {
+              const node = historySessionTree.byId.get(String(session.id || '').trim().toLowerCase());
+              return node ? [node] : [];
+            });
+            const matchingRoot = q
+              ? rootNodes.find((node) => historySessionTreeSome(node, (session) => sessionMatchesQuery(session, q))) || null
+              : null;
+            const target = matchingRoot?.session || inGroup[0] || null;
             const latestLabel = (() => {
               if (!target) return '';
               const candidate = target.filePath || '';
@@ -13221,9 +13378,26 @@ export default function CodexFlowManagerUI() {
               }
               return timeFromFilename(candidate);
             })();
-            const defaultExpanded = (!!q && !!match) || selectedHistoryDir === g.key;
+            const defaultExpanded = (!!q && !!matchingRoot) || selectedHistoryDir === g.key;
             const expanded = (expandedGroups[g.key] ?? defaultExpanded);
-            const displayList = q ? inGroup.filter((s) => sessionMatchesQuery(s, q)) : inGroup;
+            const queryMatchesGroupLabel = !!q && (g.label || '').toLowerCase().includes(q);
+            const displayRoots = q && !queryMatchesGroupLabel
+              ? rootNodes.filter((node) => historySessionTreeSome(node, (session) => sessionMatchesQuery(session, q)))
+              : rootNodes;
+            const displayRows = displayRoots.flatMap((root) => {
+              const rootNode = root!;
+              const treeKey = String(rootNode.session.id || '').trim().toLowerCase();
+              const hasSelectedDescendant = historySessionTreeSome(rootNode, (session) => session.id === selectedHistoryId);
+              const hasQueryMatch = !!q && historySessionTreeSome(rootNode, (session) => sessionMatchesQuery(session, q));
+              const defaultTreeExpanded = hasSelectedDescendant || hasQueryMatch;
+              const treeExpanded = expandedHistoryAgentTrees[treeKey] ?? defaultTreeExpanded;
+              return [
+                { node: rootNode, depth: 0, treeExpanded },
+                ...(treeExpanded
+                  ? flattenHistorySessionDescendants(rootNode).map(({ node, depth }) => ({ node, depth, treeExpanded: false }))
+                  : []),
+              ];
+            });
             const isSelectedGroup = selectedHistoryDir === g.key;
             const groupShellClass = `min-w-0 rounded-xl bg-transparent overflow-hidden`;
             const headerButtonClass = `group sticky -top-1 z-20 flex min-w-0 items-center gap-2 overflow-hidden px-2 py-1.5 w-full text-left border border-transparent outline-none focus:outline-none transition-colors ${
@@ -13258,9 +13432,10 @@ export default function CodexFlowManagerUI() {
                   </div>
 
                 </button>
-                {expanded && displayList.length > 0 && (
+                {expanded && displayRows.length > 0 && (
                   <div className="mt-0.5 min-w-0 space-y-0.5 pb-1 pl-2 pr-2">
-                    {displayList.map((s) => {
+                    {displayRows.map(({ node, depth, treeExpanded }) => {
+                      const s = node.session;
                       const sessionKey = String(s.filePath || s.id);
                       const projectMatch = historySessionProjectMetaMap.get(sessionKey) || null;
                       const anchor = historySessionDate(s);
@@ -13269,16 +13444,48 @@ export default function CodexFlowManagerUI() {
                       const previewSource = s.preview || s.title || s.filePath || '';
                       const providerIconSrc = getProviderIconSrc(s.providerId, providerItemById, themeMode);
                       const relativeLabel = describeRelativeAge(anchor, historyNow) || '--';
+                      const relationship = s.providerId === "codex" ? s.codexRelationship : undefined;
+                      const relationParts = relationship?.kind === "subagent"
+                        ? [t('history:subagent'), relationship.agentRole, relationship.agentNickname].filter(Boolean)
+                        : [];
+                      const parentId = String(relationship?.parentThreadId || "").trim().toLowerCase();
+                      const parentSession = parentId ? historySessionById.get(parentId) : undefined;
+                      const parentLabel = parentSession
+                        ? (parentSession.preview || parentSession.title || parentSession.id)
+                        : (parentId ? `…${parentId.slice(-8)}` : "");
+                      const fromParentText = depth === 0 && relationship?.kind === "subagent" && parentLabel
+                        ? String(t('history:fromParent', { parent: parentLabel }))
+                        : "";
                       const tooltip = [absoluteLabel, projectMatch?.projectName, previewSource].filter(Boolean).join('  ');
-                      const itemClass = `block w-full min-w-0 overflow-hidden rounded px-2 py-0.5 text-left text-xs border outline-none focus:outline-none ${
+                      const itemClass = `min-w-0 flex-1 overflow-hidden rounded px-2 py-0.5 text-left text-xs border outline-none focus:outline-none ${
                         active
                           ? 'bg-slate-200 border-slate-300 dark:bg-slate-700 dark:border-slate-600 dark:text-slate-100'
                           : 'bg-transparent border-transparent text-slate-800 dark:text-slate-200 hover:bg-slate-100 hover:border-slate-200 dark:hover:bg-slate-900/40 dark:hover:border-slate-700'
                       }`;
-
+                      const canToggleTree = depth === 0 && node.descendantCount > 0;
+                      const treeLabel = treeExpanded ? (t('history:collapse') as string) : (t('history:expand') as string);
                       return (
-                        <button
+                        <div
                           key={s.filePath || s.id}
+                          className="flex min-w-0 items-start gap-px"
+                          style={{ paddingLeft: `${depth > 0 ? 13 + Math.min(depth - 1, 5) * 12 : 0}px` }}
+                        >
+                          {canToggleTree ? (
+                            <button
+                              type="button"
+                              className="flex h-3 w-3 shrink-0 self-center items-center justify-center rounded p-0 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cf-accent)] dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+                              title={treeLabel}
+                              aria-label={treeLabel}
+                              aria-expanded={treeExpanded}
+                              onClick={() => {
+                                const key = String(s.id || '').trim().toLowerCase();
+                                setExpandedHistoryAgentTrees((current) => ({ ...current, [key]: !treeExpanded }));
+                              }}
+                            >
+                              {treeExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                            </button>
+                          ) : null}
+                          <button
                           data-cf-history-row-id={s.id}
                           data-cf-history-group-key={g.key}
                           onClick={() => { void openHistorySession(s, g.key); }}
@@ -13301,6 +13508,16 @@ export default function CodexFlowManagerUI() {
                                 >
                                   {previewSource || absoluteLabel || '--'}
                                 </span>
+                                {relationParts.length > 0 && (
+                                  <span className="mt-0.5 inline-block max-w-full truncate rounded border border-slate-200 bg-slate-50 px-1 text-[10px] leading-4 text-slate-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-400">
+                                    {relationParts.join(' · ')}
+                                  </span>
+                                )}
+                                {relationship?.kind === "subagent" && fromParentText ? (
+                                  <span className="block min-w-0 truncate text-[10px] leading-4 text-slate-500 dark:text-slate-400" title={fromParentText}>
+                                    {fromParentText}
+                                  </span>
+                                ) : null}
                                 {shouldShowHistoryProjectLabel && projectMatch?.projectName ? (
                                   <span
                                     className={`block min-w-0 truncate text-[10px] leading-4 ${active ? 'text-slate-600 dark:text-slate-400' : 'text-slate-500 dark:text-slate-400'}`}
@@ -13319,11 +13536,9 @@ export default function CodexFlowManagerUI() {
                             </span>
                           </div>
                         </button>
+                        </div>
                       );
                     })}
-                    {!q && inGroup.length > displayList.length && (
-                      <div className="truncate px-2 py-1 text-[11px] text-slate-500">{t('history:showing', { total: inGroup.length, count: displayList.length })}</div>
-                    )}
                   </div>
                 )}
               </div>
@@ -13426,12 +13641,66 @@ export default function CodexFlowManagerUI() {
           try { document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true } as any)); } catch {}
         }
       }}>
-        <DialogContent className="max-w-sm">
+        <DialogContent className={confirmDelete.plan && confirmDelete.plan.items.length > 1 ? "max-w-lg" : "max-w-sm"}>
           <DialogHeader>
-            <DialogTitle>{t('settings:cleanupConfirm.title')}</DialogTitle>
+            <DialogTitle>
+              {confirmDelete.plan && confirmDelete.plan.items.length > 1 ? t('history:relationDeleteTitle') : t('settings:cleanupConfirm.title')}
+            </DialogTitle>
             <DialogDescription>
-              {t('history:confirmPermanentDelete')}
-              {confirmDelete.item && (
+              {confirmDelete.planning ? (
+                <span className="flex items-center gap-2 py-2">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  {t('history:checkingRelations')}
+                </span>
+              ) : confirmDelete.relationCheckFailed ? (
+                <span className="flex items-start gap-2 py-2 text-amber-700 dark:text-amber-300">
+                  <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
+                  {t('history:relationCheckFailed')}
+                </span>
+              ) : confirmDelete.plan && confirmDelete.plan.items.length > 1 ? (
+                <span>{t('history:relationDeleteDesc', { count: confirmDelete.plan.items.length })}</span>
+              ) : (
+                <span>{t('history:confirmPermanentDelete')}</span>
+              )}
+              {!confirmDelete.planning && confirmDelete.plan && confirmDelete.plan.items.length > 1 ? (
+                <div className="mt-3 space-y-3 text-left">
+                  <div className="max-h-64 overflow-auto rounded-lg border border-slate-200 bg-slate-50 p-2 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)]">
+                    {confirmDelete.plan.items.map((planItem) => {
+                      const relation = planItem.relationship;
+                      const meta = [relation.agentRole, relation.agentNickname].filter(Boolean).join(' · ');
+                      const isTarget = planItem.id === confirmDelete.plan?.targetId;
+                      return (
+                        <div
+                          key={planItem.filePath}
+                          className={`flex min-w-0 items-start gap-2 rounded px-2 py-1.5 text-xs ${isTarget ? 'bg-white shadow-sm dark:bg-slate-800' : ''}`}
+                          style={{ paddingLeft: `${8 + Math.min(planItem.depth, 6) * 18}px` }}
+                        >
+                          <span className="mt-0.5 shrink-0 text-slate-400">{planItem.depth === 0 ? '●' : '└'}</span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate font-medium text-[var(--cf-text-primary)]" title={planItem.title}>
+                              {planItem.title}
+                            </span>
+                            <span className="block truncate text-[10px] text-slate-500">
+                              {planItem.depth === 0 ? t('history:mainAgent') : t('history:subagent')}
+                              {meta ? ` · ${meta}` : ''}
+                              {isTarget ? ` · ${t('history:currentSession')}` : ''}
+                            </span>
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {confirmDelete.item?.codexRelationship?.kind === "subagent" ? (
+                    <p className="text-xs text-slate-500">{t('history:relationDeleteFromSubagent')}</p>
+                  ) : null}
+                  {confirmDelete.plan.externalReferenceIds.length > 0 ? (
+                    <div className="flex gap-2 rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-200">
+                      <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
+                      <span>{t('history:externalReferenceWarning', { count: confirmDelete.plan.externalReferenceIds.length })}</span>
+                    </div>
+                  ) : null}
+                </div>
+              ) : !confirmDelete.planning && !confirmDelete.relationCheckFailed && confirmDelete.item ? (
                 <div className="mt-3 rounded border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:text-[var(--cf-text-secondary)]">
                   <div className="font-semibold text-[var(--cf-text-primary)] mb-1 truncate">
                     {confirmDelete.item.title || t('history:untitledSessionTitle')}
@@ -13442,66 +13711,37 @@ export default function CodexFlowManagerUI() {
                     </div>
                   )}
                 </div>
-              )}
+              ) : null}
             </DialogDescription>
           </DialogHeader>
-          <div className="flex justify-end gap-2 pt-2">
-            <Button variant="outline" disabled={confirmDelete.deleting} onClick={() => setConfirmDelete((m) => ({ ...m, open: false }))}>{t('common:cancel')}</Button>
-            <Button data-cf-dialog-primary="true" disabled={confirmDelete.deleting} className="border border-red-200 text-red-600 hover:bg-red-50 dark:border-[var(--cf-red-light)] dark:text-[var(--cf-red)] dark:hover:bg-[var(--cf-red-light)]" variant="secondary" onClick={async () => {
-              try {
-                const it = confirmDelete.item; const fallbackKey = it ? historyTimelineGroupKey(it, new Date()) : HISTORY_UNKNOWN_GROUP_KEY;
-                const key = confirmDelete.groupKey || fallbackKey;
-                if (!it?.filePath) { setConfirmDelete((m) => ({ ...m, open: false })); return; }
-                setConfirmDelete((m) => ({ ...m, deleting: true }));
-                const res: any = await window.host.history.trash({ filePath: it.filePath });
-                if (!(res && res.ok)) { alert(String(t('history:cannotDelete', { error: res && res.error ? res.error : 'unknown' }))); setConfirmDelete((m) => ({ ...m, open: false })); return; }
-                setHistorySessions((cur) => {
-                  const list = cur.filter((x) => (x.filePath || x.id) !== (it.filePath || it.id));
-                  const projectKey = historyScopeDescriptor.cacheKey;
-                  if (projectKey) {
-                    setHistoryCache(projectKey, {
-                      sessions: list,
-                      hasMore: historyHasMoreRef.current,
-                      nextOffset: historyNextOffsetRef.current,
-                    });
-                  }
-                  if (selectedHistoryId === it.id) {
-                    const nowRef = new Date();
-                    const keyOf = (item?: HistorySession) => historyTimelineGroupKey(item, nowRef);
-                    const restInGroup = list
-                      .filter((x) => keyOf(x) === key)
-                      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-                    if (restInGroup.length > 0) {
-                      setSelectedHistoryId(restInGroup[0].id);
-                    } else {
-                      const groups = Array.from(new Set(list.map((x) => keyOf(x))));
-                      const firstKey = groups[0] || null;
-                      setSelectedHistoryDir(firstKey);
-                      if (firstKey) {
-                        const firstInDir = list
-                          .filter((x) => keyOf(x) === firstKey)
-                          .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
-                        setSelectedHistoryId(firstInDir ? firstInDir.id : null);
-                      } else {
-                        setSelectedHistoryId(null);
-                      }
-                    }
-                    setCenterMode('history');
-                  }
-                  return list;
-                });
-              } catch (err: any) {
-                alert(String(t('history:deleteFailed', { error: String(err) })));
-              } finally {
-                setConfirmDelete({ open: false, item: null, groupKey: null, deleting: false });
-                // 释放可能残留的指针捕获
-                try { document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); } catch {}
-                try { document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true } as any)); } catch {}
-              }
-            }}>
-              {confirmDelete.deleting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Trash2 className="mr-2 h-4 w-4" />}
-              {confirmDelete.deleting ? t('history:deletingPermanently') : t('settings:cleanupConfirm.confirm')}
+          <div className="flex flex-wrap justify-end gap-2 pt-2">
+            <Button variant="outline" disabled={confirmDelete.deleting} onClick={() => setConfirmDelete((m) => ({ ...m, open: false }))}>
+              {t('common:cancel')}
             </Button>
+            <Button
+              variant="secondary"
+              disabled={confirmDelete.deleting || confirmDelete.planning || confirmDelete.relationCheckFailed}
+              className="border border-red-200 text-red-600 hover:bg-red-50 dark:border-[var(--cf-red-light)] dark:text-[var(--cf-red)] dark:hover:bg-[var(--cf-red-light)]"
+              onClick={() => { void executeHistoryDelete('current'); }}
+            >
+              {confirmDelete.deleting && confirmDelete.deletingMode === 'current' ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Trash2 className="mr-2 h-4 w-4" />}
+              {confirmDelete.deleting && confirmDelete.deletingMode === 'current'
+                ? t('history:deletingPermanently')
+                : confirmDelete.plan && confirmDelete.plan.items.length > 1 ? t('history:deleteCurrentOnly') : t('settings:cleanupConfirm.confirm')}
+            </Button>
+            {confirmDelete.plan && confirmDelete.plan.items.length > 1 ? (
+              <Button
+                data-cf-dialog-primary="true"
+                variant="danger"
+                disabled={confirmDelete.deleting || confirmDelete.planning || confirmDelete.plan.externalReferenceIds.length > 0}
+                onClick={() => { void executeHistoryDelete('tree'); }}
+              >
+                {confirmDelete.deleting && confirmDelete.deletingMode === 'tree' ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Trash2 className="mr-2 h-4 w-4" />}
+                {confirmDelete.deleting && confirmDelete.deletingMode === 'tree'
+                  ? t('history:deletingPermanently')
+                  : t('history:deleteRelationTree')}
+              </Button>
+            ) : null}
           </div>
         </DialogContent>
       </Dialog>

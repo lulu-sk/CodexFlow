@@ -398,6 +398,46 @@ export type HistorySummary = {
   resumeMode?: 'modern' | 'legacy' | 'unknown';
   resumeId?: string;
   runtimeShell?: 'wsl' | 'windows' | 'unknown';
+  codexRelationship?: {
+    kind: 'main' | 'subagent' | 'unknown';
+    parentThreadId?: string;
+    agentNickname?: string;
+    agentRole?: string;
+    agentDepth?: number;
+  };
+};
+
+export type CodexRelationPlanItem = {
+  id: string;
+  filePath: string;
+  title: string;
+  depth: number;
+  mtimeMs: number;
+  size: number;
+  relationship: NonNullable<HistorySummary["codexRelationship"]>;
+};
+
+export type CodexRelationDeletePlan = {
+  supported: boolean;
+  targetId?: string;
+  rootId?: string;
+  version?: string;
+  items: CodexRelationPlanItem[];
+  externalReferenceIds: string[];
+  reason?: string;
+};
+
+export type OrphanedCodexSubagentCandidate = {
+  id: string;
+  title: string;
+  rawDate?: string;
+  date: number;
+  filePath: string;
+  sizeKB?: number;
+  parentThreadId: string;
+  agentNickname?: string;
+  agentRole?: string;
+  agentDepth?: number;
 };
 
 export type MessageContent = {
@@ -779,6 +819,10 @@ export interface HistoryAPI {
   }): Promise<{ ok: boolean; sessions?: HistorySummary[]; error?: string }>;
   read(args: { filePath: string; providerId?: "codex" | "claude" | "gemini" | "antigravity" | "grok"; forceParse?: boolean }): Promise<{ id: string; title: string; date: number; messages: HistoryMessage[]; skippedLines: number; providerId?: "codex" | "claude" | "gemini" | "antigravity" | "grok" }>;
   findEmptySessions(): Promise<{ ok: boolean; candidates?: Array<{ id: string; title: string; rawDate?: string; date: number; filePath: string; sizeKB?: number }>; error?: string }>;
+  getCodexRelationPlan(args: { filePath: string }): Promise<{ ok: boolean; plan?: CodexRelationDeletePlan; error?: string }>;
+  deleteCodexRelation(args: { filePath: string; version: string; mode: "current" | "tree" }): Promise<{ ok: boolean; code?: "unsupported_plan" | "stale_plan" | "external_references" | "empty_selection"; plan?: CodexRelationDeletePlan; results?: Array<{ filePath: string; ok: boolean; notFound?: boolean; error?: string }>; summary?: { ok: number; notFound: number; failed: number }; error?: string }>;
+  findOrphanedCodexSubagents(): Promise<{ ok: boolean; candidates?: OrphanedCodexSubagentCandidate[]; error?: string }>;
+  deleteOrphanedCodexSubagents(args: { filePaths: string[] }): Promise<{ ok: boolean; results?: Array<{ filePath: string; ok: boolean; notFound?: boolean; error?: string }>; summary?: { ok: number; notFound: number; failed: number; skipped: number }; error?: string }>;
   trash(args: { filePath: string }): Promise<{ ok: true; notFound?: boolean } | { ok: false; error: string }>;
   trashMany(args: { filePaths: string[] }): Promise<{ ok: boolean; results?: Array<{ filePath: string; ok: boolean; notFound?: boolean; error?: string }>; summary?: { ok: number; notFound: number; failed: number }; error?: string }>;
   onIndexAdd?(handler: (payload: { items: HistorySummary[] }) => void): () => void;

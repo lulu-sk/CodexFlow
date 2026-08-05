@@ -502,6 +502,13 @@ type HistorySession = {
   resumeMode?: 'modern' | 'legacy' | 'unknown';
   resumeId?: string;
   runtimeShell?: 'wsl' | 'windows' | 'unknown';
+  codexRelationship?: {
+    kind: 'main' | 'subagent' | 'unknown';
+    parentThreadId?: string;
+    agentNickname?: string;
+    agentRole?: string;
+    agentDepth?: number;
+  };
 };
 
 type HistoryTimelineGroup = {

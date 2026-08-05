@@ -14,7 +14,7 @@ import opentype from 'opentype.js';
 import iconv from 'iconv-lite';
 import projects, { IMPLEMENTATION_NAME as PROJECTS_IMPL } from "./projects/index";
 import history, { purgeHistoryCacheIfOutdated } from "./history";
-import { ensureHistoryIndexLoaded, startHistoryIndexer, getIndexedSummaries, getIndexedDetails, getLastIndexerRoots, getLastIndexerRootsByProvider, stopHistoryIndexer, cacheDetails, getCachedDetails } from "./indexer";
+import { ensureHistoryIndexLoaded, startHistoryIndexer, getIndexedSummaries, getIndexedCodexSessionRecords, getIndexedDetails, getLastIndexerRoots, getLastIndexerRootsByProvider, stopHistoryIndexer, cacheDetails, getCachedDetails, removeFromIndexMany, isCodexRelationIndexReady } from "./indexer";
 import { getSessionsRootsFastAsync } from "./wsl";
 import { getClaudeRootCandidatesFastAsync, discoverClaudeSessionFiles } from "./agentSessions/claude/discovery";
 import { getGeminiRootCandidatesFastAsync, discoverGeminiSessionFiles } from "./agentSessions/gemini/discovery";
@@ -26,7 +26,20 @@ import { parseAntigravitySessionFile } from "./agentSessions/antigravity/parser"
 import { parseGrokSessionFile } from "./agentSessions/grok/parser";
 import { hasNonEmptyIOFromMessages } from "./agentSessions/shared/empty";
 import { expandHistoryDeleteCandidates } from "./historyDelete";
+import {
+  cleanupDetachedHistoryPath,
+  detachHistoryPath,
+  readHistoryDeleteQueue,
+  type HistoryDeleteTarget,
+} from "./historyFastDelete";
 import { historyItemBelongsToScope } from "./historyScope";
+import {
+  buildCodexRelationDeletePlan,
+  collectCodexSessionRecords,
+  selectCodexRelationDeleteItems,
+  verifyCodexRelationPlanFiles,
+  type CodexSessionRelationship,
+} from "./codexSessionRelations";
 import { perfLogger } from "./log";
 import settings, { ensureSettingsAutodetect, ensureFirstRunTerminalSelection, hasSavedRuntimeEnvSelection, type ThemeSetting as SettingsThemeSetting, type AppSettings, type IdeOpenSettings } from "./settings";
 import { getOnboardingState, updateOnboardingState, type OnboardingState } from "./onboarding";
@@ -93,6 +106,8 @@ import {
 
 let codexStateRepairStarted = false;
 let codexStateCleanupWorkerChain: Promise<void> = Promise.resolve();
+let historyDeleteCleanupChain: Promise<void> = Promise.resolve();
+let historyDeleteMetadataChain: Promise<void> = Promise.resolve();
 
 try { installMainIpcTimingDiagnostics(); } catch {}
 
@@ -2837,6 +2852,7 @@ if (!gotLock) {
     // 启动时清理上一次会话遗留的粘贴临时图片（崩溃/强杀兜底）
     try { await cleanupPastedImagesFromPreviousSessionOnBoot(); } catch {}
     try { createWindow(); } catch (e) { if (DIAG) { try { perfLogger.log(`[BOOT] createWindow error: ${String(e)}`); } catch {} } }
+    void resumeHistoryDeleteCleanup();
     focusTabFromProtocol(extractProtocolUrl(process.argv));
     // 启动时的耗时初始化放到后台执行：避免新实例因外部命令/代理探测阻塞而“无窗口常驻后台”
     void (async () => {
@@ -4576,6 +4592,7 @@ ipcMain.handle('history.list', async (_e, args: {
       resumeMode?: 'modern' | 'legacy' | 'unknown';
       resumeId?: string;
       runtimeShell?: 'wsl' | 'windows' | 'unknown';
+      codexRelationship?: CodexSessionRelationship;
     };
     type DiscoveredHistoryFile = {
       filePath: string;
@@ -4606,6 +4623,7 @@ ipcMain.handle('history.list', async (_e, args: {
       resumeMode: item?.resumeMode === 'modern' || item?.resumeMode === 'legacy' || item?.resumeMode === 'unknown' ? item.resumeMode : undefined,
       resumeId: typeof item?.resumeId === 'string' ? item.resumeId : undefined,
       runtimeShell: item?.runtimeShell === 'windows' || item?.runtimeShell === 'wsl' || item?.runtimeShell === 'unknown' ? item.runtimeShell : undefined,
+      codexRelationship: item?.codexRelationship,
     });
     /**
      * 中文说明：判断单条历史摘要是否属于当前请求范围。
@@ -4790,6 +4808,7 @@ ipcMain.handle('history.list', async (_e, args: {
         resumeMode: (x as any).resumeMode,
         resumeId: (x as any).resumeId,
         runtimeShell: (x as any).runtimeShell,
+        codexRelationship: (x as any).codexRelationship,
       }));
       return { ok: true, sessions: mapped };
     }
@@ -5100,14 +5119,98 @@ ipcMain.handle('history.findEmptySessions', async () => {
   }
 });
 
-// 批量彻底删除（逐个尝试）
-ipcMain.handle('history.trashMany', async (_e, { filePaths }: { filePaths: string[] }) => {
+/**
+ * 获取历史后台删除队列目录。
+ */
+function getHistoryDeleteQueueDirectory(): string {
+  return path.join(app.getPath("userData"), "history-delete-queue");
+}
+
+/**
+ * 恢复上次运行尚未完成的物理删除，不阻塞窗口创建或历史列表加载。
+ */
+async function resumeHistoryDeleteCleanup(): Promise<void> {
   try {
-    const grokSessionRoots = (await getGrokRootCandidatesFastAsync().catch(() => [])).map((candidate) => candidate.path);
+    const targets = await readHistoryDeleteQueue(getHistoryDeleteQueueDirectory());
+    enqueueHistoryDeleteCleanup(targets);
+  } catch (error) {
+    try { perfLogger.log(`[history.delete] resume cleanup failed error=${String(error)}`); } catch {}
+  }
+}
+
+/**
+ * 将已摘除的历史文件排入后台物理清理队列，避免 IPC 请求等待递归删除。
+ */
+function enqueueHistoryDeleteCleanup(targets: readonly HistoryDeleteTarget[]): void {
+  const uniqueTargets = new Map<string, HistoryDeleteTarget>();
+  for (const target of targets || []) {
+    const filePath = String(target?.filePath || "").trim();
+    if (!filePath) continue;
+    const key = `${filePath.replace(/\\/g, "/").toLowerCase()}|${target.recursive ? "dir" : "file"}`;
+    const existing = uniqueTargets.get(key);
+    if (!existing) {
+      uniqueTargets.set(key, {
+        filePath,
+        recursive: target.recursive === true,
+        queueRecordPath: target.queueRecordPath,
+      });
+    } else if (!existing.queueRecordPath && target.queueRecordPath) {
+      existing.queueRecordPath = target.queueRecordPath;
+    }
+  }
+  if (uniqueTargets.size === 0) return;
+  historyDeleteCleanupChain = historyDeleteCleanupChain
+    .catch(() => {})
+    .then(async () => {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await Promise.all(Array.from(uniqueTargets.values()).map(async (target) => {
+        try {
+          await cleanupDetachedHistoryPath(target);
+        } catch (error) {
+          try { perfLogger.log(`[history.delete] background cleanup failed path=${target.filePath} error=${String(error)}`); } catch {}
+        }
+      }));
+    })
+    .catch(() => {});
+}
+
+/**
+ * 延后清理历史列表缓存；该函数内部包含同步读写，不能放在删除 IPC 的等待链路中。
+ */
+function enqueueHistoryDeleteMetadataCleanup(filePaths: readonly string[]): void {
+  const paths = Array.from(new Set((filePaths || []).map((item) => String(item || "").trim()).filter(Boolean)));
+  if (paths.length === 0) return;
+  historyDeleteMetadataChain = historyDeleteMetadataChain
+    .catch(() => {})
+    .then(async () => {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      try { await history.removePathsFromCache(paths); } catch {}
+    })
+    .catch(() => {});
+}
+
+/**
+ * 批量彻底删除历史文件，并同步清理索引、解析缓存及 Codex SQLite 状态。
+ *
+ * 删除动作先通过同目录改名把目标从历史目录摘除，改名后的内容再由后台递归清理。
+ */
+async function trashHistoryFilesMany(filePaths: string[]) {
+  try {
+    const list = Array.isArray(filePaths) ? filePaths.slice() : [];
+    const needsGrokSessionRoots = list.some((filePath) => /(?:^|[\\/])\.grok[\\/].*summary\.json$/i.test(String(filePath || "")));
+    const indexedGrokRoots = needsGrokSessionRoots ? getLastIndexerRootsByProvider("grok") : [];
+    const grokSessionRoots = needsGrokSessionRoots
+      ? indexedGrokRoots.length > 0
+        ? indexedGrokRoots
+        : (await getGrokRootCandidatesFastAsync().catch(() => [])).map((candidate) => candidate.path)
+      : [];
+    const historyDeleteQueueDirectory = getHistoryDeleteQueueDirectory();
     const results: { filePath: string; ok: boolean; notFound?: boolean; error?: string }[] = [];
     const codexStateCleanupPaths = new Set<string>();
+    const indexCleanupPaths = new Set<string>();
+    const removedNotificationPaths = new Set<string>();
+    const backgroundCleanupTargets: HistoryDeleteTarget[] = [];
     let okCount = 0; let notFoundCount = 0; let failCount = 0;
-    const list = Array.isArray(filePaths) ? filePaths.slice() : [];
     // 并发限制器：避免一次性对大量文件触发过多 I/O / shell 调用
     const pLimitLocal = (max: number) => {
       let running = 0; const q: (() => void)[] = [];
@@ -5129,7 +5232,7 @@ ipcMain.handle('history.trashMany', async (_e, { filePaths }: { filePaths: strin
       }
     };
 
-    // 单个文件删除逻辑（保持原候选顺序）：彻底删除
+    // 单个文件删除逻辑（保持原候选顺序）：先摘除路径，再把内容交给后台清理。
     const handleOne = async (filePath: string) => {
       if (!filePath || typeof filePath !== 'string') return { filePath: String(filePath), ok: false, error: 'invalid filePath' };
       const candidates: string[] = [];
@@ -5145,43 +5248,75 @@ ipcMain.handle('history.trashMany', async (_e, { filePaths }: { filePaths: strin
       }
       push(normSlashes(p0));
       const deleteCandidates = expandHistoryDeleteCandidates(candidates, grokSessionRoots);
-      const anyExists = deleteCandidates.some((c) => { try { return fs.existsSync(c); } catch { return false; } });
-      if (!anyExists) {
+      const existingCandidates: Array<{ filePath: string; recursive: boolean }> = [];
+      const candidateStats = await Promise.all(deleteCandidates.map(async (candidate) => {
+        try {
+          const stat = await fsp.stat(candidate);
+          return stat.isFile() || stat.isDirectory()
+            ? { filePath: candidate, recursive: stat.isDirectory() }
+            : null;
+        } catch {
+          return null;
+        }
+      }));
+      const seenExisting = new Set<string>();
+      for (const candidate of candidateStats) {
+        if (!candidate) continue;
+        const key = candidate.filePath.replace(/\\/g, "/").toLowerCase();
+        if (seenExisting.has(key)) continue;
+        seenExisting.add(key);
+        existingCandidates.push(candidate);
+      }
+      if (existingCandidates.length === 0) {
+        for (const candidate of [p0, ...deleteCandidates]) indexCleanupPaths.add(candidate);
         rememberCodexStateCleanupPaths([p0, ...deleteCandidates]);
+        for (const candidate of [p0, ...deleteCandidates]) removedNotificationPaths.add(candidate);
         return { filePath: p0, ok: true, notFound: true };
       }
-      let deletedAny = false; const failed: { cand: string; err: any }[] = [];
-      for (const cand of deleteCandidates) {
+      const detachResults = await Promise.all(existingCandidates.map(async ({ filePath: candidate, recursive }) => {
         try {
-          if (!fs.existsSync(cand)) { failed.push({ cand, err: 'not_exists' }); continue; }
-          try {
-            const targetStat = await fsp.stat(cand).catch(() => null as fs.Stats | null);
-            await fsp.rm(cand, { force: true, recursive: targetStat?.isDirectory() === true });
-            try { const idx = require('./indexer'); if (typeof idx.removeFromIndex === 'function') idx.removeFromIndex(cand); } catch {}
-            try { const hist = require('./history').default; await hist.removePathFromCache(cand); } catch {}
-            try { const win = BrowserWindow.getFocusedWindow(); win?.webContents.send('history:index:remove', { filePath: cand }); } catch {}
-            deletedAny = true;
-          } catch (e1: any) {
-            failed.push({ cand, err: e1 });
+          const detached = await detachHistoryPath(
+            { filePath: candidate, recursive },
+            { queueDirectory: historyDeleteQueueDirectory },
+          );
+          if (detached.ok && detached.queuedCleanup) {
+            return { candidate, ok: true, cleanup: detached.queuedCleanup };
           }
-        } catch (e: any) { failed.push({ cand, err: e }); }
+          return {
+            candidate,
+            ok: false,
+            error: detached.error,
+          };
+        } catch (error) {
+          return {
+            candidate,
+            ok: false,
+            error,
+          };
+        }
+      }));
+      for (const result of detachResults) {
+        if (result.cleanup) backgroundCleanupTargets.push(result.cleanup);
       }
-      const remaining = deleteCandidates.filter((cand) => {
-        try { return fs.existsSync(cand); } catch { return false; }
-      });
-      if (deletedAny && remaining.length === 0) {
-        try { const idx = require('./indexer'); if (typeof idx.removeFromIndex === 'function') idx.removeFromIndex(p0); } catch {}
-        try { const hist = require('./history').default; await hist.removePathFromCache(p0); } catch {}
-        try { const win = BrowserWindow.getFocusedWindow(); win?.webContents.send('history:index:remove', { filePath: p0 }); } catch {}
-        rememberCodexStateCleanupPaths([p0, ...deleteCandidates]);
-        return { filePath: p0, ok: true };
+      const detachedCandidates = detachResults
+        .filter((result) => result.ok)
+        .map((result) => result.candidate);
+      for (const candidate of detachedCandidates) {
+        indexCleanupPaths.add(candidate);
+        removedNotificationPaths.add(candidate);
       }
-      try {
-        const hist = require('./history').default; try { await hist.removePathFromCache(p0); } catch {}
-        const idx = require('./indexer'); try { if (typeof idx.removeFromIndex === 'function') idx.removeFromIndex(p0); } catch {}
-      } catch {}
-      const details = [...failed.map(f => `${f.cand}: ${String(f.err)}`), ...remaining.map((cand) => `${cand}: still_exists`)].join('; ');
-      return { filePath: p0, ok: false, error: `Failed to delete permanently (${details})` };
+      rememberCodexStateCleanupPaths(detachedCandidates);
+      const failed = detachResults.filter((result) => !result.ok);
+      if (failed.length > 0) {
+        const details = failed.map((result) => `${result.candidate}: ${String(result.error)}`).join("; ");
+        return { filePath: p0, ok: false, error: `Failed to detach history path (${details})` };
+      }
+      for (const candidate of [p0, ...deleteCandidates]) {
+        indexCleanupPaths.add(candidate);
+        removedNotificationPaths.add(candidate);
+      }
+      rememberCodexStateCleanupPaths([p0, ...deleteCandidates]);
+      return { filePath: p0, ok: true };
     };
 
     // 并发执行（限制并发数），收集结果
@@ -5195,6 +5330,17 @@ ipcMain.handle('history.trashMany', async (_e, { filePaths }: { filePaths: strin
         if ((r as any).notFound) notFoundCount++; else okCount++;
       } else failCount++;
     }
+    // 路径已摘除后立即更新内存索引并通知界面；大缓存和物理内容均在后台处理。
+    if (indexCleanupPaths.size > 0) {
+      try { removeFromIndexMany(Array.from(indexCleanupPaths)); } catch {}
+      enqueueHistoryDeleteMetadataCleanup(Array.from(indexCleanupPaths));
+    }
+    try {
+      const win = BrowserWindow.getFocusedWindow();
+      for (const filePath of removedNotificationPaths)
+        win?.webContents.send('history:index:remove', { filePath });
+    } catch {}
+    enqueueHistoryDeleteCleanup(backgroundCleanupTargets);
     // SQLite 状态清理属于删除后的辅助收尾，不应阻塞删除结果返回与界面反馈。
     void cleanupCodexStateForDeletedPathsSafely(Array.from(codexStateCleanupPaths), 'history.trashMany');
 
@@ -5202,83 +5348,159 @@ ipcMain.handle('history.trashMany', async (_e, { filePaths }: { filePaths: strin
   } catch (e: any) {
     return { ok: false, error: String(e) } as any;
   }
+}
+
+// 批量彻底删除（逐个尝试）
+ipcMain.handle('history.trashMany', async (_e, { filePaths }: { filePaths: string[] }) => {
+  return await trashHistoryFilesMany(filePaths);
 });
 
-// 彻底删除指定历史文件（支持 WSL/UNC/Windows 路径候选）
-ipcMain.handle('history.trash', async (_e, { filePath }: { filePath: string }) => {
+/**
+ * 规范化会话文件路径，供主进程二次扫描后做稳定比对。
+ */
+function codexSessionPathKey(filePath: string): string {
+  return String(filePath || "").trim().replace(/\\/g, "/").toLowerCase();
+}
+
+/**
+ * 从历史索引构建会话标题映射；索引缺失时由关系模块回退显示会话编号。
+ */
+function buildCodexRelationTitleMap(): Map<string, string> {
+  const titles = new Map<string, string>();
+  for (const summary of getIndexedSummaries()) {
+    const id = String((summary as any)?.id || "").trim().toLowerCase();
+    const title = String((summary as any)?.preview || (summary as any)?.title || "").trim();
+    if (id && title) titles.set(id, title);
+  }
+  return titles;
+}
+
+/**
+ * 使用内存索引立即返回目标会话的关联删除计划。
+ */
+ipcMain.handle('history.codexRelationPlan', async (_e, args: { filePath?: string }) => {
   try {
-    if (!filePath || typeof filePath !== 'string') throw new Error('invalid filePath');
-    const grokSessionRoots = (await getGrokRootCandidatesFastAsync().catch(() => [])).map((candidate) => candidate.path);
-    const candidates: string[] = [];
-    const push = (p?: string) => { if (p && !candidates.includes(p)) candidates.push(p); };
-    const normSlashes = (p: string) => (process.platform === 'win32' ? p.replace(/\//g, '\\') : p);
-    const p0 = String(filePath);
-    // Windows 下候选顺序：
-    // 1) POSIX -> UNC（跨发行版路径）
-    // 2) /mnt/<drive> -> X:\ 盘符路径
-    // 3) 原始路径
-    if (process.platform === 'win32') {
-      if (/^\//.test(p0)) {
-        try { push(wsl.wslToUNC(p0, settings.getSettings().distro || 'Ubuntu-24.04')); } catch {}
-        const m = p0.match(/^\/mnt\/([a-zA-Z])\/(.*)$/);
-        if (m) push(`${m[1].toUpperCase()}:\\${m[2].replace(/\//g, '\\')}`);
-      }
-    }
-    push(normSlashes(p0));
-    const deleteCandidates = expandHistoryDeleteCandidates(candidates, grokSessionRoots);
-    // 候选均不存在则视为成功（无需删除）
-    const anyExists = deleteCandidates.some((c) => { try { return fs.existsSync(c); } catch { return false; } });
-    if (!anyExists) {
-      // 即使文件已不存在，也在后台清理可能残留的 Codex 状态。
-      void cleanupCodexStateForDeletedPathsSafely([p0, ...deleteCandidates], 'history.trash.notFound');
-      return { ok: true, notFound: true } as any;
-    }
-    // 依次尝试候选：永久删除
-    const failed: { cand: string; err: any }[] = [];
-    let deletedAny = false;
-    for (const cand of deleteCandidates) {
-      try {
-        if (!fs.existsSync(cand)) { failed.push({ cand, err: 'not_exists' }); continue; }
-        try {
-          const targetStat = await fsp.stat(cand).catch(() => null as fs.Stats | null);
-          await fsp.rm(cand, { force: true, recursive: targetStat?.isDirectory() === true });
-          // 删除成功：同步清理索引与历史缓存，并通知渲染进程移除该项
-          try { const idx = require('./indexer'); if (typeof idx.removeFromIndex === 'function') idx.removeFromIndex(cand); } catch {}
-          try { const hist = require('./history').default; await hist.removePathFromCache(cand); } catch {}
-          try { const win = BrowserWindow.getFocusedWindow(); win?.webContents.send('history:index:remove', { filePath: cand }); } catch {}
-          deletedAny = true;
-        } catch (e1: any) {
-          failed.push({ cand, err: e1 });
-        }
-      } catch (e: any) {
-        failed.push({ cand, err: e });
-      }
-    }
-    const remaining = deleteCandidates.filter((cand) => {
-      try { return fs.existsSync(cand); } catch { return false; }
-    });
-    if (deletedAny && remaining.length === 0) {
-      try { const idx = require('./indexer'); if (typeof idx.removeFromIndex === 'function') idx.removeFromIndex(p0); } catch {}
-      try { const hist = require('./history').default; await hist.removePathFromCache(p0); } catch {}
-      try { const win = BrowserWindow.getFocusedWindow(); win?.webContents.send('history:index:remove', { filePath: p0 }); } catch {}
-      // 历史文件、索引和缓存均已处理完成，SQLite 收尾无需继续占用删除弹窗。
-      void cleanupCodexStateForDeletedPathsSafely([p0, ...deleteCandidates], 'history.trash');
-      return { ok: true };
-    }
-    const details = [...failed.map(f => `${f.cand}: ${String(f.err)}`), ...remaining.map((cand) => `${cand}: still_exists`)].join('; ');
-    // 若删除失败，仍尝试从索引与历史缓存中移除该路径，避免切换项目后缓存恢复已删除会话
-    try {
-      const hist = require('./history').default;
-      try { await hist.removePathFromCache(filePath); } catch {}
-    } catch {}
-    try {
-      const idx = require('./indexer');
-      try { if (typeof idx.removeFromIndex === 'function') idx.removeFromIndex(filePath); } catch {}
-    } catch {}
-    throw new Error(`Failed to delete permanently (${details})`);
+    const filePath = typeof args?.filePath === "string" ? args.filePath.trim() : "";
+    if (!filePath) return { ok: false, error: "invalid filePath" };
+    await ensureHistoryIndexLoaded();
+    const records = getIndexedCodexSessionRecords();
+    const plan = buildCodexRelationDeletePlan(filePath, records, buildCodexRelationTitleMap());
+    return { ok: true, plan };
   } catch (e: any) {
     return { ok: false, error: String(e) };
   }
+});
+
+/**
+ * 确认删除前复核计划版本，再删除当前会话或整棵主代理关联树。
+ * 两种范围都使用已展示给用户的内存索引快照，并只复核实际删除目标的文件签名，
+ * 避免点击确认后再次遍历全部 JSONL；索引器会在后台持续刷新关系快照。
+ */
+ipcMain.handle('history.deleteCodexRelation', async (_e, args: { filePath?: string; version?: string; mode?: "current" | "tree" }) => {
+  try {
+    const filePath = typeof args?.filePath === "string" ? args.filePath.trim() : "";
+    const version = typeof args?.version === "string" ? args.version.trim() : "";
+    const mode = args?.mode === "tree" ? "tree" : args?.mode === "current" ? "current" : null;
+    if (!filePath || !version || !mode) return { ok: false, error: "invalid arguments" };
+    await ensureHistoryIndexLoaded();
+    const records = getIndexedCodexSessionRecords();
+    const plan = buildCodexRelationDeletePlan(filePath, records, buildCodexRelationTitleMap());
+    if (!plan.supported || !plan.version) return { ok: false, code: "unsupported_plan", plan };
+    if (plan.version !== version) return { ok: false, code: "stale_plan", plan };
+    if (mode === "tree" && !isCodexRelationIndexReady())
+      return { ok: false, code: "stale_plan", plan };
+    if (mode === "tree" && plan.externalReferenceIds.length > 0)
+      return { ok: false, code: "external_references", plan };
+    const selected = selectCodexRelationDeleteItems(plan, mode);
+    if (selected.length === 0) return { ok: false, code: "empty_selection", plan };
+    const fileCheck = await verifyCodexRelationPlanFiles(plan, selected);
+    if (!fileCheck.ok) return { ok: false, code: "stale_plan", plan };
+    const result = await trashHistoryFilesMany(selected.map((item) => item.filePath));
+    return { ...result, plan };
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+/**
+ * 扫描父会话已不存在的 thread_spawn 子代理；仅返回当前稳定可读的会话文件。
+ */
+ipcMain.handle('history.findOrphanedCodexSubagents', async () => {
+  try {
+    const records = await collectCodexSessionRecords();
+    const allIds = new Set(records.map((record) => record.id));
+    const summaries = getIndexedSummaries();
+    const summaryById = new Map(summaries.map((summary: any) => [String(summary?.id || "").trim().toLowerCase(), summary]));
+    const candidates = records
+      .filter((record) => record.relationship.kind === "subagent")
+      .filter((record) => record.relationship.threadSpawn === true && !!record.relationship.parentThreadId)
+      .filter((record) => !allIds.has(String(record.relationship.parentThreadId)))
+      .map((record) => {
+        const summary: any = summaryById.get(record.id);
+        return {
+          id: record.id,
+          title: String(summary?.preview || summary?.title || record.id),
+          rawDate: typeof summary?.rawDate === "string" ? summary.rawDate : undefined,
+          date: Number(summary?.date || record.mtimeMs),
+          filePath: record.filePath,
+          sizeKB: Math.max(0, Math.ceil(record.size / 1024)),
+          parentThreadId: record.relationship.parentThreadId,
+          agentNickname: record.relationship.agentNickname,
+          agentRole: record.relationship.agentRole,
+          agentDepth: record.relationship.agentDepth,
+        };
+      })
+      .sort((a, b) => b.date - a.date);
+    return { ok: true, candidates };
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+/**
+ * 对用户选中的孤立子代理再次全量扫描，只删除此刻仍满足孤立条件的文件。
+ */
+ipcMain.handle('history.deleteOrphanedCodexSubagents', async (_e, args: { filePaths?: string[] }) => {
+  try {
+    const requested = Array.isArray(args?.filePaths)
+      ? Array.from(new Set(args.filePaths.map((item) => String(item || "").trim()).filter(Boolean)))
+      : [];
+    if (requested.length === 0) return { ok: true, results: [], summary: { ok: 0, notFound: 0, failed: 0, skipped: 0 } };
+    const records = await collectCodexSessionRecords();
+    const allIds = new Set(records.map((record) => record.id));
+    const currentOrphans = new Map(
+      records
+        .filter((record) => record.relationship.kind === "subagent")
+        .filter((record) => record.relationship.threadSpawn === true && !!record.relationship.parentThreadId)
+        .filter((record) => !allIds.has(String(record.relationship.parentThreadId)))
+        .map((record) => [codexSessionPathKey(record.filePath), record]),
+    );
+    const safePaths = requested
+      .map((filePath) => currentOrphans.get(codexSessionPathKey(filePath))?.filePath)
+      .filter((filePath): filePath is string => !!filePath);
+    const result: any = await trashHistoryFilesMany(safePaths);
+    const summary = result?.summary || { ok: 0, notFound: 0, failed: 0 };
+    return {
+      ...result,
+      summary: { ...summary, skipped: Math.max(0, requested.length - safePaths.length) },
+    };
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+// 彻底删除指定历史文件（支持 WSL/UNC/Windows 路径候选）。
+// 单条删除统一复用批量实现，避免重复执行慢速的物理删除和缓存写入。
+ipcMain.handle('history.trash', async (_e, args: { filePath?: string }) => {
+  const filePath = typeof args?.filePath === "string" ? args.filePath : "";
+  const result: any = await trashHistoryFilesMany([filePath]);
+  if (!result?.ok) return result;
+  const item = Array.isArray(result.results) ? result.results[0] : null;
+  if (item && !item.ok) return { ok: false, error: item.error || "Failed to delete permanently" };
+  return {
+    ok: true,
+    ...(item?.notFound ? { notFound: true } : {}),
+  };
 });
 
 // (trimmed) removed unused history.roots/listSplit/debugInfo handlers

@@ -111,6 +111,38 @@ afterEach(async () => {
 });
 
 describe("electron/history.listHistory", () => {
+  it("列表摘要会携带现代 Codex 子代理关系", async () => {
+    await createHistoryListJsonlFile([
+      {
+        timestamp: "2026-04-29T03:35:01.000Z",
+        type: "session_meta",
+        payload: {
+          id: "child-session",
+          cwd: "/workspace/project",
+          parent_thread_id: "parent-session",
+          agent_nickname: "Atlas",
+          agent_role: "researcher",
+          source: {
+            subagent: {
+              thread_spawn: { parent_thread_id: "parent-session", depth: 1 },
+            },
+          },
+        },
+      },
+    ]);
+
+    const sessions = await listHistory({});
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].codexRelationship).toMatchObject({
+      kind: "subagent",
+      parentThreadId: "parent-session",
+      agentNickname: "Atlas",
+      agentRole: "researcher",
+      agentDepth: 1,
+    });
+  });
+
   it("列表摘要优先使用 Codex thread_name_updated 作为预览标题", async () => {
     const userRequest = [
       "# Files mentioned by the user:",

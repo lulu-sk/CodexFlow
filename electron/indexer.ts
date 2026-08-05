@@ -21,6 +21,11 @@ import { parseGeminiSessionFile, deriveGeminiProjectHashCandidatesFromPath } fro
 import { parseAntigravitySessionFile } from "./agentSessions/antigravity/parser";
 import { parseGrokSessionFile } from "./agentSessions/grok/parser";
 import { filterCodexHistoryPreviewText } from "./agentSessions/shared/preview";
+import {
+  extractCodexSessionRelationship,
+  type CodexSessionRecord,
+  type CodexSessionRelationship,
+} from "./codexSessionRelations";
 import { extractTaggedPrefix } from "./agentSessions/shared/taggedPrefix";
 import {
   dirKeyFromCwd as dirKeyFromCwdShared,
@@ -51,6 +56,7 @@ type Details = {
   resumeMode?: 'modern' | 'legacy' | 'unknown';
   resumeId?: string;
   runtimeShell?: RuntimeShell;
+  codexRelationship?: CodexSessionRelationship;
 };
 
 type PersistIndex = {
@@ -134,6 +140,72 @@ type HistoryFastRefreshRequest = {
   filePath?: string;
   sourcePath?: string;
 };
+type CodexRelationIndexState = {
+  ready: boolean;
+  pending: Map<string, number>;
+};
+
+/**
+ * 获取 Codex 关系索引的同步状态。
+ */
+function getCodexRelationIndexState(): CodexRelationIndexState {
+  if (!g.__indexer) g.__indexer = {};
+  if (!g.__indexer.codexRelationIndexState) {
+    g.__indexer.codexRelationIndexState = {
+      ready: false,
+      pending: new Map<string, number>(),
+    } as CodexRelationIndexState;
+  }
+  return g.__indexer.codexRelationIndexState as CodexRelationIndexState;
+}
+
+/**
+ * 重置 Codex 关系索引状态；索引器完成首轮扫描前禁止整树删除。
+ */
+function resetCodexRelationIndexState(): void {
+  if (!g.__indexer) g.__indexer = {};
+  g.__indexer.codexRelationIndexState = {
+    ready: false,
+    pending: new Map<string, number>(),
+  } as CodexRelationIndexState;
+}
+
+/**
+ * 标记一个尚未合入索引的 Codex 关系变更。
+ */
+function markCodexRelationIndexPending(key: string): void {
+  const normalizedKey = String(key || "").trim();
+  if (!normalizedKey) return;
+  const state = getCodexRelationIndexState();
+  state.pending.set(normalizedKey, (state.pending.get(normalizedKey) || 0) + 1);
+}
+
+/**
+ * 标记一个 Codex 关系变更已完成索引处理。
+ */
+function settleCodexRelationIndexPending(key: string): void {
+  const normalizedKey = String(key || "").trim();
+  if (!normalizedKey) return;
+  const state = getCodexRelationIndexState();
+  const count = state.pending.get(normalizedKey) || 0;
+  if (count <= 1) state.pending.delete(normalizedKey);
+  else state.pending.set(normalizedKey, count - 1);
+}
+
+/**
+ * 设置 Codex 关系索引首轮扫描是否完成。
+ */
+function setCodexRelationIndexReady(ready: boolean): void {
+  getCodexRelationIndexState().ready = ready === true;
+}
+
+/**
+ * 判断整树删除能否直接使用内存关系快照，不执行确认阶段的全量扫描。
+ */
+export function isCodexRelationIndexReady(): boolean {
+  const state = getCodexRelationIndexState();
+  return state.ready && state.pending.size === 0;
+}
 
 /**
  * 获取文件变更监听的队列状态（挂到 global.__indexer，便于 stopHistoryIndexer 统一清理）。
@@ -410,8 +482,8 @@ function stripDetailsForPersist(details: Details): Details {
   return { ...rest, messages: [] };
 }
 
-// 中文说明：历史索引语义调整后提升版本，强制丢弃旧的 index/details 缓存，避免继续沿用错误 dirKey。
-const VERSION = "v17";
+// 历史索引加入 Codex 会话关系字段后提升版本，避免旧缓存缺少父子关系和关联删除所需的文件签名。
+const VERSION = "v18";
 
 /**
  * 读取 Claude Code 的 Agent 历史开关（默认 false）。
@@ -725,6 +797,7 @@ function buildIndexSummary(providerId: ProviderId, filePath: string, details: De
     resumeMode: details.resumeMode,
     resumeId: details.resumeId,
     runtimeShell: details.runtimeShell && details.runtimeShell !== "unknown" ? details.runtimeShell : detectRuntimeShell(filePath),
+    codexRelationship: details.codexRelationship,
   } as any;
 }
 
@@ -857,10 +930,15 @@ async function flushFastRefreshQueue(): Promise<void> {
       st.pendingRoots.clear();
 
       for (const entry of files) {
+        const pendingKey = `fast-file:${canonicalKey(entry.filePath)}`;
         try { await upsertIndexedFile(entry.filePath, entry.providerId); } catch {}
+        finally {
+          if (entry.providerId === "codex") settleCodexRelationIndexPending(pendingKey);
+        }
       }
 
       for (const entry of roots) {
+        const pendingKey = `fast-root:${canonicalKey(entry.root)}`;
         if (entry.providerId !== "codex" && entry.providerId !== "antigravity" && entry.providerId !== "grok") continue;
         try {
           const recent = entry.providerId === "antigravity"
@@ -872,6 +950,9 @@ async function flushFastRefreshQueue(): Promise<void> {
             try { await upsertIndexedFile(fp, entry.providerId); } catch {}
           }
         } catch {}
+        finally {
+          if (entry.providerId === "codex") settleCodexRelationIndexPending(pendingKey);
+        }
       }
 
       if (!st.rerun && st.pendingFiles.size === 0 && st.pendingRoots.size === 0) break;
@@ -894,6 +975,8 @@ export function requestHistoryFastRefresh(req: HistoryFastRefreshRequest): void 
     const explicitFile = resolveAccessibleHistoryFilePath(String(req?.filePath || "").trim(), req?.sourcePath);
     if (explicitFile) {
       const key = canonicalKey(explicitFile);
+      if (providerId === "codex" && !st.pendingFiles.has(key))
+        markCodexRelationIndexPending(`fast-file:${key}`);
       st.pendingFiles.set(key, { providerId, filePath: explicitFile });
     }
 
@@ -903,7 +986,10 @@ export function requestHistoryFastRefresh(req: HistoryFastRefreshRequest): void 
       for (const root of roots) {
         const cleanRoot = String(root || "").trim();
         if (!cleanRoot) continue;
-        st.pendingRoots.set(canonicalKey(cleanRoot), { providerId, root: cleanRoot });
+        const key = canonicalKey(cleanRoot);
+        if (providerId === "codex" && !st.pendingRoots.has(key))
+          markCodexRelationIndexPending(`fast-root:${key}`);
+        st.pendingRoots.set(key, { providerId, root: cleanRoot });
       }
     }
 
@@ -1042,6 +1128,7 @@ async function parseSummary(fp: string, stat: fs.Stats): Promise<IndexSummary> {
   let resumeMode: 'modern' | 'legacy' | 'unknown' = 'unknown';
   let resumeId: string | undefined = undefined;
   let runtimeShell: RuntimeShell = 'unknown';
+  let codexRelationship: CodexSessionRelationship | undefined;
   let parsedFirst: any = null;
   try {
     const obj = JSON.parse(first);
@@ -1052,6 +1139,7 @@ async function parseSummary(fp: string, stat: fs.Stats): Promise<IndexSummary> {
       if (info.id) resumeId = info.id;
     } catch {}
     if (obj && obj.type === 'session_meta' && obj.payload) {
+      codexRelationship = extractCodexSessionRelationship(obj);
       if (obj.payload?.id) id = String(obj.payload.id);
       if (typeof obj.payload?.cwd === 'string') { cwd = obj.payload.cwd; dbgSrc = 'json.payload.cwd'; }
       if (Object.prototype.hasOwnProperty.call(obj, 'timestamp')) {
@@ -1174,7 +1262,7 @@ async function parseSummary(fp: string, stat: fs.Stats): Promise<IndexSummary> {
   // 预览字段由详情解析阶段统一生成（避免与详情筛选逻辑重复/偏差）
   if (!resumeId) resumeId = id;
   if (runtimeShell === 'unknown') runtimeShell = detectRuntimeShell(fp);
-  return { providerId: "codex", id, title, date, filePath: fp, rawDate, dirKey, resumeMode, resumeId, runtimeShell } as any;
+  return { providerId: "codex", id, title, date, filePath: fp, rawDate, dirKey, resumeMode, resumeId, runtimeShell, codexRelationship } as any;
 }
 
 async function parseCodexDetails(fp: string, stat: fs.Stats, opts?: { summaryOnly?: boolean }): Promise<Details> {
@@ -1191,6 +1279,7 @@ async function parseCodexDetails(fp: string, stat: fs.Stats, opts?: { summaryOnl
   let resumeMode: 'modern' | 'legacy' | 'unknown' = 'unknown';
   let resumeId: string | undefined = undefined;
   let runtimeShell: RuntimeShell = 'unknown';
+  let codexRelationship: CodexSessionRelationship | undefined;
   let prefixAcc: string = ""; // 前缀累积用于提取 <cwd> 或 CWD 行
   const chunk = 256 * 1024;
   // 说明类去重：会话头 instructions 与用户 <user_instructions> 可能重复
@@ -1248,6 +1337,7 @@ async function parseCodexDetails(fp: string, stat: fs.Stats, opts?: { summaryOnl
               if (hint !== 'unknown') runtimeShell = hint;
             }
             if (lineIndex === 0) {
+              codexRelationship = extractCodexSessionRelationship(obj);
               try {
                 const info = detectResumeInfo(obj);
                 if (info.mode) resumeMode = info.mode;
@@ -1515,17 +1605,17 @@ async function parseCodexDetails(fp: string, stat: fs.Stats, opts?: { summaryOnl
         if (cwd) dirKey = dirKeyFromCwd(cwd); else dirKey = dirKeyOf(fp);
         if (runtimeShell === 'unknown') runtimeShell = detectRuntimeShell(fp);
         const finalResumeId = resumeId || id;
-        resolve({ providerId: "codex", id, title: resolveCodexDetailsTitle(), date, filePath: fp, messages, skippedLines: skipped, rawDate, cwd, dirKey, preview, resumeMode, resumeId: finalResumeId, runtimeShell });
+        resolve({ providerId: "codex", id, title: resolveCodexDetailsTitle(), date, filePath: fp, messages, skippedLines: skipped, rawDate, cwd, dirKey, preview, resumeMode, resumeId: finalResumeId, runtimeShell, codexRelationship });
       });
       rs.on('error', () => {
         if (runtimeShell === 'unknown') runtimeShell = detectRuntimeShell(fp);
         const finalResumeId = resumeId || id;
-        resolve({ providerId: "codex", id, title: resolveCodexDetailsTitle(), date, filePath: fp, messages, skippedLines: skipped, rawDate, cwd, dirKey, preview, resumeMode, resumeId: finalResumeId, runtimeShell });
+        resolve({ providerId: "codex", id, title: resolveCodexDetailsTitle(), date, filePath: fp, messages, skippedLines: skipped, rawDate, cwd, dirKey, preview, resumeMode, resumeId: finalResumeId, runtimeShell, codexRelationship });
       });
     } catch {
       if (runtimeShell === 'unknown') runtimeShell = detectRuntimeShell(fp);
       const finalResumeId = resumeId || id;
-      resolve({ providerId: "codex", id, title: resolveCodexDetailsTitle(), date, filePath: fp, messages, skippedLines: skipped, resumeMode, resumeId: finalResumeId, runtimeShell });
+      resolve({ providerId: "codex", id, title: resolveCodexDetailsTitle(), date, filePath: fp, messages, skippedLines: skipped, resumeMode, resumeId: finalResumeId, runtimeShell, codexRelationship });
     }
   });
 }
@@ -1546,6 +1636,30 @@ export function getIndexedSummaries(): IndexSummary[] {
     .sort((a, b) => b.date - a.date);
 }
 
+/**
+ * 从内存索引生成 Codex 会话关系快照，避免打开删除确认时重新遍历全部 JSONL 文件。
+ */
+export function getIndexedCodexSessionRecords(): CodexSessionRecord[] {
+  const ix: PersistIndex = g.__indexer.index || { version: VERSION, files: {}, savedAt: 0 };
+  const records: CodexSessionRecord[] = [];
+  for (const entry of Object.values(ix.files)) {
+    const summary = entry?.summary as IndexSummary | undefined;
+    const providerId = summary?.providerId || "codex";
+    const id = String(summary?.id || "").trim().toLowerCase();
+    const filePath = String(summary?.filePath || "").trim();
+    const relationship = summary?.codexRelationship;
+    if (providerId !== "codex" || !id || !filePath || !relationship || relationship.kind === "unknown") continue;
+    records.push({
+      id,
+      filePath,
+      mtimeMs: Number(entry.sig?.mtimeMs || 0),
+      size: Number(entry.sig?.size || 0),
+      relationship,
+    });
+  }
+  return records;
+}
+
 export function getIndexedDetails(filePath: string): Details | null {
   const cached = getCachedDetails(filePath);
   if (cached) return cached;
@@ -1564,6 +1678,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
   try {
     await stopHistoryIndexer();
   } catch {}
+  resetCodexRelationIndexState();
   try { setIndexerWindowGetter(getWindow); } catch {}
   await perfLogger.time("indexer.start", async () => {
     // 1) 读取持久化缓存
@@ -1943,6 +2058,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
               resumeMode: details.resumeMode,
               resumeId: details.resumeId,
               runtimeShell: details.runtimeShell && details.runtimeShell !== 'unknown' ? details.runtimeShell : detectRuntimeShell(fp),
+              codexRelationship: details.codexRelationship,
             } as any;
             try { getDetailsCache().delete(k); } catch {}
             det.files[k] = { sig, details: slimDetails };
@@ -2007,6 +2123,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
             resumeMode: details.resumeMode,
             resumeId: details.resumeId,
             runtimeShell: details.runtimeShell && details.runtimeShell !== 'unknown' ? details.runtimeShell : detectRuntimeShell(fp),
+            codexRelationship: details.codexRelationship,
           } as any;
           ix.files[k] = { sig, summary };
           updatedSummaries++;
@@ -2081,6 +2198,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
             resumeMode: details.resumeMode,
             resumeId: details.resumeId,
             runtimeShell: details.runtimeShell && details.runtimeShell !== 'unknown' ? details.runtimeShell : detectRuntimeShell(normalizedFp),
+            codexRelationship: details.codexRelationship,
           } as any;
           ix.files[k] = { sig, summary };
           ix.savedAt = Date.now(); det.savedAt = Date.now(); saveIndex(ix); saveDetails(det);
@@ -2119,7 +2237,13 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
             if (due.length === 0) break;
             for (let i = 0; i < due.length; i += WATCH_BATCH_LIMIT) {
               const batch = due.slice(i, i + WATCH_BATCH_LIMIT);
-              await Promise.all(batch.map((p) => watchLimit(() => upsertFromWatch(p))));
+              await Promise.all(batch.map((p) => watchLimit(async () => {
+                try {
+                  await upsertFromWatch(p);
+                } finally {
+                  settleCodexRelationIndexPending(`watch:${canonicalKey(p)}`);
+                }
+              })));
               // 让出事件循环，避免主进程长时间被占用导致 UI 卡顿
               await new Promise<void>((r) => setImmediate(r));
             }
@@ -2153,6 +2277,8 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
           const normalizedFp = providerId === "antigravity" ? normalizeAntigravityWatchPath(fp) : fp;
           const k = canonicalKey(normalizedFp);
           const st = getWatchQueueState();
+          if (providerId === "codex" && !st.queue.has(k))
+            markCodexRelationIndexPending(`watch:${k}`);
           st.queue.set(k, { filePath: normalizedFp, dueAt: Date.now() + WATCH_DEBOUNCE_MS });
           scheduleWatchFlush();
         } catch {}
@@ -2165,8 +2291,12 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
             try { getWatchQueueState().queue.delete(canonicalKey(normalizeAntigravityWatchPath(fp))); } catch {}
             return;
           }
-          try { getWatchQueueState().queue.delete(canonicalKey(fp)); } catch {}
           const k = canonicalKey(fp);
+          try {
+            const removedPending = getWatchQueueState().queue.delete(k);
+            if (providerId === "codex" && removedPending)
+              settleCodexRelationIndexPending(`watch:${k}`);
+          } catch {}
           const removed = ix.files[k]?.summary;
           try { getDetailsCache().delete(k); } catch {}
           delete ix.files[k]; delete det.files[k];
@@ -2318,6 +2448,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
                 resumeMode: details.resumeMode,
                 resumeId: details.resumeId,
                 runtimeShell: details.runtimeShell && details.runtimeShell !== 'unknown' ? details.runtimeShell : detectRuntimeShell(fp),
+                codexRelationship: details.codexRelationship,
               } as any;
               ix.files[k] = { sig, summary };
               ix.savedAt = Date.now(); det.savedAt = Date.now();
@@ -2373,6 +2504,7 @@ export async function startHistoryIndexer(getWindow: () => BrowserWindow | null)
         } catch (e) { idxLog(`[rescan:init failed] ${String(e)}`); }
         else { idxLog("[rescan] skipped (no UNC roots)"); }
       } else { perfLogger.log(`[watch] disabled (no chokidar)`); }
+      setCodexRelationIndexReady(true);
   });
 }
 
@@ -2394,24 +2526,35 @@ export function getLastIndexerRootsByProvider(providerId: string): string[] {
   }
 }
 
-// 供主进程在删除文件后主动清理索引与详情缓存，避免切换项目时已删除项回流
-export function removeFromIndex(filePath: string): boolean {
+/**
+ * 批量清理索引与详情缓存，避免关联删除时为每个文件重复安排持久化写入。
+ */
+export function removeFromIndexMany(filePaths: readonly string[]): number {
   try {
     const ix: PersistIndex = g.__indexer.index || { version: VERSION, files: {}, savedAt: 0 };
     const det: PersistDetails = g.__indexer.details || { version: VERSION, files: {}, savedAt: 0 };
-    const k = canonicalKey(filePath);
-    const existed = !!ix.files[k] || !!det.files[k];
-    try { getDetailsCache().delete(k); } catch {}
-    if (ix.files[k]) delete ix.files[k];
-    if (det.files[k]) delete det.files[k];
-    if (existed) {
+    const keys = new Set((filePaths || []).map((filePath) => canonicalKey(String(filePath || ""))).filter(Boolean));
+    let removed = 0;
+    for (const k of keys) {
+      const existed = !!ix.files[k] || !!det.files[k];
+      try { getDetailsCache().delete(k); } catch {}
+      if (ix.files[k]) delete ix.files[k];
+      if (det.files[k]) delete det.files[k];
+      if (existed) removed++;
+    }
+    if (removed > 0) {
       ix.savedAt = Date.now();
       det.savedAt = Date.now();
       saveIndex(ix);
       saveDetails(det);
     }
-    return existed;
-  } catch { return false; }
+    return removed;
+  } catch { return 0; }
+}
+
+// 供主进程在删除文件后主动清理索引与详情缓存，避免切换项目时已删除项回流
+export function removeFromIndex(filePath: string): boolean {
+  return removeFromIndexMany([filePath]) > 0;
 }
 
 export async function stopHistoryIndexer(): Promise<void> {
@@ -2453,6 +2596,7 @@ export async function stopHistoryIndexer(): Promise<void> {
   try { clearRescanCooldown(); } catch {}
   try { clearWatchQueueState(); } catch {}
   try { clearFastRefreshState(); } catch {}
+  try { resetCodexRelationIndexState(); } catch {}
   try { await flushPersistWrites(); } catch {}
   try { setIndexerWindowGetter(null); } catch {}
 }

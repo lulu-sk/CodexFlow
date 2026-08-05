@@ -6,6 +6,7 @@ import path from "node:path";
 import { promises as fsp } from "node:fs";
 import type { SessionsRootCandidate } from "../../wsl";
 import { getDistroHomeSubPathUNCAsync, listDistrosAsync } from "../../wsl";
+import { isHistoryDeleteStagingName } from "../../historyFastDelete";
 
 /**
  * 快速判断目录是否存在。
@@ -128,6 +129,7 @@ export async function discoverClaudeSessionFiles(root: string, opts?: ClaudeDisc
       for (const ent of entries) {
         const name = ent.name;
         if (!name) continue;
+        if (isHistoryDeleteStagingName(name)) continue;
         const full = path.join(dir, name);
         if (ent.isDirectory()) {
           // 跳过明显无关的超大目录
