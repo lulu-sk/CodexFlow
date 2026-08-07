@@ -135,6 +135,8 @@
     "desc": "Make all in-app requests follow your proxy (default: on).",
     "enable": "Enable proxy for network requests",
     "enableDesc": "When enabled, CodexFlow will proxy rate-limit checks and other requests.",
+    "terminalEnable": "Use proxy for new terminals",
+    "terminalEnableDesc": "When disabled, new PowerShell, CMD, and WSL terminals will not inherit common proxy environment variables. Existing terminals are unchanged.",
     "mode": "Proxy mode",
     "modeSystem": "Follow system proxy",
     "modeCustom": "Custom proxy URL",

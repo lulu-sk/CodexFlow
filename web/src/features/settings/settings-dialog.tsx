@@ -106,6 +106,7 @@ type GitWorktreePrefs = {
 };
 type NetworkPrefs = {
   proxyEnabled: boolean;
+  terminalProxyEnabled: boolean;
   proxyMode: "system" | "custom";
   proxyUrl: string;
   noProxy: string;
@@ -629,6 +630,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   const [codexErrorHandling, setCodexErrorHandling] = useState<CodexErrorHandlingPrefs>(() => normalizeCodexErrorHandlingPrefs(values.codexErrorHandling));
   const [network, setNetwork] = useState<NetworkPrefs>({
     proxyEnabled: values.network?.proxyEnabled ?? true,
+    terminalProxyEnabled: values.network?.terminalProxyEnabled ?? true,
     proxyMode: values.network?.proxyMode ?? "system",
     proxyUrl: values.network?.proxyUrl ?? "",
     noProxy: values.network?.noProxy ?? "",
@@ -790,6 +792,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     setCodexErrorHandling(normalizeCodexErrorHandlingPrefs(values.codexErrorHandling));
     setNetwork({
       proxyEnabled: values.network?.proxyEnabled ?? true,
+      terminalProxyEnabled: values.network?.terminalProxyEnabled ?? true,
       proxyMode: values.network?.proxyMode ?? "system",
       proxyUrl: values.network?.proxyUrl ?? "",
       noProxy: values.network?.noProxy ?? "",
@@ -2785,6 +2788,18 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                       <div>
                         <div className="text-sm font-medium text-slate-800 dark:text-[var(--cf-text-primary)]">{t("settings:network.enable")}</div>
                         <p className="text-xs text-slate-500 dark:text-[var(--cf-text-secondary)]">{t("settings:network.enableDesc")}</p>
+                      </div>
+                    </label>
+                    <label className="flex items-start gap-3 rounded-lg border border-slate-200/70 bg-white/60 px-3 py-3 shadow-sm dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface-muted)] dark:text-[var(--cf-text-primary)]">
+                      <input
+                        type="checkbox"
+                        className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:border-[var(--cf-border)] dark:bg-[var(--cf-surface)] dark:checked:bg-[var(--cf-accent)] dark:focus-visible:ring-[var(--cf-accent)]/40"
+                        checked={network.terminalProxyEnabled}
+                        onChange={(e) => setNetwork((v) => ({ ...v, terminalProxyEnabled: e.target.checked }))}
+                      />
+                      <div>
+                        <div className="text-sm font-medium text-slate-800 dark:text-[var(--cf-text-primary)]">{t("settings:network.terminalEnable")}</div>
+                        <p className="text-xs text-slate-500 dark:text-[var(--cf-text-secondary)]">{t("settings:network.terminalEnableDesc")}</p>
                       </div>
                     </label>
                     <div className="grid gap-3 sm:grid-cols-[180px_1fr] items-center">

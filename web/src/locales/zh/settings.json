@@ -135,6 +135,8 @@
     "desc": "让应用内请求走代理（默认开启）以保证海外服务可达。",
     "enable": "启用代理网络",
     "enableDesc": "开启后，用量/更新等网络请求将按下方模式走代理。",
+    "terminalEnable": "让新终端使用代理",
+    "terminalEnableDesc": "关闭后，新打开的 PowerShell、CMD 和 WSL 终端不会继承常见代理环境变量；已运行的终端不受影响。",
     "mode": "代理模式",
     "modeSystem": "跟随系统代理",
     "modeCustom": "自定义代理地址",

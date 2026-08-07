@@ -29,6 +29,8 @@ export type NotificationSettings = {
 export type NetworkSettings = {
   /** 是否启用代理（默认启用） */
   proxyEnabled?: boolean;
+  /** 新打开的终端是否继承代理环境变量（默认启用） */
+  terminalProxyEnabled?: boolean;
   /** 代理模式：跟随系统或自定义 */
   proxyMode?: 'system' | 'custom';
   /** 自定义代理地址（如 http://127.0.0.1:7890） */
@@ -228,6 +230,7 @@ let cachedDistrosAt = 0;
 let cachedTerminalCapabilitySettings: Required<TerminalCapabilitySettings> = {
   ...DEFAULT_TERMINAL_CAPABILITIES,
 };
+let cachedTerminalProxyEnabled = true;
 const DEFAULT_NOTIFICATIONS: NotificationSettings = {
   badge: true,
   system: true,
@@ -236,6 +239,7 @@ const DEFAULT_NOTIFICATIONS: NotificationSettings = {
 };
 const DEFAULT_NETWORK: NetworkSettings = {
   proxyEnabled: true,
+  terminalProxyEnabled: true,
   proxyMode: 'system',
   proxyUrl: '',
   noProxy: '',
@@ -759,10 +763,12 @@ export function getSettings(): AppSettings {
       : {};
     const next = mergeWithDefaults(parsed, distros);
     cachedTerminalCapabilitySettings = normalizeTerminalCapabilitySettings(next.terminalCapabilities);
+    cachedTerminalProxyEnabled = next.network?.terminalProxyEnabled !== false;
     return next;
   } catch (e) {
     const next = defaultSettings();
     cachedTerminalCapabilitySettings = normalizeTerminalCapabilitySettings(next.terminalCapabilities);
+    cachedTerminalProxyEnabled = next.network?.terminalProxyEnabled !== false;
     return next;
   }
 }
@@ -772,6 +778,13 @@ export function getSettings(): AppSettings {
  */
 export function getTerminalCapabilitySettings(): Required<TerminalCapabilitySettings> {
   return { ...cachedTerminalCapabilitySettings };
+}
+
+/**
+ * 返回内存中的终端代理设置，供 PTY 打开热路径使用。
+ */
+export function getTerminalProxyEnabled(): boolean {
+  return cachedTerminalProxyEnabled;
 }
 
 export function updateSettings(partial: Partial<AppSettings>) {
@@ -785,6 +798,12 @@ export function updateSettings(partial: Partial<AppSettings>) {
       const patch = (partial as any)?.terminalCapabilities;
       if (patch && typeof patch === "object")
         (mergedRaw as any).terminalCapabilities = { ...current, ...patch };
+    } catch {}
+    // 对 network 做浅层合并，避免只更新一个代理开关时覆盖其它网络偏好。
+    try {
+      const curNetwork = (cur as any)?.network && typeof (cur as any).network === "object" ? (cur as any).network : {};
+      const nextNetwork = (partial as any)?.network && typeof (partial as any).network === "object" ? (partial as any).network : null;
+      if (nextNetwork) (mergedRaw as any).network = { ...curNetwork, ...nextNetwork };
     } catch {}
     // 对 dragDrop 做浅层合并，避免渲染层只更新单个字段时覆盖其它子字段
     try {
@@ -839,6 +858,7 @@ export function updateSettings(partial: Partial<AppSettings>) {
     const next = mergeWithDefaults(mergedRaw, distros);
     fs.writeFileSync(getStorePath(), JSON.stringify(next, null, 2), 'utf8');
     cachedTerminalCapabilitySettings = normalizeTerminalCapabilitySettings(next.terminalCapabilities);
+    cachedTerminalProxyEnabled = next.network?.terminalProxyEnabled !== false;
     return next;
   } catch (e) {
     return getSettings();
@@ -909,6 +929,7 @@ export async function ensureFirstRunTerminalSelection(): Promise<AppSettings> {
 export default {
   getSettings,
   getTerminalCapabilitySettings,
+  getTerminalProxyEnabled,
   updateSettings,
   hasSettingsStore,
   hasSavedRuntimeEnvSelection,
