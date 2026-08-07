@@ -1641,6 +1641,7 @@ type CompletionPreferences = {
 // 网络代理偏好（与设置对话框保持一致）
 type NetworkPrefs = {
   proxyEnabled: boolean;
+  terminalProxyEnabled: boolean;
   proxyMode: "system" | "custom";
   proxyUrl: string;
   noProxy: string;

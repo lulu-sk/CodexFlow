@@ -5726,7 +5726,7 @@ export default function CodexFlowManagerUI() {
   // Claude Code：是否读取 agent-*.jsonl 等不推荐历史（仅影响历史索引/预览）。
   const [claudeCodeReadAgentHistory, setClaudeCodeReadAgentHistory] = useState<boolean>(false);
   // 网络代理设置（用于设置对话框初始值与回显）
-  const [networkPrefs, setNetworkPrefs] = useState<NetworkPrefs>({ proxyEnabled: true, proxyMode: "system", proxyUrl: "", noProxy: "" });
+  const [networkPrefs, setNetworkPrefs] = useState<NetworkPrefs>({ proxyEnabled: true, terminalProxyEnabled: true, proxyMode: "system", proxyUrl: "", noProxy: "" });
   // ChatGPT/Codex：是否启用“记录账号”（用于自动备份与快速切换）
   const [codexAccountRecordEnabled, setCodexAccountRecordEnabled] = useState<boolean>(false);
   // 默认 IDE 打开策略（用于文件“定位打开”链路）。
@@ -7092,6 +7092,7 @@ export default function CodexFlowManagerUI() {
             const net = (s as any).network || {};
             setNetworkPrefs({
               proxyEnabled: net.proxyEnabled !== false,
+              terminalProxyEnabled: net.terminalProxyEnabled !== false,
               proxyMode: net.proxyMode === 'custom' ? 'custom' : 'system',
               proxyUrl: String(net.proxyUrl || ''),
               noProxy: String(net.noProxy || ''),

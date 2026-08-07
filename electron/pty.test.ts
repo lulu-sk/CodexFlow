@@ -7,6 +7,7 @@ const settingsMock = vi.hoisted(() => ({
   },
   getSettings: vi.fn(),
   getTerminalCapabilitySettings: vi.fn(),
+  getTerminalProxyEnabled: vi.fn(() => true),
 }));
 
 vi.mock('node-pty', () => ({
@@ -30,6 +31,7 @@ vi.mock('./settings.js', () => ({
       settingsMock.getTerminalCapabilitySettings();
       return settingsMock.terminalCapabilities;
     },
+    getTerminalProxyEnabled: () => settingsMock.getTerminalProxyEnabled(),
   },
 }));
 
@@ -50,6 +52,8 @@ describe('PTYManager', () => {
     settingsMock.terminalCapabilities.trueColor = false;
     settingsMock.getSettings.mockClear();
     settingsMock.getTerminalCapabilitySettings.mockClear();
+    settingsMock.getTerminalProxyEnabled.mockReset();
+    settingsMock.getTerminalProxyEnabled.mockReturnValue(true);
   });
 
   /**
@@ -230,6 +234,30 @@ describe('PTYManager', () => {
       if (previousNoColor === undefined) delete process.env.NO_COLOR;
       else process.env.NO_COLOR = previousNoColor;
     }
+  });
+
+  it('关闭终端代理时应清理代理变量并保留显式绕过策略', async () => {
+    const { win } = createWindowStub();
+    const manager = new PTYManager(() => [win as any]);
+    const spawn = vi.mocked(pty.spawn);
+    spawn.mockReset();
+    spawn.mockReturnValue(createPtyStub() as any);
+    settingsMock.getTerminalProxyEnabled.mockReturnValue(false);
+
+    await manager.openWSLConsole({
+      terminal: 'pwsh',
+      env: {
+        HTTP_PROXY: 'http://127.0.0.1:7890',
+        https_proxy: 'http://127.0.0.1:7890',
+        WSLENV: 'HTTP_PROXY/u:CODEXFLOW_PROXY/u:TERM/u',
+      },
+    });
+
+    const env = spawn.mock.calls[0]?.[2]?.env as Record<string, string>;
+    expect(env).not.toHaveProperty('HTTP_PROXY');
+    expect(env).not.toHaveProperty('https_proxy');
+    expect(env).toHaveProperty('NO_PROXY', '*');
+    expect(env.WSLENV).toBe('TERM/u');
   });
 
   it('内置和系统 ConPTY 都失败时才应把 WSL 切换为 PowerShell', async () => {

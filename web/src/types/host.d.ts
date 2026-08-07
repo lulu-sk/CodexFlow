@@ -114,6 +114,8 @@ export type AppSettings = {
   /** 网络代理设置 */
   network?: {
     proxyEnabled?: boolean;
+    /** 新打开的终端是否继承代理环境变量（默认启用）。 */
+    terminalProxyEnabled?: boolean;
     proxyMode?: 'system' | 'custom';
     proxyUrl?: string;
     noProxy?: string;

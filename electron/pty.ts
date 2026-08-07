@@ -160,6 +160,47 @@ function mergeExtraEnv(base: Record<string, string>, extra?: Record<string, stri
   return next;
 }
 
+const TERMINAL_PROXY_ENV_KEYS = [
+  "CODEXFLOW_PROXY",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "all_proxy",
+  "npm_config_proxy",
+  "npm_config_https_proxy",
+  "npm_config_noproxy",
+  "GIT_HTTP_PROXY",
+  "GIT_HTTPS_PROXY",
+  "GIT_PROXY_COMMAND",
+  "NO_PROXY",
+  "no_proxy",
+] as const;
+
+/**
+ * 清理终端环境中的代理变量，并让常见网络库默认绕过所有地址。
+ * @param env - 即将传给 PTY 的环境变量
+ */
+export function stripTerminalProxyEnvironment(env: Record<string, string>): Record<string, string> {
+  const next = { ...env };
+  for (const key of TERMINAL_PROXY_ENV_KEYS) delete next[key];
+  next.NO_PROXY = "*";
+  next.no_proxy = "*";
+  if (typeof next.WSLENV === "string") {
+    const blocked = new Set(TERMINAL_PROXY_ENV_KEYS.map((key) => key.toLowerCase()));
+    next.WSLENV = next.WSLENV
+      .split(":")
+      .filter((item) => {
+        const base = String(item || "").split("/")[0].trim().toLowerCase();
+        return base && !blocked.has(base);
+      })
+      .join(":");
+    if (!next.WSLENV) delete next.WSLENV;
+  }
+  return next;
+}
+
 /**
  * 中文说明：将指定环境变量名追加到 WSLENV，确保传递到 WSL。
  */
@@ -470,6 +511,10 @@ export class PTYManager {
       { ...process.env } as Record<string, string>,
     );
     env = mergeExtraEnv(env, opts.env);
+    const terminalProxyEnabled = typeof (settings as any).getTerminalProxyEnabled === "function"
+      ? (settings as any).getTerminalProxyEnabled() !== false
+      : true;
+    if (!terminalProxyEnabled) env = stripTerminalProxyEnvironment(env);
     const terminalCapabilities = normalizeTerminalCapabilitySettings(
       settings.getTerminalCapabilitySettings(),
     );
@@ -523,10 +568,13 @@ export class PTYManager {
         }
       }
       if (os.platform() === 'win32') {
+        const blockedProxyKeys = new Set(TERMINAL_PROXY_ENV_KEYS.map((key) => key.toLowerCase()));
         const keys = [
           ...Object.keys(opts.env || {}),
           ...capabilityEnvKeys,
-        ].map((key) => String(key || "").trim()).filter(Boolean);
+        ].map((key) => String(key || "").trim())
+          .filter(Boolean)
+          .filter((key) => terminalProxyEnabled || !blockedProxyKeys.has(key.toLowerCase()));
         if (keys.length > 0) env.WSLENV = appendWslEnv(env.WSLENV, keys);
       }
       try {
