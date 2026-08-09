@@ -172,8 +172,8 @@ function Harness(props: { initialDraft?: string; initialChips?: PathChip[] }): R
 /**
  * 中文说明：固定布局需将附件和文本限制在输入区内部，避免影响外部终端尺寸。
  */
-function StableLayoutHarness(props: { initialChips?: PathChip[] }): React.ReactElement {
-  const [draft, setDraft] = useState("");
+function StableLayoutHarness(props: { initialDraft?: string; initialChips?: PathChip[] }): React.ReactElement {
+  const [draft, setDraft] = useState(props.initialDraft ?? "");
   const [chips, setChips] = useState<PathChip[]>(props.initialChips ?? []);
   return (
     <div className="h-[7.5rem]">
@@ -350,6 +350,22 @@ describe("PathChipsInput 固定布局", () => {
     expect(tray?.className).toContain("overflow-y-auto");
     expect(editor.className).toContain("min-h-0");
     expect(editor.className).toContain("overflow-y-auto");
+  });
+
+  it("中文前缀与长本地链接应按字符连续换行", async () => {
+    const mounted = createMountedRoot();
+    cleanup = mounted.unmount;
+    const longFileUrl = `页面:file:///C:/Example/${"%E6%B5%8B%E8%AF%95".repeat(16)}/index.html`;
+
+    await act(async () => {
+      mounted.root.render(<StableLayoutHarness initialDraft={longFileUrl} />);
+    });
+
+    const editor = getEditor(mounted.host);
+
+    expect(editor.value).toBe(longFileUrl);
+    expect(editor.className).toContain("break-all");
+    expect(editor.className).not.toContain("break-words");
   });
 });
 

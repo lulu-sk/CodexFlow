@@ -605,7 +605,7 @@ describe("TerminalManager（长文本发送策略）", () => {
     tm.disposeAll(false);
   });
 
-  it("Codex 在 PowerShell 短单行文本场景下，会优先走 adapter.paste 并快速提交", async () => {
+  it("Codex 在 PowerShell 短单行文本场景下，会在实际回显安静后通过 bracketed paste 提交", async () => {
     vi.useFakeTimers();
     const adapter: any = createAdapterStub();
     const hostPty = createHostPtyStub();
@@ -619,18 +619,70 @@ describe("TerminalManager（长文本发送策略）", () => {
     const text = "单行正文不会拆分";
     await tm.sendTextAndEnter("tab-codex-single", text, { providerId: "codex", terminalMode: "pwsh" as any });
 
-    expect(adapter.paste).toHaveBeenCalledWith(text);
-    expect(hostPty.write).not.toHaveBeenCalledWith(
+    expect(adapter.paste).not.toHaveBeenCalled();
+    expect(hostPty.write).toHaveBeenCalledWith(
       "pty-codex-single",
       `${BRACKETED_PASTE_START}${text}${BRACKETED_PASTE_END}`,
     );
     expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex-single", "\r");
 
     const minWaitMs = getPasteSubmitMinWaitMs({ providerId: "codex", terminalMode: "pwsh" as any, textLength: text.length });
+    hostPty.emitData("pty-codex-single", "输入区已显示正文");
     vi.advanceTimersByTime(minWaitMs - 1);
     expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex-single", "\r");
     vi.advanceTimersByTime(1);
     expect(hostPty.write).toHaveBeenCalledWith("pty-codex-single", "\r");
+
+    tm.disposeAll(false);
+  });
+
+  it("Codex 在 PowerShell 短单行文本较晚回显时，会从最后回显重新计算粘贴保护窗口", async () => {
+    vi.useFakeTimers();
+    const adapter: any = createAdapterStub();
+    const hostPty = createHostPtyStub();
+    createTerminalAdapterMock.mockReturnValue(adapter);
+
+    const ptyByTab: Record<string, string> = { "tab-codex-late-echo": "pty-codex-late-echo" };
+    const tm = new TerminalManager((tabId) => ptyByTab[tabId], hostPty as any, {});
+    tm.ensurePersistentContainer("tab-codex-late-echo");
+    tm.setPty("tab-codex-late-echo", "pty-codex-late-echo");
+
+    const text = "这条正文会较晚出现在输入区";
+    await tm.sendTextAndEnter("tab-codex-late-echo", text, { providerId: "codex", terminalMode: "pwsh" as any });
+    const minWaitMs = getPasteSubmitMinWaitMs({ providerId: "codex", terminalMode: "pwsh" as any, textLength: text.length });
+
+    vi.advanceTimersByTime(minWaitMs);
+    expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex-late-echo", "\r");
+
+    hostPty.emitData("pty-codex-late-echo", "输入区较晚显示正文");
+    vi.advanceTimersByTime(139);
+    expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex-late-echo", "\r");
+    vi.advanceTimersByTime(1);
+    expect(hostPty.write).toHaveBeenCalledWith("pty-codex-late-echo", "\r");
+
+    tm.disposeAll(false);
+  });
+
+  it("Codex 在 PowerShell 短单行文本无法读取回显时，会在一秒内兜底提交", async () => {
+    vi.useFakeTimers();
+    const adapter: any = createAdapterStub();
+    const hostPty = createHostPtyStub();
+    createTerminalAdapterMock.mockReturnValue(adapter);
+
+    const ptyByTab: Record<string, string> = { "tab-codex-fallback": "pty-codex-fallback" };
+    const tm = new TerminalManager((tabId) => ptyByTab[tabId], hostPty as any, {});
+    tm.ensurePersistentContainer("tab-codex-fallback");
+    tm.setPty("tab-codex-fallback", "pty-codex-fallback");
+
+    await tm.sendTextAndEnter("tab-codex-fallback", "回显不可用时也不能等待数秒", {
+      providerId: "codex",
+      terminalMode: "pwsh" as any,
+    });
+
+    vi.advanceTimersByTime(999);
+    expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex-fallback", "\r");
+    vi.advanceTimersByTime(1);
+    expect(hostPty.write).toHaveBeenCalledWith("pty-codex-fallback", "\r");
 
     tm.disposeAll(false);
   });
@@ -677,6 +729,10 @@ describe("TerminalManager（长文本发送策略）", () => {
     vi.advanceTimersByTime(40);
     expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex-short-multi", "\r");
     vi.advanceTimersByTime(40);
+    expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex-short-multi", "\r");
+    vi.advanceTimersByTime(119);
+    expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex-short-multi", "\r");
+    vi.advanceTimersByTime(1);
     expect(hostPty.write).toHaveBeenCalledWith("pty-codex-short-multi", "\r");
 
     tm.disposeAll(false);
@@ -705,7 +761,7 @@ describe("TerminalManager（长文本发送策略）", () => {
     tm.disposeAll(false);
   });
 
-  it("Codex 在 PowerShell 单行文本的 write_only 场景下，仍优先走 adapter.paste", async () => {
+  it("Codex 在 PowerShell 单行文本的 write_only 场景下，会通过 bracketed paste 写入正文", async () => {
     const adapter: any = createAdapterStub();
     const hostPty = createHostPtyStub();
     createTerminalAdapterMock.mockReturnValue(adapter);
@@ -718,8 +774,8 @@ describe("TerminalManager（长文本发送策略）", () => {
     const text = "单行正文";
     await tm.sendText("tab-codex-write-single", text, { providerId: "codex", terminalMode: "pwsh" as any });
 
-    expect(adapter.paste).toHaveBeenCalledWith(text);
-    expect(hostPty.write).not.toHaveBeenCalledWith(
+    expect(adapter.paste).not.toHaveBeenCalled();
+    expect(hostPty.write).toHaveBeenCalledWith(
       "pty-codex-write-single",
       `${BRACKETED_PASTE_START}${text}${BRACKETED_PASTE_END}`,
     );
@@ -1007,6 +1063,10 @@ describe("TerminalManager（长文本发送策略）", () => {
       vi.advanceTimersByTime(1);
     }
 
+    expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex-ack", "\r");
+    vi.advanceTimersByTime(39);
+    expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex-ack", "\r");
+    vi.advanceTimersByTime(1);
     expect(hostPty.write).toHaveBeenCalledWith("pty-codex-ack", "\r");
 
     tm.disposeAll(false);

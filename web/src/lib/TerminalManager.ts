@@ -74,6 +74,8 @@ const CLAUDE_LARGE_PASTE_LINE_THRESHOLD = 5;
 const CLAUDE_LARGE_PASTE_CHAR_THRESHOLD = 1000;
 const CODEX_LARGE_PASTE_CHAR_THRESHOLD = 1000;
 const CODEX_WINDOWS_FAST_SUBMIT_DELAY_MS = 32;
+const CODEX_WINDOWS_PASTE_BURST_SETTLE_MS = 140;
+const CODEX_WINDOWS_FAST_SUBMIT_MAX_WAIT_MS = 1000;
 const GEMINI_LARGE_PASTE_LINE_THRESHOLD = 5;
 const GEMINI_LARGE_PASTE_CHAR_THRESHOLD = 500;
 const GEMINI_HUGE_PASTE_CHUNK_THRESHOLD = 900;
@@ -1184,6 +1186,7 @@ export default class TerminalManager {
    * 设计背景：
    * - 在某些终端/CLI 组合里，“前端已经把 paste 发出去”并不等于“目标 CLI 已完整接收并可提交”；
    * - 若可读取 xterm 光标附近的局部屏幕文本，则优先等待“输入区已出现目标占位符/尾部文本”的屏幕 ACK；
+   * - 可通过 `screenAckSettleMs` 在屏幕 ACK 稳定后继续等待，避免目标 CLI 的粘贴保护窗口把 Enter 当成正文换行；
    * - 若拿不到屏幕 ACK，则退回到 PTY 回显静默与最终超时兜底；
    * - 可选的 provider 级额外延迟仍通过 `getPasteEnterDelayMs` 叠加，兼容 Gemini 这类防误触窗口。
    *
@@ -1201,6 +1204,7 @@ export default class TerminalManager {
       hardTimeoutMs?: number;
       minWaitMs?: number;
       screenAckProbe?: TerminalSendScreenAckProbe | null;
+      screenAckSettleMs?: number;
       screenAckCanFinish?: (() => boolean) | null;
       traceId?: string | null;
       strategy?: string;
@@ -1214,6 +1218,9 @@ export default class TerminalManager {
     const hardTimeoutMs = typeof options.hardTimeoutMs === 'number' ? Math.max(200, Math.floor(options.hardTimeoutMs)) : 1200;
     const minWaitMs = typeof options.minWaitMs === 'number' ? Math.max(0, Math.floor(options.minWaitMs)) : 0;
     const screenAckProbe = options.screenAckProbe ?? null;
+    const screenAckSettleMs = typeof options.screenAckSettleMs === "number"
+      ? Math.max(0, Math.floor(options.screenAckSettleMs))
+      : 0;
     const screenAckCanFinish = options.screenAckCanFinish ?? null;
     const traceId = options.traceId ?? null;
     const strategy = String(options.strategy || "quiet-submit");
@@ -1226,12 +1233,13 @@ export default class TerminalManager {
     let unsub: (() => void) | undefined;
     let dataEventCount = 0;
     let screenAckStableCount = 0;
+    let screenAckReadyAt: number | null = null;
     let lastScreenAckMarker = "";
     let lastScreenAckBlockedMarker = "";
 
     this.logSendDiagnostic(
       traceId,
-      `start strategy=${strategy} provider=${String(options.providerId || "")} terminal=${String(options.terminalMode || "")} pty=${ptyId} chars=${text.length} minWaitMs=${minWaitMs} quietMs=${echoQuietWindowMs} hardMs=${hardTimeoutMs} enterDelayMs=${enterDelayMs} allowQuiet=${allowQuietSubmit ? 1 : 0} screenAck=${screenAckProbe ? 1 : 0} screenAckMarkers=${screenAckProbe?.markers.length || 0}`
+      `start strategy=${strategy} provider=${String(options.providerId || "")} terminal=${String(options.terminalMode || "")} pty=${ptyId} chars=${text.length} minWaitMs=${minWaitMs} quietMs=${echoQuietWindowMs} hardMs=${hardTimeoutMs} enterDelayMs=${enterDelayMs} allowQuiet=${allowQuietSubmit ? 1 : 0} screenAck=${screenAckProbe ? 1 : 0} screenAckMarkers=${screenAckProbe?.markers.length || 0} screenAckSettleMs=${screenAckSettleMs}`
     );
 
     const sendEnter = () => {
@@ -1271,10 +1279,11 @@ export default class TerminalManager {
       }
       sendEnter();
     };
-    const attemptFinish = (reason: string) => {
+    const attemptFinish = (reason: string, notBeforeAt = startedAt) => {
       if (done) return;
-      const elapsedMs = Math.max(0, Date.now() - startedAt);
-      const remainMs = Math.max(0, minWaitMs - elapsedMs);
+      const now = Date.now();
+      const elapsedMs = Math.max(0, now - startedAt);
+      const remainMs = Math.max(0, minWaitMs - elapsedMs, notBeforeAt - now);
       if (remainMs <= 0) {
         finish(reason);
         return;
@@ -1312,6 +1321,7 @@ export default class TerminalManager {
         } catch {}
         if (!match) {
           screenAckStableCount = 0;
+          screenAckReadyAt = null;
           lastScreenAckMarker = "";
           lastScreenAckBlockedMarker = "";
           return;
@@ -1319,6 +1329,7 @@ export default class TerminalManager {
         if (match.matchedMarker !== lastScreenAckMarker) {
           lastScreenAckMarker = match.matchedMarker;
           screenAckStableCount = 1;
+          screenAckReadyAt = null;
           lastScreenAckBlockedMarker = "";
           this.logSendDiagnostic(
             traceId,
@@ -1339,11 +1350,13 @@ export default class TerminalManager {
           return;
         }
         lastScreenAckBlockedMarker = "";
+        if (screenAckReadyAt === null)
+          screenAckReadyAt = Date.now();
         this.logSendDiagnostic(
           traceId,
-          `screen-ack.ready elapsedMs=${Math.max(0, Date.now() - startedAt)} stable=${screenAckStableCount} buffer=${match.snapshot.bufferType} cursorAbsY=${match.snapshot.cursorAbsY} marker=${match.matchedMarker}`
+          `screen-ack.ready elapsedMs=${Math.max(0, Date.now() - startedAt)} stable=${screenAckStableCount} settleMs=${screenAckSettleMs} buffer=${match.snapshot.bufferType} cursorAbsY=${match.snapshot.cursorAbsY} marker=${match.matchedMarker}`
         );
-        attemptFinish('screen-ack');
+        attemptFinish('screen-ack', screenAckReadyAt + screenAckSettleMs);
       }, TERMINAL_SEND_SCREEN_ACK_POLL_MS);
     };
 
@@ -1483,13 +1496,13 @@ export default class TerminalManager {
   }
 
   /**
-   * 中文说明：Codex 在 Windows/PowerShell 短文本场景下，快速写入正文并在最小 settle 后提交。
+   * 中文说明：Codex 在 Windows/PowerShell 短文本场景下，写入正文并依据实际回显自适应提交。
    *
    * 设计背景：
-   * - 短文本不需要等待局部屏幕 ACK；等待 ACK 失败时会退到数秒级 hard timeout，造成“短消息偶现几秒后才发送”；
-   * - Codex TUI 的 Windows paste-burst 保护会在短窗口内把 Enter 当作正文换行，因此提交前仍复用 Codex 的最小等待时间；
-   * - 多行短文本仍保留显式 bracketed paste，避免 PowerShell/ConPTY 将内嵌换行拆成多次提交；
-   * - 单行短文本优先复用 xterm paste 通道，失败时再直接写入 PTY。
+   * - Codex TUI 的 Windows paste-burst 保护会在最后一批正文到达后的短窗口内把 Enter 当作正文换行；
+   * - 固定从调用开始计时无法覆盖主进程或 ConPTY 偶发繁忙，因此还需等待 PTY 回显安静或输入区正文稳定；
+   * - 所有短文本统一使用显式 bracketed paste，让 Codex 明确区分正文与后续 Enter；
+   * - 正常链路仍在原有最小等待时间后提交；只有正文较晚落地时才自适应延后，并以短超时兜底。
    *
    * @param ptyId 当前标签页绑定的 PTY id
    * @param text 已规范化的待发送文本（不含尾随换行）
@@ -1509,33 +1522,35 @@ export default class TerminalManager {
       CODEX_WINDOWS_FAST_SUBMIT_DELAY_MS,
       getPasteSubmitMinWaitMs({ providerId: "codex", terminalMode, textLength: normalizedText.length }),
     );
-    const sendEnter = () => {
-      this.logSendDiagnostic(traceId, `fast.enter delayMs=${submitDelayMs}`);
-      try { this.hostPty.write(ptyId, "\r"); } catch {}
-    };
-    const scheduleEnter = () => {
-      try { window.setTimeout(sendEnter, submitDelayMs); } catch { sendEnter(); }
-    };
-
-    if (this.shouldForceCodexWindowsBracketedPaste("codex", terminalMode, normalizedText)) {
-      this.logSendDiagnostic(traceId, `trigger.mode=host.bracketed.fast chars=${normalizedText.length}`);
-      try { this.hostPty.write(ptyId, buildBracketedPastePayload(normalizedText)); } catch {}
-      scheduleEnter();
-      return;
-    }
-
-    if (adapter && typeof (adapter as any).paste === "function") {
-      try {
-        (adapter as any).paste(normalizedText);
-        this.logSendDiagnostic(traceId, `trigger.mode=adapter.paste.fast chars=${normalizedText.length}`);
-        scheduleEnter();
-        return;
-      } catch {}
-    }
-
-    this.logSendDiagnostic(traceId, `trigger.mode=host.write.fast chars=${normalizedText.length}`);
-    try { this.hostPty.write(ptyId, normalizedText); } catch {}
-    scheduleEnter();
+    const screenAckProbe = this.createSendScreenAckProbe(adapter, "codex", normalizedText);
+    this.sendTextAndEnterAfterPtyQuiet(ptyId, normalizedText, {
+      allowQuietSubmit: true,
+      providerId: "codex",
+      echoQuietWindowMs: CODEX_WINDOWS_PASTE_BURST_SETTLE_MS,
+      hardTimeoutMs: CODEX_WINDOWS_FAST_SUBMIT_MAX_WAIT_MS,
+      minWaitMs: submitDelayMs,
+      screenAckProbe,
+      screenAckSettleMs: CODEX_WINDOWS_PASTE_BURST_SETTLE_MS,
+      traceId,
+      strategy: "codex-fast-submit",
+      terminalMode,
+      triggerSend: (textToSend) => {
+        if (this.shouldForceCodexWindowsBracketedPaste("codex", terminalMode, textToSend)) {
+          this.logSendDiagnostic(traceId, `trigger.mode=host.bracketed.fast chars=${textToSend.length}`);
+          this.hostPty.write(ptyId, buildBracketedPastePayload(textToSend));
+          return;
+        }
+        if (adapter && typeof (adapter as any).paste === "function") {
+          try {
+            (adapter as any).paste(textToSend);
+            this.logSendDiagnostic(traceId, `trigger.mode=adapter.paste.fast chars=${textToSend.length}`);
+            return;
+          } catch {}
+        }
+        this.logSendDiagnostic(traceId, `trigger.mode=host.write.fast chars=${textToSend.length}`);
+        this.hostPty.write(ptyId, textToSend);
+      },
+    });
   }
 
   /**
@@ -1559,10 +1574,11 @@ export default class TerminalManager {
     this.sendTextAndEnterAfterPtyQuiet(ptyId, text, {
       allowQuietSubmit: !screenAckProbe,
       providerId: 'codex',
-      echoQuietWindowMs: 32,
+      echoQuietWindowMs: CODEX_WINDOWS_PASTE_BURST_SETTLE_MS,
       hardTimeoutMs,
       minWaitMs,
       screenAckProbe,
+      screenAckSettleMs: CODEX_WINDOWS_PASTE_BURST_SETTLE_MS,
       traceId,
       strategy: 'codex-paste-quiet',
       terminalMode,
@@ -1942,7 +1958,7 @@ export default class TerminalManager {
 
   /**
    * 中文说明：判断 Codex 在 Windows 终端下是否需要强制走显式 bracketed paste。
-   * 设计目标：统一覆盖“发送并回车”与“仅写入正文”两条链路，避免多行正文退化成普通输入后被拆成多条消息。
+   * 设计目标：统一覆盖“发送并回车”与“仅写入正文”两条链路，避免正文退化成快速按键后让 Enter 被识别为换行。
    * @param providerId providerId
    * @param terminalMode 当前标签页运行终端类型
    * @param text 待发送正文
@@ -1954,7 +1970,7 @@ export default class TerminalManager {
     text?: string,
   ): boolean {
     return this.shouldUseCodexWindowsSubmitStrategy(providerId, terminalMode)
-      && /[\r\n]/.test(String(text ?? ""));
+      && String(text ?? "").length > 0;
   }
 
   /**
@@ -2738,7 +2754,7 @@ export default class TerminalManager {
   /**
    * 发送一段文本到指定 tab 对应的终端：
    * - 优先走 xterm 的 paste 通道（若可用，可触发 bracketed paste，避免应用层对逐字输入做清洗）。
-   * - Codex 在 Windows/PowerShell 下发送多行正文时，会强制改走显式 bracketed paste，避免退化为普通输入后被拆成多条消息。
+   * - Codex 在 Windows/PowerShell 下发送正文时，会统一改走显式 bracketed paste，避免正文退化成快速按键输入。
    * - 若 adapter 不存在或 paste 不可用，则回退为直接写入 PTY。
    * - `sendText()` 仅负责“写入正文”，不会走 Gemini 外部编辑器提交链路；该链路只在 `sendTextAndEnter()` 中启用。
    */
@@ -2796,7 +2812,7 @@ export default class TerminalManager {
    * - 仅在“文本已被目标 CLI 正常接收”的合适时机发送真正的 `'\r'`(Enter)，保证应用正确解析。
    * - 全链路容错：任何阶段异常都会降级为直接 `write(text)` 并最终补发 `'\r'`。
    * - Gemini：使用“xterm paste + 局部屏幕 ACK/超时兜底 + 延迟回车”策略，避开 40ms paste 防误触窗口。
-   * - Codex / Claude + Windows/PowerShell：使用“等待 PTY 回显静默 + 再回车”策略；其中 Codex 的多行正文会改走显式 bracketed paste，避免 PowerShell/ConPTY 下被拆成多条消息。
+   * - Codex + Windows/PowerShell：正文统一使用显式 bracketed paste，短文本保持快速提交，长文本继续等待屏幕 ACK；Claude 仍使用原有静默等待策略。
    *
    * @param tabId 目标标签页标识，用于定位对应 PTY 与终端适配器
    * @param raw 待发送的原始文本；方法内部会规范化并去除尾随换行
