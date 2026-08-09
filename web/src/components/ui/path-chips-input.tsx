@@ -1703,11 +1703,11 @@ export default function PathChipsInput({
             onContextMenu={onEditableContextMenu}
             rows={3}
             // 说明：
-            // - resize-none 禁用手动拖拽；whitespace-pre-wrap + break-words 实现中文/长词自动换行；
+            // - resize-none 禁用手动拖拽；whitespace-pre-wrap + break-all 避免中文前缀与长链接之间产生孤行；
             // - leading-5 提升可读性；固定布局时文本只在自身区域滚动；pb-10 给右下角发送按钮留出垂直空间；
             style={balancedScrollbarGutter ? ({ scrollbarGutter: 'stable both-edges' } as any) : undefined}
             className={cn(
-              "block flex-1 w-full min-w-[8rem] outline-none bg-[var(--cf-surface-solid)] placeholder:text-[var(--cf-text-muted)] text-[var(--cf-text-primary)] select-text resize-none whitespace-pre-wrap break-words leading-5",
+              "block flex-1 w-full min-w-[8rem] outline-none bg-[var(--cf-surface-solid)] placeholder:text-[var(--cf-text-muted)] text-[var(--cf-text-primary)] select-text resize-none whitespace-pre-wrap break-all leading-5",
               stableLayout ? "min-h-0 overflow-y-auto py-0.5 pb-10" : "py-0.5 pb-10 min-h-[1.5rem]",
               draftInputClassName,
             )}
