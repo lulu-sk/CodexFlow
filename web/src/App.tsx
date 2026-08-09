@@ -97,7 +97,7 @@ import HistoryCopyButton from "@/components/history/history-copy-button";
 import { useHistoryImageContextMenu } from "@/components/history/history-image-context-menu";
 import HistoryPanelToggleButton from "@/components/history/history-panel-toggle-button";
 import HistoryTurnDiffCard from "@/features/history/history-turn-diff-card";
-import { findBestHistorySessionForTab } from "@/features/history/session-binding";
+import { bindHistorySessionIdToTabs, findBestHistorySessionForTab } from "@/features/history/session-binding";
 import {
   getProjectCenterViewState,
   getTabHistoryViewState,
@@ -481,6 +481,11 @@ type HistoryTabMatchCacheEntry = {
   match: HistorySession;
 };
 
+type HistoryBindingRetryState = {
+  attemptIndex: number;
+  timerId: number | null;
+};
+
 type CodexErrorScanState = {
   buffer: string;
   lastReconnectErrorKey?: string;
@@ -500,6 +505,7 @@ type CodexErrorScanState = {
 const CODEX_ERROR_SCAN_MAX_BUFFER_LENGTH = 16 * 1024;
 const CODEX_RECONNECT_DETAIL_GRACE_MS = 10_000;
 const CODEX_RECONNECT_AFTER_ERROR_GRACE_MS = 10_000;
+const HISTORY_BINDING_RETRY_DELAYS_MS = [200, 500, 1_000, 2_000, 4_000] as const;
 
 /**
  * 中文说明：生成 Codex 错误去重键，避免同一段终端输出反复触发处理。
@@ -1848,11 +1854,13 @@ export default function CodexFlowManagerUI() {
   const [agentTurnHistoryByTab, setAgentTurnHistoryByTab] = useState<Record<string, AgentTurnTimerState[]>>({});
   const agentTurnHistoryByTabRef = useRef<Record<string, AgentTurnTimerState[]>>({});
   const agentSessionIdByTabRef = useRef<Record<string, string>>({});
+  const historyActiveTurnStartedAtByTabRef = useRef<Record<string, number>>({});
   const openHistoryForTabRef = useRef<((tabId: string) => Promise<void>) | null>(null);
   const prefetchHistoryForTabRef = useRef<((tabId: string, forceRefresh?: boolean) => Promise<HistoryTabMatchCacheEntry | null>) | null>(null);
   const historyMatchByTabRef = useRef<Record<string, HistoryTabMatchCacheEntry>>({});
   const historyPrefetchInFlightRef = useRef<Map<string, Promise<HistoryTabMatchCacheEntry | null>>>(new Map());
   const historyOpenInFlightTabIdsRef = useRef<Set<string>>(new Set());
+  const historyBindingRetryByTabRef = useRef<Map<string, HistoryBindingRetryState>>(new Map());
   const MAX_AGENT_TURN_HISTORY = 200;
   const [agentTurnClockTick, setAgentTurnClockTick] = useState(0);
   const [agentTurnCtxMenu, setAgentTurnCtxMenu] = useState<{ show: boolean; x: number; y: number; tabId: string | null }>({
@@ -1888,6 +1896,93 @@ export default function CodexFlowManagerUI() {
   const CODEX_OSC_EXTERNAL_WAIT_NO_DETAIL_MS = 3_000;
   const COMPLETION_DEDUPE_WINDOW_MS = 1_600;
   const COMPLETION_CROSS_SOURCE_WINDOW_MS = 5_000;
+
+  /**
+   * 将可信会话 ID 正式绑定到标签并同步内存快照；确认本轮会话后同时结束活动会话发现。
+   */
+  const bindHistorySessionIdToTab = useCallback((
+    tabId: string,
+    sessionId: string,
+    completeActiveDiscovery: boolean = false,
+  ): boolean => {
+    const safeTabId = String(tabId || "").trim();
+    const safeSessionId = String(sessionId || "").trim();
+    if (!safeTabId || !safeSessionId) return false;
+    if (completeActiveDiscovery) {
+      delete historyActiveTurnStartedAtByTabRef.current[safeTabId];
+      delete historyMatchByTabRef.current[safeTabId];
+    }
+    agentSessionIdByTabRef.current[safeTabId] = safeSessionId;
+    const result = bindHistorySessionIdToTabs(
+      tabsByProjectRef.current,
+      safeTabId,
+      safeSessionId,
+      tabProjectRef.current[safeTabId],
+    );
+    if (!result.projectId) return false;
+    tabProjectRef.current[safeTabId] = result.projectId;
+    if (!result.changed) return true;
+    tabsByProjectRef.current = result.tabsByProject;
+    delete historyMatchByTabRef.current[safeTabId];
+    setTabsByProject(result.tabsByProject);
+    return true;
+  }, []);
+
+  /**
+   * 取消指定标签尚未执行的历史绑定重试，并移除等待索引事件的标记。
+   */
+  const clearHistoryBindingRetry = useCallback((tabId: string): void => {
+    const safeTabId = String(tabId || "").trim();
+    if (!safeTabId) return;
+    const state = historyBindingRetryByTabRef.current.get(safeTabId);
+    if (state?.timerId !== null && state?.timerId !== undefined) {
+      try { window.clearTimeout(state.timerId); } catch {}
+    }
+    historyBindingRetryByTabRef.current.delete(safeTabId);
+  }, []);
+
+  /**
+   * 在完成通知后用有限次数短延迟重查历史；次数耗尽后保留标记，等待索引新增事件恢复。
+   */
+  const scheduleHistoryBindingRetry = useCallback((tabId: string): void => {
+    const safeTabId = String(tabId || "").trim();
+    if (!safeTabId) return;
+    clearHistoryBindingRetry(safeTabId);
+    const state: HistoryBindingRetryState = { attemptIndex: 0, timerId: null };
+    historyBindingRetryByTabRef.current.set(safeTabId, state);
+
+    /**
+     * 安排下一次查询；成功后停止，全部失败时由历史索引事件继续唤醒。
+     */
+    const scheduleNextAttempt = (): void => {
+      if (historyBindingRetryByTabRef.current.get(safeTabId) !== state) return;
+      const delayMs = HISTORY_BINDING_RETRY_DELAYS_MS[state.attemptIndex];
+      if (delayMs === undefined) {
+        state.timerId = null;
+        return;
+      }
+      state.attemptIndex += 1;
+      state.timerId = window.setTimeout(() => {
+        state.timerId = null;
+        if (historyBindingRetryByTabRef.current.get(safeTabId) !== state) return;
+        const request = prefetchHistoryForTabRef.current?.(safeTabId, true);
+        if (!request) {
+          scheduleNextAttempt();
+          return;
+        }
+        void request.then((match) => {
+          if (historyBindingRetryByTabRef.current.get(safeTabId) !== state) return;
+          if (match) clearHistoryBindingRetry(safeTabId);
+          else scheduleNextAttempt();
+        }).catch(() => {
+          if (historyBindingRetryByTabRef.current.get(safeTabId) === state)
+            scheduleNextAttempt();
+        });
+      }, delayMs);
+    };
+
+    scheduleNextAttempt();
+  }, [clearHistoryBindingRetry]);
 
   /**
    * 判断待恢复的 tab 是否仍属于指定窗口，避免延迟任务绑定已被移动/关闭的终端。
@@ -1973,6 +2068,12 @@ export default function CodexFlowManagerUI() {
       }
       codexErrorScanByTabRef.current = {};
       codexHandledErrorKeysByPtyRef.current = {};
+      for (const state of historyBindingRetryByTabRef.current.values()) {
+        if (state.timerId !== null) {
+          try { window.clearTimeout(state.timerId); } catch {}
+        }
+      }
+      historyBindingRetryByTabRef.current.clear();
       if (hydratedPtyBindingTimerRef.current !== null) {
         try { window.clearTimeout(hydratedPtyBindingTimerRef.current); } catch {}
         hydratedPtyBindingTimerRef.current = null;
@@ -2320,6 +2421,8 @@ export default function CodexFlowManagerUI() {
     try { return parseProjectCenterViewStateMap(localStorage.getItem(PROJECT_CENTER_VIEW_STATE_STORAGE_KEY)); }
     catch { return {}; }
   });
+  const projectCenterViewStateByIdRef = useRef<ProjectCenterViewStateMap>(projectCenterViewStateById);
+  projectCenterViewStateByIdRef.current = projectCenterViewStateById;
   const selectedProjectCenterViewState = getProjectCenterViewState(projectCenterViewStateById, selectedProjectId);
   const centerMode = selectedProjectCenterViewState.mode;
 
@@ -2941,8 +3044,10 @@ export default function CodexFlowManagerUI() {
   const startAgentTurnTimer = useCallback((tabId: string) => {
     const id = String(tabId || "").trim();
     if (!id) return;
-    prefetchHistoryForTabSilently(id);
-    if (agentTurnTimerByTabRef.current[id]?.status === "working") return;
+    if (agentTurnTimerByTabRef.current[id]?.status === "working") {
+      prefetchHistoryForTabSilently(id, true);
+      return;
+    }
     resetCodexErrorScanForTab(id, "timer-start", { keepAttempts: true });
     const now = Date.now();
     const nextState: AgentTurnTimerState = {
@@ -2954,6 +3059,8 @@ export default function CodexFlowManagerUI() {
       ...agentTurnTimerByTabRef.current,
       [id]: nextState,
     };
+    historyActiveTurnStartedAtByTabRef.current[id] = now;
+    delete historyMatchByTabRef.current[id];
     setAgentTurnTimerByTab((prev) => {
       const current = prev[id];
       if (current?.status === "working") return prev;
@@ -2962,8 +3069,10 @@ export default function CodexFlowManagerUI() {
         [id]: nextState,
       };
     });
+    scheduleHistoryBindingRetry(id);
+    prefetchHistoryForTabSilently(id, true);
     notifyLog(`agentTimer.start tab=${id}`);
-  }, [notifyLog, prefetchHistoryForTabSilently, resetCodexErrorScanForTab]);
+  }, [notifyLog, prefetchHistoryForTabSilently, resetCodexErrorScanForTab, scheduleHistoryBindingRetry]);
 
   /**
    * 在收到代理完成通知时结束计时，并固化本轮总耗时，同时记入历史。
@@ -4215,6 +4324,7 @@ export default function CodexFlowManagerUI() {
     if (shouldEnableAgentTimerForProvider(providerId)) completeAgentTurnTimer(tabId);
     else cancelAgentTurnTimer(tabId, "provider-not-supported");
     prefetchHistoryForTabSilently(tabId, true);
+    scheduleHistoryBindingRetry(tabId);
     recordCompletionSnapshot(tabId, cleanedPreview, source);
     const foreground = isAppForeground();
     const activeMatch = activeTabIdRef.current === tabId;
@@ -4953,6 +5063,8 @@ export default function CodexFlowManagerUI() {
     try { return parseTabHistoryViewStateMap(localStorage.getItem(TAB_HISTORY_VIEW_STATE_STORAGE_KEY)); }
     catch { return {}; }
   });
+  const tabHistoryViewStateByKeyRef = useRef<TabHistoryViewStateMap>(tabHistoryViewStateByKey);
+  tabHistoryViewStateByKeyRef.current = tabHistoryViewStateByKey;
   const selectedTabHistoryViewState = getTabHistoryViewState(
     tabHistoryViewStateByKey,
     historySelectionOwnerTabId,
@@ -5807,17 +5919,60 @@ export default function CodexFlowManagerUI() {
     }
     const project = projectsRef.current.find((item) => item.id === projectId) || null;
     if (!tab || !project) return null;
-    const threadId = String(agentSessionIdByTabRef.current[safeTabId] || tab.historySessionId || "").trim().toLowerCase();
+    const activeTurnStartedAt = Number(historyActiveTurnStartedAtByTabRef.current[safeTabId]);
+    const hasActiveDiscovery = Number.isFinite(activeTurnStartedAt) && activeTurnStartedAt > 0;
+    const threadId = hasActiveDiscovery
+      ? ""
+      : String(agentSessionIdByTabRef.current[safeTabId] || tab.historySessionId || "").trim().toLowerCase();
     const signature = JSON.stringify([
       project.id,
       project.wslPath,
       project.winPath,
       tab.providerId,
       Number(tab.createdAt || 0),
+      hasActiveDiscovery ? activeTurnStartedAt : 0,
       threadId,
     ]);
     return { tabId: safeTabId, projectId, tab, project, signature };
   }, []);
+
+  /**
+   * 收集其他终端标签已经占用的会话 ID，避免并行标签把同一历史记录绑定两次。
+   */
+  const collectHistorySessionIdsBoundToOtherTabs = useCallback((tabId: string): string[] => {
+    const safeTabId = String(tabId || "").trim();
+    const sessionIds = new Set<string>();
+    for (const tabs of Object.values(tabsByProjectRef.current)) {
+      for (const tab of tabs || []) {
+        if (tab.id === safeTabId) continue;
+        const storedSessionId = String(tab.historySessionId || "").trim();
+        const runtimeSessionId = String(agentSessionIdByTabRef.current[tab.id] || "").trim();
+        if (storedSessionId) sessionIds.add(storedSessionId);
+        if (runtimeSessionId) sessionIds.add(runtimeSessionId);
+      }
+    }
+    return Array.from(sessionIds);
+  }, []);
+
+  /**
+   * 当用户已停留在该标签的空历史页时，自动选中刚发现的绑定会话。
+   */
+  const revealPendingHistoryMatch = useCallback((context: HistoryTabLookupContext, match: HistorySession): void => {
+    if (historySelectionProjectIdRef.current !== context.projectId) return;
+    if (historySelectionOwnerTabIdRef.current !== context.tabId) return;
+    if (getProjectCenterViewState(projectCenterViewStateByIdRef.current, context.projectId).mode !== "history") return;
+    const viewState = getTabHistoryViewState(
+      tabHistoryViewStateByKeyRef.current,
+      context.tabId,
+      context.projectId,
+    );
+    if (viewState.selectedHistoryId) return;
+    const groupKey = historyTimelineGroupKey(match, new Date());
+    setExpandedGroups((current) => ({ ...current, [groupKey]: true }));
+    setSelectedHistoryDir(groupKey, context.tabId, context.projectId);
+    setSelectedHistoryId(match.id, context.tabId, context.projectId);
+    requestHistoryDetailBottom(context.tabId, context.projectId, match.id);
+  }, [requestHistoryDetailBottom, setSelectedHistoryDir, setSelectedHistoryId]);
 
   /**
    * 在后台查找并缓存终端对应的历史会话；相同标签与上下文的并发请求会自动合并。
@@ -5845,19 +6000,43 @@ export default function CodexFlowManagerUI() {
       });
       if (!(result?.ok && Array.isArray(result.sessions))) throw new Error("history.list failed");
       const sessions = result.sessions.map((item: any) => mapHistoryListItemToSession(item));
+      const currentContext = resolveHistoryTabLookupContext(context.tabId);
+      if (!currentContext || currentContext.signature !== context.signature) return null;
+      const currentSessionId = String(
+        agentSessionIdByTabRef.current[currentContext.tabId] || currentContext.tab.historySessionId || "",
+      ).trim();
+      const activeTurnStartedAt = Number(historyActiveTurnStartedAtByTabRef.current[currentContext.tabId]);
+      const hasActiveDiscovery = Number.isFinite(activeTurnStartedAt) && activeTurnStartedAt > 0;
       const match = findBestHistorySessionForTab(sessions, {
-        providerId: context.tab.providerId,
-        threadId: agentSessionIdByTabRef.current[context.tabId] || context.tab.historySessionId,
-        tabCreatedAt: context.tab.createdAt,
+        providerId: currentContext.tab.providerId,
+        threadId: hasActiveDiscovery ? undefined : currentSessionId,
+        tabCreatedAt: currentContext.tab.createdAt,
+        activeTurnStartedAt: hasActiveDiscovery ? activeTurnStartedAt : undefined,
+        currentSessionId,
+        excludedSessionIds: collectHistorySessionIdsBoundToOtherTabs(currentContext.tabId),
       });
       setHistorySessions((current) => mergeHistorySessions(current, sessions));
       if (!match) {
-        if (historyMatchByTabRef.current[context.tabId]?.signature === context.signature)
-          delete historyMatchByTabRef.current[context.tabId];
+        if (historyMatchByTabRef.current[currentContext.tabId]?.signature === currentContext.signature)
+          delete historyMatchByTabRef.current[currentContext.tabId];
         return null;
       }
-      const entry: HistoryTabMatchCacheEntry = { signature: context.signature, sessions, match };
-      historyMatchByTabRef.current[context.tabId] = entry;
+      const bindingSessionId = String(
+        hasActiveDiscovery
+          ? (match.resumeId || match.id || "")
+          : (currentSessionId || match.resumeId || match.id || ""),
+      ).trim();
+      if (!bindingSessionId || !bindHistorySessionIdToTab(
+        currentContext.tabId,
+        bindingSessionId,
+        hasActiveDiscovery,
+      )) return null;
+      const boundContext = resolveHistoryTabLookupContext(currentContext.tabId);
+      if (!boundContext) return null;
+      const entry: HistoryTabMatchCacheEntry = { signature: boundContext.signature, sessions, match };
+      historyMatchByTabRef.current[boundContext.tabId] = entry;
+      clearHistoryBindingRetry(boundContext.tabId);
+      revealPendingHistoryMatch(boundContext, match);
       return entry;
     })();
     historyPrefetchInFlightRef.current.set(inFlightKey, request);
@@ -5867,7 +6046,7 @@ export default function CodexFlowManagerUI() {
       if (historyPrefetchInFlightRef.current.get(inFlightKey) === request)
         historyPrefetchInFlightRef.current.delete(inFlightKey);
     }
-  }, [mapHistoryListItemToSession, mergeHistorySessions, resolveHistoryTabLookupContext]);
+  }, [bindHistorySessionIdToTab, clearHistoryBindingRetry, collectHistorySessionIdsBoundToOtherTabs, mapHistoryListItemToSession, mergeHistorySessions, resolveHistoryTabLookupContext, revealPendingHistoryMatch]);
 
   /**
    * 为指定终端标签查找并打开其对应历史会话，优先使用预取结果实现即时响应。
@@ -5903,6 +6082,13 @@ export default function CodexFlowManagerUI() {
       setSelectedHistoryId(null, safeTabId, context.projectId);
       const prefetched = await prefetchHistoryForTab(safeTabId, true);
       if (!prefetched) {
+        const boundSessionId = String(
+          agentSessionIdByTabRef.current[safeTabId] || context.tab.historySessionId || "",
+        ).trim();
+        if (boundSessionId) {
+          scheduleHistoryBindingRetry(safeTabId);
+          return;
+        }
         setNoticeDialog({
           open: true,
           title: String(t("terminal:viewSessionHistory")),
@@ -5925,7 +6111,7 @@ export default function CodexFlowManagerUI() {
     } finally {
       historyOpenInFlightTabIdsRef.current.delete(safeTabId);
     }
-  }, [mergeHistorySessions, openHistorySession, prefetchHistoryForTab, prefetchHistoryForTabSilently, requestHistoryDetailBottom, resolveHistoryTabLookupContext, setCenterMode, setSelectedHistoryDir, setSelectedHistoryId, t]);
+  }, [mergeHistorySessions, openHistorySession, prefetchHistoryForTab, prefetchHistoryForTabSilently, requestHistoryDetailBottom, resolveHistoryTabLookupContext, scheduleHistoryBindingRetry, setCenterMode, setSelectedHistoryDir, setSelectedHistoryId, t]);
 
   useEffect(() => {
     openHistoryForTabRef.current = openHistoryForTab;
@@ -7621,7 +7807,7 @@ export default function CodexFlowManagerUI() {
         const isSubagentCompletion = completionKind === "subagent" || hookEventName === "SubagentStop";
         const sessionId = String(payload?.threadId || "").trim();
         if (!isSubagentCompletion && sessionId)
-          agentSessionIdByTabRef.current[resolvedTabId] = sessionId;
+          bindHistorySessionIdToTab(resolvedTabId, sessionId, true);
         if (isSubagentCompletion) {
           notifyLog(`externalCompletion subagent tab=${resolvedTabId} previewLen=${cleanedPreview.length} agentType=${payload?.agentType || "n/a"} agentId=${payload?.agentId || "n/a"}`);
           handleSubagentCompletion(resolvedTabId, preview, payload?.agentType, payload?.agentId, normalizeOptions);
@@ -7633,7 +7819,7 @@ export default function CodexFlowManagerUI() {
       });
     } catch {}
     return () => { try { off && off(); } catch {} };
-  }, [handleAgentCompletion, handleSubagentCompletion, notifyLog, resolveExternalTabId]);
+  }, [bindHistorySessionIdToTab, handleAgentCompletion, handleSubagentCompletion, notifyLog, resolveExternalTabId]);
 
   // 监听主进程“退出确认”请求：用应用内 Dialog 替代原生对话框，保持 UI 风格一致
   useEffect(() => {
@@ -8608,6 +8794,13 @@ export default function CodexFlowManagerUI() {
       });
     };
     const updateOne = (it: any) => upsertSessions([it]);
+    /**
+     * 索引新增或更新后唤醒仍在等待文件的标签，避免首次列表查询过早返回空值。
+     */
+    const refreshPendingHistoryBindings = (): void => {
+      for (const tabId of historyBindingRetryByTabRef.current.keys())
+        prefetchHistoryForTabSilently(tabId, true);
+    };
     const removeOne = (filePath: string) => {
       if (!filePath) return;
       setHistorySessions((cur) => {
@@ -8650,9 +8843,11 @@ export default function CodexFlowManagerUI() {
     };
     const unsubAdd = window.host.history.onIndexAdd?.((payload: { items: any[] }) => {
       try { upsertSessions(payload?.items || []); } catch {}
+      try { refreshPendingHistoryBindings(); } catch {}
     }) || (() => {});
     const unsubUpd = window.host.history.onIndexUpdate?.((payload: { item: any }) => {
       try { updateOne(payload?.item); } catch {}
+      try { refreshPendingHistoryBindings(); } catch {}
     }) || (() => {});
     const unsubRem = window.host.history.onIndexRemove?.((payload: { filePath: string }) => {
       try { removeOne(String(payload?.filePath || '')); } catch {}
@@ -8662,9 +8857,10 @@ export default function CodexFlowManagerUI() {
         clearHistoryCache();
       } catch {}
       try { setHistoryInvalidateNonce((x) => x + 1); } catch {}
+      try { refreshPendingHistoryBindings(); } catch {}
     }) || (() => {});
     return () => { try { unsubAdd(); } catch {}; try { unsubUpd(); } catch {}; try { unsubRem(); } catch {}; try { unsubInvalidate(); } catch {}; };
-  }, [clearHistoryCache, historyScopeDescriptor.cacheKey, historyScopeDescriptor.effectiveScope, historyScopeDescriptor.projectNeedles, historyScopeProjectIdSet, mapHistoryListItemToSession, pathStartsWithBoundary, resolveHistoryProjectByDirKey, selectedHistoryId, setHistoryCache]);
+  }, [clearHistoryCache, historyScopeDescriptor.cacheKey, historyScopeDescriptor.effectiveScope, historyScopeDescriptor.projectNeedles, historyScopeProjectIdSet, mapHistoryListItemToSession, pathStartsWithBoundary, prefetchHistoryForTabSilently, resolveHistoryProjectByDirKey, selectedHistoryId, setHistoryCache]);
 
   // Subscribe to PTY exit/error events：标记退出并更新计数（不修改标签名）
   useEffect(() => {
@@ -9074,6 +9270,10 @@ export default function CodexFlowManagerUI() {
       delete next[key];
       return next;
     });
+    clearHistoryBindingRetry(tabId);
+    delete agentSessionIdByTabRef.current[tabId];
+    delete historyActiveTurnStartedAtByTabRef.current[tabId];
+    delete historyMatchByTabRef.current[tabId];
     clearPendingForTab(tabId);
     cancelAgentTurnTimer(tabId, "close-tab");
     unregisterTabProject(tabId);

@@ -120,7 +120,7 @@ type ConsoleTab = {
   providerId: string;
   /** 当前标签页归属的窗口标识；未指定时默认归属主窗口。 */
   windowId?: string;
-  /** 从历史详情继续会话时绑定的原会话标识，用于直接查看对应历史。 */
+  /** 当前标签绑定的历史会话标识，用于新会话自动关联和继续会话直接查看历史。 */
   historySessionId?: string;
   logs: string[]; // kept for visual compatibility; no longer used once terminal mounts
   createdAt: number;
