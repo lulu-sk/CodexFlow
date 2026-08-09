@@ -57,6 +57,10 @@
     "descNoName": "该终端标签页仍在进行中，且还有未发送的输入内容或附件。关闭后将中断当前任务/进程，并丢弃这些内容，是否继续？",
     "confirm": "仍然关闭"
   },
+  "viewSessionHistory": "查看会话历史",
+  "hideSessionHistory": "隐藏会话历史",
+  "historySessionNotFound": "暂未找到与当前终端匹配的历史会话。",
+  "historySessionLoadFailed": "历史会话加载失败，请稍后重试。",
   "ctx": {
     "copy": "复制",
     "copyLine": "复制整行",

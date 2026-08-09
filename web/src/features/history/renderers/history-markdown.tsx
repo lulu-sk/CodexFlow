@@ -664,7 +664,7 @@ export function HistoryMarkdown(props: HistoryMarkdownProps) {
   const openLocalPathMenu = useCallback((e: React.MouseEvent<HTMLAnchorElement>, link: ResolvedHistoryLocalLink) => {
     const margin = 6;
     const menuWidth = 200;
-    const menuHeight = String(projectRootPath || "").trim() ? 92 : 46;
+    const menuHeight = String(projectRootPath || "").trim() ? 154 : 108;
     const vw = typeof window !== "undefined" ? window.innerWidth : 1920;
     const vh = typeof window !== "undefined" ? window.innerHeight : 1080;
     const x = Math.max(margin, Math.min(Math.round(e.clientX), Math.max(margin, vw - menuWidth - margin)));
@@ -696,6 +696,36 @@ export function HistoryMarkdown(props: HistoryMarkdownProps) {
     await copyTextForHistoryLocalPath(normalized || sourcePath);
     closeLocalPathMenu();
   }, [localPathMenu.link?.openPath, localPathMenu.link?.rawPath, closeLocalPathMenu]);
+
+  /**
+   * 复制菜单中本地文件的完整文本内容。
+   */
+  const copyLocalFileContentsFromMenu = useCallback(async () => {
+    const openPath = String(localPathMenu.link?.openPath || "").trim();
+    closeLocalPathMenu();
+    if (!openPath) return;
+    try {
+      const res: any = await (window as any)?.host?.utils?.copyFileContents?.(openPath);
+      if (!(res && res.ok)) throw new Error(res?.error || "copyFileContents failed");
+    } catch {
+      try { alert(String(t("history:copyFileContentsFailed"))); } catch {}
+    }
+  }, [localPathMenu.link?.openPath, closeLocalPathMenu, t]);
+
+  /**
+   * 在系统文件管理器中定位菜单对应的本地文件。
+   */
+  const showLocalFileInFolderFromMenu = useCallback(async () => {
+    const openPath = String(localPathMenu.link?.openPath || "").trim();
+    closeLocalPathMenu();
+    if (!openPath) return;
+    try {
+      const res: any = await (window as any)?.host?.utils?.showInFolder?.(openPath);
+      if (!(res && res.ok)) throw new Error(res?.error || "showInFolder failed");
+    } catch {
+      try { alert(String(t("history:cannotOpenContaining"))); } catch {}
+    }
+  }, [localPathMenu.link?.openPath, closeLocalPathMenu, t]);
 
   /**
    * 中文说明：打开“当前项目 IDE 设置”窗口，并加载项目绑定与全局默认配置。
@@ -885,6 +915,18 @@ export function HistoryMarkdown(props: HistoryMarkdownProps) {
                   onClick={copyLocalPathFromMenu}
                 >
                   {t("history:copyPath")}
+                </button>
+                <button
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
+                  onClick={() => { void copyLocalFileContentsFromMenu(); }}
+                >
+                  {t("history:copyFileContents")}
+                </button>
+                <button
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
+                  onClick={() => { void showLocalFileInFolderFromMenu(); }}
+                >
+                  {t("history:openInFileExplorer")}
                 </button>
                 {String(projectRootPath || "").trim() ? (
                   <>

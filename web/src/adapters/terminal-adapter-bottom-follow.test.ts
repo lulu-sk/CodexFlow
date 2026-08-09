@@ -274,6 +274,24 @@ describe("TerminalAdapter（持续底部跟随）", () => {
     adapter.dispose();
   });
 
+  it("历史面板触发布局刷新后仍会持续跟随底部输出", async () => {
+    const { adapter, terminal } = createMountedAdapter();
+    terminal.scrollToBottom();
+
+    adapter.notifyLayoutResizeStart?.("history-panel");
+    adapter.notifyPtyResizePending?.({ cols: 60, rows: 24 }, "history-panel");
+    adapter.resizeTo?.({ cols: 60, rows: 24 }, "history-panel");
+    adapter.notifyPtyResizeComplete?.({ cols: 60, rows: 24 }, "history-panel", "sent");
+    await vi.advanceTimersByTimeAsync(2000);
+
+    moveAwayFromBottom(terminal, 4);
+    adapter.write("output after history panel resize");
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(terminal.__activeBuffer.viewportY).toBe(terminal.__activeBuffer.baseY);
+    adapter.dispose();
+  });
+
   it("待命后会纠正没有显式活动来源的 buffer 与 DOM 程序性滚动", async () => {
     const { adapter, terminal, viewport } = createMountedAdapter();
     adapter.scrollToBottom({ followOutput: true, source: "history-resume" });

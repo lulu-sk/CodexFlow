@@ -450,6 +450,9 @@ export type MessageContent = {
   fallbackSrc?: string;
   localPath?: string;
   mimeType?: string;
+  cwd?: string;
+  diffSource?: "apply_patch" | "file_change" | "turn_diff";
+  patchable?: boolean;
 };
 export type HistoryMessage = { role: string; content: MessageContent[] };
 
@@ -820,6 +823,10 @@ export interface HistoryAPI {
     historyRoot?: string;
   }): Promise<{ ok: boolean; sessions?: HistorySummary[]; error?: string }>;
   read(args: { filePath: string; providerId?: "codex" | "claude" | "gemini" | "antigravity" | "grok"; forceParse?: boolean }): Promise<{ id: string; title: string; date: number; messages: HistoryMessage[]; skippedLines: number; providerId?: "codex" | "claude" | "gemini" | "antigravity" | "grok" }>;
+  revertTurnDiff(args: { projectWinPath: string; diffText: string; operation?: "undo" | "reapply" }): Promise<
+    | { ok: true; repoRoot: string }
+    | { ok: false; code: "invalid_request" | "project_not_found" | "not_git_repo" | "conflict" | "apply_failed"; error: string }
+  >;
   findEmptySessions(): Promise<{ ok: boolean; candidates?: Array<{ id: string; title: string; rawDate?: string; date: number; filePath: string; sizeKB?: number }>; error?: string }>;
   getCodexRelationPlan(args: { filePath: string }): Promise<{ ok: boolean; plan?: CodexRelationDeletePlan; error?: string }>;
   deleteCodexRelation(args: { filePath: string; version: string; mode: "current" | "tree" }): Promise<{ ok: boolean; code?: "unsupported_plan" | "stale_plan" | "external_references" | "empty_selection"; plan?: CodexRelationDeletePlan; results?: Array<{ filePath: string; ok: boolean; notFound?: boolean; error?: string }>; summary?: { ok: number; notFound: number; failed: number }; error?: string }>;
@@ -1169,6 +1176,8 @@ export interface UtilsAPI {
   /** 将路径转换为当前系统可直接使用的剪贴板格式。 */
   normalizePathForClipboard(p: string): Promise<{ ok: boolean; path?: string; error?: string }>;
   readText(): Promise<{ ok: boolean; text?: string; error?: string }>;
+  /** 将指定本地普通文件的 UTF-8 文本内容复制到系统剪贴板。 */
+  copyFileContents(p: string): Promise<{ ok: boolean; error?: string }>;
   saveText(content: string, defaultPath?: string): Promise<{ ok: boolean; path?: string; canceled?: boolean; error?: string }>;
   fetchJson(args: { url: string; timeoutMs?: number; headers?: Record<string, string> }): Promise<{ ok: boolean; status?: number; data?: any; error?: string; raw?: string }>;
   showInFolder(p: string): Promise<{ ok: boolean; openedDir?: string; error?: string }>;

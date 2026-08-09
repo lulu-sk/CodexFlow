@@ -758,6 +758,478 @@ describe("electron/history.readHistoryFile", () => {
     expect(String(userMessages[0]?.content?.[1]?.src || "")).toMatch(/^file:\/\//);
   });
 
+  it("会把 Codex 的 turn_diff 事件保留为可审核的历史内容", async () => {
+    const unifiedDiff = [
+      "diff --git a/src/example.ts b/src/example.ts",
+      "index 1111111..2222222 100644",
+      "--- a/src/example.ts",
+      "+++ b/src/example.ts",
+      "@@ -1 +1 @@",
+      "-export const value = 1;",
+      "+export const value = 2;",
+    ].join("\n");
+    const filePath = await createHistoryJsonlFile([
+      {
+        timestamp: "2026-03-25T01:03:00.000Z",
+        type: "session_meta",
+        payload: {
+          id: "session-turn-diff",
+          cwd: "/tmp/demo",
+        },
+      },
+      {
+        timestamp: "2026-03-25T01:03:01.000Z",
+        type: "event_msg",
+        payload: {
+          type: "turn_diff",
+          unified_diff: unifiedDiff,
+        },
+      },
+    ]);
+
+    const parsed = await readHistoryFile(filePath, { maxLines: 0 });
+    const changeMessage = parsed.messages.find((message) => message.role === "change");
+
+    expect(changeMessage?.content).toMatchObject([{
+      type: "turn_diff",
+      text: unifiedDiff,
+      tags: ["event_msg.turn_diff", "turn_diff"],
+      cwd: "/tmp/demo",
+      diffSource: "turn_diff",
+      patchable: true,
+    }]);
+  });
+
+  it("会把同一轮的改动卡片稳定放到该轮最后一条消息之后", async () => {
+    const unifiedDiff = [
+      "diff --git a/src/example.ts b/src/example.ts",
+      "--- a/src/example.ts",
+      "+++ b/src/example.ts",
+      "@@ -1 +1 @@",
+      "-export const value = 1;",
+      "+export const value = 2;",
+    ].join("\n");
+    const turnId = "turn-order";
+    const filePath = await createHistoryJsonlFile([
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "先说明改动范围" }],
+          internal_chat_message_metadata_passthrough: { turn_id: turnId },
+        },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          type: "turn_diff",
+          unified_diff: unifiedDiff,
+          turn_id: turnId,
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "改动已完成" }],
+          internal_chat_message_metadata_passthrough: { turn_id: turnId },
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "下一步" }],
+          internal_chat_message_metadata_passthrough: { turn_id: "next-turn" },
+        },
+      },
+    ]);
+
+    const parsed = await readHistoryFile(filePath, { maxLines: 0 });
+
+    expect(parsed.messages.map((message) => message.role)).toEqual(["assistant", "assistant", "change", "user"]);
+  });
+
+  it("缺少 turn_diff 时会按轮次合并 exec 中的 apply_patch 记录", async () => {
+    const firstPatch = [
+      "*** Begin Patch",
+      "*** Update File: src/first.ts",
+      "@@",
+      "-export const first = 1;",
+      "+export const first = 2;",
+      "*** End Patch",
+    ].join("\n");
+    const secondPatch = [
+      "*** Begin Patch",
+      "*** Update File: src/second.ts",
+      "@@",
+      "-export const second = 1;",
+      "+export const second = 2;",
+      "*** End Patch",
+    ].join("\n");
+    const turnMetadata = { turn_id: "turn-apply-patch" };
+    const filePath = await createHistoryJsonlFile([
+      {
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call",
+          name: "exec",
+          call_id: "call-first",
+          input: `const patch = ${JSON.stringify(firstPatch)}; text(await tools.apply_patch(patch));`,
+          internal_chat_message_metadata_passthrough: turnMetadata,
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call",
+          name: "exec",
+          call_id: "call-second",
+          input: `const patch = ${JSON.stringify(secondPatch)}; text(await tools.apply_patch(patch));`,
+          internal_chat_message_metadata_passthrough: turnMetadata,
+        },
+      },
+    ]);
+
+    const parsed = await readHistoryFile(filePath, { maxLines: 0 });
+    const changeMessages = parsed.messages.filter((message) => message.role === "change");
+
+    expect(changeMessages).toHaveLength(1);
+    expect(changeMessages[0]?.content?.[0]?.tags).toEqual([
+      "custom_tool_call.apply_patch",
+      "apply_patch",
+      "turn_diff",
+    ]);
+    expect(changeMessages[0]?.content?.[0]?.text).toContain("*** Update File: src/first.ts");
+    expect(changeMessages[0]?.content?.[0]?.text).toContain("*** Update File: src/second.ts");
+  });
+
+  it("会以 FileChange 作为改动摘要来源，并保留插件一致的原始差异段", async () => {
+    const turnId = "turn-file-change";
+    const firstBatch = {
+      "C:\\workspace\\project\\Client\\Packages\\manifest.json": {
+        type: "update",
+        unified_diff: "@@ -1,1 +1,2 @@\n-old\n+new\n+another\n",
+      },
+      "C:\\workspace\\project\\Client\\Packages\\packages-lock.json": {
+        type: "update",
+        unified_diff: "@@ -4,2 +4,3 @@\n-before\n+after\n+added\n",
+      },
+      "C:\\workspace\\project\\Client\\Packages\\Coplay\\.gitignore": {
+        type: "update",
+        unified_diff: "@@ -1,1 +1,1 @@\n-old-ignore\n+new-ignore\n",
+      },
+      "C:\\workspace\\project_peer\\Client\\Packages\\manifest.json": {
+        type: "update",
+        unified_diff: "@@ -2,1 +2,2 @@\n-old-peer\n+new-peer\n+peer-extra\n",
+      },
+      "C:\\workspace\\project_peer\\Client\\Packages\\packages-lock.json": {
+        type: "update",
+        unified_diff: "@@ -3,1 +3,2 @@\n-old-lock\n+new-lock\n+lock-extra\n",
+      },
+      "C:\\workspace\\project_peer\\Client\\Packages\\Coplay\\.gitignore": {
+        type: "update",
+        unified_diff: "@@ -1,1 +1,1 @@\n-old-peer-ignore\n+new-peer-ignore\n",
+      },
+    };
+    const filePath = await createHistoryJsonlFile([
+      {
+        type: "session_meta",
+        payload: { id: "session-file-change", cwd: "C:\\workspace\\project" },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call",
+          name: "apply_patch",
+          call_id: "call-fallback",
+          input: "*** Begin Patch\n*** Update File: Client/Packages/manifest.json\n-old\n+new\n*** End Patch",
+          internal_chat_message_metadata_passthrough: { turn_id: turnId },
+        },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          turn_id: turnId,
+          item: { type: "CommandExecution", id: "command-project-1", cwd: "file:///C:/workspace/project" },
+        },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          turn_id: turnId,
+          item: { type: "FileChange", id: "file-change-1", changes: firstBatch },
+        },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          turn_id: turnId,
+          item: { type: "CommandExecution", id: "command-peer-1", cwd: "file:///C:/workspace/project_peer" },
+        },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          turn_id: turnId,
+          item: {
+            type: "FileChange",
+            id: "file-change-2",
+            changes: {
+              "C:\\workspace\\project_peer\\Client\\Packages\\packages-lock.json": {
+                type: "update",
+                unified_diff: "@@ -20,1 +20,2 @@\n-before-second\n+after-second\n+added-second\n",
+              },
+            },
+          },
+        },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          turn_id: turnId,
+          item: { type: "CommandExecution", id: "command-project-2", cwd: "file:///C:/workspace/project" },
+        },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          turn_id: turnId,
+          item: {
+            type: "FileChange",
+            id: "file-change-3",
+            changes: {
+              "C:\\workspace\\project\\Client\\Packages\\Coplay\\.gitignore": {
+                type: "update",
+                unified_diff: "@@ -1,1 +1,1 @@\n-new-ignore\n+localized-ignore\n",
+              },
+              "C:\\workspace\\project_peer\\Client\\Packages\\Coplay\\.gitignore": {
+                type: "update",
+                unified_diff: "@@ -1,1 +1,1 @@\n-new-peer-ignore\n+localized-peer-ignore\n",
+              },
+            },
+          },
+        },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          turn_id: turnId,
+          item: {
+            type: "FileChange",
+            id: "file-change-4",
+            changes: {
+              "C:\\workspace\\project\\Client\\Temp\\temporary.ps1": {
+                type: "add",
+                content: "one\ntwo\nthree\n",
+              },
+            },
+          },
+        },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          turn_id: turnId,
+          item: {
+            type: "FileChange",
+            id: "file-change-5",
+            changes: {
+              "C:\\workspace\\project\\Client\\Temp\\temporary.ps1": {
+                type: "update",
+                unified_diff: "@@ -1,2 +1,1 @@\n-one\n-two\n+merged\n",
+              },
+            },
+          },
+        },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          turn_id: turnId,
+          item: { type: "CommandExecution", id: "command-peer-2", cwd: "file:///C:/workspace/project_peer" },
+        },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          turn_id: turnId,
+          item: {
+            type: "FileChange",
+            id: "file-change-6",
+            changes: {
+              "C:\\workspace\\project\\Client\\Temp\\temporary.ps1": {
+                type: "delete",
+                content: "merged\n",
+              },
+            },
+          },
+        },
+      },
+    ]);
+
+    const parsed = await readHistoryFile(filePath, { maxLines: 0 });
+    const changeMessages = parsed.messages.filter((message) => message.role === "change");
+    const change = changeMessages[0]?.content?.[0];
+
+    expect(changeMessages).toHaveLength(1);
+    expect(change?.diffSource).toBe("file_change");
+    expect(change?.patchable).toBe(false);
+    expect(change?.cwd).toBe("C:\\workspace\\project");
+    expect(change?.text).not.toContain("*** Begin Patch");
+    const diffHeaders = change?.text.match(/^diff --git .+$/gm) || [];
+    expect(diffHeaders).toEqual([
+      "diff --git a/C:/workspace/project/Client/Packages/Coplay/.gitignore b/C:/workspace/project/Client/Packages/Coplay/.gitignore",
+      "diff --git a/C:/workspace/project/Client/Packages/manifest.json b/C:/workspace/project/Client/Packages/manifest.json",
+      "diff --git a/C:/workspace/project/Client/Packages/packages-lock.json b/C:/workspace/project/Client/Packages/packages-lock.json",
+      "diff --git a/C:/workspace/project_peer/Client/Packages/Coplay/.gitignore b/C:/workspace/project_peer/Client/Packages/Coplay/.gitignore",
+      "diff --git a/C:/workspace/project_peer/Client/Packages/manifest.json b/C:/workspace/project_peer/Client/Packages/manifest.json",
+      "diff --git a/C:/workspace/project_peer/Client/Packages/packages-lock.json b/C:/workspace/project_peer/Client/Packages/packages-lock.json",
+      "diff --git a/C:/workspace/project_peer/Client/Packages/packages-lock.json b/C:/workspace/project_peer/Client/Packages/packages-lock.json",
+      "diff --git a/C:/workspace/project/Client/Temp/temporary.ps1 b/C:/workspace/project/Client/Temp/temporary.ps1",
+      "diff --git a/C:/workspace/project/Client/Temp/temporary.ps1 b/C:/workspace/project/Client/Temp/temporary.ps1",
+      "diff --git a/C:/workspace/project/Client/Temp/temporary.ps1 b/C:/workspace/project/Client/Temp/temporary.ps1",
+    ]);
+    const reviewSegments = String(change?.text || "").split(/(?=^diff --git )/m).filter(Boolean);
+    expect((reviewSegments[0]?.match(/^@@/gm) || [])).toHaveLength(2);
+    expect((reviewSegments[3]?.match(/^@@/gm) || [])).toHaveLength(2);
+    expect(reviewSegments[7]).toContain("new file mode 100644");
+    expect(reviewSegments[8]).not.toContain("new file mode 100644");
+    expect(reviewSegments[9]).toContain("deleted file mode 100644");
+  });
+
+  it("移动操作会保持独立差异段，并切断同路径普通更新的合并", async () => {
+    const turnId = "turn-file-move";
+    const sourcePath = "C:\\workspace\\project\\src\\before.ts";
+    const filePath = await createHistoryJsonlFile([
+      { type: "session_meta", payload: { id: "session-file-move", cwd: "C:\\workspace\\project" } },
+      {
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          turn_id: turnId,
+          item: {
+            type: "FileChange",
+            id: "file-update-before-move",
+            changes: { [sourcePath]: { type: "update", unified_diff: "@@ -1 +1 @@\n-old\n+updated\n" } },
+          },
+        },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          turn_id: turnId,
+          item: {
+            type: "FileChange",
+            id: "file-move",
+            changes: {
+              [sourcePath]: {
+                type: "update",
+                move_path: "C:\\workspace\\project\\src\\after.ts",
+                unified_diff: "@@ -1 +1 @@\n-updated\n+moved\n",
+              },
+            },
+          },
+        },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          turn_id: turnId,
+          item: {
+            type: "FileChange",
+            id: "file-update-after-move",
+            changes: { [sourcePath]: { type: "update", unified_diff: "@@ -1 +1 @@\n-moved\n+final\n" } },
+          },
+        },
+      },
+    ]);
+
+    const parsed = await readHistoryFile(filePath, { maxLines: 0 });
+    const change = parsed.messages.find((message) => message.role === "change")?.content?.[0];
+    const reviewSegments = String(change?.text || "").split(/(?=^diff --git )/m).filter(Boolean);
+
+    expect(reviewSegments).toHaveLength(3);
+    expect(reviewSegments[1]).toContain("rename from C:/workspace/project/src/before.ts");
+    expect(reviewSegments[1]).toContain("rename to C:/workspace/project/src/after.ts");
+  });
+
+  it("标准 turn_diff 始终优先于同轮 FileChange 和 apply_patch 回退", async () => {
+    const turnId = "turn-diff-priority";
+    const standardDiff = [
+      "diff --git a/src/standard.ts b/src/standard.ts",
+      "--- a/src/standard.ts",
+      "+++ b/src/standard.ts",
+      "@@ -1 +1 @@",
+      "-before",
+      "+after",
+    ].join("\n");
+    const filePath = await createHistoryJsonlFile([
+      { type: "session_meta", payload: { id: "session-diff-priority", cwd: "C:\\workspace\\project" } },
+      {
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call",
+          name: "apply_patch",
+          call_id: "priority-patch",
+          input: "*** Begin Patch\n*** Update File: src/fallback.ts\n-old\n+new\n*** End Patch",
+          internal_chat_message_metadata_passthrough: { turn_id: turnId },
+        },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          turn_id: turnId,
+          item: {
+            type: "FileChange",
+            id: "priority-file-change-before",
+            changes: {
+              "C:\\workspace\\project\\src\\fallback.ts": { type: "update", unified_diff: "@@ -1 +1 @@\n-old\n+new\n" },
+            },
+          },
+        },
+      },
+      { type: "event_msg", payload: { type: "turn_diff", turn_id: turnId, unified_diff: standardDiff } },
+      {
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          turn_id: turnId,
+          item: {
+            type: "FileChange",
+            id: "priority-file-change-after",
+            changes: {
+              "C:\\workspace\\project\\src\\ignored.ts": { type: "update", unified_diff: "@@ -1 +1 @@\n-old\n+ignored\n" },
+            },
+          },
+        },
+      },
+    ]);
+
+    const parsed = await readHistoryFile(filePath, { maxLines: 0 });
+    const changeMessages = parsed.messages.filter((message) => message.role === "change");
+    const change = changeMessages[0]?.content?.[0];
+
+    expect(changeMessages).toHaveLength(1);
+    expect(change).toMatchObject({ text: standardDiff, diffSource: "turn_diff", patchable: true });
+  });
+
   it("会清理 Codex 新格式用户消息中的图片边界占位符", async () => {
     const dataUrlA = "data:image/png;base64,QUFB";
     const dataUrlB = "data:image/png;base64,QkJC";

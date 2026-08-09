@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useImperativeHandle, useLayoutEffect, us
 type VirtualizedListProps<TItem> = {
   items: TItem[];
   scrollContainerRef: React.RefObject<HTMLDivElement | null>;
+  viewportKey?: string;
   estimateItemHeight?: number;
   getEstimatedItemHeight?: (item: TItem, index: number) => number;
   overscan?: number;
@@ -14,11 +15,17 @@ type VirtualizedScrollAlign = "auto" | "start" | "center" | "end";
 
 export type VirtualizedListHandle = {
   scrollToIndex: (index: number, options?: { align?: VirtualizedScrollAlign; behavior?: ScrollBehavior }) => void;
+  syncViewport: () => void;
 };
 
 type VirtualizedViewportState = {
   scrollTop: number;
   height: number;
+};
+
+type VirtualizedViewportController = {
+  viewport: VirtualizedViewportState;
+  syncViewport: () => void;
 };
 
 export type VirtualizedLayout = {
@@ -119,28 +126,32 @@ function findVisibleEndIndex(tops: number[], offset: number): number {
 /**
  * 中文说明：订阅滚动容器位置与高度，驱动虚拟列表窗口计算。
  */
-function useVirtualizedViewport(scrollContainerRef: React.RefObject<HTMLDivElement | null>, syncSignal: number): VirtualizedViewportState {
+function useVirtualizedViewport(
+  scrollContainerRef: React.RefObject<HTMLDivElement | null>,
+  syncSignal: number,
+  viewportKey?: string,
+): VirtualizedViewportController {
   const [viewport, setViewport] = useState<VirtualizedViewportState>({ scrollTop: 0, height: 0 });
-  const syncViewportRef = useRef<(() => void) | null>(null);
 
-  useLayoutEffect(() => {
+  /**
+   * 立即读取真实滚动容器，确保挂载和快速切换期间也能同步视口。
+   */
+  const syncViewport = useCallback(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    const nextScrollTop = Math.max(0, container.scrollTop || 0);
+    const nextHeight = Math.max(0, container.clientHeight || 0);
+    setViewport((current) => {
+      if (current.scrollTop === nextScrollTop && current.height === nextHeight) return current;
+      return { scrollTop: nextScrollTop, height: nextHeight };
+    });
+  }, [scrollContainerRef]);
+
+  useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
 
     let rafId = 0;
-
-    /**
-     * 中文说明：同步容器视口状态，并避免无变化时多余渲染。
-     */
-    const syncViewport = () => {
-      const nextScrollTop = Math.max(0, container.scrollTop || 0);
-      const nextHeight = Math.max(0, container.clientHeight || 0);
-      setViewport((current) => {
-        if (current.scrollTop === nextScrollTop && current.height === nextHeight) return current;
-        return { scrollTop: nextScrollTop, height: nextHeight };
-      });
-    };
-    syncViewportRef.current = syncViewport;
 
     /**
      * 中文说明：使用 rAF 合并高频滚动事件，降低状态更新压力。
@@ -166,7 +177,6 @@ function useVirtualizedViewport(scrollContainerRef: React.RefObject<HTMLDivEleme
 
     return () => {
       container.removeEventListener("scroll", scheduleSync);
-      if (syncViewportRef.current === syncViewport) syncViewportRef.current = null;
       if (resizeObserver) {
         try {
           resizeObserver.disconnect();
@@ -176,13 +186,13 @@ function useVirtualizedViewport(scrollContainerRef: React.RefObject<HTMLDivEleme
       }
       if (rafId) window.cancelAnimationFrame(rafId);
     };
-  }, [scrollContainerRef]);
+  }, [scrollContainerRef, syncViewport]);
 
   useLayoutEffect(() => {
-    syncViewportRef.current?.();
-  }, [syncSignal]);
+    syncViewport();
+  }, [syncSignal, syncViewport, viewportKey]);
 
-  return viewport;
+  return { viewport, syncViewport };
 }
 
 /**
@@ -237,6 +247,7 @@ function VirtualizedMeasuredRow({ itemKey, top, onHeightChange, children }: Virt
 function VirtualizedListInner<TItem>({
   items,
   scrollContainerRef,
+  viewportKey,
   estimateItemHeight = 240,
   getEstimatedItemHeight,
   overscan,
@@ -277,7 +288,7 @@ function VirtualizedListInner<TItem>({
     if (container.scrollTop > maxScrollTop) container.scrollTop = maxScrollTop;
   }, [layout.totalHeight, scrollContainerRef]);
 
-  const viewport = useVirtualizedViewport(scrollContainerRef, layout.totalHeight);
+  const { viewport, syncViewport } = useVirtualizedViewport(scrollContainerRef, layout.totalHeight, viewportKey);
   const overscanPx = Math.max(estimateItemHeight, overscan ?? estimateItemHeight * 4);
   const hostOffsetTop = Math.max(0, hostRef.current?.offsetTop || 0);
   const viewportTopInList = Math.max(0, viewport.scrollTop - hostOffsetTop);
@@ -336,11 +347,13 @@ function VirtualizedListInner<TItem>({
       top: clampScrollTop(nextTop, 0, maxTop),
       behavior: options?.behavior || "smooth",
     });
-  }, [estimateItemHeight, items.length, layout.heights, layout.tops, scrollContainerRef]);
+    syncViewport();
+  }, [estimateItemHeight, items.length, layout.heights, layout.tops, scrollContainerRef, syncViewport]);
 
   useImperativeHandle(ref, () => ({
     scrollToIndex,
-  }), [scrollToIndex]);
+    syncViewport,
+  }), [scrollToIndex, syncViewport]);
 
   if (items.length === 0) return null;
 
