@@ -1665,6 +1665,14 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
       return;
     }
 
+    // 布局变化后的 PTY 重绘可能晚于 resize 事务，需把原有底部意图延续到后续输出。
+    if (!viewportBottomFollowRequest) {
+      startViewportBottomFollow({
+        followOutput: true,
+        source: `layout-resize.${source}`,
+      });
+    }
+
     const anchor = createViewportReadAnchor(resolved.snapshot, `layout-resize.${source}`, {
       cols: term.cols,
       rows: term.rows,

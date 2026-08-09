@@ -57,6 +57,10 @@
     "descNoName": "This terminal tab is still working and has unsent input or attachments. Closing it will interrupt the current task/process and discard them. Continue?",
     "confirm": "Close anyway"
   },
+  "viewSessionHistory": "View session history",
+  "hideSessionHistory": "Hide session history",
+  "historySessionNotFound": "No matching history session was found yet.",
+  "historySessionLoadFailed": "Failed to load the history session. Please try again.",
   "ctx": {
     "copy": "Copy",
     "copyLine": "Copy Line",

@@ -46,6 +46,7 @@ import {
   Info as InfoIcon,
   Maximize2,
   Minimize2,
+  Columns2,
   ArrowDownAZ,
   ArrowDown,
   ArrowUp,
@@ -58,6 +59,7 @@ import {
   GitMerge,
   GitBranch,
   Loader2,
+  Download,
 } from "lucide-react";
 import AboutSupport from "@/components/about-support";
 import { ProviderSwitcher } from "@/components/topbar/provider-switcher";
@@ -94,11 +96,38 @@ import { resolveDirRowDropPosition } from "@/lib/dir-tree-dnd";
 import HistoryCopyButton from "@/components/history/history-copy-button";
 import { useHistoryImageContextMenu } from "@/components/history/history-image-context-menu";
 import HistoryPanelToggleButton from "@/components/history/history-panel-toggle-button";
+import HistoryTurnDiffCard from "@/features/history/history-turn-diff-card";
+import { findBestHistorySessionForTab } from "@/features/history/session-binding";
+import {
+  getProjectCenterViewState,
+  getTabHistoryViewState,
+  parseProjectCenterViewStateMap,
+  parseTabHistoryViewStateMap,
+  PROJECT_CENTER_VIEW_STATE_STORAGE_KEY,
+  resolveHistoryDetailLayout,
+  resolveTabHistoryViewStateKey,
+  shouldApplyHistoryDetailBottomRequest,
+  TAB_HISTORY_VIEW_STATE_STORAGE_KEY,
+  updateProjectCenterViewState,
+  updateTabHistoryViewState,
+  updateTabHistoryViewStateByKey,
+  type ProjectCenterMode,
+  type ProjectCenterViewStateMap,
+  type HistoryDetailBottomRequest,
+  type HistoryDetailLayoutMode,
+  type TabHistoryViewStateMap,
+} from "@/features/history/project-view-state";
 import {
   resolveHistoryDetailSearchMode,
   shouldEnableHistoryDetailDomHighlights,
   shouldUseVirtualizedHistoryDetail,
 } from "@/features/history/detail-virtualization";
+import {
+  buildHistoryDetailSessionFingerprint,
+  shouldReuseHistoryDetailLoad,
+  upsertHistoryDetailSessionMessages,
+} from "@/features/history/detail-message-cache";
+import { resolveHistoryDetailTypeFilter } from "@/features/history/detail-type-filter";
 import {
   buildHistoryContentItemKey,
   hasVisibleHistoryMessageContent,
@@ -178,6 +207,7 @@ import {
 } from "@/lib/tab-window";
 
 const CONSOLE_SESSION_STORAGE_KEY = "codexflow.consoleSession.v1";
+const HISTORY_DETAIL_LAYOUT_STORAGE_KEY = "codexflow.historyDetailLayout.v1";
 import {
   clearRendererDraftRecovery,
   loadRendererDraftRecovery,
@@ -435,6 +465,20 @@ type AgentTurnTimerState = {
   autoContinueScheduledAt?: number;
   autoContinueAttempt?: number;
   autoContinueMaxAttempts?: number;
+};
+
+type HistoryTabLookupContext = {
+  tabId: string;
+  projectId: string;
+  tab: ConsoleTab;
+  project: Project;
+  signature: string;
+};
+
+type HistoryTabMatchCacheEntry = {
+  signature: string;
+  sessions: HistorySession[];
+  match: HistorySession;
 };
 
 type CodexErrorScanState = {
@@ -1695,6 +1739,7 @@ export default function CodexFlowManagerUI() {
         kind: tab.kind === "git" ? "git" : "terminal",
         providerId: tab.providerId,
         windowId: resolveTabWindowId(tab),
+        historySessionId: tab.historySessionId,
         createdAt: tab.createdAt,
         logs: [],
       }));
@@ -1802,6 +1847,12 @@ export default function CodexFlowManagerUI() {
   const agentTurnTimerByTabRef = useRef<Record<string, AgentTurnTimerState>>({});
   const [agentTurnHistoryByTab, setAgentTurnHistoryByTab] = useState<Record<string, AgentTurnTimerState[]>>({});
   const agentTurnHistoryByTabRef = useRef<Record<string, AgentTurnTimerState[]>>({});
+  const agentSessionIdByTabRef = useRef<Record<string, string>>({});
+  const openHistoryForTabRef = useRef<((tabId: string) => Promise<void>) | null>(null);
+  const prefetchHistoryForTabRef = useRef<((tabId: string, forceRefresh?: boolean) => Promise<HistoryTabMatchCacheEntry | null>) | null>(null);
+  const historyMatchByTabRef = useRef<Record<string, HistoryTabMatchCacheEntry>>({});
+  const historyPrefetchInFlightRef = useRef<Map<string, Promise<HistoryTabMatchCacheEntry | null>>>(new Map());
+  const historyOpenInFlightTabIdsRef = useRef<Set<string>>(new Set());
   const MAX_AGENT_TURN_HISTORY = 200;
   const [agentTurnClockTick, setAgentTurnClockTick] = useState(0);
   const [agentTurnCtxMenu, setAgentTurnCtxMenu] = useState<{ show: boolean; x: number; y: number; tabId: string | null }>({
@@ -1981,6 +2032,7 @@ export default function CodexFlowManagerUI() {
             kind: tab.kind === "git" ? "git" : "terminal",
             providerId: tab.providerId,
             windowId: resolveTabWindowId(tab),
+            historySessionId: tab.historySessionId,
             createdAt: tab.createdAt,
             logs: [],
           }));
@@ -2264,7 +2316,33 @@ export default function CodexFlowManagerUI() {
     };
   }
   const tabsListRef = useRef<HTMLDivElement | null>(null);
-  const [centerMode, setCenterMode] = useState<'console' | 'history'>('console');
+  const [projectCenterViewStateById, setProjectCenterViewStateById] = useState<ProjectCenterViewStateMap>(() => {
+    try { return parseProjectCenterViewStateMap(localStorage.getItem(PROJECT_CENTER_VIEW_STATE_STORAGE_KEY)); }
+    catch { return {}; }
+  });
+  const selectedProjectCenterViewState = getProjectCenterViewState(projectCenterViewStateById, selectedProjectId);
+  const centerMode = selectedProjectCenterViewState.mode;
+
+  /**
+   * 设置指定项目的中心视图，并持久化到项目独立状态中。
+   */
+  const setCenterMode = useCallback((mode: ProjectCenterMode, projectId: string = selectedProjectId): void => {
+    setProjectCenterViewStateById((current) => updateProjectCenterViewState(current, projectId, { mode }));
+  }, [selectedProjectId]);
+
+  useEffect(() => {
+    try { localStorage.setItem(PROJECT_CENTER_VIEW_STATE_STORAGE_KEY, JSON.stringify(projectCenterViewStateById)); } catch {}
+  }, [projectCenterViewStateById]);
+  // 记住用户选择的历史详情布局，方便在分栏与全屏之间快速往返。
+  const [historyDetailLayoutMode, setHistoryDetailLayoutMode] = useState<HistoryDetailLayoutMode>(() => {
+    try { return localStorage.getItem(HISTORY_DETAIL_LAYOUT_STORAGE_KEY) === "split" ? "split" : "full"; }
+    catch { return "full"; }
+  });
+
+  useEffect(() => {
+    try { localStorage.setItem(HISTORY_DETAIL_LAYOUT_STORAGE_KEY, historyDetailLayoutMode); } catch {}
+  }, [historyDetailLayoutMode]);
+  const resolvedHistoryDetailLayout = resolveHistoryDetailLayout(historyDetailLayoutMode, tabs);
   const tabPointerDragStateRef = useRef<TabPointerDragState | null>(null);
   const tabDragPreviewRef = useRef<HTMLDivElement | null>(null);
   const tabDragPreviewFrameRef = useRef<number | null>(null);
@@ -2850,11 +2928,20 @@ export default function CodexFlowManagerUI() {
   }, [notifyLog]);
 
   /**
+   * 静默预取指定标签的历史绑定；预取失败留给用户主动打开时再显示错误。
+   */
+  const prefetchHistoryForTabSilently = useCallback((tabId: string, forceRefresh: boolean = false): void => {
+    const request = prefetchHistoryForTabRef.current?.(String(tabId || "").trim(), forceRefresh);
+    if (request) void request.catch(() => {});
+  }, []);
+
+  /**
    * 在用户发送消息或手动继续计时时启动计时；若当前标签页已在计时中则保持不变，避免重复启动。
    */
   const startAgentTurnTimer = useCallback((tabId: string) => {
     const id = String(tabId || "").trim();
     if (!id) return;
+    prefetchHistoryForTabSilently(id);
     if (agentTurnTimerByTabRef.current[id]?.status === "working") return;
     resetCodexErrorScanForTab(id, "timer-start", { keepAttempts: true });
     const now = Date.now();
@@ -2876,7 +2963,7 @@ export default function CodexFlowManagerUI() {
       };
     });
     notifyLog(`agentTimer.start tab=${id}`);
-  }, [notifyLog, resetCodexErrorScanForTab]);
+  }, [notifyLog, prefetchHistoryForTabSilently, resetCodexErrorScanForTab]);
 
   /**
    * 在收到代理完成通知时结束计时，并固化本轮总耗时，同时记入历史。
@@ -3279,17 +3366,20 @@ export default function CodexFlowManagerUI() {
   }, []);
 
   /**
-   * 渲染输入区上方的计时状态条（仅在存在计时状态时显示）。
+   * 渲染输入区上方的计时状态和历史入口；继续会话尚未计时时也保留历史入口。
    */
-  const renderAgentTurnStatusBar = useCallback((tabId: string, wrapperClassName: string = "mb-0.5 px-1") => {
+  const renderAgentTurnStatusBar = useCallback((tabId: string, wrapperClassName: string = "mb-0.5 px-1", historySessionId?: string) => {
     const id = String(tabId || "").trim();
     const state = id ? agentTurnTimerByTab[id] : undefined;
-    if (!state) return null;
+    const hasHistoryBinding = !!String(historySessionId || "").trim();
+    if (!state && !hasHistoryBinding) return null;
+    const historyVisible = centerMode === "history" && activeTabId === id;
+    const historyActionLabel = String(t(historyVisible ? "terminal:hideSessionHistory" : "terminal:viewSessionHistory"));
     const working = state?.status === "working";
     const reconnecting = working && !!(state.reconnectAttempt || state.reconnectErrorKind || state.reconnectErrorMessage);
     const interrupted = state?.status === "interrupted";
     const failed = state?.status === "failed";
-    const statusText = resolveAgentTurnStatusText(id);
+    const statusText = state ? resolveAgentTurnStatusText(id) : "";
 
     // 计算总耗时（包含历史和当前进行中的）
     const historyForTab = agentTurnHistoryByTab[id] || [];
@@ -3298,11 +3388,12 @@ export default function CodexFlowManagerUI() {
 
     return (
       <div className={wrapperClassName}>
-        <div className="relative group/agent-timer inline-block">
+        <div className="flex min-w-0 items-center gap-1">
+        {state ? <div className="relative group/agent-timer inline-block">
           <div
             className={working
-              ? "-translate-y-[6px] text-[10px] sm:text-xs text-slate-500/80 dark:text-slate-400/70 px-2 py-0.5 flex items-center gap-2 select-none cursor-default hover:text-slate-600 dark:hover:text-slate-300 transition-colors"
-              : "-translate-y-[6px] text-[10px] sm:text-xs text-slate-500/80 dark:text-slate-400/70 px-2 py-0.5 flex items-center gap-2 select-none cursor-default transition-colors"}
+              ? "text-[10px] sm:text-xs text-slate-500/80 dark:text-slate-400/70 px-2 py-0.5 flex items-center gap-2 select-none cursor-default hover:text-slate-600 dark:hover:text-slate-300 transition-colors"
+              : "text-[10px] sm:text-xs text-slate-500/80 dark:text-slate-400/70 px-2 py-0.5 flex items-center gap-2 select-none cursor-default transition-colors"}
             onContextMenu={(event) => {
               openAgentTurnContextMenu(event, id);
             }}
@@ -3374,10 +3465,31 @@ export default function CodexFlowManagerUI() {
               </div>
             </ScrollArea>
           </div>
+        </div> : null}
+        <button
+          type="button"
+          className="inline-flex h-5 shrink-0 items-center gap-1 rounded px-1.5 text-[10px] text-slate-500/80 transition-colors hover:bg-slate-100 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cf-accent)] dark:text-slate-400/70 dark:hover:bg-slate-800 dark:hover:text-slate-200 sm:text-xs"
+          title={historyActionLabel}
+          aria-label={historyActionLabel}
+          aria-pressed={historyVisible}
+          onMouseEnter={() => { prefetchHistoryForTabSilently(id); }}
+          onFocus={() => { prefetchHistoryForTabSilently(id); }}
+          onClick={() => {
+            if (historyVisible) {
+              setCenterMode("console", selectedProjectId);
+              requestAnimationFrame(() => scheduleFocusForTab(id, { immediate: true, allowDuringRename: true }));
+              return;
+            }
+            void openHistoryForTabRef.current?.(id);
+          }}
+        >
+          <HistoryIcon className="h-3 w-3" />
+          <span>{historyActionLabel}</span>
+        </button>
         </div>
       </div>
     );
-  }, [agentTurnHistoryByTab, agentTurnTimerByTab, agentTurnClockTick, openAgentTurnContextMenu, resolveAgentTurnStatusText, t]);
+  }, [activeTabId, agentTurnHistoryByTab, agentTurnTimerByTab, agentTurnClockTick, centerMode, openAgentTurnContextMenu, prefetchHistoryForTabSilently, resolveAgentTurnStatusText, scheduleFocusForTab, selectedProjectId, setCenterMode, t]);
 
   /**
    * 判断是否存在任意“进行中”计时；存在时驱动 1 秒一次的 UI 刷新。
@@ -4102,6 +4214,7 @@ export default function CodexFlowManagerUI() {
     const providerId = resolveTabProviderId(tabId);
     if (shouldEnableAgentTimerForProvider(providerId)) completeAgentTurnTimer(tabId);
     else cancelAgentTurnTimer(tabId, "provider-not-supported");
+    prefetchHistoryForTabSilently(tabId, true);
     recordCompletionSnapshot(tabId, cleanedPreview, source);
     const foreground = isAppForeground();
     const activeMatch = activeTabIdRef.current === tabId;
@@ -4825,8 +4938,87 @@ export default function CodexFlowManagerUI() {
   useEffect(() => { historyHasMoreRef.current = historyHasMore; }, [historyHasMore]);
   useEffect(() => { historyNextOffsetRef.current = historyNextOffset; }, [historyNextOffset]);
   useEffect(() => { historyLoadingMoreRef.current = historyLoadingMore; }, [historyLoadingMore]);
-  const [selectedHistoryDir, setSelectedHistoryDir] = useState<string | null>(null);
-  const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
+  const rememberedHistoryTabId = activeTabByProject[selectedProjectId];
+  const selectedProjectTabsForHistory = tabs;
+  const historySelectionOwnerTabId = rememberedHistoryTabId && selectedProjectTabsForHistory.some((tab) => tab.id === rememberedHistoryTabId)
+    ? rememberedHistoryTabId
+    : (activeTabId && selectedProjectTabsForHistory.some((tab) => tab.id === activeTabId) ? activeTabId : null);
+  const historySelectionOwnerTabIdRef = useRef<string | null>(historySelectionOwnerTabId);
+  const historySelectionProjectIdRef = useRef<string>(selectedProjectId);
+  const historyDetailBottomRequestSeqRef = useRef(0);
+  const [historyDetailBottomRequest, setHistoryDetailBottomRequest] = useState<HistoryDetailBottomRequest | null>(null);
+  historySelectionOwnerTabIdRef.current = historySelectionOwnerTabId;
+  historySelectionProjectIdRef.current = selectedProjectId;
+  const [tabHistoryViewStateByKey, setTabHistoryViewStateByKey] = useState<TabHistoryViewStateMap>(() => {
+    try { return parseTabHistoryViewStateMap(localStorage.getItem(TAB_HISTORY_VIEW_STATE_STORAGE_KEY)); }
+    catch { return {}; }
+  });
+  const selectedTabHistoryViewState = getTabHistoryViewState(
+    tabHistoryViewStateByKey,
+    historySelectionOwnerTabId,
+    selectedProjectId,
+  );
+  const selectedTabHistoryViewStateKey = resolveTabHistoryViewStateKey(historySelectionOwnerTabId, selectedProjectId);
+  const selectedHistoryDir = selectedTabHistoryViewState.selectedHistoryDir;
+  const selectedHistoryId = selectedTabHistoryViewState.selectedHistoryId;
+
+  useEffect(() => {
+    try { localStorage.setItem(TAB_HISTORY_VIEW_STATE_STORAGE_KEY, JSON.stringify(tabHistoryViewStateByKey)); } catch {}
+  }, [tabHistoryViewStateByKey]);
+
+  /**
+   * 设置指定标签页记住的历史分组；没有标签页时写入项目兜底状态。
+   */
+  const setSelectedHistoryDir = useCallback((value: string | null, tabId?: string | null, projectId?: string): void => {
+    const ownerTabId = tabId === undefined ? historySelectionOwnerTabIdRef.current : tabId;
+    const ownerProjectId = projectId === undefined ? historySelectionProjectIdRef.current : projectId;
+    setTabHistoryViewStateByKey((current) => updateTabHistoryViewState(current, ownerTabId, ownerProjectId, { selectedHistoryDir: value }));
+  }, []);
+
+  /**
+   * 设置指定标签页记住的历史会话；没有标签页时写入项目兜底状态。
+   */
+  const setSelectedHistoryId = useCallback((value: string | null, tabId?: string | null, projectId?: string): void => {
+    const ownerTabId = tabId === undefined ? historySelectionOwnerTabIdRef.current : tabId;
+    const ownerProjectId = projectId === undefined ? historySelectionProjectIdRef.current : projectId;
+    setTabHistoryViewStateByKey((current) => {
+      const currentState = getTabHistoryViewState(current, ownerTabId, ownerProjectId);
+      return updateTabHistoryViewState(current, ownerTabId, ownerProjectId, {
+        selectedHistoryId: value,
+        detailScrollProgress: currentState.selectedHistoryId === value ? currentState.detailScrollProgress : null,
+      });
+    });
+  }, []);
+
+  /**
+   * 保存已解析状态键对应的历史详情滚动百分比，避免异步滚动回调写入新标签页。
+   */
+  const setHistoryDetailScrollProgress = useCallback((stateKey: string, value: number | null): void => {
+    setTabHistoryViewStateByKey((current) => updateTabHistoryViewStateByKey(current, stateKey, {
+      detailScrollProgress: value,
+    }));
+  }, []);
+
+  /**
+   * 为终端历史按钮创建一次性滚动到底部请求，不改写历史列表保存的阅读位置。
+   */
+  const requestHistoryDetailBottom = useCallback((tabId: string, projectId: string, sessionId: string): void => {
+    const normalizedSessionId = String(sessionId || "").trim();
+    if (!normalizedSessionId) return;
+    historyDetailBottomRequestSeqRef.current += 1;
+    setHistoryDetailBottomRequest({
+      id: historyDetailBottomRequestSeqRef.current,
+      scrollStateKey: resolveTabHistoryViewStateKey(tabId, projectId),
+      sessionId: normalizedSessionId,
+    });
+  }, []);
+
+  /**
+   * 消费已经执行的一次性底部滚动请求，避免之后从历史列表进入时重复触发。
+   */
+  const consumeHistoryDetailBottomRequest = useCallback((requestId: number): void => {
+    setHistoryDetailBottomRequest((current) => current?.id === requestId ? null : current);
+  }, []);
   // 用于在点击项目时抑制自动选中历史的标志
   const suppressAutoSelectRef = useRef(false);
   useEffect(() => { historySessionsRef.current = historySessions; }, [historySessions]);
@@ -4940,9 +5132,9 @@ export default function CodexFlowManagerUI() {
       setSelectedProjectId(projectId);
     }
     revealProjectRowInSidebar(projectId);
-    setCenterMode('console');
-    setSelectedHistoryDir(null);
-    setSelectedHistoryId(null);
+    setCenterMode('console', projectId);
+    setSelectedHistoryDir(null, tabId, projectId);
+    setSelectedHistoryId(null, tabId, projectId);
     setActiveTab(tabId, { focusMode: 'immediate', allowDuringRename: true, delay: 0, projectId });
     terminalManagerRef.current?.scrollToBottom(tabId, {
       followOutput: true,
@@ -5512,25 +5704,68 @@ export default function CodexFlowManagerUI() {
     if (project.id !== selectedProjectId) setSelectedProjectId(project.id);
     revealProjectRowInSidebar(project.id);
   }, [revealProjectRowInSidebar, selectedProjectId, showHiddenProjects]);
+
+  /**
+   * 将历史详情立即写入目标项目当前窗口的对应标签页。
+   */
+  const applyHistoryViewSelection = useCallback((
+    sessionId: string,
+    groupKey: string,
+    projectId: string,
+    preferredTabId?: string | null,
+  ): void => {
+    const projectTabs = (tabsByProject[projectId] || []).filter((tab) => isTabOwnedByWindow(tab, currentWindowId));
+    const preferredOwnerTabId = preferredTabId && projectTabs.some((tab) => tab.id === preferredTabId)
+      ? preferredTabId
+      : null;
+    const rememberedOwnerTabId = activeTabByProject[projectId];
+    const ownerTabId = preferredOwnerTabId
+      || (rememberedOwnerTabId && projectTabs.some((tab) => tab.id === rememberedOwnerTabId) ? rememberedOwnerTabId : null);
+    setSelectedHistoryDir(groupKey, ownerTabId, projectId);
+    setSelectedHistoryId(sessionId, ownerTabId, projectId);
+    setCenterMode("history", projectId);
+  }, [activeTabByProject, currentWindowId, setCenterMode, setSelectedHistoryDir, setSelectedHistoryId, tabsByProject]);
+
   /**
    * 打开指定历史记录，并在需要时切换左侧项目到其真实归属。
    */
-  const openHistorySession = useCallback(async (session: HistorySession, groupKey?: string | null): Promise<void> => {
+  const openHistorySession = useCallback(async (
+    session: HistorySession,
+    groupKey?: string | null,
+    historyTabId?: string | null,
+  ): Promise<void> => {
     try { suppressAutoSelectRef.current = false; } catch {}
     const nextSeq = historyOpenResolveSeqRef.current + 1;
     historyOpenResolveSeqRef.current = nextSeq;
-    setSelectedHistoryDir(groupKey || historyTimelineGroupKey(session, new Date()));
-    setSelectedHistoryId(session.id);
-    setCenterMode("history");
+    const resolvedGroupKey = groupKey || historyTimelineGroupKey(session, new Date());
+    const initialOwnerTabId = historyTabId === undefined ? historySelectionOwnerTabIdRef.current : historyTabId;
+    const initialOwnerProjectId = String(
+      (initialOwnerTabId ? tabProjectRef.current[initialOwnerTabId] : "") || selectedProjectId,
+    ).trim();
     logHistoryProjectResolution(`open id=${session.id} file=${String(session.filePath || "")} dirKey=${String(session.dirKey || "")} selectedProjectId=${String(selectedProjectId || "")}`);
+    const synchronousTarget = resolveHistoryActionTarget(session.filePath || session.id, session);
+    if (synchronousTarget.project && synchronousTarget.projectMatch) {
+      applyHistoryViewSelection(session.id, resolvedGroupKey, synchronousTarget.project.id, initialOwnerTabId);
+      syncHistoryTargetProjectSelection(synchronousTarget.project, synchronousTarget.projectMatch);
+      return;
+    }
+    if (historyTabId !== undefined && initialOwnerProjectId)
+      applyHistoryViewSelection(session.id, resolvedGroupKey, initialOwnerProjectId, initialOwnerTabId);
     const { project, projectMatch } = await resolveHistoryActionTargetAsync(session.filePath || session.id, session);
     if (historyOpenResolveSeqRef.current !== nextSeq) return;
     logHistoryProjectResolution(
       `resolved id=${session.id} dirKey=${String(session.dirKey || "")} matchedProjectId=${String(projectMatch?.projectId || "")} matchedProjectName=${String(projectMatch?.projectName || "")} resolvedProjectPath=${String(project?.winPath || "")} selectedProjectId=${String(selectedProjectId || "")}`,
     );
-    if (project && projectMatch) syncHistoryTargetProjectSelection(project, projectMatch);
-    else logHistoryProjectResolution(`no-match id=${session.id} dirKey=${String(session.dirKey || "")} file=${String(session.filePath || "")}`);
-  }, [logHistoryProjectResolution, resolveHistoryActionTargetAsync, selectedProjectId, syncHistoryTargetProjectSelection]);
+    if (project && projectMatch) {
+      applyHistoryViewSelection(session.id, resolvedGroupKey, project.id, initialOwnerTabId);
+      syncHistoryTargetProjectSelection(project, projectMatch);
+    }
+    else {
+      if (historyTabId === undefined && initialOwnerProjectId)
+        applyHistoryViewSelection(session.id, resolvedGroupKey, initialOwnerProjectId, initialOwnerTabId);
+      logHistoryProjectResolution(`no-match id=${session.id} dirKey=${String(session.dirKey || "")} file=${String(session.filePath || "")}`);
+    }
+  }, [applyHistoryViewSelection, logHistoryProjectResolution, resolveHistoryActionTarget, resolveHistoryActionTargetAsync, selectedProjectId, syncHistoryTargetProjectSelection]);
   /**
    * 拉取指定历史范围的一页记录。
    */
@@ -5549,6 +5784,159 @@ export default function CodexFlowManagerUI() {
     if (!(res && res.ok && Array.isArray(res.sessions))) throw new Error("history.list failed");
     return res.sessions.map((h: any) => mapHistoryListItemToSession(h));
   }, [mapHistoryListItemToSession]);
+
+  /**
+   * 解析终端标签的项目、引擎与线程信息，生成可用于校验预取缓存的稳定上下文。
+   */
+  const resolveHistoryTabLookupContext = useCallback((tabId: string): HistoryTabLookupContext | null => {
+    const safeTabId = String(tabId || "").trim();
+    if (!safeTabId) return null;
+
+    let projectId = String(tabProjectRef.current[safeTabId] || "").trim();
+    let tab = projectId
+      ? (tabsByProjectRef.current[projectId] || []).find((item) => item.id === safeTabId)
+      : undefined;
+    if (!tab) {
+      for (const [candidateProjectId, tabs] of Object.entries(tabsByProjectRef.current)) {
+        const candidate = (tabs || []).find((item) => item.id === safeTabId);
+        if (!candidate) continue;
+        projectId = candidateProjectId;
+        tab = candidate;
+        break;
+      }
+    }
+    const project = projectsRef.current.find((item) => item.id === projectId) || null;
+    if (!tab || !project) return null;
+    const threadId = String(agentSessionIdByTabRef.current[safeTabId] || tab.historySessionId || "").trim().toLowerCase();
+    const signature = JSON.stringify([
+      project.id,
+      project.wslPath,
+      project.winPath,
+      tab.providerId,
+      Number(tab.createdAt || 0),
+      threadId,
+    ]);
+    return { tabId: safeTabId, projectId, tab, project, signature };
+  }, []);
+
+  /**
+   * 在后台查找并缓存终端对应的历史会话；相同标签与上下文的并发请求会自动合并。
+   */
+  const prefetchHistoryForTab = useCallback(async (
+    tabId: string,
+    forceRefresh: boolean = false,
+  ): Promise<HistoryTabMatchCacheEntry | null> => {
+    const context = resolveHistoryTabLookupContext(tabId);
+    if (!context) return null;
+    const cached = historyMatchByTabRef.current[context.tabId];
+    if (!forceRefresh && cached?.signature === context.signature) return cached;
+
+    const inFlightKey = `${context.tabId}\n${context.signature}`;
+    const existingRequest = historyPrefetchInFlightRef.current.get(inFlightKey);
+    if (existingRequest) return existingRequest;
+
+    const request = (async (): Promise<HistoryTabMatchCacheEntry | null> => {
+      const result = await window.host.history.list({
+        scope: "current_project",
+        projectWslPath: context.project.wslPath,
+        projectWinPath: context.project.winPath,
+        limit: 250,
+        offset: 0,
+      });
+      if (!(result?.ok && Array.isArray(result.sessions))) throw new Error("history.list failed");
+      const sessions = result.sessions.map((item: any) => mapHistoryListItemToSession(item));
+      const match = findBestHistorySessionForTab(sessions, {
+        providerId: context.tab.providerId,
+        threadId: agentSessionIdByTabRef.current[context.tabId] || context.tab.historySessionId,
+        tabCreatedAt: context.tab.createdAt,
+      });
+      setHistorySessions((current) => mergeHistorySessions(current, sessions));
+      if (!match) {
+        if (historyMatchByTabRef.current[context.tabId]?.signature === context.signature)
+          delete historyMatchByTabRef.current[context.tabId];
+        return null;
+      }
+      const entry: HistoryTabMatchCacheEntry = { signature: context.signature, sessions, match };
+      historyMatchByTabRef.current[context.tabId] = entry;
+      return entry;
+    })();
+    historyPrefetchInFlightRef.current.set(inFlightKey, request);
+    try {
+      return await request;
+    } finally {
+      if (historyPrefetchInFlightRef.current.get(inFlightKey) === request)
+        historyPrefetchInFlightRef.current.delete(inFlightKey);
+    }
+  }, [mapHistoryListItemToSession, mergeHistorySessions, resolveHistoryTabLookupContext]);
+
+  /**
+   * 为指定终端标签查找并打开其对应历史会话，优先使用预取结果实现即时响应。
+   */
+  const openHistoryForTab = useCallback(async (tabId: string): Promise<void> => {
+    const safeTabId = String(tabId || "").trim();
+    if (!safeTabId || historyOpenInFlightTabIdsRef.current.has(safeTabId)) return;
+    const context = resolveHistoryTabLookupContext(safeTabId);
+    if (!context) {
+      setNoticeDialog({
+        open: true,
+        title: String(t("terminal:viewSessionHistory")),
+        message: String(t("terminal:historySessionNotFound")),
+      });
+      return;
+    }
+
+    const cached = historyMatchByTabRef.current[safeTabId];
+    historyOpenInFlightTabIdsRef.current.add(safeTabId);
+    try {
+      if (cached?.signature === context.signature) {
+        const groupKey = historyTimelineGroupKey(cached.match, new Date());
+        setHistorySessions((current) => mergeHistorySessions(current, cached.sessions));
+        setExpandedGroups((current) => ({ ...current, [groupKey]: true }));
+        prefetchHistoryForTabSilently(safeTabId, true);
+        await openHistorySession(cached.match, groupKey, safeTabId);
+        requestHistoryDetailBottom(safeTabId, context.projectId, cached.match.id);
+        return;
+      }
+
+      setCenterMode("history", context.projectId);
+      setSelectedHistoryDir(null, safeTabId, context.projectId);
+      setSelectedHistoryId(null, safeTabId, context.projectId);
+      const prefetched = await prefetchHistoryForTab(safeTabId, true);
+      if (!prefetched) {
+        setNoticeDialog({
+          open: true,
+          title: String(t("terminal:viewSessionHistory")),
+          message: String(t("terminal:historySessionNotFound")),
+        });
+        return;
+      }
+
+      const groupKey = historyTimelineGroupKey(prefetched.match, new Date());
+      setExpandedGroups((current) => ({ ...current, [groupKey]: true }));
+      await openHistorySession(prefetched.match, groupKey, safeTabId);
+      requestHistoryDetailBottom(safeTabId, context.projectId, prefetched.match.id);
+    } catch (error) {
+      console.warn("open terminal history failed", error);
+      setNoticeDialog({
+        open: true,
+        title: String(t("terminal:viewSessionHistory")),
+        message: String(t("terminal:historySessionLoadFailed")),
+      });
+    } finally {
+      historyOpenInFlightTabIdsRef.current.delete(safeTabId);
+    }
+  }, [mergeHistorySessions, openHistorySession, prefetchHistoryForTab, prefetchHistoryForTabSilently, requestHistoryDetailBottom, resolveHistoryTabLookupContext, setCenterMode, setSelectedHistoryDir, setSelectedHistoryId, t]);
+
+  useEffect(() => {
+    openHistoryForTabRef.current = openHistoryForTab;
+    prefetchHistoryForTabRef.current = prefetchHistoryForTab;
+    return () => {
+      if (openHistoryForTabRef.current === openHistoryForTab)
+        openHistoryForTabRef.current = null;
+      if (prefetchHistoryForTabRef.current === prefetchHistoryForTab)
+        prefetchHistoryForTabRef.current = null;
+    };
+  }, [openHistoryForTab, prefetchHistoryForTab]);
   /**
    * 加载当前历史范围的下一页记录，并同步缓存与分页状态。
    */
@@ -7231,6 +7619,9 @@ export default function CodexFlowManagerUI() {
         const hookEventName = String(payload?.hookEventName || "").trim();
         const completionKind = String(payload?.completionKind || "").trim().toLowerCase();
         const isSubagentCompletion = completionKind === "subagent" || hookEventName === "SubagentStop";
+        const sessionId = String(payload?.threadId || "").trim();
+        if (!isSubagentCompletion && sessionId)
+          agentSessionIdByTabRef.current[resolvedTabId] = sessionId;
         if (isSubagentCompletion) {
           notifyLog(`externalCompletion subagent tab=${resolvedTabId} previewLen=${cleanedPreview.length} agentType=${payload?.agentType || "n/a"} agentId=${payload?.agentId || "n/a"}`);
           handleSubagentCompletion(resolvedTabId, preview, payload?.agentType, payload?.agentId, normalizeOptions);
@@ -7400,9 +7791,14 @@ export default function CodexFlowManagerUI() {
     try { clearHistoryCache(); } catch {}
     setSelectedProjectId((prev) => (prev === project.id ? "" : prev));
     try { suppressAutoSelectRef.current = true; } catch {}
-    setSelectedHistoryDir(null);
-    setSelectedHistoryId(null);
-    setCenterMode('console');
+    setTabHistoryViewStateByKey((current) => {
+      const next = { ...current };
+      for (const tabId of tabIds)
+        delete next[resolveTabHistoryViewStateKey(tabId, project.id)];
+      delete next[resolveTabHistoryViewStateKey(null, project.id)];
+      return next;
+    });
+    setCenterMode('console', project.id);
   }, [activeTabId, clearHistoryCache, setActiveTab, tabsByProject, tm]);
 
   /**
@@ -7528,7 +7924,7 @@ export default function CodexFlowManagerUI() {
     tabsByProjectRef.current = nextTabsByProject;
     setTabsByProject(nextTabsByProject);
     setActiveTab(tab.id, { focusMode: 'immediate', allowDuringRename: true, delay: 0 });
-    try { setCenterMode('console'); } catch {}
+    try { setCenterMode('console', project.id); } catch {}
 
     try {
       const launchEnv = await buildProviderLaunchEnv(tab.id, tab.providerId, tab.name, env, startupCmd);
@@ -7754,7 +8150,7 @@ export default function CodexFlowManagerUI() {
     const existing = projectTabs.find((tab) => tab.kind === "git" && isTabOwnedByWindow(tab, currentWindowId));
     if (existing) {
       setActiveTab(existing.id, { projectId: id, focusMode: "immediate", allowDuringRename: true, delay: 0 });
-      try { setCenterMode("console"); } catch {}
+      try { setCenterMode("console", id); } catch {}
       markProjectUsed(id);
       return;
     }
@@ -7786,7 +8182,7 @@ export default function CodexFlowManagerUI() {
           return next;
         });
         setActiveTab(existingAnyWindow.id, { projectId: id, focusMode: "immediate", allowDuringRename: true, delay: 0 });
-        try { setCenterMode("console"); } catch {}
+        try { setCenterMode("console", id); } catch {}
         markProjectUsed(id);
         return;
       }
@@ -7808,7 +8204,7 @@ export default function CodexFlowManagerUI() {
           return next;
         });
         setActiveTab(detachedOwnedGitEntry.tab.id, { projectId: id, focusMode: "immediate", allowDuringRename: true, delay: 0 });
-        try { setCenterMode("console"); } catch {}
+        try { setCenterMode("console", id); } catch {}
         markProjectUsed(id);
         return;
       }
@@ -7829,7 +8225,7 @@ export default function CodexFlowManagerUI() {
     registerTabProject(tab.id, id);
     setTabsByProject((m) => ({ ...m, [id]: [tab, ...(m[id] || [])] }));
     setActiveTab(tab.id, { projectId: id, focusMode: "immediate", allowDuringRename: true, delay: 0 });
-    try { setCenterMode("console"); } catch {}
+    try { setCenterMode("console", id); } catch {}
     markProjectUsed(id);
   }, [currentWindowId, isDetachedTabWindow, markProjectUsed, t]);
 
@@ -8016,7 +8412,7 @@ export default function CodexFlowManagerUI() {
     }
 
     try { window.host.projects.touch(target.id); } catch {}
-    try { setCenterMode("console"); } catch {}
+    try { setCenterMode("console", target.id); } catch {}
     markProjectUsed(target.id);
     return true;
   }, [
@@ -8669,6 +9065,13 @@ export default function CodexFlowManagerUI() {
       if (!(tabId in m)) return m;
       const next = { ...m };
       delete next[tabId];
+      return next;
+    });
+    setTabHistoryViewStateByKey((current) => {
+      const key = resolveTabHistoryViewStateKey(tabId, projectId);
+      if (!(key in current)) return current;
+      const next = { ...current };
+      delete next[key];
       return next;
     });
     clearPendingForTab(tabId);
@@ -10005,9 +10408,9 @@ export default function CodexFlowManagerUI() {
     if (firstNewProjectId) {
       suppressAutoSelectRef.current = true;
       setSelectedProjectId(firstNewProjectId);
-      setCenterMode("console");
-      setSelectedHistoryDir(null);
-      setSelectedHistoryId(null);
+      setCenterMode("console", firstNewProjectId);
+      setSelectedHistoryDir(null, firstTabId, firstNewProjectId);
+      setSelectedHistoryId(null, firstTabId, firstNewProjectId);
       if (firstTabId) {
         setActiveTab(firstTabId, { projectId: firstNewProjectId, focusMode: "immediate", allowDuringRename: true, delay: 0 });
       }
@@ -11818,7 +12221,7 @@ export default function CodexFlowManagerUI() {
           </Button>
         </div>
       </div>
-      <ScrollArea className="flex-1 min-h-0 pl-2 pr-[5px] pb-6">
+      <ScrollArea className="cf-project-list-scroll flex-1 min-h-0 pl-2 pr-[5px] pb-6">
         <div
           className="space-y-1 relative"
           onDragOver={(e) => {
@@ -11913,14 +12316,11 @@ export default function CodexFlowManagerUI() {
                   if (cur?.project?.id === p.id) hoveredProjectShortcutRef.current = null;
                 }}
                 onClick={() => {
-                  // 点击项目时默认进入控制台，并清除历史选择（避免自动跳到历史详情）
+                  // 项目独立记住控制台/历史状态，切换时恢复上次视图。
                   suppressAutoSelectRef.current = true;
                   setSelectedProjectId(p.id);
                   if (isDetachedTabWindow)
                     openGitWorkbenchTabForProjectId(p.id);
-                  setCenterMode("console");
-                  setSelectedHistoryDir(null);
-                  setSelectedHistoryId(null);
                 }}
                 onContextMenu={(e) => {
                   e.preventDefault();
@@ -12712,7 +13112,7 @@ export default function CodexFlowManagerUI() {
                           className="relative flex flex-1 flex-col rounded-[26px] bg-[var(--cf-surface-solid)] shadow-apple-lg animate-[cfFullscreenPanelEnter_260ms_cubic-bezier(0.4,0,0.2,1)_both] data-[state=closing]:animate-[cfFullscreenPanelExit_220ms_cubic-bezier(0.4,0,0.2,1)_forwards]"
                           >
                             <div className="h-5 shrink-0">
-                              {renderAgentTurnStatusBar(tab.id, "px-4 pt-0.5 pb-0.5")}
+                              {renderAgentTurnStatusBar(tab.id, "px-4 pt-0.5 pb-0.5", tab.historySessionId)}
                             </div>
                             <PathChipsInput
                               placeholder={inputPlaceholder}
@@ -12764,7 +13164,7 @@ export default function CodexFlowManagerUI() {
                       <div className="relative z-30 mt-0.5 h-[8.75rem] shrink-0 w-full">
                         <div className="relative flex h-full min-h-0 w-full flex-col">
                           <div className="relative z-30 h-5 shrink-0 overflow-visible">
-                            {renderAgentTurnStatusBar(tab.id, "mb-0.5 px-1")}
+                            {renderAgentTurnStatusBar(tab.id, "mb-0.5 px-1", tab.historySessionId)}
                           </div>
                           <PathChipsInput
                             placeholder={inputPlaceholder}
@@ -13009,6 +13409,7 @@ export default function CodexFlowManagerUI() {
           name: String(tabName),
           providerId,
           windowId: currentWindowId,
+          historySessionId: String(sessionId || session?.resumeId || session?.id || "").trim() || undefined,
           logs: [],
           createdAt: Date.now(),
         };
@@ -13048,11 +13449,12 @@ export default function CodexFlowManagerUI() {
           alert(String(t('history:resumeFailed', { error: String((err as any)?.message || err) })));
           return false;
         }
+        if (tab.historySessionId) agentSessionIdByTabRef.current[tab.id] = tab.historySessionId;
         registerTabProject(tab.id, targetProject.id);
         setTabsByProject((m) => ({ ...m, [targetProject.id]: [...(m[targetProject.id] || []), tab] }));
         setActiveTab(tab.id, { projectId: targetProject.id, focusMode: 'immediate', allowDuringRename: true, delay: 0 });
         try {
-          setCenterMode('console');
+          setCenterMode('console', targetProject.id);
           requestAnimationFrame(() => {
             try { scheduleFocusForTab(tab.id, { immediate: true, allowDuringRename: true }); } catch {}
           });
@@ -13189,6 +13591,16 @@ export default function CodexFlowManagerUI() {
       { allowSelectedProjectFallback: historyScopeDescriptor.effectiveScope === "current_project" },
     ).project;
   }, [historyScopeDescriptor.effectiveScope, resolveHistoryActionTarget, selectedHistorySessionForDetail, selectedProject]);
+
+  /**
+   * 打开当前历史详情实际所属项目的 Git 工作台。
+   */
+  const openSelectedHistoryGitWorkbench = useCallback((): void => {
+    const projectId = selectedHistoryDetailProject?.id;
+    if (!projectId) return;
+    setSelectedProjectId(projectId);
+    openGitWorkbenchTabForProjectId(projectId);
+  }, [openGitWorkbenchTabForProjectId, selectedHistoryDetailProject?.id]);
 
   const historySessionTree = useMemo(() => buildHistorySessionTree(historySessions), [historySessions]);
 
@@ -13721,7 +14133,7 @@ export default function CodexFlowManagerUI() {
             </Button>
             <Button
               variant="secondary"
-              disabled={confirmDelete.deleting || confirmDelete.planning || confirmDelete.relationCheckFailed}
+              disabled={confirmDelete.deleting || confirmDelete.planning}
               className="border border-red-200 text-red-600 hover:bg-red-50 dark:border-[var(--cf-red-light)] dark:text-[var(--cf-red)] dark:hover:bg-[var(--cf-red-light)]"
               onClick={() => { void executeHistoryDelete('current'); }}
             >
@@ -13770,7 +14182,30 @@ export default function CodexFlowManagerUI() {
                   {centerMode === 'console' ? (
                     ConsoleArea
                   ) : (
-                    <HistoryDetail sessions={historySessions} selectedHistoryId={selectedHistoryId} projectWinPath={selectedHistoryDetailProject?.winPath} onBack={() => {
+                    <div className={cn(
+                      "h-full min-h-0 min-w-0",
+                      resolvedHistoryDetailLayout.mode === "split" && "grid grid-cols-[minmax(0,1fr)_minmax(320px,1fr)]",
+                    )}>
+                      {resolvedHistoryDetailLayout.mode === "split" ? (
+                        <div key="history-console" className="min-h-0 min-w-0 overflow-hidden border-r border-[var(--cf-border)]">
+                          {ConsoleArea}
+                        </div>
+                      ) : null}
+                      <div key="history-detail" className="h-full min-h-0 min-w-0 overflow-hidden">
+                    <HistoryDetail
+                      sessions={historySessions}
+                      selectedHistoryId={selectedHistoryId}
+                      projectWinPath={selectedHistoryDetailProject?.winPath}
+                      onOpenGit={selectedHistoryDetailProject ? openSelectedHistoryGitWorkbench : undefined}
+                      layoutMode={resolvedHistoryDetailLayout.mode}
+                      canSplitLayout={resolvedHistoryDetailLayout.canSplit}
+                      onLayoutModeChange={setHistoryDetailLayoutMode}
+                      scrollStateKey={selectedTabHistoryViewStateKey}
+                      scrollProgress={selectedTabHistoryViewState.detailScrollProgress}
+                      onScrollProgressChange={setHistoryDetailScrollProgress}
+                      scrollToBottomRequest={historyDetailBottomRequest}
+                      onScrollToBottomRequestHandled={consumeHistoryDetailBottomRequest}
+                      onBack={() => {
                   dumpOverlayDiagnostics('onBack.enter');
                   // 返回控制台：先关闭任意可能遗留的全屏遮罩，避免拦截点击/键盘事件
                   try { setHistoryCtxMenu((m) => ({ ...m, show: false })); } catch {}
@@ -13802,6 +14237,8 @@ export default function CodexFlowManagerUI() {
 	                    console.warn('resume external panel failed', e);
                   }
                     }} />
+                      </div>
+                    </div>
                   )}
                 </div>
               ) : (
@@ -14868,9 +15305,9 @@ export default function CodexFlowManagerUI() {
               if (firstReuseProjectId) {
                 suppressAutoSelectRef.current = true;
                 setSelectedProjectId(firstReuseProjectId);
-                setCenterMode("console");
-                setSelectedHistoryDir(null);
-                setSelectedHistoryId(null);
+                setCenterMode("console", firstReuseProjectId);
+                setSelectedHistoryDir(null, firstReuseTabId, firstReuseProjectId);
+                setSelectedHistoryId(null, firstReuseTabId, firstReuseProjectId);
                 if (firstReuseTabId) {
                   setActiveTab(firstReuseTabId, { projectId: firstReuseProjectId, focusMode: "immediate", allowDuringRename: true, delay: 0 });
                 }
@@ -17155,12 +17592,16 @@ function ContentRenderer({
   items,
   kprefix,
   projectWinPath,
+  onOpenGit,
   inlineImageState,
+  skipTypes,
 }: {
   items: MessageContent[];
   kprefix?: string;
   projectWinPath?: string;
+  onOpenGit?: () => void;
   inlineImageState?: HistoryInlineImageRenderState;
+  skipTypes?: string[];
 }) {
   if (!Array.isArray(items) || items.length === 0) return null;
   return (
@@ -17169,9 +17610,22 @@ function ContentRenderer({
         const ty = (c?.type || '').toLowerCase();
         const text = String(c?.text ?? '');
         const contentItemKey = buildHistoryContentItemKey(kprefix || "itm", i);
+        if (skipTypes?.includes(ty)) return null;
         if (ty === 'image') {
           if (inlineImageState?.hiddenImageItemKeys?.has(contentItemKey)) return null;
           return <HistoryImageContent key={contentItemKey} item={c} itemKey={contentItemKey} />;
+        }
+        if (ty === 'turn_diff') {
+          return (
+            <HistoryTurnDiffCard
+              key={`${kprefix || 'itm'}-turn-diff-${i}`}
+              diffText={text}
+              projectWinPath={projectWinPath}
+              cwd={typeof (c as any).cwd === 'string' ? String((c as any).cwd) : undefined}
+              patchable={(c as any).patchable !== false}
+              onOpenGit={onOpenGit}
+            />
+          );
         }
         if (inlineImageState?.hiddenTextItemKeys?.has(contentItemKey)) return null;
         if (ty === 'user_instructions') {
@@ -17398,6 +17852,7 @@ type HistoryRenderOptions = {
   activeMessageKey?: string;
   registerMessageRef?: (key: string, node: HTMLDivElement | null) => void;
   projectWinPath?: string;
+  onOpenGit?: () => void;
   inlineImageState?: HistoryInlineImageRenderState;
 };
 
@@ -17451,6 +17906,44 @@ function HistoryMessageCard({ view, options }: { view: HistoryMessageView; optio
   const messageKey = view.messageKey;
   if (!hasVisibleHistoryMessageContent(message, messageKey, options?.inlineImageState)) return null;
   const isActive = options?.activeMessageKey === messageKey;
+  const turnDiffItems = message.content.filter((item) => String(item?.type || '').toLowerCase() === 'turn_diff');
+  const regularItems = message.content.filter((item) => String(item?.type || '').toLowerCase() !== 'turn_diff');
+  if (turnDiffItems.length > 0) {
+    return (
+      <div
+        ref={(node) => options?.registerMessageRef?.(messageKey, node)}
+        data-history-message-key={messageKey}
+        className={cn("min-w-0 space-y-2", isActive && "rounded-apple-lg ring-2 ring-[var(--cf-accent)]/70")}
+      >
+        {regularItems.length > 0 ? (
+          <div className={cn(
+            "min-w-0 overflow-hidden rounded-apple-lg border border-[var(--cf-border)] bg-[var(--cf-surface)] backdrop-blur-apple p-2 shadow-apple-sm text-[var(--cf-text-primary)] transition-all duration-apple hover:shadow-apple dark:shadow-apple-dark-sm dark:hover:shadow-apple-dark",
+            isActive && "border-[var(--cf-accent)]/70 bg-[var(--cf-accent)]/5 shadow-apple dark:bg-[var(--cf-accent)]/10",
+          )}>
+            <div data-history-search-scope className="mb-1 truncate text-xs uppercase tracking-wider font-apple-semibold text-[var(--cf-text-secondary)]">{message.role}</div>
+            <ContentRenderer
+              items={message.content}
+              kprefix={messageKey}
+              projectWinPath={options?.projectWinPath}
+              onOpenGit={options?.onOpenGit}
+              inlineImageState={options?.inlineImageState}
+              skipTypes={["turn_diff"]}
+            />
+          </div>
+        ) : null}
+        {turnDiffItems.map((item, index) => (
+          <HistoryTurnDiffCard
+            key={`${messageKey}-turn-diff-${index}`}
+            diffText={String(item.text || '')}
+            projectWinPath={options?.projectWinPath}
+            cwd={typeof (item as any).cwd === 'string' ? String((item as any).cwd) : undefined}
+            patchable={(item as any).patchable !== false}
+            onOpenGit={options?.onOpenGit}
+          />
+        ))}
+      </div>
+    );
+  }
   return (
     <div
       ref={(node) => options?.registerMessageRef?.(messageKey, node)}
@@ -17462,6 +17955,7 @@ function HistoryMessageCard({ view, options }: { view: HistoryMessageView; optio
         items={message.content}
         kprefix={messageKey}
         projectWinPath={options?.projectWinPath}
+        onOpenGit={options?.onOpenGit}
         inlineImageState={options?.inlineImageState}
       />
     </div>
@@ -17620,7 +18114,16 @@ function normalizeHistoryReadMessages(res: any): HistoryMessage[] {
   const rawMessages = Array.isArray(res?.messages) ? res.messages : [];
   return rawMessages.map((message: any) => ({
     role: String(message?.role || "unknown"),
-    content: Array.isArray(message?.content) ? message.content : [],
+    content: Array.isArray(message?.content)
+      ? message.content.map((item: any) => ({
+        ...item,
+        cwd: typeof item?.cwd === "string" ? item.cwd : undefined,
+        diffSource: item?.diffSource === "apply_patch" || item?.diffSource === "file_change" || item?.diffSource === "turn_diff"
+          ? item.diffSource
+          : undefined,
+        patchable: typeof item?.patchable === "boolean" ? item.patchable : undefined,
+      }))
+      : [],
   }));
 }
 
@@ -17639,6 +18142,7 @@ function serializeConsoleTabsByProject(
       kind: tab.kind === "git" ? "git" : "terminal",
       providerId: tab.providerId,
       windowId: resolveTabWindowId(tab),
+      historySessionId: tab.historySessionId,
       createdAt: tab.createdAt,
     }));
   }
@@ -17686,7 +18190,15 @@ function buildHistoryTypeFilter(messages: HistoryMessage[]): Record<string, bool
   filtered.sort();
 
   const next: Record<string, boolean> = {};
-  for (const key of filtered) next[key] = (key === 'input_text' || key === 'output_text' || key === 'image' || key === 'subagent_notification');
+  for (const key of filtered) {
+    next[key] = (
+      key === 'input_text'
+      || key === 'output_text'
+      || key === 'image'
+      || key === 'subagent_notification'
+      || key === 'turn_diff'
+    );
+  }
   return next;
 }
 
@@ -17704,7 +18216,24 @@ function mergeHistoryTypeFilterSelection(current: Record<string, boolean>, defau
   return next;
 }
 
-function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, onResume, onResumeExternal, getResumeShellLabel }: { sessions: HistorySession[]; selectedHistoryId: string | null; projectWinPath?: string; onBack?: () => void; onResume?: (filePath?: string) => void; onResumeExternal?: (filePath?: string) => void; getResumeShellLabel: (filePath?: string) => ShellLabel }) {
+function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onOpenGit, layoutMode, canSplitLayout, onLayoutModeChange, scrollStateKey, scrollProgress, onScrollProgressChange, scrollToBottomRequest, onScrollToBottomRequestHandled, onBack, onResume, onResumeExternal, getResumeShellLabel }: {
+  sessions: HistorySession[];
+  selectedHistoryId: string | null;
+  projectWinPath?: string;
+  onOpenGit?: () => void;
+  layoutMode: HistoryDetailLayoutMode;
+  canSplitLayout: boolean;
+  onLayoutModeChange: (mode: HistoryDetailLayoutMode) => void;
+  scrollStateKey: string;
+  scrollProgress: number | null;
+  onScrollProgressChange: (stateKey: string, progress: number | null) => void;
+  scrollToBottomRequest: HistoryDetailBottomRequest | null;
+  onScrollToBottomRequestHandled: (requestId: number) => void;
+  onBack?: () => void;
+  onResume?: (filePath?: string) => void;
+  onResumeExternal?: (filePath?: string) => void;
+  getResumeShellLabel: (filePath?: string) => ShellLabel;
+}) {
   const { t } = useTranslation(['history', 'common']);
   const MAX_HISTORY_MESSAGE_CACHE = 5;
   const [loaded, setLoaded] = useState(false);
@@ -17729,25 +18258,19 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
   const reqSeq = useRef(0);
   const lastLoadedFingerprintRef = useRef<string>("");
   const lastLoadedHistoryIdRef = useRef<string>("");
+  const lastLoadedMessageCountRef = useRef<number | null>(null);
   const selectedSession = useMemo(() => sessions.find((x) => x.id === selectedHistoryId) || null, [sessions, selectedHistoryId]);
   const selectedLocalSession = useMemo(
     () => localSessions.find((x) => x.id === selectedHistoryId) || null,
     [localSessions, selectedHistoryId],
   );
-  const selectedSessionFingerprint = useMemo(() => {
-    if (!selectedSession) return "none";
-    return [
-      selectedSession.providerId,
-      selectedSession.id,
-      selectedSession.filePath || "",
-      selectedSession.date || "",
-      selectedSession.resumeMode || "",
-      selectedSession.resumeId || "",
-      selectedSession.preview || "",
-      selectedSession.rawDate || "",
-      selectedSession.runtimeShell || "",
-    ].join("|");
-  }, [selectedSession]);
+  const selectedSessionFingerprint = useMemo(
+    () => buildHistoryDetailSessionFingerprint(selectedSession),
+    [selectedSession],
+  );
+  const selectedLocalMessageCount = Array.isArray(selectedLocalSession?.messages)
+    ? selectedLocalSession.messages.length
+    : 0;
 
   // 刷新列表时保留已加载的消息内容，避免详情面板闪烁
   useEffect(() => {
@@ -17774,6 +18297,10 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
   }, [selectedHistoryId]);
 
   const detailSession = selectedLocalSession || selectedSession;
+  const effectiveTypeFilter = useMemo(() => resolveHistoryDetailTypeFilter(
+    typeFilter,
+    buildHistoryTypeFilter(detailSession?.messages || []),
+  ), [detailSession?.messages, typeFilter]);
   const debouncedDetailSearch = useDebouncedValue(detailSearchInput, HISTORY_DETAIL_SEARCH_DEBOUNCE_MS);
   const deferredDetailSearch = useDeferredValue(debouncedDetailSearch);
   const normalizedDetailSearch = useMemo(() => deferredDetailSearch.trim().toLowerCase(), [deferredDetailSearch]);
@@ -17798,11 +18325,11 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
     if (!detailSession) return { messages: [], matches: [] };
     return filterHistoryMessages(
       detailSession,
-      typeFilter,
+      effectiveTypeFilter,
       normalizedDetailSearch,
       detailSearchMode === "message" ? "message" : "occurrence",
     );
-  }, [selectedHistoryId, detailSession, typeFilter, normalizedDetailSearch, detailSearchMode]);
+  }, [selectedHistoryId, detailSession, effectiveTypeFilter, normalizedDetailSearch, detailSearchMode]);
 
   const inlineImageState = useMemo(() => resolveHistoryInlineImageRenderState(
     filteredHistory.messages.map((view) => ({
@@ -17826,6 +18353,14 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
   const filteredMessages = visibleFilteredHistory.messages;
   const showNoMatch = detailSearchActive && filteredMessages.length === 0;
   const detailScrollAreaRef = useRef<HTMLDivElement | null>(null);
+  const historyVirtualListRef = useRef<VirtualizedListHandle | null>(null);
+  const pendingLayoutScrollProgressRef = useRef<number | null>(null);
+  const historyDetailScrollRestoreCleanupRef = useRef<(() => void) | null>(null);
+  const historyDetailScrollRestoreActiveRef = useRef(false);
+  const historyDetailProgrammaticScrollIgnoreUntilRef = useRef(0);
+  const historyDetailScrollSaveTimerRef = useRef(0);
+  const pendingHistoryDetailScrollSaveRef = useRef<{ stateKey: string; progress: number } | null>(null);
+  const savedHistoryDetailScrollProgressRef = useRef<number | null>(scrollProgress);
   const historyScrollToTopTitle = t("common:scrollToTopWithShortcut") as string;
   const historyScrollToBottomTitle = t("common:scrollToBottomWithShortcut") as string;
   const detailRenderSession = detailSession || selectedSession;
@@ -17838,10 +18373,157 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
     searchActive: detailSearchActive,
     domHighlightEnabled,
   });
+  const historyDetailScrollContentReadyRef = useRef(false);
+  historyDetailScrollContentReadyRef.current = (
+    filteredMessages.length > 0
+    || !selectedHistoryId
+    || (loaded && lastLoadedHistoryIdRef.current === selectedHistoryId)
+  );
+  savedHistoryDetailScrollProgressRef.current = scrollProgress;
+
+  /**
+   * 取消历史详情滚动进度恢复任务。
+   */
+  const cancelHistoryDetailScrollRestore = useCallback(() => {
+    const cleanup = historyDetailScrollRestoreCleanupRef.current;
+    historyDetailScrollRestoreCleanupRef.current = null;
+    if (cleanup) cleanup();
+  }, []);
+
+  /**
+   * 将待保存的滚动进度提交到触发滚动时对应的标签页状态。
+   */
+  const flushHistoryDetailScrollProgress = useCallback(() => {
+    if (historyDetailScrollSaveTimerRef.current) {
+      clearTimeout(historyDetailScrollSaveTimerRef.current);
+      historyDetailScrollSaveTimerRef.current = 0;
+    }
+    const pending = pendingHistoryDetailScrollSaveRef.current;
+    pendingHistoryDetailScrollSaveRef.current = null;
+    if (pending) onScrollProgressChange(pending.stateKey, pending.progress);
+  }, [onScrollProgressChange]);
+
+  /**
+   * 合并高频滚动事件，并按标签页保存当前阅读百分比。
+   */
+  const handleHistoryDetailScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
+    if (historyDetailScrollRestoreActiveRef.current) return;
+    if (Date.now() < historyDetailProgrammaticScrollIgnoreUntilRef.current) return;
+    const viewport = event.currentTarget;
+    const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+    const progress = maxScrollTop > 0
+      ? Math.min(1, Math.max(0, viewport.scrollTop / maxScrollTop))
+      : 0;
+    pendingHistoryDetailScrollSaveRef.current = { stateKey: scrollStateKey, progress };
+    if (historyDetailScrollSaveTimerRef.current)
+      clearTimeout(historyDetailScrollSaveTimerRef.current);
+    historyDetailScrollSaveTimerRef.current = window.setTimeout(flushHistoryDetailScrollProgress, 120);
+  }, [flushHistoryDetailScrollProgress, scrollStateKey]);
+
+  /**
+   * 在内容加载和虚拟行测量期间持续恢复同一阅读百分比。
+   */
+  const restoreHistoryDetailScrollProgress = useCallback((value: number | null) => {
+    cancelHistoryDetailScrollRestore();
+    const viewport = detailScrollAreaRef.current;
+    if (!viewport) return;
+    const viewportElement: HTMLDivElement = viewport;
+    const numericValue = Number(value);
+    const targetProgress = Number.isFinite(numericValue)
+      ? Math.min(1, Math.max(0, numericValue))
+      : 0;
+    let cancelled = false;
+    let frameId = 0;
+    let attempts = 0;
+    let stableFrames = 0;
+    let lastMaxScrollTop = -1;
+    const startedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+    historyDetailScrollRestoreActiveRef.current = true;
+
+    /**
+     * 结束滚动进度恢复并同步虚拟列表的最终视口。
+     */
+    function cleanupScrollRestore() {
+      cancelled = true;
+      if (frameId) {
+        cancelAnimationFrame(frameId);
+        frameId = 0;
+      }
+      historyVirtualListRef.current?.syncViewport();
+      historyDetailScrollRestoreActiveRef.current = false;
+      if (historyDetailScrollRestoreCleanupRef.current === cleanupScrollRestore)
+        historyDetailScrollRestoreCleanupRef.current = null;
+    }
+
+    /**
+     * 根据最新内容高度反复校准滚动位置，直到布局稳定或达到等待上限。
+     */
+    function calibrateScrollRestore() {
+      frameId = 0;
+      if (cancelled || detailScrollAreaRef.current !== viewportElement) {
+        cleanupScrollRestore();
+        return;
+      }
+      attempts += 1;
+      const maxScrollTop = Math.max(0, viewportElement.scrollHeight - viewportElement.clientHeight);
+      viewportElement.scrollTop = targetProgress * maxScrollTop;
+      historyVirtualListRef.current?.syncViewport();
+      stableFrames = Math.abs(maxScrollTop - lastMaxScrollTop) <= 0.5 ? stableFrames + 1 : 0;
+      lastMaxScrollTop = maxScrollTop;
+      const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+      const contentReady = historyDetailScrollContentReadyRef.current;
+      if ((contentReady && attempts >= 4 && stableFrames >= 3) || now - startedAt >= 2500) {
+        cleanupScrollRestore();
+        return;
+      }
+      frameId = requestAnimationFrame(calibrateScrollRestore);
+    }
+
+    historyDetailScrollRestoreCleanupRef.current = cleanupScrollRestore;
+    const maxScrollTop = Math.max(0, viewportElement.scrollHeight - viewportElement.clientHeight);
+    viewportElement.scrollTop = targetProgress * maxScrollTop;
+    historyVirtualListRef.current?.syncViewport();
+    frameId = requestAnimationFrame(calibrateScrollRestore);
+  }, [cancelHistoryDetailScrollRestore]);
+
+  /**
+   * 切换历史详情布局前记录当前滚动百分比，避免宽度变化后阅读进度发生跳跃。
+   */
+  const changeHistoryDetailLayoutMode = useCallback((mode: HistoryDetailLayoutMode) => {
+    if (mode === "split" && !canSplitLayout) return;
+    if (mode === layoutMode) return;
+    const viewport = detailScrollAreaRef.current;
+    if (viewport) {
+      const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+      pendingLayoutScrollProgressRef.current = maxScrollTop > 0
+        ? Math.min(1, Math.max(0, viewport.scrollTop / maxScrollTop))
+        : 0;
+    }
+    onLayoutModeChange(mode);
+  }, [canSplitLayout, layoutMode, onLayoutModeChange]);
+
+  useLayoutEffect(() => {
+    const progress = pendingLayoutScrollProgressRef.current;
+    if (progress === null) return;
+    pendingLayoutScrollProgressRef.current = null;
+    restoreHistoryDetailScrollProgress(progress);
+  }, [layoutMode, restoreHistoryDetailScrollProgress]);
+
+  useLayoutEffect(() => {
+    restoreHistoryDetailScrollProgress(savedHistoryDetailScrollProgressRef.current);
+  }, [restoreHistoryDetailScrollProgress, scrollStateKey, selectedHistoryId]);
+
+  useLayoutEffect(() => () => {
+    flushHistoryDetailScrollProgress();
+  }, [flushHistoryDetailScrollProgress, scrollStateKey]);
+
+  useEffect(() => () => {
+    cancelHistoryDetailScrollRestore();
+    flushHistoryDetailScrollProgress();
+  }, [cancelHistoryDetailScrollRestore, flushHistoryDetailScrollProgress]);
 
   // DOM 级高亮（用于适配 Markdown 渲染后文本结构变化），并保持与现有“过滤/跳转”能力兼容
   const historyFindRootRef = useRef<HTMLDivElement | null>(null);
-  const historyVirtualListRef = useRef<VirtualizedListHandle | null>(null);
   const historyDetailBottomScrollCleanupRef = useRef<(() => void) | null>(null);
   const matches = useMemo(() => {
     if (!detailSearchActive || !detailSession) return [];
@@ -17955,13 +18637,14 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
     const cleanup = historyDetailBottomScrollCleanupRef.current;
     historyDetailBottomScrollCleanupRef.current = null;
     if (cleanup) cleanup();
+    historyDetailProgrammaticScrollIgnoreUntilRef.current = 0;
   }, []);
 
   useEffect(() => () => {
     cancelHistoryDetailBottomScroll();
   }, [cancelHistoryDetailBottomScroll]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     cancelHistoryDetailBottomScroll();
   }, [cancelHistoryDetailBottomScroll, selectedHistoryId]);
 
@@ -18005,6 +18688,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
   useEffect(() => {
     if (!detailSearchActive || !activeMatch) return;
     cancelHistoryDetailBottomScroll();
+    cancelHistoryDetailScrollRestore();
     const matchIndex = messageIndexByKey.get(activeMatch.messageKey);
     if (typeof matchIndex === "number") {
       historyVirtualListRef.current?.scrollToIndex(matchIndex, { align: "center", behavior: "smooth" });
@@ -18051,12 +18735,13 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
       cancelled = true;
       cancelAnimationFrame(rafId);
     };
-  }, [cancelHistoryDetailBottomScroll, detailSearchActive, activeMatch, messageIndexByKey]);
+  }, [cancelHistoryDetailBottomScroll, cancelHistoryDetailScrollRestore, detailSearchActive, activeMatch, messageIndexByKey]);
 
   useEffect(() => {
     const request = activeUserInputScrollRequest;
     if (!request) return;
     cancelHistoryDetailBottomScroll();
+    cancelHistoryDetailScrollRestore();
     const { messageKey, messageIndex, userInputIndex } = request;
     historyVirtualListRef.current?.scrollToIndex(messageIndex, { align: "start", behavior: "auto" });
 
@@ -18187,7 +18872,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
     return () => {
       stopUserInputAnchorCalibration();
     };
-  }, [activeUserInputScrollRequest, cancelHistoryDetailBottomScroll]);
+  }, [activeUserInputScrollRequest, cancelHistoryDetailBottomScroll, cancelHistoryDetailScrollRestore]);
 
   const goToNextMatch = useCallback(() => {
     if (!matches.length) return;
@@ -18209,6 +18894,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
     const messageIndex = messageIndexByKey.get(messageKey);
     if (typeof messageIndex !== "number") return;
     cancelHistoryDetailBottomScroll();
+    cancelHistoryDetailScrollRestore();
     activeUserInputIndexRef.current = nextIndex;
     userInputScrollRequestIdRef.current += 1;
     setActiveUserInputIndex(nextIndex);
@@ -18218,7 +18904,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
       messageIndex,
       userInputIndex: nextIndex,
     });
-  }, [cancelHistoryDetailBottomScroll, messageIndexByKey, userInputMessageKeys]);
+  }, [cancelHistoryDetailBottomScroll, cancelHistoryDetailScrollRestore, messageIndexByKey, userInputMessageKeys]);
 
   /**
    * 在当前可见的 USER Input 锚点之间循环切换。
@@ -18251,24 +18937,28 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
     activeMessageKey: activeDetailMessageKey,
     registerMessageRef,
     projectWinPath,
+    onOpenGit,
     inlineImageState,
-  }), [activeDetailMessageKey, registerMessageRef, projectWinPath, inlineImageState]);
+  }), [activeDetailMessageKey, registerMessageRef, projectWinPath, onOpenGit, inlineImageState]);
 
   /**
    * 将历史详情滚动区滚动到顶部。
    */
   const scrollHistoryDetailToTop = useCallback(() => {
     cancelHistoryDetailBottomScroll();
+    cancelHistoryDetailScrollRestore();
     const viewport = detailScrollAreaRef.current;
     if (!viewport || viewport.scrollTop <= 0) return;
     viewport.scrollTop = 0;
-  }, [cancelHistoryDetailBottomScroll]);
+    historyVirtualListRef.current?.syncViewport();
+  }, [cancelHistoryDetailBottomScroll, cancelHistoryDetailScrollRestore]);
 
   /**
    * 将历史详情滚动区滚动到底部。
    */
-  const scrollHistoryDetailToBottom = useCallback(() => {
+  const scrollHistoryDetailToBottom = useCallback((preserveSavedProgress: boolean = false) => {
     cancelHistoryDetailBottomScroll();
+    cancelHistoryDetailScrollRestore();
     const viewport = detailScrollAreaRef.current;
     if (!viewport) return;
     const viewportElement = viewport;
@@ -18286,6 +18976,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
     const minHoldMs = shouldPrimeVirtualEnd ? 900 : 450;
     const maxHoldMs = 2500;
     const maxAttempts = 150;
+    if (preserveSavedProgress) historyDetailScrollRestoreActiveRef.current = true;
 
     /**
      * 滚动到当前 DOM 已知的最大底部位置。
@@ -18295,6 +18986,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
       if (maxScrollTop > 0 && viewportElement.scrollTop < maxScrollTop - 1) {
         viewportElement.scrollTop = maxScrollTop;
       }
+      historyVirtualListRef.current?.syncViewport();
       return maxScrollTop;
     }
 
@@ -18309,6 +19001,10 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
       }
       try { resizeObserver?.disconnect(); } catch {}
       resizeObserver = null;
+      if (preserveSavedProgress) {
+        historyDetailScrollRestoreActiveRef.current = false;
+        historyDetailProgrammaticScrollIgnoreUntilRef.current = Date.now() + 100;
+      }
       if (historyDetailBottomScrollCleanupRef.current === cleanupBottomScroll) {
         historyDetailBottomScrollCleanupRef.current = null;
       }
@@ -18369,13 +19065,22 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
     }
     scrollToCurrentBottom();
     scheduleBottomCalibration();
-  }, [cancelHistoryDetailBottomScroll, filteredMessages.length, useVirtualizedHistory]);
+  }, [cancelHistoryDetailBottomScroll, cancelHistoryDetailScrollRestore, filteredMessages.length, useVirtualizedHistory]);
+
+  useLayoutEffect(() => {
+    const request = scrollToBottomRequest;
+    if (!request || !shouldApplyHistoryDetailBottomRequest(request, scrollStateKey, selectedHistoryId)) return;
+    if (!historyDetailScrollContentReadyRef.current) return;
+    scrollHistoryDetailToBottom(true);
+    onScrollToBottomRequestHandled(request.id);
+  }, [filteredMessages.length, loaded, onScrollToBottomRequestHandled, scrollStateKey, scrollHistoryDetailToBottom, scrollToBottomRequest, selectedHistoryId]);
 
   /**
    * 点击历史详情正文时让滚动区获得焦点，以便接收快捷键。
    */
   const focusHistoryDetailViewport = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     cancelHistoryDetailBottomScroll();
+    cancelHistoryDetailScrollRestore();
     const viewport = detailScrollAreaRef.current;
     if (!viewport) return;
     const target = event.target as HTMLElement | null;
@@ -18385,7 +19090,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
     } catch {
       viewport.focus();
     }
-  }, [cancelHistoryDetailBottomScroll]);
+  }, [cancelHistoryDetailBottomScroll, cancelHistoryDetailScrollRestore]);
 
   /**
    * 在历史详情滚动区内处理 Ctrl + Home / Ctrl + End 快捷键。
@@ -18406,6 +19111,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
       || key === "spacebar"
     ) {
       cancelHistoryDetailBottomScroll();
+      cancelHistoryDetailScrollRestore();
     }
     if (!event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || nativeEvent?.isComposing) return;
     if (key === "home") {
@@ -18422,7 +19128,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
       event.stopPropagation();
       scrollHistoryDetailToBottom();
     }
-  }, [cancelHistoryDetailBottomScroll, scrollHistoryDetailToBottom, scrollHistoryDetailToTop]);
+  }, [cancelHistoryDetailBottomScroll, cancelHistoryDetailScrollRestore, scrollHistoryDetailToBottom, scrollHistoryDetailToTop]);
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
@@ -18454,17 +19160,32 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
     return () => window.removeEventListener('keydown', handler);
   }, [detailSearchActive, matches.length, goToNextMatch, goToPrevMatch]);
 
+  // 会话列表刷新会创建新对象；读取只应在稳定指纹或正文数量变化时重新触发。
   useEffect(() => {
-    if (!selectedHistoryId || !selectedSession || !selectedSession.filePath) return;
+    const seq = ++reqSeq.current;
+
+    /**
+     * 当前选择变化时立即作废本轮读取，避免旧项目结果写入新项目状态。
+     */
+    const invalidateRequest = () => {
+      if (reqSeq.current === seq) reqSeq.current += 1;
+    };
+
+    if (!selectedHistoryId || !selectedSession || !selectedSession.filePath) return invalidateRequest;
     const signature = selectedSessionFingerprint;
-    const hasMessages = !!(selectedLocalSession && Array.isArray(selectedLocalSession.messages) && selectedLocalSession.messages.length > 0);
-    if (lastLoadedFingerprintRef.current === signature && (hasMessages || loaded)) return;
+    const cachedMessageCount = selectedLocalMessageCount;
+    const hasMessages = cachedMessageCount > 0;
+    if (shouldReuseHistoryDetailLoad({
+      lastLoadedFingerprint: lastLoadedFingerprintRef.current,
+      requestedFingerprint: signature,
+      lastLoadedMessageCount: lastLoadedMessageCountRef.current,
+      cachedMessageCount,
+    })) return invalidateRequest;
     const preserveCurrentDetail = lastLoadedHistoryIdRef.current === selectedHistoryId && hasMessages;
     if (!preserveCurrentDetail) {
       setLoaded(false);
       setTypeFilter({});
     }
-    const seq = ++reqSeq.current;
     (async () => {
       try {
         const filePath = String(selectedSession.filePath || '');
@@ -18479,15 +19200,17 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
           }
         }
         if (seq === reqSeq.current) {
-          const allowedIds = new Set(touchMessageCache(selectedHistoryId));
           setLocalSessions((cur) => {
-            const next = cur.map((x) => (x.id === selectedHistoryId ? { ...x, messages: msgs } : x));
+            if (seq !== reqSeq.current) return cur;
+            const allowedIds = new Set(touchMessageCache(selectedHistoryId));
+            const next = upsertHistoryDetailSessionMessages(cur, selectedSession, msgs);
             return pruneMessages(next, allowedIds);
           });
           setSkipped(res.skippedLines || 0);
           setLoaded(true);
           lastLoadedFingerprintRef.current = signature;
           lastLoadedHistoryIdRef.current = selectedHistoryId;
+          lastLoadedMessageCountRef.current = msgs.length;
         }
         try {
           const next = buildHistoryTypeFilter(msgs);
@@ -18499,7 +19222,8 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
         if (seq === reqSeq.current) setLoaded(true);
       }
     })();
-  }, [selectedHistoryId, selectedSession, selectedSessionFingerprint, selectedLocalSession, pruneMessages, touchMessageCache]);
+    return invalidateRequest;
+  }, [selectedHistoryId, selectedSessionFingerprint, selectedLocalMessageCount, pruneMessages, touchMessageCache]);
 
   function buildFilteredText(): string {
     if (!selectedHistoryId) return '';
@@ -18508,9 +19232,9 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
     const allowItem = (it: any) => {
       const keys = keysOfItemCanonical(it);
       // developer 标签需要显式启用：避免 developer 内容被 input_text 等类型“顺带展示”
-      if (keys.includes('developer') && Object.prototype.hasOwnProperty.call(typeFilter, 'developer') && !typeFilter['developer']) return false;
-      for (const k of keys) { if (Object.prototype.hasOwnProperty.call(typeFilter, k) && !!typeFilter[k]) return true; }
-      return !!typeFilter['other'];
+      if (keys.includes('developer') && Object.prototype.hasOwnProperty.call(effectiveTypeFilter, 'developer') && !effectiveTypeFilter['developer']) return false;
+      for (const k of keys) { if (Object.prototype.hasOwnProperty.call(effectiveTypeFilter, k) && !!effectiveTypeFilter[k]) return true; }
+      return !!effectiveTypeFilter['other'];
     };
     const lines: string[] = [];
     // 导出头部：首行标题保留原有 title；Date 行显示本地时间，并附原始（若有）
@@ -18537,42 +19261,95 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
     <>
       <div className="grid h-full min-h-0 min-w-0 grid-rows-[auto_auto_1fr] overflow-hidden">
       {/* 紧凑的标题栏 - 减少垂直间距 */}
-      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-[var(--cf-border)] px-3 py-1.5">
+      <div className="flex min-w-0 flex-nowrap items-center justify-between gap-2 border-b border-[var(--cf-border)] px-3 py-1.5">
         <div className="flex min-w-0 items-center gap-2 text-sm">
           {/* 返回箭头：点击返回到控制台 */}
           <button className="flex min-w-0 items-center gap-2 text-sm font-apple-medium text-[var(--cf-text-secondary)] transition-colors duration-apple hover:text-[var(--cf-text-primary)]" onClick={() => { if (onBack) onBack(); }} aria-label={t('history:detailTitle') as string}>
-            <ChevronLeft className="h-4 w-4 shrink-0" /> <span className="truncate">{t('history:detailTitle')}</span>
+            {layoutMode === "split"
+              ? <ChevronRight className="h-4 w-4 shrink-0" />
+              : <ChevronLeft className="h-4 w-4 shrink-0" />}
+            <span className="truncate">{t('history:detailTitle')}</span>
           </button>
         </div>
-        <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-1.5">
+        <div className={cn(
+          "ml-auto flex min-w-0 items-center justify-end gap-1.5",
+          layoutMode === "split" ? "flex-nowrap" : "flex-wrap",
+        )}>
+          <Button
+            size="icon-sm"
+            variant="secondary"
+            className="h-7 w-7 shrink-0"
+            title={t(!canSplitLayout ? 'history:detailSplitViewUnavailable' : layoutMode === "split" ? 'history:detailFullView' : 'history:detailSplitView') as string}
+            aria-label={t(!canSplitLayout ? 'history:detailSplitViewUnavailable' : layoutMode === "split" ? 'history:detailFullView' : 'history:detailSplitView') as string}
+            disabled={!canSplitLayout}
+            onClick={() => changeHistoryDetailLayoutMode(layoutMode === "split" ? "full" : "split")}
+          >
+            {layoutMode === "split" ? <Maximize2 className="h-4 w-4" /> : <Columns2 className="h-4 w-4" />}
+          </Button>
           {detailSession?.filePath ? (
             <>
-              <Button size="sm" variant="secondary" onClick={() => {
+              <Button
+                size={layoutMode === "split" ? "icon-sm" : "sm"}
+                variant="secondary"
+                className={layoutMode === "split" ? "h-7 w-7 shrink-0" : undefined}
+                title={t('history:continueConversation') as string}
+                aria-label={t('history:continueConversation') as string}
+                onClick={() => {
                 try {
                   if (!selectedHistoryId) return;
                   const s = localSessions.find((x) => x.id === selectedHistoryId);
                   if (!s || !s.filePath) return;
                   onResume?.(s.filePath);
                 } catch {}
-              }}>{t('history:continueConversation')}</Button>
-              <Button size="sm" variant="secondary" onClick={() => {
+              }}>
+                {layoutMode === "split" ? <Play className="h-4 w-4" /> : t('history:continueConversation')}
+              </Button>
+              <Button
+                size={layoutMode === "split" ? "icon-sm" : "sm"}
+                variant="secondary"
+                className={layoutMode === "split" ? "h-7 w-7 shrink-0" : undefined}
+                title={t('history:continueExternalWith', { env: getResumeShellLabel(detailSession?.filePath) }) as string}
+                aria-label={t('history:continueExternalWith', { env: getResumeShellLabel(detailSession?.filePath) }) as string}
+                onClick={() => {
                 try {
                   if (!selectedHistoryId) return;
                   const s = localSessions.find((x) => x.id === selectedHistoryId);
                   if (!s || !s.filePath) return;
                   onResumeExternal?.(s.filePath);
                 } catch {}
-              }}>{t('history:continueExternalWith', { env: getResumeShellLabel(detailSession?.filePath) })}</Button>
+              }}>
+                {layoutMode === "split"
+                  ? <ExternalLink className="h-4 w-4" />
+                  : t('history:continueExternalWith', { env: getResumeShellLabel(detailSession?.filePath) })}
+              </Button>
             </>
           ) : null}
-          <Button size="sm" variant="secondary" onClick={async () => {
-            const text = buildFilteredText();
-            try { await window.host.utils.copyText(text); } catch { try { await navigator.clipboard.writeText(text); } catch {} }
-          }}>{t('history:copyAll')}</Button>
-          <Button size="sm" variant="secondary" onClick={async () => {
-            const text = buildFilteredText();
-            try { await window.host.utils.saveText(text, `${selectedHistoryId || 'history'}.txt`); } catch {}
-          }}>{t('history:export')}</Button>
+          <Button
+            size={layoutMode === "split" ? "icon-sm" : "sm"}
+            variant="secondary"
+            className={layoutMode === "split" ? "h-7 w-7 shrink-0" : undefined}
+            title={t('history:copyAll') as string}
+            aria-label={t('history:copyAll') as string}
+            onClick={async () => {
+              const text = buildFilteredText();
+              try { await window.host.utils.copyText(text); } catch { try { await navigator.clipboard.writeText(text); } catch {} }
+            }}
+          >
+            {layoutMode === "split" ? <CopyIcon className="h-4 w-4" /> : t('history:copyAll')}
+          </Button>
+          <Button
+            size={layoutMode === "split" ? "icon-sm" : "sm"}
+            variant="secondary"
+            className={layoutMode === "split" ? "h-7 w-7 shrink-0" : undefined}
+            title={t('history:export') as string}
+            aria-label={t('history:export') as string}
+            onClick={async () => {
+              const text = buildFilteredText();
+              try { await window.host.utils.saveText(text, `${selectedHistoryId || 'history'}.txt`); } catch {}
+            }}
+          >
+            {layoutMode === "split" ? <Download className="h-4 w-4" /> : t('history:export')}
+          </Button>
         </div>
       </div>
 
@@ -18580,8 +19357,14 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
       <div className="flex flex-col gap-1.5 px-3 py-1.5 text-xs text-[var(--cf-text-secondary)] bg-[var(--cf-bg-secondary)]">
         {/* 第一行：搜索、USER 输入导航和过滤器 */}
         <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2">
-          <div className="flex min-w-0 items-center gap-2 justify-self-start">
-            <div className="relative min-w-0 max-w-xs flex-1 basis-[14rem]">
+          <div className={cn(
+            "flex min-w-0 items-center gap-2",
+            layoutMode === "split" ? "col-span-3 w-full justify-self-stretch" : "justify-self-start",
+          )}>
+            <div className={cn(
+              "relative min-w-0 flex-1",
+              layoutMode === "split" ? "max-w-none basis-auto" : "max-w-xs basis-[14rem]",
+            )}>
               <Input
                 value={detailSearchInput}
                 onChange={(e) => setDetailSearchInput((e.target as HTMLInputElement).value)}
@@ -18629,11 +19412,11 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
           </div>
 
           {userInputMessageKeys.length > 0 ? (
-            <div className="flex items-center justify-self-center">
-              <div className="grid grid-cols-[3.75rem_1.25rem_1.25rem] items-center gap-1">
+            <div className="col-start-2 flex items-center justify-self-center">
+              <div className="relative flex items-center gap-1">
                 <div
                   className={cn(
-                    "whitespace-nowrap text-right text-[0.65rem] font-apple-medium tabular-nums text-[var(--cf-text-muted)]",
+                    "absolute right-full mr-1 w-[3.75rem] whitespace-nowrap text-right text-[0.65rem] font-apple-medium tabular-nums text-[var(--cf-text-muted)]",
                     activeUserInputIndex === null && "invisible",
                   )}
                   aria-hidden={activeUserInputIndex === null}
@@ -18662,17 +19445,22 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
                 </button>
               </div>
             </div>
-          ) : <div className="justify-self-center" />}
+          ) : <div className="col-start-2 justify-self-center" />}
 
           <div className="flex shrink-0 items-center justify-self-end gap-1.5">
             <span className="text-[var(--cf-text-muted)] font-apple-medium whitespace-nowrap">{Object.values(typeFilter).filter(Boolean).length}/{Object.keys(typeFilter).length}</span>
             <Button
-              size="sm"
+              size={layoutMode === "split" ? "icon-sm" : "sm"}
               variant="ghost"
-              className="h-7 px-2 text-xs"
+              className={layoutMode === "split" ? "h-7 w-7" : "h-7 px-2 text-xs"}
+              title={t('history:filterTypes') as string}
+              aria-label={t('history:filterTypes') as string}
+              aria-expanded={filtersExpanded}
               onClick={() => setFiltersExpanded(!filtersExpanded)}
             >
-              {t('history:filterTypes')} {filtersExpanded ? '▼' : '▶'}
+              {layoutMode === "split"
+                ? <SlidersHorizontal className="h-3.5 w-3.5" />
+                : <>{t('history:filterTypes')} {filtersExpanded ? '▼' : '▶'}</>}
             </Button>
           </div>
         </div>
@@ -18790,12 +19578,18 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
       <div className="relative group/history-detail flex-1 min-h-0 min-w-0 overflow-hidden">
         <ScrollArea
           ref={detailScrollAreaRef}
-          key={selectedHistoryId || 'none'}
           className="h-full min-h-0 min-w-0 p-2 focus-visible:outline-none"
           tabIndex={0}
+          onScroll={handleHistoryDetailScroll}
           onPointerDownCapture={focusHistoryDetailViewport}
-          onTouchMoveCapture={() => cancelHistoryDetailBottomScroll()}
-          onWheelCapture={() => cancelHistoryDetailBottomScroll()}
+          onTouchMoveCapture={() => {
+            cancelHistoryDetailBottomScroll();
+            cancelHistoryDetailScrollRestore();
+          }}
+          onWheelCapture={() => {
+            cancelHistoryDetailBottomScroll();
+            cancelHistoryDetailScrollRestore();
+          }}
           onKeyDownCapture={handleHistoryDetailBoundaryShortcut}
         >
           {selectedHistoryId ? (
@@ -18812,6 +19606,7 @@ function HistoryDetail({ sessions, selectedHistoryId, projectWinPath, onBack, on
                         key={detailRenderSession.id}
                         items={filteredMessages}
                         scrollContainerRef={detailScrollAreaRef}
+                        viewportKey={scrollStateKey}
                         estimateItemHeight={HISTORY_DETAIL_VIRTUAL_ESTIMATED_HEIGHT}
                         getEstimatedItemHeight={estimateHistoryMessageHeight}
                         overscan={HISTORY_DETAIL_VIRTUAL_OVERSCAN}

@@ -51,8 +51,14 @@ export type MessageContent = {
   fallbackSrc?: string;
   localPath?: string;
   mimeType?: string;
+  /** 文件差异对应的会话工作目录，用于把路径显示为相对路径。 */
+  cwd?: string;
+  /** 文件差异来源，供前端区分标准差异与 FileChange 回退记录。 */
+  diffSource?: 'apply_patch' | 'file_change' | 'turn_diff';
+  /** 当前差异是否可以安全交给 Git/apply_patch 执行撤销或重新应用。 */
+  patchable?: boolean;
 };
-export type Message = { role: string; content: MessageContent[] };
+export type Message = { role: string; content: MessageContent[]; turnId?: string };
 
 // 历史摘要前缀与缓存上限（控制内存占用）
 const SUMMARY_PREFIX_BYTES = 48 * 1024; // 仅保留文件头 48KB，用于提取 metadata / cwd 提示
@@ -1572,6 +1578,295 @@ export async function listHistorySplit(project: { wslPath?: string; winPath?: st
   return { belongs: belongs.slice().sort(sortDesc), all: all.sort(sortDesc) };
 }
 
+const MAX_CODEX_APPLY_PATCH_HISTORY_BYTES = 16 * 1024 * 1024;
+
+type CodexFileChangeValue = {
+  type?: unknown;
+  unified_diff?: unknown;
+  content?: unknown;
+  move_path?: unknown;
+};
+
+type CodexFileChangeOperation = 'add' | 'update' | 'delete' | 'move';
+
+/**
+ * 规范化 FileChange 中的文件路径，统一使用正斜杠以便生成跨平台统一差异。
+ */
+function normalizeCodexFileChangePath(value: unknown): string {
+  let text = String(value || '').trim();
+  if (!text) return '';
+  if (text.startsWith('"') && text.endsWith('"')) {
+    try { text = String(JSON.parse(text) || '').trim(); } catch { text = text.slice(1, -1); }
+  }
+  return text.replace(/\\/g, '/').replace(/[\r\n]+/g, '');
+}
+
+/**
+ * 规范化 Codex item 记录的工作目录，兼容 file URI、Windows、UNC 与 WSL 路径。
+ */
+function normalizeCodexFileChangeCwd(value: unknown): string {
+  let text = String(value || '').trim().replace(/[\r\n]+/g, '');
+  if (!text) return '';
+  if (text.startsWith('"') && text.endsWith('"')) {
+    try { text = String(JSON.parse(text) || '').trim(); } catch { text = text.slice(1, -1); }
+  }
+  if (/^file:/i.test(text)) {
+    try {
+      const fileUrl = new URL(text);
+      if (fileUrl.protocol === 'file:') {
+        const decodedPath = decodeURIComponent(fileUrl.pathname);
+        text = fileUrl.hostname && fileUrl.hostname.toLowerCase() !== 'localhost'
+          ? `//${fileUrl.hostname}${decodedPath}`
+          : decodedPath;
+      }
+    } catch {}
+  }
+  if (/^\/[a-z]:[\\/]/i.test(text)) text = text.slice(1);
+  if (/^[a-z]:[\\/]/i.test(text) || text.startsWith('//') || text.startsWith('\\\\'))
+    return text.replace(/[\\/]+/g, '\\');
+  return text.replace(/\\/g, '/').replace(/\/+/g, '/');
+}
+
+/**
+ * 生成插件式 FileChange 合并键：只有同一工作目录下同一路径的普通更新才允许合并。
+ */
+function buildCodexFileChangeLocationKey(cwd: string, filePath: string): string {
+  const normalizedCwd = normalizeCodexFileChangeCwd(cwd).replace(/\\/g, '/').replace(/\/$/, '');
+  const normalizedPath = normalizeCodexFileChangePath(filePath).replace(/\/$/, '');
+  const windowsLike = /^[a-z]:\//i.test(normalizedCwd)
+    || /^[a-z]:\//i.test(normalizedPath)
+    || normalizedCwd.startsWith('//')
+    || normalizedPath.startsWith('//');
+  const cwdKey = windowsLike ? normalizedCwd.toLowerCase() : normalizedCwd;
+  const pathKey = windowsLike ? normalizedPath.toLowerCase() : normalizedPath;
+  return `${cwdKey}\0${pathKey}`;
+}
+
+/**
+ * 从文件完整内容生成新增或删除文件的统一差异主体。
+ */
+function buildCodexWholeFileDiffBody(content: unknown, operation: 'add' | 'delete'): string {
+  const normalized = String(content ?? '').replace(/\r\n?/g, '\n');
+  const lines = normalized.split('\n');
+  const hasTrailingNewline = lines.length > 0 && lines[lines.length - 1] === '';
+  if (hasTrailingNewline) lines.pop();
+  const count = lines.length;
+  if (operation === 'add') {
+    const hunk = `@@ -0,0 +1,${count} @@`;
+    return [hunk, ...lines.map((line) => `+${line}`), ...(hasTrailingNewline ? [] : ['\\ No newline at end of file'])].join('\n');
+  }
+  const hunk = `@@ -1,${count} +0,0 @@`;
+  return [hunk, ...lines.map((line) => `-${line}`), ...(hasTrailingNewline ? [] : ['\\ No newline at end of file'])].join('\n');
+}
+
+/**
+ * 把一条 Codex FileChange 转换为带文件头的统一差异文本。
+ */
+function buildCodexFileChangeUnifiedDiff(filePath: string, change: CodexFileChangeValue): string {
+  const sourcePath = normalizeCodexFileChangePath(filePath);
+  if (!sourcePath) return '';
+  const rawType = String(change?.type || 'update').trim().toLowerCase();
+  const operation = rawType === 'add' || rawType === 'delete' ? rawType : 'update';
+  const targetPath = normalizeCodexFileChangePath(change?.move_path) || sourcePath;
+  const headerPath = operation === 'delete' ? sourcePath : targetPath;
+  const lines = [`diff --git a/${sourcePath} b/${headerPath}`];
+
+  if (operation === 'add') {
+    lines.push('new file mode 100644', '--- /dev/null', `+++ b/${targetPath}`);
+    lines.push(buildCodexWholeFileDiffBody(change?.content, 'add'));
+  } else if (operation === 'delete') {
+    lines.push('deleted file mode 100644', `--- a/${sourcePath}`, '+++ /dev/null');
+    lines.push(buildCodexWholeFileDiffBody(change?.content, 'delete'));
+  } else {
+    if (sourcePath !== targetPath) {
+      lines.push(`rename from ${sourcePath}`, `rename to ${targetPath}`);
+    }
+    lines.push(`--- a/${sourcePath}`, `+++ b/${targetPath}`);
+    const fragment = String(change?.unified_diff || '').replace(/\r\n?/g, '\n').trim();
+    if (fragment) {
+      const fragmentLines = fragment.split('\n');
+      const bodyStart = fragmentLines.findIndex((line) => line.startsWith('@@'));
+      lines.push(...(bodyStart >= 0 ? fragmentLines.slice(bodyStart) : fragmentLines));
+    }
+  }
+  return lines.join('\n').trim();
+}
+
+/**
+ * 合并同一工作目录与路径下的普通 FileChange 更新，保留首段文件头并追加后续 hunk。
+ */
+function mergeCodexFileChangeUpdates(parts: string[]): string {
+  const normalized = parts.map((part) => String(part || '').replace(/\r\n?/g, '\n').trim()).filter(Boolean);
+  if (normalized.length <= 1) return normalized[0] || '';
+  const firstLines = normalized[0].split('\n');
+  const merged = [...firstLines];
+  for (const part of normalized.slice(1)) {
+    const partLines = part.split('\n');
+    const hunkIndex = partLines.findIndex((line) => line.startsWith('@@'));
+    if (hunkIndex >= 0) merged.push(...partLines.slice(hunkIndex));
+    else merged.push(...partLines);
+  }
+  return merged.join('\n').trim();
+}
+
+/**
+ * 提取一个 FileChange item，并按规范化完整路径稳定排序以对齐 Codex 插件服务端顺序。
+ */
+function extractCodexFileChangeSegments(item: any): Array<{ path: string; type: CodexFileChangeOperation; text: string }> {
+  const changes = item?.changes;
+  if (!changes || typeof changes !== 'object' || Array.isArray(changes)) return [];
+  const entries = Object.entries(changes as Record<string, CodexFileChangeValue>)
+    .map(([rawPath, rawChange], index) => {
+      const normalizedPath = normalizeCodexFileChangePath(rawPath);
+      const sortKey = /^[a-z]:\//i.test(normalizedPath) || normalizedPath.startsWith('//')
+        ? normalizedPath.toLowerCase()
+        : normalizedPath;
+      return { rawPath, rawChange, normalizedPath, sortKey, index };
+    })
+    .sort((left, right) => {
+      if (left.sortKey < right.sortKey) return -1;
+      if (left.sortKey > right.sortKey) return 1;
+      return left.index - right.index;
+    });
+  const segments: Array<{ path: string; type: CodexFileChangeOperation; text: string }> = [];
+  for (const { rawPath, rawChange, normalizedPath } of entries) {
+    const change = (rawChange && typeof rawChange === 'object' ? rawChange : {}) as CodexFileChangeValue;
+    const rawType = String(change.type || 'update').trim().toLowerCase();
+    const movePath = normalizeCodexFileChangePath(change.move_path);
+    const type: CodexFileChangeOperation = movePath && movePath !== normalizedPath
+      ? 'move'
+      : (rawType === 'add' || rawType === 'delete' ? rawType : 'update');
+    const text = buildCodexFileChangeUnifiedDiff(rawPath, change);
+    if (text) segments.push({ path: normalizedPath, type, text });
+  }
+  return segments;
+}
+
+/**
+ * 解码工具调用源码中的单个 JavaScript 字符串字面量，不执行任何会话内代码。
+ */
+function decodeJavaScriptStringLiteral(source: string, literalStart: number): { value: string; end: number } | null {
+  const quote = source[literalStart];
+  if (quote !== '"' && quote !== "'" && quote !== '`') return null;
+  let value = '';
+
+  for (let index = literalStart + 1; index < source.length; index += 1) {
+    const current = source[index];
+    if (current === quote) return { value, end: index + 1 };
+    if (current !== '\\') {
+      value += current;
+      continue;
+    }
+
+    index += 1;
+    if (index >= source.length) return null;
+    const escaped = source[index];
+    if (escaped === 'n') value += '\n';
+    else if (escaped === 'r') value += '\r';
+    else if (escaped === 't') value += '\t';
+    else if (escaped === 'b') value += '\b';
+    else if (escaped === 'f') value += '\f';
+    else if (escaped === 'v') value += '\v';
+    else if (escaped === '0') value += '\0';
+    else if (escaped === '\n') continue;
+    else if (escaped === '\r') {
+      if (source[index + 1] === '\n') index += 1;
+    } else if (escaped === 'x') {
+      const hex = source.slice(index + 1, index + 3);
+      if (!/^[0-9a-f]{2}$/i.test(hex)) return null;
+      value += String.fromCharCode(Number.parseInt(hex, 16));
+      index += 2;
+    } else if (escaped === 'u') {
+      const hex = source.slice(index + 1, index + 5);
+      if (!/^[0-9a-f]{4}$/i.test(hex)) return null;
+      value += String.fromCharCode(Number.parseInt(hex, 16));
+      index += 4;
+    } else {
+      value += escaped;
+    }
+  }
+  return null;
+}
+
+/**
+ * 从一段已解码文本中提取完整的 apply_patch 块，并自动去重。
+ */
+function collectApplyPatchBlocks(text: string, target: string[], seen: Set<string>): void {
+  const matcher = /\*\*\* Begin Patch[\s\S]*?\*\*\* End Patch/g;
+  let match: RegExpExecArray | null;
+  while ((match = matcher.exec(String(text || ''))) !== null) {
+    const block = String(match[0] || '').trim();
+    if (!block || seen.has(block) || Buffer.byteLength(block, 'utf8') > MAX_CODEX_APPLY_PATCH_HISTORY_BYTES) continue;
+    seen.add(block);
+    target.push(block);
+  }
+}
+
+/**
+ * 从 Codex 工具调用参数中安全提取 apply_patch 内容，兼容直接调用和 exec 中的字符串变量写法。
+ */
+function extractCodexApplyPatchBlocks(toolName: unknown, callArguments: unknown): string[] {
+  const normalizedToolName = String(toolName || '').trim().toLowerCase();
+  const sources: string[] = [];
+
+  /**
+   * 深度收集工具参数中的字符串值，避免依赖某一版固定参数结构。
+   */
+  function visit(value: unknown): void {
+    if (typeof value === 'string') {
+      sources.push(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+    for (const item of Object.values(value as Record<string, unknown>)) visit(item);
+  }
+
+  visit(callArguments);
+  const blocks: string[] = [];
+  const seen = new Set<string>();
+  for (const source of sources) {
+    if (!source.includes('*** Begin Patch')) continue;
+    const isDirectApplyPatch = normalizedToolName.includes('apply_patch');
+    const containsApplyPatchCall = /(?:tools|functions)\.apply_patch\s*\(/.test(source);
+    if (!isDirectApplyPatch && !containsApplyPatchCall) continue;
+
+    if (isDirectApplyPatch) collectApplyPatchBlocks(source, blocks, seen);
+    let markerIndex = source.indexOf('*** Begin Patch');
+    while (markerIndex >= 0) {
+      const literalStart = markerIndex - 1;
+      const decoded = decodeJavaScriptStringLiteral(source, literalStart);
+      if (decoded) collectApplyPatchBlocks(decoded.value, blocks, seen);
+      markerIndex = source.indexOf('*** Begin Patch', markerIndex + 1);
+    }
+  }
+  return blocks;
+}
+
+/**
+ * 提取 Codex 记录携带的轮次 ID，用于把同一轮内的多次文件修改合并为一个改动条。
+ */
+function resolveCodexTurnId(record: any, source: any): string {
+  const candidates = [
+    source?.turn_id,
+    source?.turnId,
+    source?.internal_chat_message_metadata_passthrough?.turn_id,
+    record?.turn_id,
+    record?.turnId,
+    record?.payload?.turn_id,
+    record?.payload?.turnId,
+    record?.payload?.internal_chat_message_metadata_passthrough?.turn_id,
+  ];
+  for (const candidate of candidates) {
+    const value = String(candidate || '').trim();
+    if (value) return value;
+  }
+  return '';
+}
+
 export async function readHistoryFile(filePath: string, opts?: { chunkSize?: number; maxLines?: number }): Promise<{ id: string; title: string; date: number; messages: Message[]; skippedLines: number }> {
   // 简单缓存：基于文件 mtimeMs + size，避免重复解析未变更文件。
   // 关键点：缓存需要感知“是否完整解析”，避免较小 maxLines 的截断结果污染后续完整详情读取。
@@ -1608,6 +1903,161 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
   const __normInstr = (s: string) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
   const recentImagePathCandidates: string[] = [];
   const imagePathCandidatesByCallId = new Map<string, string[]>();
+  const turnDiffMessagesByKey = new Map<string, Message>();
+  const turnDiffSourceByKey = new Map<string, 'apply_patch' | 'file_change' | 'turn_diff'>();
+  type FileChangeSegment = { path: string; type: CodexFileChangeOperation; text: string };
+  type FileChangeTurnState = {
+    segments: FileChangeSegment[];
+    updateByLocation: Map<string, { index: number; parts: string[] }>;
+    cardCwd: string;
+  };
+  const fileChangeStateByKey = new Map<string, FileChangeTurnState>();
+  const commandCwdByTurn = new Map<string, string>();
+  let anonymousTurnDiffIndex = 0;
+  let historyCwd = '';
+
+  /**
+   * 将指定轮次的改动卡片放到该轮最后一条消息之后，避免日志事件顺序导致卡片夹在助手正文中间。
+   */
+  function placeTurnDiffAfterTurnMessages(turnId: string, turnDiffMessage: Message): void {
+    const normalizedTurnId = String(turnId || '').trim();
+    if (!normalizedTurnId) return;
+    const currentIndex = messages.indexOf(turnDiffMessage);
+    if (currentIndex >= 0) messages.splice(currentIndex, 1);
+    let anchorIndex = -1;
+    for (let index = 0; index < messages.length; index += 1) {
+      const message = messages[index];
+      if (String(message?.turnId || '').trim() === normalizedTurnId && message !== turnDiffMessage)
+        anchorIndex = index;
+    }
+    if (anchorIndex >= 0) messages.splice(anchorIndex + 1, 0, turnDiffMessage);
+    else messages.push(turnDiffMessage);
+  }
+
+  /**
+   * 在同一轮的新消息写入后重新定位已存在的改动卡片，兼容 turn_diff 先于助手输出到达的日志。
+   */
+  function relocateTurnDiffForTurn(turnId: string): void {
+    const normalizedTurnId = String(turnId || '').trim();
+    if (!normalizedTurnId) return;
+    const turnDiffMessage = turnDiffMessagesByKey.get(`turn:${normalizedTurnId}`);
+    if (turnDiffMessage) placeTurnDiffAfterTurnMessages(normalizedTurnId, turnDiffMessage);
+  }
+
+  /**
+   * 为消息附加稳定轮次标识，避免把 undefined 属性写入历史缓存。
+   */
+  function withTurnId(message: Message, turnId?: string): Message {
+    const normalizedTurnId = String(turnId || '').trim();
+    return normalizedTurnId ? { ...message, turnId: normalizedTurnId } : message;
+  }
+
+  /**
+   * 新增或合并一条轮次改动消息；标准 turn_diff 到达时会替换同轮的 apply_patch 回退内容。
+   */
+  function upsertTurnDiffMessage(options: {
+    turnId?: string;
+    fallbackKey?: string;
+    text: string;
+    tags: string[];
+    replaceExisting?: boolean;
+    source?: 'apply_patch' | 'file_change' | 'turn_diff';
+    cwd?: string;
+    patchable?: boolean;
+    appendAlways?: boolean;
+  }): void {
+    const text = String(options.text || '').trim();
+    if (!text) return;
+    const turnId = String(options.turnId || '').trim();
+    const fallbackKey = String(options.fallbackKey || '').trim();
+    const key = turnId
+      ? `turn:${turnId}`
+      : (fallbackKey ? `fallback:${fallbackKey}` : `anonymous:${anonymousTurnDiffIndex++}`);
+    const source = options.source || 'apply_patch';
+    const sourceRank = source === 'turn_diff' ? 3 : (source === 'file_change' ? 2 : 1);
+    const existing = turnDiffMessagesByKey.get(key);
+    if (existing?.content?.[0]) {
+      const item = existing.content[0];
+      const existingSource = turnDiffSourceByKey.get(key);
+      const existingRank = existingSource === 'turn_diff' ? 3 : (existingSource === 'file_change' ? 2 : 1);
+      if (existingSource && sourceRank < existingRank) return;
+      if (options.replaceExisting) {
+        item.text = text;
+        item.tags = options.tags;
+        item.cwd = String(options.cwd || item.cwd || '').trim() || undefined;
+        item.diffSource = source;
+        item.patchable = typeof options.patchable === 'boolean' ? options.patchable : source !== 'file_change';
+        turnDiffSourceByKey.set(key, source);
+        if (turnId) placeTurnDiffAfterTurnMessages(turnId, existing);
+        return;
+      }
+      if (options.appendAlways || !String(item.text || '').includes(text)) item.text = `${String(item.text || '').trim()}\n${text}`.trim();
+      item.tags = Array.from(new Set([...(item.tags || []), ...options.tags]));
+      item.cwd = String(options.cwd || item.cwd || '').trim() || undefined;
+      item.diffSource = source;
+      item.patchable = typeof options.patchable === 'boolean' ? options.patchable : source !== 'file_change';
+      turnDiffSourceByKey.set(key, source);
+      return;
+    }
+
+    const message: Message = {
+      role: 'change',
+      turnId: turnId || undefined,
+      content: [{ type: 'turn_diff', text, tags: options.tags }],
+    };
+    message.content[0].cwd = String(options.cwd || '').trim() || undefined;
+    message.content[0].diffSource = source;
+    message.content[0].patchable = typeof options.patchable === 'boolean' ? options.patchable : source !== 'file_change';
+    turnDiffMessagesByKey.set(key, message);
+    turnDiffSourceByKey.set(key, source);
+    if (turnId) placeTurnDiffAfterTurnMessages(turnId, message);
+    else messages.push(message);
+  }
+
+  /**
+   * 累积同一轮的 FileChange：普通更新按“工作目录 + 路径”合并，其它操作保持独立差异段。
+   */
+  function upsertCodexFileChange(item: any, turnId: string, cwd?: string): void {
+    const normalizedTurnId = String(turnId || '').trim();
+    const fallbackKey = String(item?.id || '').trim();
+    const key = normalizedTurnId ? `turn:${normalizedTurnId}` : (fallbackKey ? `fallback:${fallbackKey}` : `anonymous:${anonymousTurnDiffIndex++}`);
+    const normalizedCwd = normalizeCodexFileChangeCwd(cwd || historyCwd);
+    const state = fileChangeStateByKey.get(key) || {
+      segments: [],
+      updateByLocation: new Map<string, { index: number; parts: string[] }>(),
+      cardCwd: normalizedCwd,
+    };
+    if (!state.cardCwd && normalizedCwd) state.cardCwd = normalizedCwd;
+    fileChangeStateByKey.set(key, state);
+    for (const segment of extractCodexFileChangeSegments(item)) {
+      const locationKey = buildCodexFileChangeLocationKey(normalizedCwd, segment.path);
+      const activeUpdate = state.updateByLocation.get(locationKey);
+      if (segment.type === 'update' && activeUpdate) {
+        activeUpdate.parts.push(segment.text);
+        state.segments[activeUpdate.index] = {
+          ...state.segments[activeUpdate.index],
+          text: mergeCodexFileChangeUpdates(activeUpdate.parts),
+        };
+        continue;
+      }
+      const index = state.segments.length;
+      state.segments.push(segment);
+      if (segment.type === 'update') state.updateByLocation.set(locationKey, { index, parts: [segment.text] });
+      else state.updateByLocation.delete(locationKey);
+    }
+    const text = state.segments.map((segment) => segment.text).join('\n').trim();
+    if (!text) return;
+    upsertTurnDiffMessage({
+      turnId: normalizedTurnId,
+      fallbackKey: normalizedTurnId ? undefined : fallbackKey,
+      text,
+      tags: ['event_msg.item_completed.FileChange', 'FileChange', 'turn_diff'],
+      replaceExisting: true,
+      source: 'file_change',
+      cwd: state.cardCwd || normalizeCodexFileChangeCwd(historyCwd) || undefined,
+      patchable: false,
+    });
+  }
 
   // 读取 stat 并检查缓存
   let stat: fs.Stats | null = null;
@@ -1970,6 +2420,7 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
       if (lineIndex === 0) {
         // 新版：顶层为 session_meta，真实头部在 payload 中
         if (obj && obj.type === 'session_meta' && obj.payload) {
+          historyCwd = normalizeCodexFileChangeCwd(obj.payload.cwd || obj.payload.working_dir);
           try { if (obj.payload.id) id = String(obj.payload.id); } catch {}
           try {
             const minimal = { id: obj.payload.id, timestamp: obj.payload.timestamp || obj.timestamp, originator: obj.payload.originator, cli_version: obj.payload.cli_version };
@@ -1988,6 +2439,7 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
           try { if (obj.payload.git) messages.push({ role: 'state', content: [{ type: 'git', text: pretty(obj.payload.git), tags: ['session_meta.git'] }] }); } catch {}
         } else {
           // 旧版：首行即为会话头
+          historyCwd = normalizeCodexFileChangeCwd(obj?.cwd || obj?.working_dir);
           id = obj.id || id;
           title = obj.instructions || obj.title || title;
           if (Object.prototype.hasOwnProperty.call(obj, 'timestamp')) {
@@ -2020,6 +2472,24 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
       const userMessageEventContent = obj.type === 'event_msg' && obj.payload && obj.payload.type === 'user_message'
         ? buildCodexUserMessageEventContent(obj.payload)
         : null;
+      const turnDiffEventText = obj.type === 'event_msg' && obj.payload && obj.payload.type === 'turn_diff'
+        ? String(obj.payload.unified_diff || '').trim()
+        : '';
+      const codexTurnId = resolveCodexTurnId(obj, obj?.payload);
+      const completedItem = obj.type === 'event_msg'
+        && obj.payload
+        && obj.payload.type === 'item_completed'
+        && obj.payload.item
+        ? obj.payload.item
+        : null;
+      const completedItemType = String(completedItem?.type || '').trim().toLowerCase();
+      const fileChangeItem = completedItemType === 'filechange' ? completedItem : null;
+      if (completedItemType === 'commandexecution') {
+        const commandCwd = normalizeCodexFileChangeCwd(completedItem?.cwd || obj.payload?.cwd);
+        if (commandCwd) commandCwdByTurn.set(codexTurnId, commandCwd);
+      }
+      if (obj.type === 'turn_context' && obj.payload?.cwd && !historyCwd)
+        historyCwd = normalizeCodexFileChangeCwd(obj.payload.cwd);
 
       if (obj.type === 'message' || obj.record_type === 'message' || (obj.type === 'response_item' && obj.payload && (obj.payload.type === 'message' || obj.payload.record_type === 'message'))) {
 	        const src: any = (obj.type === 'response_item' && obj.payload) ? obj.payload : obj;
@@ -2148,13 +2618,41 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
             }
           }
         } catch {}
-        if (contentArr.length > 0) messages.push({ role: normalizeHistoryMessageRoleForContent(role, contentArr), content: contentArr });
+        if (contentArr.length > 0) {
+          const message = withTurnId({ role: normalizeHistoryMessageRoleForContent(role, contentArr), content: contentArr }, codexTurnId);
+          messages.push(message);
+          relocateTurnDiffForTurn(codexTurnId);
+        }
       } else if (userMessageEventContent) {
         try {
           rememberImagePathsFromText(typeof obj.payload?.message === 'string' ? obj.payload.message : '');
         } catch {}
-        if (!mergePathOnlyUserMessageIntoPreviousUserMessage(userMessageEventContent))
-          messages.push({ role: 'user', content: userMessageEventContent });
+        if (!mergePathOnlyUserMessageIntoPreviousUserMessage(userMessageEventContent)) {
+          messages.push(withTurnId({ role: 'user', content: userMessageEventContent }, codexTurnId));
+          relocateTurnDiffForTurn(codexTurnId);
+        }
+      } else if (fileChangeItem) {
+        const fileChangeCwd = normalizeCodexFileChangeCwd(
+          fileChangeItem.cwd
+          || obj.payload?.cwd
+          || commandCwdByTurn.get(codexTurnId)
+          || historyCwd,
+        );
+        upsertCodexFileChange(
+          fileChangeItem,
+          codexTurnId || String(fileChangeItem.turn_id || '').trim(),
+          fileChangeCwd,
+        );
+      } else if (turnDiffEventText) {
+        upsertTurnDiffMessage({
+          turnId: codexTurnId,
+          text: turnDiffEventText,
+          tags: ['event_msg.turn_diff', 'turn_diff'],
+          replaceExisting: true,
+          source: 'turn_diff',
+          cwd: historyCwd || undefined,
+          patchable: true,
+        });
       } else if (
         obj.type === 'function_call'
         || obj.type === 'custom_tool_call'
@@ -2164,6 +2662,18 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
         const src: any = (obj.type === 'response_item' && obj.payload) ? obj.payload : obj;
         const name = src.name || src.tool || src.function || 'function';
         const callArguments = src.type === 'custom_tool_call' ? src.input : src.arguments;
+        const applyPatchBlocks = extractCodexApplyPatchBlocks(name, callArguments);
+        if (applyPatchBlocks.length > 0) {
+          upsertTurnDiffMessage({
+            turnId: resolveCodexTurnId(obj, src),
+            fallbackKey: String((src as any).call_id || ''),
+            text: applyPatchBlocks.join('\n'),
+            tags: ['custom_tool_call.apply_patch', 'apply_patch', 'turn_diff'],
+            source: 'apply_patch',
+            cwd: historyCwd || undefined,
+            patchable: true,
+          });
+        }
         let argsPretty = '';
         try {
           if (typeof callArguments === 'string') {
@@ -2177,7 +2687,8 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
         rememberImagePathsFromText(text);
         const imagePathCandidates = extractImagePathCandidatesFromFunctionCallArguments(callArguments, text);
         rememberImagePathsForCallId((src as any).call_id, imagePathCandidates);
-        messages.push({ role: 'tool', content: [{ type: 'function_call', text, tags: ['function_call'] }] });
+        messages.push(withTurnId({ role: 'tool', content: [{ type: 'function_call', text, tags: ['function_call'] }] }, resolveCodexTurnId(obj, src)));
+        relocateTurnDiffForTurn(resolveCodexTurnId(obj, src));
       } else if (
         obj.type === 'function_call_output'
         || obj.type === 'custom_tool_call_output'
@@ -2215,7 +2726,11 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
           rememberImagePathsFromText(text);
           contentArr.unshift({ type: 'function_output', text, tags: ['function_output'] });
         }
-        if (contentArr.length > 0) messages.push({ role: 'tool', content: contentArr });
+        if (contentArr.length > 0) {
+          const turnId = resolveCodexTurnId(obj, src);
+          messages.push(withTurnId({ role: 'tool', content: contentArr }, turnId));
+          relocateTurnDiffForTurn(turnId);
+        }
       } else if (obj.type === 'reasoning' || (obj.type === 'response_item' && obj.payload && obj.payload.type === 'reasoning')) {
         // 仅展示公开的 summary，忽略/标注加密内容
         const src: any = (obj.type === 'response_item' && obj.payload) ? obj.payload : obj;
@@ -2232,7 +2747,11 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
             items.push({ type: 'summary', text: '[encrypted_reasoning omitted]', tags: ['reasoning.summary'] });
           }
         } catch {}
-        if (items.length > 0) messages.push({ role: 'reasoning', content: items });
+        if (items.length > 0) {
+          const turnId = resolveCodexTurnId(obj, src);
+          messages.push(withTurnId({ role: 'reasoning', content: items }, turnId));
+          relocateTurnDiffForTurn(turnId);
+        }
       } else if (obj.record_type === 'state' || obj.type === 'state' || (obj.type === 'response_item' && obj.payload && (obj.payload.type === 'state' || obj.payload.record_type === 'state'))) {
         const role = 'state';
         const src: any = (obj.type === 'response_item' && obj.payload) ? obj.payload : obj;

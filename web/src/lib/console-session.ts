@@ -19,6 +19,7 @@ export type PersistedConsoleTab = {
   providerId: string;
   kind?: "terminal" | "git";
   windowId?: string;
+  historySessionId?: string;
   createdAt: number;
 };
 
@@ -143,9 +144,10 @@ function normalizeTabsByProject(input: unknown): Record<string, PersistedConsole
       const kindRaw = toNonEmptyString(obj.kind).toLowerCase();
       const kind = kindRaw === "git" ? "git" : "terminal";
       const windowId = toNonEmptyString(obj.windowId) || undefined;
+      const historySessionId = toNonEmptyString(obj.historySessionId) || undefined;
       const createdAtNum = Number(obj.createdAt);
       const createdAt = Number.isFinite(createdAtNum) ? createdAtNum : Date.now();
-      tabs.push({ id, name, providerId, kind, windowId, createdAt });
+      tabs.push({ id, name, providerId, kind, windowId, historySessionId, createdAt });
     }
     out[projectId] = tabs;
   }

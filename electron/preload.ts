@@ -631,6 +631,9 @@ contextBridge.exposeInMainWorld('host', {
     read: async (args: { filePath: string; providerId?: "codex" | "claude" | "gemini" | "antigravity" | "grok"; forceParse?: boolean }) => {
       return await ipcRenderer.invoke('history.read', args);
     },
+    revertTurnDiff: async (args: { projectWinPath: string; diffText: string; operation?: 'undo' | 'reapply' }) => {
+      return await ipcRenderer.invoke('history.revertTurnDiff', args);
+    },
     findEmptySessions: async () => {
       return await ipcRenderer.invoke('history.findEmptySessions');
     },
@@ -835,6 +838,12 @@ contextBridge.exposeInMainWorld('host', {
     },
     readText: async () => {
       return await ipcRenderer.invoke('utils.readText');
+    },
+    /**
+     * 将指定本地普通文件的 UTF-8 文本内容复制到系统剪贴板。
+     */
+    copyFileContents: async (p: string) => {
+      return await ipcRenderer.invoke('utils.copyFileContents', { path: p });
     },
     saveText: async (content: string, defaultPath?: string) => {
       return await ipcRenderer.invoke('utils.saveText', { content, defaultPath });

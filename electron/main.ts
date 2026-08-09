@@ -14,6 +14,7 @@ import opentype from 'opentype.js';
 import iconv from 'iconv-lite';
 import projects, { IMPLEMENTATION_NAME as PROJECTS_IMPL } from "./projects/index";
 import history, { purgeHistoryCacheIfOutdated } from "./history";
+import { revertHistoryTurnDiff } from "./history/revertTurnDiff";
 import { ensureHistoryIndexLoaded, startHistoryIndexer, getIndexedSummaries, getIndexedCodexSessionRecords, getIndexedDetails, getLastIndexerRoots, getLastIndexerRootsByProvider, stopHistoryIndexer, cacheDetails, getCachedDetails, removeFromIndexMany, isCodexRelationIndexReady } from "./indexer";
 import { getSessionsRootsFastAsync } from "./wsl";
 import { getClaudeRootCandidatesFastAsync, discoverClaudeSessionFiles } from "./agentSessions/claude/discovery";
@@ -4995,6 +4996,14 @@ ipcMain.handle('history.read', async (_e, args: { filePath: string; providerId?:
   return withMeta;
 });
 
+ipcMain.handle('history.revertTurnDiff', async (_e, args: { projectWinPath?: string; diffText?: string; operation?: 'undo' | 'reapply' }) => {
+  return await revertHistoryTurnDiff({
+    projectWinPath: String(args?.projectWinPath || ''),
+    diffText: String(args?.diffText || ''),
+    operation: args?.operation === 'reapply' ? 'reapply' : 'undo',
+  });
+});
+
 // 扫描所有索引的会话，找出“有效输入/输出均为空”的文件（安全优先：解析失败不纳入可清理候选）
 ipcMain.handle('history.findEmptySessions', async () => {
   try {
@@ -5416,13 +5425,22 @@ ipcMain.handle('history.deleteCodexRelation', async (_e, args: { filePath?: stri
     await ensureHistoryIndexLoaded();
     const records = getIndexedCodexSessionRecords();
     const plan = buildCodexRelationDeletePlan(filePath, records, buildCodexRelationTitleMap());
+    // 仅删除当前会话时，用户确认的是明确文件；刚结束对话造成的签名变化不应阻止删除。
+    // 整棵关系树仍必须通过下方的版本、引用与文件签名复核。
+    if (mode === "current") {
+      const currentItem = plan.supported
+        ? selectCodexRelationDeleteItems(plan, "current")[0]
+        : undefined;
+      const result = await trashHistoryFilesMany([currentItem?.filePath || filePath]);
+      return { ...result, plan };
+    }
     if (!plan.supported || !plan.version) return { ok: false, code: "unsupported_plan", plan };
     if (plan.version !== version) return { ok: false, code: "stale_plan", plan };
-    if (mode === "tree" && !isCodexRelationIndexReady())
+    if (!isCodexRelationIndexReady())
       return { ok: false, code: "stale_plan", plan };
-    if (mode === "tree" && plan.externalReferenceIds.length > 0)
+    if (plan.externalReferenceIds.length > 0)
       return { ok: false, code: "external_references", plan };
-    const selected = selectCodexRelationDeleteItems(plan, mode);
+    const selected = selectCodexRelationDeleteItems(plan, "tree");
     if (selected.length === 0) return { ok: false, code: "empty_selection", plan };
     const fileCheck = await verifyCodexRelationPlanFiles(plan, selected);
     if (!fileCheck.ok) return { ok: false, code: "stale_plan", plan };
@@ -5753,6 +5771,29 @@ ipcMain.handle('utils.geminiWslEditor.readStatus', async (_e, args: {
       tabId: String(args?.tabId || ""),
       distro: String(args?.distro || ""),
     });
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+/**
+ * 读取本地普通文件的 UTF-8 文本内容并直接写入系统剪贴板。
+ */
+ipcMain.handle('utils.copyFileContents', async (_e, { path: p }: { path: string }) => {
+  try {
+    if (!p || typeof p !== 'string') throw new Error('invalid path');
+    const candidates = buildPathOpenCandidates(String(p));
+    for (const cand of candidates) {
+      try {
+        if (!path.isAbsolute(cand)) continue;
+        const stat = await fsp.stat(cand);
+        if (!stat.isFile()) continue;
+        const text = await fsp.readFile(cand, 'utf8');
+        clipboard.writeText(text);
+        return { ok: true };
+      } catch {}
+    }
+    throw new Error('no valid file');
   } catch (e: any) {
     return { ok: false, error: String(e) };
   }
