@@ -351,6 +351,8 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
     pendingWriteScheduled = null;
     if (!term) return;
     if (pendingWriteChars <= 0 || pendingWriteChunks.length === 0) return;
+    // 等待上一批由 xterm 完成解析和绘制，避免外层分帧后又在 xterm 内部形成无界积压。
+    if (termWriteInFlight > 0) return;
     const pendingBeforeFlush = pendingWriteChars;
     const chunksBeforeFlush = pendingWriteChunks.length;
     touchViewportResizeTransaction("write.before", true);
@@ -408,16 +410,18 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
         }
         try { scheduleViewportReconcile("write.done"); } catch {}
         if (deferredResizeStartedAt !== null) scheduleDeferredResizeReady("write.done");
+        if (pendingWriteChars > 0 && pendingWriteChunks.length > 0 && pendingWriteScheduled === null) {
+          try { pendingWriteScheduled = window.requestAnimationFrame(flushPendingWrites); } catch {}
+        }
       });
     } catch {
       termWriteInFlight = Math.max(0, termWriteInFlight - 1);
       try { term.write(payload); } catch {}
+      if (pendingWriteChars > 0 && pendingWriteChunks.length > 0 && pendingWriteScheduled === null) {
+        try { pendingWriteScheduled = window.requestAnimationFrame(flushPendingWrites); } catch {}
+      }
     }
     scheduleViewportReconcile("write.after");
-    // 若仍有残留，继续分帧
-    if (pendingWriteChars > 0 && pendingWriteChunks.length > 0) {
-      try { pendingWriteScheduled = window.requestAnimationFrame(flushPendingWrites); } catch {}
-    }
   };
 
   /**
@@ -456,6 +460,7 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
       }
     }
     if (pendingWriteScheduled !== null) return;
+    if (termWriteInFlight > 0) return;
     try { pendingWriteScheduled = window.requestAnimationFrame(flushPendingWrites); } catch {}
   };
 
@@ -2597,8 +2602,8 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
         cursorBlink: true,
         // 光标样式：使用竖线（更接近编辑器/Windows Terminal 的“插入位”感受）
         cursorStyle: "bar",
-        // 透明背景在某些机器上会影响清屏性能，若遇到问题可改为 false
-        allowTransparency: true,
+        // 内置主题均提供不透明背景；关闭透明画布可降低清屏和软件绘图回退时的合成压力。
+        allowTransparency: false,
         // Windows/ConPTY 自行处理 CR/LF，前端不应把 "\n" 强行当作 CRLF
         // 否则会与后端的换行判定叠加，放大错位风险
         convertEol: false,

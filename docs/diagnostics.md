@@ -10,6 +10,8 @@
 ## 日志位置
 
 - 文件：`%APPDATA%/codexflow/perf.log`
+- 写入方式：主进程按小批次异步追加，避免高频诊断日志阻塞 Electron 事件循环。
+- 文件上限：单个日志约 16 MB，超过后轮换为 `perf.log.1`；待写队列异常积压时会保留最新记录并写入 `reason=pending-overflow` 摘要。
 - 内容（示例）：
   - `[WIN] loadURL ...` / `[WIN] loadFile ...`
   - `[WC] did-fail-load ...` / `[WC] did-finish-load`

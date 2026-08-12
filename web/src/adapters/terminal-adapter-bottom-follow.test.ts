@@ -131,8 +131,10 @@ vi.mock("@xterm/xterm", () => {
   };
 
   return {
-    Terminal: vi.fn(function TerminalMock() {
-      return createFakeTerminal();
+    Terminal: vi.fn(function TerminalMock(options?: Record<string, unknown>) {
+      const terminal = createFakeTerminal();
+      terminal.__constructorOptions = options || {};
+      return terminal;
     }),
   };
 });
@@ -222,6 +224,37 @@ describe("TerminalAdapter（持续底部跟随）", () => {
       toJSON: () => ({}),
     });
   };
+
+  it("使用不透明画布，降低软件绘图回退时的合成压力", () => {
+    const { adapter, terminal } = createMountedAdapter();
+    expect(terminal.__constructorOptions.allowTransparency).toBe(false);
+    adapter.dispose();
+  });
+
+  it("大段输出会等待上一批写入完成后再继续", async () => {
+    const { adapter, terminal } = createMountedAdapter();
+    const callbacks: Array<() => void> = [];
+    terminal.write.mockImplementation((_data: string, callback?: () => void) => {
+      if (callback) callbacks.push(callback);
+    });
+
+    adapter.write("x".repeat(240_001));
+    await vi.advanceTimersByTimeAsync(20);
+    expect(terminal.write).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(terminal.write).toHaveBeenCalledTimes(1);
+
+    callbacks.shift()?.();
+    await vi.advanceTimersByTimeAsync(20);
+    expect(terminal.write).toHaveBeenCalledTimes(2);
+
+    callbacks.shift()?.();
+    await vi.advanceTimersByTimeAsync(20);
+    expect(terminal.write).toHaveBeenCalledTimes(3);
+    callbacks.shift()?.();
+    adapter.dispose();
+  });
 
   it("挂载前的跟随请求会待命，并在终端可见后自动滚到底部", async () => {
     const adapter = createTerminalAdapter();
