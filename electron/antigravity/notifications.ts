@@ -5,10 +5,10 @@ import { promises as fsp } from "node:fs";
 import path from "node:path";
 import { BrowserWindow } from "electron";
 import { perfLogger } from "../log";
-import type { SessionsRootCandidate } from "../wsl";
+import { isNetworkPath, type SessionsRootCandidate } from "../wsl";
 import { getAntigravityRootCandidatesFastAsync } from "../agentSessions/antigravity/discovery";
 import { parseAntigravitySessionFile } from "../agentSessions/antigravity/parser";
-import { requestHistoryFastRefresh } from "../indexer";
+import { requestHistoryFastRefresh } from "../historyReconciler";
 
 const ANTIGRAVITY_HOOK_FILENAME = "codexflow_stop_notify.js";
 const ANTIGRAVITY_NAMED_HOOK_ID = "codexflow-notify";
@@ -17,6 +17,8 @@ const ANTIGRAVITY_HOOK_TIMEOUT_SECONDS = 8;
 const ANTIGRAVITY_NOTIFY_POLL_INTERVAL_MS = 1200;
 const ANTIGRAVITY_NOTIFY_READ_LIMIT_BYTES = 128 * 1024;
 const ANTIGRAVITY_NOTIFY_PREVIEW_LIMIT_CHARS = 240;
+const ANTIGRAVITY_NOTIFY_PREVIEW_TIMEOUT_MS = 1_500;
+const ANTIGRAVITY_NOTIFY_PREVIEW_MAX_DB_BYTES = 4 * 1024 * 1024;
 
 const ANTIGRAVITY_HOOK_SCRIPT = String.raw`#!/usr/bin/env node
 // SPDX-License-Identifier: Apache-2.0
@@ -233,6 +235,7 @@ let antigravityNotifyPolling = false;
 let antigravityNotifyWindowGetter: (() => BrowserWindow | null) | null = null;
 let antigravityNotifyBridgeGeneration = 0;
 let inflight: Promise<void> | null = null;
+const antigravityPreviewInflight = new Map<string, Promise<AntigravityNotifyEntry>>();
 
 /**
  * 记录 Antigravity 通知配置和桥接日志。
@@ -697,11 +700,12 @@ function extractLastAssistantPreview(details: Awaited<ReturnType<typeof parseAnt
 async function hydrateAntigravityNotifyPreview(entry: AntigravityNotifyEntry, sourcePath?: string): Promise<AntigravityNotifyEntry> {
   const currentPreview = String(entry.preview || "").trim();
   if (currentPreview && !isAntigravityStatusPreview(currentPreview)) return entry;
-  const dbPath = await resolveAntigravityConversationDbPathAsync(entry, sourcePath);
-  if (!dbPath) return entry;
+  const dbPath = resolveAntigravityConversationDbPath(entry, sourcePath);
+  if (!dbPath || isNetworkPath(dbPath)) return currentPreview && isAntigravityStatusPreview(currentPreview) ? { ...entry, preview: "" } : entry;
   try {
     const stat = await fsp.stat(dbPath);
-    if (!stat || !stat.isFile()) return entry;
+    if (!stat || !stat.isFile() || Number(stat.size || 0) > ANTIGRAVITY_NOTIFY_PREVIEW_MAX_DB_BYTES)
+      return currentPreview && isAntigravityStatusPreview(currentPreview) ? { ...entry, preview: "" } : entry;
     const details = await parseAntigravitySessionFile(dbPath, stat, { summaryOnly: false });
     const preview = extractLastAssistantPreview(details);
     if (!preview) return currentPreview && isAntigravityStatusPreview(currentPreview) ? { ...entry, preview: "" } : entry;
@@ -710,6 +714,47 @@ async function hydrateAntigravityNotifyPreview(entry: AntigravityNotifyEntry, so
   } catch (error) {
     logAntigravityNotification(`hydrate preview failed session=${entry.sessionId || "n/a"} error=${String(error)}`);
     return currentPreview && isAntigravityStatusPreview(currentPreview) ? { ...entry, preview: "" } : entry;
+  }
+}
+
+/**
+ * 生成预览数据库的稳定键，供通知单飞任务去重。
+ */
+function antigravityPreviewKey(filePath: string): string {
+  try { return path.normalize(filePath).replace(/\\/g, "/").toLowerCase(); } catch { return String(filePath || "").toLowerCase(); }
+}
+
+/**
+ * 限时补齐通知预览，避免会话 DB I/O 阻塞后续通知轮询。
+ */
+async function hydrateAntigravityNotifyPreviewWithTimeout(
+  entry: AntigravityNotifyEntry,
+  sourcePath?: string,
+): Promise<AntigravityNotifyEntry> {
+  const fallback = isAntigravityStatusPreview(entry.preview) ? { ...entry, preview: "" } : entry;
+  const dbPath = resolveAntigravityConversationDbPath(entry, sourcePath);
+  if (!dbPath || isNetworkPath(dbPath)) return fallback;
+  const key = antigravityPreviewKey(dbPath);
+  let task = antigravityPreviewInflight.get(key);
+  if (!task) {
+    let tracked: Promise<AntigravityNotifyEntry>;
+    tracked = hydrateAntigravityNotifyPreview(entry, sourcePath).finally(() => {
+      if (antigravityPreviewInflight.get(key) === tracked) antigravityPreviewInflight.delete(key);
+    });
+    antigravityPreviewInflight.set(key, tracked);
+    task = tracked;
+  }
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    return await Promise.race([
+      task,
+      new Promise<AntigravityNotifyEntry>((resolve) => {
+        timer = setTimeout(() => resolve(fallback), ANTIGRAVITY_NOTIFY_PREVIEW_TIMEOUT_MS);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -764,19 +809,22 @@ async function readAntigravityNotifyEntries(source: AntigravityNotifySource): Pr
  */
 async function emitAntigravityNotify(entry: AntigravityNotifyEntry, sourcePath?: string, generation = antigravityNotifyBridgeGeneration): Promise<void> {
   if (generation !== antigravityNotifyBridgeGeneration) return;
-  entry = await hydrateAntigravityNotifyPreview(entry, sourcePath);
-  if (generation !== antigravityNotifyBridgeGeneration) return;
-  const win = antigravityNotifyWindowGetter ? antigravityNotifyWindowGetter() : null;
+  const providerId = String(entry.providerId || "antigravity").toLowerCase();
+  if (providerId && providerId !== "antigravity") return;
+  const refreshPath = resolveAntigravityConversationDbPath(entry, sourcePath)
+    || String(entry.transcriptPath || "").trim();
   try {
     requestHistoryFastRefresh({
       providerId: "antigravity",
-      filePath: entry.transcriptPath,
+      filePath: refreshPath,
       sourcePath,
+      sessionId: entry.sessionId,
     });
   } catch {}
+  entry = await hydrateAntigravityNotifyPreviewWithTimeout(entry, sourcePath);
+  if (generation !== antigravityNotifyBridgeGeneration) return;
+  const win = antigravityNotifyWindowGetter ? antigravityNotifyWindowGetter() : null;
   if (!win) return;
-  const providerId = String(entry.providerId || "antigravity").toLowerCase();
-  if (providerId && providerId !== "antigravity") return;
   const payload: {
     providerId: "antigravity";
     tabId: string;
@@ -871,8 +919,10 @@ export function stopAntigravityNotificationBridge(): void {
 
 export const __testing = {
   clipPreview,
+  emitAntigravityNotify,
   extractLastAssistantPreview,
   hydrateAntigravityNotifyPreview,
+  hydrateAntigravityNotifyPreviewWithTimeout,
   isAntigravityStatusPreview,
   resolveAntigravityConversationDbPath,
   sanitizeAntigravitySessionId,

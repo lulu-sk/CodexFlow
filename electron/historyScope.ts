@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
-import { findBestMatchingDirKeyScope, pathMatchesDirKeyScope } from "./agentSessions/shared/path";
+import {
+  findBestMatchingDirKeyScope,
+  normalizeDirKeyScopeValue,
+  pathMatchesNormalizedDirKeyScope,
+} from "./agentSessions/shared/path";
 
 export type HistoryScopeMode = "current_project" | "project_group" | "all_sessions";
 export type HistoryScopeProviderId = "codex" | "claude" | "gemini" | "antigravity" | "grok";
@@ -21,6 +25,13 @@ export type HistoryScopeFilterOptions = {
   extractGeminiProjectHashFromPath?: (filePath: string) => string | null | undefined;
 };
 
+export type HistoryScopeMatcher = (item: HistoryScopeFilterItem) => boolean;
+
+type CompiledHistoryProjectScope = {
+  key: string;
+  current: boolean;
+};
+
 /**
  * 中文说明：解析候选历史路径命中的“最具体项目 scope”。
  */
@@ -28,6 +39,46 @@ export function resolveBestHistoryProjectScope(dirKey: string | undefined, scope
   const normalized = String(dirKey || "").trim();
   if (!normalized) return "";
   return findBestMatchingDirKeyScope(normalized, scopeKeys);
+}
+
+/**
+ * 中文说明：编译历史范围匹配器，复用规范化后的项目路径并按最具体路径优先匹配。
+ */
+export function createHistoryScopeMatcher(options: HistoryScopeFilterOptions): HistoryScopeMatcher {
+  if (options.scope === "all_sessions") return () => true;
+
+  const currentScopes = new Set(
+    options.currentProjectNeedles.map((item) => normalizeDirKeyScopeValue(item)).filter(Boolean),
+  );
+  const allScopes = new Set(
+    [...options.allProjectNeedles, ...options.currentProjectNeedles]
+      .map((item) => normalizeDirKeyScopeValue(item))
+      .filter(Boolean),
+  );
+  const projectScopes: CompiledHistoryProjectScope[] = Array.from(allScopes)
+    .map((key) => ({ key, current: currentScopes.has(key) }))
+    .sort((left, right) => right.key.length - left.key.length);
+
+  return (item: HistoryScopeFilterItem): boolean => {
+    const dirKey = normalizeDirKeyScopeValue(String(item.dirKey || ""));
+    if (dirKey) {
+      const owner = projectScopes.find((scope) => pathMatchesNormalizedDirKeyScope(dirKey, scope.key));
+      if (owner) return owner.current;
+    }
+
+    const providerId = String(item.providerId || "").trim().toLowerCase();
+    if (providerId !== "gemini") return false;
+
+    const geminiHashNeedles = options.geminiHashNeedles;
+    if (!geminiHashNeedles || geminiHashNeedles.size <= 0) return false;
+
+    const explicitHash = String(item.projectHash || "").trim().toLowerCase();
+    const derivedHash = options.extractGeminiProjectHashFromPath
+      ? String(options.extractGeminiProjectHashFromPath(String(item.filePath || "")) || "").trim().toLowerCase()
+      : "";
+    const targetHash = explicitHash || derivedHash;
+    return !!targetHash && geminiHashNeedles.has(targetHash);
+  };
 }
 
 /**
@@ -39,29 +90,5 @@ export function historyItemBelongsToScope(
   item: HistoryScopeFilterItem,
   options: HistoryScopeFilterOptions,
 ): boolean {
-  if (options.scope === "all_sessions") return true;
-
-  const dirKey = String(item.dirKey || "").trim();
-  if (dirKey) {
-    const bestOverall = resolveBestHistoryProjectScope(dirKey, options.allProjectNeedles);
-    if (bestOverall) {
-      const bestCurrent = resolveBestHistoryProjectScope(dirKey, options.currentProjectNeedles);
-      return !!bestCurrent && bestCurrent === bestOverall;
-    }
-    if (options.currentProjectNeedles.some((scopeKey) => pathMatchesDirKeyScope(dirKey, scopeKey))) return true;
-  }
-
-  const providerId = String(item.providerId || "").trim().toLowerCase();
-  if (providerId !== "gemini") return false;
-
-  const geminiHashNeedles = options.geminiHashNeedles;
-  if (!geminiHashNeedles || geminiHashNeedles.size <= 0) return false;
-
-  const explicitHash = String(item.projectHash || "").trim().toLowerCase();
-  const derivedHash = options.extractGeminiProjectHashFromPath
-    ? String(options.extractGeminiProjectHashFromPath(String(item.filePath || "")) || "").trim().toLowerCase()
-    : "";
-  const targetHash = explicitHash || derivedHash;
-  if (!targetHash) return false;
-  return geminiHashNeedles.has(targetHash);
+  return createHistoryScopeMatcher(options)(item);
 }

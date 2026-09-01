@@ -2,7 +2,14 @@
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
 import { describe, expect, it } from "vitest";
-import { dirKeyFromCwd, findBestMatchingDirKeyScope, pathMatchesDirKeyScope, tidyPathCandidate } from "./path";
+import {
+  dirKeyFromCwd,
+  findBestMatchingDirKeyScope,
+  normalizeDirKeyScopeValue,
+  pathMatchesDirKeyScope,
+  pathMatchesNormalizedDirKeyScope,
+  tidyPathCandidate,
+} from "./path";
 
 const TEST_PARENT_SCOPE = "/mnt/c/users/example-user";
 const TEST_CODEX_SCOPE = `${TEST_PARENT_SCOPE}/.codex/worktrees/135b/codexflow`;
@@ -40,6 +47,13 @@ describe("pathMatchesDirKeyScope", () => {
 
   it("普通项目目录仍允许匹配子目录", () => {
     expect(pathMatchesDirKeyScope("/mnt/g/projects/demo/src", "/mnt/g/projects/demo")).toBe(true);
+  });
+
+  it("批量匹配可复用已规范化的路径", () => {
+    const candidate = normalizeDirKeyScopeValue("G:\\Projects\\Demo\\src");
+    const scope = normalizeDirKeyScopeValue("/mnt/g/projects/demo");
+
+    expect(pathMatchesNormalizedDirKeyScope(candidate, scope)).toBe(true);
   });
 });
 

@@ -4,6 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+const historyReconcilerMocks = vi.hoisted(() => ({
+  requestHistoryFastRefresh: vi.fn(),
+}));
+
 vi.mock("../agentSessions/grok/discovery", () => ({
   getGrokRootCandidatesFastAsync: vi.fn(),
 }));
@@ -11,6 +15,8 @@ vi.mock("../agentSessions/grok/discovery", () => ({
 vi.mock("../wsl", () => ({
   uncToWsl: vi.fn(() => null),
 }));
+
+vi.mock("../historyReconciler", () => historyReconcilerMocks);
 
 const tempDirs: string[] = [];
 
@@ -40,6 +46,7 @@ async function loadGrokNotificationsModule(grokHome: string): Promise<typeof imp
 }
 
 afterEach(() => {
+  historyReconcilerMocks.requestHistoryFastRefresh.mockReset();
   try { vi.restoreAllMocks(); } catch {}
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop();
@@ -67,7 +74,7 @@ describe("electron/grok/notifications", () => {
     expect([...scriptBuffer.subarray(0, 3)]).not.toEqual([0xef, 0xbb, 0xbf]);
     const script = scriptBuffer.toString("utf8");
     expect(script).toContain("GROK_CODEXFLOW_TAB_ID");
-    expect(script).toContain("IsNullOrWhiteSpace($tabId)");
+    expect(script).not.toContain("IsNullOrWhiteSpace($tabId)");
     expect(script).toContain("GROK_CODEXFLOW_ENV_LABEL");
     expect(script).toContain("GROK_CODEXFLOW_PROVIDER_ID");
     expect(script).toContain("[Console]::OpenStandardInput()");
@@ -81,13 +88,14 @@ describe("electron/grok/notifications", () => {
     expect(mod.__testing.shouldUsePosixHook({ path: "\\\\wsl.localhost\\TestDistro\\home\\user\\.grok\\sessions", exists: true, source: "wsl", kind: "unc" }, "win32")).toBe(true);
   });
 
-  it("缺少 CodexFlow 标签页标记的 Grok 通知不会进入转发链路", async () => {
+  it("缺少 CodexFlow 标签页标记时仍刷新历史，但不进入 UI 转发链路", async () => {
     const grokHome = fs.mkdtempSync(path.join(os.tmpdir(), "codexflow-grok-notify-"));
     tempDirs.push(grokHome);
     const mod = await loadGrokNotificationsModule(grokHome);
     const rawEvent = JSON.stringify({
       hookEventName: "stop",
       sessionId: "external-session",
+      transcriptPath: path.join(grokHome, "sessions", "external-session", "summary.json"),
       reason: "end_turn",
     });
     const line = [
@@ -102,6 +110,11 @@ describe("electron/grok/notifications", () => {
 
     expect(record?.tabId).toBe("");
     expect(mod.__testing.hasGrokCodexFlowTabId(record)).toBe(false);
+    mod.__testing.emitNotifyRecord(record, path.join(grokHome, "codexflow", "after-agent-notify.jsonl"), 0);
+    expect(historyReconcilerMocks.requestHistoryFastRefresh).toHaveBeenCalledWith(expect.objectContaining({
+      providerId: "grok",
+      sessionId: "external-session",
+    }));
   });
 
   it("可解析有效的 Base64 通知事件", async () => {

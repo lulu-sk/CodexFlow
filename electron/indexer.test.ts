@@ -49,7 +49,7 @@ vi.mock("./agentSessions/grok/discovery", async (importOriginal) => {
   };
 });
 
-import { ensureHistoryIndexLoaded, getIndexedCodexSessionRecords, getIndexedSummaries, isCodexRelationIndexReady, requestHistoryFastRefresh, startHistoryIndexer, stopHistoryIndexer } from "./indexer";
+import { commitIndexedHistoryFilesRemovedAfterSweep, ensureHistoryIndexLoaded, getIndexedCodexSessionRecords, getIndexedSummaries, getLastIndexerRoots, isCodexRelationIndexReady, listIndexedHistoryFilesForRemovalAfterSweep, requestHistoryFastRefresh, startHistoryIndexer, stopHistoryIndexer } from "./indexer";
 
 const originalCwd = process.cwd();
 const tempDirs: string[] = [];
@@ -98,6 +98,17 @@ async function createCodexSessionFile(lines: unknown[]): Promise<string> {
   return filePath;
 }
 
+/**
+ * 启动轻量索引器并通过协调器精确刷新一个 Codex 会话文件。
+ */
+async function startAndRefreshCodexFile(filePath: string): Promise<void> {
+  await startHistoryIndexer(() => null);
+  requestHistoryFastRefresh({ providerId: "codex", filePath });
+  await vi.waitFor(() => {
+    expect(getIndexedSummaries().some((item) => item.filePath === filePath)).toBe(true);
+  }, { timeout: 2_000 });
+}
+
 describe("electron/indexer Codex preview", () => {
   it("仅在首轮索引完成后允许使用关系快照", async () => {
     expect(isCodexRelationIndexReady()).toBe(false);
@@ -120,6 +131,36 @@ describe("electron/indexer Codex preview", () => {
     requestHistoryFastRefresh({ providerId: "codex", filePath });
     expect(isCodexRelationIndexReady()).toBe(false);
     await vi.waitFor(() => expect(isCodexRelationIndexReady()).toBe(true), { timeout: 2_000 });
+  });
+
+  it("稳定扫描删除端口只返回候选并提交协调器确认的缺失项", async () => {
+    const parentDir = path.join(os.tmpdir(), "codexflow-indexed-history");
+    const filePath = path.join(parentDir, "session.jsonl");
+    const key = filePath.replace(/\\/g, "/").toLowerCase();
+    (global as any).__indexer.index = {
+      version: "v18",
+      files: {
+        [key]: {
+          sig: { mtimeMs: 1, size: 1 },
+          summary: { providerId: "codex", id: "session", filePath },
+        },
+      },
+      savedAt: 0,
+    };
+    (global as any).__indexer.details = {
+      version: "v18",
+      files: {
+        [key]: { sig: { mtimeMs: 1, size: 1 }, details: { providerId: "codex", id: "session", filePath, messages: [] } },
+      },
+      savedAt: 0,
+    };
+    const candidates = listIndexedHistoryFilesForRemovalAfterSweep("codex", parentDir, new Set());
+    expect(candidates).toEqual([filePath]);
+    expect(commitIndexedHistoryFilesRemovedAfterSweep("codex", [], () => true)).toBe(0);
+    expect((global as any).__indexer.index.files[key]).toBeTruthy();
+
+    expect(commitIndexedHistoryFilesRemovedAfterSweep("codex", candidates, () => true)).toBe(1);
+    expect((global as any).__indexer.index.files[key]).toBeUndefined();
   });
 
   it("首次列表请求可直接加载持久化摘要索引", async () => {
@@ -145,7 +186,43 @@ describe("electron/indexer Codex preview", () => {
 
     await ensureHistoryIndexLoaded();
 
-    expect(getIndexedSummaries().map((item) => item.id)).toEqual(["cached-session"]);
+    const first = getIndexedSummaries();
+    const second = getIndexedSummaries();
+    expect(first.map((item) => item.id)).toEqual(["cached-session"]);
+    expect(second).toBe(first);
+  });
+
+  it("索引内容更新后会使摘要缓存失效", async () => {
+    const filePath = await createCodexSessionFile([
+      {
+        timestamp: "2026-04-29T03:35:01.000Z",
+        type: "session_meta",
+        payload: { id: "summary-cache-session", cwd: "/workspace/project" },
+      },
+      {
+        timestamp: "2026-04-29T03:35:02.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "初始摘要" }],
+        },
+      },
+    ]);
+    await startAndRefreshCodexFile(filePath);
+    const first = getIndexedSummaries();
+
+    await fsp.appendFile(filePath, `${JSON.stringify({
+      timestamp: "2026-04-29T03:35:03.000Z",
+      type: "event_msg",
+      payload: { type: "thread_name_updated", thread_name: "更新后的摘要" },
+    })}\n`, "utf8");
+    requestHistoryFastRefresh({ providerId: "codex", filePath });
+
+    await vi.waitFor(() => {
+      expect(getIndexedSummaries().find((item) => item.filePath === filePath)?.title).toBe("更新后的摘要");
+    }, { timeout: 2_000 });
+    expect(getIndexedSummaries()).not.toBe(first);
   });
 
   it("停止索引器前会完成异步缓存刷盘且不持久化消息正文", async () => {
@@ -169,7 +246,7 @@ describe("electron/indexer Codex preview", () => {
       },
     ]);
 
-    await startHistoryIndexer(() => null);
+    await startAndRefreshCodexFile(filePath);
     await stopHistoryIndexer();
 
     const index = JSON.parse(await fsp.readFile(path.join(userDataDir, "history.index.v18.json"), "utf8"));
@@ -180,6 +257,32 @@ describe("electron/indexer Codex preview", () => {
     expect(Number.isFinite(index.savedAt)).toBe(true);
     expect(Number.isFinite(details.savedAt)).toBe(true);
     expect(detailEntry?.details?.messages).toEqual([]);
+  });
+
+  it("连续索引更新会延迟合并写盘，并在停止时强制刷完", async () => {
+    const filePath = await createCodexSessionFile([{
+      timestamp: "2026-04-29T03:35:01.000Z",
+      type: "session_meta",
+      payload: { id: "session-index-debounce", cwd: "/workspace/project" },
+    }]);
+    const writeFileSpy = vi.spyOn(fsp, "writeFile");
+
+    await startAndRefreshCodexFile(filePath);
+    writeFileSpy.mockClear();
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    const cacheWritesBeforeStop = writeFileSpy.mock.calls.filter(([filePath]) => {
+      const name = String(filePath || "");
+      return name.endsWith("history.index.v18.json") || name.endsWith("history.details.v18.json");
+    });
+    expect(cacheWritesBeforeStop).toHaveLength(0);
+
+    await stopHistoryIndexer();
+    const cacheWritesAfterStop = writeFileSpy.mock.calls.filter(([filePath]) => {
+      const name = String(filePath || "");
+      return name.endsWith("history.index.v18.json") || name.endsWith("history.details.v18.json");
+    });
+    expect(cacheWritesAfterStop).toHaveLength(2);
   });
 
   it("索引摘要优先使用 thread_name_updated 并跳过 Files mentioned 模板标题", async () => {
@@ -224,7 +327,7 @@ describe("electron/indexer Codex preview", () => {
       },
     ]);
 
-    await startHistoryIndexer(() => null);
+    await startAndRefreshCodexFile(filePath);
     const summaries = getIndexedSummaries().filter((item) => item.filePath === filePath);
 
     expect(summaries).toHaveLength(1);
@@ -265,7 +368,7 @@ describe("electron/indexer Codex preview", () => {
       },
     ]);
 
-    await startHistoryIndexer(() => null);
+    await startAndRefreshCodexFile(filePath);
     const summaries = getIndexedSummaries().filter((item) => item.filePath === filePath);
 
     expect(summaries).toHaveLength(1);
@@ -306,7 +409,7 @@ describe("electron/indexer Codex preview", () => {
       },
     ]);
 
-    await startHistoryIndexer(() => null);
+    await startAndRefreshCodexFile(filePath);
     const summaries = getIndexedSummaries().filter((item) => item.filePath === filePath);
 
     expect(summaries).toHaveLength(1);
@@ -375,7 +478,7 @@ describe("electron/indexer Codex preview", () => {
       },
     ]);
 
-    await startHistoryIndexer(() => null);
+    await startAndRefreshCodexFile(filePath);
     const summaries = getIndexedSummaries().filter((item) => item.filePath === filePath);
 
     expect(summaries).toHaveLength(1);
@@ -405,7 +508,7 @@ describe("electron/indexer Codex preview", () => {
       },
     ]);
 
-    await startHistoryIndexer(() => null);
+    await startAndRefreshCodexFile(filePath);
     const record = getIndexedCodexSessionRecords().find((item) => item.id === "session-index-subagent");
 
     expect(record).toMatchObject({
@@ -421,5 +524,29 @@ describe("electron/indexer Codex preview", () => {
     });
     expect(record?.mtimeMs).toBeGreaterThan(0);
     expect(record?.size).toBeGreaterThan(0);
+  });
+
+  it("根目录发现迟迟不返回时初始化仍可用，stop 后迟到结果不能回写", async () => {
+    const wsl = await import("./wsl");
+    let resolveCandidates: ((value: Awaited<ReturnType<typeof wsl.getSessionsRootCandidatesFastAsync>>) => void) | null = null;
+    vi.mocked(wsl.getSessionsRootCandidatesFastAsync).mockImplementationOnce(async () => {
+      return await new Promise((resolve) => { resolveCandidates = resolve; });
+    });
+
+    await startHistoryIndexer(() => null);
+    expect(isCodexRelationIndexReady()).toBe(true);
+    await stopHistoryIndexer();
+    const completeDiscovery = resolveCandidates as ((value: Awaited<ReturnType<typeof wsl.getSessionsRootCandidatesFastAsync>>) => void) | null;
+    if (completeDiscovery) completeDiscovery([{
+      path: path.join(os.tmpdir(), "late-history-root"),
+      exists: true,
+      source: "windows",
+      kind: "local",
+    }]);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(isCodexRelationIndexReady()).toBe(false);
+    expect(getLastIndexerRoots()).toEqual([]);
   });
 });

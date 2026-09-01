@@ -7,7 +7,7 @@ import { BrowserWindow } from "electron";
 import { perfLogger } from "../log";
 import { uncToWsl, type SessionsRootCandidate } from "../wsl";
 import { getGeminiRootCandidatesFastAsync } from "../agentSessions/gemini/discovery";
-import { requestHistoryFastRefresh } from "../indexer";
+import { requestHistoryFastRefresh } from "../historyReconciler";
 
 const GEMINI_HOOK_FILENAME = "codexflow_after_agent_notify.js";
 const GEMINI_NOTIFY_FILENAME = "codexflow_after_agent_notify.jsonl";

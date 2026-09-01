@@ -6,7 +6,7 @@ import path from "node:path";
 import { BrowserWindow } from "electron";
 import { perfLogger } from "../log";
 import { getCodexRootsFastAsync } from "../wsl";
-import { requestHistoryFastRefresh } from "../indexer";
+import { requestHistoryFastRefresh } from "../historyReconciler";
 import { getCodexNotifyStateDecision, type CodexNotifyStateDecision, type CodexNotifyStateEntry } from "./notifyState";
 
 const CODEX_NOTIFY_FILENAME = "codexflow_after_agent_notify.jsonl";
@@ -380,17 +380,18 @@ async function readCodexNotifyEntries(source: CodexNotifySource): Promise<CodexN
 function emitCodexNotify(entry: CodexNotifyEntry, sourcePath?: string): void {
   const providerId = String(entry.providerId || "codex").toLowerCase();
   if (providerId && providerId !== "codex") return;
+  try {
+    requestHistoryFastRefresh({
+      providerId: "codex",
+      sourcePath,
+      threadId: entry.threadId,
+      cwd: entry.cwd,
+    });
+  } catch {}
   if (!hasCodexFlowNotifyTabId(entry)) {
     logCodexNotification(`notify event dropped reason=missing-codexflow-tab-id previewLen=${String(entry.preview || "").length}`);
     return;
   }
-  try {
-    // 快速刷新只入队并异步扫描近期文件，不会在当前调用栈执行文件 I/O。
-    requestHistoryFastRefresh({
-      providerId: "codex",
-      sourcePath,
-    });
-  } catch {}
   const win = codexNotifyWindowGetter ? codexNotifyWindowGetter() : null;
   if (!win) return;
   const { payload, dropReason } = buildCodexNotifyDispatch(entry, Date.now(), sourcePath);

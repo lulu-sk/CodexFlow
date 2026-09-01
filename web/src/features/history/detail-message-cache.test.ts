@@ -30,6 +30,14 @@ describe("history detail message cache", () => {
     );
   });
 
+  it("索引更新版本变化时会生成新的读取指纹", () => {
+    const first = { ...SESSION, filePath: "C:\\workspace\\session.jsonl" };
+
+    expect(buildHistoryDetailSessionFingerprint(first, 1)).not.toBe(
+      buildHistoryDetailSessionFingerprint(first, 2),
+    );
+  });
+
   it("曾读取到正文但切换项目后缓存被裁剪时重新读取", () => {
     expect(shouldReuseHistoryDetailLoad({
       lastLoadedFingerprint: "session-a-v1",

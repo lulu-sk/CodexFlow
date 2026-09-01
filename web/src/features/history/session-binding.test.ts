@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   bindHistorySessionIdToTabs,
   findBestHistorySessionForTab,
+  shouldWaitForHistorySessionBinding,
   type HistorySessionBindingCandidate,
 } from "./session-binding";
 
@@ -201,5 +202,17 @@ describe("bindHistorySessionIdToTabs", () => {
 
     expect(result.changed).toBe(false);
     expect(result.tabsByProject).toBe(source);
+  });
+});
+
+describe("shouldWaitForHistorySessionBinding", () => {
+  it("已有绑定 ID 或存在活动会话发现时继续等待", () => {
+    expect(shouldWaitForHistorySessionBinding("thread-a", undefined)).toBe(true);
+    expect(shouldWaitForHistorySessionBinding("", BASE_TIME)).toBe(true);
+  });
+
+  it("没有绑定和活动会话时允许显示未找到", () => {
+    expect(shouldWaitForHistorySessionBinding("", 0)).toBe(false);
+    expect(shouldWaitForHistorySessionBinding(undefined, Number.NaN)).toBe(false);
   });
 });

@@ -5,7 +5,7 @@ import { BrowserWindow } from "electron";
 import { promises as fsp } from "node:fs";
 import path from "node:path";
 import { getGrokRootCandidatesFastAsync } from "../agentSessions/grok/discovery";
-import { requestHistoryFastRefresh } from "../indexer";
+import { requestHistoryFastRefresh } from "../historyReconciler";
 import { perfLogger } from "../log";
 import { uncToWsl, type SessionsRootCandidate } from "../wsl";
 
@@ -21,7 +21,6 @@ const GROK_WINDOWS_HOOK_SCRIPT = [
   "# SPDX-License-Identifier: Apache-2.0",
   '$ErrorActionPreference = "SilentlyContinue"',
   '$tabId = [string]$env:GROK_CODEXFLOW_TAB_ID',
-  'if ([string]::IsNullOrWhiteSpace($tabId)) { exit 0 }',
   '$notifyPath = Join-Path (Split-Path -Parent $PSScriptRoot) "codexflow\\after-agent-notify.jsonl"',
   "$notifyDir = Split-Path -Parent $notifyPath",
   "[IO.Directory]::CreateDirectory($notifyDir) | Out-Null",
@@ -52,7 +51,6 @@ const GROK_WINDOWS_HOOK_SCRIPT = [
 
 const GROK_WSL_HOOK_SCRIPT = String.raw`#!/bin/sh
 # SPDX-License-Identifier: Apache-2.0
-case "$GROK_CODEXFLOW_TAB_ID" in *[![:space:]]*) ;; *) exit 0 ;; esac
 notify_path="$(dirname "$(dirname "$0")")/codexflow/after-agent-notify.jsonl"
 mkdir -p "$(dirname "$notify_path")" 2>/dev/null || true
 input_json=$(cat)
@@ -372,15 +370,26 @@ function hasGrokCodexFlowTabId(record: ReturnType<typeof parseNotifyLine>): bool
  */
 function emitNotifyRecord(record: ReturnType<typeof parseNotifyLine>, sourcePath: string, generation: number): void {
   if (!record || generation !== notifyGeneration) return;
-  if (!hasGrokCodexFlowTabId(record)) {
-    logGrokNotification("event dropped reason=missing-codexflow-tab-id");
-    return;
-  }
   const providerId = String(record.providerId || "grok").trim().toLowerCase();
   if (providerId !== "grok") return;
   const hookEventName = String(record.event.hookEventName || "").trim().toLowerCase();
   const completionKind = resolveGrokCompletionKind(record.event);
   if (!completionKind) return;
+
+  try {
+    requestHistoryFastRefresh({
+      providerId: "grok",
+      filePath: record.event.transcriptPath,
+      sourcePath,
+      sessionId: record.event.sessionId,
+      cwd: record.event.cwd || record.event.workspaceRoot,
+    });
+  } catch {}
+
+  if (!hasGrokCodexFlowTabId(record)) {
+    logGrokNotification("ui event dropped reason=missing-codexflow-tab-id");
+    return;
+  }
 
   const win = notifyWindowGetter?.() || null;
   if (!win || win.isDestroyed()) return;
@@ -400,7 +409,6 @@ function emitNotifyRecord(record: ReturnType<typeof parseNotifyLine>, sourcePath
   };
   try {
     win.webContents.send("notifications:externalAgentComplete", payload);
-    requestHistoryFastRefresh({ providerId: "grok", sourcePath });
   } catch (error) {
     logGrokNotification(`emit failed error=${String(error)}`);
   }
@@ -483,6 +491,7 @@ export function stopGrokNotificationBridge(): void {
 }
 
 export const __testing = {
+  emitNotifyRecord,
   parseNotifyLine,
   resolveGrokCompletionKind,
   resolveGrokAgentType,

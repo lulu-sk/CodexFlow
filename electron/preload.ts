@@ -625,6 +625,13 @@ contextBridge.exposeInMainWorld('host', {
       limit?: number;
       offset?: number;
       historyRoot?: string;
+      recoveryHint?: {
+        providerId?: string;
+        threadId?: string;
+        sessionId?: string;
+        cwd?: string;
+        startedAt?: number;
+      };
     }) => {
       return await ipcRenderer.invoke('history.list', args);
     },

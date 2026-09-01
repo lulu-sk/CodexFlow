@@ -42,6 +42,18 @@ function normalizeSessionBindingId(value: unknown): string {
 }
 
 /**
+ * 判断历史尚未命中时是否应继续等待已知绑定或正在落盘的新会话。
+ */
+export function shouldWaitForHistorySessionBinding(
+  boundSessionId: unknown,
+  activeTurnStartedAt: unknown,
+): boolean {
+  if (normalizeSessionBindingId(boundSessionId)) return true;
+  const startedAt = Number(activeTurnStartedAt);
+  return Number.isFinite(startedAt) && startedAt > 0;
+}
+
+/**
  * 收集历史记录中可能代表真实会话 ID 的字段和文件名片段。
  */
 function collectHistorySessionBindingIds(session: HistorySessionBindingCandidate): Set<string> {

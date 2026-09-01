@@ -3,19 +3,20 @@
 
 import fs from "node:fs";
 import { promises as fsp } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { BrowserWindow } from "electron";
 import { perfLogger } from "./log";
 import { getDebugConfig } from "./debugConfig";
-import { getSessionsRootCandidatesFastAsync, isUNCPath, uncToWsl, wslToUNC } from "./wsl";
+import { getSessionsRootCandidatesFastAsync, isUNCPath, uncToWsl, wslToUNC, type SessionsRootCandidate } from "./wsl";
 import { safeWindowSend } from "./ipcSafe";
 import { detectResumeInfo, detectRuntimeShell, detectRuntimeShellFromContent } from "./history";
 import type { HistorySummary, Message, MessageContent, RuntimeShell } from "./history";
 import settings from "./settings";
-import { getClaudeRootCandidatesFastAsync, discoverClaudeSessionFiles } from "./agentSessions/claude/discovery";
-import { getGeminiRootCandidatesFastAsync, discoverGeminiSessionFiles } from "./agentSessions/gemini/discovery";
-import { getAntigravityRootCandidatesFastAsync, discoverAntigravitySessionFiles } from "./agentSessions/antigravity/discovery";
-import { getGrokRootCandidatesFastAsync, discoverGrokSessionFiles } from "./agentSessions/grok/discovery";
+import { getClaudeRootCandidatesFastAsync } from "./agentSessions/claude/discovery";
+import { getGeminiRootCandidatesFastAsync } from "./agentSessions/gemini/discovery";
+import { getAntigravityRootCandidatesFastAsync } from "./agentSessions/antigravity/discovery";
+import { getGrokRootCandidatesFastAsync, getGrokSessionVisibility } from "./agentSessions/grok/discovery";
 import { parseClaudeSessionFile } from "./agentSessions/claude/parser";
 import { parseGeminiSessionFile, deriveGeminiProjectHashCandidatesFromPath } from "./agentSessions/gemini/parser";
 import { parseAntigravitySessionFile } from "./agentSessions/antigravity/parser";
@@ -33,12 +34,13 @@ import {
   tidyPathCandidate as tidyPathCandidateShared,
 } from "./agentSessions/shared/path";
 
-// 仅在存在时使用 chokidar；否则跳过监听
-let chokidar: any = null;
-try { chokidar = require("chokidar"); } catch {}
-
-type ProviderId = "codex" | "claude" | "gemini" | "antigravity" | "grok";
-type FileSig = { mtimeMs: number; size: number };
+export type ProviderId = "codex" | "claude" | "gemini" | "antigravity" | "grok";
+export type FileSig = {
+  mtimeMs: number;
+  size: number;
+  auxMtimeMs?: number;
+  auxSize?: number;
+};
 type IndexSummary = HistorySummary & { providerId: ProviderId; dirKey: string; projectHash?: string };
 type Details = {
   providerId: ProviderId;
@@ -101,49 +103,52 @@ function extractCodexThreadNameFromRecord(obj: any): string {
 
 const g: any = global as any;
 if (!g.__indexer) g.__indexer = {};
-if (!g.__indexer.retries) g.__indexer.retries = new Map<string, { count: number; timer?: NodeJS.Timeout }>();
-// 周期性重扫的节流参数：避免频繁解析大文件导致内存/CPU 激增
-const RESCAN_INTERVAL_MS = 60_000;
-const RESCAN_COOLDOWN_MS = 30_000;
-const RESCAN_COOLDOWN_MAX = 512;
-const FAST_REFRESH_DEBOUNCE_MS = 140;
-const FAST_REFRESH_RECENT_FILE_LIMIT = 6;
-
-// Watch 去抖/批处理：避免 Claude 等 CLI 启动阶段频繁写入触发重复解析，导致主进程 CPU/内存瞬时飙升
-const WATCH_DEBOUNCE_MS = 800;
-const WATCH_BATCH_LIMIT = 48;
-const WATCH_CONCURRENCY = 2;
-
-type WatchQueueEntry = { filePath: string; dueAt: number };
-type WatchQueueState = { timer: NodeJS.Timeout | null; flushing: boolean; queue: Map<string, WatchQueueEntry> };
-type FastRefreshFileEntry = { providerId: ProviderId; filePath: string };
-type FastRefreshRootEntry = { providerId: ProviderId; root: string };
-type FastRefreshState = {
-  timer: NodeJS.Timeout | null;
-  running: boolean;
-  rerun: boolean;
-  pendingFiles: Map<string, FastRefreshFileEntry>;
-  pendingRoots: Map<string, FastRefreshRootEntry>;
-};
+const PERSIST_DEBOUNCE_MS = 2_000;
+const PERSIST_MAX_WAIT_MS = 15_000;
 
 type PersistWriteState = {
-  timer: NodeJS.Immediate | null;
+  timer: NodeJS.Timeout | null;
   running: boolean;
   pendingIndex: boolean;
   pendingDetails: boolean;
+  firstPendingAt: number;
+  lastPendingAt: number;
   index?: PersistIndex;
   details?: PersistDetails;
   waiters: Array<() => void>;
+};
+type IndexedSummaryCache = {
+  index: PersistIndex;
+  summaries: IndexSummary[];
 };
 type HistoryFastRefreshRequest = {
   providerId?: ProviderId | string;
   filePath?: string;
   sourcePath?: string;
+  transcriptPath?: string;
+  sessionId?: string;
+  threadId?: string;
+  cwd?: string;
+  reason?: string;
+};
+type HistoryReconcilerRuntimePort = {
+  hasPendingCodexWork(): boolean;
+  requestFastRefresh(request: HistoryFastRefreshRequest): void;
 };
 type CodexRelationIndexState = {
   ready: boolean;
-  pending: Map<string, number>;
 };
+
+let historyReconcilerRuntimePort: HistoryReconcilerRuntimePort | null = null;
+let historyIndexerLifecycleGeneration = 0;
+let historyIndexerLifecycleQueue: Promise<void> = Promise.resolve();
+
+/**
+ * 注册历史协调器的同步窄端口，避免索引器与协调器形成静态循环依赖。
+ */
+export function registerHistoryReconcilerRuntimePort(port: HistoryReconcilerRuntimePort | null): void {
+  historyReconcilerRuntimePort = port;
+}
 
 /**
  * 获取 Codex 关系索引的同步状态。
@@ -153,7 +158,6 @@ function getCodexRelationIndexState(): CodexRelationIndexState {
   if (!g.__indexer.codexRelationIndexState) {
     g.__indexer.codexRelationIndexState = {
       ready: false,
-      pending: new Map<string, number>(),
     } as CodexRelationIndexState;
   }
   return g.__indexer.codexRelationIndexState as CodexRelationIndexState;
@@ -166,30 +170,7 @@ function resetCodexRelationIndexState(): void {
   if (!g.__indexer) g.__indexer = {};
   g.__indexer.codexRelationIndexState = {
     ready: false,
-    pending: new Map<string, number>(),
   } as CodexRelationIndexState;
-}
-
-/**
- * 标记一个尚未合入索引的 Codex 关系变更。
- */
-function markCodexRelationIndexPending(key: string): void {
-  const normalizedKey = String(key || "").trim();
-  if (!normalizedKey) return;
-  const state = getCodexRelationIndexState();
-  state.pending.set(normalizedKey, (state.pending.get(normalizedKey) || 0) + 1);
-}
-
-/**
- * 标记一个 Codex 关系变更已完成索引处理。
- */
-function settleCodexRelationIndexPending(key: string): void {
-  const normalizedKey = String(key || "").trim();
-  if (!normalizedKey) return;
-  const state = getCodexRelationIndexState();
-  const count = state.pending.get(normalizedKey) || 0;
-  if (count <= 1) state.pending.delete(normalizedKey);
-  else state.pending.set(normalizedKey, count - 1);
 }
 
 /**
@@ -204,73 +185,9 @@ function setCodexRelationIndexReady(ready: boolean): void {
  */
 export function isCodexRelationIndexReady(): boolean {
   const state = getCodexRelationIndexState();
-  return state.ready && state.pending.size === 0;
-}
-
-/**
- * 获取文件变更监听的队列状态（挂到 global.__indexer，便于 stopHistoryIndexer 统一清理）。
- */
-function getWatchQueueState(): WatchQueueState {
-  if (!g.__indexer) g.__indexer = {};
-  if (!g.__indexer.watchQueueState) {
-    g.__indexer.watchQueueState = { timer: null, flushing: false, queue: new Map<string, WatchQueueEntry>() } as WatchQueueState;
-  }
-  return g.__indexer.watchQueueState as WatchQueueState;
-}
-
-/**
- * 清理文件变更监听队列（防止重启索引器后残留定时器/闭包）。
- */
-function clearWatchQueueState(): void {
-  try {
-    const st = (g.__indexer && g.__indexer.watchQueueState) ? (g.__indexer.watchQueueState as WatchQueueState) : null;
-    if (st?.timer) {
-      try { clearTimeout(st.timer); } catch {}
-    }
-  } catch {}
-  try {
-    if (!g.__indexer) g.__indexer = {};
-    g.__indexer.watchQueueState = { timer: null, flushing: false, queue: new Map<string, WatchQueueEntry>() } as WatchQueueState;
-  } catch {}
-}
-
-/**
- * 获取历史“快速刷新”队列状态（用于完成通知触发的轻量增量刷新）。
- */
-function getFastRefreshState(): FastRefreshState {
-  if (!g.__indexer) g.__indexer = {};
-  if (!g.__indexer.fastRefreshState) {
-    g.__indexer.fastRefreshState = {
-      timer: null,
-      running: false,
-      rerun: false,
-      pendingFiles: new Map<string, FastRefreshFileEntry>(),
-      pendingRoots: new Map<string, FastRefreshRootEntry>(),
-    } as FastRefreshState;
-  }
-  return g.__indexer.fastRefreshState as FastRefreshState;
-}
-
-/**
- * 清理历史“快速刷新”队列，避免索引器重启后残留定时器与闭包。
- */
-function clearFastRefreshState(): void {
-  try {
-    const st = (g.__indexer && g.__indexer.fastRefreshState) ? (g.__indexer.fastRefreshState as FastRefreshState) : null;
-    if (st?.timer) {
-      try { clearTimeout(st.timer); } catch {}
-    }
-  } catch {}
-  try {
-    if (!g.__indexer) g.__indexer = {};
-    g.__indexer.fastRefreshState = {
-      timer: null,
-      running: false,
-      rerun: false,
-      pendingFiles: new Map<string, FastRefreshFileEntry>(),
-      pendingRoots: new Map<string, FastRefreshRootEntry>(),
-    } as FastRefreshState;
-  } catch {}
+  if (!state.ready) return false;
+  try { if (historyReconcilerRuntimePort?.hasPendingCodexWork()) return false; } catch {}
+  return true;
 }
 
 /**
@@ -284,10 +201,15 @@ function getPersistWriteState(): PersistWriteState {
       running: false,
       pendingIndex: false,
       pendingDetails: false,
+      firstPendingAt: 0,
+      lastPendingAt: 0,
       waiters: [],
     } as PersistWriteState;
   }
-  return g.__indexer.persistWriteState as PersistWriteState;
+  const state = g.__indexer.persistWriteState as PersistWriteState;
+  if (!Number.isFinite(state.firstPendingAt)) state.firstPendingAt = 0;
+  if (!Number.isFinite(state.lastPendingAt)) state.lastPendingAt = 0;
+  return state;
 }
 
 /**
@@ -295,6 +217,10 @@ function getPersistWriteState(): PersistWriteState {
  */
 function schedulePersistWrite(index?: PersistIndex, details?: PersistDetails): void {
   const state = getPersistWriteState();
+  const alreadyPending = state.pendingIndex || state.pendingDetails;
+  const now = Date.now();
+  if (!alreadyPending) state.firstPendingAt = now;
+  state.lastPendingAt = now;
   if (index) {
     state.pendingIndex = true;
     state.index = index;
@@ -306,14 +232,28 @@ function schedulePersistWrite(index?: PersistIndex, details?: PersistDetails): v
   schedulePersistFlush();
 }
 
-/** 安排一次缓存持久化队列处理，不重复创建事件循环任务。 */
+/**
+ * 中文说明：使历史摘要派生缓存失效，确保索引变更后下次读取重新生成。
+ */
+function invalidateIndexedSummaryCache(): void {
+  try { delete g.__indexer.indexedSummaryCache; } catch {}
+}
+
+/** 安排一次缓存持久化队列处理，兼顾空闲去抖与持续写入的最大等待时间。 */
 function schedulePersistFlush(): void {
   const state = getPersistWriteState();
-  if (state.timer || state.running) return;
-  state.timer = setImmediate(() => {
+  if (state.running || (!state.pendingIndex && !state.pendingDetails)) return;
+  const now = Date.now();
+  const firstPendingAt = state.firstPendingAt > 0 ? state.firstPendingAt : now;
+  const lastPendingAt = state.lastPendingAt > 0 ? state.lastPendingAt : now;
+  const deadline = Math.min(lastPendingAt + PERSIST_DEBOUNCE_MS, firstPendingAt + PERSIST_MAX_WAIT_MS);
+  if (state.timer) {
+    try { clearTimeout(state.timer); } catch {}
+  }
+  state.timer = setTimeout(() => {
     state.timer = null;
     void flushPersistWrites();
-  });
+  }, Math.max(0, deadline - now));
 }
 
 /** 让出一次事件循环，避免缓存序列化连续占用主线程。 */
@@ -373,53 +313,54 @@ async function serializeDetailsForPersist(details: PersistDetails): Promise<stri
 /**
  * 串行异步写入索引和详情缓存；调用方可等待该函数确保退出前刷盘完成。
  */
-async function flushPersistWrites(): Promise<void> {
+async function flushPersistWrites(force = false): Promise<void> {
   const state = getPersistWriteState();
   if (state.running) {
     await new Promise<void>((resolve) => state.waiters.push(resolve));
-    // 当前批次结束时可能又合并了新的变更；等待方必须把后续批次也刷完。
-    if (state.pendingIndex || state.pendingDetails) await flushPersistWrites();
+    if (force && (state.pendingIndex || state.pendingDetails)) await flushPersistWrites(true);
     return;
   }
   if (!state.pendingIndex && !state.pendingDetails) return;
   if (state.timer) {
-    try { clearImmediate(state.timer); } catch {}
+    try { clearTimeout(state.timer); } catch {}
     state.timer = null;
   }
   state.running = true;
+  const writeIndex = state.pendingIndex;
+  const writeDetails = state.pendingDetails;
+  state.pendingIndex = false;
+  state.pendingDetails = false;
+  state.firstPendingAt = 0;
+  state.lastPendingAt = 0;
   try {
-    while (state.pendingIndex || state.pendingDetails) {
-      const writeIndex = state.pendingIndex;
-      const writeDetails = state.pendingDetails;
-      state.pendingIndex = false;
-      state.pendingDetails = false;
-
-      // 先让出一次事件循环，确保通知 IPC 和终端输出优先处理。
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      const tasks: Promise<unknown>[] = [];
-      if (writeIndex && state.index) {
-        const currentIndex = state.index;
-        tasks.push(serializeIndexForPersist(currentIndex)
-          .then((body) => fsp.mkdir(path.dirname(indexPath()), { recursive: true })
-            .then(() => fsp.writeFile(indexPath(), body, "utf8")))
-          .catch(() => undefined));
-      }
-      if (writeDetails && state.details) {
-        const currentDetails = state.details;
-        tasks.push(serializeDetailsForPersist(currentDetails)
-          .then((body) => fsp.mkdir(path.dirname(detailsPath()), { recursive: true })
-            .then(() => fsp.writeFile(detailsPath(), body, "utf8")))
-          .catch(() => undefined));
-      }
-      if (tasks.length > 0) await Promise.all(tasks);
+    // 先让出一次事件循环，确保通知 IPC 和终端输出优先处理。
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const tasks: Promise<unknown>[] = [];
+    if (writeIndex && state.index) {
+      const currentIndex = state.index;
+      tasks.push(serializeIndexForPersist(currentIndex)
+        .then((body) => fsp.mkdir(path.dirname(indexPath()), { recursive: true })
+          .then(() => fsp.writeFile(indexPath(), body, "utf8")))
+        .catch(() => undefined));
     }
+    if (writeDetails && state.details) {
+      const currentDetails = state.details;
+      tasks.push(serializeDetailsForPersist(currentDetails)
+        .then((body) => fsp.mkdir(path.dirname(detailsPath()), { recursive: true })
+          .then(() => fsp.writeFile(detailsPath(), body, "utf8")))
+        .catch(() => undefined));
+    }
+    if (tasks.length > 0) await Promise.all(tasks);
   } finally {
     state.running = false;
     const waiters = state.waiters.splice(0, state.waiters.length);
     for (const resolve of waiters) {
       try { resolve(); } catch {}
     }
-    if (state.pendingIndex || state.pendingDetails) schedulePersistFlush();
+  }
+  if (state.pendingIndex || state.pendingDetails) {
+    if (force) await flushPersistWrites(true);
+    else schedulePersistFlush();
   }
 }
 
@@ -444,37 +385,6 @@ function getIndexerWindow(): BrowserWindow | null {
   } catch {
     return null;
   }
-}
-
-function getRescanCooldownMap(): Map<string, number> {
-  if (!g.__indexer) g.__indexer = {};
-  if (!g.__indexer.rescanCooldown) g.__indexer.rescanCooldown = new Map<string, number>();
-  return g.__indexer.rescanCooldown as Map<string, number>;
-}
-
-function shouldThrottleRescan(key: string, now: number): boolean {
-  try {
-    const last = getRescanCooldownMap().get(key);
-    return typeof last === "number" && now - last < RESCAN_COOLDOWN_MS;
-  } catch {
-    return false;
-  }
-}
-
-function markRescanCooldown(key: string, now: number): void {
-  try {
-    const map = getRescanCooldownMap();
-    map.set(key, now);
-    while (map.size > RESCAN_COOLDOWN_MAX) {
-      const first = map.keys().next().value as string | undefined;
-      if (!first) break;
-      map.delete(first);
-    }
-  } catch {}
-}
-
-function clearRescanCooldown(): void {
-  try { getRescanCooldownMap().clear(); } catch {}
 }
 
 function stripDetailsForPersist(details: Details): Details {
@@ -588,6 +498,7 @@ export async function ensureHistoryIndexLoaded(): Promise<void> {
   if (!g.__indexer.indexLoadPromise) {
     g.__indexer.indexLoadPromise = (async () => {
       g.__indexer.index = await loadIndex();
+      invalidateIndexedSummaryCache();
       g.__indexer.indexLoaded = true;
     })().finally(() => {
       g.__indexer.indexLoadPromise = null;
@@ -600,6 +511,7 @@ export async function ensureHistoryIndexLoaded(): Promise<void> {
  * 请求异步保存索引缓存，不在当前调用栈执行文件 I/O。
  */
 function saveIndex(ix: PersistIndex): void {
+  invalidateIndexedSummaryCache();
   try { schedulePersistWrite(ix, undefined); } catch {}
 }
 
@@ -635,25 +547,6 @@ function saveDetails(d: PersistDetails): void {
 }
 
 // 并发限制器
-function pLimit(max: number) {
-  let running = 0;
-  const queue: (() => void)[] = [];
-  const next = () => {
-    running--;
-    const fn = queue.shift();
-    if (fn) fn();
-  };
-  return function <T>(task: () => Promise<T>): Promise<T> {
-    return new Promise((resolve, reject) => {
-      const run = () => {
-        running++;
-        task().then((v) => { next(); resolve(v); }).catch((e) => { next(); reject(e); });
-      };
-      if (running < max) run(); else queue.push(run);
-    });
-  };
-}
-
 function canonicalKey(filePath: string): string {
   try { return path.normalize(filePath).replace(/\\/g, "/").toLowerCase(); } catch { return String(filePath || "").toLowerCase(); }
 }
@@ -752,7 +645,7 @@ function normalizeAntigravityWatchPath(filePath: string): string {
 /**
  * 将通知里携带的 transcriptPath 规范化为主进程可直接访问的路径。
  */
-function resolveAccessibleHistoryFilePath(filePath: string, sourcePath?: string): string {
+export function resolveAccessibleHistoryFilePath(filePath: string, sourcePath?: string): string {
   try {
     const raw = String(filePath || "").trim();
     if (!raw) return "";
@@ -772,12 +665,100 @@ function resolveAccessibleHistoryFilePath(filePath: string, sourcePath?: string)
 /**
  * 解析指定 Provider 的历史详情（快速刷新场景统一走摘要模式）。
  */
-async function parseDetailsForProvider(providerId: ProviderId, filePath: string, stat: fs.Stats): Promise<Details> {
+async function parseDetailsForProvider(
+  providerId: ProviderId,
+  filePath: string,
+  stat: fs.Stats,
+  effectiveMtimeMs = Number(stat?.mtimeMs || 0),
+): Promise<Details> {
   if (providerId === "claude") return await parseClaudeSessionFile(filePath, stat, { summaryOnly: true, maxLines: getIndexedClaudeAgentHistorySetting() ? 400 : 200 } as any);
-  if (providerId === "gemini") return await parseGeminiSessionFile(filePath, stat, { summaryOnly: true } as any);
-  if (providerId === "antigravity") return await parseAntigravitySessionFile(filePath, stat, { summaryOnly: true } as any);
-  if (providerId === "grok") return await parseGrokSessionFile(filePath, stat, { summaryOnly: true } as any);
+  if (providerId === "gemini") {
+    const parsed = await parseGeminiSessionFile(filePath, stat, { summaryOnly: true } as any) as Details;
+    try {
+      const hash = String((parsed as any)?.projectHash || "").toLowerCase();
+      const map: Map<string, string> | undefined = (g.__indexer as any)?.geminiHashToCwd;
+      if (hash && !String(parsed.cwd || "").trim() && map?.has(hash)) {
+        const cwd = String(map.get(hash) || "").trim();
+        if (cwd) return { ...parsed, cwd, dirKey: dirKeyFromCwd(cwd) };
+      }
+    } catch {}
+    return parsed;
+  }
+  if (providerId === "antigravity")
+    return await parseAntigravitySessionFile(filePath, stat, { summaryOnly: true, effectiveMtimeMs } as any);
+  if (providerId === "grok") {
+    const parsed = await parseGrokSessionFile(filePath, stat, { summaryOnly: true } as any) as Details;
+    const date = Math.max(Number(parsed.date || 0), effectiveMtimeMs);
+    return { ...parsed, date };
+  }
   return await parseCodexDetails(filePath, stat, { summaryOnly: true });
+}
+
+export type HistoryReconcileResult = "unchanged" | "updated" | "filtered" | "missing" | "retry" | "not-ready";
+
+type HistoryFileObservation = {
+  filePath: string;
+  stat: fs.Stats;
+  signature: FileSig;
+  effectiveMtimeMs: number;
+};
+
+/**
+ * 将 Provider 的任意相关路径归一到索引使用的主文件路径。
+ */
+export function normalizeHistoryFileAnchor(providerId: ProviderId, filePath: string): string {
+  const raw = String(filePath || "").trim();
+  if (!raw) return "";
+  if (providerId === "antigravity") return normalizeAntigravityWatchPath(raw);
+  if (providerId === "grok") {
+    const base = path.basename(raw).toLowerCase();
+    if (base === "summary.json") return raw;
+    if (base === "updates.jsonl") return path.join(path.dirname(raw), "summary.json");
+    return path.join(path.dirname(raw), "summary.json");
+  }
+  return raw;
+}
+
+/**
+ * 比较两份文件签名，兼容旧缓存中尚未包含辅助文件字段的记录。
+ */
+function isSameFileSignature(left: FileSig | undefined, right: FileSig): boolean {
+  if (!left) return false;
+  return Number(left.mtimeMs || 0) === Number(right.mtimeMs || 0)
+    && Number(left.size || 0) === Number(right.size || 0)
+    && Number(left.auxMtimeMs || 0) === Number(right.auxMtimeMs || 0)
+    && Number(left.auxSize || 0) === Number(right.auxSize || 0);
+}
+
+/**
+ * 读取解析器实际依赖的全部文件签名。
+ */
+async function observeHistoryFile(providerId: ProviderId, filePath: string): Promise<HistoryFileObservation | null> {
+  const anchor = normalizeHistoryFileAnchor(providerId, filePath);
+  if (!anchor || !shouldIndexProviderFile(providerId, anchor)) return null;
+  const stat = await fsp.stat(anchor).catch(() => null as fs.Stats | null);
+  if (!stat?.isFile()) return null;
+  let auxMtimeMs = 0;
+  let auxSize = 0;
+  if (providerId === "antigravity" || providerId === "grok") {
+    const auxPath = providerId === "antigravity" ? `${anchor}-wal` : path.join(path.dirname(anchor), "updates.jsonl");
+    const auxStat = await fsp.stat(auxPath).catch(() => null as fs.Stats | null);
+    if (auxStat?.isFile()) {
+      auxMtimeMs = Number(auxStat.mtimeMs || 0);
+      auxSize = Number(auxStat.size || 0);
+    }
+  }
+  return {
+    filePath: anchor,
+    stat,
+    signature: {
+      mtimeMs: Number(stat.mtimeMs || 0),
+      size: Number(stat.size || 0),
+      auxMtimeMs,
+      auxSize,
+    },
+    effectiveMtimeMs: Math.max(Number(stat.mtimeMs || 0), auxMtimeMs),
+  };
 }
 
 /**
@@ -804,23 +785,47 @@ function buildIndexSummary(providerId: ProviderId, filePath: string, details: De
 /**
  * 对单个历史文件执行一次增量 upsert，并在必要时推送前端更新。
  */
-async function upsertIndexedFile(filePath: string, providerHint?: ProviderId): Promise<boolean> {
+async function upsertIndexedFile(
+  filePath: string,
+  providerHint?: ProviderId,
+  isCurrent: () => boolean = () => true,
+): Promise<HistoryReconcileResult> {
   const ix: PersistIndex | undefined = g.__indexer?.index;
   const det: PersistDetails | undefined = g.__indexer?.details;
-  if (!ix || !det) return false;
+  if (!ix || !det) return "not-ready";
   const rawPath = String(filePath || "").trim();
-  if (!rawPath) return false;
+  if (!rawPath || !isCurrent()) return "retry";
   const providerId = resolveProviderIdFromRoots(rawPath, providerHint);
-  if (!shouldIndexProviderFile(providerId, rawPath)) return false;
-  const stat = await fsp.stat(rawPath).catch(() => null as any);
-  if (!stat || !stat.isFile || !stat.isFile()) return false;
-  const k = canonicalKey(rawPath);
-  const sig: FileSig = { mtimeMs: stat.mtimeMs, size: stat.size };
+  const before = await observeHistoryFile(providerId, rawPath);
+  if (!before) return "missing";
+  const k = canonicalKey(before.filePath);
+  const sig = before.signature;
   const prev = ix.files[k]?.sig;
-  const same = prev && prev.mtimeMs === sig.mtimeMs && prev.size === sig.size;
-  if (same) return false;
+  if (isSameFileSignature(prev, sig)) return "unchanged";
 
-  const details = await parseDetailsForProvider(providerId, rawPath, stat);
+  if (providerId === "grok") {
+    const visibility = await getGrokSessionVisibility(before.filePath);
+    if (visibility === "unavailable") return "retry";
+    if (visibility === "hidden") {
+      if (!isCurrent()) return "retry";
+      const existed = !!ix.files[k] || !!det.files[k];
+      try { getDetailsCache().delete(k); } catch {}
+      delete ix.files[k];
+      delete det.files[k];
+      if (existed) {
+        ix.savedAt = Date.now();
+        det.savedAt = Date.now();
+        saveIndex(ix);
+        saveDetails(det);
+        safeWindowSend(getIndexerWindow(), "history:index:remove", { filePath: before.filePath }, { tag: "indexer", suppressMs: 1000 });
+      }
+      return "filtered";
+    }
+  }
+
+  const details = await parseDetailsForProvider(providerId, before.filePath, before.stat, before.effectiveMtimeMs);
+  const after = await observeHistoryFile(providerId, before.filePath);
+  if (!after || !isSameFileSignature(before.signature, after.signature) || !isCurrent()) return "retry";
   if (providerId === "claude" && shouldIgnoreClaudeSession(details as any, getIndexedClaudeAgentHistorySetting())) {
     const existed = !!ix.files[k] || !!det.files[k];
     try { getDetailsCache().delete(k); } catch {}
@@ -831,27 +836,27 @@ async function upsertIndexedFile(filePath: string, providerHint?: ProviderId): P
       det.savedAt = Date.now();
       saveIndex(ix);
       saveDetails(det);
-      safeWindowSend(getIndexerWindow(), "history:index:remove", { filePath: rawPath }, { tag: "indexer", suppressMs: 1000 });
+      safeWindowSend(getIndexerWindow(), "history:index:remove", { filePath: before.filePath }, { tag: "indexer", suppressMs: 1000 });
     }
-    return existed;
+    return "filtered";
   }
 
   const slimDetails = stripDetailsForPersist(details);
   try { getDetailsCache().delete(k); } catch {}
   det.files[k] = { sig, details: slimDetails };
-  ix.files[k] = { sig, summary: buildIndexSummary(providerId, rawPath, details) };
+  ix.files[k] = { sig, summary: buildIndexSummary(providerId, before.filePath, details) };
   ix.savedAt = Date.now();
   det.savedAt = Date.now();
   saveIndex(ix);
   saveDetails(det);
   safeWindowSend(getIndexerWindow(), "history:index:update", { item: ix.files[k].summary }, { tag: "indexer", suppressMs: 1000 });
-  return true;
+  return "updated";
 }
 
 /**
  * 根据 notify 文件位置推导对应的会话根目录，尽量缩小快速扫描范围。
  */
-function deriveRefreshRootFromSource(providerId: ProviderId, sourcePath?: string): string {
+export function deriveRefreshRootFromSource(providerId: ProviderId, sourcePath?: string): string {
   try {
     const p = String(sourcePath || "").trim();
     if (!p) return "";
@@ -871,131 +876,122 @@ function deriveRefreshRootFromSource(providerId: ProviderId, sourcePath?: string
 }
 
 /**
- * 枚举 Codex 最近两天目录下最可能变化的少量会话文件。
- */
-async function listRecentCodexSessionFiles(root: string, limit = FAST_REFRESH_RECENT_FILE_LIMIT): Promise<string[]> {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  const now = new Date();
-  const dates = [now, new Date(Date.now() - 24 * 60 * 60 * 1000)];
-  for (const dt of dates) {
-    try {
-      const year = String(dt.getFullYear());
-      const month = String(dt.getMonth() + 1).padStart(2, "0");
-      const day = String(dt.getDate()).padStart(2, "0");
-      const dir = path.join(root, year, month, day);
-      const files = await fsp.readdir(dir)
-        .then((items) => items.filter((name) => name.endsWith(".jsonl")).sort((a, b) => b.localeCompare(a)).slice(0, limit))
-        .catch(() => [] as string[]);
-      for (const name of files) {
-        const full = path.join(dir, name);
-        const key = canonicalKey(full);
-        if (!key || seen.has(key)) continue;
-        seen.add(key);
-        out.push(full);
-      }
-    } catch {}
-  }
-  return out;
-}
-
-/**
- * 调度一次快速刷新 flush（始终最多挂一个 timer）。
- */
-function scheduleFastRefreshFlush(): void {
-  const st = getFastRefreshState();
-  if (st.timer) return;
-  st.timer = setTimeout(() => {
-    try { getFastRefreshState().timer = null; } catch {}
-    void flushFastRefreshQueue();
-  }, FAST_REFRESH_DEBOUNCE_MS);
-}
-
-/**
- * 执行快速刷新队列：显式文件优先，其次扫描极少量近期 Codex 会话文件。
- */
-async function flushFastRefreshQueue(): Promise<void> {
-  const st = getFastRefreshState();
-  if (st.running) {
-    st.rerun = true;
-    return;
-  }
-  st.running = true;
-  try {
-    while (true) {
-      st.rerun = false;
-      const files = Array.from(st.pendingFiles.values());
-      const roots = Array.from(st.pendingRoots.values());
-      st.pendingFiles.clear();
-      st.pendingRoots.clear();
-
-      for (const entry of files) {
-        const pendingKey = `fast-file:${canonicalKey(entry.filePath)}`;
-        try { await upsertIndexedFile(entry.filePath, entry.providerId); } catch {}
-        finally {
-          if (entry.providerId === "codex") settleCodexRelationIndexPending(pendingKey);
-        }
-      }
-
-      for (const entry of roots) {
-        const pendingKey = `fast-root:${canonicalKey(entry.root)}`;
-        if (entry.providerId !== "codex" && entry.providerId !== "antigravity" && entry.providerId !== "grok") continue;
-        try {
-          const recent = entry.providerId === "antigravity"
-            ? (await discoverAntigravitySessionFiles(entry.root)).slice(-FAST_REFRESH_RECENT_FILE_LIMIT)
-            : entry.providerId === "grok"
-              ? (await discoverGrokSessionFiles(entry.root)).slice(-FAST_REFRESH_RECENT_FILE_LIMIT)
-            : await listRecentCodexSessionFiles(entry.root);
-          for (const fp of recent) {
-            try { await upsertIndexedFile(fp, entry.providerId); } catch {}
-          }
-        } catch {}
-        finally {
-          if (entry.providerId === "codex") settleCodexRelationIndexPending(pendingKey);
-        }
-      }
-
-      if (!st.rerun && st.pendingFiles.size === 0 && st.pendingRoots.size === 0) break;
-    }
-  } finally {
-    st.running = false;
-    if (st.rerun || st.pendingFiles.size > 0 || st.pendingRoots.size > 0) scheduleFastRefreshFlush();
-  }
-}
-
-/**
- * 根据“本轮对话完成”信号请求一次轻量快速刷新，加速历史侧栏感知新记录。
+ * 将通知刷新请求转交给唯一历史校对器；保留此导出以兼容现有测试和外部调用。
  */
 export function requestHistoryFastRefresh(req: HistoryFastRefreshRequest): void {
   try {
-    const rawProvider = String(req?.providerId || "codex").trim().toLowerCase();
-    const providerId: ProviderId = rawProvider === "claude" || rawProvider === "gemini" || rawProvider === "antigravity" || rawProvider === "grok" ? rawProvider : "codex";
-    const st = getFastRefreshState();
+    historyReconcilerRuntimePort?.requestFastRefresh(req);
+  } catch (error) {
+    try { perfLogger.log(`[indexer] history reconciler request failed error=${String(error)}`); } catch {}
+  }
+}
 
-    const explicitFile = resolveAccessibleHistoryFilePath(String(req?.filePath || "").trim(), req?.sourcePath);
-    if (explicitFile) {
-      const key = canonicalKey(explicitFile);
-      if (providerId === "codex" && !st.pendingFiles.has(key))
-        markCodexRelationIndexPending(`fast-file:${key}`);
-      st.pendingFiles.set(key, { providerId, filePath: explicitFile });
+/**
+ * 对外暴露稳定的单文件校对端口，供历史校对器复用索引器提交逻辑。
+ */
+export async function reconcileIndexedHistoryFile(
+  filePath: string,
+  providerHint?: ProviderId,
+  isCurrent: () => boolean = () => true,
+): Promise<HistoryReconcileResult> {
+  try { return await upsertIndexedFile(filePath, providerHint, isCurrent); } catch { return "retry"; }
+}
+
+/**
+ * 返回校对器需要的根目录、索引文件和 Codex 关系状态快照。
+ */
+export function getHistoryReconcileSnapshot(): {
+  ready: boolean;
+  rootsByProvider: Record<ProviderId, string[]>;
+  existingRootsByProvider: Record<ProviderId, string[]>;
+  files: Array<{ providerId: ProviderId; id: string; filePath: string; mtimeMs: number }>;
+} {
+  /** 创建空的 Provider 根目录映射。 */
+  const emptyRoots = (): Record<ProviderId, string[]> => ({ codex: [], claude: [], gemini: [], antigravity: [], grok: [] });
+  /** 从全局索引状态读取并复制根目录映射。 */
+  const readRoots = (raw: any): Record<ProviderId, string[]> => {
+    const roots = emptyRoots();
+    for (const providerId of Object.keys(roots) as ProviderId[])
+      roots[providerId] = Array.isArray(raw?.[providerId]) ? raw[providerId].slice() : [];
+    return roots;
+  };
+  const roots = readRoots(g.__indexer?.rootsByProvider);
+  const existingRoots = readRoots(g.__indexer?.existingRootsByProvider);
+  const ix: PersistIndex = g.__indexer?.index || { version: VERSION, files: {}, savedAt: 0 };
+  const files = Object.values(ix.files || {}).map((entry) => ({
+    providerId: String((entry.summary as any)?.providerId || "codex") as ProviderId,
+    id: String((entry.summary as any)?.id || ""),
+    filePath: String((entry.summary as any)?.filePath || ""),
+    mtimeMs: Number(entry.sig?.mtimeMs || 0),
+  })).filter((entry) => entry.filePath);
+  return {
+    ready: getCodexRelationIndexState().ready,
+    rootsByProvider: roots,
+    existingRootsByProvider: existingRoots,
+    files,
+  };
+}
+
+/**
+ * 暴露 Provider 文件筛选窄端口，供历史协调器复用 Claude 配置过滤规则。
+ */
+export function shouldIndexHistoryFile(providerId: ProviderId, filePath: string): boolean {
+  return shouldIndexProviderFile(providerId, filePath);
+}
+
+/**
+ * 返回稳定目录遍历未观察到的直属索引文件，不在索引器内执行文件系统 I/O。
+ */
+export function listIndexedHistoryFilesForRemovalAfterSweep(
+  providerId: ProviderId,
+  parentDir: string,
+  observedFiles: ReadonlySet<string>,
+): string[] {
+  const ix: PersistIndex | undefined = g.__indexer?.index;
+  if (!ix) return [];
+  const parentKey = canonicalKey(parentDir).replace(/\/$/, "");
+  return Object.values(ix.files || {}).filter((entry) => {
+    const summary: any = entry.summary;
+    return String(summary?.providerId || "codex") === providerId
+      && path.dirname(canonicalKey(String(summary?.filePath || ""))) === parentKey;
+  }).map((entry) => String((entry.summary as any)?.filePath || ""))
+    .filter((filePath) => !!filePath && !observedFiles.has(canonicalKey(filePath)));
+}
+
+/**
+ * 提交已经由协调器确认 ENOENT 的索引文件，并发送增量移除事件。
+ */
+export function commitIndexedHistoryFilesRemovedAfterSweep(
+  providerId: ProviderId,
+  missingFiles: readonly string[],
+  isCurrent: () => boolean = () => true,
+): number {
+  if (!isCurrent() || missingFiles.length === 0) return 0;
+  const ix: PersistIndex | undefined = g.__indexer?.index;
+  const det: PersistDetails | undefined = g.__indexer?.details;
+  if (!ix || !det) return 0;
+  let removed = 0;
+  for (const filePath of missingFiles) {
+    if (!isCurrent()) break;
+    const key = canonicalKey(filePath);
+    const summary = ix.files[key]?.summary as IndexSummary | undefined;
+    if (String(summary?.providerId || "codex") !== providerId) continue;
+    const existed = !!ix.files[key] || !!det.files[key];
+    try { getDetailsCache().delete(key); } catch {}
+    delete ix.files[key];
+    delete det.files[key];
+    if (existed) {
+      removed++;
+      safeWindowSend(getIndexerWindow(), "history:index:remove", { filePath }, { tag: "indexer", suppressMs: 1000 });
     }
-
-    if (!explicitFile) {
-      const hintedRoot = deriveRefreshRootFromSource(providerId, req?.sourcePath);
-      const roots = hintedRoot ? [hintedRoot] : getLastIndexerRootsByProvider(providerId);
-      for (const root of roots) {
-        const cleanRoot = String(root || "").trim();
-        if (!cleanRoot) continue;
-        const key = canonicalKey(cleanRoot);
-        if (providerId === "codex" && !st.pendingRoots.has(key))
-          markCodexRelationIndexPending(`fast-root:${key}`);
-        st.pendingRoots.set(key, { providerId, root: cleanRoot });
-      }
-    }
-
-    if (st.pendingFiles.size === 0 && st.pendingRoots.size === 0) return;
-    scheduleFastRefreshFlush();
-  } catch {}
+  }
+  if (removed > 0) {
+    ix.savedAt = Date.now();
+    det.savedAt = Date.now();
+    saveIndex(ix);
+    saveDetails(det);
+  }
+  return removed;
 }
 
 function getDetailsCache(): Map<string, Details> {
@@ -1115,154 +1111,6 @@ function titleFromFilename(filePath: string): string {
     if (m) return `${m[1]} ${m[2]}:${m[3]}:${m[4]}`;
     return base;
   } catch { return path.basename(filePath); }
-}
-
-async function parseSummary(fp: string, stat: fs.Stats): Promise<IndexSummary> {
-  const prefix = await readPrefix(fp, 64 * 1024);
-  const first = (prefix.split(/\r?\n/).find(Boolean) || "").trim();
-  let id = path.basename(fp).replace(/\.jsonl$/i, "");
-  let title = titleFromFilename(fp);
-  let cwd: string = "";
-  let rawDate: string | undefined = undefined;
-  let dbgSrc: string = "";
-  let resumeMode: 'modern' | 'legacy' | 'unknown' = 'unknown';
-  let resumeId: string | undefined = undefined;
-  let runtimeShell: RuntimeShell = 'unknown';
-  let codexRelationship: CodexSessionRelationship | undefined;
-  let parsedFirst: any = null;
-  try {
-    const obj = JSON.parse(first);
-    parsedFirst = obj;
-    try {
-      const info = detectResumeInfo(obj);
-      if (info.mode) resumeMode = info.mode;
-      if (info.id) resumeId = info.id;
-    } catch {}
-    if (obj && obj.type === 'session_meta' && obj.payload) {
-      codexRelationship = extractCodexSessionRelationship(obj);
-      if (obj.payload?.id) id = String(obj.payload.id);
-      if (typeof obj.payload?.cwd === 'string') { cwd = obj.payload.cwd; dbgSrc = 'json.payload.cwd'; }
-      if (Object.prototype.hasOwnProperty.call(obj, 'timestamp')) {
-        try { rawDate = String(obj.timestamp); } catch { rawDate = undefined; }
-      } else if (Object.prototype.hasOwnProperty.call(obj.payload, 'timestamp')) {
-        try { rawDate = String(obj.payload.timestamp); } catch { rawDate = undefined; }
-      }
-    } else {
-      if (obj?.id) id = String(obj.id);
-      if (typeof obj?.cwd === 'string') { cwd = obj.cwd; dbgSrc = 'json.cwd'; }
-      if (obj && Object.prototype.hasOwnProperty.call(obj, 'timestamp')) {
-        try { rawDate = String(obj.timestamp); } catch { rawDate = undefined; }
-      }
-    }
-  } catch {}
-  const shellHint = detectRuntimeShellFromContent(parsedFirst, prefix);
-  if (shellHint !== 'unknown') runtimeShell = shellHint;
-  // 进一步从前缀中尝试提取 CWD
-  if (!cwd) {
-    try {
-      // 优先使用 <cwd> 标签，避免命中代码字符串中的“Current working directory:”
-      const mTag = (prefix || '').match(/<cwd>\s*([^<]+?)\s*<\/cwd>/i);
-      if (mTag?.[1]) {
-        const cand = tidyPathCandidate(mTag[1]);
-        if (isLikelyPath(cand)) { cwd = cand; dbgSrc = 'prefix.tag'; }
-      }
-      if (!cwd) {
-        const mLine = (prefix || '').match(/Current\s+working\s+directory:\s*([^\r\n]+)/i);
-        if (mLine?.[1]) {
-          const cand = tidyPathCandidate(mLine[1]);
-          if (isLikelyPath(cand)) { cwd = cand; dbgSrc = 'prefix.line'; }
-        }
-      }
-    } catch {}
-  }
-  // 兜底：流式扫描更大范围以提取 CWD（应对前缀内未出现的情况）
-  if (!cwd) {
-    try {
-      const fallback = await (async function extractCwdFromFile(maxScanBytes = 1024 * 1024): Promise<string> {
-        try {
-          const rs = fs.createReadStream(fp, { encoding: 'utf8', highWaterMark: 64 * 1024 });
-          let acc = '';
-          let scanned = 0;
-          const reCwdTag = /<cwd>\s*([^<]+?)\s*<\/cwd>/i;
-          const reCwdLine = /Current\s+working\s+directory:\s*([^\r\n]+)/i;
-          return await new Promise<string>((resolve) => {
-            const finish = (val: string) => { try { rs.close(); } catch {} resolve(val); };
-            rs.on('data', (chunk) => {
-              scanned += chunk.length;
-              acc += chunk;
-              // 限制 acc 长度，避免内存暴涨（保留尾部 128KB 足够跨块匹配）
-              if (acc.length > 256 * 1024) acc = acc.slice(acc.length - 128 * 1024);
-              const m1 = acc.match(reCwdTag);
-              if (m1 && m1[1]) { const cand = tidyPathCandidate(m1[1]); if (isLikelyPath(cand)) return finish(cand); }
-              const m2 = acc.match(reCwdLine);
-              if (m2 && m2[1]) { const cand = tidyPathCandidate(m2[1]); if (isLikelyPath(cand)) return finish(cand); }
-              if (scanned >= maxScanBytes) return finish('');
-            });
-            rs.on('end', () => finish(''));
-            rs.on('error', () => finish(''));
-          });
-        } catch { return ''; }
-      })();
-      if (fallback) { cwd = fallback; dbgSrc = 'stream.cwd'; }
-    } catch {}
-  }
-  // 最后兜底：在 2MB 内启发式提取任意 Windows/WSL 绝对路径
-  if (!cwd) {
-    try {
-      const any = await (async function extractAnyPath(maxScanBytes = 1024 * 1024): Promise<string> {
-        try {
-          const rs = fs.createReadStream(fp, { encoding: 'utf8', highWaterMark: 64 * 1024 });
-          let acc = '';
-          let scanned = 0;
-          // Windows 盘符路径与 /mnt/<drive>/ 路径
-          const reWin = /([a-zA-Z]:\\[^\r\n\t"'<>{}]+)/;
-          const reMnt = /(\/mnt\/[a-zA-Z]\/[\w\-\./]+)/;
-          return await new Promise<string>((resolve) => {
-            const finish = (val: string) => { try { rs.close(); } catch {} resolve(val); };
-            rs.on('data', (chunk) => {
-              scanned += chunk.length;
-              acc += chunk;
-              if (acc.length > 256 * 1024) acc = acc.slice(acc.length - 128 * 1024);
-              // 优先匹配 /mnt 路径，再匹配盘符路径
-              const mM = acc.match(reMnt);
-              if (mM && mM[1]) return finish(tidyPathCandidate(mM[1]));
-              const mW = acc.match(reWin);
-              if (mW && mW[1]) return finish(tidyPathCandidate(mW[1]));
-              if (scanned >= maxScanBytes) return finish('');
-            });
-            rs.on('end', () => finish(''));
-            rs.on('error', () => finish(''));
-          });
-        } catch { return ''; }
-      })();
-      if (any) { cwd = any; dbgSrc = 'stream.any'; }
-    } catch {}
-  }
-  // 对已获得的 cwd 做统一清理（涵盖 JSON 首行中直接给出的 cwd）
-  if (cwd) cwd = tidyPathCandidate(cwd);
-  const date = stat.mtimeMs || 0;
-  let dirKey = "";
-  if (cwd && typeof cwd === 'string') {
-    dirKey = dirKeyFromCwd(String(cwd).trim());
-  } else {
-    // 回退：使用文件所在目录，但这可能与项目无关，仅用于兜底展示
-    dirKey = dirKeyOf(fp);
-    if (!dbgSrc) dbgSrc = 'fallback.filedir';
-  }
-  const dirResolution = analyzeDirKeyResolution(fp, cwd, dirKey);
-  dirKey = dirResolution.resolvedDirKey;
-  if (dirResolution.hasCwd && dirResolution.usesFallbackDir) {
-    if (idxDbgEnabled()) {
-      perfLogger.log(
-        `[history.indexer.cwd-fallback] file=${JSON.stringify(fp)} src=${JSON.stringify(dbgSrc || "unknown")} cwd=${JSON.stringify(dirResolution.normalizedCwd)} dirKey=${JSON.stringify(dirResolution.resolvedDirKey)} fallbackDir=${JSON.stringify(dirResolution.fallbackDirKey)}`,
-      );
-    }
-  }
-  try { if (idxDbgEnabled() && idxDbgMatch(fp)) idxLog(`summary file='${fp}' id='${id}' src=${dbgSrc} cwd='${cwd}' dirKey='${dirKey}'`); } catch {}
-  // 预览字段由详情解析阶段统一生成（避免与详情筛选逻辑重复/偏差）
-  if (!resumeId) resumeId = id;
-  if (runtimeShell === 'unknown') runtimeShell = detectRuntimeShell(fp);
-  return { providerId: "codex", id, title, date, filePath: fp, rawDate, dirKey, resumeMode, resumeId, runtimeShell, codexRelationship } as any;
 }
 
 async function parseCodexDetails(fp: string, stat: fs.Stats, opts?: { summaryOnly?: boolean }): Promise<Details> {
@@ -1624,7 +1472,10 @@ async function parseCodexDetails(fp: string, stat: fs.Stats, opts?: { summaryOnl
 
 export function getIndexedSummaries(): IndexSummary[] {
   const ix: PersistIndex = g.__indexer.index || { version: VERSION, files: {}, savedAt: 0 };
-  return Object.values(ix.files)
+  const cached = g.__indexer.indexedSummaryCache as IndexedSummaryCache | undefined;
+  if (cached?.index === ix) return cached.summaries;
+
+  const summaries = Object.values(ix.files)
     .map((x) => {
       const summary = x.summary as any;
       const providerId: ProviderId = (summary && typeof summary.providerId === "string")
@@ -1634,6 +1485,8 @@ export function getIndexedSummaries(): IndexSummary[] {
       return { ...summary, providerId, runtimeShell: shell } as IndexSummary;
     })
     .sort((a, b) => b.date - a.date);
+  g.__indexer.indexedSummaryCache = { index: ix, summaries } as IndexedSummaryCache;
+  return summaries;
 }
 
 /**
@@ -1673,839 +1526,250 @@ export function getIndexedDetails(filePath: string): Details | null {
   return { ...v, providerId, filePath: fp, runtimeShell: shell };
 }
 
-export async function startHistoryIndexer(getWindow: () => BrowserWindow | null) {
-  // 若被重复调用（例如调试期热重载），先停止既有 watcher/定时器，避免重复注册导致内存泄漏
+/**
+ * 创建空的 Provider 根目录映射。
+ */
+function createEmptyProviderRoots(): Record<ProviderId, string[]> {
+  return { codex: [], claude: [], gemini: [], antigravity: [], grok: [] };
+}
+
+/**
+ * 复制全局状态中的 Provider 根目录映射，避免异步发现结果互相覆盖。
+ */
+function copyProviderRoots(raw: any): Record<ProviderId, string[]> {
+  const roots = createEmptyProviderRoots();
+  for (const providerId of Object.keys(roots) as ProviderId[])
+    roots[providerId] = Array.isArray(raw?.[providerId]) ? raw[providerId].slice() : [];
+  return roots;
+}
+
+/**
+ * 清理设置为不读取时遗留的 Claude 子代理与空壳历史项。
+ */
+function purgeIgnoredClaudeHistory(isCurrent: () => boolean): void {
+  if (getClaudeCodeReadAgentHistorySetting() || !isCurrent()) return;
   try {
-    await stopHistoryIndexer();
-  } catch {}
-  resetCodexRelationIndexState();
-  try { setIndexerWindowGetter(getWindow); } catch {}
-  await perfLogger.time("indexer.start", async () => {
-    // 1) 读取持久化缓存
-    const removedLegacyPersistFiles = purgeLegacyPersistFiles();
-    if (idxDbgEnabled()) {
-      perfLogger.log(`[indexer] cacheVersion=${VERSION} userData=${JSON.stringify(getUserDataDir())}`);
-      if (removedLegacyPersistFiles.length > 0) perfLogger.log(`[indexer] purgedLegacyCaches=${JSON.stringify(removedLegacyPersistFiles)}`);
-    }
-    await ensureHistoryIndexLoaded();
-    g.__indexer.details = await loadDetails();
-    try { getDetailsCache().clear(); } catch {}
-    try { clearFastRefreshState(); } catch {}
-
-    // 1.5) 读取 Claude Code 过滤开关，并在启动阶段快速清理“默认应忽略”的历史项
-    const claudeCodeReadAgentHistory = getClaudeCodeReadAgentHistorySetting();
-    try { (g.__indexer as any).claudeCodeReadAgentHistory = claudeCodeReadAgentHistory; } catch {}
-    if (!claudeCodeReadAgentHistory) {
-      try {
-        const ix: PersistIndex = g.__indexer.index;
-        const det: PersistDetails = g.__indexer.details;
-        let removed = 0;
-        for (const [k, entry] of Object.entries(ix.files || {})) {
-          const summary: any = (entry as any)?.summary;
-          const pid = String(summary?.providerId || "").toLowerCase();
-          if (pid !== "claude") continue;
-          const fp = String(summary?.filePath || "");
-          const preview = typeof summary?.preview === "string" ? summary.preview.trim() : "";
-          const title = typeof summary?.title === "string" ? summary.title : "";
-          const base = fp ? path.basename(fp) : "";
-          const assistantOnly = !preview && !!base && (!title || title === base);
-          if (isClaudeAgentHistoryFilePath(fp) || assistantOnly) {
-            delete ix.files[k];
-            if ((det.files as any)[k]) delete (det.files as any)[k];
-            removed++;
-          }
-        }
-        if (removed > 0) {
-          ix.savedAt = Date.now();
-          det.savedAt = Date.now();
-          saveIndex(ix);
-          saveDetails(det);
-          idxLog(`[purge] removed=${removed} (claude agent/assistant-only) because readAgentHistory=false`);
-        }
-      } catch {}
-    }
-
-    // 2) 计算根目录（不扫描）
-    const codexRootCandidates = await getSessionsRootCandidatesFastAsync();
-    const claudeRootCandidates = await getClaudeRootCandidatesFastAsync();
-    const geminiRootCandidates = await getGeminiRootCandidatesFastAsync();
-    const antigravityRootCandidates = await getAntigravityRootCandidatesFastAsync();
-    const grokRootCandidates = await getGrokRootCandidatesFastAsync();
-
-    const uniq = (xs: string[]) => Array.from(new Set(xs.filter(Boolean)));
-    const rootsByProviderAll: Record<ProviderId, string[]> = {
-      codex: uniq(codexRootCandidates.map((c) => c.path)),
-      claude: uniq(claudeRootCandidates.map((c) => c.path)),
-      gemini: uniq(geminiRootCandidates.map((c) => c.path)),
-      antigravity: uniq(antigravityRootCandidates.map((c) => c.path)),
-      grok: uniq(grokRootCandidates.map((c) => c.path)),
-    };
-    const rootsByProviderExisting: Record<ProviderId, string[]> = {
-      codex: uniq(codexRootCandidates.filter((c) => c.exists).map((c) => c.path)),
-      claude: uniq(claudeRootCandidates.filter((c) => c.exists).map((c) => c.path)),
-      gemini: uniq(geminiRootCandidates.filter((c) => c.exists).map((c) => c.path)),
-      antigravity: uniq(antigravityRootCandidates.filter((c) => c.exists).map((c) => c.path)),
-      grok: uniq(grokRootCandidates.filter((c) => c.exists).map((c) => c.path)),
-    };
-    const rootsByProviderMissing: Record<ProviderId, string[]> = {
-      codex: uniq(codexRootCandidates.filter((c) => !c.exists).map((c) => c.path)),
-      claude: uniq(claudeRootCandidates.filter((c) => !c.exists).map((c) => c.path)),
-      gemini: uniq(geminiRootCandidates.filter((c) => !c.exists).map((c) => c.path)),
-      antigravity: uniq(antigravityRootCandidates.filter((c) => !c.exists).map((c) => c.path)),
-      grok: uniq(grokRootCandidates.filter((c) => !c.exists).map((c) => c.path)),
-    };
-
-    const rootsExisting = uniq([
-      ...rootsByProviderExisting.codex,
-      ...rootsByProviderExisting.claude,
-      ...rootsByProviderExisting.gemini,
-      ...rootsByProviderExisting.antigravity,
-      ...rootsByProviderExisting.grok,
-    ]);
-    const rootsMissing = uniq([
-      ...rootsByProviderMissing.codex,
-      ...rootsByProviderMissing.claude,
-      ...rootsByProviderMissing.gemini,
-      ...rootsByProviderMissing.antigravity,
-      ...rootsByProviderMissing.grok,
-    ]);
-
-    perfLogger.log(`[roots] codex.existing=${JSON.stringify(rootsByProviderExisting.codex)} codex.missing=${JSON.stringify(rootsByProviderMissing.codex)}`);
-    perfLogger.log(`[roots] claude.existing=${JSON.stringify(rootsByProviderExisting.claude)} claude.missing=${JSON.stringify(rootsByProviderMissing.claude)}`);
-    perfLogger.log(`[roots] gemini.existing=${JSON.stringify(rootsByProviderExisting.gemini)} gemini.missing=${JSON.stringify(rootsByProviderMissing.gemini)}`);
-    perfLogger.log(`[roots] antigravity.existing=${JSON.stringify(rootsByProviderExisting.antigravity)} antigravity.missing=${JSON.stringify(rootsByProviderMissing.antigravity)}`);
-    perfLogger.log(`[roots] grok.existing=${JSON.stringify(rootsByProviderExisting.grok)} grok.missing=${JSON.stringify(rootsByProviderMissing.grok)}`);
-
-    try {
-      // 兼容旧字段：roots 仍指向 Codex sessions roots（供 settings.codexRoots 等旧逻辑复用）
-      (g.__indexer as any).roots = rootsByProviderAll.codex.slice();
-      (g.__indexer as any).existingRoots = rootsByProviderExisting.codex.slice();
-      (g.__indexer as any).missingRoots = rootsByProviderMissing.codex.slice();
-      (g.__indexer as any).rootsByProvider = rootsByProviderAll;
-      (g.__indexer as any).existingRootsByProvider = rootsByProviderExisting;
-      (g.__indexer as any).missingRootsByProvider = rootsByProviderMissing;
-    } catch {}
-
-    // 3) 枚举所有会话文件并比对签名，增量更新（按 Provider 聚合）
-    type ProviderFile = { providerId: ProviderId; filePath: string };
-    const files: ProviderFile[] = [];
-    const scanLimit = pLimit(8);
-
-    const addFiles = (providerId: ProviderId, list: string[]) => {
-      for (const fp of list) {
-        if (!fp) continue;
-        files.push({ providerId, filePath: fp });
-      }
-    };
-
-    await Promise.all(rootsByProviderExisting.codex.map((root) => scanLimit(async () => {
-      try {
-        const years = await fsp.readdir(root, { withFileTypes: true })
-          .then((ds) => ds.filter((d) => d.isDirectory()).map((d) => d.name))
-          .catch(() => [] as string[]);
-        for (const y of years) {
-          const ydir = path.join(root, y);
-          const months = await fsp.readdir(ydir, { withFileTypes: true })
-            .then((ds) => ds.filter((d) => d.isDirectory()).map((d) => d.name))
-            .catch(() => [] as string[]);
-          for (const m of months) {
-            const mdir = path.join(ydir, m);
-            const days = await fsp.readdir(mdir, { withFileTypes: true })
-              .then((ds) => ds.filter((d) => d.isDirectory()).map((d) => d.name))
-              .catch(() => [] as string[]);
-            for (const d of days) {
-              const ddir = path.join(mdir, d);
-              const fsx = await fsp.readdir(ddir)
-                .then((fs0) => fs0.filter((f) => f.endsWith(".jsonl")))
-                .catch(() => [] as string[]);
-              for (const f of fsx) files.push({ providerId: "codex", filePath: path.join(ddir, f) });
-            }
-          }
-        }
-      } catch {}
-    })));
-
-    await Promise.all(rootsByProviderExisting.claude.map((root) => scanLimit(async () => {
-      try { addFiles("claude", await discoverClaudeSessionFiles(root, { includeAgentHistory: claudeCodeReadAgentHistory })); } catch {}
-    })));
-
-    await Promise.all(rootsByProviderExisting.gemini.map((root) => scanLimit(async () => {
-      try { addFiles("gemini", await discoverGeminiSessionFiles(root)); } catch {}
-    })));
-
-    await Promise.all(rootsByProviderExisting.antigravity.map((root) => scanLimit(async () => {
-      try { addFiles("antigravity", await discoverAntigravitySessionFiles(root)); } catch {}
-    })));
-
-    await Promise.all(rootsByProviderExisting.grok.map((root) => scanLimit(async () => {
-      try { addFiles("grok", await discoverGrokSessionFiles(root)); } catch {}
-    })));
-
-    perfLogger.log(`[files] codex=${files.filter((f) => f.providerId === "codex").length} claude=${files.filter((f) => f.providerId === "claude").length} gemini=${files.filter((f) => f.providerId === "gemini").length} antigravity=${files.filter((f) => f.providerId === "antigravity").length} grok=${files.filter((f) => f.providerId === "grok").length} total=${files.length}`);
-
     const ix: PersistIndex = g.__indexer.index;
     const det: PersistDetails = g.__indexer.details;
-    const win = getWindow();
-
-    const rootEntriesExisting: Array<{ providerId: ProviderId; root: string }> = [
-      ...rootsByProviderExisting.codex.map((root) => ({ providerId: "codex" as ProviderId, root })),
-      ...rootsByProviderExisting.claude.map((root) => ({ providerId: "claude" as ProviderId, root })),
-      ...rootsByProviderExisting.gemini.map((root) => ({ providerId: "gemini" as ProviderId, root })),
-      ...rootsByProviderExisting.antigravity.map((root) => ({ providerId: "antigravity" as ProviderId, root })),
-      ...rootsByProviderExisting.grok.map((root) => ({ providerId: "grok" as ProviderId, root })),
-    ];
-
-    const normPath = (p: string): string => {
-      return String(p || "").replace(/\\/g, "/").replace(/\/+/g, "/").replace(/\/+$/, "").toLowerCase();
-    };
-
-    /**
-     * 根据 filePath 归属到 Provider（优先按 root 前缀最长匹配；再用特征子串兜底）。
-     */
-    const resolveProviderIdForFile = (filePath: string): ProviderId => {
-      try {
-        const f = normPath(filePath);
-        let best: { providerId: ProviderId; len: number } | null = null;
-        for (const entry of rootEntriesExisting) {
-          const r = normPath(entry.root);
-          if (!r) continue;
-          if (f === r || f.startsWith(r + "/")) {
-            if (!best || r.length > best.len) best = { providerId: entry.providerId, len: r.length };
-          }
-        }
-        if (best) return best.providerId;
-        if (f.includes("/.claude/")) return "claude";
-        if (f.includes("/.grok/sessions/")) return "grok";
-        if (f.includes("/.gemini/antigravity-cli/")) return "antigravity";
-        if (f.includes("/.gemini/")) return "gemini";
-        if (f.includes("/.codex/")) return "codex";
-      } catch {}
-      return "codex";
-    };
-
-    /**
-     * 判断是否为 Provider 支持的会话文件。
-     */
-    const shouldIndexFile = (providerId: ProviderId, filePath: string): boolean => {
-      try {
-        const base = path.basename(String(filePath || "")).toLowerCase();
-        if (providerId === "codex") return base.endsWith(".jsonl");
-        if (providerId === "claude") {
-          if (!claudeCodeReadAgentHistory && base.startsWith("agent-") && base.endsWith(".jsonl")) return false;
-          return base.endsWith(".jsonl") || base.endsWith(".ndjson");
-        }
-        if (providerId === "gemini") return base.startsWith("session-") && (base.endsWith(".jsonl") || base.endsWith(".json"));
-        if (providerId === "antigravity") return base.endsWith(".db") && !base.endsWith(".db-wal") && !base.endsWith(".db-shm");
-        if (providerId === "grok") return base === "summary.json";
-        return false;
-      } catch {
-        return false;
-      }
-    };
-
-    /**
-     * Gemini 的项目目录名为 projectHash；这里通过“已知项目路径”反推 hash -> cwd 映射。
-     * - 来源：CodexFlow 的 `projects.json`（用户打开/扫描过的项目）
-     * - 策略：对同一路径计算多种 hash 变体，覆盖 Windows/WSL 的分隔符差异
-     */
-    const geminiHashToCwd = new Map<string, string>();
-    try {
-      const projectsPath = path.join(getUserDataDir(), "projects.json");
-      const rawText = await fsp.readFile(projectsPath, "utf8").catch(() => "");
-      if (rawText) {
-        const raw = JSON.parse(rawText) as any;
-        const items: any[] = Array.isArray(raw) ? raw : [];
-        /**
-         * 将项目路径注册进 `hash -> cwd` 映射（用于 Gemini 会话缺失 cwd 时的归属与继续对话）。
-         */
-        const register = (p?: unknown, kind?: "win" | "wsl") => {
-          try {
-            if (typeof p !== "string") return;
-            const t = tidyPathCandidate(p);
-            if (!t) return;
-            // 直接用路径字符串推导 hash（兼容盘符大小写与 /、\\ 分隔符差异）
-            for (const h of deriveGeminiProjectHashCandidatesFromPath(t)) {
-              if (h && !geminiHashToCwd.has(h)) geminiHashToCwd.set(h, t);
-            }
-            // 额外：当仅有 WSL 的 /mnt/<drive> 路径时，派生 Windows 盘符路径以覆盖 Windows 侧 Gemini hash
-            if (kind === "wsl") {
-              const m = t.match(/^\/mnt\/([a-zA-Z])\/(.*)$/);
-              if (m) {
-                const win = `${m[1].toUpperCase()}:\\${m[2].replace(/\//g, "\\")}`;
-                for (const h of deriveGeminiProjectHashCandidatesFromPath(win)) {
-                  if (h && !geminiHashToCwd.has(h)) geminiHashToCwd.set(h, win);
-                }
-              }
-            }
-          } catch {}
-        };
-        for (const it of items) {
-          register(it?.wslPath, "wsl");
-          register(it?.winPath, "win");
-        }
-      }
-    } catch {}
-
-    /**
-     * 统一入口：按 Provider 解析详情（索引阶段可启用 summaryOnly）。
-     */
-    const parseDetailsByProvider = async (providerId: ProviderId, fp: string, stat: fs.Stats, opts?: { summaryOnly?: boolean }): Promise<Details> => {
-      if (providerId === "claude") {
-        const summaryOnly = !!opts?.summaryOnly;
-        const maxLines = summaryOnly ? (claudeCodeReadAgentHistory ? 400 : 200) : 50_000;
-        return await parseClaudeSessionFile(fp, stat, { ...(opts as any), maxLines } as any);
-      }
-      if (providerId === "gemini") {
-        const parsed = await parseGeminiSessionFile(fp, stat, opts as any);
-        try {
-          const hash = String((parsed as any)?.projectHash || "").toLowerCase();
-          const hasCwd = !!(parsed && (parsed as any).cwd && String((parsed as any).cwd).trim());
-          if (hash && !hasCwd) {
-            const mapped = geminiHashToCwd.get(hash);
-            if (mapped) {
-              const dirKey = dirKeyFromCwd(mapped);
-              return { ...(parsed as any), cwd: mapped, dirKey } as any;
-            }
-          }
-        } catch {}
-        return parsed as any;
-      }
-      if (providerId === "antigravity") {
-        return await parseAntigravitySessionFile(fp, stat, opts as any) as any;
-      }
-      if (providerId === "grok") {
-        return await parseGrokSessionFile(fp, stat, opts as any) as any;
-      }
-      return await parseCodexDetails(fp, stat, opts);
-    };
-
-    // 去重：同一路径仅保留一份（按 canonicalKey）
-    const uniqFiles = (() => {
-      const mp = new Map<string, ProviderFile>();
-      for (const f of files) {
-        try {
-          const k = canonicalKey(f.filePath);
-          if (!k) continue;
-          if (!mp.has(k)) mp.set(k, f);
-        } catch {}
-      }
-      return Array.from(mp.values());
-    })();
-    // 先按文件更新时间倒序排队：冷启动没有缓存时，也应优先解析并展示最新会话。
-    // stat 结果在后续解析中直接复用，避免为排序重复读取文件元数据。
-    const statLimit = pLimit(16);
-    const recentFirstFiles = (await Promise.all(uniqFiles.map((item) => statLimit(async () => {
-      const stat = await fsp.stat(item.filePath).catch(() => null as any);
-      return stat ? { ...item, stat } : null;
-    }))))
-      .filter((item): item is ProviderFile & { stat: fs.Stats } => !!item)
-      .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
-
-    const workLimit = pLimit(8);
-    let updatedSummaries = 0;
-    let updatedDetails = 0;
-    const batch: IndexSummary[] = [];
-    const flush = () => {
-      if (batch.length === 0) return;
-      const items = batch.splice(0, batch.length).sort((a, b) => b.date - a.date);
-      safeWindowSend(win, "history:index:add", { items }, { tag: "indexer", suppressMs: 1000 });
-    };
-
-    // 若 details 未能解析出 cwd（仅得到文件所在目录），延迟重试几次，以适配 CLI 先写头再补充 <cwd> 的行为
-    async function scheduleReparse(fp: string, whenMs: number, reason: string) {
-      try {
-        const key = canonicalKey(fp);
-        const retries: Map<string, { count: number; timer?: NodeJS.Timeout }> = g.__indexer.retries;
-        const st = retries.get(key) || { count: 0 };
-        if (st.count >= 3) return; // 最多重试 3 次
-        st.count += 1;
-        try { if (st.timer) clearTimeout(st.timer); } catch {}
-        st.timer = setTimeout(async () => {
-          try {
-            const stat = await fsp.stat(fp).catch(() => null as any);
-            if (!stat) { retries.delete(key); return; }
-            const k = canonicalKey(fp);
-            const sig: FileSig = { mtimeMs: stat.mtimeMs, size: stat.size };
-            const providerId = resolveProviderIdForFile(fp);
-            if (!shouldIndexFile(providerId, fp)) { retries.delete(key); return; }
-            const details = await parseDetailsByProvider(providerId, fp, stat, { summaryOnly: true });
-            if (providerId === "claude" && shouldIgnoreClaudeSession(details as any, claudeCodeReadAgentHistory)) {
-              const existed = !!ix.files[k] || !!det.files[k];
-              try { getDetailsCache().delete(k); } catch {}
-              if (ix.files[k]) delete ix.files[k];
-              if (det.files[k]) delete det.files[k];
-              ix.savedAt = Date.now(); det.savedAt = Date.now();
-              saveIndex(ix); saveDetails(det);
-              if (existed) {
-                safeWindowSend(win, "history:index:remove", { filePath: fp }, { tag: "indexer", suppressMs: 1000 });
-              }
-              retries.delete(key);
-              return;
-            }
-            const dirResolution = analyzeDirKeyResolution(fp, details.cwd, details.dirKey);
-            const gotProjectDir = dirResolution.hasCwd && !dirResolution.usesFallbackDir;
-            const slimDetails = stripDetailsForPersist(details);
-            const summary: IndexSummary = {
-              providerId,
-              id: details.id,
-              title: details.title,
-              date: details.date,
-              filePath: fp,
-              rawDate: details.rawDate,
-              dirKey: dirResolution.resolvedDirKey,
-              preview: details.preview,
-              projectHash: (details as any).projectHash,
-              resumeMode: details.resumeMode,
-              resumeId: details.resumeId,
-              runtimeShell: details.runtimeShell && details.runtimeShell !== 'unknown' ? details.runtimeShell : detectRuntimeShell(fp),
-              codexRelationship: details.codexRelationship,
-            } as any;
-            try { getDetailsCache().delete(k); } catch {}
-            det.files[k] = { sig, details: slimDetails };
-            ix.files[k] = { sig, summary };
-            ix.savedAt = Date.now(); det.savedAt = Date.now();
-            saveIndex(ix); saveDetails(det);
-            if (gotProjectDir) {
-              safeWindowSend(win, "history:index:update", { item: summary }, { tag: "indexer", suppressMs: 1000 });
-              retries.delete(key);
-            } else {
-              if (dirResolution.hasCwd) {
-                if (idxDbgEnabled()) {
-                  perfLogger.log(
-                    `[history.indexer.retry-fallback] file=${JSON.stringify(fp)} reason=${JSON.stringify(reason)} cwd=${JSON.stringify(dirResolution.normalizedCwd)} dirKey=${JSON.stringify(summary.dirKey)} fallbackDir=${JSON.stringify(dirResolution.fallbackDirKey)}`,
-                  );
-                }
-              }
-              // 若仍未提取到 cwd，继续按指数回退重试
-              const nextDelay = st.count === 1 ? 2500 : (st.count === 2 ? 6000 : 12000);
-              idxLog(`[retry] reparse scheduled count=${st.count} next=${nextDelay}ms reason=${reason} file='${fp}'`);
-              await scheduleReparse(fp, nextDelay, 'retry');
-            }
-          } catch {
-            retries.delete(canonicalKey(fp));
-          }
-        }, Math.max(500, whenMs));
-        retries.set(key, st);
-        idxLog(`[retry] scheduled in ${whenMs}ms reason=${reason} file='${fp}'`);
-      } catch {}
+    let removed = 0;
+    for (const [key, entry] of Object.entries(ix.files || {})) {
+      if (!isCurrent()) return;
+      const summary: any = (entry as any)?.summary;
+      if (String(summary?.providerId || "").toLowerCase() !== "claude") continue;
+      const filePath = String(summary?.filePath || "");
+      const preview = typeof summary?.preview === "string" ? summary.preview.trim() : "";
+      const title = typeof summary?.title === "string" ? summary.title : "";
+      const base = filePath ? path.basename(filePath) : "";
+      const assistantOnly = !preview && !!base && (!title || title === base);
+      if (!isClaudeAgentHistoryFilePath(filePath) && !assistantOnly) continue;
+      delete ix.files[key];
+      delete det.files[key];
+      removed++;
     }
+    if (removed <= 0 || !isCurrent()) return;
+    ix.savedAt = Date.now();
+    det.savedAt = Date.now();
+    saveIndex(ix);
+    saveDetails(det);
+    idxLog(`[purge] removed=${removed} (claude agent/assistant-only) because readAgentHistory=false`);
+  } catch {}
+}
 
-    await Promise.all(recentFirstFiles.map(({ providerId, filePath: fp, stat }) => workLimit(async () => {
-      try {
-        if (!shouldIndexFile(providerId, fp)) return;
-        const k = canonicalKey(fp);
-        const sig: FileSig = { mtimeMs: stat.mtimeMs, size: stat.size };
-        const prev = ix.files[k]?.sig;
-        const same = prev && prev.mtimeMs === sig.mtimeMs && prev.size === sig.size;
-        if (!same) {
-          const details = await parseDetailsByProvider(providerId, fp, stat, { summaryOnly: true });
-          if (providerId === "claude" && shouldIgnoreClaudeSession(details as any, claudeCodeReadAgentHistory)) {
-            try { getDetailsCache().delete(k); } catch {}
-            if (ix.files[k]) delete ix.files[k];
-            if (det.files[k]) delete det.files[k];
-            return;
-          }
-          const slimDetails = stripDetailsForPersist(details);
-          const dirResolution = analyzeDirKeyResolution(fp, details.cwd, details.dirKey);
-          try { getDetailsCache().delete(k); } catch {}
-          det.files[k] = { sig, details: slimDetails };
-          updatedDetails++;
-          const summary: IndexSummary = {
-            providerId,
-            id: details.id,
-            title: details.title,
-            date: details.date,
-            filePath: fp,
-            rawDate: details.rawDate,
-            dirKey: dirResolution.resolvedDirKey,
-            preview: details.preview,
-            projectHash: (details as any).projectHash,
-            resumeMode: details.resumeMode,
-            resumeId: details.resumeId,
-            runtimeShell: details.runtimeShell && details.runtimeShell !== 'unknown' ? details.runtimeShell : detectRuntimeShell(fp),
-            codexRelationship: details.codexRelationship,
-          } as any;
-          ix.files[k] = { sig, summary };
-          updatedSummaries++;
-          batch.push(summary);
-          // 若暂未提取到 cwd（dirKey 仍为文件所在目录），延迟重试解析
-          try {
-            if (!dirResolution.hasCwd || dirResolution.usesFallbackDir) {
-              if (dirResolution.hasCwd) {
-                if (idxDbgEnabled()) {
-                  perfLogger.log(
-                    `[history.indexer.schedule-fallback] file=${JSON.stringify(fp)} phase="initial" cwd=${JSON.stringify(dirResolution.normalizedCwd)} dirKey=${JSON.stringify(summary.dirKey)} fallbackDir=${JSON.stringify(dirResolution.fallbackDirKey)}`,
-                  );
-                }
-              }
-              await scheduleReparse(fp, 2000, dirResolution.hasCwd ? 'dirKey=fallback' : 'no-cwd');
-            }
-          } catch {}
-          if (batch.length >= 50) flush();
-        }
-      } catch {}
-    })));
-    flush();
-    ix.savedAt = Date.now(); det.savedAt = Date.now();
-    saveIndex(ix); saveDetails(det);
-    perfLogger.log(`[indexer] updated summaries=${updatedSummaries} details=${updatedDetails}`);
+/**
+ * 从项目缓存构建 Gemini projectHash 到工作目录的映射。
+ */
+async function loadGeminiHashToCwd(): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  try {
+    const projectsPath = path.join(getUserDataDir(), "projects.json");
+    const rawText = (await fsp.readFile(projectsPath, "utf8").catch(() => "")).replace(/^\uFEFF/, "");
+    const items: any[] = rawText ? JSON.parse(rawText) : [];
+    /** 将一个项目路径登记为 Gemini 可识别的 hash 候选。 */
+    const register = (value?: unknown, kind?: "win" | "wsl"): void => {
+      if (typeof value !== "string") return;
+      const candidate = tidyPathCandidate(value);
+      if (!candidate) return;
+      for (const hash of deriveGeminiProjectHashCandidatesFromPath(candidate))
+        if (hash && !result.has(hash)) result.set(hash, candidate);
+      if (kind !== "wsl") return;
+      const match = candidate.match(/^\/mnt\/([a-zA-Z])\/(.*)$/);
+      if (!match) return;
+      const windowsPath = `${match[1].toUpperCase()}:\\${match[2].replace(/\//g, "\\")}`;
+      for (const hash of deriveGeminiProjectHashCandidatesFromPath(windowsPath))
+        if (hash && !result.has(hash)) result.set(hash, windowsPath);
+    };
+    for (const item of Array.isArray(items) ? items : []) {
+      register(item?.wslPath, "wsl");
+      register(item?.winPath, "win");
+    }
+  } catch {}
+  return result;
+}
 
-    // 4) 文件变化监听（可选）
-    if (chokidar && rootEntriesExisting.length > 0) {
-      // 每次启动索引器先清空 watch 队列（防止上一轮残留 timer 触发）
-      try { clearWatchQueueState(); } catch {}
+/**
+ * 启动单个 Provider 的免存在性探测任务，避免 UNC stat 阻塞候选发布。
+ */
+function getHistoryRootDiscoveryTask(providerId: ProviderId): Promise<SessionsRootCandidate[]> {
+  try {
+    if (providerId === "codex") return getSessionsRootCandidatesFastAsync(false);
+    if (providerId === "claude") return getClaudeRootCandidatesFastAsync(false);
+    if (providerId === "gemini") return getGeminiRootCandidatesFastAsync(false);
+    if (providerId === "antigravity") return getAntigravityRootCandidatesFastAsync(false);
+    return getGrokRootCandidatesFastAsync(false);
+  } catch (error) {
+    return Promise.reject(error);
+  }
+}
 
-      const watchLimit = pLimit(WATCH_CONCURRENCY);
+/**
+ * 立即返回本机 Provider 根候选，避免 WSL 根探测阻塞本地历史刷新。
+ */
+function getImmediateLocalHistoryRootCandidates(providerId: ProviderId): SessionsRootCandidate[] {
+  const paths: string[] = [];
+  const add = (value?: string): void => {
+    const normalized = String(value || "").trim();
+    if (normalized) paths.push(normalized);
+  };
+  if (providerId === "codex") {
+    add(path.join(os.homedir(), ".codex", "sessions"));
+  } else if (providerId === "claude") {
+    add(process.env.CLAUDE_HOME);
+    add(process.env.CLAUDE_CONFIG_DIR);
+    add(path.join(os.homedir(), ".claude"));
+  } else if (providerId === "gemini") {
+    const cliHome = String(process.env.GEMINI_CLI_HOME || "").trim();
+    const home = String(process.env.GEMINI_HOME || "").trim();
+    if (cliHome) add(path.join(cliHome, "tmp"));
+    if (home) add(path.join(home, "tmp"));
+    add(path.join(os.homedir(), ".gemini", "tmp"));
+  } else if (providerId === "antigravity") {
+    const antigravityHome = String(process.env.ANTIGRAVITY_HOME || "").trim();
+    const geminiHome = String(process.env.GEMINI_HOME || "").trim();
+    if (antigravityHome) add(path.join(antigravityHome, "conversations"));
+    if (geminiHome) add(path.join(geminiHome, "antigravity-cli", "conversations"));
+    add(path.join(os.homedir(), ".gemini", "antigravity-cli", "conversations"));
+  } else {
+    const grokHome = String(process.env.GROK_HOME || "").trim();
+    if (grokHome) add(path.join(grokHome, "sessions"));
+    add(path.join(os.homedir(), ".grok", "sessions"));
+  }
+  return Array.from(new Set(paths)).map((rootPath) => ({
+    path: rootPath,
+    exists: true,
+    source: "windows",
+    kind: "local",
+  }));
+}
 
-      /**
-       * 执行一次“文件变更 -> 索引 upsert”的核心逻辑（不做去抖/合并）。
-       */
-      async function upsertFromWatch(fp: string): Promise<void> {
-        try {
-          const rawProviderId = resolveProviderIdForFile(fp);
-          const normalizedFp = rawProviderId === "antigravity" ? normalizeAntigravityWatchPath(fp) : fp;
-          const providerId = rawProviderId === "antigravity" ? "antigravity" : resolveProviderIdForFile(normalizedFp);
-          if (!shouldIndexFile(providerId, normalizedFp)) return;
-          const stat = await fsp.stat(normalizedFp).catch(() => null as any);
-          if (!stat) return;
-          const k = canonicalKey(normalizedFp);
-          const sig: FileSig = { mtimeMs: stat.mtimeMs, size: stat.size };
-          // 先解析 details 并直接构造 summary，零额外 IO
-          const details = await parseDetailsByProvider(providerId, normalizedFp, stat, { summaryOnly: true });
-          if (providerId === "claude" && shouldIgnoreClaudeSession(details as any, claudeCodeReadAgentHistory)) {
-            const existed = !!ix.files[k] || !!det.files[k];
-            try { getDetailsCache().delete(k); } catch {}
-            if (ix.files[k]) delete ix.files[k];
-            if (det.files[k]) delete det.files[k];
-            ix.savedAt = Date.now(); det.savedAt = Date.now(); saveIndex(ix); saveDetails(det);
-            if (existed) safeWindowSend(win, "history:index:remove", { filePath: normalizedFp }, { tag: "indexer", suppressMs: 1000 });
-            return;
-          }
-          const slimDetails = stripDetailsForPersist(details);
-          const dirResolution = analyzeDirKeyResolution(normalizedFp, details.cwd, details.dirKey);
-          try { getDetailsCache().delete(k); } catch {}
-          det.files[k] = { sig, details: slimDetails };
-          const summary: IndexSummary = {
-            providerId,
-            id: details.id,
-            title: details.title,
-            date: details.date,
-            filePath: normalizedFp,
-            rawDate: details.rawDate,
-            dirKey: dirResolution.resolvedDirKey,
-            preview: details.preview,
-            projectHash: (details as any).projectHash,
-            resumeMode: details.resumeMode,
-            resumeId: details.resumeId,
-            runtimeShell: details.runtimeShell && details.runtimeShell !== 'unknown' ? details.runtimeShell : detectRuntimeShell(normalizedFp),
-            codexRelationship: details.codexRelationship,
-          } as any;
-          ix.files[k] = { sig, summary };
-          ix.savedAt = Date.now(); det.savedAt = Date.now(); saveIndex(ix); saveDetails(det);
-          safeWindowSend(win, "history:index:update", { item: summary }, { tag: "indexer", suppressMs: 1000 });
-          try {
-            if (!dirResolution.hasCwd || dirResolution.usesFallbackDir) {
-              if (dirResolution.hasCwd) {
-                if (idxDbgEnabled()) {
-                  perfLogger.log(
-                    `[history.indexer.schedule-fallback] file=${JSON.stringify(normalizedFp)} phase="watch" cwd=${JSON.stringify(dirResolution.normalizedCwd)} dirKey=${JSON.stringify(summary.dirKey)} fallbackDir=${JSON.stringify(dirResolution.fallbackDirKey)}`,
-                  );
-                }
-              }
-              await scheduleReparse(normalizedFp, 2000, dirResolution.hasCwd ? 'dirKey=fallback(change)' : 'no-cwd(change)');
-            }
-          } catch {}
-        } catch {}
+/**
+ * 发布单个 Provider 的候选根，并请求协调器开始受限扫描。
+ */
+function publishHistoryRootCandidates(
+  providerId: ProviderId,
+  candidates: readonly SessionsRootCandidate[],
+  isCurrent: () => boolean,
+): void {
+  if (!isCurrent()) return;
+  const unique = (values: string[]) => Array.from(new Set(values.filter(Boolean)));
+  const allRoots = copyProviderRoots(g.__indexer?.rootsByProvider);
+  const existingRoots = copyProviderRoots(g.__indexer?.existingRootsByProvider);
+  const missingRoots = copyProviderRoots(g.__indexer?.missingRootsByProvider);
+  allRoots[providerId] = unique([...allRoots[providerId], ...candidates.map((candidate) => candidate.path)]);
+  existingRoots[providerId] = unique([...existingRoots[providerId], ...candidates.filter((candidate) => candidate.exists).map((candidate) => candidate.path)]);
+  missingRoots[providerId] = unique([...missingRoots[providerId], ...candidates.filter((candidate) => !candidate.exists).map((candidate) => candidate.path)]);
+  if (!isCurrent()) return;
+  g.__indexer.rootsByProvider = allRoots;
+  g.__indexer.existingRootsByProvider = existingRoots;
+  g.__indexer.missingRootsByProvider = missingRoots;
+  if (providerId === "codex") {
+    g.__indexer.roots = allRoots.codex.slice();
+    g.__indexer.existingRoots = existingRoots.codex.slice();
+    g.__indexer.missingRoots = missingRoots.codex.slice();
+  }
+  perfLogger.log(`[roots] ${providerId}.existing=${JSON.stringify(existingRoots[providerId])} ${providerId}.missing=${JSON.stringify(missingRoots[providerId])}`);
+}
+
+/**
+ * 后台发现各 Provider 根目录；迟到结果只有在启动代次仍有效时才允许发布。
+ */
+function scheduleHistoryRootDiscovery(
+  lifecycleGeneration: number,
+  reconcilerGeneration: number,
+  reconciler: typeof import("./historyReconciler"),
+): void {
+  const isCurrent = () => historyIndexerLifecycleGeneration === lifecycleGeneration
+    && reconciler.isHistoryReconcilerGenerationCurrent(reconcilerGeneration);
+  for (const providerId of ["codex", "claude", "gemini", "antigravity", "grok"] as ProviderId[]) {
+    publishHistoryRootCandidates(providerId, getImmediateLocalHistoryRootCandidates(providerId), isCurrent);
+    void getHistoryRootDiscoveryTask(providerId).then((candidates) => {
+      publishHistoryRootCandidates(providerId, candidates, isCurrent);
+      if (isCurrent()) reconciler.requestHistoryReconcileNow(`roots-discovered:${providerId}`);
+    }).catch((error) => {
+      if (isCurrent()) idxLog(`[roots] provider=${providerId} discovery failed error=${String(error)}`);
+    });
+  }
+}
+
+/**
+ * 串行启动历史索引器；初始化仅加载本地缓存，目录发现与解析交给协调器后台执行。
+ */
+export function startHistoryIndexer(getWindow: () => BrowserWindow | null): Promise<void> {
+  const lifecycleGeneration = ++historyIndexerLifecycleGeneration;
+  const pauseTask = import("./historyReconciler")
+    .then(async (reconciler) => await reconciler.pauseHistoryReconciler())
+    .catch(() => 0);
+  const operation = historyIndexerLifecycleQueue.catch(() => undefined).then(async () => {
+    await pauseTask;
+    if (historyIndexerLifecycleGeneration !== lifecycleGeneration) return;
+
+    const reconciler = await import("./historyReconciler");
+    const reconcilerGeneration = await reconciler.beginHistoryReconcilerInitialization();
+    const isCurrent = () => historyIndexerLifecycleGeneration === lifecycleGeneration
+      && reconciler.isHistoryReconcilerGenerationCurrent(reconcilerGeneration);
+    if (!isCurrent()) return;
+
+    resetCodexRelationIndexState();
+    setIndexerWindowGetter(getWindow);
+    await perfLogger.time("indexer.start", async () => {
+      const removedLegacyPersistFiles = purgeLegacyPersistFiles();
+      if (idxDbgEnabled()) {
+        perfLogger.log(`[indexer] cacheVersion=${VERSION} userData=${JSON.stringify(getUserDataDir())}`);
+        if (removedLegacyPersistFiles.length > 0)
+          perfLogger.log(`[indexer] purgedLegacyCaches=${JSON.stringify(removedLegacyPersistFiles)}`);
       }
 
-      /**
-       * flush watch 队列：对同一文件的短时间频繁变更进行合并（去抖 + 批处理 + 限并发）。
-       */
-      async function flushWatchQueue(): Promise<void> {
-        const st = getWatchQueueState();
-        if (st.flushing) return;
-        st.flushing = true;
-        try {
-          while (true) {
-            const now = Date.now();
-            const due: string[] = [];
-            for (const [k, v] of Array.from(st.queue.entries())) {
-              if (v.dueAt > now) continue;
-              st.queue.delete(k);
-              due.push(v.filePath);
-            }
-            if (due.length === 0) break;
-            for (let i = 0; i < due.length; i += WATCH_BATCH_LIMIT) {
-              const batch = due.slice(i, i + WATCH_BATCH_LIMIT);
-              await Promise.all(batch.map((p) => watchLimit(async () => {
-                try {
-                  await upsertFromWatch(p);
-                } finally {
-                  settleCodexRelationIndexPending(`watch:${canonicalKey(p)}`);
-                }
-              })));
-              // 让出事件循环，避免主进程长时间被占用导致 UI 卡顿
-              await new Promise<void>((r) => setImmediate(r));
-            }
-          }
-        } catch {
-          // ignore
-        } finally {
-          st.flushing = false;
-          if (st.queue.size > 0) scheduleWatchFlush();
-        }
-      }
+      await ensureHistoryIndexLoaded();
+      if (!isCurrent()) return;
+      const details = await loadDetails();
+      if (!isCurrent()) return;
+      g.__indexer.details = details;
+      try { getDetailsCache().clear(); } catch {}
 
-      /**
-       * 安排一次 watch flush（始终最多挂一个 timer）。
-       */
-      function scheduleWatchFlush(): void {
-        const st = getWatchQueueState();
-        if (st.timer) return;
-        st.timer = setTimeout(() => {
-          try { const st2 = getWatchQueueState(); st2.timer = null; } catch {}
-          flushWatchQueue().catch(() => {});
-        }, WATCH_DEBOUNCE_MS);
-      }
+      const claudeCodeReadAgentHistory = getClaudeCodeReadAgentHistorySetting();
+      g.__indexer.claudeCodeReadAgentHistory = claudeCodeReadAgentHistory;
+      purgeIgnoredClaudeHistory(isCurrent);
+      if (!isCurrent()) return;
 
-      /**
-       * 监听事件入队：对同一文件路径做去抖合并，避免频繁 change/add 触发重复解析。
-       */
-      function enqueueWatchChange(fp: string): void {
-        try {
-          const providerId = resolveProviderIdForFile(fp);
-          const normalizedFp = providerId === "antigravity" ? normalizeAntigravityWatchPath(fp) : fp;
-          const k = canonicalKey(normalizedFp);
-          const st = getWatchQueueState();
-          if (providerId === "codex" && !st.queue.has(k))
-            markCodexRelationIndexPending(`watch:${k}`);
-          st.queue.set(k, { filePath: normalizedFp, dueAt: Date.now() + WATCH_DEBOUNCE_MS });
-          scheduleWatchFlush();
-        } catch {}
-      }
+      const geminiHashToCwd = await loadGeminiHashToCwd();
+      if (!isCurrent()) return;
+      g.__indexer.geminiHashToCwd = geminiHashToCwd;
+      g.__indexer.roots = [];
+      g.__indexer.existingRoots = [];
+      g.__indexer.missingRoots = [];
+      g.__indexer.rootsByProvider = createEmptyProviderRoots();
+      g.__indexer.existingRootsByProvider = createEmptyProviderRoots();
+      g.__indexer.missingRootsByProvider = createEmptyProviderRoots();
 
-      const onUnlink = (fp: string) => {
-        try {
-          const providerId = resolveProviderIdForFile(fp);
-          if (providerId === "antigravity" && /\.db-(?:wal|shm)$/i.test(String(fp || ""))) {
-            try { getWatchQueueState().queue.delete(canonicalKey(normalizeAntigravityWatchPath(fp))); } catch {}
-            return;
-          }
-          const k = canonicalKey(fp);
-          try {
-            const removedPending = getWatchQueueState().queue.delete(k);
-            if (providerId === "codex" && removedPending)
-              settleCodexRelationIndexPending(`watch:${k}`);
-          } catch {}
-          const removed = ix.files[k]?.summary;
-          try { getDetailsCache().delete(k); } catch {}
-          delete ix.files[k]; delete det.files[k];
-          ix.savedAt = Date.now(); det.savedAt = Date.now(); saveIndex(ix); saveDetails(det);
-          if (removed) safeWindowSend(win, "history:index:remove", { filePath: fp }, { tag: "indexer", suppressMs: 1000 });
-        } catch {}
-      };
-
-        const isUNC = (p: string) => {
-          try {
-            const raw = String(p || '');
-            if (/^\\\\wsl\.localhost\\/i.test(raw)) return true;
-            if (/^\/\/wsl\.localhost\//i.test(raw)) return true;
-            const s = raw.replace(/\//g, '\\');
-            return /^\\\\wsl\.localhost\\/i.test(s);
-          } catch { return false; }
-        };
-        const patternsForProvider = (providerId: ProviderId): string[] => {
-          if (providerId === "codex") return ["*.jsonl"];
-          if (providerId === "claude") return ["*.jsonl", "*.ndjson"];
-          if (providerId === "gemini") return ["session-*.jsonl", "session-*.json"];
-          if (providerId === "antigravity") return ["*.db", "*.db-wal", "*.db-shm"];
-          if (providerId === "grok") return ["summary.json"];
-          return ["*.jsonl"];
-        };
-
-        /**
-         * 计算 Provider 的监听根目录，减少无关扫描：
-         * - Claude：优先监听 `<root>/projects`（与 discovery 行为一致，避免拾取 root 下无关 JSONL）。
-         */
-        const resolveWatchRootForProvider = async (providerId: ProviderId, root: string): Promise<string> => {
-          if (providerId !== "claude") return root;
-          try {
-            const projectsRoot = path.join(root, "projects");
-            const st = await fsp.stat(projectsRoot).catch(() => null as any);
-            if (st && st.isDirectory()) return projectsRoot;
-          } catch {}
-          return root;
-        };
-
-        const watchEntriesExisting = (await Promise.all(rootEntriesExisting.map(async (e) => {
-          const r = await resolveWatchRootForProvider(e.providerId, e.root);
-          return { providerId: e.providerId, root: r };
-        }))).filter((e) => !!e.root);
-
-        const localEntries = watchEntriesExisting.filter((e) => !isUNC(e.root));
-        const uncEntries = watchEntriesExisting.filter((e) => isUNC(e.root));
-
-        const makeGlobs = (entries: Array<{ providerId: ProviderId; root: string }>) => {
-          const out: string[] = [];
-          for (const entry of entries) {
-            const r = entry.root;
-            const pats = patternsForProvider(entry.providerId);
-            for (const pat of pats) {
-              try {
-                if (entry.providerId === "antigravity") {
-                  out.push(path.join(r, pat));
-                  out.push(r.replace(/\\/g, "/").replace(/\/+$/g, "") + `/${pat}`);
-                  continue;
-                }
-                // 同时提供反斜杠样式与 POSIX 样式的 glob，提升 UNC/Windows 兼容性
-                const back = path.join(r, "**", pat);
-                out.push(back);
-                const posix = r.replace(/\\/g, "/").replace(/\/+$/g, "") + `/**/${pat}`;
-                out.push(posix);
-              } catch {
-                try { out.push(path.join(r, "**", pat)); } catch {}
-              }
-            }
-          }
-          return out;
-        };
-
-        const watchers: any[] = [];
-        try {
-          if (localEntries.length > 0) {
-            const globsLocal = makeGlobs(localEntries);
-            idxLog(`[watch:init local] globs=${JSON.stringify(globsLocal)}`);
-            const w1 = chokidar.watch(globsLocal, {
-              ignoreInitial: true,
-              awaitWriteFinish: { stabilityThreshold: 500, pollInterval: 100 },
-              depth: 10,
-              followSymlinks: false,
-              ignored: ['**/node_modules/**', '**/.git/**'],
-            });
-            w1.on('add', enqueueWatchChange).on('change', enqueueWatchChange).on('unlink', onUnlink).on('error', (e: any) => { perfLogger.log(`[watch:error local] ${String(e)}`); });
-            // ready 时记录
-            try { w1.on('ready', () => { idxLog(`[watch:ready local] paths=${JSON.stringify(localEntries.map((x) => x.root))}`); }); } catch {}
-            watchers.push(w1);
-          }
-        } catch (e) { perfLogger.log(`[watch:init local failed] ${String(e)}`); }
-        try {
-          if (uncEntries.length > 0) {
-            // UNC 到 WSL 的共享不可靠，使用轮询模式
-            const globsUNC = makeGlobs(uncEntries);
-            idxLog(`[watch:init unc] globs=${JSON.stringify(globsUNC)}`);
-            const w2 = chokidar.watch(globsUNC, {
-              ignoreInitial: true,
-              awaitWriteFinish: { stabilityThreshold: 800, pollInterval: 200 },
-              depth: 10,
-              usePolling: true,
-              interval: 2500,
-              binaryInterval: 4000,
-              followSymlinks: false,
-              ignored: ['**/node_modules/**', '**/.git/**'],
-            });
-            w2.on('add', enqueueWatchChange).on('change', enqueueWatchChange).on('unlink', onUnlink).on('error', (e: any) => { perfLogger.log(`[watch:error unc] ${String(e)}`); });
-            try { w2.on('ready', () => { idxLog(`[watch:ready unc] paths=${JSON.stringify(uncEntries.map((x) => x.root))}`); }); } catch {}
-            watchers.push(w2);
-          }
-        } catch (e) { perfLogger.log(`[watch:init unc failed] ${String(e)}`); }
-        g.__indexer.watchers = watchers;
-        perfLogger.log(`[watch] enabled using chokidar (local=${localEntries.length}, unc=${uncEntries.length})`);
-        // 5) 周期性轻量重扫：仅扫描当天与前一天目录，弥补 UNC 监听遗漏的新增/变更
-        const rescanRoots = uncEntries
-          .filter((e) => e.providerId === "codex")
-          .map((e) => e.root);
-        if (rescanRoots.length > 0) try {
-          const upsertQuick = async (fp: string) => {
-            try {
-              idxLog(`[rescan] checking file='${fp}'`);
-              const stat = await fsp.stat(fp).catch(() => null as any);
-              if (!stat) return;
-              const k = canonicalKey(fp);
-              const sig: FileSig = { mtimeMs: stat.mtimeMs, size: stat.size };
-              const prev = ix.files[k]?.sig;
-              const same = prev && prev.mtimeMs === sig.mtimeMs && prev.size === sig.size;
-              if (same) return;
-              const now = Date.now();
-              if (shouldThrottleRescan(k, now)) {
-                idxLog(`[rescan] skip.cooldown file='${fp}'`);
-                return;
-              }
-              markRescanCooldown(k, now);
-              const details = await parseDetailsByProvider("codex", fp, stat, { summaryOnly: true });
-              const slimDetails = stripDetailsForPersist(details);
-              try { getDetailsCache().delete(k); } catch {}
-              det.files[k] = { sig, details: slimDetails };
-              const summary: IndexSummary = {
-                providerId: "codex",
-                id: details.id,
-                title: details.title,
-                date: details.date,
-                filePath: fp,
-                rawDate: details.rawDate,
-                dirKey: details.dirKey || dirKeyOf(fp),
-                preview: details.preview,
-                projectHash: (details as any).projectHash,
-                resumeMode: details.resumeMode,
-                resumeId: details.resumeId,
-                runtimeShell: details.runtimeShell && details.runtimeShell !== 'unknown' ? details.runtimeShell : detectRuntimeShell(fp),
-                codexRelationship: details.codexRelationship,
-              } as any;
-              ix.files[k] = { sig, summary };
-              ix.savedAt = Date.now(); det.savedAt = Date.now();
-              saveIndex(ix); saveDetails(det);
-              safeWindowSend(win, "history:index:update", { item: summary }, { tag: "indexer", suppressMs: 1000 });
-              idxLog(`[rescan] updated index for file='${fp}' dirKey='${summary.dirKey}'`);
-              // If dirKey still falls back, schedule reparse
-              try {
-                const dirResolution = analyzeDirKeyResolution(fp, details.cwd, summary.dirKey);
-                if (!dirResolution.hasCwd || dirResolution.usesFallbackDir) {
-                  if (dirResolution.hasCwd) {
-                    if (idxDbgEnabled()) {
-                      perfLogger.log(
-                        `[history.indexer.schedule-fallback] file=${JSON.stringify(fp)} phase="rescan" cwd=${JSON.stringify(dirResolution.normalizedCwd)} dirKey=${JSON.stringify(summary.dirKey)} fallbackDir=${JSON.stringify(dirResolution.fallbackDirKey)}`,
-                      );
-                    }
-                  }
-                  await scheduleReparse(fp, 2500, dirResolution.hasCwd ? 'dirKey=fallback(rescan)' : 'no-cwd(rescan)');
-                }
-              } catch {}
-            } catch (e) { idxLog(`[rescan:error] file='${fp}' err=${String(e)}`); }
-          };
-          const listDayDir = async (root: string, d: Date) => {
-            try {
-              const y = String(d.getFullYear());
-              const m = String(d.getMonth() + 1).padStart(2, '0');
-              const day = String(d.getDate()).padStart(2, '0');
-              const dir = path.join(root, y, m, day);
-              const fsx = await fsp.readdir(dir).then((fs0) => fs0.filter((f) => f.endsWith('.jsonl'))).catch(() => [] as string[]);
-              return fsx.map((f) => path.join(dir, f));
-            } catch { return [] as string[]; }
-          };
-          try {
-            const prevTimer: NodeJS.Timeout | null | undefined = (g.__indexer as any)?.rescanTimer;
-            if (prevTimer) {
-              try { clearInterval(prevTimer); } catch {}
-            }
-          } catch {}
-          const timer = setInterval(async () => {
-            try {
-              const today = new Date();
-              const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
-              const limit2 = pLimit(6);
-              for (const r of rescanRoots) {
-                const filesToday = await listDayDir(r, today);
-                const filesYest = await listDayDir(r, yesterday);
-                const files = Array.from(new Set([...filesToday, ...filesYest]));
-                await Promise.all(files.map((fp) => limit2(() => upsertQuick(fp))));
-              }
-            } catch (e) { idxLog(`[rescan:error] err=${String(e)}`); }
-          }, RESCAN_INTERVAL_MS);
-          try { (g.__indexer as any).rescanTimer = timer; } catch {}
-        } catch (e) { idxLog(`[rescan:init failed] ${String(e)}`); }
-        else { idxLog("[rescan] skipped (no UNC roots)"); }
-      } else { perfLogger.log(`[watch] disabled (no chokidar)`); }
       setCodexRelationIndexReady(true);
+      if (!reconciler.markHistoryReconcilerReady(reconcilerGeneration)) {
+        resetCodexRelationIndexState();
+        return;
+      }
+      scheduleHistoryRootDiscovery(lifecycleGeneration, reconcilerGeneration, reconciler);
+    });
   });
+  historyIndexerLifecycleQueue = operation.catch(() => undefined);
+  return operation;
 }
 
 export function getLastIndexerRoots(): string[] {
@@ -2557,46 +1821,28 @@ export function removeFromIndex(filePath: string): boolean {
   return removeFromIndexMany([filePath]) > 0;
 }
 
-export async function stopHistoryIndexer(): Promise<void> {
-  try {
-    const watchers = Array.isArray(g.__indexer?.watchers) ? (g.__indexer.watchers as any[]) : [];
-    if (watchers.length > 0) {
-      const tasks = watchers.map(async (w) => {
-        try {
-          if (!w) return;
-          if (typeof w.close === 'function') {
-            await Promise.resolve(w.close());
-            return;
-          }
-          if (typeof w.stop === 'function') {
-            await Promise.resolve(w.stop());
-          }
-        } catch {}
-      });
-      try { await Promise.allSettled(tasks); } catch {}
-    }
-  } catch {}
-  try { (g.__indexer as any).watchers = []; } catch {}
-  try {
-    const timer = (g.__indexer as any)?.rescanTimer;
-    if (timer) {
-      try { clearInterval(timer); } catch {}
-    }
-    (g.__indexer as any).rescanTimer = null;
-  } catch {}
-  try {
-    const retries: Map<string, { count: number; timer?: NodeJS.Timeout }> | undefined = g.__indexer?.retries;
-    if (retries && typeof retries.forEach === 'function') {
-      retries.forEach((st) => {
-        try { if (st?.timer) clearTimeout(st.timer); } catch {}
-      });
-      retries.clear();
-    }
-  } catch {}
-  try { clearRescanCooldown(); } catch {}
-  try { clearWatchQueueState(); } catch {}
-  try { clearFastRefreshState(); } catch {}
-  try { resetCodexRelationIndexState(); } catch {}
-  try { await flushPersistWrites(); } catch {}
-  try { setIndexerWindowGetter(null); } catch {}
+/**
+ * 立即废弃当前代次，并在串行队列中完成缓存刷盘和窗口引用清理。
+ */
+export function stopHistoryIndexer(): Promise<void> {
+  const lifecycleGeneration = ++historyIndexerLifecycleGeneration;
+  const pauseTask = import("./historyReconciler")
+    .then(async (reconciler) => await reconciler.pauseHistoryReconciler())
+    .catch(() => 0);
+  const operation = historyIndexerLifecycleQueue.catch(() => undefined).then(async () => {
+    await pauseTask;
+    if (historyIndexerLifecycleGeneration !== lifecycleGeneration) return;
+    try { resetCodexRelationIndexState(); } catch {}
+    try { await flushPersistWrites(true); } catch {}
+    if (historyIndexerLifecycleGeneration !== lifecycleGeneration) return;
+    g.__indexer.roots = [];
+    g.__indexer.existingRoots = [];
+    g.__indexer.missingRoots = [];
+    g.__indexer.rootsByProvider = createEmptyProviderRoots();
+    g.__indexer.existingRootsByProvider = createEmptyProviderRoots();
+    g.__indexer.missingRootsByProvider = createEmptyProviderRoots();
+    try { setIndexerWindowGetter(null); } catch {}
+  });
+  historyIndexerLifecycleQueue = operation.catch(() => undefined);
+  return operation;
 }
