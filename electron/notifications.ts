@@ -8,6 +8,7 @@ import { app, BrowserWindow, ipcMain, Notification, nativeImage, Event } from 'e
 import settings from './settings';
 import { perfLogger } from './log';
 import { activateWindowPreservingState } from './windowActivation';
+import { setHistoryReconcilerActiveTaskCount } from './historyReconciler';
 
 type BadgePayload = {
   count?: number;
@@ -488,6 +489,7 @@ export function registerNotificationIPC(getWindow: () => BrowserWindow | null, o
     const errorCount = payload?.hasError ? Math.max(1, coerceCount(payload?.errorCount)) : coerceCount(payload?.errorCount);
     const completedCount = coerceCount(typeof payload?.completedCount === 'number' ? payload.completedCount : payload?.count);
     const runningCount = payload?.hasRunningTask ? Math.max(1, coerceCount(payload?.runningCount)) : coerceCount(payload?.runningCount);
+    setHistoryReconcilerActiveTaskCount(runningCount);
     logNotification(`setBadge IPC error=${errorCount} completed=${completedCount} running=${runningCount}`);
     updateBadge(errorCount, completedCount, runningCount);
   };

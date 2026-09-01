@@ -196,6 +196,46 @@ export function getTabHistoryViewState(
 }
 
 /**
+ * 根据最新历史列表校验当前详情选择，并在选中会话仍存在时同步其所属分组。
+ */
+export function reconcileHistoryListSelection(
+  state: TabHistoryViewState,
+  sessions: ReadonlyArray<{ id: unknown; groupKey: unknown }>,
+): {
+  selectedHistoryId: string | null;
+  selectedHistoryDir: string | null;
+  selectedSessionPresent: boolean;
+} {
+  const selectedHistoryId = String(state.selectedHistoryId || "").trim();
+  const selectedHistoryDir = typeof state.selectedHistoryDir === "string"
+    ? state.selectedHistoryDir
+    : null;
+  if (!selectedHistoryId) {
+    return {
+      selectedHistoryId: null,
+      selectedHistoryDir,
+      selectedSessionPresent: false,
+    };
+  }
+
+  const selectedSession = sessions.find((session) => String(session.id || "").trim() === selectedHistoryId);
+  if (!selectedSession) {
+    return {
+      selectedHistoryId: null,
+      selectedHistoryDir,
+      selectedSessionPresent: false,
+    };
+  }
+
+  const groupKey = String(selectedSession.groupKey || "").trim();
+  return {
+    selectedHistoryId,
+    selectedHistoryDir: groupKey || selectedHistoryDir,
+    selectedSessionPresent: true,
+  };
+}
+
+/**
  * 以不可变方式更新指定标签页的历史详情状态，并在内容未变化时复用原对象。
  */
 export function updateTabHistoryViewState(

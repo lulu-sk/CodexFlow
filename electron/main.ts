@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
-import { app, BrowserWindow, ipcMain, dialog, clipboard, shell, Menu, screen, session, nativeTheme, nativeImage } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, clipboard, shell, Menu, screen, session, nativeTheme, nativeImage, powerMonitor } from 'electron';
 import os from 'node:os';
 import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -16,6 +16,8 @@ import projects, { IMPLEMENTATION_NAME as PROJECTS_IMPL } from "./projects/index
 import history, { purgeHistoryCacheIfOutdated } from "./history";
 import { revertHistoryTurnDiff } from "./history/revertTurnDiff";
 import { ensureHistoryIndexLoaded, startHistoryIndexer, getIndexedSummaries, getIndexedCodexSessionRecords, getIndexedDetails, getLastIndexerRoots, getLastIndexerRootsByProvider, stopHistoryIndexer, cacheDetails, getCachedDetails, removeFromIndexMany, isCodexRelationIndexReady } from "./indexer";
+import { pauseHistoryReconciler } from "./historyReconciler";
+import { requestHistoryListRecovery, type HistoryListRecoveryHint } from "./historyListRecovery";
 import { getSessionsRootsFastAsync } from "./wsl";
 import { getClaudeRootCandidatesFastAsync, discoverClaudeSessionFiles } from "./agentSessions/claude/discovery";
 import { getGeminiRootCandidatesFastAsync, discoverGeminiSessionFiles } from "./agentSessions/gemini/discovery";
@@ -33,7 +35,7 @@ import {
   readHistoryDeleteQueue,
   type HistoryDeleteTarget,
 } from "./historyFastDelete";
-import { historyItemBelongsToScope } from "./historyScope";
+import { createHistoryScopeMatcher } from "./historyScope";
 import {
   buildCodexRelationDeletePlan,
   collectCodexSessionRecords,
@@ -2831,6 +2833,15 @@ if (!gotLock) {
     // 加载统一调试配置并建立监听
     try { readDebugConfig(); applyDebugGlobalsFromConfig(); watchDebugConfig(); } catch {}
     try { installMainEventLoopDiagnostics(); } catch {}
+    let historySuspendTask: Promise<number> | null = null;
+    powerMonitor.on("suspend", () => {
+      historySuspendTask = pauseHistoryReconciler().catch(() => -1);
+    });
+    powerMonitor.on("resume", () => {
+      const pending = historySuspendTask || Promise.resolve(-1);
+      historySuspendTask = null;
+      void pending.then(async () => await startHistoryIndexer(() => mainWindow)).catch(() => {});
+    });
     // Windows：尽早设置 AUMID（建议在创建窗口前完成）
     try {
       if (process.platform === 'win32') {
@@ -4475,6 +4486,7 @@ ipcMain.handle('history.list', async (_e, args: {
   limit?: number;
   offset?: number;
   historyRoot?: string;
+  recoveryHint?: HistoryListRecoveryHint;
 }) => {
   try {
     // 首次列表请求只等待持久化摘要索引，不等待后台目录扫描。
@@ -4640,22 +4652,20 @@ ipcMain.handle('history.list', async (_e, args: {
     /**
      * 中文说明：判断单条历史摘要是否属于当前请求范围。
      */
+    const historyScopeMatcher = createHistoryScopeMatcher({
+      scope,
+      currentProjectNeedles: needles,
+      allProjectNeedles,
+      geminiHashNeedles,
+      extractGeminiProjectHashFromPath,
+    });
     const belongsToScope = (item: Pick<FallbackHistorySummary, 'providerId' | 'dirKey' | 'projectHash' | 'filePath'>): boolean => {
-      return historyItemBelongsToScope(
-        {
-          providerId: item.providerId,
-          dirKey: canon(item.dirKey),
-          projectHash: item.projectHash,
-          filePath: item.filePath,
-        },
-        {
-          scope,
-          currentProjectNeedles: needles,
-          allProjectNeedles,
-          geminiHashNeedles,
-          extractGeminiProjectHashFromPath,
-        },
-      );
+      return historyScopeMatcher({
+        providerId: item.providerId,
+        dirKey: item.dirKey,
+        projectHash: item.projectHash,
+        filePath: item.filePath,
+      });
     };
     /**
      * 中文说明：按文件路径去重并保持时间倒序，避免多来源回退结果重复。
@@ -4786,13 +4796,19 @@ ipcMain.handle('history.list', async (_e, args: {
       return dedupeSortHistorySummaries([...codexItems, ...claudeItems, ...geminiItems, ...antigravityItems, ...grokItems]).slice(0, fallbackTargetCount);
     };
     const all = getIndexedSummaries();
+    const filtered = scope === 'all_sessions'
+      ? all
+      : all.filter((summary) => belongsToScope(summary));
+    const recoveryRequested = scope === 'current_project'
+      ? requestHistoryListRecovery(args?.recoveryHint, filtered, {
+          projectWslPath: args?.projectWslPath,
+          projectWinPath: args?.projectWinPath,
+        })
+      : false;
     // Minimal probe logging (opt-in): only when CODEX_HISTORY_DEBUG=1
     const dbg = () => { try { return !!getDebugConfig().history.debug; } catch { return false; } };
     const dbgFile = (() => { try { return String(getDebugConfig().history.filter || '').trim().toLowerCase(); } catch { return ''; } })();
     if (all && all.length > 0) {
-      const filtered = scope === 'all_sessions'
-        ? all
-        : all.filter((s) => belongsToScope(s));
       try {
         if (dbg()) {
           const foundIdx = dbgFile ? all.some((x: any) => String(x.filePath || '').toLowerCase().includes(dbgFile)) : false;
@@ -4801,12 +4817,10 @@ ipcMain.handle('history.list', async (_e, args: {
         }
       } catch {}
       if (scope !== 'all_sessions' && filtered.length === 0) {
-        // 中文说明：索引已就绪但当前范围无命中时，直接返回空结果；
-        // 避免范围切换把“空列表”退化成跨 Provider 的重型全量扫描。
+        // 索引范围空命中必须快速返回；带会话线索的请求已在后台提交定向恢复。
         return { ok: true, sessions: [] };
       }
-      const sorted = filtered.sort((a, b) => b.date - a.date);
-      const sliced = paginate(sorted);
+      const sliced = paginate(filtered);
       const mapped = sliced.map((x) => ({
         providerId: (x as any).providerId || "codex",
         id: x.id,
@@ -4824,6 +4838,8 @@ ipcMain.handle('history.list', async (_e, args: {
       }));
       return { ok: true, sessions: mapped };
     }
+    // 终端绑定预取由协调器异步恢复，避免索引为空时在 IPC 内同步扫描全部历史目录。
+    if (recoveryRequested) return { ok: true, sessions: [] };
     const fallback = await perfLogger.time('history.list.fallback', async () => await collectFallbackSummaries());
     return { ok: true, sessions: paginate(fallback) };
   } catch (e: any) {

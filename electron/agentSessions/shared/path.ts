@@ -33,18 +33,37 @@ function trimTrailingSeparatorsPreserveRoot(value: string): string {
  * - `C:` / `C:\foo` 转为 `/mnt/c` 风格；
  * - 其余路径统一为小写 POSIX 风格。
  */
-function normalizeDirKeyScopeValue(value: string): string {
+export function normalizeDirKeyScopeValue(value: string): string {
   const raw = String(value || "").trim();
   if (!raw) return "";
   const driveMatch = raw.match(/^([a-zA-Z]):(?:[\\/](.*))?$/);
   if (driveMatch) {
     const drive = driveMatch[1].toLowerCase();
-    const rest = String(driveMatch[2] || "").replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\/+|\/+$/g, "");
+    const rest = String(driveMatch[2] || "").replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\/+|\/+$/g, "").toLowerCase();
     return rest ? `/mnt/${drive}/${rest}` : `/mnt/${drive}`;
   }
   const normalized = raw.replace(/\\/g, "/").replace(/\/+/g, "/");
   if (normalized === "/") return "/";
   return normalized.replace(/\/+$/, "").toLowerCase();
+}
+
+/**
+ * 中文说明：判断已规范化的目录 scope 是否只允许精确匹配。
+ */
+function isExactMatchOnlyNormalizedDirKeyScope(scope: string): boolean {
+  if (!scope) return false;
+  if (scope === "/") return true;
+  return /^\/mnt\/[a-z]$/.test(scope);
+}
+
+/**
+ * 中文说明：比较两个已规范化的目录 scope，避免批量筛选时重复处理字符串。
+ */
+export function pathMatchesNormalizedDirKeyScope(candidate: string, scope: string): boolean {
+  if (!candidate || !scope) return false;
+  if (candidate === scope) return true;
+  if (isExactMatchOnlyNormalizedDirKeyScope(scope)) return false;
+  return candidate.startsWith(`${scope}/`);
 }
 
 /**
@@ -75,10 +94,7 @@ export function tidyPathCandidate(value: string): string {
  */
 export function isExactMatchOnlyDirKeyScope(scopeKey: string): boolean {
   const scope = normalizeDirKeyScopeValue(scopeKey);
-  if (!scope) return false;
-  if (scope === "/") return true;
-  if (/^\/mnt\/[a-z]$/.test(scope)) return true;
-  return false;
+  return isExactMatchOnlyNormalizedDirKeyScope(scope);
 }
 
 /**
@@ -89,10 +105,7 @@ export function isExactMatchOnlyDirKeyScope(scopeKey: string): boolean {
 export function pathMatchesDirKeyScope(candidateKey: string, scopeKey: string): boolean {
   const candidate = normalizeDirKeyScopeValue(candidateKey);
   const scope = normalizeDirKeyScopeValue(scopeKey);
-  if (!candidate || !scope) return false;
-  if (candidate === scope) return true;
-  if (isExactMatchOnlyDirKeyScope(scope)) return false;
-  return candidate.startsWith(`${scope}/`);
+  return pathMatchesNormalizedDirKeyScope(candidate, scope);
 }
 
 /**
@@ -106,7 +119,7 @@ export function findBestMatchingDirKeyScope(candidateKey: string, scopeKeys: rea
   let best = "";
   for (const rawScope of scopeKeys) {
     const scope = normalizeDirKeyScopeValue(rawScope);
-    if (!scope || !pathMatchesDirKeyScope(candidate, scope)) continue;
+    if (!pathMatchesNormalizedDirKeyScope(candidate, scope)) continue;
     if (!best || scope.length > best.length) best = scope;
   }
   return best;

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import os from "node:os";
-import { isUNCPath, uncToWsl, winToWsl, wslToUNC, normalizeWinPath } from "./wsl";
+import { isNetworkPath, isUNCPath, uncToWsl, winToWsl, wslToUNC, normalizeWinPath } from "./wsl";
 
 describe("wsl 路径工具（UNC 兼容）", () => {
   afterEach(() => {
@@ -12,6 +12,13 @@ describe("wsl 路径工具（UNC 兼容）", () => {
     expect(isUNCPath("\\\\wsl$\\Ubuntu-24.04\\home\\me\\proj")).toBe(true);
     expect(isUNCPath("\\\\WSL$\\Ubuntu-24.04\\home\\me\\proj")).toBe(true);
     expect(isUNCPath("\\\\server\\share\\path")).toBe(false);
+  });
+
+  it("isNetworkPath 同时识别 WSL 与普通 Windows UNC", () => {
+    expect(isNetworkPath("\\\\wsl.localhost\\Ubuntu-24.04\\home\\me\\proj")).toBe(true);
+    expect(isNetworkPath("\\\\server\\share\\path")).toBe(true);
+    expect(isNetworkPath("//server/share/path")).toBe(true);
+    expect(isNetworkPath("C:\\Users\\me\\proj")).toBe(false);
   });
 
   it("uncToWsl 能从 \\\\wsl.localhost/\\\\wsl$ 解析出 distro 与 wslPath", () => {

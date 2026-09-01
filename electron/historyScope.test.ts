@@ -2,7 +2,7 @@
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
 import { describe, expect, it } from "vitest";
-import { historyItemBelongsToScope } from "./historyScope";
+import { createHistoryScopeMatcher, historyItemBelongsToScope } from "./historyScope";
 
 const TEST_PARENT_PROJECT = "/mnt/c/users/example-user";
 const TEST_CODEX_CHILD_PROJECT = `${TEST_PARENT_PROJECT}/.codex/worktrees/135b/codexflow`;
@@ -131,5 +131,16 @@ describe("electron/historyScope.historyItemBelongsToScope", () => {
         allProjectNeedles: ["/mnt/j/projects/projects/example"],
       },
     )).toBe(false);
+  });
+
+  it("编译后的匹配器可复用项目范围并保持最具体项目语义", () => {
+    const matcher = createHistoryScopeMatcher({
+      scope: "current_project",
+      currentProjectNeedles: [TEST_CODEX_CHILD_PROJECT],
+      allProjectNeedles: [TEST_PARENT_PROJECT, TEST_CODEX_CHILD_PROJECT],
+    });
+
+    expect(matcher({ providerId: "codex", dirKey: TEST_CODEX_CHILD_PROJECT })).toBe(true);
+    expect(matcher({ providerId: "codex", dirKey: TEST_PARENT_PROJECT })).toBe(false);
   });
 });

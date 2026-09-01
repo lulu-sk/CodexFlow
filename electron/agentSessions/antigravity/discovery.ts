@@ -36,10 +36,10 @@ function dedupeCandidates(list: SessionsRootCandidate[]): SessionsRootCandidate[
 /**
  * 获取 Antigravity CLI conversation DB 根路径候选（Windows 本地 + WSL UNC）。
  */
-export async function getAntigravityRootCandidatesFastAsync(): Promise<SessionsRootCandidate[]> {
+export async function getAntigravityRootCandidatesFastAsync(probeExists = true): Promise<SessionsRootCandidate[]> {
   const list: SessionsRootCandidate[] = [];
   const push = async (p: string, source: "windows" | "wsl", kind: "local" | "unc", distro?: string) => {
-    list.push({ path: p, exists: await directoryExists(p), source, kind, distro });
+    list.push({ path: p, exists: probeExists ? await directoryExists(p) : true, source, kind, distro });
   };
 
   try {

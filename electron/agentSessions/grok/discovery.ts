@@ -14,6 +14,24 @@ type GrokDiscoverySummary = {
 };
 
 /**
+ * 读取 Grok 会话摘要的可见性，区分隐藏、可见和暂时无法判断。
+ */
+export async function getGrokSessionVisibility(summaryPath: string): Promise<"visible" | "hidden" | "unavailable"> {
+  try {
+    const raw = (await fsp.readFile(summaryPath, "utf8")).replace(/^\uFEFF/, "");
+    const summary = JSON.parse(raw) as GrokDiscoverySummary;
+    if (!summary || typeof summary !== "object" || Array.isArray(summary)) return "unavailable";
+    if (summary.hidden === true) return "hidden";
+    if (summary.hidden === false) return "visible";
+    return typeof summary.session_kind !== "string" || !summary.session_kind.startsWith("subagent")
+      ? "visible"
+      : "hidden";
+  } catch {
+    return "unavailable";
+  }
+}
+
+/**
  * 判断路径是否为目录。
  */
 async function directoryExists(targetPath: string): Promise<boolean> {
@@ -56,25 +74,16 @@ async function getWslConfiguredGrokSessionsRoot(distro: string): Promise<string>
  * 按 Grok Build 官方历史列表规则判断摘要文件是否应显示。
  */
 async function shouldIncludeGrokSummary(summaryPath: string): Promise<boolean> {
-  try {
-    const raw = (await fsp.readFile(summaryPath, "utf8")).replace(/^\uFEFF/, "");
-    const summary = JSON.parse(raw) as GrokDiscoverySummary;
-    if (!summary || typeof summary !== "object" || Array.isArray(summary)) return false;
-    if (summary.hidden === true) return false;
-    if (summary.hidden === false) return true;
-    return typeof summary.session_kind !== "string" || !summary.session_kind.startsWith("subagent");
-  } catch {
-    return false;
-  }
+  return (await getGrokSessionVisibility(summaryPath)) === "visible";
 }
 
 /**
  * 获取 Grok Build 会话根候选（Windows 本地与所有 WSL 发行版）。
  */
-export async function getGrokRootCandidatesFastAsync(): Promise<SessionsRootCandidate[]> {
+export async function getGrokRootCandidatesFastAsync(probeExists = true): Promise<SessionsRootCandidate[]> {
   const candidates: SessionsRootCandidate[] = [];
   const push = async (targetPath: string, source: "windows" | "wsl", kind: "local" | "unc", distro?: string) => {
-    candidates.push({ path: targetPath, exists: await directoryExists(targetPath), source, kind, distro });
+    candidates.push({ path: targetPath, exists: probeExists ? await directoryExists(targetPath) : true, source, kind, distro });
   };
 
   try {

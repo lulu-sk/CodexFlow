@@ -8,11 +8,11 @@ export type HistoryDetailLoadReuseOptions = {
 };
 
 /**
- * 根据会话的稳定字段生成详情读取指纹，避免仅对象身份变化时重复取消读取。
+ * 根据会话字段及可选刷新版本生成详情读取指纹，避免仅对象身份变化时重复读取。
  */
-export function buildHistoryDetailSessionFingerprint(session: HistorySession | null): string {
+export function buildHistoryDetailSessionFingerprint(session: HistorySession | null, refreshNonce = 0): string {
   if (!session) return "none";
-  return [
+  const parts = [
     session.providerId,
     session.id,
     session.filePath || "",
@@ -22,7 +22,10 @@ export function buildHistoryDetailSessionFingerprint(session: HistorySession | n
     session.preview || "",
     session.rawDate || "",
     session.runtimeShell || "",
-  ].join("|");
+  ];
+  const revision = Number.isFinite(refreshNonce) ? Math.max(0, Math.trunc(refreshNonce)) : 0;
+  if (revision > 0) parts.push(String(revision));
+  return parts.join("|");
 }
 
 /**

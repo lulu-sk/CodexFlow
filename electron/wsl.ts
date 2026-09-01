@@ -336,6 +336,15 @@ export function isUNCPath(p: string): boolean {
 }
 
 /**
+ * 判断路径是否位于 WSL 或普通 Windows UNC 网络共享。
+ */
+export function isNetworkPath(p: string): boolean {
+  const raw = String(p || "").trim();
+  if (!raw) return false;
+  return isUNCPath(raw) || /^\\\\[^\\/]+[\\/]+[^\\/]+/.test(raw) || /^\/\/[^/]+\/[^/]+/.test(raw);
+}
+
+/**
  * 将 UNC 路径转换为 WSL 绝对路径:
  * - \\wsl.localhost\Distro\home\you -> /home/you
  * - \\wsl$\Distro\home\you -> /home/you
@@ -451,6 +460,7 @@ export default {
   winToWslAsync,
   wslToUNC,
   isUNCPath,
+  isNetworkPath,
   uncToWsl,
   normalizeWinPath,
   getDistroHome,
@@ -593,14 +603,14 @@ function dedupeCandidates(list: SessionsRootCandidate[]): SessionsRootCandidate[
   return Array.from(seen.values());
 }
 
-export async function getSessionsRootCandidatesFastAsync(): Promise<SessionsRootCandidate[]> {
+export async function getSessionsRootCandidatesFastAsync(probeExists = true): Promise<SessionsRootCandidate[]> {
   const list: SessionsRootCandidate[] = [];
   try {
     const roots = await getCodexRootsFastAsync();
     if (roots.windowsSessions) {
       list.push({
         path: roots.windowsSessions,
-        exists: await directoryExists(roots.windowsSessions),
+        exists: probeExists ? await directoryExists(roots.windowsSessions) : true,
         source: 'windows',
         kind: 'local',
       });
@@ -609,7 +619,7 @@ export async function getSessionsRootCandidatesFastAsync(): Promise<SessionsRoot
       if (!w.sessionsUNC) continue;
       list.push({
         path: w.sessionsUNC,
-        exists: await directoryExists(w.sessionsUNC),
+        exists: probeExists ? await directoryExists(w.sessionsUNC) : true,
         source: 'wsl',
         distro: w.distro,
         kind: 'unc',
@@ -621,7 +631,7 @@ export async function getSessionsRootCandidatesFastAsync(): Promise<SessionsRoot
       const fallback = path.join(os.homedir(), '.codex', 'sessions');
       list.push({
         path: fallback,
-        exists: await directoryExists(fallback),
+        exists: probeExists ? await directoryExists(fallback) : true,
         source: 'windows',
         kind: 'local',
       });

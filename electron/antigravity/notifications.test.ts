@@ -3,6 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+const historyReconcilerMocks = vi.hoisted(() => ({
+  requestHistoryFastRefresh: vi.fn(),
+}));
+
 vi.mock("../agentSessions/antigravity/discovery", () => ({
   getAntigravityRootCandidatesFastAsync: vi.fn(),
 }));
@@ -10,6 +14,8 @@ vi.mock("../agentSessions/antigravity/discovery", () => ({
 vi.mock("../agentSessions/antigravity/parser", () => ({
   parseAntigravitySessionFile: vi.fn(),
 }));
+
+vi.mock("../historyReconciler", () => historyReconcilerMocks);
 
 /**
  * 创建临时目录，供 Antigravity 通知 hook 配置测试使用。
@@ -34,6 +40,7 @@ describe("electron/antigravity/notifications", () => {
   const tempDirs: string[] = [];
 
   afterEach(() => {
+    historyReconcilerMocks.requestHistoryFastRefresh.mockReset();
     try { vi.restoreAllMocks(); } catch {}
     while (tempDirs.length > 0) {
       const dir = tempDirs.pop();
@@ -163,6 +170,72 @@ describe("electron/antigravity/notifications", () => {
     expect(result.preview).toBe("这是最后一条助手回复正文。");
     expect(result.previewEscapedWhitespace).toBe(false);
     expect(parser.parseAntigravitySessionFile).toHaveBeenCalledWith(dbPath, expect.any(Object), { summaryOnly: false });
+  });
+
+  it("emitAntigravityNotify：先入队历史刷新，再异步补齐预览", async () => {
+    const geminiRoot = createTempDir("antigravity-notify-refresh-");
+    tempDirs.push(geminiRoot);
+    const root = path.join(geminiRoot, "antigravity-cli");
+    const sourcePath = path.join(root, "hooks", "codexflow_after_agent_notify.jsonl");
+    fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+    const mod = await loadAntigravityNotificationsModule(root);
+    const pending = mod.__testing.emitAntigravityNotify({
+      providerId: "antigravity",
+      sessionId: "session-refresh",
+      preview: "",
+    }, sourcePath, 0);
+
+    expect(historyReconcilerMocks.requestHistoryFastRefresh).toHaveBeenCalledWith(expect.objectContaining({
+      providerId: "antigravity",
+      sessionId: "session-refresh",
+      sourcePath,
+    }));
+    await pending;
+  });
+
+  it("预览补齐跳过 UNC，并对同一 DB 保持单飞", async () => {
+    const geminiRoot = createTempDir("antigravity-preview-singleflight-");
+    tempDirs.push(geminiRoot);
+    const root = path.join(geminiRoot, "antigravity-cli");
+    const sessionId = "session-singleflight";
+    const dbPath = path.join(root, "conversations", `${sessionId}.db`);
+    const notifyPath = path.join(root, "hooks", "codexflow_after_agent_notify.jsonl");
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    fs.mkdirSync(path.dirname(notifyPath), { recursive: true });
+    fs.writeFileSync(dbPath, "", "utf8");
+    const mod = await loadAntigravityNotificationsModule(root);
+    const parser = await import("../agentSessions/antigravity/parser");
+    vi.mocked(parser.parseAntigravitySessionFile).mockResolvedValue({
+      providerId: "antigravity",
+      id: `antigravity:${sessionId}`,
+      title: sessionId,
+      date: 1,
+      filePath: dbPath,
+      messages: [],
+      skippedLines: 0,
+      dirKey: "",
+    } as any);
+
+    const entry = { providerId: "antigravity", sessionId, preview: "" };
+    await Promise.all([
+      mod.__testing.hydrateAntigravityNotifyPreviewWithTimeout(entry, notifyPath),
+      mod.__testing.hydrateAntigravityNotifyPreviewWithTimeout(entry, notifyPath),
+    ]);
+    expect(parser.parseAntigravitySessionFile).toHaveBeenCalledTimes(1);
+
+    const uncResult = await mod.__testing.hydrateAntigravityNotifyPreview({
+      providerId: "antigravity",
+      sessionId,
+      preview: "NO_TOOL_CALL",
+    }, "\\\\wsl.localhost\\Ubuntu\\home\\user\\.gemini\\antigravity-cli\\hooks\\notify.jsonl");
+    expect(uncResult.preview).toBe("");
+
+    const ordinaryUncResult = await mod.__testing.hydrateAntigravityNotifyPreview({
+      providerId: "antigravity",
+      sessionId,
+      preview: "NO_TOOL_CALL",
+    }, "\\\\server\\share\\.gemini\\antigravity-cli\\hooks\\notify.jsonl");
+    expect(ordinaryUncResult.preview).toBe("");
   });
 
   it("hydrateAntigravityNotifyPreview：NO_TOOL_CALL 结束状态不作为通知正文", async () => {

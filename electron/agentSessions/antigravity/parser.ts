@@ -15,6 +15,8 @@ export type AntigravityParseOptions = {
   summaryOnly?: boolean;
   /** 详情阶段最多解析多少条 step；0 或缺失表示不限。 */
   maxSteps?: number;
+  /** 使用主数据库与 WAL 合并后的有效更新时间，保证 WAL-only 提交也能刷新排序。 */
+  effectiveMtimeMs?: number;
 };
 
 export type AntigravitySessionDetails = {
@@ -728,7 +730,7 @@ function clampPreview(text: string, max = 96): string {
 export async function parseAntigravitySessionFile(filePath: string, stat: Stats, opts?: AntigravityParseOptions): Promise<AntigravitySessionDetails> {
   const summaryOnly = !!opts?.summaryOnly;
   const maxSteps = summaryOnly ? 80 : Math.max(0, Math.floor(Number(opts?.maxSteps || 0)));
-  const date = Number(stat?.mtimeMs || 0);
+  const date = Number(opts?.effectiveMtimeMs || stat?.mtimeMs || 0);
   const conversationId = conversationIdFromPath(filePath);
   const id = `antigravity:${conversationId}`;
   let runtimeShell: RuntimeShell = detectRuntimeShell(filePath);

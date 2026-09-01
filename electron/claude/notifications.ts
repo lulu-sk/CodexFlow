@@ -7,7 +7,7 @@ import { BrowserWindow } from "electron";
 import { perfLogger } from "../log";
 import { uncToWsl, type SessionsRootCandidate } from "../wsl";
 import { getClaudeRootCandidatesFastAsync } from "../agentSessions/claude/discovery";
-import { requestHistoryFastRefresh } from "../indexer";
+import { requestHistoryFastRefresh } from "../historyReconciler";
 
 const CLAUDE_HOOK_FILENAME = "codexflow_stop_notify.js";
 const CLAUDE_HOOK_TIMEOUT_MS = 5000;

@@ -179,6 +179,18 @@ describe("parseAntigravitySessionFile", () => {
     expect(details.messages).toHaveLength(0);
   });
 
+  it("使用 DB 与 WAL 合并后的有效更新时间进行排序", async () => {
+    const fp = await createSessionDb([
+      { idx: 1, stepType: 14, contentField: 19, text: "wal update" },
+    ]);
+    const stat = await fs.promises.stat(fp);
+    const effectiveMtimeMs = stat.mtimeMs + 10_000;
+
+    const details = await parseAntigravitySessionFile(fp, stat, { summaryOnly: true, effectiveMtimeMs });
+
+    expect(details.date).toBe(effectiveMtimeMs);
+  });
+
   it("summaryOnly 能从 metadata 提取正斜杠 Windows cwd 并归属到项目目录", async () => {
     const fp = await createSessionDb([
       {

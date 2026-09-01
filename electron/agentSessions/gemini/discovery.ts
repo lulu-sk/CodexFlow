@@ -42,18 +42,19 @@ function dedupeCandidates(list: SessionsRootCandidate[]): SessionsRootCandidate[
  *
  * 参考：Agent Sessions (macOS) 的 discovery 约定为 `~/.gemini/tmp`。
  */
-export async function getGeminiRootCandidatesFastAsync(): Promise<SessionsRootCandidate[]> {
+export async function getGeminiRootCandidatesFastAsync(probeExists = true): Promise<SessionsRootCandidate[]> {
   const list: SessionsRootCandidate[] = [];
   const push = async (p: string, source: "windows" | "wsl", kind: "local" | "unc", distro?: string) => {
-    list.push({ path: p, exists: await directoryExists(p), source, kind, distro });
+    list.push({ path: p, exists: probeExists ? await directoryExists(p) : true, source, kind, distro });
   };
 
-  // 1) 显式环境变量（优先）：GEMINI_HOME 指向 ~/.gemini（则 sessions 在 tmp 下）
+  // 1) 显式环境变量（优先）：GEMINI_CLI_HOME/GEMINI_HOME 指向 ~/.gemini（则 sessions 在 tmp 下）
   try {
-    const env = typeof process.env.GEMINI_HOME === "string" ? process.env.GEMINI_HOME.trim() : "";
-    if (env) {
+    const envCandidates = [process.env.GEMINI_CLI_HOME, process.env.GEMINI_HOME]
+      .map((value) => typeof value === "string" ? value.trim() : "")
+      .filter(Boolean);
+    for (const env of envCandidates)
       await push(path.join(env, "tmp"), "windows", "local");
-    }
   } catch {}
 
   // 2) 默认位置：~/.gemini/tmp

@@ -5,6 +5,7 @@ import {
   getTabHistoryViewState,
   parseProjectCenterViewStateMap,
   parseTabHistoryViewStateMap,
+  reconcileHistoryListSelection,
   resolveHistoryDetailLayout,
   resolveProjectCenterViewStateKey,
   resolveTabHistoryViewStateKey,
@@ -72,6 +73,31 @@ describe("project-view-state", () => {
     expect(resolveTabHistoryViewStateKey(null, "project-a")).not.toBe(resolveTabHistoryViewStateKey("tab-a", "project-a"));
     expect(getTabHistoryViewState(states, null, "project-a").selectedHistoryId).toBe("project-session");
     expect(getTabHistoryViewState(states, "tab-a", "project-a").selectedHistoryId).toBeNull();
+  });
+
+  it("列表刷新以最新选中的会话为准，避免异步结果清空详情", () => {
+    const result = reconcileHistoryListSelection({
+      selectedHistoryDir: null,
+      selectedHistoryId: "session-a",
+      detailScrollProgress: 0.42,
+    }, [{ id: "session-a", groupKey: "today" }]);
+
+    expect(result).toEqual({
+      selectedHistoryId: "session-a",
+      selectedHistoryDir: "today",
+      selectedSessionPresent: true,
+    });
+  });
+
+  it("列表刷新后找不到当前会话时标记选择失效", () => {
+    const result = reconcileHistoryListSelection({
+      selectedHistoryDir: "today",
+      selectedHistoryId: "session-a",
+      detailScrollProgress: null,
+    }, [{ id: "session-b", groupKey: "today" }]);
+
+    expect(result.selectedSessionPresent).toBe(false);
+    expect(result.selectedHistoryId).toBeNull();
   });
 
   it("损坏数据回退为空状态并规整无效字段", () => {
