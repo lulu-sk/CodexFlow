@@ -11,7 +11,7 @@ vi.mock("./historyReconciler", () => ({
   requestHistoryFastRefresh: historyReconcilerMocks.requestHistoryFastRefresh,
 }));
 
-import { requestHistoryListRecovery } from "./historyListRecovery";
+import { findIndexedHistoryRecoveryTarget, requestHistoryListRecovery } from "./historyListRecovery";
 
 describe("electron/historyListRecovery", () => {
   beforeEach(() => {
@@ -64,5 +64,23 @@ describe("electron/historyListRecovery", () => {
       {},
     )).toBe(false);
     expect(historyReconcilerMocks.requestHistoryFastRefresh).not.toHaveBeenCalled();
+  });
+
+  it.each(["codex", "claude", "gemini", "grok", "antigravity"])("%s 可直接命中第 250 条之后的旧会话", (providerId) => {
+    const target = { providerId, id: "summary-old", resumeId: "session-old" };
+    const items = [...Array.from({ length: 300 }, (_, index) => ({ providerId, id: `recent-${index}` })), target];
+    const hint = { providerId, sessionId: "SESSION-OLD" };
+
+    expect(findIndexedHistoryRecoveryTarget(hint, items)).toBe(target);
+    expect(requestHistoryListRecovery(hint, items, {})).toBe(false);
+    expect(historyReconcilerMocks.requestHistoryFastRefresh).not.toHaveBeenCalled();
+  });
+
+  it("精确查找不串到其他引擎或不在项目范围内的记录", () => {
+    expect(findIndexedHistoryRecoveryTarget({ providerId: "codex", threadId: "session" }, [
+      { providerId: "claude", id: "session" },
+      { providerId: "codex", id: "other" },
+    ])).toBeUndefined();
+    expect(findIndexedHistoryRecoveryTarget({ providerId: "codex", threadId: "session" }, [])).toBeUndefined();
   });
 });

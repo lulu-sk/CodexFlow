@@ -828,7 +828,7 @@ export interface HistoryAPI {
       cwd?: string;
       startedAt?: number;
     };
-  }): Promise<{ ok: boolean; sessions?: HistorySummary[]; error?: string }>;
+  }): Promise<{ ok: boolean; sessions?: HistorySummary[]; matchedSession?: HistorySummary; error?: string }>;
   read(args: { filePath: string; providerId?: "codex" | "claude" | "gemini" | "antigravity" | "grok"; forceParse?: boolean }): Promise<{ id: string; title: string; date: number; messages: HistoryMessage[]; skippedLines: number; providerId?: "codex" | "claude" | "gemini" | "antigravity" | "grok" }>;
   revertTurnDiff(args: { projectWinPath: string; diffText: string; operation?: "undo" | "reapply" }): Promise<
     | { ok: true; repoRoot: string }

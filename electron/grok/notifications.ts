@@ -402,6 +402,7 @@ function emitNotifyRecord(record: ReturnType<typeof parseNotifyLine>, sourcePath
     preview: normalizePreview(record.event.lastAssistantMessage),
     timestamp,
     eventId: `${sessionId || "grok"}-${hookEventName}-${timestamp}`,
+    threadId: sessionId.trim(),
     hookEventName,
     completionKind,
     agentType: resolveGrokAgentType(record.event),

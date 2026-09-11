@@ -17,7 +17,7 @@ import history, { purgeHistoryCacheIfOutdated } from "./history";
 import { revertHistoryTurnDiff } from "./history/revertTurnDiff";
 import { ensureHistoryIndexLoaded, startHistoryIndexer, getIndexedSummaries, getIndexedCodexSessionRecords, getIndexedDetails, getLastIndexerRoots, getLastIndexerRootsByProvider, stopHistoryIndexer, cacheDetails, getCachedDetails, removeFromIndexMany, isCodexRelationIndexReady } from "./indexer";
 import { pauseHistoryReconciler } from "./historyReconciler";
-import { requestHistoryListRecovery, type HistoryListRecoveryHint } from "./historyListRecovery";
+import { findIndexedHistoryRecoveryTarget, requestHistoryListRecovery, type HistoryListRecoveryHint } from "./historyListRecovery";
 import { getSessionsRootsFastAsync } from "./wsl";
 import { getClaudeRootCandidatesFastAsync, discoverClaudeSessionFiles } from "./agentSessions/claude/discovery";
 import { getGeminiRootCandidatesFastAsync, discoverGeminiSessionFiles } from "./agentSessions/gemini/discovery";
@@ -4799,6 +4799,10 @@ ipcMain.handle('history.list', async (_e, args: {
     const filtered = scope === 'all_sessions'
       ? all
       : all.filter((summary) => belongsToScope(summary));
+    // 精确目标独立于列表分页返回，避免较旧会话已在索引中却永远落不到首屏。
+    const matchedSession = scope === 'current_project'
+      ? findIndexedHistoryRecoveryTarget(args?.recoveryHint, filtered)
+      : undefined;
     const recoveryRequested = scope === 'current_project'
       ? requestHistoryListRecovery(args?.recoveryHint, filtered, {
           projectWslPath: args?.projectWslPath,
@@ -4836,7 +4840,7 @@ ipcMain.handle('history.list', async (_e, args: {
         runtimeShell: (x as any).runtimeShell,
         codexRelationship: (x as any).codexRelationship,
       }));
-      return { ok: true, sessions: mapped };
+      return { ok: true, sessions: mapped, matchedSession };
     }
     // 终端绑定预取由协调器异步恢复，避免索引为空时在 IPC 内同步扫描全部历史目录。
     if (recoveryRequested) return { ok: true, sessions: [] };

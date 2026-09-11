@@ -48,15 +48,19 @@ function normalizeRecoveryProviderId(value: unknown): HistoryListRecoveryProvide
 }
 
 /**
- * 判断索引结果是否已经包含目标会话，避免对已命中的记录重复发起校对。
+ * 在当前项目的完整索引中精确定位目标，供分页外返回与恢复去重复用。
  */
-function hasIndexedRecoveryTarget(
-  items: ReadonlyArray<IndexedHistoryRecoveryItem>,
-  providerId: HistoryListRecoveryProviderId,
-  identities: ReadonlySet<string>,
-): boolean {
-  if (identities.size === 0) return false;
-  return items.some((item) => {
+export function findIndexedHistoryRecoveryTarget<T extends IndexedHistoryRecoveryItem>(
+  hint: HistoryListRecoveryHint | undefined,
+  items: ReadonlyArray<T>,
+): T | undefined {
+  const providerId = normalizeRecoveryProviderId(hint?.providerId);
+  if (!providerId) return undefined;
+  const identities = new Set(
+    [hint?.threadId, hint?.sessionId].map((value) => normalizeRecoveryText(value, 512).toLowerCase()).filter(Boolean),
+  );
+  if (identities.size === 0) return undefined;
+  return items.find((item) => {
     if (normalizeRecoveryProviderId(item.providerId) !== providerId) return false;
     const itemIds = [item.id, item.resumeId]
       .map((value) => normalizeRecoveryText(value, 512).toLowerCase())
@@ -84,7 +88,7 @@ export function requestHistoryListRecovery(
   const rawStartedAt = Number(hint?.startedAt);
   const startedAt = Number.isFinite(rawStartedAt) && rawStartedAt > 0 ? rawStartedAt : undefined;
   if (identities.size === 0 && !startedAt) return false;
-  if (hasIndexedRecoveryTarget(indexedItems, providerId, identities)) return false;
+  if (findIndexedHistoryRecoveryTarget(hint, indexedItems)) return false;
 
   const cwd = normalizeRecoveryText(
     hint?.cwd || project.projectWslPath || project.projectWinPath,

@@ -695,6 +695,8 @@ function emitClaudeNotify(entry: ClaudeNotifyEntry, sourcePath?: string): void {
       providerId: "claude",
       filePath: entry.transcriptPath,
       sourcePath,
+      sessionId: entry.sessionId,
+      cwd: entry.cwd,
     });
   } catch {}
   if (!win) return;
@@ -708,6 +710,7 @@ function emitClaudeNotify(entry: ClaudeNotifyEntry, sourcePath?: string): void {
     previewEscapedWhitespace?: boolean;
     timestamp: string;
     eventId: string;
+    threadId: string;
   } = {
     providerId: "claude" as const,
     tabId: entry.tabId ? String(entry.tabId) : "",
@@ -715,6 +718,7 @@ function emitClaudeNotify(entry: ClaudeNotifyEntry, sourcePath?: string): void {
     preview: entry.preview ? String(entry.preview) : "",
     timestamp: entry.timestamp ? String(entry.timestamp) : "",
     eventId: entry.eventId ? String(entry.eventId) : "",
+    threadId: String(entry.sessionId || "").trim(),
   };
   if (typeof entry.previewEscapedWhitespace === "boolean")
     payload.previewEscapedWhitespace = entry.previewEscapedWhitespace;
