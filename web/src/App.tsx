@@ -83,8 +83,20 @@ import {
   type CodexCliErrorKind,
 } from "@/lib/codex-cli-error-classifier";
 import {
-  rememberCodexErrorReplayKey,
-  shouldSuppressCodexErrorResizeReplay,
+  completeCodexPtyHistoryReplay,
+  classifyCodexFinalErrorOnIdleScreen,
+  consumeCodexPtyOutputChunk,
+  createCodexPtyOutputFrameState,
+  hasCodexCurrentTurnBoundary,
+  hasCodexComposerPrompt,
+  isCodexRuntimeStatusAfterError,
+  rememberCodexErrorReplay,
+  resolveCodexErrorReplayDecision,
+  shouldTrustCodexRuntimeStatusForCurrentTurn,
+  type CodexErrorReplayDecision,
+  type CodexErrorReplayRecord,
+  type CodexPtyOutputFrame,
+  type CodexPtyOutputFrameState,
 } from "@/lib/codex-error-replay-guard";
 import {
   DEFAULT_CODEX_ERROR_HANDLING_PREFS,
@@ -492,6 +504,10 @@ type HistoryBindingRetryState = {
 
 type CodexErrorScanState = {
   buffer: string;
+  outputFrameState?: CodexPtyOutputFrameState;
+  turn: number;
+  currentPrompt?: string;
+  turnOutputText?: string;
   lastReconnectErrorKey?: string;
   lastFinalErrorKey?: string;
   lastReconnectStatusAt?: number;
@@ -504,9 +520,36 @@ type CodexErrorScanState = {
   pendingFinalError?: CodexCliErrorClassification;
   pendingFinalErrorAt?: number;
   pendingFinalErrorTimerId?: number;
+  pendingFinalErrorHistoryReplay?: boolean;
+  pendingFinalErrorSynchronized?: boolean;
+  pendingFinalErrorOutputText?: string;
 };
 
+/**
+ * 创建一份完整的 Codex 错误扫描状态，保证新增的轮次与 PTY 帧字段不会遗漏。
+ */
+function createCodexErrorScanState(options?: {
+  outputFrameState?: CodexPtyOutputFrameState;
+  turn?: number;
+  currentPrompt?: string;
+  turnOutputText?: string;
+  autoContinueAttempts?: number;
+}): CodexErrorScanState {
+  return {
+    buffer: "",
+    outputFrameState: options?.outputFrameState || createCodexPtyOutputFrameState(),
+    turn: Math.max(0, Math.floor(Number(options?.turn) || 0)),
+    currentPrompt: options?.currentPrompt,
+    turnOutputText: String(options?.turnOutputText || ""),
+    autoContinueAttempts: Math.max(0, Math.floor(Number(options?.autoContinueAttempts) || 0)),
+  };
+}
+
 const CODEX_ERROR_SCAN_MAX_BUFFER_LENGTH = 16 * 1024;
+const CODEX_TURN_OUTPUT_MAX_LENGTH = 128 * 1024;
+const CODEX_FINAL_ERROR_SCREEN_CONFIRM_RETRY_MS = 40;
+const CODEX_FINAL_ERROR_SCREEN_CONFIRM_MAX_CHECKS = 250;
+const CODEX_FINAL_ERROR_SCREEN_CONFIRM_STABLE_CHECKS = 3;
 const CODEX_RECONNECT_DETAIL_GRACE_MS = 10_000;
 const CODEX_RECONNECT_AFTER_ERROR_GRACE_MS = 10_000;
 const HISTORY_BINDING_RETRY_DELAYS_MS = [200, 500, 1_000, 2_000, 4_000] as const;
@@ -514,11 +557,38 @@ const HISTORY_BINDING_WAIT_TTL_MS = 5 * 60_000;
 const HISTORY_BINDING_INVALIDATION_REFRESH_GAP_MS = 10_000;
 
 /**
+ * 追加当前轮次的终端输出，并限制内存中只保留最近的可判定片段。
+ */
+function appendCodexTurnOutput(previous: string | undefined, next: string): string {
+  const combined = `${String(previous || "")}${String(next || "")}`;
+  return combined.length > CODEX_TURN_OUTPUT_MAX_LENGTH
+    ? combined.slice(-CODEX_TURN_OUTPUT_MAX_LENGTH)
+    : combined;
+}
+
+/**
+ * 清除等待最终错误确认的临时字段，但保留轮次、帧聚合和已处理错误历史。
+ */
+function clearCodexPendingFinalErrorState(state: CodexErrorScanState): CodexErrorScanState {
+  return {
+    ...state,
+    pendingFinalErrorKey: undefined,
+    pendingFinalErrorKind: undefined,
+    pendingFinalError: undefined,
+    pendingFinalErrorAt: undefined,
+    pendingFinalErrorTimerId: undefined,
+    pendingFinalErrorHistoryReplay: undefined,
+    pendingFinalErrorSynchronized: undefined,
+    pendingFinalErrorOutputText: undefined,
+  };
+}
+
+/**
  * 中文说明：生成 Codex 错误去重键，避免同一段终端输出反复触发处理。
  */
 function buildCodexCliErrorKey(classification: CodexCliErrorClassification): string {
   const attempt = classification.reconnectAttempt ? `:${classification.reconnectAttempt}/${classification.reconnectMaxAttempts || "?"}` : "";
-  return `${classification.phase}:${classification.kind}${attempt}:${classification.matchedText}`;
+  return `${classification.phase}:${classification.kind}${attempt}:${classification.replayFingerprint || classification.matchedText}`;
 }
 
 type CompletionEventSource = "osc" | "external" | "manual" | "unknown";
@@ -1882,7 +1952,7 @@ export default function CodexFlowManagerUI() {
   const resumeCompletionGuardByTabRef = useRef<Record<string, number>>({});
   const ptyNotificationBuffersRef = useRef<Record<string, string>>({});
   const codexErrorScanByTabRef = useRef<Record<string, CodexErrorScanState>>({});
-  const codexHandledErrorKeysByPtyRef = useRef<Record<string, string[]>>({});
+  const codexHandledErrorKeysByPtyRef = useRef<Record<string, CodexErrorReplayRecord[]>>({});
   const ptyListenersRef = useRef<Record<string, () => void>>({});
   const ptyToTabRef = useRef<Record<string, string>>({});
   const hydratedPtyBindingQueueRef = useRef<Array<{ tabId: string; ptyId: string; windowId: string; source: string }>>([]);
@@ -3020,17 +3090,17 @@ export default function CodexFlowManagerUI() {
   }, [notifyLog]);
 
   /**
-   * 重置指定标签页的 Codex 错误扫描状态；用户主动发送时同时开启新的错误回放边界。
+   * 重置指定标签页的 Codex 错误扫描状态；只在明确开始新轮次时递增轮次。
    */
-  const resetCodexErrorScanForTab = useCallback((tabId: string, source: string, options?: { keepAttempts?: boolean }): void => {
+  const resetCodexErrorScanForTab = useCallback((tabId: string, source: string, options?: {
+    keepAttempts?: boolean;
+    advanceTurn?: boolean;
+    prompt?: string;
+    clearFrameState?: boolean;
+  }): void => {
     const id = String(tabId || "").trim();
     if (!id) return;
-    if (source === "user-send") {
-      const ptyId = ptyByTabRef.current[id];
-      if (ptyId)
-        delete codexHandledErrorKeysByPtyRef.current[ptyId];
-    }
-    const state = codexErrorScanByTabRef.current[id];
+    const state = codexErrorScanByTabRef.current[id] || createCodexErrorScanState();
     if (state && typeof state.autoContinueTimerId === "number") {
       try { window.clearTimeout(state.autoContinueTimerId); } catch {}
       notifyLog(`codexError.scan.resetTimer tab=${id} source=${source}`);
@@ -3039,14 +3109,24 @@ export default function CodexFlowManagerUI() {
       try { window.clearTimeout(state.pendingFinalErrorTimerId); } catch {}
       notifyLog(`codexError.scan.resetPendingFinalTimer tab=${id} source=${source}`);
     }
-    if (options?.keepAttempts && state) {
-      codexErrorScanByTabRef.current[id] = {
-        buffer: "",
-        autoContinueAttempts: state.autoContinueAttempts || 0,
-      };
-      return;
-    }
-    delete codexErrorScanByTabRef.current[id];
+    const advanceTurn = !!options?.advanceTurn;
+    const nextTurn = advanceTurn ? state.turn + 1 : state.turn;
+    const nextPrompt = advanceTurn
+      ? String(options?.prompt || "").trim().slice(0, 4_096)
+      : state.currentPrompt;
+    const clearFrameState = !!options?.clearFrameState;
+    codexErrorScanByTabRef.current[id] = {
+      ...createCodexErrorScanState({
+        outputFrameState: clearFrameState ? undefined : state.outputFrameState,
+        turn: nextTurn,
+        currentPrompt: nextPrompt,
+        turnOutputText: advanceTurn ? "" : state.turnOutputText,
+        autoContinueAttempts: options?.keepAttempts ? state.autoContinueAttempts : 0,
+      }),
+      ...(clearFrameState ? {} : {
+        outputFrameState: state.outputFrameState || createCodexPtyOutputFrameState(),
+      }),
+    };
   }, [notifyLog]);
 
   /**
@@ -3331,9 +3411,14 @@ export default function CodexFlowManagerUI() {
       [id]: nextHistory,
     }));
 
+    // 中断很少发生，保留来源日志以定位无按键中断；不记录输入内容或终端正文。
+    try {
+      void window.host?.utils?.perfLogCritical?.(
+        `[agentTimer.interrupt] tab=${id} source=${source} turn=${codexErrorScanByTabRef.current[id]?.turn || 0} startedAt=${current.startedAt} elapsedMs=${elapsedMs}`,
+      );
+    } catch {}
     resetCodexErrorScanForTab(id, `timer-interrupt:${source}`);
-    notifyLog(`agentTimer.interrupt tab=${id} source=${source}`);
-  }, [notifyLog, resetCodexErrorScanForTab]);
+  }, [resetCodexErrorScanForTab]);
 
   /**
    * 在识别到 Codex CLI 错误时结束本轮计时，并记录失败原因与自动 continue 计划。
@@ -4405,28 +4490,191 @@ export default function CodexFlowManagerUI() {
   function rememberHandledCodexError(ptyId: string, classification: CodexCliErrorClassification): void {
     const id = String(ptyId || "").trim();
     if (!id) return;
-    codexHandledErrorKeysByPtyRef.current[id] = rememberCodexErrorReplayKey(
+    const tabId = ptyToTabRef.current[id];
+    const turn = tabId
+      ? codexErrorScanByTabRef.current[tabId]?.turn || 0
+      : 0;
+    codexHandledErrorKeysByPtyRef.current[id] = rememberCodexErrorReplay(
       codexHandledErrorKeysByPtyRef.current[id],
       classification,
+      turn,
     );
   }
 
   /**
-   * 判断当前识别结果是否是 PTY 缩放重绘产生的已处理错误回放。
+   * 判断当前识别结果应放行、压制，还是等待当前终端屏幕确认。
    */
-  function shouldSuppressCodexResizeReplay(
+  function resolveCodexReplayDecision(
     tabId: string,
     ptyId: string,
     classification: CodexCliErrorClassification,
-  ): boolean {
-    const suppressed = shouldSuppressCodexErrorResizeReplay({
-      resizeReplayActive: tm.isPtyResizeReplayWindowActive(tabId),
-      handledErrorKeys: codexHandledErrorKeysByPtyRef.current[ptyId],
+    frame?: Pick<CodexPtyOutputFrame, "historyReplay" | "synchronized">,
+    outputText?: string,
+    currentRuntimePhase?: "working" | "reconnecting",
+    idleScreenConfirmed = false,
+  ): CodexErrorReplayDecision {
+    const state = codexErrorScanByTabRef.current[tabId];
+    const resizeReplayActive = tm.isPtyResizeReplayWindowActive(tabId);
+    const decision = resolveCodexErrorReplayDecision({
+      historyReplay: !!frame?.historyReplay,
+      synchronized: !!frame?.synchronized,
+      resizeReplayActive,
+      handledErrors: codexHandledErrorKeysByPtyRef.current[ptyId],
       classification,
+      currentTurn: state?.turn || 0,
+      currentPrompt: state?.currentPrompt || "",
+      outputText: String(outputText || ""),
+      currentRuntimePhase,
+      idleScreenConfirmed,
     });
-    if (suppressed)
-      notifyLog(`codexError.resizeReplay.suppress tab=${tabId} pty=${ptyId} kind=${classification.kind}`);
-    return suppressed;
+    if (decision !== "allow")
+      notifyLog(`codexError.replay.decision tab=${tabId} pty=${ptyId} turn=${state?.turn || 0} kind=${classification.kind} phase=${classification.phase} decision=${decision} runtime=${currentRuntimePhase || "unknown"} synchronized=${frame?.synchronized ? "1" : "0"} history=${frame?.historyReplay ? "1" : "0"} resize=${resizeReplayActive ? "1" : "0"}`);
+    return decision;
+  }
+
+  /**
+   * 在确认可输入画面不属于待处理错误后，只清除候选状态，不改变当前计时状态。
+   */
+  function settleCodexIdleWithoutFinalError(
+    tabId: string,
+    source: string,
+    expectedPendingErrorKey?: string,
+  ): void {
+    const id = String(tabId || "").trim();
+    if (!id) return;
+    const state = codexErrorScanByTabRef.current[id];
+    if (!state) return;
+    if (expectedPendingErrorKey && state.pendingFinalErrorKey !== expectedPendingErrorKey) return;
+    if (typeof state.pendingFinalErrorTimerId === "number") {
+      try { window.clearTimeout(state.pendingFinalErrorTimerId); } catch {}
+    }
+    codexErrorScanByTabRef.current[id] = {
+      ...clearCodexPendingFinalErrorState(state),
+      buffer: "",
+      lastReconnectErrorKey: undefined,
+      lastReconnectStatusAt: undefined,
+    };
+    notifyLog(`codexError.idle tab=${id} source=${source}`);
+  }
+
+  /**
+   * 判断空闲屏幕是否已证明属于当前轮次，避免历史或缩放重放改变当前计时状态。
+   */
+  function shouldTrustCodexIdleScreenForCurrentTurn(
+    tabId: string,
+    state: CodexErrorScanState,
+    screenText: string,
+  ): boolean {
+    const replayCandidate = tm.isPtyResizeReplayWindowActive(tabId)
+      || !!state.pendingFinalErrorHistoryReplay;
+    if (!replayCandidate) return true;
+    return hasCodexCurrentTurnBoundary(
+      `${state.pendingFinalErrorOutputText || ""}\n${screenText}`,
+      state.currentPrompt || "",
+    );
+  }
+
+  /**
+   * 在 xterm 写入队列稳定后，用当前光标附近的真实屏幕状态确认同类最终错误。
+   */
+  function scheduleCodexPendingFinalIdleScreenCheck(tabId: string, errorKey: string): void {
+    const id = String(tabId || "").trim();
+    if (!id || !errorKey) return;
+
+    const inspect = (attempt: number, stableScreenText = "", stableScreenChecks = 0) => {
+      const state = codexErrorScanByTabRef.current[id];
+      if (
+        !state ||
+        state.pendingFinalErrorKey !== errorKey ||
+        state.pendingFinalError?.phase !== "final" ||
+        typeof state.pendingFinalErrorTimerId === "number"
+      ) return;
+
+      if (tm.hasPendingTerminalOutput(id)) {
+        if (attempt < CODEX_FINAL_ERROR_SCREEN_CONFIRM_MAX_CHECKS)
+          window.setTimeout(() => inspect(attempt + 1), CODEX_FINAL_ERROR_SCREEN_CONFIRM_RETRY_MS);
+        else
+          notifyLog(`codexError.pendingFinal.screen.wait tab=${id} turn=${state.turn} kind=${state.pendingFinalError.kind} runtime=write-pending`);
+        return;
+      }
+
+      const snapshot = tm.readTerminalCursorTextSnapshot(id, {
+        linesBefore: 256,
+        linesAfter: 4,
+        maxChars: CODEX_TURN_OUTPUT_MAX_LENGTH,
+      });
+      const screenText = String(snapshot?.text || "");
+      const screenRuntimePhase = detectCodexCliRuntimeStatusText(screenText)?.phase;
+      if (hasCodexComposerPrompt(screenText)) {
+        const nextStableScreenChecks = screenText === stableScreenText ? stableScreenChecks + 1 : 1;
+        if (
+          nextStableScreenChecks < CODEX_FINAL_ERROR_SCREEN_CONFIRM_STABLE_CHECKS &&
+          attempt < CODEX_FINAL_ERROR_SCREEN_CONFIRM_MAX_CHECKS
+        ) {
+          window.setTimeout(
+            () => inspect(attempt + 1, screenText, nextStableScreenChecks),
+            CODEX_FINAL_ERROR_SCREEN_CONFIRM_RETRY_MS,
+          );
+          return;
+        }
+        if (!shouldTrustCodexIdleScreenForCurrentTurn(id, state, screenText)) {
+          if (attempt < CODEX_FINAL_ERROR_SCREEN_CONFIRM_MAX_CHECKS) {
+            window.setTimeout(
+              () => inspect(attempt + 1, screenText, nextStableScreenChecks),
+              CODEX_FINAL_ERROR_SCREEN_CONFIRM_RETRY_MS,
+            );
+          } else {
+            notifyLog(`codexError.pendingFinal.screen.wait tab=${id} turn=${state.turn} kind=${state.pendingFinalError.kind} screen=composer trusted=0`);
+          }
+          return;
+        }
+        if (classifyCodexFinalErrorOnIdleScreen(screenText, state.currentPrompt || "")) {
+          confirmCodexPendingFinalErrorFromIdleScreen(id, errorKey, screenText, "xterm-screen");
+          return;
+        }
+        settleCodexIdleWithoutFinalError(id, "idle-screen-without-final-error", errorKey);
+        notifyLog(`codexError.pendingFinal.screen.drop tab=${id} turn=${state.turn} kind=${state.pendingFinalError.kind} screen=composer trusted=1 errorVisible=0`);
+        return;
+      }
+      if (screenRuntimePhase === "working" || screenRuntimePhase === "reconnecting") {
+        if (isCodexRuntimeStatusAfterError(
+          screenText,
+          screenRuntimePhase,
+          state.pendingFinalError.matchedText,
+        )) {
+          codexErrorScanByTabRef.current[id] = clearCodexPendingFinalErrorState(state);
+          notifyLog(`codexError.pendingFinal.screen.drop tab=${id} turn=${state.turn} kind=${state.pendingFinalError.kind} runtime=${screenRuntimePhase} errorVisible=0`);
+          return;
+        }
+      }
+
+      if (attempt < CODEX_FINAL_ERROR_SCREEN_CONFIRM_MAX_CHECKS)
+          window.setTimeout(() => inspect(attempt + 1), CODEX_FINAL_ERROR_SCREEN_CONFIRM_RETRY_MS);
+      else
+        notifyLog(`codexError.pendingFinal.screen.wait tab=${id} turn=${state.turn} kind=${state.pendingFinalError.kind} runtime=unknown`);
+    };
+
+    window.setTimeout(() => inspect(0), CODEX_FINAL_ERROR_SCREEN_CONFIRM_RETRY_MS);
+  }
+
+  /**
+   * 判断终端状态是否能够证明属于当前发送轮次，防止历史重放把失败状态错误恢复为进行中。
+   */
+  function shouldTrustCodexRuntimeStatus(
+    tabId: string,
+    frame: Pick<CodexPtyOutputFrame, "historyReplay" | "synchronized">,
+    outputText: string,
+    statusText: string,
+  ): boolean {
+    const state = codexErrorScanByTabRef.current[tabId];
+    return shouldTrustCodexRuntimeStatusForCurrentTurn({
+      historyReplay: !!frame.historyReplay,
+      synchronized: !!frame.synchronized,
+      resizeReplayActive: tm.isPtyResizeReplayWindowActive(tabId),
+      currentPrompt: state?.currentPrompt || "",
+      outputText,
+      statusText,
+    });
   }
 
   /**
@@ -4499,6 +4747,71 @@ export default function CodexFlowManagerUI() {
   }
 
   /**
+   * 当前 xterm 屏幕同时显示最终错误与可输入提示时，以屏幕上的真实错误确认本轮新失败。
+   */
+  function confirmCodexPendingFinalErrorFromIdleScreen(
+    tabId: string,
+    errorKey: string,
+    screenText: string,
+    source: string,
+  ): void {
+    const id = String(tabId || "").trim();
+    if (!id || !errorKey || !screenText) return;
+    const state = codexErrorScanByTabRef.current[id];
+    const pendingClassification = state?.pendingFinalError;
+    const screenClassification = classifyCodexFinalErrorOnIdleScreen(
+      screenText,
+      state?.currentPrompt || "",
+    );
+    if (
+      !state ||
+      state.pendingFinalErrorKey !== errorKey ||
+      pendingClassification?.phase !== "final" ||
+      typeof state.pendingFinalErrorTimerId === "number" ||
+      !screenClassification
+    ) return;
+
+    const confirmedErrorKey = buildCodexCliErrorKey(screenClassification);
+    const ptyId = ptyByTabRef.current[id];
+    const decision = ptyId
+      ? resolveCodexReplayDecision(
+        id,
+        ptyId,
+        screenClassification,
+        {
+          historyReplay: !!state.pendingFinalErrorHistoryReplay,
+          synchronized: !!state.pendingFinalErrorSynchronized,
+        },
+        `${state.pendingFinalErrorOutputText || ""}\n${screenText}`,
+        undefined,
+        true,
+      )
+      : "allow";
+    if (decision !== "allow") {
+      if (shouldTrustCodexIdleScreenForCurrentTurn(id, state, screenText))
+        settleCodexIdleWithoutFinalError(id, "idle-final-error-suppressed", errorKey);
+      else
+        scheduleCodexPendingFinalIdleScreenCheck(id, errorKey);
+      notifyLog(`codexError.pendingFinal.screen.suppress tab=${id} turn=${state.turn} kind=${screenClassification.kind} source=${source} decision=${decision}`);
+      return;
+    }
+
+    const timerState = agentTurnTimerByTabRef.current[id];
+    if (!timerState || timerState.status !== "working") {
+      codexErrorScanByTabRef.current[id] = clearCodexPendingFinalErrorState(state);
+      notifyLog(`codexError.pendingFinal.screen.drop tab=${id} turn=${state.turn} kind=${screenClassification.kind} source=${source} reason=not-working`);
+      return;
+    }
+    codexErrorScanByTabRef.current[id] = {
+      ...clearCodexPendingFinalErrorState(state),
+      lastFinalErrorKey: confirmedErrorKey,
+    };
+    clearAgentTurnReconnecting(id, "idle-final-error-screen");
+    notifyLog(`codexError.pendingFinal.screen.confirm tab=${id} turn=${state.turn} kind=${screenClassification.kind} candidateKind=${pendingClassification.kind} source=${source}`);
+    handleCodexCliErrorDetected(id, screenClassification, confirmedErrorKey);
+  }
+
+  /**
    * 将等待 Reconnecting 的疑似最终错误落为真正最终失败。
    */
   function flushCodexPendingFinalError(tabId: string, errorKey: string, source: string) {
@@ -4512,20 +4825,16 @@ export default function CodexFlowManagerUI() {
     const bufferedStatus = detectCodexCliRuntimeStatusText(state.buffer || "");
     const bufferedClassification = classifyCodexCliErrorText(state.buffer || "");
     const bufferedErrorKey = bufferedClassification ? buildCodexCliErrorKey(bufferedClassification) : "";
+    const pendingClassification = state.pendingFinalError;
     if (
       bufferedStatus?.phase === "working" ||
       bufferedStatus?.phase === "reconnecting" ||
-      bufferedClassification?.phase !== "final" ||
-      bufferedErrorKey !== errorKey
+      (bufferedClassification && (
+        bufferedClassification.phase !== "final" ||
+        bufferedErrorKey !== errorKey
+      ))
     ) {
-      codexErrorScanByTabRef.current[id] = {
-        ...state,
-        pendingFinalErrorKey: undefined,
-        pendingFinalErrorKind: undefined,
-        pendingFinalError: undefined,
-        pendingFinalErrorAt: undefined,
-        pendingFinalErrorTimerId: undefined,
-      };
+      codexErrorScanByTabRef.current[id] = clearCodexPendingFinalErrorState(state);
       const reason = bufferedStatus?.phase
         ? `runtime-${bufferedStatus.phase}`
         : bufferedClassification?.phase
@@ -4534,28 +4843,59 @@ export default function CodexFlowManagerUI() {
       notifyLog(`codexError.pendingFinal.drop tab=${id} source=${source} reason=${reason}`);
       return;
     }
-    codexErrorScanByTabRef.current[id] = {
-      ...state,
-      pendingFinalErrorKey: undefined,
-      pendingFinalErrorKind: undefined,
-      pendingFinalError: undefined,
-      pendingFinalErrorAt: undefined,
-      pendingFinalErrorTimerId: undefined,
-      lastFinalErrorKey: errorKey,
-    };
+    const finalClassification = bufferedClassification?.phase === "final"
+      ? bufferedClassification
+      : pendingClassification;
+    if (!finalClassification || finalClassification.phase !== "final") {
+      codexErrorScanByTabRef.current[id] = clearCodexPendingFinalErrorState(state);
+      notifyLog(`codexError.pendingFinal.drop tab=${id} source=${source} reason=classification-missing`);
+      return;
+    }
+    const ptyId = ptyByTabRef.current[id];
+    const replayDecision = ptyId
+      ? resolveCodexReplayDecision(
+        id,
+        ptyId,
+        finalClassification,
+        {
+          historyReplay: !!state.pendingFinalErrorHistoryReplay,
+          synchronized: !!state.pendingFinalErrorSynchronized,
+        },
+        state.pendingFinalErrorOutputText || state.buffer || state.turnOutputText,
+        bufferedStatus?.phase,
+      )
+      : "allow";
+    if (replayDecision !== "allow") {
+      codexErrorScanByTabRef.current[id] = clearCodexPendingFinalErrorState(state);
+      notifyLog(`codexError.pendingFinal.suppress tab=${id} source=${source} kind=${finalClassification.kind} decision=${replayDecision}`);
+      return;
+    }
     const timerState = agentTurnTimerByTabRef.current[id];
     if (!timerState || timerState.status !== "working") {
+      codexErrorScanByTabRef.current[id] = clearCodexPendingFinalErrorState(state);
       notifyLog(`codexError.pendingFinal.drop tab=${id} source=${source} reason=not-working`);
       return;
     }
+    codexErrorScanByTabRef.current[id] = {
+      ...clearCodexPendingFinalErrorState(state),
+      lastFinalErrorKey: errorKey,
+    };
     notifyLog(`codexError.pendingFinal.flush tab=${id} source=${source} key=${errorKey}`);
-    handleCodexCliErrorDetected(id, bufferedClassification, errorKey);
+    handleCodexCliErrorDetected(id, finalClassification, errorKey);
   }
 
   /**
    * 在已有 PTY 输出流上低成本扫描 Codex CLI 错误文本。
    */
-  function processCodexPtyErrorChunk(ptyId: string, chunk: string) {
+  function processCodexPtyErrorFrame(
+    ptyId: string,
+    chunk: string,
+    frame: CodexPtyOutputFrame = {
+      text: chunk,
+      synchronized: false,
+      historyReplay: false,
+    },
+  ) {
     if (!ptyId || typeof chunk !== "string" || chunk.length === 0) return;
     const prefs = codexErrorHandlingPrefsRef.current;
     if (!prefs.detectionEnabled) return;
@@ -4569,55 +4909,30 @@ export default function CodexFlowManagerUI() {
 
     const cleanedChunk = stripAnsiForCodexErrorScan(chunk);
     if (!cleanedChunk) return;
-    const previous = codexErrorScanByTabRef.current[tabId] || { buffer: "", autoContinueAttempts: 0 };
+    const previousState = codexErrorScanByTabRef.current[tabId] || createCodexErrorScanState();
+    const previous: CodexErrorScanState = {
+      ...previousState,
+      turnOutputText: appendCodexTurnOutput(previousState.turnOutputText, cleanedChunk),
+      pendingFinalErrorOutputText: previousState.pendingFinalError
+        && typeof previousState.pendingFinalErrorTimerId !== "number"
+        ? appendCodexTurnOutput(previousState.pendingFinalErrorOutputText, cleanedChunk)
+        : previousState.pendingFinalErrorOutputText,
+    };
+    codexErrorScanByTabRef.current[tabId] = previous;
+    const frameIsSnapshot = !!frame.synchronized;
+    const replayOutputText = frameIsSnapshot
+      ? cleanedChunk
+      : `${previous.buffer || ""}${cleanedChunk}`.slice(-CODEX_ERROR_SCAN_MAX_BUFFER_LENGTH);
     const now = Date.now();
     const chunkRuntimeStatus = detectCodexCliRuntimeStatusText(cleanedChunk);
-    if (chunkRuntimeStatus?.phase === "idle") {
-      const idleClassification = classifyCodexCliErrorText(cleanedChunk);
-      if (idleClassification?.phase === "final" && shouldSuppressCodexResizeReplay(tabId, ptyId, idleClassification))
-        return;
-      if (typeof previous.pendingFinalErrorTimerId === "number") {
-        try { window.clearTimeout(previous.pendingFinalErrorTimerId); } catch {}
-      }
-      if (idleClassification?.phase === "final") {
-        const errorKey = buildCodexCliErrorKey(idleClassification);
-        codexErrorScanByTabRef.current[tabId] = {
-          ...previous,
-          buffer: "",
-          lastReconnectErrorKey: undefined,
-          lastReconnectStatusAt: undefined,
-          lastFinalErrorKey: errorKey,
-          pendingFinalErrorKey: undefined,
-          pendingFinalErrorKind: undefined,
-          pendingFinalError: undefined,
-          pendingFinalErrorAt: undefined,
-          pendingFinalErrorTimerId: undefined,
-        };
-        clearAgentTurnReconnecting(tabId, "idle-final-error");
-        if (previous.lastFinalErrorKey !== errorKey)
-          handleCodexCliErrorDetected(tabId, idleClassification, errorKey);
-        notifyLog(`codexError.idle.final tab=${tabId} kind=${idleClassification.kind}`);
-        return;
-      }
-      codexErrorScanByTabRef.current[tabId] = {
-        ...previous,
-        buffer: "",
-        lastReconnectErrorKey: undefined,
-        lastReconnectStatusAt: undefined,
-        pendingFinalErrorKey: undefined,
-        pendingFinalErrorKind: undefined,
-        pendingFinalError: undefined,
-        pendingFinalErrorAt: undefined,
-        pendingFinalErrorTimerId: undefined,
-      };
-      clearAgentTurnReconnecting(tabId, "idle-output");
-      if (timerState.status === "working")
-        interruptAgentTurnTimer(tabId, "codex-idle-output");
-      notifyLog(`codexError.idle tab=${tabId}`);
-      return;
-    }
+    const runtimeStatusTrusted = chunkRuntimeStatus?.phase === "working"
+      ? shouldTrustCodexRuntimeStatus(tabId, frame, replayOutputText, "Working")
+      : chunkRuntimeStatus?.phase === "reconnecting"
+        ? shouldTrustCodexRuntimeStatus(tabId, frame, replayOutputText, "Reconnecting...")
+        : true;
     if (timerState.status === "failed") {
       if (chunkRuntimeStatus?.phase === "working") {
+        if (!runtimeStatusTrusted) return;
         restoreFailedAgentTurnToWorking(tabId, "pty-runtime-status");
         const restoredScanState = codexErrorScanByTabRef.current[tabId] || previous;
         if (typeof restoredScanState.pendingFinalErrorTimerId === "number") {
@@ -4637,12 +4952,17 @@ export default function CodexFlowManagerUI() {
           pendingFinalError: undefined,
           pendingFinalErrorAt: undefined,
           pendingFinalErrorTimerId: undefined,
+          pendingFinalErrorHistoryReplay: undefined,
+          pendingFinalErrorSynchronized: undefined,
+          pendingFinalErrorOutputText: undefined,
         };
         notifyLog(`codexError.failed.working tab=${tabId}`);
         return;
       }
       if (chunkRuntimeStatus?.phase !== "reconnecting") return;
-      const nextBuffer = `${previous.buffer || ""}${cleanedChunk}`.slice(-CODEX_ERROR_SCAN_MAX_BUFFER_LENGTH);
+      const nextBuffer = `${frameIsSnapshot ? "" : previous.buffer || ""}${cleanedChunk}`.slice(-CODEX_ERROR_SCAN_MAX_BUFFER_LENGTH);
+      const reconnectOutputText = frameIsSnapshot ? cleanedChunk : nextBuffer;
+      if (!runtimeStatusTrusted) return;
       const reconnectClassification = classifyCodexCliErrorText(`${cleanedChunk}\n${timerState.errorMessage || ""}`) || {
         kind: timerState.errorKind || previous.pendingErrorKind || previous.pendingFinalErrorKind || "unknownHttp",
         severity: "temporary" as const,
@@ -4658,9 +4978,37 @@ export default function CodexFlowManagerUI() {
         reconnectAttempt: reconnectClassification.reconnectAttempt || chunkRuntimeStatus.reconnectAttempt,
         reconnectMaxAttempts: reconnectClassification.reconnectMaxAttempts || chunkRuntimeStatus.reconnectMaxAttempts,
       };
-      if (shouldSuppressCodexResizeReplay(tabId, ptyId, normalizedReconnectClassification))
-        return;
       const reconnectErrorKey = buildCodexCliErrorKey(normalizedReconnectClassification);
+      const replayDecision = resolveCodexReplayDecision(
+        tabId,
+        ptyId,
+        normalizedReconnectClassification,
+        frame,
+        reconnectOutputText,
+        chunkRuntimeStatus.phase,
+      );
+      if (replayDecision !== "allow") {
+        if (typeof previous.pendingFinalErrorTimerId === "number") {
+          try { window.clearTimeout(previous.pendingFinalErrorTimerId); } catch {}
+        }
+        codexErrorScanByTabRef.current[tabId] = {
+          ...previous,
+          buffer: nextBuffer,
+          pendingErrorKey: undefined,
+          pendingErrorKind: undefined,
+          autoContinueTimerId: undefined,
+          pendingFinalErrorKey: undefined,
+          pendingFinalErrorKind: undefined,
+          pendingFinalError: undefined,
+          pendingFinalErrorAt: undefined,
+          pendingFinalErrorTimerId: undefined,
+          pendingFinalErrorHistoryReplay: undefined,
+          pendingFinalErrorSynchronized: undefined,
+          pendingFinalErrorOutputText: undefined,
+        };
+        notifyLog(`codexError.failed.reconnecting.suppress tab=${tabId} kind=${normalizedReconnectClassification.kind} decision=${replayDecision}`);
+        return;
+      }
       restoreFailedAgentTurnToReconnecting(tabId, normalizedReconnectClassification, "pty-runtime-status");
       const restoredScanState = codexErrorScanByTabRef.current[tabId] || previous;
       if (typeof restoredScanState.pendingFinalErrorTimerId === "number") {
@@ -4679,17 +5027,20 @@ export default function CodexFlowManagerUI() {
         pendingFinalError: undefined,
         pendingFinalErrorAt: undefined,
         pendingFinalErrorTimerId: undefined,
+        pendingFinalErrorHistoryReplay: undefined,
+        pendingFinalErrorSynchronized: undefined,
+        pendingFinalErrorOutputText: undefined,
       };
       if (previous.lastReconnectErrorKey !== reconnectErrorKey)
         handleCodexCliReconnectDetected(tabId, normalizedReconnectClassification);
       notifyLog(`codexError.failed.reconnecting tab=${tabId} kind=${normalizedReconnectClassification.kind}`);
       return;
     }
-    if (chunkRuntimeStatus?.phase === "working" && typeof previous.pendingFinalErrorTimerId === "number") {
+    if (runtimeStatusTrusted && chunkRuntimeStatus?.phase === "working" && typeof previous.pendingFinalErrorTimerId === "number") {
       try { window.clearTimeout(previous.pendingFinalErrorTimerId); } catch {}
       notifyLog(`codexError.pendingFinal.clear tab=${tabId} source=working-output`);
     }
-    const baseScanState: CodexErrorScanState = chunkRuntimeStatus?.phase === "working"
+    const baseScanState: CodexErrorScanState = runtimeStatusTrusted && chunkRuntimeStatus?.phase === "working"
       ? {
         ...previous,
         buffer: "",
@@ -4700,15 +5051,25 @@ export default function CodexFlowManagerUI() {
         pendingFinalError: undefined,
         pendingFinalErrorAt: undefined,
         pendingFinalErrorTimerId: undefined,
+        pendingFinalErrorHistoryReplay: undefined,
+        pendingFinalErrorSynchronized: undefined,
+        pendingFinalErrorOutputText: undefined,
       }
       : previous;
-    const nextBuffer = `${baseScanState.buffer || ""}${cleanedChunk}`.slice(-CODEX_ERROR_SCAN_MAX_BUFFER_LENGTH);
-    const latestScanState: CodexErrorScanState = chunkRuntimeStatus?.phase === "reconnecting"
+    const nextBuffer = `${frameIsSnapshot ? "" : baseScanState.buffer || ""}${cleanedChunk}`.slice(-CODEX_ERROR_SCAN_MAX_BUFFER_LENGTH);
+    const classificationOutputText = frameIsSnapshot ? cleanedChunk : nextBuffer;
+    const latestScanState: CodexErrorScanState = runtimeStatusTrusted && chunkRuntimeStatus?.phase === "reconnecting"
       ? { ...baseScanState, lastReconnectStatusAt: now }
       : baseScanState;
-    if (chunkRuntimeStatus?.phase === "working")
+    if (runtimeStatusTrusted && chunkRuntimeStatus?.phase === "working")
       clearAgentTurnReconnecting(tabId, "working-output");
-    if (chunkRuntimeStatus?.phase === "reconnecting" && previous.pendingFinalError && previous.pendingFinalErrorKey) {
+    if (
+      runtimeStatusTrusted &&
+      chunkRuntimeStatus?.phase === "reconnecting" &&
+      previous.pendingFinalError &&
+      previous.pendingFinalErrorKey &&
+      typeof previous.pendingFinalErrorTimerId === "number"
+    ) {
       const pendingAgeMs = Math.max(0, now - Number(previous.pendingFinalErrorAt || now));
       if (pendingAgeMs <= CODEX_RECONNECT_AFTER_ERROR_GRACE_MS) {
         const reconnectClassification: CodexCliErrorClassification = {
@@ -4717,12 +5078,37 @@ export default function CodexFlowManagerUI() {
           reconnectAttempt: chunkRuntimeStatus.reconnectAttempt,
           reconnectMaxAttempts: chunkRuntimeStatus.reconnectMaxAttempts,
         };
-        if (shouldSuppressCodexResizeReplay(tabId, ptyId, reconnectClassification))
+        const reconnectErrorKey = buildCodexCliErrorKey(reconnectClassification);
+        const replayDecision = resolveCodexReplayDecision(
+          tabId,
+          ptyId,
+          reconnectClassification,
+          frame,
+          classificationOutputText,
+          chunkRuntimeStatus.phase,
+        );
+        if (replayDecision !== "allow") {
+          if (typeof previous.pendingFinalErrorTimerId === "number") {
+            try { window.clearTimeout(previous.pendingFinalErrorTimerId); } catch {}
+          }
+          codexErrorScanByTabRef.current[tabId] = {
+            ...latestScanState,
+            buffer: nextBuffer,
+            pendingFinalErrorKey: undefined,
+            pendingFinalErrorKind: undefined,
+            pendingFinalError: undefined,
+            pendingFinalErrorAt: undefined,
+            pendingFinalErrorTimerId: undefined,
+            pendingFinalErrorHistoryReplay: undefined,
+            pendingFinalErrorSynchronized: undefined,
+            pendingFinalErrorOutputText: undefined,
+          };
+          notifyLog(`codexError.pendingFinal.reconnecting.suppress tab=${tabId} kind=${reconnectClassification.kind} decision=${replayDecision}`);
           return;
+        }
         if (typeof previous.pendingFinalErrorTimerId === "number") {
           try { window.clearTimeout(previous.pendingFinalErrorTimerId); } catch {}
         }
-        const reconnectErrorKey = buildCodexCliErrorKey(reconnectClassification);
         codexErrorScanByTabRef.current[tabId] = {
           ...latestScanState,
           buffer: nextBuffer,
@@ -4731,6 +5117,9 @@ export default function CodexFlowManagerUI() {
           pendingFinalError: undefined,
           pendingFinalErrorAt: undefined,
           pendingFinalErrorTimerId: undefined,
+          pendingFinalErrorHistoryReplay: undefined,
+          pendingFinalErrorSynchronized: undefined,
+          pendingFinalErrorOutputText: undefined,
           lastReconnectErrorKey: reconnectErrorKey,
         };
         if (previous.lastReconnectErrorKey !== reconnectErrorKey)
@@ -4741,6 +5130,7 @@ export default function CodexFlowManagerUI() {
     }
     const chunkClassification = classifyCodexCliErrorText(cleanedChunk);
     const bufferClassification = classifyCodexCliErrorText(nextBuffer);
+    const classificationRuntimePhase = detectCodexCliRuntimeStatusText(classificationOutputText)?.phase;
     const recentlySawReconnect = !!(
       bufferClassification?.phase === "reconnecting" &&
       latestScanState.lastReconnectStatusAt &&
@@ -4757,9 +5147,65 @@ export default function CodexFlowManagerUI() {
       return;
     }
 
-    if (shouldSuppressCodexResizeReplay(tabId, ptyId, classification))
-      return;
     const errorKey = buildCodexCliErrorKey(classification);
+    const replayDecision = resolveCodexReplayDecision(
+      tabId,
+      ptyId,
+      classification,
+      frame,
+      classificationOutputText,
+      classificationRuntimePhase,
+    );
+    if (replayDecision === "suppress") {
+      if (typeof previous.pendingFinalErrorTimerId === "number") {
+        try { window.clearTimeout(previous.pendingFinalErrorTimerId); } catch {}
+      }
+      codexErrorScanByTabRef.current[tabId] = {
+        ...latestScanState,
+        buffer: nextBuffer,
+        pendingFinalErrorKey: undefined,
+        pendingFinalErrorKind: undefined,
+        pendingFinalError: undefined,
+        pendingFinalErrorAt: undefined,
+        pendingFinalErrorTimerId: undefined,
+        pendingFinalErrorHistoryReplay: undefined,
+        pendingFinalErrorSynchronized: undefined,
+        pendingFinalErrorOutputText: undefined,
+      };
+      notifyLog(`codexError.replay.suppressed-state tab=${tabId} kind=${classification.kind} phase=${classification.phase}`);
+      return;
+    }
+    if (replayDecision === "await-idle") {
+      if (typeof previous.pendingFinalErrorTimerId === "number") {
+        try { window.clearTimeout(previous.pendingFinalErrorTimerId); } catch {}
+      }
+      const shouldScheduleScreenCheck = previous.pendingFinalErrorKey !== errorKey
+        || !previous.pendingFinalError?.explicitFinal
+        || typeof previous.pendingFinalErrorTimerId === "number";
+      codexErrorScanByTabRef.current[tabId] = {
+        ...latestScanState,
+        buffer: nextBuffer,
+        pendingFinalErrorKey: errorKey,
+        pendingFinalErrorKind: classification.kind,
+        pendingFinalError: classification,
+        pendingFinalErrorAt: previous.pendingFinalErrorKey === errorKey
+          ? previous.pendingFinalErrorAt
+          : now,
+        pendingFinalErrorTimerId: undefined,
+        pendingFinalErrorHistoryReplay: previous.pendingFinalErrorKey === errorKey
+          ? !!previous.pendingFinalErrorHistoryReplay || frame.historyReplay
+          : frame.historyReplay,
+        pendingFinalErrorSynchronized: previous.pendingFinalErrorKey === errorKey
+          ? !!previous.pendingFinalErrorSynchronized || frame.synchronized
+          : frame.synchronized,
+        pendingFinalErrorOutputText: previous.pendingFinalErrorKey === errorKey
+          ? previous.pendingFinalErrorOutputText || classificationOutputText
+          : classificationOutputText,
+      };
+      if (shouldScheduleScreenCheck)
+        scheduleCodexPendingFinalIdleScreenCheck(tabId, errorKey);
+      return;
+    }
     if (classification.phase === "reconnecting") {
       if (typeof previous.pendingFinalErrorTimerId === "number") {
         try { window.clearTimeout(previous.pendingFinalErrorTimerId); } catch {}
@@ -4773,6 +5219,9 @@ export default function CodexFlowManagerUI() {
         pendingFinalError: undefined,
         pendingFinalErrorAt: undefined,
         pendingFinalErrorTimerId: undefined,
+        pendingFinalErrorHistoryReplay: undefined,
+        pendingFinalErrorSynchronized: undefined,
+        pendingFinalErrorOutputText: undefined,
       };
       if (previous.lastReconnectErrorKey === errorKey) return;
       handleCodexCliReconnectDetected(tabId, classification);
@@ -4798,6 +5247,15 @@ export default function CodexFlowManagerUI() {
         pendingFinalError: classification,
         pendingFinalErrorAt: previous.pendingFinalErrorKey === errorKey ? previous.pendingFinalErrorAt : now,
         pendingFinalErrorTimerId,
+        pendingFinalErrorHistoryReplay: previous.pendingFinalErrorKey === errorKey
+          ? previous.pendingFinalErrorHistoryReplay
+          : frame.historyReplay,
+        pendingFinalErrorSynchronized: previous.pendingFinalErrorKey === errorKey
+          ? previous.pendingFinalErrorSynchronized
+          : frame.synchronized,
+        pendingFinalErrorOutputText: previous.pendingFinalErrorKey === errorKey
+          ? previous.pendingFinalErrorOutputText
+          : classificationOutputText,
       };
       return;
     }
@@ -4809,6 +5267,40 @@ export default function CodexFlowManagerUI() {
     };
     if (previous.lastFinalErrorKey === errorKey) return;
     handleCodexCliErrorDetected(tabId, classification, errorKey);
+  }
+
+  /**
+   * 先按 Codex 同步更新边界聚合 PTY 数据，再把完整帧交给错误状态机。
+   */
+  function processCodexPtyErrorChunk(ptyId: string, chunk: string): void {
+    if (!ptyId || typeof chunk !== "string" || chunk.length === 0) return;
+    const tabId = ptyToTabRef.current[ptyId];
+    if (!tabId) return;
+    const previous = codexErrorScanByTabRef.current[tabId] || createCodexErrorScanState();
+    const consumed = consumeCodexPtyOutputChunk(previous.outputFrameState, chunk);
+    codexErrorScanByTabRef.current[tabId] = {
+      ...previous,
+      outputFrameState: consumed.state,
+    };
+    for (const frame of consumed.frames) {
+      const stateBeforeFrame = codexErrorScanByTabRef.current[tabId] || previous;
+      const boundaryOutputText = frame.synchronized
+        ? frame.text
+        : `${stateBeforeFrame.buffer || ""}${frame.text}`.slice(-CODEX_ERROR_SCAN_MAX_BUFFER_LENGTH);
+      processCodexPtyErrorFrame(ptyId, frame.text, frame);
+      const stateAfterFrame = codexErrorScanByTabRef.current[tabId];
+      if (
+        frame.historyReplay &&
+        !frame.synchronized &&
+        stateAfterFrame &&
+        hasCodexCurrentTurnBoundary(boundaryOutputText, stateAfterFrame.currentPrompt || "")
+      ) {
+        codexErrorScanByTabRef.current[tabId] = {
+          ...stateAfterFrame,
+          outputFrameState: completeCodexPtyHistoryReplay(stateAfterFrame.outputFrameState),
+        };
+      }
+    }
   }
 
   function processPtyNotificationChunk(ptyId: string, chunk: string) {
@@ -4957,7 +5449,7 @@ export default function CodexFlowManagerUI() {
    */
   function unregisterPtyListener(
     ptyId: string | undefined | null,
-    options?: { forgetCodexErrorHistory?: boolean },
+    options?: { forgetCodexErrorHistory?: boolean; clearFrameState?: boolean },
   ): void {
     if (!ptyId) return;
     const tabId = ptyToTabRef.current[ptyId];
@@ -4968,7 +5460,10 @@ export default function CodexFlowManagerUI() {
     delete ptyListenersRef.current[ptyId];
     delete ptyNotificationBuffersRef.current[ptyId];
     if (tabId) {
-      resetCodexErrorScanForTab(tabId, "pty-unregister");
+      resetCodexErrorScanForTab(tabId, "pty-unregister", {
+        keepAttempts: true,
+        clearFrameState: options?.clearFrameState !== false,
+      });
     }
     if (options?.forgetCodexErrorHistory)
       delete codexHandledErrorKeysByPtyRef.current[ptyId];
@@ -5046,7 +5541,8 @@ export default function CodexFlowManagerUI() {
     // 只在确实需要重置时才删除缓冲区，并记录详细信息
     if (shouldResetBuffer) {
       delete ptyNotificationBuffersRef.current[ptyId];
-      if (previousTab) resetCodexErrorScanForTab(previousTab, "pty-reassign");
+      if (previousTab) resetCodexErrorScanForTab(previousTab, "pty-reassign", { clearFrameState: true, keepAttempts: true });
+      resetCodexErrorScanForTab(tabId, "pty-reassign-target", { clearFrameState: true, keepAttempts: true });
       notifyLog(`registerPtyForTab buffer reset pty=${ptyId}`);
     } else if (existingBuffer && existingBuffer.length > 0) {
       // 不需要重置但有缓冲区内容，记录以便跟踪
@@ -6765,12 +7261,24 @@ export default function CodexFlowManagerUI() {
     codexErrorScanByTabRef.current[id] = {
       ...state,
       buffer: "",
+      outputFrameState: createCodexPtyOutputFrameState(),
+      turn: state.turn + 1,
+      currentPrompt: "continue",
+      turnOutputText: "",
       lastReconnectErrorKey: undefined,
       lastFinalErrorKey: undefined,
       pendingErrorKey: undefined,
       pendingErrorKind: undefined,
       autoContinueTimerId: undefined,
       autoContinueAttempts: nextAttempts,
+      pendingFinalErrorKey: undefined,
+      pendingFinalErrorKind: undefined,
+      pendingFinalError: undefined,
+      pendingFinalErrorAt: undefined,
+      pendingFinalErrorTimerId: undefined,
+      pendingFinalErrorHistoryReplay: undefined,
+      pendingFinalErrorSynchronized: undefined,
+      pendingFinalErrorOutputText: undefined,
     };
 
     const tabEnv = getTabExecEnv(id, "codex");
@@ -6811,7 +7319,7 @@ export default function CodexFlowManagerUI() {
       return;
     }
 
-    const state = codexErrorScanByTabRef.current[id] || { buffer: "", autoContinueAttempts: 0 };
+    const state = codexErrorScanByTabRef.current[id] || createCodexErrorScanState();
     if (typeof state.autoContinueTimerId === "number") {
       try { window.clearTimeout(state.autoContinueTimerId); } catch {}
     }
@@ -6822,6 +7330,10 @@ export default function CodexFlowManagerUI() {
     codexErrorScanByTabRef.current[id] = {
       ...state,
       buffer: "",
+      outputFrameState: createCodexPtyOutputFrameState(),
+      turn: state.turn + 1,
+      currentPrompt: "continue",
+      turnOutputText: "",
       lastReconnectErrorKey: undefined,
       lastFinalErrorKey: undefined,
       pendingErrorKey: undefined,
@@ -6833,6 +7345,9 @@ export default function CodexFlowManagerUI() {
       pendingFinalError: undefined,
       pendingFinalErrorAt: undefined,
       pendingFinalErrorTimerId: undefined,
+      pendingFinalErrorHistoryReplay: undefined,
+      pendingFinalErrorSynchronized: undefined,
+      pendingFinalErrorOutputText: undefined,
     };
 
     const tabEnv = getTabExecEnv(id, "codex");
@@ -6907,7 +7422,7 @@ export default function CodexFlowManagerUI() {
     const maxAttempts = Math.max(0, prefs.autoContinueMaxAttempts);
     if (maxAttempts <= 0) return undefined;
 
-    const state = codexErrorScanByTabRef.current[id] || { buffer: "", autoContinueAttempts: 0 };
+    const state = codexErrorScanByTabRef.current[id] || createCodexErrorScanState();
     const previousAttempts = Math.max(0, Number(state.autoContinueAttempts || 0));
     if (previousAttempts >= maxAttempts) return undefined;
     if (typeof state.autoContinueTimerId === "number") {
@@ -9321,7 +9836,11 @@ export default function CodexFlowManagerUI() {
     }
     // 用户开始新一轮输入后，立即取消恢复期守卫，避免影响真实完成通知。
     delete resumeCompletionGuardByTabRef.current[activeTab.id];
-    resetCodexErrorScanForTab(activeTab.id, "user-send");
+    resetCodexErrorScanForTab(activeTab.id, "user-send", {
+      advanceTurn: true,
+      prompt: text,
+      clearFrameState: true,
+    });
     if (shouldEnableAgentTimerForProvider(activeTab.providerId)) startAgentTurnTimer(activeTab.id);
     else cancelAgentTurnTimer(activeTab.id, "provider-not-supported");
     // 统一改用 TerminalManager 的封装，保证行为一致且便于复用

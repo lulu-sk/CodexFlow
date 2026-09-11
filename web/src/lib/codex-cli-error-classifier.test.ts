@@ -42,6 +42,16 @@ describe("codex-cli-error-classifier（Codex TUI 错误识别）", () => {
       retryable: false,
     },
     {
+      text: "Your workspace is out of credits. Ask your workspace owner to refill in order to continue.",
+      kind: "usageLimit",
+      retryable: false,
+    },
+    {
+      text: "You hit your spend cap set by the owner of your workspace. Ask an owner to increase your spend cap to continue.",
+      kind: "usageLimit",
+      retryable: false,
+    },
+    {
       text: "unexpected status 403 Forbidden: openai_error, url: https://example.test/v1/responses, cf-ray: a02de7d0ad6a4833-SJC",
       kind: "forbidden",
       retryable: true,
@@ -83,6 +93,11 @@ describe("codex-cli-error-classifier（Codex TUI 错误识别）", () => {
       retryable: true,
     },
     {
+      text: "Codex is currently experiencing high load.",
+      kind: "highDemand",
+      retryable: true,
+    },
+    {
       text: "stream disconnected before completion: stream closed before response.completed",
       kind: "networkStream",
       retryable: true,
@@ -90,6 +105,21 @@ describe("codex-cli-error-classifier（Codex TUI 错误识别）", () => {
     {
       text: "stream disconnected before completion: Concurrency limit exceeded for user, please retry later",
       kind: "concurrency",
+      retryable: true,
+    },
+    {
+      text: "rate limit exceeded: retry later",
+      kind: "rateLimited",
+      retryable: true,
+    },
+    {
+      text: "Connection failed: error sending request",
+      kind: "networkStream",
+      retryable: true,
+    },
+    {
+      text: "Error while reading the server response: HTTP status client error (429 Too Many Requests)",
+      kind: "rateLimited",
       retryable: true,
     },
   ];
@@ -146,7 +176,7 @@ describe("codex-cli-error-classifier（Codex TUI 错误识别）", () => {
         Stream disconnected before completion: Incomplete response returned, reason: upstream_error
       › 继续
       ■ stream disconnected before completion: Incomplete response returned, reason: upstream_error
-      › Explain this codebase
+      › Ask Codex to do anything
     `;
 
     const result = classifyCodexCliErrorText(text);
@@ -154,7 +184,93 @@ describe("codex-cli-error-classifier（Codex TUI 错误识别）", () => {
     expect(result?.phase).toBe("final");
     expect(result?.explicitFinal).toBe(true);
     expect(shouldDelayCodexCliFinalErrorForReconnect(result)).toBe(false);
-    expect(detectCodexCliRuntimeStatusText(text)?.phase).toBe("idle");
+    expect(detectCodexCliRuntimeStatusText(text)).toBeNull();
+  });
+
+  it("输入框不表示空闲，和 Working 同屏时仍识别为运行中", () => {
+    const text = `
+      Working (9m 39s  esc to interrupt)
+      › Ask Codex to do anything
+    `;
+
+    expect(detectCodexCliRuntimeStatusText(text)?.phase).toBe("working");
+  });
+
+  it("服务过载警告完成后会覆盖旧的 Working 状态", () => {
+    const text = [
+      "Working (9m 39s  esc to interrupt)",
+      "⚠ Codex is currently experiencing high load.",
+      "› Ask Codex to do anything",
+    ].join("\n");
+
+    expect(detectCodexCliRuntimeStatusText(text)).toBeNull();
+  });
+
+  it("普通警告中的网络错误文字不会覆盖旧的 Working 状态", () => {
+    const text = [
+      "Working (9m 39s  esc to interrupt)",
+      "⚠ network error was recovered; continuing work",
+      "› Ask Codex to do anything",
+    ].join("\n");
+
+    expect(detectCodexCliRuntimeStatusText(text)?.phase).toBe("working");
+  });
+
+  it.each([
+    ["⚠Selected model is at capacity. Please try a different model.", "modelCapacity"],
+    ["⚠\ufe0fError running remote compact task: Selected model is at capacity. Please try a different model.", "modelCapacity"],
+    ["■Error running remote compact task: unexpected status 503 Service Unavailable", "serviceUnavailable"],
+    ["▪ Error running remote compact task: stream disconnected before completion", "networkStream"],
+  ])("终态标记兼容紧贴文字、变体选择符和压缩错误包装：%s", (errorLine, kind) => {
+    const text = [
+      "Reconnecting... 1/5 (1m 03s  esc to interrupt)",
+      errorLine,
+      "  1 background terminal running · /ps to view · /stop to close",
+      "› Ask Codex to do anything",
+    ].join("\n");
+    expect(classifyCodexCliErrorText(text)).toMatchObject({ kind, phase: "final", explicitFinal: true });
+    expect(detectCodexCliRuntimeStatusText(text)).toBeNull();
+  });
+
+  it("单独输入框不是 Codex 运行状态", () => {
+    expect(detectCodexCliRuntimeStatusText("› Ask Codex to do anything")).toBeNull();
+  });
+
+  it("额度重置提示不是额度错误", () => {
+    const informationalMessages = [
+      "You have 1 usage limit reset available. Run /usage to use one.",
+      "You don't have any usage limit resets available.",
+      "No usage limit resets are available.",
+      "Usage reset. You have 0 usage limit resets left.",
+    ];
+
+    for (const message of informationalMessages)
+      expect(classifyCodexCliErrorText(message)).toBeNull();
+  });
+
+  it("明确的额度耗尽文案仍识别为额度错误", () => {
+    for (const message of [
+      "You've hit your usage limit. Try again later.",
+      "Usage limit reached. Try again later.",
+      "Usage limit has been reached. Try again later.",
+    ])
+      expect(classifyCodexCliErrorText(message)?.kind).toBe("usageLimit");
+  });
+
+  it("Codex 最终错误的外层包装仍会继承历史错误终态", () => {
+    const cases = [
+      ["■ Error while reading the server response: HTTP status server error (503 Service Unavailable)", "serviceUnavailable"],
+      ["■ rate limit exceeded: retry later", "rateLimited"],
+      ["■ Connection failed: error sending request", "networkStream"],
+      ["■ Codex is currently experiencing high load.", "highDemand"],
+    ] as const;
+
+    for (const [text, kind] of cases) {
+      const result = classifyCodexCliErrorText(text);
+      expect(result?.kind).toBe(kind);
+      expect(result?.phase).toBe("final");
+      expect(result?.explicitFinal).toBe(true);
+    }
   });
 
   it("新的 Working 状态会压住旧的 Reconnecting 错误", () => {
@@ -212,7 +328,7 @@ describe("codex-cli-error-classifier（Codex TUI 错误识别）", () => {
     expect(result?.phase).toBe("final");
   });
 
-  it("Codex 最终历史错误行会压住旧的 Reconnecting 状态", () => {
+  it("Codex 最终历史错误行会压住分类阶段，但不会自行伪造空闲状态", () => {
     const text = `
       Reconnecting... 1/5 (4m 09s  esc to interrupt)
       ■ unexpected status 503 Service Unavailable: upstream_status: HTTP 503
@@ -223,7 +339,56 @@ describe("codex-cli-error-classifier（Codex TUI 错误识别）", () => {
     expect(result?.phase).toBe("final");
     expect(result?.explicitFinal).toBe(true);
     expect(shouldDelayCodexCliFinalErrorForReconnect(result)).toBe(false);
-    expect(detectCodexCliRuntimeStatusText(text)?.phase).toBe("idle");
+    expect(detectCodexCliRuntimeStatusText(text)?.phase).toBe("reconnecting");
+  });
+
+  it("最终历史行中的内层错误匹配仍会继承整行的最终状态", () => {
+    const text = [
+      "Reconnecting... 5/5 (8m 53s  esc to interrupt)",
+      "■ stream disconnected before completion: Concurrency limit exceeded for user",
+    ].join("\n");
+
+    const result = classifyCodexCliErrorText(text);
+    expect(result?.kind).toBe("concurrency");
+    expect(result?.phase).toBe("final");
+    expect(result?.explicitFinal).toBe(true);
+    expect(shouldDelayCodexCliFinalErrorForReconnect(result)).toBe(false);
+  });
+
+  it("单独重绘最终错误历史行时不能把它当成当前空闲提示", () => {
+    const text = "■ exceeded retry limit, last status: 429 Too Many Requests";
+
+    expect(classifyCodexCliErrorText(text)?.explicitFinal).toBe(true);
+    expect(detectCodexCliRuntimeStatusText(text)).toBeNull();
+  });
+
+  it("明确最终错误后出现 Working 时保留错误供回放守卫裁决", () => {
+    const text = `
+      ■ exceeded retry limit, last status: 429 Too Many Requests
+      Working (3m 01s  esc to interrupt)
+      › Ask Codex to do anything
+    `;
+
+    const result = classifyCodexCliErrorText(text);
+    expect(result?.kind).toBe("rateLimited");
+    expect(result?.phase).toBe("final");
+    expect(result?.explicitFinal).toBe(true);
+    expect(detectCodexCliRuntimeStatusText(text)?.phase).toBe("working");
+  });
+
+  it("同屏出现两次 429 时错误匹配不能吞入中间的助手输出", () => {
+    const errorText = "exceeded retry limit, last status: 429 Too Many Requests";
+    const single = classifyCodexCliErrorText(`■ ${errorText}`);
+    const repeated = classifyCodexCliErrorText([
+      `■ ${errorText}`,
+      "› continue",
+      "• Inspecting tools",
+      `■ ${errorText}`,
+      "› Ask Codex to do anything",
+    ].join("\n"));
+
+    expect(repeated?.matchedText).toBe(single?.matchedText);
+    expect(repeated?.replayFingerprint).toBe(single?.replayFingerprint);
   });
 
   it("普通方块项目符号不会被误判为 Codex 最终历史行", () => {

@@ -14,13 +14,14 @@ export type CodexCliErrorKind =
 
 export type CodexCliErrorSeverity = "temporary" | "blocking";
 export type CodexCliErrorPhase = "reconnecting" | "final";
-export type CodexCliRuntimePhase = "working" | "reconnecting" | "idle";
+export type CodexCliRuntimePhase = "working" | "reconnecting";
 
 export type CodexCliErrorClassification = {
   kind: CodexCliErrorKind;
   severity: CodexCliErrorSeverity;
   retryable: boolean;
   matchedText: string;
+  replayFingerprint?: string;
   phase: CodexCliErrorPhase;
   explicitFinal?: boolean;
   reconnectAttempt?: number;
@@ -58,7 +59,7 @@ const CODEX_CLI_ERROR_RULES: CodexCliErrorRule[] = [
   {
     kind: "usageLimit",
     severity: "blocking",
-    pattern: /(?:you['’]ve hit your usage limit|usage limit(?:ed)?(?:\s+reached)?)/i,
+    pattern: /(?:you['’]ve hit your usage limit|usage limit(?:\s+has been)?\s+reached|you['’]re\s+out\s+of\s+credits|your(?:\s+workspace)?\s+is\s+out\s+of\s+credits|you\s+hit\s+your\s+spend\s+cap|spend\s+cap\s+set\s+(?:in|by)\s+(?:your|the\s+owner))/i,
   },
   {
     kind: "modelCapacity",
@@ -73,7 +74,7 @@ const CODEX_CLI_ERROR_RULES: CodexCliErrorRule[] = [
   {
     kind: "highDemand",
     severity: "temporary",
-    pattern: /currently experiencing high demand/i,
+    pattern: /(?:currently experiencing high (?:demand|load)|server overloaded)/i,
   },
   {
     kind: "serviceUnavailable",
@@ -103,12 +104,12 @@ const CODEX_CLI_ERROR_RULES: CodexCliErrorRule[] = [
   {
     kind: "rateLimited",
     severity: "temporary",
-    pattern: /(?:exceeded retry limit[\s\S]{0,240}(?:429|Too Many Requests)|429\s+Too Many Requests|Too Many Requests)/i,
+    pattern: /(?:exceeded retry limit[\s\S]{0,240}?(?:429(?:\s+Too Many Requests)?|Too Many Requests)|429\s+Too Many Requests|Too Many Requests|rate limit exceeded)/i,
   },
   {
     kind: "networkStream",
     severity: "temporary",
-    pattern: /(?:stream disconnected before completion|Transport error|network error|error decoding response body|stream closed before response\.completed)/i,
+    pattern: /(?:stream disconnected before completion|Transport error|network error|error decoding response body|stream closed before response\.completed|connection failed|Error while reading the server response)/i,
   },
   {
     kind: "unknownHttp",
@@ -122,13 +123,18 @@ const ANSI_SEQUENCE_PATTERN =
 
 const CONTROL_CHARS_EXCEPT_WHITESPACE_PATTERN = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
 const MAX_MATCHED_TEXT_LENGTH = 280;
+const MAX_REPLAY_FINGERPRINT_DETAIL_LENGTH = 160;
 const RECONNECTING_STATUS_PATTERN = /Reconnecting\.\.\.\s+(\d+)\/(\d+)/gi;
 const WORKING_STATUS_PATTERN = /\bWorking\s*\(/gi;
-const CODEX_HISTORY_LINE_MARKER_PATTERN = /(?:^|\n)[^\S\n]*[■▪]\s+/gu;
+const CODEX_COMPOSER_PROMPT_PATTERN = /(?:^|\n)[^\S\n]*›[^\S\n]+Ask Codex to do\b/giu;
 const CODEX_FINAL_HISTORY_LINE_PATTERN =
-  /^(?:unexpected status\s+\d{3}|exceeded retry limit|stream disconnected before completion|Conversation interrupted|Goal budget reached|you['’]ve hit your usage limit|usage limit(?:ed)?(?:\s+reached)?|selected model is at capacity|model is at capacity|currently experiencing high demand|400\s+Bad Request|403\s+Forbidden|413\s+(?:Payload Too Large|Request Entity Too Large)|sign in with ChatGPT)\b/i;
+  /^(?:unexpected status\s+\d{3}|exceeded retry limit|stream disconnected before completion|Conversation interrupted|Goal budget reached|you['’]ve hit your usage limit|usage limit(?:\s+has been)?\s+reached|you['’]re\s+out\s+of\s+credits|your(?:\s+workspace)?\s+is\s+out\s+of\s+credits|you\s+hit\s+your\s+spend\s+cap|spend\s+cap\s+set\s+(?:in|by)\s+(?:your|the\s+owner)|selected model is at capacity|model is at capacity|(?:we['’]re\s+|codex\s+is\s+)?currently experiencing high (?:demand|load)|server overloaded|rate limit exceeded|connection failed|Error while reading the server response|Transport error|network error|error decoding response body|stream closed before response\.completed|concurrency limit exceeded|429\s+Too Many Requests|Too Many Requests|502\s+Bad Gateway|503\s+Service Unavailable|400\s+Bad Request|403\s+Forbidden|413\s+(?:Payload Too Large|Request Entity Too Large)|sign in with ChatGPT)\b/i;
+const CODEX_SERVER_OVERLOADED_HISTORY_LINE_PATTERN =
+  /^(?:selected model is at capacity|model is at capacity|(?:we['’]re\s+|codex\s+is\s+)?currently experiencing high (?:demand|load)|server overloaded)\b/i;
+const CODEX_FINAL_HISTORY_MARKER_PATTERN = /^[^\S\n]*([■▪⚠])[\ufe0e\ufe0f]?[^\S\n]*/u;
+const CODEX_COMPACT_ERROR_PREFIX_PATTERN = /^Error running remote compact task:[^\S\n]*/i;
 const EXPLICIT_FINAL_ERROR_PATTERN =
-  /(?:exceeded retry limit|selected model is at capacity|you['’]ve hit your usage limit|usage limit(?:ed)?(?:\s+reached)?|currently experiencing high demand|400\s+Bad Request|<h1>\s*400\s+Bad Request\s*<\/h1>|unexpected status\s+413\b|413\s+Payload Too Large|413\s+Request Entity Too Large|<h1>\s*413\s+(?:Payload Too Large|Request Entity Too Large)\s*<\/h1>)/i;
+  /(?:exceeded retry limit|selected model is at capacity|you['’]ve hit your usage limit|usage limit(?:\s+has been)?\s+reached|you['’]re\s+out\s+of\s+credits|your(?:\s+workspace)?\s+is\s+out\s+of\s+credits|you\s+hit\s+your\s+spend\s+cap|spend\s+cap\s+set\s+(?:in|by)\s+(?:your|the\s+owner)|currently experiencing high (?:demand|load)|server overloaded|400\s+Bad Request|<h1>\s*400\s+Bad Request\s*<\/h1>|unexpected status\s+413\b|413\s+Payload Too Large|413\s+Request Entity Too Large|<h1>\s*413\s+(?:Payload Too Large|Request Entity Too Large)\s*<\/h1>)/i;
 const SOURCE_LOCATION_LINE_PATTERN = /^(?:(?:[A-Za-z]:)?[./\\\w@ -]+\.(?:ts|tsx|js|jsx|json|cjs|mjs|md|css|scss|html|yml|yaml|txt|cs|shader|uxml|uss):\d+(?::\d+)?:)/i;
 const SOURCE_LITERAL_LINE_PATTERN = /\b(?:pattern|text|kind|matchedText|label|expect|toBe|toContain)\s*[:(=]/i;
 
@@ -215,6 +221,25 @@ function readLineAtIndex(text: string, index: number): string {
 }
 
 /**
+ * 提取稳定的错误详情指纹：保留错误原因，排除 URL、请求标识等每次都会变化的附带信息。
+ */
+function buildCodexCliErrorReplayFingerprint(text: string, errorIndex: number, matchedText: string): string {
+  const normalizedMatch = String(matchedText || "").replace(/\s+/g, " ").trim();
+  if (!normalizedMatch) return "";
+  const lineText = readLineAtIndex(text, errorIndex);
+  const matchOffset = lineText.toLowerCase().indexOf(normalizedMatch.toLowerCase());
+  const detail = (matchOffset >= 0 ? lineText.slice(matchOffset + normalizedMatch.length) : "")
+    .replace(/^[\s:：,，;；-]+/u, "")
+    .replace(/\b(?:url|request(?:[_ -]?id)?|cf-ray|x-request-id)\s*[:=]\s*[^,\s;]+/giu, "")
+    .replace(/https?:\/\/\S+/giu, "")
+    .replace(/\b[0-9a-f]{12,}\b/giu, "#")
+    .replace(/\s+/g, " ")
+    .replace(/^[\s,，;；]+|[\s,，;；]+$/gu, "")
+    .slice(0, MAX_REPLAY_FINGERPRINT_DETAIL_LENGTH);
+  return detail ? normalizedMatch + ": " + detail : normalizedMatch;
+}
+
+/**
  * 判断匹配是否更像源码/diff/搜索结果里的错误样例，而不是 Codex CLI 运行时真正吐出的错误。
  */
 function isLikelySourceOrDiffErrorExample(text: string, errorIndex: number): boolean {
@@ -226,17 +251,19 @@ function isLikelySourceOrDiffErrorExample(text: string, errorIndex: number): boo
 }
 
 /**
- * 判断 Codex 历史行是否是已停止运行的最终/中断状态，避免把普通方块项目符号当作空闲状态。
+ * 验证整条 Codex 终态历史行；兼容终端紧排符号和压缩错误包装，普通警告仍不能代表失败。
  */
-function isCodexFinalHistoryLine(text: string, contentStartIndex: number): boolean {
-  const index = Math.max(0, Number(contentStartIndex) || 0);
-  const lineEnd = text.indexOf("\n", index);
-  const lineText = text.slice(index, lineEnd === -1 ? text.length : lineEnd).trim();
-  return CODEX_FINAL_HISTORY_LINE_PATTERN.test(lineText);
+export function isCodexFinalHistoryLine(line: string): boolean {
+  const marker = CODEX_FINAL_HISTORY_MARKER_PATTERN.exec(line);
+  if (!marker) return false;
+  const content = line.slice(marker[0].length).replace(CODEX_COMPACT_ERROR_PREFIX_PATTERN, "");
+  return marker[1] === "⚠"
+    ? CODEX_SERVER_OVERLOADED_HISTORY_LINE_PATTERN.test(content)
+    : CODEX_FINAL_HISTORY_LINE_PATTERN.test(content);
 }
 
 type CodexStatusMarker = {
-  kind: "reconnecting" | "working" | "idle";
+  kind: "reconnecting" | "working";
   index: number;
   attempt?: number;
   maxAttempts?: number;
@@ -261,16 +288,30 @@ function collectCodexStatusMarkers(text: string): CodexStatusMarker[] {
       index: match.index || 0,
     });
   }
-  for (const match of text.matchAll(CODEX_HISTORY_LINE_MARKER_PATTERN)) {
-    const contentStartIndex = (match.index || 0) + match[0].length;
-    if (!isCodexFinalHistoryLine(text, contentStartIndex)) continue;
-    markers.push({
-      kind: "idle",
-      index: contentStartIndex,
-    });
-  }
   markers.sort((left, right) => left.index - right.index);
   return markers;
+}
+
+/**
+ * 判断旧运行标记之后是否已经出现终态错误和输入框的完整结束画面。
+ */
+function hasCodexFinalHistoryEndedAfterRuntimeStatus(text: string, runtimeStatusIndex: number): boolean {
+  let latestFinalHistoryIndex = -1;
+  let lineStart = 0;
+  while (lineStart <= text.length) {
+    const lineEnd = text.indexOf("\n", lineStart);
+    const lineText = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd);
+    if (isCodexFinalHistoryLine(lineText))
+      latestFinalHistoryIndex = lineStart;
+    if (lineEnd === -1) break;
+    lineStart = lineEnd + 1;
+  }
+  if (latestFinalHistoryIndex <= runtimeStatusIndex) return false;
+
+  let latestComposerIndex = -1;
+  for (const match of text.matchAll(CODEX_COMPOSER_PROMPT_PATTERN))
+    latestComposerIndex = match.index || 0;
+  return latestComposerIndex > latestFinalHistoryIndex;
 }
 
 /**
@@ -286,10 +327,7 @@ function isExplicitFinalCodexErrorText(matchedText: string): boolean {
  * 判断错误匹配是否位于 Codex TUI 最终历史行中，典型形态为红色方块后的错误/中断消息。
  */
 function hasCodexFinalHistoryMarkerBeforeMatch(text: string, errorIndex: number): boolean {
-  const index = Math.max(0, Number(errorIndex) || 0);
-  const lineStart = Math.max(0, text.lastIndexOf("\n", Math.max(0, index - 1)) + 1);
-  const prefix = text.slice(lineStart, index);
-  return /[■▪]\s*$/u.test(prefix) && isCodexFinalHistoryLine(text, index);
+  return isCodexFinalHistoryLine(readLineAtIndex(text, errorIndex));
 }
 
 /**
@@ -342,7 +380,7 @@ function findLastRuleMatch(text: string, rule: CodexCliErrorRule): RegExpExecArr
 }
 
 /**
- * 读取终端文本中最后一个 Codex 运行状态标记。
+ * 读取终端文本中最后一个可验证的 Codex 运行状态标记；可输入框不参与运行状态判断。
  */
 export function detectCodexCliRuntimeStatusText(input: string): CodexCliRuntimeStatus | null {
   const text = normalizeCodexCliErrorText(input);
@@ -350,8 +388,8 @@ export function detectCodexCliRuntimeStatusText(input: string): CodexCliRuntimeS
   const markers = collectCodexStatusMarkers(text);
   const latest = markers[markers.length - 1];
   if (!latest) return null;
+  if (hasCodexFinalHistoryEndedAfterRuntimeStatus(text, latest.index)) return null;
   if (latest.kind === "working") return { phase: "working" };
-  if (latest.kind === "idle") return { phase: "idle" };
   return {
     phase: "reconnecting",
     reconnectAttempt: latest.attempt,
@@ -382,18 +420,21 @@ export function classifyCodexCliErrorText(input: string): CodexCliErrorClassific
   }
   if (selected) {
     const { rule, match } = selected;
+    const explicitFinal = isExplicitFinalCodexErrorText(match[0]) || hasCodexFinalHistoryMarkerBeforeMatch(text, match.index || 0);
     const markers = collectCodexStatusMarkers(text);
     const latestMarker = markers[markers.length - 1];
-    if (latestMarker?.kind === "working" && latestMarker.index > (match.index || 0)) return null;
-    const explicitFinal = isExplicitFinalCodexErrorText(match[0]) || hasCodexFinalHistoryMarkerBeforeMatch(text, match.index || 0);
+    if (!explicitFinal && latestMarker?.kind === "working" && latestMarker.index > (match.index || 0)) return null;
     const phase = explicitFinal
       ? { phase: "final" as const }
       : resolveCodexCliErrorPhase(text, match.index || 0);
+    const matchedText = clipMatchedText(match[0] || text);
+    const replayFingerprint = buildCodexCliErrorReplayFingerprint(text, match.index || 0, match[0] || text);
     return {
       kind: rule.kind,
       severity: rule.severity,
       retryable: isCodexCliErrorAutoRetryable(rule.kind),
-      matchedText: clipMatchedText(match[0] || text),
+      matchedText,
+      replayFingerprint: replayFingerprint || undefined,
       explicitFinal: explicitFinal || undefined,
       ...phase,
     };
