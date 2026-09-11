@@ -5,6 +5,7 @@ import {
   createTerminalAdapter,
   type TerminalAdapterAPI,
   type TerminalCursorTextSnapshot,
+  type TerminalCursorTextSnapshotOptions,
   type TerminalScrollSnapshot,
   type TerminalScrollToBottomOptions,
 } from '@/adapters/TerminalAdapter';
@@ -528,6 +529,35 @@ export default class TerminalManager {
     const lastPtyResizeAt = this.lastPtyResizeAtByTab[id];
     if (typeof lastPtyResizeAt !== "number") return false;
     return Math.max(0, this.nowMs() - lastPtyResizeAt) <= TERMINAL_PTY_RESIZE_REPLAY_GUARD_MS;
+  }
+
+  /**
+   * 判断指定终端是否仍有 PTY 输出等待 xterm 解析。
+   * @param tabId tab 标识
+   */
+  hasPendingTerminalOutput(tabId: string): boolean {
+    const id = String(tabId || "").trim();
+    return !!id && this.adapterHasPendingWriteWork(id);
+  }
+
+  /**
+   * 读取指定终端光标附近的当前屏幕文本，用于判断 TUI 最终处于运行态还是可输入态。
+   * @param tabId tab 标识
+   * @param options 屏幕快照读取范围
+   */
+  readTerminalCursorTextSnapshot(
+    tabId: string,
+    options?: TerminalCursorTextSnapshotOptions,
+  ): TerminalCursorTextSnapshot | null {
+    const id = String(tabId || "").trim();
+    if (!id) return null;
+    const adapter = this.adapters[id];
+    if (!adapter || typeof adapter.readCursorTextSnapshot !== "function") return null;
+    try {
+      return adapter.readCursorTextSnapshot(options);
+    } catch {
+      return null;
+    }
   }
 
   /**

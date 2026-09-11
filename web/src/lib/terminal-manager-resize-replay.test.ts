@@ -48,4 +48,26 @@ describe("TerminalManager（PTY 缩放重绘窗口）", () => {
     now.mockReturnValue(3_501);
     expect(tm.isPtyResizeReplayWindowActive("tab-a")).toBe(false);
   });
+
+  it("屏幕确认接口会读取适配器的待写状态和光标附近文本", () => {
+    const tm = new TerminalManager(() => "pty-a", createHostPtyStub() as any, {});
+    const snapshot = {
+      bufferType: "normal",
+      cursorAbsY: 12,
+      startAbsY: 8,
+      endAbsY: 12,
+      lines: ["■ error", "› Ask Codex to do anything"],
+      text: "■ error\n› Ask Codex to do anything",
+    };
+    const adapter = {
+      hasPendingWriteWork: vi.fn(() => true),
+      readCursorTextSnapshot: vi.fn(() => snapshot),
+    };
+    (tm as any).adapters["tab-a"] = adapter;
+
+    expect(tm.hasPendingTerminalOutput("tab-a")).toBe(true);
+    expect(tm.readTerminalCursorTextSnapshot("tab-a", { linesBefore: 32 })).toBe(snapshot);
+    expect(adapter.readCursorTextSnapshot).toHaveBeenCalledWith({ linesBefore: 32 });
+    expect(tm.readTerminalCursorTextSnapshot("missing-tab")).toBeNull();
+  });
 });
