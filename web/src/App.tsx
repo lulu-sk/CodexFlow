@@ -1915,7 +1915,8 @@ export default function CodexFlowManagerUI() {
     terminalManagerRef.current = new TerminalManager(
       (tabId: string) => ptyByTabRef.current[tabId],
       undefined,
-      { fontFamily: terminalFontFamily, theme: terminalTheme }
+      { fontFamily: terminalFontFamily, theme: terminalTheme },
+      (tabId: string) => resolveTabProviderId(tabId)
     );
   }
   const tm = terminalManagerRef.current;

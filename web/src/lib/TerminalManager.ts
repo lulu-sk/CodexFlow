@@ -2072,11 +2072,13 @@ export default class TerminalManager {
    * 构造函数
    * @param getPtyId - 回调，用于根据 tabId 查询当前绑定的 PTY id（由上层 state 驱动）
    * @param hostPty - 实现 PTY I/O 的宿主接口（默认为 window.host.pty）
+   * @param getProviderId - 实时查询标签页引擎，用于隔离终端按键兼容逻辑
    */
   constructor(
     getPtyId?: (tabId: string) => string | undefined,
     hostPty?: HostPtyAPI,
-    appearance?: Partial<TerminalAppearance>
+    appearance?: Partial<TerminalAppearance>,
+    private readonly getProviderId?: (tabId: string) => string
   ) {
     this.getPtyId = getPtyId || (() => undefined);
     // 若未提供 hostPty，则回退到全局 window.host.pty（兼容当前代码库）
@@ -2612,7 +2614,10 @@ export default class TerminalManager {
       // create adapter and mount into persistent container
       let adapter = this.adapters[tabId];
       if (!adapter) {
-        adapter = createTerminalAdapter({ appearance: this.appearance });
+        adapter = createTerminalAdapter({
+          appearance: this.appearance,
+          getProviderId: () => this.getProviderId?.(tabId) || "",
+        });
         this.adapters[tabId] = adapter;
       }
       if (!this.adapterResizeReadyUnsubByTab[tabId]) {

@@ -10,6 +10,30 @@ vi.mock("@/adapters/TerminalAdapter", () => ({
 
 import TerminalManager from "./TerminalManager";
 
+describe("TerminalManager（终端按键上下文）", () => {
+  it("向适配器传递所属标签页的实时引擎，不串用其他标签页", () => {
+    const providers: Record<string, string> = { "tab-a": "codex", "tab-b": "shell" };
+    createTerminalAdapterMock.mockReturnValue({
+      mount: vi.fn(), setAppearance: vi.fn(), dispose: vi.fn(),
+    });
+    const tm = new TerminalManager(undefined, createHostPtyStub(), {}, (tabId) => providers[tabId]);
+    try {
+      tm.ensurePersistentContainer("tab-a");
+      const codexOptions = createTerminalAdapterMock.mock.lastCall![0];
+      tm.ensurePersistentContainer("tab-b");
+      const shellOptions = createTerminalAdapterMock.mock.lastCall![0];
+      expect(codexOptions.getProviderId()).toBe("codex");
+      expect(shellOptions.getProviderId()).toBe("shell");
+
+      providers["tab-a"] = "claude";
+      expect(codexOptions.getProviderId()).toBe("claude");
+    } finally {
+      tm.disposeAll(false);
+      createTerminalAdapterMock.mockReset();
+    }
+  });
+});
+
 /**
  * 创建 TerminalManager 测试所需的最小 PTY 宿主。
  */

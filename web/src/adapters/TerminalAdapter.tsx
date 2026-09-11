@@ -137,6 +137,8 @@ export type TerminalCursorTextSnapshot = {
 
 export type TerminalAdapterOptions = {
   appearance?: Partial<TerminalAppearance>;
+  /** 按键触发时读取所属标签页的引擎，避免兼容逻辑影响其他终端。 */
+  getProviderId?: () => string;
 };
 
 export function createTerminalAdapter(options?: TerminalAdapterOptions): TerminalAdapterAPI {
@@ -2953,6 +2955,15 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
 
         term!.attachCustomKeyEventHandler((e: KeyboardEvent) => {
           try {
+            // xterm 5.5 会把 Alt + ↑ 改成 Ctrl + ↑；Codex 回答问题需要原始 Alt 编码。
+            if (e.type === "keydown" && e.key === "ArrowUp" && e.altKey
+              && !e.ctrlKey && !e.shiftKey && !e.metaKey && !e.isComposing && e.keyCode !== 229
+              && options?.getProviderId?.() === "codex") {
+              e.preventDefault();
+              e.stopPropagation();
+              term!.input("\x1b[1;3A", true);
+              return false;
+            }
             maybeMarkCtrlKeydown(e);
             if (!getBoundaryScrollAction(e) && isHistoryScrollKey(e)) markViewportUserScroll("key.history");
             if (handleBoundaryScrollAction(e)) return false;
