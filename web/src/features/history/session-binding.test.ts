@@ -66,19 +66,19 @@ describe("findBestHistorySessionForTab", () => {
     expect(result).toBeNull();
   });
 
-  it("新一轮开始后会用持续写入的新会话替换过期绑定", () => {
+  it("新一轮开始后会用唯一正在写入的新会话替换过期绑定", () => {
     const expected = createSession({
       id: "active-new-session",
       date: new Date(BASE_TIME + 5_000).toISOString(),
     });
     const result = findBestHistorySessionForTab([
-      createSession({ id: "stale-bound-session", date: new Date(BASE_TIME - 1_000).toISOString() }),
+      createSession({ id: "bound-session", date: new Date(BASE_TIME - 1_000).toISOString() }),
       expected,
     ], {
       providerId: "codex",
       tabCreatedAt: BASE_TIME - 60 * 60_000,
       activeTurnStartedAt: BASE_TIME,
-      currentSessionId: "stale-bound-session",
+      currentSessionId: "bound-session",
     });
 
     expect(result).toBe(expected);
@@ -120,17 +120,72 @@ describe("findBestHistorySessionForTab", () => {
     expect(result).toBe(expected);
   });
 
-  it("新一轮没有近期活动候选时不覆盖已有绑定", () => {
+  it("新一轮文件尚未刷新时仍可查看已有会话", () => {
+    const expected = createSession({ id: "bound-session", date: new Date(BASE_TIME - 10 * 60_000).toISOString() });
     const result = findBestHistorySessionForTab([
-      createSession({ id: "stale-bound-session", date: new Date(BASE_TIME - 10 * 60_000).toISOString() }),
+      expected,
     ], {
       providerId: "codex",
       tabCreatedAt: BASE_TIME - 60 * 60_000,
       activeTurnStartedAt: BASE_TIME,
-      currentSessionId: "stale-bound-session",
+      currentSessionId: "bound-session",
     });
 
-    expect(result).toBeNull();
+    expect(result).toBe(expected);
+  });
+
+  it("新会话的精确通知可以替换旧绑定", () => {
+    const expected = createSession({ id: "new-session" });
+    expect(findBestHistorySessionForTab([createSession({ id: "old-session" }), expected], {
+      providerId: "codex", threadId: "new-session", currentSessionId: "old-session",
+      tabCreatedAt: BASE_TIME, activeTurnStartedAt: BASE_TIME,
+    })).toBe(expected);
+  });
+
+  it("先显示尚未刷新的旧绑定，晚到的新会话仍能接管", () => {
+    const previous = createSession({ id: "previous", date: new Date(BASE_TIME - 60_000).toISOString() });
+    const next = createSession({ id: "next", date: new Date(BASE_TIME + 1_000).toISOString() });
+    const context = { providerId: "codex", currentSessionId: "previous", tabCreatedAt: BASE_TIME - 60_000, activeTurnStartedAt: BASE_TIME };
+
+    expect(findBestHistorySessionForTab([previous], context)).toBe(previous);
+    expect(findBestHistorySessionForTab([previous, next], context)).toBe(next);
+  });
+
+  it("文件更新时间略早于计时起点时仍能发现当前会话", () => {
+    const expected = createSession({ date: new Date(BASE_TIME - 500).toISOString() });
+    expect(findBestHistorySessionForTab([expected], {
+      providerId: "codex", tabCreatedAt: BASE_TIME - 60 * 60_000, activeTurnStartedAt: BASE_TIME,
+    })).toBe(expected);
+  });
+
+  it("多个未绑定终端同时写入时不按最新时间猜测", () => {
+    expect(findBestHistorySessionForTab([
+      createSession({ id: "session-a", date: new Date(BASE_TIME + 1_000).toISOString() }),
+      createSession({ id: "session-b", date: new Date(BASE_TIME + 2_000).toISOString() }),
+    ], { providerId: "codex", tabCreatedAt: BASE_TIME, activeTurnStartedAt: BASE_TIME })).toBeNull();
+  });
+
+  it("按创建时间兜底也排除其他标签和子代理的历史", () => {
+    const expected = createSession({ id: "main-session", date: new Date(BASE_TIME + 3_000).toISOString() });
+    expect(findBestHistorySessionForTab([
+      createSession({ id: "claimed-session" }),
+      createSession({ id: "child-session", codexRelationship: { kind: "subagent" } }),
+      expected,
+    ], { providerId: "codex", tabCreatedAt: BASE_TIME, excludedSessionIds: ["claimed-session"] })).toBe(expected);
+  });
+
+  it.each(["codex", "claude", "gemini", "grok", "antigravity"])("%s 使用恢复编号精确定位旧历史", (providerId) => {
+    const expected = createSession({ providerId, id: "summary", resumeId: "session-id" });
+    expect(findBestHistorySessionForTab([expected], {
+      providerId, threadId: "SESSION-ID", tabCreatedAt: BASE_TIME + 86_400_000,
+    })).toBe(expected);
+  });
+
+  it("文件名编号匹配不受父目录中其他 UUID 干扰", () => {
+    const expected = createSession({ filePath: "/history/11111111-1111-1111-1111-111111111111/rollout-22222222-2222-2222-2222-222222222222.jsonl" });
+    expect(findBestHistorySessionForTab([expected], {
+      providerId: "codex", threadId: "22222222-2222-2222-2222-222222222222", tabCreatedAt: BASE_TIME,
+    })).toBe(expected);
   });
 
   it("精确线程 ID 在活动会话发现期间仍保持最高优先级", () => {

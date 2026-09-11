@@ -833,6 +833,7 @@ async function emitAntigravityNotify(entry: AntigravityNotifyEntry, sourcePath?:
     previewEscapedWhitespace?: boolean;
     timestamp: string;
     eventId: string;
+    threadId: string;
   } = {
     providerId: "antigravity",
     tabId: entry.tabId ? String(entry.tabId) : "",
@@ -840,6 +841,7 @@ async function emitAntigravityNotify(entry: AntigravityNotifyEntry, sourcePath?:
     preview: entry.preview ? String(entry.preview) : "",
     timestamp: entry.timestamp ? String(entry.timestamp) : "",
     eventId: entry.eventId ? String(entry.eventId) : "",
+    threadId: String(entry.sessionId || "").trim(),
   };
   if (typeof entry.previewEscapedWhitespace === "boolean")
     payload.previewEscapedWhitespace = entry.previewEscapedWhitespace;

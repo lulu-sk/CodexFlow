@@ -110,6 +110,7 @@ import { useHistoryImageContextMenu } from "@/components/history/history-image-c
 import HistoryPanelToggleButton from "@/components/history/history-panel-toggle-button";
 import HistoryTurnDiffCard from "@/features/history/history-turn-diff-card";
 import { bindHistorySessionIdToTabs, findBestHistorySessionForTab, shouldWaitForHistorySessionBinding } from "@/features/history/session-binding";
+import { lookupHistoryWithStableContext } from "@/features/history/session-lookup";
 import { shouldMergeHistoryPrefetchIntoVisibleList } from "@/features/history/prefetch-visibility";
 import {
   getProjectCenterViewState,
@@ -1937,6 +1938,7 @@ export default function CodexFlowManagerUI() {
   const historyMatchByTabRef = useRef<Record<string, HistoryTabMatchCacheEntry>>({});
   const historyPrefetchInFlightRef = useRef<Map<string, Promise<HistoryTabMatchCacheEntry | null>>>(new Map());
   const historyOpenInFlightTabIdsRef = useRef<Set<string>>(new Set());
+  const historyFollowTabIdsRef = useRef<Set<string>>(new Set());
   const historyBindingRetryByTabRef = useRef<Map<string, HistoryBindingRetryState>>(new Map());
   const MAX_AGENT_TURN_HISTORY = 200;
   const [agentTurnClockTick, setAgentTurnClockTick] = useState(0);
@@ -2062,7 +2064,7 @@ export default function CodexFlowManagerUI() {
         }
         void request.then((match) => {
           if (historyBindingRetryByTabRef.current.get(safeTabId) !== state) return;
-          if (match) clearHistoryBindingRetry(safeTabId);
+          if (match && !historyActiveTurnStartedAtByTabRef.current[safeTabId]) clearHistoryBindingRetry(safeTabId);
           else scheduleNextAttempt();
         }).catch(() => {
           if (historyBindingRetryByTabRef.current.get(safeTabId) === state)
@@ -3690,6 +3692,7 @@ export default function CodexFlowManagerUI() {
           onFocus={() => { prefetchHistoryForTabSilently(id); }}
           onClick={() => {
             if (historyVisible) {
+              historyFollowTabIdsRef.current.delete(id);
               setCenterMode("console", selectedProjectId);
               requestAnimationFrame(() => scheduleFocusForTab(id, { immediate: true, allowDuringRename: true }));
               return;
@@ -6458,6 +6461,8 @@ export default function CodexFlowManagerUI() {
     historyOpenResolveSeqRef.current = nextSeq;
     const resolvedGroupKey = groupKey || historyTimelineGroupKey(session, new Date());
     const initialOwnerTabId = historyTabId === undefined ? historySelectionOwnerTabIdRef.current : historyTabId;
+    if (historyTabId === undefined && initialOwnerTabId)
+      historyFollowTabIdsRef.current.delete(initialOwnerTabId);
     const initialOwnerProjectId = String(
       (initialOwnerTabId ? tabProjectRef.current[initialOwnerTabId] : "") || selectedProjectId,
     ).trim();
@@ -6528,9 +6533,7 @@ export default function CodexFlowManagerUI() {
     if (!tab || !project) return null;
     const activeTurnStartedAt = Number(historyActiveTurnStartedAtByTabRef.current[safeTabId]);
     const hasActiveDiscovery = Number.isFinite(activeTurnStartedAt) && activeTurnStartedAt > 0;
-    const threadId = hasActiveDiscovery
-      ? ""
-      : String(agentSessionIdByTabRef.current[safeTabId] || tab.historySessionId || "").trim().toLowerCase();
+    const threadId = String(agentSessionIdByTabRef.current[safeTabId] || tab.historySessionId || "").trim().toLowerCase();
     const signature = JSON.stringify([
       project.id,
       project.wslPath,
@@ -6584,7 +6587,7 @@ export default function CodexFlowManagerUI() {
   }, []);
 
   /**
-   * 当用户已停留在该标签的空历史页时，自动选中刚发现的绑定会话。
+   * 查看终端历史时跟随晚到的绑定；用户手动选择其他历史后停止跟随。
    */
   const revealPendingHistoryMatch = useCallback((context: HistoryTabLookupContext, match: HistorySession): void => {
     if (historySelectionProjectIdRef.current !== context.projectId) return;
@@ -6595,7 +6598,8 @@ export default function CodexFlowManagerUI() {
       context.tabId,
       context.projectId,
     );
-    if (viewState.selectedHistoryId) return;
+    if (viewState.selectedHistoryId && !historyFollowTabIdsRef.current.has(context.tabId)) return;
+    if (viewState.selectedHistoryId === match.id) return;
     const groupKey = historyTimelineGroupKey(match, new Date());
     setExpandedGroups((current) => ({ ...current, [groupKey]: true }));
     setSelectedHistoryDir(groupKey, context.tabId, context.projectId);
@@ -6632,9 +6636,8 @@ export default function CodexFlowManagerUI() {
     )
       setHistorySessions((current) => mergeHistorySessions(current, sessions));
     if (!match) {
-      if (historyMatchByTabRef.current[currentContext.tabId]?.signature === currentContext.signature)
-        delete historyMatchByTabRef.current[currentContext.tabId];
-      return null;
+      const cached = historyMatchByTabRef.current[currentContext.tabId];
+      return cached?.signature === currentContext.signature ? cached : null;
     }
     const bindingSessionId = String(
       hasActiveDiscovery
@@ -6644,13 +6647,14 @@ export default function CodexFlowManagerUI() {
     if (!bindingSessionId || !bindHistorySessionIdToTab(
       currentContext.tabId,
       bindingSessionId,
-      hasActiveDiscovery,
+      hasActiveDiscovery && Date.parse(match.date) >= activeTurnStartedAt,
     )) return null;
     const boundContext = resolveHistoryTabLookupContext(currentContext.tabId);
     if (!boundContext) return null;
     const entry: HistoryTabMatchCacheEntry = { signature: boundContext.signature, sessions, match };
     historyMatchByTabRef.current[boundContext.tabId] = entry;
-    clearHistoryBindingRetry(boundContext.tabId);
+    if (!historyActiveTurnStartedAtByTabRef.current[boundContext.tabId])
+      clearHistoryBindingRetry(boundContext.tabId);
     revealPendingHistoryMatch(boundContext, match);
     return entry;
   }, [bindHistorySessionIdToTab, clearHistoryBindingRetry, collectHistorySessionIdsBoundToOtherTabs, mergeHistorySessions, resolveHistoryTabLookupContext, revealPendingHistoryMatch]);
@@ -6700,33 +6704,37 @@ export default function CodexFlowManagerUI() {
     const existingRequest = historyPrefetchInFlightRef.current.get(inFlightKey);
     if (existingRequest) return existingRequest;
 
-    const request = (async (): Promise<HistoryTabMatchCacheEntry | null> => {
-      const activeTurnStartedAt = Number(historyActiveTurnStartedAtByTabRef.current[context.tabId]);
-      const hasActiveDiscovery = Number.isFinite(activeTurnStartedAt) && activeTurnStartedAt > 0;
-      const recoverySessionId = hasActiveDiscovery
-        ? ""
-        : String(agentSessionIdByTabRef.current[context.tabId] || context.tab.historySessionId || "").trim();
-      const recoveryHint = hasActiveDiscovery || recoverySessionId
-        ? {
-            providerId: context.tab.providerId,
-            threadId: context.tab.providerId === "codex" ? recoverySessionId || undefined : undefined,
-            sessionId: context.tab.providerId === "codex" ? undefined : recoverySessionId || undefined,
-            cwd: context.project.wslPath || context.project.winPath,
-            startedAt: hasActiveDiscovery ? activeTurnStartedAt : undefined,
-          }
-        : undefined;
-      const result = await window.host.history.list({
-        scope: "current_project",
-        projectWslPath: context.project.wslPath,
-        projectWinPath: context.project.winPath,
-        limit: 250,
-        offset: 0,
-        recoveryHint,
-      });
-      if (!(result?.ok && Array.isArray(result.sessions))) throw new Error("history.list failed");
-      const sessions = result.sessions.map((item: any) => mapHistoryListItemToSession(item));
-      return resolveHistoryBindingForTab(context, sessions, true);
-    })();
+    const request = lookupHistoryWithStableContext({
+      getContext: () => resolveHistoryTabLookupContext(tabId),
+      load: async (context): Promise<HistorySession[]> => {
+        const activeTurnStartedAt = Number(historyActiveTurnStartedAtByTabRef.current[context.tabId]);
+        const hasActiveDiscovery = Number.isFinite(activeTurnStartedAt) && activeTurnStartedAt > 0;
+        const recoverySessionId = String(agentSessionIdByTabRef.current[context.tabId] || context.tab.historySessionId || "").trim();
+        const recoveryHint = hasActiveDiscovery || recoverySessionId
+          ? {
+              providerId: context.tab.providerId,
+              threadId: context.tab.providerId === "codex" ? recoverySessionId || undefined : undefined,
+              sessionId: context.tab.providerId === "codex" ? undefined : recoverySessionId || undefined,
+              cwd: context.project.wslPath || context.project.winPath,
+              startedAt: hasActiveDiscovery ? activeTurnStartedAt : undefined,
+            }
+          : undefined;
+        const result = await window.host.history.list({
+          scope: "current_project",
+          projectWslPath: context.project.wslPath,
+          projectWinPath: context.project.winPath,
+          limit: 250,
+          offset: 0,
+          recoveryHint,
+        });
+        if (!(result?.ok && Array.isArray(result.sessions))) throw new Error("history.list failed");
+        return mergeHistorySessions(
+          result.sessions.map((item: any) => mapHistoryListItemToSession(item)),
+          result.matchedSession ? [mapHistoryListItemToSession(result.matchedSession)] : [],
+        );
+      },
+      resolve: (context, sessions) => resolveHistoryBindingForTab(context, sessions, true),
+    });
     historyPrefetchInFlightRef.current.set(inFlightKey, request);
     try {
       return await request;
@@ -6734,7 +6742,7 @@ export default function CodexFlowManagerUI() {
       if (historyPrefetchInFlightRef.current.get(inFlightKey) === request)
         historyPrefetchInFlightRef.current.delete(inFlightKey);
     }
-  }, [mapHistoryListItemToSession, resolveHistoryBindingForTab, resolveHistoryTabLookupContext]);
+  }, [mapHistoryListItemToSession, mergeHistorySessions, resolveHistoryBindingForTab, resolveHistoryTabLookupContext]);
 
   /**
    * 为指定终端标签查找并打开其对应历史会话，优先使用预取结果实现即时响应。
@@ -6753,6 +6761,7 @@ export default function CodexFlowManagerUI() {
     }
 
     const cached = historyMatchByTabRef.current[safeTabId];
+    historyFollowTabIdsRef.current.add(safeTabId);
     historyOpenInFlightTabIdsRef.current.add(safeTabId);
     try {
       if (cached?.signature === context.signature) {
@@ -6770,6 +6779,7 @@ export default function CodexFlowManagerUI() {
       setSelectedHistoryDir(null, safeTabId, context.projectId);
       setSelectedHistoryId(null, safeTabId, context.projectId);
       const prefetched = await prefetchHistoryForTab(safeTabId, true);
+      if (!historyFollowTabIdsRef.current.has(safeTabId)) return;
       if (!prefetched) {
         const boundSessionId = String(
           agentSessionIdByTabRef.current[safeTabId] || context.tab.historySessionId || "",
@@ -8516,8 +8526,13 @@ export default function CodexFlowManagerUI() {
         const completionKind = String(payload?.completionKind || "").trim().toLowerCase();
         const isSubagentCompletion = completionKind === "subagent" || hookEventName === "SubagentStop";
         const sessionId = String(payload?.threadId || "").trim();
-        if (!isSubagentCompletion && sessionId)
-          bindHistorySessionIdToTab(resolvedTabId, sessionId, true);
+        // 只有通知明确携带标签编号才固化绑定，避免外部终端按引擎兜底匹配时串会话。
+        if (!isSubagentCompletion && sessionId && String(payload?.tabId || "").trim()
+          && bindHistorySessionIdToTab(resolvedTabId, sessionId, true)) {
+          // 绑定恢复不受完成通知去重或恢复期守卫影响，避免真实编号已到达却没有后续查询。
+          prefetchHistoryForTabSilently(resolvedTabId, true);
+          scheduleHistoryBindingRetry(resolvedTabId);
+        }
         if (isSubagentCompletion) {
           notifyLog(`externalCompletion subagent tab=${resolvedTabId} previewLen=${cleanedPreview.length} agentType=${payload?.agentType || "n/a"} agentId=${payload?.agentId || "n/a"}`);
           handleSubagentCompletion(resolvedTabId, preview, payload?.agentType, payload?.agentId, normalizeOptions);
@@ -8529,7 +8544,7 @@ export default function CodexFlowManagerUI() {
       });
     } catch {}
     return () => { try { off && off(); } catch {} };
-  }, [bindHistorySessionIdToTab, handleAgentCompletion, handleSubagentCompletion, notifyLog, resolveExternalTabId]);
+  }, [bindHistorySessionIdToTab, handleAgentCompletion, handleSubagentCompletion, notifyLog, prefetchHistoryForTabSilently, resolveExternalTabId, scheduleHistoryBindingRetry]);
 
   // 监听主进程“退出确认”请求：用应用内 Dialog 替代原生对话框，保持 UI 风格一致
   useEffect(() => {
@@ -9981,6 +9996,7 @@ export default function CodexFlowManagerUI() {
       return next;
     });
     clearHistoryBindingRetry(tabId);
+    historyFollowTabIdsRef.current.delete(tabId);
     delete agentSessionIdByTabRef.current[tabId];
     delete historyActiveTurnStartedAtByTabRef.current[tabId];
     delete historyMatchByTabRef.current[tabId];
