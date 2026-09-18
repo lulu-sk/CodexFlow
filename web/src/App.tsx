@@ -9876,17 +9876,19 @@ export default function CodexFlowManagerUI() {
       if (sendMode === 'write_and_enter') await tm.sendTextAndEnter(activeTab.id, text, sendOptions);
       else await tm.sendText(activeTab.id, text, sendOptions);
     } catch {
-      // 兜底：避免 Gemini 直接写入 `\n` 被吞，统一使用 bracketed paste +（可选）延迟回车
+      // 兜底：Gemini 与 Windows Codex 仍需保留各自的正文编码和提交等待。
       try {
         if (activeTab.providerId === "grok") {
           const write = (data: string) => { try { window.host.pty.write(pid, data); } catch {} };
           for (const attachmentPath of attachmentPaths) writeBracketedPaste(write, attachmentPath);
           if (text) writeBracketedPaste(write, text);
           if (sendMode === "write_and_enter") write("\r");
-        } else if (isGeminiLikeProvider(activeTab.providerId)) {
+        } else if (isGeminiLikeProvider(activeTab.providerId)
+          || (activeTab.providerId === "codex" && isWindowsLike(activeEnv.terminal))) {
           const write = (data: string) => { try { window.host.pty.write(pid, data); } catch {} };
-          if (sendMode === "write_and_enter") writeBracketedPasteAndEnter(write, text, { providerId: activeTab.providerId });
-          else writeBracketedPaste(write, text);
+          const pasteOptions = { providerId: activeTab.providerId, terminalMode: activeEnv.terminal };
+          if (sendMode === "write_and_enter") writeBracketedPasteAndEnter(write, text, pasteOptions);
+          else writeBracketedPaste(write, text, pasteOptions);
         } else {
           // 非 Gemini：直接写入 PTY，并在需要时单独补 CR
           try { window.host.pty.write(pid, text); } catch {}

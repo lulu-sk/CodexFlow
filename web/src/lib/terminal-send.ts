@@ -12,7 +12,14 @@ import type { TerminalMode } from "./shell";
  * - Gemini CLI 将 `\r` 识别为 `return`（默认提交），将 `\n` 识别为 `enter`（默认不绑定）。
  * - 多行文本若直接写入 PTY（包含 `\n`）可能导致换行被忽略；显式 bracketed paste 可让应用将换行视为正文插入。
  * - Gemini CLI 对“非可信终端”的 paste 有 40ms 防误触提交保护，因此需要在粘贴结束后延迟发送 `\r`。
+ * - Windows Codex 使用控制台按键记录，正文换行还需转换为 Alt+Enter，不能只依赖粘贴边界。
  */
+
+/** 粘贴目标环境；省略时保持原始正文，不附加特定 CLI 的按键编码。 */
+type TerminalPasteOptions = {
+  providerId?: string | null;
+  terminalMode?: TerminalMode | null;
+};
 
 /**
  * Bracketed Paste 起止标记。
@@ -90,12 +97,25 @@ export function stripTrailingNewlines(text: string): string {
 }
 
 /**
- * 构造 bracketed paste 序列：ESC[200~ + text + ESC[201~。
+ * 判断是否需要兼容 Codex 的 Windows 控制台输入记录。
+ */
+function isCodexWindowsPaste(options?: TerminalPasteOptions): boolean {
+  return isCodexProvider(options?.providerId) && !!options?.terminalMode && options.terminalMode !== "wsl";
+}
+
+/**
+ * 构造 bracketed paste 序列：ESC[200~ + 正文 + ESC[201~。
+ * Codex 的 Windows 输入后端读取按键记录，不能依赖粘贴边界保护正文中的换行：
+ * LF 会丢失，普通 CR 可能提前提交；使用 ConPTY 能识别的 Alt+Enter 插入正文换行。
+ * 只转换传输数据，保留原始文本供屏幕确认、长度计算和草稿使用。
  * @param text 要粘贴的文本
+ * @param options 目标 CLI 与终端环境
  * @returns 可直接写入 PTY 的 bracketed paste 序列
  */
-export function buildBracketedPastePayload(text: string): string {
-  return `${BRACKETED_PASTE_START}${String(text ?? "")}${BRACKETED_PASTE_END}`;
+export function buildBracketedPastePayload(text: string, options?: TerminalPasteOptions): string {
+  const raw = String(text ?? "");
+  const payload = isCodexWindowsPaste(options) ? raw.replace(/\r\n|[\r\n]/g, "\x1b\r") : raw;
+  return `${BRACKETED_PASTE_START}${payload}${BRACKETED_PASTE_END}`;
 }
 
 /**
@@ -145,10 +165,11 @@ export function getPasteSubmitMinWaitMs(args: {
  * 向 PTY 写入 bracketed paste 序列（用于确保多行换行作为正文插入）。
  * @param write 具体写入函数（例如 data => hostPty.write(ptyId, data)）
  * @param text 要发送的文本
+ * @param options 目标 CLI 与终端环境
  */
-export function writeBracketedPaste(write: (data: string) => void, text: string): void {
+export function writeBracketedPaste(write: (data: string) => void, text: string, options?: TerminalPasteOptions): void {
   try {
-    write(buildBracketedPastePayload(text));
+    write(buildBracketedPastePayload(text, options));
   } catch {}
 }
 
@@ -156,19 +177,21 @@ export function writeBracketedPaste(write: (data: string) => void, text: string)
  * 向 PTY 写入 bracketed paste 序列，并在延迟后发送 Enter（`\r`）。
  * @param write 具体写入函数（例如 data => hostPty.write(ptyId, data)）
  * @param raw 原始文本（会自动去除末尾换行）
- * @param options 可选参数（providerId 用于决定延迟；enter 可自定义）
+ * @param options 目标环境及提交按键；Codex Windows 的兜底发送需等待粘贴保护窗口结束
  */
 export function writeBracketedPasteAndEnter(
   write: (data: string) => void,
   raw: string,
-  options?: { providerId?: string | null; enter?: string }
+  options?: TerminalPasteOptions & { enter?: string }
 ): void {
   const text = stripTrailingNewlines(String(raw ?? ""));
   const enter = typeof options?.enter === "string" ? options!.enter : "\r";
-  const delayMs = getPasteEnterDelayMs(options?.providerId);
+  const delayMs = isCodexWindowsPaste(options)
+    ? getPasteSubmitMinWaitMs({ ...options, textLength: text.length })
+    : getPasteEnterDelayMs(options?.providerId);
 
   try {
-    write(buildBracketedPastePayload(text));
+    write(buildBracketedPastePayload(text, options));
   } catch {}
 
   const sendEnter = () => {
