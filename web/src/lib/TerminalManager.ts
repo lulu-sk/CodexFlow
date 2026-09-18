@@ -1531,7 +1531,7 @@ export default class TerminalManager {
    * 设计背景：
    * - Codex TUI 的 Windows paste-burst 保护会在最后一批正文到达后的短窗口内把 Enter 当作正文换行；
    * - 固定从调用开始计时无法覆盖主进程或 ConPTY 偶发繁忙，因此还需等待 PTY 回显安静或输入区正文稳定；
-   * - 所有短文本统一使用显式 bracketed paste，让 Codex 明确区分正文与后续 Enter；
+   * - 所有短文本统一使用显式 bracketed paste，正文换行另编码为 Windows 可识别的 Alt+Enter；
    * - 正常链路仍在原有最小等待时间后提交；只有正文较晚落地时才自适应延后，并以短超时兜底。
    *
    * @param ptyId 当前标签页绑定的 PTY id
@@ -1567,7 +1567,7 @@ export default class TerminalManager {
       triggerSend: (textToSend) => {
         if (this.shouldForceCodexWindowsBracketedPaste("codex", terminalMode, textToSend)) {
           this.logSendDiagnostic(traceId, `trigger.mode=host.bracketed.fast chars=${textToSend.length}`);
-          this.hostPty.write(ptyId, buildBracketedPastePayload(textToSend));
+          this.hostPty.write(ptyId, buildBracketedPastePayload(textToSend, { providerId: "codex", terminalMode }));
           return;
         }
         if (adapter && typeof (adapter as any).paste === "function") {
@@ -1589,7 +1589,7 @@ export default class TerminalManager {
    * 设计背景：
    * - 仅监听 xterm 的 outbound 数据，只能说明“前端已把 paste 发出”，不能说明 Codex CLI 已真正消化完成；
    * - 长文本下，PowerShell / ConPTY 链路里常出现“paste 已发出但 CLI 尚未可提交”的时间差；
-   * - 多行正文若退化为普通输入，内嵌换行可能被 CLI 提前当成独立提交，因此这里对多行正文强制发送显式 bracketed paste；
+   * - Windows 输入后端不能仅靠粘贴边界保护换行，因此正文换行另编码为 Alt+Enter，避免丢失或提前提交；
    * - 因此这里优先等待输入区出现 `[Pasted Content ...]` 等局部屏幕 ACK，再补 Enter；屏幕 ACK 缺失时再走超时兜底。
    *
    * @param ptyId 当前标签页绑定的 PTY id
@@ -1615,7 +1615,7 @@ export default class TerminalManager {
       triggerSend: (normalizedText) => {
         if (this.shouldForceCodexWindowsBracketedPaste('codex', terminalMode, normalizedText)) {
           this.logSendDiagnostic(traceId, `trigger.mode=host.bracketed chars=${normalizedText.length}`);
-          this.hostPty.write(ptyId, buildBracketedPastePayload(normalizedText));
+          this.hostPty.write(ptyId, buildBracketedPastePayload(normalizedText, { providerId: "codex", terminalMode }));
           return;
         }
         if (adapter && typeof (adapter as any).paste === 'function') {
@@ -1988,7 +1988,7 @@ export default class TerminalManager {
 
   /**
    * 中文说明：判断 Codex 在 Windows 终端下是否需要强制走显式 bracketed paste。
-   * 设计目标：统一覆盖“发送并回车”与“仅写入正文”两条链路，避免正文退化成快速按键后让 Enter 被识别为换行。
+   * 设计目标：统一覆盖“发送并回车”与“仅写入正文”，由粘贴构造器编码 Windows 正文换行。
    * @param providerId providerId
    * @param terminalMode 当前标签页运行终端类型
    * @param text 待发送正文
@@ -2828,7 +2828,7 @@ export default class TerminalManager {
     if (ptyId && this.shouldForceCodexWindowsBracketedPaste(options?.providerId, options?.terminalMode, text)) {
       const normalizedText = String(text ?? "");
       this.logSendDiagnostic(traceId, `trigger.mode=host.bracketed chars=${normalizedText.length}`);
-      this.hostPty.write(ptyId, buildBracketedPastePayload(normalizedText));
+      this.hostPty.write(ptyId, buildBracketedPastePayload(normalizedText, options));
       return;
     }
     if (adapter && typeof (adapter as any).paste === 'function') {

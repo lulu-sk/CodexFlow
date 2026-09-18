@@ -584,7 +584,7 @@ describe("TerminalManager（长文本发送策略）", () => {
     expect(adapter.paste).not.toHaveBeenCalled();
     expect(hostPty.write).toHaveBeenCalledWith(
       "pty-codex",
-      `${BRACKETED_PASTE_START}${text}${BRACKETED_PASTE_END}`,
+      `${BRACKETED_PASTE_START}${text.split("\n").join("\x1b\r")}${BRACKETED_PASTE_END}`,
     );
     expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex", "\r");
 
@@ -716,7 +716,7 @@ describe("TerminalManager（长文本发送策略）", () => {
     expect(adapter.paste).not.toHaveBeenCalled();
     expect(hostPty.write).toHaveBeenCalledWith(
       "pty-codex-short-multi",
-      `${BRACKETED_PASTE_START}${text}${BRACKETED_PASTE_END}`,
+      `${BRACKETED_PASTE_START}第一行\x1b\r第二行用于局部屏幕ACK命中${BRACKETED_PASTE_END}`,
     );
     expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex-short-multi", "\r");
 
@@ -754,7 +754,7 @@ describe("TerminalManager（长文本发送策略）", () => {
     expect(adapter.paste).not.toHaveBeenCalled();
     expect(hostPty.write).toHaveBeenCalledWith(
       "pty-codex-write",
-      `${BRACKETED_PASTE_START}${text}${BRACKETED_PASTE_END}`,
+      `${BRACKETED_PASTE_START}第一行\x1b\r第二行\x1b\r第三行${BRACKETED_PASTE_END}`,
     );
     expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex-write", "\r");
 
@@ -781,6 +781,49 @@ describe("TerminalManager（长文本发送策略）", () => {
     );
     expect(hostPty.write).not.toHaveBeenCalledWith("pty-codex-write-single", "\r");
 
+    tm.disposeAll(false);
+  });
+
+  it.each(["pwsh", "windows", "cmd"] as const)("Codex %s 在没有终端适配器时，仍保留混合换行且只提交一次", async (terminalMode) => {
+    vi.useFakeTimers();
+    const hostPty = createHostPtyStub();
+    const tm = new TerminalManager(() => "pty-codex-no-adapter", hostPty as any, {});
+    const text = "你好\r\n\r\n  牛号\n你好\r尾行\n";
+
+    await tm.sendText("tab-codex-no-adapter", text, { providerId: "codex", terminalMode });
+    vi.runAllTimers();
+    expect(hostPty.write.mock.calls).toEqual([
+      ["pty-codex-no-adapter", `${BRACKETED_PASTE_START}你好\x1b\r\x1b\r  牛号\x1b\r你好\x1b\r尾行\x1b\r${BRACKETED_PASTE_END}`],
+    ]);
+
+    hostPty.write.mockClear();
+    await tm.sendTextAndEnter("tab-codex-no-adapter", text, { providerId: "codex", terminalMode });
+    expect(hostPty.write.mock.calls).toEqual([
+      ["pty-codex-no-adapter", `${BRACKETED_PASTE_START}你好\x1b\r\x1b\r  牛号\x1b\r你好\x1b\r尾行${BRACKETED_PASTE_END}`],
+    ]);
+    hostPty.emitData("pty-codex-no-adapter", "尾行");
+    vi.runAllTimers();
+    expect(hostPty.write.mock.calls).toHaveLength(2);
+    expect(hostPty.write.mock.calls[1]).toEqual(["pty-codex-no-adapter", "\r"]);
+    tm.disposeAll(false);
+  });
+
+  it("Codex WSL 的两种发送模式继续交给终端组件处理，不注入 Windows 换行编码", async () => {
+    vi.useFakeTimers();
+    const adapter: any = createAdapterStub();
+    const hostPty = createHostPtyStub();
+    createTerminalAdapterMock.mockReturnValue(adapter);
+    const tm = new TerminalManager(() => "pty-codex-wsl", hostPty as any, {});
+    tm.ensurePersistentContainer("tab-codex-wsl");
+    tm.setPty("tab-codex-wsl", "pty-codex-wsl");
+    const text = "你好\n\n  第二行";
+    const options = { providerId: "codex", terminalMode: "wsl" as const };
+
+    await tm.sendText("tab-codex-wsl", text, options);
+    await tm.sendTextAndEnter("tab-codex-wsl", text, options);
+    expect(adapter.paste.mock.calls).toEqual([[text], [text]]);
+    vi.runAllTimers();
+    expect(hostPty.write.mock.calls).toEqual([["pty-codex-wsl", "\r"]]);
     tm.disposeAll(false);
   });
 
