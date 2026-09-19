@@ -4,6 +4,7 @@ import { promises as fsp } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { execGitAsync } from "./exec";
 import { dispatchGitFeatureAction } from "./featureService";
+import { configureGitFixtureAsync } from "./testUtils/repoConfig";
 import { DEFAULT_CHANGE_LIST_ID } from "./changelists";
 
 /**
@@ -21,10 +22,12 @@ async function gitAsync(repo: string, argv: string[], timeoutMs: number = 20_000
 async function createRepoAsync(prefix: string): Promise<string> {
   const repo = await fsp.mkdtemp(path.join(os.tmpdir(), prefix));
   await gitAsync(repo, ["init"]);
-  await gitAsync(repo, ["config", "user.name", "CodexFlow"]);
-  await gitAsync(repo, ["config", "user.email", "codexflow@example.com"]);
-  await gitAsync(repo, ["config", "core.autocrlf", "false"]);
-  await gitAsync(repo, ["config", "core.eol", "lf"]);
+  await configureGitFixtureAsync(repo, [
+    ["user.name", "CodexFlow"],
+    ["user.email", "codexflow@example.com"],
+    ["core.autocrlf", "false"],
+    ["core.eol", "lf"],
+  ], gitAsync);
   return repo;
 }
 

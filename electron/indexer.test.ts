@@ -49,7 +49,16 @@ vi.mock("./agentSessions/grok/discovery", async (importOriginal) => {
   };
 });
 
+vi.mock("./agentSessions/antigravity/discovery", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./agentSessions/antigravity/discovery")>();
+  return {
+    ...actual,
+    getAntigravityRootCandidatesFastAsync: vi.fn(async () => []),
+  };
+});
+
 import { commitIndexedHistoryFilesRemovedAfterSweep, ensureHistoryIndexLoaded, getIndexedCodexSessionRecords, getIndexedSummaries, getLastIndexerRoots, isCodexRelationIndexReady, listIndexedHistoryFilesForRemovalAfterSweep, requestHistoryFastRefresh, startHistoryIndexer, stopHistoryIndexer } from "./indexer";
+import { stopHistoryReconciler } from "./historyReconciler";
 
 const originalCwd = process.cwd();
 const tempDirs: string[] = [];
@@ -57,6 +66,10 @@ const tempDirs: string[] = [];
 beforeEach(async () => {
   userDataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "codexflow-indexer-user-data-"));
   tempDirs.push(userDataDir);
+  vi.spyOn(os, "homedir").mockReturnValue(userDataDir);
+  for (const name of ["CLAUDE_HOME", "CLAUDE_CONFIG_DIR", "GEMINI_CLI_HOME", "GEMINI_HOME", "ANTIGRAVITY_HOME", "GROK_HOME"]) {
+    vi.stubEnv(name, "");
+  }
   process.chdir(userDataDir);
   wslMockState.sessionRoots = [];
   (global as any).__indexer = {
@@ -68,19 +81,25 @@ beforeEach(async () => {
 
 afterEach(async () => {
   try { await stopHistoryIndexer(); } catch {}
-  (global as any).__indexer = {
-    retries: new Map(),
-    index: { version: "v12", files: {}, savedAt: 0 },
-    details: { version: "v12", files: {}, savedAt: 0 },
-  };
-  wslMockState.sessionRoots = [];
-  userDataDir = "";
-  process.chdir(originalCwd);
-  await Promise.all(tempDirs.splice(0).map(async (dir) => {
-    try {
-      await fsp.rm(dir, { recursive: true, force: true });
-    } catch {}
-  }));
+  try {
+    await stopHistoryReconciler();
+  } finally {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    (global as any).__indexer = {
+      retries: new Map(),
+      index: { version: "v12", files: {}, savedAt: 0 },
+      details: { version: "v12", files: {}, savedAt: 0 },
+    };
+    wslMockState.sessionRoots = [];
+    userDataDir = "";
+    process.chdir(originalCwd);
+    await Promise.all(tempDirs.splice(0).map(async (dir) => {
+      try {
+        await fsp.rm(dir, { recursive: true, force: true });
+      } catch {}
+    }));
+  }
 });
 
 /**

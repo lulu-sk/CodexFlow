@@ -4,6 +4,7 @@ import { promises as fsp } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { execGitAsync } from "../exec";
 import { dispatchGitFeatureAction } from "../featureService";
+import { configureGitFixtureAsync } from "../testUtils/repoConfig";
 import { GitChangesSaver } from "./changeSaver";
 
 type ClonePairContext = {
@@ -53,10 +54,12 @@ async function gitInDirAsync(cwd: string, argv: string[], timeoutMs: number = 30
  * 为测试仓库写入统一用户配置与 LF 行尾，避免不同平台默认配置导致断言波动。
  */
 async function configureRepoAsync(repo: string): Promise<void> {
-  await gitAsync(repo, ["config", "user.name", "CodexFlow"]);
-  await gitAsync(repo, ["config", "user.email", "codexflow@example.com"]);
-  await gitAsync(repo, ["config", "core.autocrlf", "false"]);
-  await gitAsync(repo, ["config", "core.eol", "lf"]);
+  await configureGitFixtureAsync(repo, [
+    ["user.name", "CodexFlow"],
+    ["user.email", "codexflow@example.com"],
+    ["core.autocrlf", "false"],
+    ["core.eol", "lf"],
+  ], gitAsync);
 }
 
 /**

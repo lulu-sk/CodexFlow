@@ -20,6 +20,8 @@
 - 安装依赖：`npm i`（会编译主进程到 `dist/electron` 并重建原生依赖）。
 - 启动开发：`npm run dev`（先恢复 Electron 兼容的原生模块，再同时启动 Vite 与 Electron）。
 - 执行测试：`npm run test`（运行 Vitest 前会把 `better-sqlite3` 重建为 Node 版本，请勿直接调用 Vitest）。
+  - 默认使用一个测试工作进程，避免真实 Git 操作争抢资源而触发原有超时；临时实验目录 `.tmp/` 不参与测试收集。
+  - Git 集成测试仍使用独立真实仓库；新增初始配置可复用 `electron/git/testUtils/repoConfig.ts`，不要共享可变仓库或减少断言来提速。
 - 生产构建：`npm run build`（等价 `npm run build:web && electron-builder`）。
 - 仅重新编译主进程：`npx tsc -p tsconfig.electron.json`。
 - 若 Electron 版本变更或 ABI 异常：执行 `npm run postinstall` 重建 `node-pty` 等原生模块。

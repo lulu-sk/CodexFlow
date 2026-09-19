@@ -4,6 +4,7 @@ import { promises as fsp } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { execGitAsync, type GitExecResult } from "./exec";
 import { dispatchGitFeatureAction } from "./featureService";
+import { configureGitFixtureAsync } from "./testUtils/repoConfig";
 import type { GitConsoleEntry } from "./consoleStore";
 
 type RepoFixture = {
@@ -35,10 +36,12 @@ async function createRepoFixture(prefix: string): Promise<RepoFixture> {
   const repo = await fsp.mkdtemp(path.join(os.tmpdir(), `${prefix}-repo-`));
   const userDataPath = await fsp.mkdtemp(path.join(os.tmpdir(), `${prefix}-userdata-`));
   await gitAsync(repo, ["init", "-b", "master"]);
-  await gitAsync(repo, ["config", "user.name", "CodexFlow"]);
-  await gitAsync(repo, ["config", "user.email", "codexflow@example.com"]);
-  await gitAsync(repo, ["config", "core.autocrlf", "false"]);
-  await gitAsync(repo, ["config", "core.eol", "lf"]);
+  await configureGitFixtureAsync(repo, [
+    ["user.name", "CodexFlow"],
+    ["user.email", "codexflow@example.com"],
+    ["core.autocrlf", "false"],
+    ["core.eol", "lf"],
+  ], gitAsync);
   await writeFileAsync(repo, "conflict.txt", "base\n");
   await gitAsync(repo, ["add", "conflict.txt"]);
   await gitAsync(repo, ["commit", "-m", "base"]);
@@ -1483,7 +1486,8 @@ describe("featureService log filters", () => {
     try {
       for (let index = 1; index <= 42; index += 1) {
         const subject = index % 2 === 0 ? `keep ${index}` : `skip ${index}`;
-        await commitFileChangeAsync(fixture.repo, "conflict.txt", `${subject}\n`, subject);
+        await writeFileAsync(fixture.repo, "conflict.txt", `${subject}\n`);
+        await gitAsync(fixture.repo, ["commit", "--only", "-m", subject, "--", "conflict.txt"]);
       }
 
       const firstRes = await dispatchGitFeatureAction({
