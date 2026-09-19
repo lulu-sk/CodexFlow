@@ -4,6 +4,7 @@ import { promises as fsp } from "node:fs";
 import { describe, expect, it } from "vitest";
 import * as gitExecModule from "./exec";
 import { dispatchGitFeatureAction } from "./featureService";
+import { configureGitFixtureAsync } from "./testUtils/repoConfig";
 import type { GitConsoleEntry } from "./consoleStore";
 import { toFsPathKey } from "./pathKey";
 
@@ -67,8 +68,10 @@ async function createRepoFixture(prefix: string, options?: RepoFixtureOptions): 
   const repo = await fsp.mkdtemp(path.join(os.tmpdir(), `${prefix}-repo-`));
   const userDataPath = await fsp.mkdtemp(path.join(os.tmpdir(), `${prefix}-userdata-`));
   await gitAsync(repo, ["init", "-b", "master"]);
-  await gitAsync(repo, ["config", "user.name", "CodexFlow"]);
-  await gitAsync(repo, ["config", "user.email", "codexflow@example.com"]);
+  await configureGitFixtureAsync(repo, [
+    ["user.name", "CodexFlow"],
+    ["user.email", "codexflow@example.com"],
+  ], gitAsync);
   await writeFileAsync(repo, "a.txt", "base a\n");
   await writeFileAsync(repo, "b.txt", "base b\n");
   await writeFileAsync(repo, "scratch.txt", "base scratch\n");

@@ -4,6 +4,7 @@ import { promises as fsp } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { execGitAsync } from "./exec";
 import { dispatchGitFeatureAction } from "./featureService";
+import { configureGitFixtureAsync } from "./testUtils/repoConfig";
 
 const GIT_INTEGRATION_TEST_TIMEOUT_MS = 20_000;
 
@@ -29,8 +30,10 @@ async function createRepoFixture(prefix: string): Promise<RepoFixture> {
   const repo = await fsp.mkdtemp(path.join(os.tmpdir(), `${prefix}-repo-`));
   const userDataPath = await fsp.mkdtemp(path.join(os.tmpdir(), `${prefix}-userdata-`));
   await gitAsync(repo, ["init", "-b", "master"]);
-  await gitAsync(repo, ["config", "user.name", "CodexFlow"]);
-  await gitAsync(repo, ["config", "user.email", "codexflow@example.com"]);
+  await configureGitFixtureAsync(repo, [
+    ["user.name", "CodexFlow"],
+    ["user.email", "codexflow@example.com"],
+  ], gitAsync);
   return {
     repo,
     userDataPath,
