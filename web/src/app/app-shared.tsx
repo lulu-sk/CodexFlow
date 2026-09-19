@@ -1420,7 +1420,7 @@ function parseRecycleStashes(details: any, t: any): {
  * 构造自动提交信息：包含来源（user/agent）+ 内容前缀摘要。
  */
 function buildAutoCommitMessage(source: "user" | "agent", text: string): string {
-  const head = summarizeForCommitMessage(text, 72);
+  const head = summarizeForCommitMessage(text, 200);
   const label = source === "agent" ? "agent" : "user";
   const body = head || (source === "agent" ? "agent output" : "user input");
   return `auto(${label}): ${body}`.trim();
