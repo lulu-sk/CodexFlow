@@ -1574,8 +1574,12 @@ export default function CodexFlowManagerUI() {
   const hiddenProjectIdSet = useMemo(() => new Set(hiddenProjectIds), [hiddenProjectIds]);
   const visibleProjects = useMemo(() => {
     if (showHiddenProjects) return projects;
-    return projects.filter((p) => !hiddenProjectIdSet.has(p.id));
-  }, [projects, showHiddenProjects, hiddenProjectIdSet]);
+    // 路径检查完成后自动隐藏无效目录，眼睛按钮可显示；不写入手动隐藏列表。
+    return projects.filter((p) => {
+      const git = gitInfoByProjectId[p.id];
+      return !hiddenProjectIdSet.has(p.id) && (!git || (git.exists && git.isDirectory));
+    });
+  }, [projects, showHiddenProjects, hiddenProjectIdSet, gitInfoByProjectId]);
   const selectedProject = useMemo(
     () => visibleProjects.find((p) => p.id === selectedProjectId) || null,
     [visibleProjects, selectedProjectId]
@@ -6265,12 +6269,13 @@ export default function CodexFlowManagerUI() {
    * 将项目实体转换为历史归属标签，供列表展示与动作路由复用。
    */
   const createHistoryProjectMatch = useCallback((project: Project): HistoryProjectMatch => {
+    const git = gitInfoByProjectId[project.id];
     return {
       projectId: project.id,
       projectName: project.name,
-      hidden: hiddenProjectIdSet.has(project.id),
+      hidden: hiddenProjectIdSet.has(project.id) || !!(git && (!git.exists || !git.isDirectory)),
     };
-  }, [hiddenProjectIdSet]);
+  }, [gitInfoByProjectId, hiddenProjectIdSet]);
   /**
    * 缓存单个 Gemini projectHash 的项目归属，避免同一会话重复做异步推断。
    */
