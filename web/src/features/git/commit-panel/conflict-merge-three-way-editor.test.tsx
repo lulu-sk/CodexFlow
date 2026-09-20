@@ -3,6 +3,7 @@
 import React, { act } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRoot, type Root } from "react-dom/client";
+import type * as MonacoNS from "monaco-editor";
 import { buildConflictMergeMetadata } from "../../../../../electron/git/commitPanel/conflictMergeMetadata";
 import { setConflictMergeSemanticResolversForTesting } from "../../../../../electron/git/commitPanel/conflictMergeSemantic";
 import type { GitConflictMergeSnapshot } from "../types";
@@ -16,6 +17,10 @@ import { ConflictMergeThreeWayEditor } from "./conflict-merge-three-way-editor";
 const decorationSetCalls: Array<unknown[]> = [];
 const revealLineInCenterCalls: number[] = [];
 const revealLineInCenterIfOutsideViewportCalls: number[] = [];
+const copyEditors: Array<{
+  addAction: ReturnType<typeof vi.fn<(action: MonacoNS.editor.IActionDescriptor) => MonacoNS.IDisposable>>;
+  trigger: ReturnType<typeof vi.fn>;
+}> = [];
 
 vi.mock("monaco-editor", () => {
   class Range {
@@ -37,6 +42,8 @@ vi.mock("monaco-editor", () => {
 
   return {
     Range,
+    KeyMod: { CtrlCmd: 2048 },
+    KeyCode: { KeyC: 33 },
     editor: {
       OverviewRulerLane: {
         Full: 2,
@@ -74,7 +81,14 @@ vi.mock("@monaco-editor/react", async () => {
       dispose() {},
     });
 
+    const copyEditor = {
+      addAction: vi.fn((_action: MonacoNS.editor.IActionDescriptor) => ({ dispose: vi.fn() })),
+      trigger: vi.fn(),
+    };
+    copyEditors.push(copyEditor);
     return {
+      ...copyEditor,
+      onDidDispose: createDisposable,
       getVisibleRanges() {
         return [{
           startLineNumber: 1,
@@ -301,9 +315,46 @@ afterEach(() => {
   decorationSetCalls.length = 0;
   revealLineInCenterCalls.length = 0;
   revealLineInCenterIfOutsideViewportCalls.length = 0;
+  copyEditors.length = 0;
 });
 
 describe("ConflictMergeThreeWayEditor", () => {
+  it.each([false, true])("三栏在只读状态为 %s 时都应支持复制并在卸载时释放绑定", async (saving) => {
+    const restoreRaf = installSyncRequestAnimationFrame();
+    const mounted = createMountedRoot();
+    try {
+      await act(async () => {
+        mounted.root.render(<ConflictMergeThreeWayEditor
+          language="plaintext"
+          saving={saving}
+          busy={false}
+          collapseUnchanged={false}
+          leftPane={{ label: "HEAD", text: "原文🙂", renderable: true, fallbackText: "" }}
+          rightPane={{ label: "Working Tree", text: "修改🚀", renderable: true, fallbackText: "" }}
+          resultLabel="Index"
+          resultText="结果✓"
+          blocks={[]}
+          selectedBlock={null}
+          onResultTextChange={vi.fn()}
+        />);
+      });
+      expect(copyEditors).toHaveLength(3);
+      for (const editor of copyEditors) {
+        expect(editor.addAction).toHaveBeenCalledTimes(1);
+        const action = editor.addAction.mock.calls[0][0];
+        expect(action.keybindings).toEqual([2048 | 33]);
+        expect(action.precondition).toBe("editorTextFocus");
+        await action.run(editor as unknown as MonacoNS.editor.IStandaloneCodeEditor);
+        expect(editor.trigger).toHaveBeenCalledWith("keyboard", "editor.action.clipboardCopyAction", null);
+      }
+    } finally {
+      mounted.unmount();
+      restoreRaf();
+    }
+    for (const editor of copyEditors)
+      expect(editor.addAction.mock.results[0].value.dispose).toHaveBeenCalledTimes(1);
+  });
+
   it("应为可自动解决的 conflict 渲染 magic resolve gutter 按钮，并回调到统一入口", async () => {
     const restoreRaf = installSyncRequestAnimationFrame();
     setConflictMergeSemanticResolversForTesting([{

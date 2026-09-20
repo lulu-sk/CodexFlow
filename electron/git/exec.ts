@@ -252,13 +252,14 @@ export async function spawnGitAsync(opts: GitSpawnOptions): Promise<GitExecResul
         closeStdin();
       }
 
-      child.stdout?.on("data", (buf: Buffer) => {
-        const chunk = Buffer.isBuffer(buf) ? buf.toString("utf8") : String(buf || "");
+      // 让流保留跨数据块的 UTF-8 字节，避免中文或 emoji 恰好被拆开时变成乱码。
+      child.stdout?.setEncoding("utf8");
+      child.stderr?.setEncoding("utf8");
+      child.stdout?.on("data", (chunk: string) => {
         stdout += chunk;
         try { opts?.onStdout?.(chunk); } catch {}
       });
-      child.stderr?.on("data", (buf: Buffer) => {
-        const chunk = Buffer.isBuffer(buf) ? buf.toString("utf8") : String(buf || "");
+      child.stderr?.on("data", (chunk: string) => {
         stderr += chunk;
         try { opts?.onStderr?.(chunk); } catch {}
       });
@@ -428,8 +429,9 @@ export async function spawnGitStdoutToFileAsync(opts: GitSpawnStdoutToFileOption
         } catch {}
       });
 
-      child.stderr?.on("data", (buf: Buffer) => {
-        const chunk = Buffer.isBuffer(buf) ? buf.toString("utf8") : String(buf || "");
+      // stdout 原样写入文件；只有用于显示的 stderr 做流式文本解码。
+      child.stderr?.setEncoding("utf8");
+      child.stderr?.on("data", (chunk: string) => {
         stderr += chunk;
         try { opts?.onStderr?.(chunk); } catch {}
       });

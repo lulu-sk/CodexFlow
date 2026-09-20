@@ -11,6 +11,7 @@ import type { PartialCommitDiffControls, PartialCommitDiffControlSide, PartialCo
 import { Button } from "@/components/ui/button";
 import { isLineVisible, resolveEditorAnchorTop, resolveVisibleLineRange } from "./monaco-overlay-utils";
 import { resolveCheckboxGutterOffset } from "./monaco-git-diff-layout";
+import { bindGitEditorCopyAction } from "./monaco-copy";
 import type { GitDiffEditorSelection, GitDiffLineDecorations, GitDiffSnapshot } from "./types";
 
 type GitTranslate = (key: string, fallback: string, values?: Record<string, unknown>) => string;
@@ -498,6 +499,7 @@ export default function MonacoGitDiff(props: MonacoGitDiffProps): JSX.Element {
   const originalFocusListenerRef = useRef<MonacoNS.IDisposable | null>(null);
   const modifiedFocusListenerRef = useRef<MonacoNS.IDisposable | null>(null);
   const overlayListenerRefs = useRef<MonacoNS.IDisposable[]>([]);
+  const copyActionRefs = useRef<MonacoNS.IDisposable[]>([]);
   const overlayFrameRef = useRef<number | null>(null);
   const focusSideRef = useRef<GitDiffEditorSelection["focusSide"]>(null);
   const modelPathsRef = useRef<MonacoDiffModelPaths | null>(null);
@@ -674,6 +676,10 @@ export default function MonacoGitDiff(props: MonacoGitDiffProps): JSX.Element {
     originalExcludedDecorationRef.current = editor.getOriginalEditor().createDecorationsCollection();
     modifiedExcludedDecorationRef.current = editor.getModifiedEditor().createDecorationsCollection();
     applyDiffEditorViewOptions(editor, sideBySide, ignoreWhitespace, collapseUnchanged);
+    for (const action of copyActionRefs.current) action.dispose();
+    copyActionRefs.current = [editor.getOriginalEditor(), editor.getModifiedEditor()].map((codeEditor) => (
+      bindGitEditorCopyAction(codeEditor, monaco, gt("workbench.misc.console.copy", "复制"))
+    ));
     bindDiffLineListener();
     bindSelectionListeners();
     bindPartialCommitOverlayListeners();
@@ -687,6 +693,7 @@ export default function MonacoGitDiff(props: MonacoGitDiffProps): JSX.Element {
     bindPartialCommitOverlayListeners,
     bindSelectionListeners,
     collapseUnchanged,
+    gt,
     ignoreWhitespace,
     onModifiedContentChange,
     sideBySide,
@@ -851,6 +858,8 @@ export default function MonacoGitDiff(props: MonacoGitDiffProps): JSX.Element {
       modifiedExcludedDecorationRef.current = null;
       originalSelectionListenerRef.current?.dispose();
       originalSelectionListenerRef.current = null;
+      for (const action of copyActionRefs.current) action.dispose();
+      copyActionRefs.current = [];
       modifiedSelectionListenerRef.current?.dispose();
       modifiedSelectionListenerRef.current = null;
       originalFocusListenerRef.current?.dispose();

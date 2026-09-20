@@ -2,6 +2,7 @@ import type { Dirent } from "node:fs";
 import { promises as fsp } from "node:fs";
 import path from "node:path";
 import { toFsPathAbs, toFsPathKey } from "../pathKey";
+import { readSubmoduleStatusAsync } from "../submoduleStatus";
 import type {
   GitUpdateAggregatedSession,
   GitUpdateRepositoryGraph,
@@ -231,7 +232,7 @@ async function discoverSubmoduleRootsAsync(
   for (const seedRoot of seedRoots) {
     const repoRoot = toFsPathAbs(seedRoot);
     if (!repoRoot) continue;
-    const statusRes = await runtime.runGitExecAsync(repoRoot, ["submodule", "status", "--recursive"], 20_000);
+    const statusRes = await readSubmoduleStatusAsync(repoRoot, (root, argv, timeoutMs) => runtime.runGitExecAsync(root, argv, timeoutMs));
     if (!statusRes.ok) continue;
     for (const relativePath of parseSubmoduleStatusPaths(statusRes.stdout || "")) {
       const candidatePath = toFsPathAbs(path.join(repoRoot, relativePath));

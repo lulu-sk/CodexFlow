@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 
-import React, { act } from "react";
+import React, { act, useMemo } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRoot, type Root } from "react-dom/client";
-import { useLatestAsyncRunner } from "./refresh-controller";
+import { createCommitRefreshController, useLatestAsyncRunner } from "./refresh-controller";
 
 /**
  * 启用 React 18 act 环境标记，避免测试输出无关告警。
@@ -45,6 +45,17 @@ function StableRunnerHarness(props: {
   return null;
 }
 
+/** 模拟工作台在刷新途中更新仓库状态，验证控制器仍串行运行且使用最新回调。 */
+function RefreshControllerHarness(props: {
+  runner: (options?: { keepLog?: boolean }) => Promise<void>;
+  captures: Array<ReturnType<typeof createCommitRefreshController<{ keepLog?: boolean }>>>;
+}): JSX.Element | null {
+  const stableRunner = useLatestAsyncRunner(props.runner);
+  const controller = useMemo(() => createCommitRefreshController(stableRunner, (_running, pending) => pending), [stableRunner]);
+  props.captures.push(controller);
+  return null;
+}
+
 describe("useLatestAsyncRunner", () => {
   let cleanup: (() => void) | null = null;
 
@@ -81,5 +92,31 @@ describe("useLatestAsyncRunner", () => {
     expect(firstRunner).not.toHaveBeenCalled();
     expect(secondRunner).toHaveBeenCalledTimes(1);
     expect(secondRunner).toHaveBeenCalledWith("refresh");
+  });
+
+  it("刷新途中重渲染不能创建并行控制器，排队请求应调用最新实现", async () => {
+    const captures: Array<ReturnType<typeof createCommitRefreshController<{ keepLog?: boolean }>>> = [];
+    let release!: () => void;
+    const firstRunner = vi.fn(async () => await new Promise<void>((resolve) => { release = resolve; }));
+    const secondRunner = vi.fn(async () => {});
+    const mounted = createMountedRoot();
+    cleanup = mounted.unmount;
+    await act(async () => {
+      mounted.root.render(<RefreshControllerHarness runner={firstRunner} captures={captures} />);
+    });
+    const firstRequest = captures[0].request({ keepLog: false });
+    await act(async () => {
+      mounted.root.render(<RefreshControllerHarness runner={secondRunner} captures={captures} />);
+    });
+    expect(captures[1]).toBe(captures[0]);
+    expect(captures[1].isBusy()).toBe(true);
+    const nextRequest = captures[1].request({ keepLog: true });
+    expect(secondRunner).not.toHaveBeenCalled();
+    release();
+    await Promise.all([firstRequest, nextRequest]);
+    expect(firstRunner).toHaveBeenCalledTimes(1);
+    expect(secondRunner).toHaveBeenCalledTimes(1);
+    expect(secondRunner).toHaveBeenCalledWith({ keepLog: true });
+    expect(captures[1].isBusy()).toBe(false);
   });
 });
