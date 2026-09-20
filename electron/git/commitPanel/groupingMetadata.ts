@@ -3,6 +3,7 @@
 
 import path from "node:path";
 import { promises as fsp } from "node:fs";
+import { readSubmoduleStatusAsync } from "../submoduleStatus";
 
 export type CommitPanelGroupingKey = "directory" | "module" | "repository";
 
@@ -92,7 +93,7 @@ async function discoverRepositoriesAsync(runtime: GroupingRuntime, repoRoot: str
     external: false,
   }];
 
-  const submoduleRes = await runtime.runGitExecAsync(normalizedRepoRoot, ["submodule", "status", "--recursive"], 20_000);
+  const submoduleRes = await readSubmoduleStatusAsync(normalizedRepoRoot, (root, argv, timeoutMs) => runtime.runGitExecAsync(root, argv, timeoutMs));
   if (!submoduleRes.ok) return repositories;
 
   const relativeRoots = parseSubmoduleStatusPaths(submoduleRes.stdout || "");

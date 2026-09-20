@@ -10,6 +10,7 @@ import { ArrowDown, ArrowLeft, ArrowRight, Sparkles, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { resolveGitTextWith } from "../git-i18n";
+import { bindGitEditorCopyAction } from "../monaco-copy";
 import {
   isLineVisible,
   resolveEditorAnchorTop,
@@ -565,6 +566,7 @@ export function ConflictMergeThreeWayEditor(props: ConflictMergeThreeWayEditorPr
     right: null,
   });
   const scrollListenersRef = useRef<MonacoNS.IDisposable[]>([]);
+  const copyActionRefs = useRef<Partial<Record<ConflictMergeEditorPaneKey, MonacoNS.IDisposable>>>({});
   const scrollSyncingRef = useRef<boolean>(false);
   const gutterFrameRef = useRef<number | null>(null);
   const [editorMountStamp, setEditorMountStamp] = React.useState(0);
@@ -617,8 +619,10 @@ export function ConflictMergeThreeWayEditor(props: ConflictMergeThreeWayEditorPr
   ): void => {
     monacoRef.current = monaco;
     editorRefs.current[paneKey] = editor;
+    copyActionRefs.current[paneKey]?.dispose();
+    copyActionRefs.current[paneKey] = bindGitEditorCopyAction(editor, monaco, gt("workbench.misc.console.copy", "复制"));
     setEditorMountStamp((prev) => prev + 1);
-  }, []);
+  }, [gt]);
 
   /**
    * 记录三栏宿主节点，供 gutter 操作按真实布局定位。
@@ -1204,6 +1208,8 @@ export function ConflictMergeThreeWayEditor(props: ConflictMergeThreeWayEditorPr
         decorationRefs.current[paneKey] = null;
       });
       (Object.keys(editorRefs.current) as ConflictMergeEditorPaneKey[]).forEach((paneKey) => {
+        copyActionRefs.current[paneKey]?.dispose();
+        delete copyActionRefs.current[paneKey];
         editorRefs.current[paneKey] = null;
       });
       if (gutterFrameRef.current != null && typeof window !== "undefined") {

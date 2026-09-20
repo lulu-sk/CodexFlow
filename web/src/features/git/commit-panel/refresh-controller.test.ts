@@ -47,4 +47,60 @@ describe("commit refresh controller", () => {
     await waiter;
     expect(resolved).toBe(true);
   });
+
+  it("后续轻量请求不能覆盖已排队的日志刷新和去抖要求", async () => {
+    let release!: () => void;
+    const firstDone = new Promise<void>((resolve) => { release = resolve; });
+    const runTask = vi.fn(async (_options?: { keepLog?: boolean; debounceMs?: number }) => {
+      if (runTask.mock.calls.length === 1) await firstDone;
+    });
+    const controller = createCommitRefreshController(runTask, (current, next) => ({
+      keepLog: current?.keepLog !== false && next?.keepLog !== false,
+      debounceMs: Math.max(current?.debounceMs || 0, next?.debounceMs || 0),
+    }));
+    const requests = [
+      controller.request({ keepLog: true }),
+      controller.request({ keepLog: false, debounceMs: 260 }),
+      controller.request({ keepLog: true, debounceMs: 0 }),
+    ];
+    release();
+    await Promise.all(requests);
+    expect(runTask).toHaveBeenCalledTimes(2);
+    expect(runTask).toHaveBeenLastCalledWith({ keepLog: false, debounceMs: 260 });
+  });
+
+  it("没有参数的排队请求也必须在当前刷新结束后执行", async () => {
+    let release!: () => void;
+    const firstDone = new Promise<void>((resolve) => { release = resolve; });
+    const runTask = vi.fn(async () => {
+      if (runTask.mock.calls.length === 1) await firstDone;
+    });
+    const controller = createCommitRefreshController(runTask, (_current, next) => next);
+    const first = controller.request();
+    const second = controller.request();
+    release();
+    await Promise.all([first, second]);
+    expect(runTask).toHaveBeenCalledTimes(2);
+  });
+
+  it("刷新失败应通知所有请求且不产生额外未处理异常，之后仍可继续刷新", async () => {
+    const failure = new Error("读取失败");
+    let reject!: (reason: Error) => void;
+    const firstDone = new Promise<void>((_resolve, rejectPromise) => { reject = rejectPromise; });
+    const runTask = vi.fn(async () => {
+      if (runTask.mock.calls.length === 1) await firstDone;
+    });
+    const controller = createCommitRefreshController(runTask, (_current, next) => next);
+    const result = Promise.allSettled([controller.request(), controller.request()]);
+    const idle = controller.awaitNotBusy();
+    reject(failure);
+    expect(await result).toEqual([
+      { status: "rejected", reason: failure },
+      { status: "rejected", reason: failure },
+    ]);
+    await idle;
+    expect(controller.isBusy()).toBe(false);
+    await controller.request();
+    expect(runTask).toHaveBeenCalledTimes(2);
+  });
 });

@@ -40,14 +40,16 @@ export function createCommitRefreshController<TOptions>(
   let busy = false;
   let runningOptions: TOptions | undefined;
   let pendingOptions: TOptions | undefined;
+  let hasPendingRequest = false;
   let waiters: CommitRefreshRequest<TOptions>[] = [];
   let notBusyWaiters: CommitRefreshWaiter[] = [];
 
-  const flushWaiters = (error?: unknown): void => {
+  /** 通知本轮所有请求；显式区分成功与失败，保留空值异常的拒绝语义。 */
+  const flushWaiters = (failed = false, error?: unknown): void => {
     const current = waiters;
     waiters = [];
     for (const waiter of current) {
-      if (error) waiter.reject(error);
+      if (failed) waiter.reject(error);
       else waiter.resolve();
     }
   };
@@ -62,23 +64,24 @@ export function createCommitRefreshController<TOptions>(
       waiter.resolve();
   };
 
+  /** 串行消费合并后的请求，任务异常只通过请求本身返回，避免悬空的拒绝。 */
   const runLoop = async (): Promise<void> => {
     if (busy) return;
     busy = true;
     try {
-      while (waiters.length > 0) {
+      while (hasPendingRequest) {
         runningOptions = pendingOptions;
         pendingOptions = undefined;
+        hasPendingRequest = false;
         await runTask(runningOptions);
-        if (!pendingOptions) break;
       }
       flushWaiters();
     } catch (error) {
-      flushWaiters(error);
-      throw error;
+      flushWaiters(true, error);
     } finally {
       runningOptions = undefined;
       pendingOptions = undefined;
+      hasPendingRequest = false;
       busy = false;
       queueMicrotask(() => {
         if (!busy && waiters.length === 0)
@@ -89,7 +92,9 @@ export function createCommitRefreshController<TOptions>(
 
   return {
     request(options?: TOptions): Promise<void> {
-      pendingOptions = mergeOptions(runningOptions, options);
+      // 后续请求必须累积已有排队要求，不能用运行中的旧选项覆盖它们。
+      pendingOptions = mergeOptions(hasPendingRequest ? pendingOptions : runningOptions, options);
+      hasPendingRequest = true;
       return new Promise<void>((resolve, reject) => {
         waiters.push({ options, resolve, reject });
         void runLoop();

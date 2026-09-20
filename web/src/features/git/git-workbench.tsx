@@ -464,8 +464,6 @@ import {
   resolveCommitGroupExpandedState,
   resolveCommitTreeExpandedState,
 } from "./commit-panel/tree-state-strategy";
-import { ConflictMergeDialog } from "./commit-panel/conflict-merge-dialog";
-import { ConflictMergeThreeWayEditor } from "./commit-panel/conflict-merge-three-way-editor";
 import { CommitTreePane } from "./commit-panel/commit-tree-pane";
 import { createCommitRefreshController, useLatestAsyncRunner } from "./commit-panel/refresh-controller";
 import { mergePagedGitLogGraphItems } from "./log-graph/graph-items";
@@ -587,6 +585,13 @@ import {
 } from "./worktree-tab-state";
 
 const MonacoGitDiff = React.lazy(async () => await import("./monaco-git-diff"));
+// 冲突对话框和三栏比对也必须按需加载，否则其静态依赖会在打开 Git 面板时提前初始化 Monaco。
+const ConflictMergeDialog = React.lazy(async () => ({
+  default: (await import("./commit-panel/conflict-merge-dialog")).ConflictMergeDialog,
+}));
+const ConflictMergeThreeWayEditor = React.lazy(async () => ({
+  default: (await import("./commit-panel/conflict-merge-three-way-editor")).ConflictMergeThreeWayEditor,
+}));
 
 type GitWorkbenchProps = {
   tabId?: string;
@@ -3290,6 +3295,11 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
     return toErrorText(raw, gt(key, fallback, values));
   }, [gt]);
   const projectScopePath = String(repoPath || "").trim();
+  // 每次切换项目都更换身份，即使切回同一路径，也不能接收上一次进入时的异步结果。
+  const refreshScopePathKey = normalizeGitWorkbenchProjectPathKey(projectScopePath);
+  const refreshScope = useMemo(() => ({}), [refreshScopePathKey]);
+  const refreshScopeRef = useRef(refreshScope);
+  refreshScopeRef.current = refreshScope;
   const hotSessionTabId = String(tabId || "").trim();
   const initialHotSessionSnapshot = useMemo(() => {
     return findLocalGitWorkbenchHotSessionSnapshot(hotSessionTabId, projectScopePath);
@@ -5936,6 +5946,11 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
     const nextPathKey = normalizeGitWorkbenchProjectPathKey(projectScopePath);
     if (repoProbePathKeyRef.current === nextPathKey) return;
     repoProbePathKeyRef.current = nextPathKey;
+    lastLogReloadKeyRef.current = "";
+    setLogLoading(false);
+    setIgnoredLoading(false);
+    setLoading(false);
+    setCommitTreeBusy(false);
     const snapshot = findLocalGitWorkbenchHotSessionSnapshot(hotSessionTabId, projectScopePath);
     if (snapshot) {
       applyHotSessionSnapshot(snapshot);
@@ -6646,11 +6661,14 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
   const loadLogAsync = useCallback(
     async (targetRepoRoot: string, cursor: number, overwrite: boolean): Promise<void> => {
       if (!targetRepoRoot || !active) return;
+      // 首屏刷新和筛选监听共用已发起标记，避免打开面板时读取两次同一页日志。
+      if (overwrite && cursor === 0)
+        lastLogReloadKeyRef.current = `${targetRepoRoot}\n${JSON.stringify(activeLogFilters)}`;
       const requestId = logRequestSeqRef.current + 1;
       logRequestSeqRef.current = requestId;
       setLogLoading(true);
       const res = await getLogAsync(targetRepoRoot, cursor, LOG_PAGE_SIZE, activeLogFilters);
-      if (requestId !== logRequestSeqRef.current) return;
+      if (refreshScopeRef.current !== refreshScope || requestId !== logRequestSeqRef.current) return;
       if (!res.ok || !res.data) {
         setLogLoading(false);
         setError(toErrorText(res.error, gt("workbench.log.loadFailed", "读取日志失败")));
@@ -6665,8 +6683,9 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
       setLogHasMore(!!res.data.hasMore);
       setLogLoading(false);
     },
-    [active, activeLogFilters],
+    [active, activeLogFilters, refreshScope],
   );
+  const invokeLoadLogAsync = useLatestAsyncRunner(loadLogAsync);
 
   /**
    * 独立刷新 ignored 节点；优先回放同仓缓存，再异步拉取最新结果，避免切换显示时整页卡顿。
@@ -6684,7 +6703,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
     ignoredRequestSeqRef.current = requestId;
     setIgnoredLoading(true);
     const res = await getIgnoredStatusAsync(targetRepoRoot);
-    if (requestId !== ignoredRequestSeqRef.current) return;
+    if (refreshScopeRef.current !== refreshScope || requestId !== ignoredRequestSeqRef.current) return;
     setIgnoredLoading(false);
     if (!res.ok || !res.data) {
       setError(toErrorText(res.error, gitWorkbenchText("workbench.errors.readIgnoredFilesFailed", "读取已忽略文件失败")));
@@ -6693,7 +6712,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
     const nextEntries = res.data.entries || [];
     ignoredEntriesCacheRef.current.set(targetRepoRoot, nextEntries);
     setIgnoredEntries(nextEntries);
-  }, [repoRoot]);
+  }, [refreshScope, repoRoot]);
 
   /**
    * 独立刷新 worktree 列表；保持与参考实现一致的 `worktreesChanged` 只更新 worktree 视图的语义，
@@ -6705,10 +6724,10 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
     const requestId = worktreeRequestSeqRef.current + 1;
     worktreeRequestSeqRef.current = requestId;
     const res = await getWorktreesAsync(targetRepoRoot);
-    if (requestId !== worktreeRequestSeqRef.current) return;
+    if (refreshScopeRef.current !== refreshScope || requestId !== worktreeRequestSeqRef.current) return;
     if (!res.ok || !res.data) return;
     setWorktreeItems(res.data.items || []);
-  }, [repoRoot]);
+  }, [refreshScope, repoRoot]);
 
   /**
    * 给自动刷新链路提供“仅刷新 worktree 列表”的轻量入口，保留与整仓刷新一致的去抖语义。
@@ -6722,8 +6741,9 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
         window.setTimeout(resolve, debounceMs);
       });
     }
+    if (refreshScopeRef.current !== refreshScope) return;
     await refreshWorktreeItemsAsync();
-  }, [refreshWorktreeItemsAsync]);
+  }, [refreshScope, refreshWorktreeItemsAsync]);
 
   /**
    * 自动刷新链路的状态轻量刷新入口，只更新本地变更树和提交 inclusion 状态。
@@ -6739,9 +6759,11 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
         window.setTimeout(resolve, debounceMs);
       });
     }
+    if (refreshScopeRef.current !== refreshScope) return;
     setCommitTreeBusy(true);
     try {
       const statusRes = await getStatusAsync(projectScopePath || targetRepoRoot);
+      if (refreshScopeRef.current !== refreshScope) return;
       if (!statusRes.ok || !statusRes.data) return;
       const statusData = statusRes.data;
       setStatus(statusData);
@@ -6759,9 +6781,9 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
         setIgnoredEntries([]);
       }
     } finally {
-      setCommitTreeBusy(false);
+      if (refreshScopeRef.current === refreshScope) setCommitTreeBusy(false);
     }
-  }, [buildCommitInclusionItems, effectiveCommitAllSetting, projectScopePath, refreshIgnoredEntriesAsync, repoRoot, syncCommitInclusionState]);
+  }, [buildCommitInclusionItems, effectiveCommitAllSetting, projectScopePath, refreshIgnoredEntriesAsync, refreshScope, repoRoot, syncCommitInclusionState]);
 
   /**
    * 自动刷新链路的引用轻量刷新入口，只更新分支状态与日志首屏。
@@ -6777,7 +6799,9 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
         window.setTimeout(resolve, debounceMs);
       });
     }
+    if (refreshScopeRef.current !== refreshScope) return;
     const branchRes = await getBranchPopupAsync(targetRepoRoot);
+    if (refreshScopeRef.current !== refreshScope) return;
     if (branchRes.ok && branchRes.data) {
       setBranchPopup(branchRes.data);
       setRepoBranch(String(branchRes.data.currentBranch || repoBranch || "HEAD"));
@@ -6785,7 +6809,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
     }
     if (active)
       await loadLogAsync(targetRepoRoot, 0, true);
-  }, [active, loadLogAsync, repoBranch, repoRoot]);
+  }, [active, loadLogAsync, refreshScope, repoBranch, repoRoot]);
 
   /**
    * 执行通用刷新（状态/日志/分支/搁置/worktree），并始终使用最新日志筛选条件重载列表。
@@ -6797,6 +6821,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
     setError("");
     try {
       const detect = await detectRepoAsync(repoPath);
+      if (refreshScopeRef.current !== refreshScope) return;
       if (!detect.ok) {
         setError(toErrorText(detect.error, gt("workbench.repo.detectFailed", "检测仓库失败")));
         return;
@@ -6831,12 +6856,14 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
       const shelfTask = getShelvesAsync(repo.repoRoot);
       const stashTask = getStashListAsync(repo.repoRoot);
       const worktreeTask = refreshWorktreeItemsAsync(repo.repoRoot);
+      const logTask = options?.keepLog ? Promise.resolve() : invokeLoadLogAsync(repo.repoRoot, 0, true);
 
       /**
        * 提交树只依赖状态链路；branch/stash/worktree/log 即使慢或失败，也不应让左侧提交树一直卡在 busy。
        */
       try {
         const statusRes = await statusTask;
+        if (refreshScopeRef.current !== refreshScope) return;
         if (statusRes.ok && statusRes.data) {
           const statusData = statusRes.data;
           setStatus(statusData);
@@ -6859,7 +6886,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
           setIgnoredEntries([]);
         }
       } finally {
-        setCommitTreeBusy(false);
+        if (refreshScopeRef.current === refreshScope) setCommitTreeBusy(false);
       }
 
       const [branchRes, shelfRes, stashRes] = await Promise.all([
@@ -6868,6 +6895,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
         stashTask,
         worktreeTask,
       ]);
+      if (refreshScopeRef.current !== refreshScope) return;
 
       if (branchRes.ok && branchRes.data) {
         setBranchPopup(branchRes.data);
@@ -6880,30 +6908,32 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
         setShelfViewState(shelfRes.data.viewState || { showRecycled: false, groupByDirectory: false });
       }
       if (stashRes.ok && stashRes.data) setStashItems(stashRes.data.items || []);
-
-      if (!options?.keepLog) {
-        await loadLogAsync(repo.repoRoot, 0, true);
-      }
+      await logTask;
     } finally {
-      setRepoProbeSettled(true);
-      setLoading(false);
-      setCommitTreeBusy(false);
+      if (refreshScopeRef.current === refreshScope) {
+        setRepoProbeSettled(true);
+        setLoading(false);
+        setCommitTreeBusy(false);
+      }
     }
-  }, [active, buildCommitInclusionItems, effectiveCommitAllSetting, loadLogAsync, projectScopePath, refreshIgnoredEntriesAsync, refreshWorktreeItemsAsync, repoPath, syncCommitInclusionState]);
+  }, [active, buildCommitInclusionItems, effectiveCommitAllSetting, invokeLoadLogAsync, projectScopePath, refreshIgnoredEntriesAsync, refreshScope, refreshWorktreeItemsAsync, repoPath, syncCommitInclusionState]);
 
+  // 同一项目跨渲染保留控制器；切换项目时新建队列，避免新仓库等待旧仓库的慢请求。
+  const invokeRefreshAllTaskAsync = useLatestAsyncRunner(runRefreshAllTaskAsync);
   const refreshAllController = useMemo(() => createCommitRefreshController<{ keepLog?: boolean; debounceMs?: number }>(
     async (options) => {
       const debounceMs = Math.max(0, Math.floor(Number(options?.debounceMs) || 0));
       if (debounceMs > 0) await new Promise<void>((resolve) => {
         window.setTimeout(resolve, debounceMs);
       });
-      await runRefreshAllTaskAsync({ keepLog: options?.keepLog });
+      if (refreshScopeRef.current !== refreshScope) return;
+      await invokeRefreshAllTaskAsync({ keepLog: options?.keepLog });
     },
     (running, pending) => ({
       keepLog: (running?.keepLog !== false) && (pending?.keepLog !== false),
       debounceMs: Math.max(Number(running?.debounceMs) || 0, Number(pending?.debounceMs) || 0),
     }),
-  ), [runRefreshAllTaskAsync]);
+  ), [invokeRefreshAllTaskAsync, refreshScope]);
 
   /**
    * 执行通用刷新（状态/日志/分支/搁置/worktree），并通过串行控制器保证最多一个运行中 + 一个排队中。
@@ -6914,6 +6944,7 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
     resetView?: boolean;
     afterRefresh?: () => Promise<void> | void;
   }): Promise<void> => {
+    if (refreshScopeRef.current !== refreshScope) return;
     const currentCommitTreeViewState = commitTreeViewStateRef.current;
     pendingCommitTreeStateRef.current = createCommitTreeStateSnapshot({
       selectedRowKeys: currentCommitTreeViewState.selectedRowKeys,
@@ -6927,8 +6958,9 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
       debounceMs: options?.debounceMs,
     });
     await refreshAllController.awaitNotBusy();
+    if (refreshScopeRef.current !== refreshScope) return;
     if (options?.afterRefresh) await options.afterRefresh();
-  }, [refreshAllController]);
+  }, [refreshAllController, refreshScope]);
 
   /**
    * 按 repoRoot 批量执行 stage/unstage；stage 侧额外支持 intent-to-add 变体，供 Add Without Content 复用。
@@ -14523,8 +14555,8 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
     if (!active || !repoRoot) return;
     const reloadKey = `${repoRoot}\n${JSON.stringify(activeLogFilters)}`;
     if (lastLogReloadKeyRef.current === reloadKey) return;
-    lastLogReloadKeyRef.current = reloadKey;
     const id = window.setTimeout(() => {
+      if (lastLogReloadKeyRef.current === reloadKey) return;
       void loadLogAsync(repoRoot, 0, true);
     }, 260);
     return () => window.clearTimeout(id);
@@ -15863,44 +15895,48 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
                 void applyIgnoreTargetAsync(target);
               }}
             />
-            <ConflictMergeDialog
-              open={!!conflictMergeDialogState}
-              loading={conflictMergeDialogState?.loading === true}
-              saving={conflictMergeDialogState?.saving === true}
-              snapshot={conflictMergeDialogState?.snapshot || null}
-              onOpenChange={(open) => {
-                if (!open) closeConflictMergeDialog();
-              }}
-              onRefresh={() => {
-                const pathText = String(conflictMergeDialogState?.relativePath || "").trim();
-                if (!pathText) return;
-                const scopeRepoRoot = repoRoot
-                  ? resolveConflictResolverScopeKey(repoRoot, String(conflictMergeDialogState?.repoRoot || "").trim()) || undefined
-                  : undefined;
-                void openConflictMergeDialogAsync(pathText, {
-                  reverse: conflictMergeDialogState?.reverse === true,
-                  scopeRepoRoot,
-                });
-              }}
-              onResolve={(resultText) => {
-                void resolveConflictMergeAsync(resultText);
-              }}
-              onResolveWithSource={(source) => {
-                void resolveConflictMergeWithSourceAsync(source);
-              }}
-              onOpenInIde={() => {
-                const targetPath = String(conflictMergeDialogState?.relativePath || "").trim();
-                const targetRepoRoot = String(conflictMergeDialogState?.repoRoot || "").trim();
-                if (!targetPath || !targetRepoRoot) return;
-                void openSourceInIdeAsync(targetPath, targetRepoRoot);
-              }}
-              onOpenInSystem={() => {
-                const targetPath = String(conflictMergeDialogState?.relativePath || "").trim();
-                const targetRepoRoot = String(conflictMergeDialogState?.repoRoot || "").trim();
-                if (!targetPath || !targetRepoRoot) return;
-                void openRepoPathInSystemAsync(targetPath, targetRepoRoot);
-              }}
-            />
+            {conflictMergeDialogState ? (
+              <React.Suspense fallback={null}>
+                <ConflictMergeDialog
+                  open={!!conflictMergeDialogState}
+                  loading={conflictMergeDialogState?.loading === true}
+                  saving={conflictMergeDialogState?.saving === true}
+                  snapshot={conflictMergeDialogState?.snapshot || null}
+                  onOpenChange={(open) => {
+                    if (!open) closeConflictMergeDialog();
+                  }}
+                  onRefresh={() => {
+                    const pathText = String(conflictMergeDialogState?.relativePath || "").trim();
+                    if (!pathText) return;
+                    const scopeRepoRoot = repoRoot
+                      ? resolveConflictResolverScopeKey(repoRoot, String(conflictMergeDialogState?.repoRoot || "").trim()) || undefined
+                      : undefined;
+                    void openConflictMergeDialogAsync(pathText, {
+                      reverse: conflictMergeDialogState?.reverse === true,
+                      scopeRepoRoot,
+                    });
+                  }}
+                  onResolve={(resultText) => {
+                    void resolveConflictMergeAsync(resultText);
+                  }}
+                  onResolveWithSource={(source) => {
+                    void resolveConflictMergeWithSourceAsync(source);
+                  }}
+                  onOpenInIde={() => {
+                    const targetPath = String(conflictMergeDialogState?.relativePath || "").trim();
+                    const targetRepoRoot = String(conflictMergeDialogState?.repoRoot || "").trim();
+                    if (!targetPath || !targetRepoRoot) return;
+                    void openSourceInIdeAsync(targetPath, targetRepoRoot);
+                  }}
+                  onOpenInSystem={() => {
+                    const targetPath = String(conflictMergeDialogState?.relativePath || "").trim();
+                    const targetRepoRoot = String(conflictMergeDialogState?.repoRoot || "").trim();
+                    if (!targetPath || !targetRepoRoot) return;
+                    void openRepoPathInSystemAsync(targetPath, targetRepoRoot);
+                  }}
+                />
+              </React.Suspense>
+            ) : null}
             <div className={GIT_PANEL_FOOTER_CLASS}>
               <Input
                 ref={commitMessageInputRef}
@@ -17826,35 +17862,41 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
           </div>
         ) : null}
         <div className="min-h-0 flex-1">
-          <React.Suspense fallback={<div className="h-full w-full p-4 text-xs text-[var(--cf-text-secondary)]">{gt("workbench.misc.diff.loading", "正在加载 Diff 组件...")}</div>}>
-            <MonacoGitDiff
-              diff={diff}
-              sideBySide={diffMode === "side"}
-              ignoreWhitespace={ignoreWhitespace}
-              collapseUnchanged={collapseUnchanged}
-              modifiedEditable={diff?.mode === "working"}
-              lineDecorations={partialCommitVisible ? diffPartialCommitLineDecorations : null}
-              partialCommitControls={partialCommitVisible ? diffPartialCommitControls : null}
-              onPartialCommitBlockToggle={partialCommitVisible ? toggleDiffPartialLineGroupSelection : undefined}
-              onPartialCommitLineToggle={partialCommitVisible ? toggleDiffPartialSingleLineSelection : undefined}
-              onModifiedContentChange={(content) => {
-                if (!diff || diff.mode !== "working") return;
-                scheduleWriteWorkingFile(diff.path, content);
-              }}
-              onSelectionChange={setDiffEditorSelection}
-              activeLine={diffActiveLine}
-              onChangedLines={setChangedDiffLineIndexes}
-              onOpenInIde={canOpenExternalDiffTarget(diff) ? () => {
-                void openDiffExternalTargetAsync("ide");
-              } : undefined}
-              onOpenInSystem={canOpenExternalDiffTarget(diff) ? () => {
-                void openDiffExternalTargetAsync("system");
-              } : undefined}
-              onExportPatch={diff && canExportPatchFromDiffMode(diff.mode) ? () => {
-                void exportPatchAsync();
-              } : undefined}
-            />
-          </React.Suspense>
+          {diff ? (
+            <React.Suspense fallback={<div className="h-full w-full p-4 text-xs text-[var(--cf-text-secondary)]">{gt("workbench.misc.diff.loading", "正在加载 Diff 组件...")}</div>}>
+              <MonacoGitDiff
+                diff={diff}
+                sideBySide={diffMode === "side"}
+                ignoreWhitespace={ignoreWhitespace}
+                collapseUnchanged={collapseUnchanged}
+                modifiedEditable={diff?.mode === "working"}
+                lineDecorations={partialCommitVisible ? diffPartialCommitLineDecorations : null}
+                partialCommitControls={partialCommitVisible ? diffPartialCommitControls : null}
+                onPartialCommitBlockToggle={partialCommitVisible ? toggleDiffPartialLineGroupSelection : undefined}
+                onPartialCommitLineToggle={partialCommitVisible ? toggleDiffPartialSingleLineSelection : undefined}
+                onModifiedContentChange={(content) => {
+                  if (!diff || diff.mode !== "working") return;
+                  scheduleWriteWorkingFile(diff.path, content);
+                }}
+                onSelectionChange={setDiffEditorSelection}
+                activeLine={diffActiveLine}
+                onChangedLines={setChangedDiffLineIndexes}
+                onOpenInIde={canOpenExternalDiffTarget(diff) ? () => {
+                  void openDiffExternalTargetAsync("ide");
+                } : undefined}
+                onOpenInSystem={canOpenExternalDiffTarget(diff) ? () => {
+                  void openDiffExternalTargetAsync("system");
+                } : undefined}
+                onExportPatch={diff && canExportPatchFromDiffMode(diff.mode) ? () => {
+                  void exportPatchAsync();
+                } : undefined}
+              />
+            </React.Suspense>
+          ) : (
+            <div className="cf-git-diff-placeholder h-full w-full p-6 text-sm text-[var(--cf-text-secondary)]">
+              {gt("diffViewer.empty", "请选择变更文件以查看差异。")}
+            </div>
+          )}
         </div>
       </div>
     );
@@ -19915,29 +19957,31 @@ export default function GitWorkbench(props: GitWorkbenchProps): JSX.Element {
               </div>
             ) : (
               <div className="min-h-0 flex-1">
-                <ConflictMergeThreeWayEditor
-                  language="plaintext"
-                  saving={true}
-                  busy={false}
-                  collapseUnchanged={false}
-                  leftPane={{
-                    label: gt("workbench.stageThreeWay.head", "HEAD"),
-                    text: stageThreeWayDialogState.headText,
-                    renderable: stageThreeWayDialogState.headRenderable,
-                    fallbackText: stageThreeWayDialogState.headFallbackText,
-                  }}
-                  rightPane={{
-                    label: gt("workbench.stageThreeWay.workingTree", "Working Tree"),
-                    text: stageThreeWayDialogState.workingText,
-                    renderable: stageThreeWayDialogState.workingRenderable,
-                    fallbackText: stageThreeWayDialogState.workingFallbackText,
-                  }}
-                  resultLabel={gt("workbench.stageThreeWay.index", "Index")}
-                  resultText={stageThreeWayDialogState.indexText}
-                  blocks={[]}
-                  selectedBlock={null}
-                  onResultTextChange={() => {}}
-                />
+                <React.Suspense fallback={<Loader2 className="m-auto h-4 w-4 animate-spin" />}>
+                  <ConflictMergeThreeWayEditor
+                    language="plaintext"
+                    saving={true}
+                    busy={false}
+                    collapseUnchanged={false}
+                    leftPane={{
+                      label: gt("workbench.stageThreeWay.head", "HEAD"),
+                      text: stageThreeWayDialogState.headText,
+                      renderable: stageThreeWayDialogState.headRenderable,
+                      fallbackText: stageThreeWayDialogState.headFallbackText,
+                    }}
+                    rightPane={{
+                      label: gt("workbench.stageThreeWay.workingTree", "Working Tree"),
+                      text: stageThreeWayDialogState.workingText,
+                      renderable: stageThreeWayDialogState.workingRenderable,
+                      fallbackText: stageThreeWayDialogState.workingFallbackText,
+                    }}
+                    resultLabel={gt("workbench.stageThreeWay.index", "Index")}
+                    resultText={stageThreeWayDialogState.indexText}
+                    blocks={[]}
+                    selectedBlock={null}
+                    onResultTextChange={() => {}}
+                  />
+                </React.Suspense>
               </div>
             )}
           </div>
