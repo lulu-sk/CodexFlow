@@ -404,7 +404,7 @@ export function resolveCodexErrorReplayDecision({
     classification.matchedText,
   );
   // 最终错误之后仍有 Working/Reconnecting，说明当前画面尚未停在这个错误上。
-  if (classification.phase === "final" && classification.explicitFinal && activeRuntimeAfterError)
+  if (classification.phase === "final" && activeRuntimeAfterError)
     return "suppress";
   const normalizedTurn = Math.max(0, Math.floor(Number(currentTurn) || 0));
   const errorAfterCurrentTurnBoundary = isCodexTextAfterCurrentTurnBoundary(
@@ -427,8 +427,8 @@ export function resolveCodexErrorReplayDecision({
   if (handled && handled.turn === normalizedTurn && (phaseAlreadyHandled || handledFinalError))
     return "suppress";
 
-  // PTY 字节只用于发现候选；所有明确最终错误都必须由稳定后的 xterm 屏幕确认归属。
-  if (classification.phase === "final" && classification.explicitFinal) {
+  // 局部重画可能只含错误正文；无论标记是否随帧到达，最终失败都必须由稳定屏幕确认。
+  if (classification.phase === "final") {
     if ((historyReplay || resizeReplayActive) && !errorAfterCurrentTurnBoundary)
       return "await-idle";
     if (idleScreenConfirmed) return "allow";

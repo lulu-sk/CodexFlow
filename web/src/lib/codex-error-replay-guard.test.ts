@@ -777,6 +777,28 @@ describe("codex-error-replay-guard（Codex 历史错误重放防护）", () => {
       expect(classification?.explicitFinal).toBe(true);
       detectedKinds.add(classification!.kind);
 
+      const partialClassification = classifyCodexCliErrorText(errorText)!;
+      expect(resolveCodexErrorReplayDecision({
+        historyReplay: false,
+        synchronized: true,
+        resizeReplayActive: false,
+        handledErrors: [],
+        classification: partialClassification,
+        currentTurn: 1,
+        currentPrompt: "continue",
+        outputText: errorText,
+      })).toBe("await-idle");
+      expect(resolveCodexErrorReplayDecision({
+        historyReplay: false,
+        resizeReplayActive: false,
+        handledErrors: [],
+        classification: partialClassification,
+        currentTurn: 1,
+        currentPrompt: "continue",
+        outputText: `${errorText}\nWorking (1s • esc to interrupt)`,
+        currentRuntimePhase: "working",
+      })).toBe("suppress");
+
       const historicalScreen = [
         `${finalMarker} ${errorText}`,
         "",
@@ -859,7 +881,7 @@ describe("codex-error-replay-guard（Codex 历史错误重放防护）", () => {
     }));
   });
 
-  it("非历史重放期间同类错误可在新的 continue 代次再次上报", () => {
+  it("非历史重放期间同类错误经屏幕确认后可在新的 continue 代次再次上报", () => {
     const handledErrors = rememberCodexErrorReplay([], FINAL_ERROR, 0);
 
     expect(shouldSuppressCodexErrorReplay({
@@ -870,6 +892,7 @@ describe("codex-error-replay-guard（Codex 历史错误重放防护）", () => {
       currentTurn: 1,
       currentPrompt: "continue",
       outputText: `■ ${ERROR_TEXT}`,
+      idleScreenConfirmed: true,
     })).toBe(false);
   });
 
@@ -908,6 +931,7 @@ describe("codex-error-replay-guard（Codex 历史错误重放防护）", () => {
       currentTurn: 1,
       currentPrompt: "continue",
       outputText: ["› continue", "■ " + ERROR_TEXT].join("\n"),
+      idleScreenConfirmed: true,
     })).toBe(false);
   });
 
@@ -980,7 +1004,7 @@ describe("codex-error-replay-guard（Codex 历史错误重放防护）", () => {
       currentPrompt: "",
       outputText: `■ ${ERROR_TEXT}`,
     })).toBe(true);
-    expect(shouldSuppressCodexErrorReplay({
+    expect(resolveCodexErrorReplayDecision({
       historyReplay: false,
       resizeReplayActive: true,
       handledErrors,
@@ -988,7 +1012,17 @@ describe("codex-error-replay-guard（Codex 历史错误重放防护）", () => {
       currentTurn: 0,
       currentPrompt: "",
       outputText: `■ ${differentError.matchedText}`,
-    })).toBe(false);
+    })).toBe("await-idle");
+    expect(resolveCodexErrorReplayDecision({
+      historyReplay: false,
+      resizeReplayActive: true,
+      handledErrors,
+      classification: differentError,
+      currentTurn: 0,
+      currentPrompt: "continue",
+      outputText: `› continue\n■ ${differentError.matchedText}\n› Ask Codex to do anything`,
+      idleScreenConfirmed: true,
+    })).toBe("allow");
   });
 
   it("错误历史达到上限后只保留最近记录和最新代次", () => {

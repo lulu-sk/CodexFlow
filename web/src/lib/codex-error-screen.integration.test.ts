@@ -54,6 +54,67 @@ function readScreen(terminal: Terminal): string {
 }
 
 describe("Codex 错误字节流与真实终端屏幕联测", () => {
+  it.each([80, 128])("%i 列中旧 502 正文的局部重画必须等待屏幕确认，新一轮真实 502 仍可处理", async (cols) => {
+    const terminal = createTerminal(cols);
+    const error = "unexpected status 502 Bad Gateway: Upstream service temporarily unavailable, url: https://example.test/v1/responses, request id: sample-request";
+    await writeTerminal(terminal, [
+      `■ ${error}`,
+      "",
+      "› 继续",
+      "",
+      "• 继续。保持现有运行和成果，稍后检查。",
+      BACKGROUND_FOOTER,
+      "",
+      "› Ask Codex to do anything",
+    ].join("\r\n"));
+    expect(classifyCodexFinalErrorOnIdleScreen(readScreen(terminal), "继续")).toBeNull();
+
+    // 只重画错误正文，方块和新轮次输入仍留在屏幕上；字节顺序不等于屏幕顺序。
+    for (const synchronized of [false, true]) {
+      const redraw = `\x1b[1;3H\x1b[31m${error}\x1b[0m`;
+      const text = synchronized ? `\x1b[?2026h${redraw}\x1b[?2026l` : redraw;
+      const frames = consumeCodexPtyOutputChunk(createCodexPtyOutputFrameState(), text).frames;
+      await writeTerminal(terminal, text);
+      const candidate = classifyCodexCliErrorText(frames[0].text)!;
+      expect(candidate).toMatchObject({ kind: "badGateway", phase: "final" });
+      expect(candidate.explicitFinal).not.toBe(true);
+      const check = {
+        historyReplay: frames[0].historyReplay,
+        synchronized: frames[0].synchronized,
+        resizeReplayActive: false,
+        currentTurn: 1,
+        currentPrompt: "继续",
+        handledErrors: undefined,
+        classification: candidate,
+        outputText: frames[0].text,
+      };
+      expect(resolveCodexErrorReplayDecision(check)).toBe("await-idle");
+      expect(classifyCodexFinalErrorOnIdleScreen(readScreen(terminal), "继续")).toBeNull();
+    }
+
+    // 同样的无标记候选对应真正的新错误时，完整屏幕仍应放行一次。
+    await writeTerminal(terminal, `\x1b[2J\x1b[H› 继续\r\n■ ${error}\r\n${BACKGROUND_FOOTER}\r\n\r\n› Ask Codex to do anything`);
+    const screen = readScreen(terminal);
+    const confirmed = classifyCodexFinalErrorOnIdleScreen(screen, "继续")!;
+    expect(confirmed).toMatchObject({ kind: "badGateway", explicitFinal: true });
+    const confirmedCheck = {
+      historyReplay: false,
+      synchronized: true,
+      resizeReplayActive: false,
+      currentTurn: 1,
+      currentPrompt: "继续",
+      handledErrors: undefined,
+      classification: confirmed,
+      outputText: screen,
+      idleScreenConfirmed: true,
+    };
+    expect(resolveCodexErrorReplayDecision(confirmedCheck)).toBe("allow");
+    expect(resolveCodexErrorReplayDecision({
+      ...confirmedCheck,
+      handledErrors: rememberCodexErrorReplay([], confirmed, 1),
+    })).toBe("suppress");
+  });
+
   it.each([80, 128])("%i 列终端中紧排容量警告与后台终端栏均可确认，重绘不重复处理", async (cols) => {
     const terminal = createTerminal(cols);
     const error = `Error running remote compact task: ${CAPACITY_MESSAGE}`;
