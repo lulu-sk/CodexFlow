@@ -22,6 +22,7 @@ import { parseGeminiSessionFile, deriveGeminiProjectHashCandidatesFromPath } fro
 import { parseAntigravitySessionFile } from "./agentSessions/antigravity/parser";
 import { parseGrokSessionFile } from "./agentSessions/grok/parser";
 import { filterCodexHistoryPreviewText } from "./agentSessions/shared/preview";
+import { openCodexHistoryStream, selectCurrentHistorySummaries } from "./codexRollout";
 import {
   extractCodexSessionRelationship,
   type CodexSessionRecord,
@@ -41,7 +42,7 @@ export type FileSig = {
   auxMtimeMs?: number;
   auxSize?: number;
 };
-type IndexSummary = HistorySummary & { providerId: ProviderId; dirKey: string; projectHash?: string };
+type IndexSummary = HistorySummary & { providerId: ProviderId; dirKey: string; projectHash?: string; codexHistoryResolved?: boolean };
 type Details = {
   providerId: ProviderId;
   id: string;
@@ -801,7 +802,10 @@ async function upsertIndexedFile(
   const k = canonicalKey(before.filePath);
   const sig = before.signature;
   const prev = ix.files[k]?.sig;
-  if (isSameFileSignature(prev, sig)) return "unchanged";
+  const previousSummary = ix.files[k]?.summary;
+  const needsHistoryBase = providerId === "codex" && !!previousSummary?.codexRelationship?.historyBaseThreadId
+    && !previousSummary.codexHistoryResolved;
+  if (isSameFileSignature(prev, sig) && !needsHistoryBase) return "unchanged";
 
   if (providerId === "grok") {
     const visibility = await getGrokSessionVisibility(before.filePath);
@@ -845,11 +849,15 @@ async function upsertIndexedFile(
   try { getDetailsCache().delete(k); } catch {}
   det.files[k] = { sig, details: slimDetails };
   ix.files[k] = { sig, summary: buildIndexSummary(providerId, before.filePath, details) };
+  if (providerId === "codex") ix.files[k].summary.codexHistoryResolved = true;
   ix.savedAt = Date.now();
   det.savedAt = Date.now();
   saveIndex(ix);
   saveDetails(det);
-  safeWindowSend(getIndexerWindow(), "history:index:update", { item: ix.files[k].summary }, { tag: "indexer", suppressMs: 1000 });
+  const item = providerId === "codex"
+    ? getIndexedSummaries().find((summary) => summary.providerId === "codex" && summary.id === details.id)
+    : ix.files[k].summary;
+  if (item) safeWindowSend(getIndexerWindow(), "history:index:update", { item }, { tag: "indexer", suppressMs: 1000 });
   return "updated";
 }
 
@@ -1130,6 +1138,7 @@ async function parseCodexDetails(fp: string, stat: fs.Stats, opts?: { summaryOnl
   let codexRelationship: CodexSessionRelationship | undefined;
   let prefixAcc: string = ""; // 前缀累积用于提取 <cwd> 或 CWD 行
   const chunk = 256 * 1024;
+  const historyStream = await openCodexHistoryStream(fp, chunk);
   // 说明类去重：会话头 instructions 与用户 <user_instructions> 可能重复
   const __seenInstructions = new Set<string>();
   const __normInstr = (s: string) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
@@ -1164,7 +1173,7 @@ async function parseCodexDetails(fp: string, stat: fs.Stats, opts?: { summaryOnl
   };
   return await new Promise<Details>((resolve) => {
     try {
-      const rs = fs.createReadStream(fp, { encoding: "utf8", highWaterMark: chunk });
+      const rs = historyStream;
       let lineIndex = 0;
       let buf = "";
 
@@ -1475,7 +1484,7 @@ export function getIndexedSummaries(): IndexSummary[] {
   const cached = g.__indexer.indexedSummaryCache as IndexedSummaryCache | undefined;
   if (cached?.index === ix) return cached.summaries;
 
-  const summaries = Object.values(ix.files)
+  const summaries = selectCurrentHistorySummaries(Object.values(ix.files)
     .map((x) => {
       const summary = x.summary as any;
       const providerId: ProviderId = (summary && typeof summary.providerId === "string")
@@ -1484,7 +1493,7 @@ export function getIndexedSummaries(): IndexSummary[] {
       const shell = summary.runtimeShell && summary.runtimeShell !== 'unknown' ? summary.runtimeShell : detectRuntimeShell(summary.filePath);
       return { ...summary, providerId, runtimeShell: shell } as IndexSummary;
     })
-    .sort((a, b) => b.date - a.date);
+  );
   g.__indexer.indexedSummaryCache = { index: ix, summaries } as IndexedSummaryCache;
   return summaries;
 }

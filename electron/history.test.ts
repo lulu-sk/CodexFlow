@@ -20,7 +20,7 @@ vi.mock("./wsl", async (importOriginal) => {
   };
 });
 
-import { listHistory, readHistoryFile } from "./history";
+import { listHistory, listHistorySplit, readHistoryFile } from "./history";
 
 const tempDirs: string[] = [];
 
@@ -111,6 +111,41 @@ afterEach(async () => {
 });
 
 describe("electron/history.listHistory", () => {
+  it("回退多版本在扫描和缓存分页中只保留当前版本，详情恢复继承记录", async () => {
+    const thread = "11111111-1111-4111-8111-111111111111";
+    const revision = "22222222-2222-4222-8222-222222222222";
+    const prefixRecords = [
+      { ordinal: 0, type: "session_meta", payload: { id: thread, cwd: "/workspace/project" } },
+      { ordinal: 1, type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "保留的请求" }] } },
+      { ordinal: 2, type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "保留的回答" }] } },
+    ];
+    const obsolete = { ordinal: 3, type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "已撤回的请求" }] } };
+    const initialPath = await createHistoryListJsonlFile([...prefixRecords, obsolete]);
+    const originalPath = path.join(path.dirname(initialPath), `rollout-2026-04-29T03-35-01-${thread}.jsonl`);
+    await fsp.rename(initialPath, originalPath);
+    const revisionPath = path.join(path.dirname(originalPath), `rollout-2026-04-29T03-36-01-${thread}_${revision}.jsonl`);
+    const prefix = prefixRecords.map((record) => JSON.stringify(record)).join("\n") + "\n";
+    await fsp.writeFile(revisionPath, [
+      JSON.stringify({ ordinal: 3, type: "session_meta", payload: { id: thread, cwd: "/workspace/project", history_base: { thread_id: thread, end_ordinal_exclusive: 3, end_byte_offset: Buffer.byteLength(prefix) } } }),
+      JSON.stringify({ ...obsolete, payload: { ...obsolete.payload, content: [{ type: "input_text", text: "修改后的请求" }] } }),
+    ].join("\n") + "\n", "utf8");
+    await fsp.utimes(originalPath, new Date(), new Date(Date.now() + 10_000));
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const sessions = await listHistory({}, { limit: 1 });
+      expect(sessions.map((item) => item.filePath)).toEqual([revisionPath]);
+      expect(await listHistory({}, { offset: 1, limit: 1 })).toEqual([]);
+    }
+    expect((await listHistorySplit({})).all.map((item) => item.filePath)).toEqual([revisionPath]);
+    const details = await readHistoryFile(revisionPath, { maxLines: 0 });
+    expect(details.id).toBe(thread);
+    const texts = collectTexts(details.messages);
+    expect(texts).toContain("保留的请求");
+    expect(texts).toContain("保留的回答");
+    expect(texts).toContain("修改后的请求");
+    expect(texts).not.toContain("已撤回的请求");
+  });
+
   it("列表摘要会携带现代 Codex 子代理关系", async () => {
     await createHistoryListJsonlFile([
       {

@@ -18,6 +18,7 @@ import { deriveGeminiProjectHashCandidatesFromPath, extractGeminiProjectHashFrom
 import { filterCodexHistoryPreviewText } from './agentSessions/shared/preview';
 import { pathMatchesDirKeyScope, tidyPathCandidate } from "./agentSessions/shared/path";
 import { extractCodexSessionRelationship, type CodexSessionRelationship } from "./codexSessionRelations";
+import { openCodexHistoryStream, selectCurrentHistorySummaries } from "./codexRollout";
 
 /**
  * History 读取模块: 支持逐行解析 JSONL, list/read 接口
@@ -913,9 +914,9 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
     if (hit && sigsEqual(hit.sigs || [], sigsNow)) {
       logDebug(`cache-hit entries=${hit.list.length}`);
       // Prune entries that no longer exist to avoid stale "ghost" sessions
-      const pruned = hit.list.filter((e) => {
+      const pruned = selectCurrentHistorySummaries(hit.list.filter((e) => {
         try { return fs.existsSync(e.filePath); } catch { return false; }
-      });
+      }));
       if (pruned.length !== hit.list.length) {
         try {
           const updated: HistoryListCacheEntry = { ...hit, list: pruned, savedAt: Date.now() };
@@ -1323,7 +1324,7 @@ export async function listHistory(project: { wslPath?: string; winPath?: string 
     }
     }
   }
-  const finalList = summaries.sort((a, b) => b.date - a.date);
+  const finalList = selectCurrentHistorySummaries(summaries);
   const off = opts?.offset || 0;
   const end = opts?.limit ? off + (opts!.limit) : undefined;
   const sliced = finalList.slice(off, end);
@@ -1575,7 +1576,7 @@ export async function listHistorySplit(project: { wslPath?: string; winPath?: st
     }
   }
   const sortDesc = (a: HistorySummary, b: HistorySummary) => b.date - a.date;
-  return { belongs: belongs.slice().sort(sortDesc), all: all.sort(sortDesc) };
+  return { belongs: belongs.slice().sort(sortDesc), all: selectCurrentHistorySummaries(all) };
 }
 
 const MAX_CODEX_APPLY_PATCH_HISTORY_BYTES = 16 * 1024 * 1024;
@@ -2780,11 +2781,12 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
   }
 
   // 改为统一使用 UNC/Windows 直读，不再通过 wsl 调用读取
+  const historyStream = stat ? await openCodexHistoryStream(filePath, chunk) : null;
 
   return new Promise((resolve, reject) => {
     try {
-      if (!fs.existsSync(filePath)) return resolve({ id, title, date, messages, skippedLines: 0 });
-      const rs = fs.createReadStream(filePath, { encoding: 'utf8', highWaterMark: chunk });
+      if (!historyStream) return resolve({ id, title, date, messages, skippedLines: 0 });
+      const rs = historyStream;
       const rl = readline.createInterface({ input: rs, crlfDelay: Infinity });
       let lineIndex = 0;
       let done = false;

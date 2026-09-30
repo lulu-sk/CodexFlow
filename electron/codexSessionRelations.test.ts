@@ -8,6 +8,7 @@ import path from "node:path";
 import {
   buildCodexRelationDeletePlan,
   extractCodexSessionRelationship,
+  findCodexExternalReferenceIds,
   selectCodexRelationDeleteItems,
   verifyCodexRelationPlanFiles,
   type CodexSessionRecord,
@@ -26,6 +27,25 @@ function createRecord(
 }
 
 describe("electron/codexSessionRelations", () => {
+  it("删除当前会话包含全部回退版本，并识别对物理前缀的外部引用", () => {
+    const thread = "11111111-1111-4111-8111-111111111111";
+    const revision = "22222222-2222-4222-8222-222222222222";
+    const originalPath = `/fixture/sessions/rollout-2026-01-02T01-00-00-${thread}.jsonl`;
+    const revisionPath = `/fixture/sessions/rollout-2026-01-02T02-00-00-${thread}_${revision}.jsonl`;
+    const records = [
+      createRecord(thread, originalPath, { kind: "main" }, 90),
+      createRecord(thread, revisionPath, { kind: "main", historyBaseThreadId: thread }, 20),
+      createRecord("fork", "/fixture/sessions/fork.jsonl", { kind: "main", historyBaseThreadId: revision }, 30),
+      createRecord("child", "/fixture/sessions/child.jsonl", { kind: "subagent", parentThreadId: thread }, 40),
+    ];
+    const plan = buildCodexRelationDeletePlan(revisionPath, records, new Map());
+    const current = selectCodexRelationDeleteItems(plan, "current");
+    expect(current.map((item) => item.filePath)).toEqual([originalPath, revisionPath]);
+    expect(plan.externalReferenceIds).toEqual(["fork"]);
+    expect(findCodexExternalReferenceIds(current, records)).toEqual(["fork"]);
+    expect(buildCodexRelationDeletePlan(originalPath, records, new Map()).supported).toBe(true);
+  });
+
   it("能从现代 thread_spawn 元数据提取父会话、昵称、角色和深度", () => {
     const relationship = extractCodexSessionRelationship({
       timestamp: "2026-01-24T00:00:00.000Z",
