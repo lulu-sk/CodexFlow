@@ -6,6 +6,7 @@ import { promises as fsp } from "node:fs";
 import path from "node:path";
 import { getSessionsRootsFastAsync } from "./wsl";
 import { isHistoryDeleteStagingName } from "./historyFastDelete";
+import { isNewerCodexRollout, parseCodexRolloutFileName } from "./codexRollout";
 
 export type CodexSessionKind = "main" | "subagent" | "unknown";
 
@@ -226,13 +227,15 @@ export async function collectCodexSessionRecords(): Promise<CodexSessionRecord[]
 }
 
 /**
- * 以会话编号去重，优先选择最近更新的文件，避免归档迁移短暂重叠时重复删除。
+ * 为关系树选择每个会话的当前版本；实际删除仍需保留所有物理记录。
  */
 function uniqueRecordsById(records: readonly CodexSessionRecord[]): CodexSessionRecord[] {
   const byId = new Map<string, CodexSessionRecord>();
   for (const record of records) {
     const previous = byId.get(record.id);
-    if (!previous || record.mtimeMs >= previous.mtimeMs) byId.set(record.id, record);
+    if (!previous || isNewerCodexRollout(
+      { ...record, date: record.mtimeMs }, { ...previous, date: previous.mtimeMs },
+    )) byId.set(record.id, record);
   }
   return Array.from(byId.values());
 }
@@ -247,12 +250,18 @@ export function buildCodexRelationDeletePlan(
 ): CodexRelationDeletePlan {
   const uniqueRecords = uniqueRecordsById(records);
   const targetKey = pathKey(targetFilePath);
-  const target = uniqueRecords.find((record) => pathKey(record.filePath) === targetKey);
+  const target = records.find((record) => pathKey(record.filePath) === targetKey);
   if (!target) return { supported: false, items: [], externalReferenceIds: [], reason: "not_found" };
   if (target.relationship.kind === "unknown")
     return { supported: false, items: [], externalReferenceIds: [], reason: "unrecognized" };
 
   const byId = new Map(uniqueRecords.map((record) => [record.id, record]));
+  const filesById = new Map<string, Map<string, CodexSessionRecord>>();
+  for (const record of records) {
+    const files = filesById.get(record.id) || new Map<string, CodexSessionRecord>();
+    files.set(pathKey(record.filePath), record);
+    filesById.set(record.id, files);
+  }
   let root = target;
   const visitedParents = new Set<string>([target.id]);
   while (root.relationship.parentThreadId) {
@@ -279,24 +288,13 @@ export function buildCodexRelationDeletePlan(
     const current = queue.shift();
     if (!current || queued.has(current.record.id)) continue;
     queued.add(current.record.id);
-    items.push({
-      ...current.record,
-      title: titleById.get(current.record.id) || current.record.id,
-      depth: current.depth,
-    });
+    for (const record of filesById.get(current.record.id)?.values() || []) {
+      items.push({ ...record, title: titleById.get(record.id) || record.id, depth: current.depth });
+    }
     for (const child of children.get(current.record.id) || []) queue.push({ record: child, depth: current.depth + 1 });
   }
 
-  const plannedIds = new Set(items.map((item) => item.id));
-  const externalReferenceIds = uniqueRecords
-    .filter((record) => !plannedIds.has(record.id))
-    .filter((record) => {
-      const relation = record.relationship;
-      return !!relation.forkedFromId && plannedIds.has(relation.forkedFromId)
-        || !!relation.historyBaseThreadId && plannedIds.has(relation.historyBaseThreadId);
-    })
-    .map((record) => record.id)
-    .sort();
+  const externalReferenceIds = findCodexExternalReferenceIds(items, records);
   const versionSource = [
     ...items.map((item) => `${item.id}|${pathKey(item.filePath)}|${item.mtimeMs}|${item.size}`),
     ...externalReferenceIds.map((id) => `external|${id}`),
@@ -309,6 +307,24 @@ export function buildCodexRelationDeletePlan(
     items,
     externalReferenceIds,
   };
+}
+
+/** 找出删除范围之外的历史依赖，同时区分逻辑会话编号与物理记录编号。 */
+export function findCodexExternalReferenceIds(
+  items: readonly CodexSessionRecord[],
+  records: readonly CodexSessionRecord[],
+): string[] {
+  const plannedIds = new Set(items.map((item) => item.id));
+  const plannedRolloutIds = new Set(items.map((item) => parseCodexRolloutFileName(item.filePath)?.rolloutId || item.id));
+  return Array.from(new Set(records
+    .filter((record) => !plannedIds.has(record.id))
+    .filter((record) => {
+      const relation = record.relationship;
+      return !!relation.forkedFromId && plannedIds.has(relation.forkedFromId)
+        || !!relation.historyBaseThreadId && plannedRolloutIds.has(relation.historyBaseThreadId);
+    })
+    .map((record) => record.id)))
+    .sort();
 }
 
 /**

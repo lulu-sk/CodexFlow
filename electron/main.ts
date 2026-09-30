@@ -16,6 +16,7 @@ import projects, { IMPLEMENTATION_NAME as PROJECTS_IMPL } from "./projects/index
 import history, { purgeHistoryCacheIfOutdated } from "./history";
 import { revertHistoryTurnDiff } from "./history/revertTurnDiff";
 import { ensureHistoryIndexLoaded, startHistoryIndexer, getIndexedSummaries, getIndexedCodexSessionRecords, getIndexedDetails, getLastIndexerRoots, getLastIndexerRootsByProvider, stopHistoryIndexer, cacheDetails, getCachedDetails, removeFromIndexMany, isCodexRelationIndexReady } from "./indexer";
+import { selectCurrentHistorySummaries } from "./codexRollout";
 import { pauseHistoryReconciler } from "./historyReconciler";
 import { findIndexedHistoryRecoveryTarget, requestHistoryListRecovery, type HistoryListRecoveryHint } from "./historyListRecovery";
 import { getSessionsRootsFastAsync } from "./wsl";
@@ -39,6 +40,7 @@ import { createHistoryScopeMatcher } from "./historyScope";
 import {
   buildCodexRelationDeletePlan,
   collectCodexSessionRecords,
+  findCodexExternalReferenceIds,
   selectCodexRelationDeleteItems,
   verifyCodexRelationPlanFiles,
   type CodexSessionRelationship,
@@ -4668,16 +4670,10 @@ ipcMain.handle('history.list', async (_e, args: {
       });
     };
     /**
-     * 中文说明：按文件路径去重并保持时间倒序，避免多来源回退结果重复。
+     * 按 Codex 会话编号和其它提供方的文件路径合并回退结果，分页前移除旧版本。
      */
     const dedupeSortHistorySummaries = (items: FallbackHistorySummary[]): FallbackHistorySummary[] => {
-      const merged = new Map<string, FallbackHistorySummary>();
-      for (const item of items) {
-        const key = String(item.filePath || item.id);
-        const prev = merged.get(key);
-        if (!prev || prev.date < item.date) merged.set(key, item);
-      }
-      return Array.from(merged.values()).sort((a, b) => b.date - a.date);
+      return selectCurrentHistorySummaries(items);
     };
     /**
      * 中文说明：为 fallback 扫描按 mtime 预排序文件，便于命中足够条目后提前停止解析。
@@ -5445,13 +5441,18 @@ ipcMain.handle('history.deleteCodexRelation', async (_e, args: { filePath?: stri
     await ensureHistoryIndexLoaded();
     const records = getIndexedCodexSessionRecords();
     const plan = buildCodexRelationDeletePlan(filePath, records, buildCodexRelationTitleMap());
-    // 仅删除当前会话时，用户确认的是明确文件；刚结束对话造成的签名变化不应阻止删除。
-    // 整棵关系树仍必须通过下方的版本、引用与文件签名复核。
+    // 单文件会话沿用现有删除体验；多版本会话需要完整删除并检查前缀依赖。
     if (mode === "current") {
-      const currentItem = plan.supported
-        ? selectCodexRelationDeleteItems(plan, "current")[0]
-        : undefined;
-      const result = await trashHistoryFilesMany([currentItem?.filePath || filePath]);
+      const currentItems = plan.supported ? selectCodexRelationDeleteItems(plan, "current") : [];
+      if (currentItems.length > 1) {
+        if (plan.version !== version || !isCodexRelationIndexReady())
+          return { ok: false, code: "stale_plan", plan };
+        if (findCodexExternalReferenceIds(currentItems, records).length > 0)
+          return { ok: false, code: "external_references", plan };
+        if (!(await verifyCodexRelationPlanFiles(plan, currentItems)).ok)
+          return { ok: false, code: "stale_plan", plan };
+      }
+      const result = await trashHistoryFilesMany(currentItems.length > 0 ? currentItems.map((item) => item.filePath) : [filePath]);
       return { ...result, plan };
     }
     if (!plan.supported || !plan.version) return { ok: false, code: "unsupported_plan", plan };

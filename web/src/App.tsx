@@ -154,6 +154,7 @@ import { VirtualizedList, type VirtualizedListHandle } from "@/features/history/
 import { buildHistoryUserInputMessageKeys } from "@/features/history/user-input-anchors";
 import { applyHistoryFindHighlights, clearHistoryFindHighlights, setActiveHistoryFindMatch } from "@/features/history/find/history-find";
 import { buildHistorySessionTree, flattenHistorySessionDescendants, historySessionTreeSome } from "@/features/history/session-tree";
+import { historySessionKey } from "@/features/history/session-key";
 import { toWSLForInsert } from "@/lib/wsl";
 import { probeWinPathKind, type WinPathProbeResult } from "@/lib/dragDrop";
 import { extractGeminiProjectHashFromPath, deriveGeminiProjectHashCandidatesFromPath } from "@/lib/gemini-hash";
@@ -6144,10 +6145,10 @@ export default function CodexFlowManagerUI() {
    */
   const mergeHistorySessions = useCallback((base: HistorySession[], incoming: HistorySession[]): HistorySession[] => {
     const mp = new Map<string, HistorySession>();
-    for (const it of base) mp.set(String(it.filePath || it.id), it);
-    let changed = false;
+    for (const it of base) mp.set(historySessionKey(it), it);
+    let changed = mp.size !== base.length;
     for (const it of incoming) {
-      const key = String(it.filePath || it.id);
+      const key = historySessionKey(it);
       const previous = mp.get(key);
       if (!previous) {
         mp.set(key, it);
@@ -6178,7 +6179,7 @@ export default function CodexFlowManagerUI() {
       mp.set(key, {
         ...previous,
         ...it,
-        messages: it.messages.length > 0 ? it.messages : previous.messages,
+        messages: it.messages.length > 0 || it.filePath !== previous.filePath ? it.messages : previous.messages,
       });
       changed = true;
     }
@@ -9382,15 +9383,16 @@ export default function CodexFlowManagerUI() {
       if (!Array.isArray(items) || items.length === 0) return;
       setHistorySessions((cur) => {
         const mp = new Map<string, HistorySession>();
-        for (const s of cur) mp.set(String(s.filePath || s.id), s);
-        let changed = false;
+        for (const s of cur) mp.set(historySessionKey(s), s);
+        let changed = mp.size !== cur.length;
         for (const it of items) {
           if (!belongsToSelected(it)) continue;
           const s = mapHistoryListItemToSession(it);
-          const key = s.filePath || s.id;
+          const key = historySessionKey(s);
           const prev = mp.get(key);
           if (
             !prev ||
+            prev.filePath !== s.filePath ||
             prev.providerId !== s.providerId ||
             prev.date !== s.date ||
             prev.title !== s.title ||

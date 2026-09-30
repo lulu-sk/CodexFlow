@@ -129,6 +129,33 @@ async function startAndRefreshCodexFile(filePath: string): Promise<void> {
 }
 
 describe("electron/indexer Codex preview", () => {
+  it("索引和增量刷新选择当前回退版本，摘要使用继承的首条用户输入", async () => {
+    const thread = "11111111-1111-4111-8111-111111111111";
+    const revision = "22222222-2222-4222-8222-222222222222";
+    const prefixRecords = [
+      { ordinal: 0, type: "session_meta", payload: { id: thread, cwd: "/workspace/project", source: "cli" } },
+      { ordinal: 1, type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "继承的首条请求" }] } },
+    ];
+    const initialPath = await createCodexSessionFile(prefixRecords);
+    const originalPath = path.join(path.dirname(initialPath), `rollout-2026-04-29T03-35-01-${thread}.jsonl`);
+    await fsp.rename(initialPath, originalPath);
+    const revisionPath = path.join(path.dirname(originalPath), `rollout-2026-04-29T03-36-01-${thread}_${revision}.jsonl`);
+    const prefix = prefixRecords.map((record) => JSON.stringify(record)).join("\n") + "\n";
+    await fsp.writeFile(revisionPath, JSON.stringify({
+      ordinal: 2, type: "session_meta",
+      payload: { id: thread, cwd: "/workspace/project", source: "cli", history_base: { thread_id: thread, end_ordinal_exclusive: 2, end_byte_offset: Buffer.byteLength(prefix) } },
+    }) + "\n", "utf8");
+    await startAndRefreshCodexFile(revisionPath);
+    expect(getIndexedSummaries().filter((item) => item.id === thread)).toMatchObject([
+      { filePath: revisionPath, preview: "继承的首条请求" },
+    ]);
+    await fsp.appendFile(originalPath, JSON.stringify({ type: "event_msg", payload: { type: "thread_name_updated", thread_name: "旧版本的更新" } }) + "\n", "utf8");
+    requestHistoryFastRefresh({ providerId: "codex", filePath: originalPath });
+    await vi.waitFor(() => expect(isCodexRelationIndexReady()).toBe(true), { timeout: 2_000 });
+    expect(getIndexedSummaries().filter((item) => item.id === thread).map((item) => item.filePath)).toEqual([revisionPath]);
+    expect(getIndexedCodexSessionRecords().filter((item) => item.id === thread)).toHaveLength(2);
+  });
+
   it("仅在首轮索引完成后允许使用关系快照", async () => {
     expect(isCodexRelationIndexReady()).toBe(false);
 
