@@ -333,6 +333,19 @@ describe("codex-error-replay-guard（Codex 历史错误重放防护）", () => {
     expect(harness.notifications).toHaveLength(1);
   });
 
+  it("标题折行和 HTML 正文不会挡住稳定屏幕上的最终错误", () => {
+    const screen = [
+      "› continue",
+      "■ unexpected",
+      "status 502 Bad Gateway: <html><h1>400 Bad Request</h1></html>",
+      "",
+      "› Ask Codex to do anything",
+    ].join("\n");
+    expect(classifyCodexFinalErrorOnIdleScreen(screen, "continue")).toMatchObject({
+      kind: "badGateway", phase: "final", explicitFinal: true,
+    });
+  });
+
   it("自动 continue 后从较早位置重放到尾部不会重复上报旧错误", () => {
     const harness = createDetectionHarness();
     consumeDetectionSequence(harness, [
@@ -512,6 +525,52 @@ describe("codex-error-replay-guard（Codex 历史错误重放防护）", () => {
     expect(hasCodexComposerPrompt(reconnectingScreen)).toBe(true);
     expect(classifyCodexFinalErrorOnIdleScreen(workingScreen, "continue")).toBeNull();
     expect(classifyCodexFinalErrorOnIdleScreen(reconnectingScreen, "continue")).toBeNull();
+  });
+
+  it.each([
+    "\n• 已恢复并完成检查。",
+    "\n› 新任务",
+    "\nWorking (1s  esc to interrupt)",
+    "\nReconnecting... 2/5 (1s  esc to interrupt)",
+    "\n⚠ MCP startup incomplete",
+    "\n■ 普通说明：错误已恢复。",
+    "\n─ Worked for 1s ─",
+    "\n\n已恢复并完成检查。",
+  ])("多行错误之后的新事件仍不能确认为失败：%s", (laterText) => {
+    const screen = `› continue\n■ unexpected status 502 Bad Gateway: upstream unavailable, request\nid: sample-request${laterText}\n\n› Ask Codex to do anything`;
+    expect(classifyCodexFinalErrorOnIdleScreen(screen, "continue")).toBeNull();
+  });
+
+  it("多行错误在新轮次之前或处于历史浏览时不能确认失败", () => {
+    const error = "■ unexpected status 502 Bad Gateway: upstream unavailable, request\nid: sample-request";
+    expect(classifyCodexFinalErrorOnIdleScreen(
+      `${error}\n\n› continue\n\n› Ask Codex to do anything`, "continue",
+    )).toBeNull();
+    expect(classifyCodexFinalErrorOnIdleScreen(
+      `› continue\n${error}\n\n› Ask Codex to do anything\nenter/esc latest`, "continue",
+    )).toBeNull();
+  });
+
+  it.each(GENERIC_FINAL_ERROR_TEXTS)("各类最终错误的连续详情行与后台栏均可确认：%s", (error) => {
+    const expectedKind = classifyCodexCliErrorText(error)!.kind;
+    const screen = [
+      "› continue",
+      `■ ${error}, request`,
+      "id: sample-request",
+      "  1 background terminal running · /ps to view · /stop to close",
+      "",
+      "› Ask Codex to do anything",
+    ].join("\n");
+    expect(classifyCodexFinalErrorOnIdleScreen(screen, "continue")).toMatchObject({
+      kind: expectedKind, phase: "final", explicitFinal: true,
+    });
+  });
+
+  it("折行拆开错误名称时仍从完整错误块识别 502", () => {
+    const screen = "› continue\n■ unexpected status 502 Bad\nGateway: upstream unavailable, request\nid: sample-request\n\n› Ask Codex to do anything";
+    expect(classifyCodexFinalErrorOnIdleScreen(screen, "continue")).toMatchObject({
+      kind: "badGateway", phase: "final", explicitFinal: true,
+    });
   });
 
   it("额度重置提示与 MCP 启动状态同屏时不能冒充最终错误", () => {

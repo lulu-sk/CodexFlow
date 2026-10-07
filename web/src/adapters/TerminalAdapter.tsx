@@ -7,6 +7,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import i18n from "@/i18n/setup";
 import { copyTextCrossPlatform, readTextCrossPlatform } from "@/lib/clipboard";
+import { isCodexOwnedTranscriptScreen } from "@/lib/codex-tui-screen";
 import {
   DEFAULT_TERMINAL_FONT_FAMILY,
   getTerminalTheme,
@@ -2320,6 +2321,20 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
     }
   };
 
+  /** 新版 Codex 自管历史时，通过原有输入链路跳转端点，不改变终端输入焦点。 */
+  const scrollCodexTranscriptBoundary = (action: "top" | "bottom"): boolean => {
+    if (!term || options?.getProviderId?.() !== "codex") return false;
+    const snapshot = readCursorTextSnapshot({ linesBefore: term.rows, linesAfter: term.rows });
+    const cursorLine = snapshot ? readLogicalLineAt(term.buffer.active, snapshot.cursorAbsY)?.text || "" : "";
+    if (!snapshot || !isCodexOwnedTranscriptScreen(
+      snapshot.bufferType, term.modes.mouseTrackingMode, snapshot.text, cursorLine,
+    )) return false;
+    viewportReadAnchor = null;
+    markViewportUserScroll(`codex.${action}`);
+    term.input(action === "top" ? "\x1b[1;5H" : "\x1b[1;5F", true);
+    return true;
+  };
+
   /**
    * 中文说明：将 DOM 滚动条位置与 xterm 缓冲区视图对齐。
    *
@@ -3353,12 +3368,14 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
     },
     scrollToTop: () => {
       try {
+        if (scrollCodexTranscriptBoundary("top")) return;
         viewportReadAnchor = null;
         markViewportUserScroll("api.top");
         term?.scrollToTop();
       } catch {}
     },
     scrollToBottom: (options?: TerminalScrollToBottomOptions) => {
+      if (scrollCodexTranscriptBoundary("bottom")) return;
       if (options?.followOutput) {
         startViewportBottomFollow(options);
         return;

@@ -75,6 +75,13 @@ describe("TerminalManager（长文本发送策略）", () => {
     };
   };
 
+  it("终端不存在时应明确返回未安排发送", async () => {
+    const hostPty = createHostPtyStub();
+    const tm = new TerminalManager(() => undefined, hostPty as any, {});
+    expect(await tm.sendTextAndEnter("tab-missing", "continue", { providerId: "codex" })).toBe(false);
+    expect(hostPty.write).not.toHaveBeenCalled();
+  });
+
   it("Gemini 会等待 PTY 回显静默后，再延迟发送 Enter", async () => {
     vi.useFakeTimers();
     const adapter: any = createAdapterStub();

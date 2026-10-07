@@ -73,6 +73,8 @@ import TerminalManager from "@/lib/TerminalManager";
 import { isGeminiLikeProvider, isGeminiProvider, writeBracketedPaste, writeBracketedPasteAndEnter } from "@/lib/terminal-send";
 import { oscBufferDefaults, trimOscBuffer } from "@/lib/oscNotificationBuffer";
 import { collectRetainedAgentTurnTabIds, pruneAgentTurnHistory, pruneAgentTurnTimers } from "@/lib/agent-turn-timer";
+import { resolveAgentCompletionTab } from "@/lib/agent-completion-routing";
+import { createCodexTurnCompletionProbe, inspectCodexTurnCompletion, observeCodexTurnCompletionBoundary, type CodexTurnCompletionProbe } from "@/lib/codex-turn-completion";
 import {
   classifyCodexCliErrorText,
   detectCodexCliRuntimeStatusText,
@@ -98,6 +100,7 @@ import {
   type CodexPtyOutputFrame,
   type CodexPtyOutputFrameState,
 } from "@/lib/codex-error-replay-guard";
+import { isCodexHistoryBrowsingScreen } from "@/lib/codex-tui-screen";
 import {
   DEFAULT_CODEX_ERROR_HANDLING_PREFS,
   isCodexAutoContinueErrorKind,
@@ -525,6 +528,8 @@ type CodexErrorScanState = {
   pendingFinalErrorHistoryReplay?: boolean;
   pendingFinalErrorSynchronized?: boolean;
   pendingFinalErrorOutputText?: string;
+  pendingFinalScreenCheck?: { errorKey: string; turn: number };
+  pendingRuntimeScreenCheck?: { turn: number };
 };
 
 /**
@@ -552,7 +557,6 @@ const CODEX_TURN_OUTPUT_MAX_LENGTH = 128 * 1024;
 const CODEX_FINAL_ERROR_SCREEN_CONFIRM_RETRY_MS = 40;
 const CODEX_FINAL_ERROR_SCREEN_CONFIRM_MAX_CHECKS = 250;
 const CODEX_FINAL_ERROR_SCREEN_CONFIRM_STABLE_CHECKS = 3;
-const CODEX_RECONNECT_DETAIL_GRACE_MS = 10_000;
 const CODEX_RECONNECT_AFTER_ERROR_GRACE_MS = 10_000;
 const HISTORY_BINDING_RETRY_DELAYS_MS = [200, 500, 1_000, 2_000, 4_000] as const;
 const HISTORY_BINDING_WAIT_TTL_MS = 5 * 60_000;
@@ -582,6 +586,7 @@ function clearCodexPendingFinalErrorState(state: CodexErrorScanState): CodexErro
     pendingFinalErrorHistoryReplay: undefined,
     pendingFinalErrorSynchronized: undefined,
     pendingFinalErrorOutputText: undefined,
+    pendingFinalScreenCheck: undefined,
   };
 }
 
@@ -593,7 +598,7 @@ function buildCodexCliErrorKey(classification: CodexCliErrorClassification): str
   return `${classification.phase}:${classification.kind}${attempt}:${classification.replayFingerprint || classification.matchedText}`;
 }
 
-type CompletionEventSource = "osc" | "external" | "manual" | "unknown";
+type CompletionEventSource = "osc" | "external" | "screen" | "manual" | "unknown";
 type GeminiExternalEditorShortcut = "ctrlG" | "ctrlX" | "auto";
 type CompletionPreviewNormalizeOptions = {
   previewEscapedWhitespace?: boolean;
@@ -1955,6 +1960,7 @@ export default function CodexFlowManagerUI() {
   });
   const agentTurnCtxMenuRef = useRef<HTMLDivElement | null>(null);
   const completionSnapshotRef = useRef<Record<string, CompletionSnapshot>>({});
+  const codexTurnCompletionProbeByTabRef = useRef<Record<string, { startedAt: number; probe: CodexTurnCompletionProbe }>>({});
   const pendingOscCompletionTimersRef = useRef<Record<string, number>>({});
   const pendingOscCompletionPreviewRef = useRef<Record<string, string>>({});
   const resumeCompletionGuardByTabRef = useRef<Record<string, number>>({});
@@ -3123,6 +3129,13 @@ export default function CodexFlowManagerUI() {
       ? String(options?.prompt || "").trim().slice(0, 4_096)
       : state.currentPrompt;
     const clearFrameState = !!options?.clearFrameState;
+    if (advanceTurn && resolveTabProviderId(id).toLowerCase() === "codex") {
+      const snapshot = tm.readTerminalCursorTextSnapshot(id, { linesBefore: 256, linesAfter: 8, maxChars: CODEX_TURN_OUTPUT_MAX_LENGTH });
+      codexTurnCompletionProbeByTabRef.current[id] = {
+        startedAt: agentTurnTimerByTabRef.current[id]?.startedAt || Date.now(),
+        probe: createCodexTurnCompletionProbe(snapshot?.text || ""),
+      };
+    }
     codexErrorScanByTabRef.current[id] = {
       ...createCodexErrorScanState({
         outputFrameState: clearFrameState ? undefined : state.outputFrameState,
@@ -3135,7 +3148,7 @@ export default function CodexFlowManagerUI() {
         outputFrameState: state.outputFrameState || createCodexPtyOutputFrameState(),
       }),
     };
-  }, [notifyLog]);
+  }, [notifyLog, resolveTabProviderId, tm]);
 
   /**
    * 静默预取指定标签的历史绑定；预取失败留给用户主动打开时再显示错误。
@@ -3162,6 +3175,10 @@ export default function CodexFlowManagerUI() {
       startedAt: now,
       elapsedMs: 0,
     };
+    if (resolveTabProviderId(id).toLowerCase() === "codex") {
+      const snapshot = tm.readTerminalCursorTextSnapshot(id, { linesBefore: 256, linesAfter: 8, maxChars: CODEX_TURN_OUTPUT_MAX_LENGTH });
+      codexTurnCompletionProbeByTabRef.current[id] = { startedAt: now, probe: createCodexTurnCompletionProbe(snapshot?.text || "") };
+    }
     agentTurnTimerByTabRef.current = {
       ...agentTurnTimerByTabRef.current,
       [id]: nextState,
@@ -3179,7 +3196,7 @@ export default function CodexFlowManagerUI() {
     scheduleHistoryBindingRetry(id);
     prefetchHistoryForTabSilently(id, true);
     notifyLog(`agentTimer.start tab=${id}`);
-  }, [notifyLog, prefetchHistoryForTabSilently, resetCodexErrorScanForTab, scheduleHistoryBindingRetry]);
+  }, [notifyLog, prefetchHistoryForTabSilently, resetCodexErrorScanForTab, resolveTabProviderId, scheduleHistoryBindingRetry, tm]);
 
   /**
    * 在收到代理完成通知时结束计时，并固化本轮总耗时，同时记入历史。
@@ -3734,6 +3751,44 @@ export default function CodexFlowManagerUI() {
     return () => { window.clearInterval(timer); };
   }, [hasWorkingAgentTimer]);
 
+  /** 在本轮完成画面稳定后补齐计时和通知，沿用统一完成事件处理。 */
+  function checkCodexTurnCompletions(): void {
+    for (const id of Object.keys(codexTurnCompletionProbeByTabRef.current)) {
+      if (agentTurnTimerByTabRef.current[id]?.status !== "working")
+        delete codexTurnCompletionProbeByTabRef.current[id];
+    }
+    if (!hasWorkingAgentTimer) return;
+    for (const [id, timer] of Object.entries(agentTurnTimerByTabRef.current)) {
+      if (timer.status !== "working" || resolveTabProviderId(id).toLowerCase() !== "codex") continue;
+      const snapshot = tm.readTerminalCursorTextSnapshot(id, { linesBefore: 256, linesAfter: 8, maxChars: CODEX_TURN_OUTPUT_MAX_LENGTH });
+      const screenText = snapshot?.text || "";
+      const existing = codexTurnCompletionProbeByTabRef.current[id];
+      if (!existing || existing.startedAt !== timer.startedAt) {
+        codexTurnCompletionProbeByTabRef.current[id] = { startedAt: timer.startedAt, probe: createCodexTurnCompletionProbe(screenText) };
+        continue;
+      }
+      const scan = codexErrorScanByTabRef.current[id];
+      const result = inspectCodexTurnCompletion(
+        existing.probe,
+        screenText,
+        scan?.currentPrompt || "",
+        tm.hasPendingTerminalOutput(id) || tm.isPtyResizeReplayWindowActive(id)
+          || !!scan?.outputFrameState?.synchronized || !!scan?.outputFrameState?.historyReplay,
+      );
+      existing.probe = result.probe;
+      if (!result.completed) continue;
+      // 兜底先结束计时后，迟到的新通知不能被上一轮相同文案误去重。
+      if ((completionSnapshotRef.current[id]?.ts ?? Infinity) < timer.startedAt)
+        delete completionSnapshotRef.current[id];
+      handleAgentCompletion(id, "", "screen");
+      notifyLog(`agentTimer.done tab=${id} source=stable-codex-completion-screen`);
+    }
+  }
+
+  useEffect(() => {
+    checkCodexTurnCompletions();
+  }, [agentTurnClockTick, hasWorkingAgentTimer, handleAgentCompletion, notifyLog, resolveTabProviderId, tm]);
+
   /**
    * 监听键盘 ESC；当焦点位于终端区域且该标签页计时中时，执行取消计时。
    */
@@ -4069,6 +4124,9 @@ export default function CodexFlowManagerUI() {
     const delta = Date.now() - last.ts;
     if (delta < 0) return false;
     if (hasWorkingTimer) return false;
+    // 屏幕兜底已提醒过本轮；迟到的 hook/OSC 即使带完整正文也不重复触发副作用。
+    if (last.source === "screen" && delta <= COMPLETION_CROSS_SOURCE_WINDOW_MS
+      && (source === "external" || source === "osc")) return true;
     if (
       delta <= windowMs &&
       isEquivalentCompletionPreview(String(last.preview || ""), String(preview || ""))
@@ -4136,34 +4194,13 @@ export default function CodexFlowManagerUI() {
   /**
    * 根据外部通知负载推断对应的 tabId。
    */
-  function resolveExternalTabId(payload: { tabId?: string; providerId?: string; envLabel?: string }): string | null {
-    const direct = String(payload?.tabId || "").trim();
-    if (direct) {
-      let existsInCurrentWindow = false;
-      for (const list of Object.values(tabsByProjectRef.current)) {
-        if ((list || []).some((tab) => String(tab?.id || "").trim() === direct)) {
-          existsInCurrentWindow = true;
-          break;
-        }
-      }
-      if (existsInCurrentWindow) return direct;
-      return null;
-    }
-    const providerId = String(payload?.providerId || "codex").trim().toLowerCase();
-    const envLabel = String(payload?.envLabel || "").trim();
-    const matched: ConsoleTab[] = [];
-    for (const list of Object.values(tabsByProjectRef.current)) {
-      for (const tab of list || []) {
-        if (String(tab?.providerId || "").trim().toLowerCase() !== providerId) continue;
-        if (envLabel && String(tab.name || "").trim() === envLabel) matched.push(tab);
-        else if (!envLabel) matched.push(tab);
-      }
-    }
-    if (envLabel) {
-      if (matched.length === 1) return matched[0].id;
-      return null;
-    }
-    return matched.length === 1 ? matched[0].id : null;
+  function resolveExternalTabId(payload: ExternalAgentCompletePayload): string | null {
+    return resolveAgentCompletionTab(payload, {
+      tabsByProject: tabsByProjectRef.current,
+      projects: projectsRef.current,
+      sessionIdByTab: agentSessionIdByTabRef.current,
+      timersByTab: agentTurnTimerByTabRef.current,
+    });
   }
 
   function showCompletionNotification(tabId: string, preview: string) {
@@ -4511,7 +4548,7 @@ export default function CodexFlowManagerUI() {
   }
 
   /**
-   * 判断当前识别结果应放行、压制，还是等待当前终端屏幕确认。
+   * 判断当前识别结果应放行、压制、等待屏幕确认，还是只更新重连进度。
    */
   function resolveCodexReplayDecision(
     tabId: string,
@@ -4589,21 +4626,48 @@ export default function CodexFlowManagerUI() {
   function scheduleCodexPendingFinalIdleScreenCheck(tabId: string, errorKey: string): void {
     const id = String(tabId || "").trim();
     if (!id || !errorKey) return;
+    const initialState = codexErrorScanByTabRef.current[id];
+    if (!initialState || initialState.pendingFinalErrorKey !== errorKey) return;
+    if (initialState.pendingFinalScreenCheck?.errorKey === errorKey
+      && initialState.pendingFinalScreenCheck.turn === initialState.turn) return;
+    const check = { errorKey, turn: initialState.turn };
+    const ptyId = ptyByTabRef.current[id];
+    const startedAt = agentTurnTimerByTabRef.current[id]?.startedAt;
+    codexErrorScanByTabRef.current[id] = { ...initialState, pendingFinalScreenCheck: check };
 
+    /** 检查结束后释放标记，让后续输出能重新发起确认。 */
+    const finish = () => {
+      const state = codexErrorScanByTabRef.current[id];
+      if (state?.pendingFinalScreenCheck === check)
+        codexErrorScanByTabRef.current[id] = { ...state, pendingFinalScreenCheck: undefined };
+    };
+
+    /** 只在检查期限内继续等待，期限耗尽不能替代稳定屏幕证据。 */
+    const retry = (attempt: number, screenText = "", stableChecks = 0) => {
+      if (attempt < CODEX_FINAL_ERROR_SCREEN_CONFIRM_MAX_CHECKS)
+        window.setTimeout(() => inspect(attempt + 1, screenText, stableChecks), CODEX_FINAL_ERROR_SCREEN_CONFIRM_RETRY_MS);
+      else
+        finish();
+    };
+
+    /** 回调只能处理同一终端、同一轮次和同一候选，识别关闭后立即失效。 */
     const inspect = (attempt: number, stableScreenText = "", stableScreenChecks = 0) => {
       const state = codexErrorScanByTabRef.current[id];
       if (
         !state ||
+        state.pendingFinalScreenCheck !== check || state.turn !== check.turn ||
+        ptyByTabRef.current[id] !== ptyId ||
+        agentTurnTimerByTabRef.current[id]?.startedAt !== startedAt ||
+        agentTurnTimerByTabRef.current[id]?.status !== "working" ||
+        !codexErrorHandlingPrefsRef.current.detectionEnabled ||
+        resolveTabProviderId(id).toLowerCase() !== "codex" ||
         state.pendingFinalErrorKey !== errorKey ||
         state.pendingFinalError?.phase !== "final" ||
         typeof state.pendingFinalErrorTimerId === "number"
-      ) return;
+      ) { finish(); return; }
 
       if (tm.hasPendingTerminalOutput(id)) {
-        if (attempt < CODEX_FINAL_ERROR_SCREEN_CONFIRM_MAX_CHECKS)
-          window.setTimeout(() => inspect(attempt + 1), CODEX_FINAL_ERROR_SCREEN_CONFIRM_RETRY_MS);
-        else
-          notifyLog(`codexError.pendingFinal.screen.wait tab=${id} turn=${state.turn} kind=${state.pendingFinalError.kind} runtime=write-pending`);
+        retry(attempt);
         return;
       }
 
@@ -4617,24 +4681,17 @@ export default function CodexFlowManagerUI() {
       if (hasCodexComposerPrompt(screenText)) {
         const nextStableScreenChecks = screenText === stableScreenText ? stableScreenChecks + 1 : 1;
         if (
-          nextStableScreenChecks < CODEX_FINAL_ERROR_SCREEN_CONFIRM_STABLE_CHECKS &&
-          attempt < CODEX_FINAL_ERROR_SCREEN_CONFIRM_MAX_CHECKS
+          nextStableScreenChecks < CODEX_FINAL_ERROR_SCREEN_CONFIRM_STABLE_CHECKS
         ) {
-          window.setTimeout(
-            () => inspect(attempt + 1, screenText, nextStableScreenChecks),
-            CODEX_FINAL_ERROR_SCREEN_CONFIRM_RETRY_MS,
-          );
+          retry(attempt, screenText, nextStableScreenChecks);
+          return;
+        }
+        if (isCodexHistoryBrowsingScreen(screenText)) {
+          settleCodexIdleWithoutFinalError(id, "history-browsing-screen", errorKey);
           return;
         }
         if (!shouldTrustCodexIdleScreenForCurrentTurn(id, state, screenText)) {
-          if (attempt < CODEX_FINAL_ERROR_SCREEN_CONFIRM_MAX_CHECKS) {
-            window.setTimeout(
-              () => inspect(attempt + 1, screenText, nextStableScreenChecks),
-              CODEX_FINAL_ERROR_SCREEN_CONFIRM_RETRY_MS,
-            );
-          } else {
-            notifyLog(`codexError.pendingFinal.screen.wait tab=${id} turn=${state.turn} kind=${state.pendingFinalError.kind} screen=composer trusted=0`);
-          }
+          retry(attempt, screenText, nextStableScreenChecks);
           return;
         }
         if (classifyCodexFinalErrorOnIdleScreen(screenText, state.currentPrompt || "")) {
@@ -4657,10 +4714,7 @@ export default function CodexFlowManagerUI() {
         }
       }
 
-      if (attempt < CODEX_FINAL_ERROR_SCREEN_CONFIRM_MAX_CHECKS)
-          window.setTimeout(() => inspect(attempt + 1), CODEX_FINAL_ERROR_SCREEN_CONFIRM_RETRY_MS);
-      else
-        notifyLog(`codexError.pendingFinal.screen.wait tab=${id} turn=${state.turn} kind=${state.pendingFinalError.kind} runtime=unknown`);
+      retry(attempt);
     };
 
     window.setTimeout(() => inspect(0), CODEX_FINAL_ERROR_SCREEN_CONFIRM_RETRY_MS);
@@ -4684,6 +4738,63 @@ export default function CodexFlowManagerUI() {
       outputText,
       statusText,
     });
+  }
+
+  /** 同步帧可能只重画状态栏；等待真实屏幕稳定并确认轮次后再更新运行状态。 */
+  function scheduleCodexRuntimeScreenCheck(tabId: string): void {
+    const initialState = codexErrorScanByTabRef.current[tabId];
+    if (!initialState || initialState.pendingRuntimeScreenCheck?.turn === initialState.turn) return;
+    const check = { turn: initialState.turn };
+    const ptyId = ptyByTabRef.current[tabId];
+    const startedAt = agentTurnTimerByTabRef.current[tabId]?.startedAt;
+    codexErrorScanByTabRef.current[tabId] = { ...initialState, pendingRuntimeScreenCheck: check };
+
+    /** 结束检查时仅释放自己的标记，不能改变新轮次的检查。 */
+    const finish = () => {
+      const state = codexErrorScanByTabRef.current[tabId];
+      if (state?.pendingRuntimeScreenCheck === check)
+        codexErrorScanByTabRef.current[tabId] = { ...state, pendingRuntimeScreenCheck: undefined };
+    };
+
+    /** 写入完成且屏幕连续稳定后，复用现有报错链路处理完整画面。 */
+    const inspect = (attempt: number, lastScreenText = "", stableChecks = 0) => {
+      const state = codexErrorScanByTabRef.current[tabId];
+      const timer = agentTurnTimerByTabRef.current[tabId];
+      if (!state || state.pendingRuntimeScreenCheck !== check || state.turn !== check.turn
+        || !ptyId || ptyByTabRef.current[tabId] !== ptyId || timer?.startedAt !== startedAt
+        || (timer.status !== "working" && timer.status !== "failed")
+        || !codexErrorHandlingPrefsRef.current.detectionEnabled
+        || resolveTabProviderId(tabId).toLowerCase() !== "codex"
+        || tm.isPtyResizeReplayWindowActive(tabId)) { finish(); return; }
+      const screenText = tm.hasPendingTerminalOutput(tabId) ? "" : String(tm.readTerminalCursorTextSnapshot(tabId, {
+        linesBefore: 256, linesAfter: 4, maxChars: CODEX_TURN_OUTPUT_MAX_LENGTH,
+      })?.text || "");
+      const nextStableChecks = screenText && screenText === lastScreenText ? stableChecks + 1 : 1;
+      if (screenText && nextStableChecks >= CODEX_FINAL_ERROR_SCREEN_CONFIRM_STABLE_CHECKS) {
+        finish();
+        const runtime = detectCodexCliRuntimeStatusText(screenText);
+        if (isCodexHistoryBrowsingScreen(screenText)) return;
+        if (!runtime) {
+          if (hasCodexCurrentTurnBoundary(screenText, state.currentPrompt || "")
+            && classifyCodexFinalErrorOnIdleScreen(screenText, state.currentPrompt || ""))
+            processCodexPtyErrorFrame(ptyId, screenText, { text: screenText, synchronized: true, historyReplay: false });
+          return;
+        }
+        const trusted = shouldTrustCodexRuntimeStatusForCurrentTurn({
+          historyReplay: false, synchronized: true, resizeReplayActive: false,
+          currentPrompt: state.currentPrompt || "", outputText: screenText,
+          statusText: runtime.phase === "working" ? "Working" : "Reconnecting...",
+        });
+        if (trusted)
+          processCodexPtyErrorFrame(ptyId, screenText, { text: screenText, synchronized: true, historyReplay: false });
+        return;
+      }
+      if (attempt < CODEX_FINAL_ERROR_SCREEN_CONFIRM_MAX_CHECKS)
+        window.setTimeout(() => inspect(attempt + 1, screenText, nextStableChecks), CODEX_FINAL_ERROR_SCREEN_CONFIRM_RETRY_MS);
+      else
+        finish();
+    };
+    window.setTimeout(() => inspect(0), CODEX_FINAL_ERROR_SCREEN_CONFIRM_RETRY_MS);
   }
 
   /**
@@ -4766,6 +4877,7 @@ export default function CodexFlowManagerUI() {
   ): void {
     const id = String(tabId || "").trim();
     if (!id || !errorKey || !screenText) return;
+    if (!codexErrorHandlingPrefsRef.current.detectionEnabled) return;
     const state = codexErrorScanByTabRef.current[id];
     const pendingClassification = state?.pendingFinalError;
     const screenClassification = classifyCodexFinalErrorOnIdleScreen(
@@ -4823,13 +4935,18 @@ export default function CodexFlowManagerUI() {
   /**
    * 重连等待结束后转入稳定屏幕确认，超时本身不能证明当前轮次失败。
    */
-  function flushCodexPendingFinalError(tabId: string, errorKey: string, source: string) {
+  function flushCodexPendingFinalError(tabId: string, errorKey: string, source: string, expectedTurn?: number) {
     const id = String(tabId || "").trim();
     if (!id || !errorKey) return;
     const state = codexErrorScanByTabRef.current[id];
-    if (!state || state.pendingFinalErrorKey !== errorKey || !state.pendingFinalError) return;
+    if (!state || state.pendingFinalErrorKey !== errorKey || !state.pendingFinalError
+      || (expectedTurn !== undefined && state.turn !== expectedTurn)) return;
     if (typeof state.pendingFinalErrorTimerId === "number") {
       try { window.clearTimeout(state.pendingFinalErrorTimerId); } catch {}
+    }
+    if (!codexErrorHandlingPrefsRef.current.detectionEnabled) {
+      codexErrorScanByTabRef.current[id] = clearCodexPendingFinalErrorState(state);
+      return;
     }
     const timerState = agentTurnTimerByTabRef.current[id];
     if (!timerState || timerState.status !== "working") {
@@ -4859,8 +4976,6 @@ export default function CodexFlowManagerUI() {
   ) {
     if (!ptyId || typeof chunk !== "string" || chunk.length === 0) return;
     const prefs = codexErrorHandlingPrefsRef.current;
-    if (!prefs.detectionEnabled) return;
-
     const tabId = ptyToTabRef.current[ptyId];
     if (!tabId) return;
     const providerId = resolveTabProviderId(tabId).toLowerCase();
@@ -4871,7 +4986,7 @@ export default function CodexFlowManagerUI() {
     const cleanedChunk = stripAnsiForCodexErrorScan(chunk);
     if (!cleanedChunk) return;
     const previousState = codexErrorScanByTabRef.current[tabId] || createCodexErrorScanState();
-    const previous: CodexErrorScanState = {
+    let previous: CodexErrorScanState = {
       ...previousState,
       turnOutputText: appendCodexTurnOutput(previousState.turnOutputText, cleanedChunk),
       pendingFinalErrorOutputText: previousState.pendingFinalError
@@ -4879,6 +4994,16 @@ export default function CodexFlowManagerUI() {
         : previousState.pendingFinalErrorOutputText,
     };
     codexErrorScanByTabRef.current[tabId] = previous;
+    const completionProbe = codexTurnCompletionProbeByTabRef.current[tabId];
+    if (completionProbe && completionProbe.startedAt === timerState.startedAt) {
+      completionProbe.probe = observeCodexTurnCompletionBoundary(
+        completionProbe.probe,
+        previous.turnOutputText || "",
+        previous.currentPrompt || "",
+        frame.historyReplay || tm.isPtyResizeReplayWindowActive(tabId),
+      );
+    }
+    if (!prefs.detectionEnabled) return;
     const frameIsSnapshot = !!frame.synchronized;
     const replayOutputText = frameIsSnapshot
       ? cleanedChunk
@@ -4890,6 +5015,11 @@ export default function CodexFlowManagerUI() {
       : chunkRuntimeStatus?.phase === "reconnecting"
         ? shouldTrustCodexRuntimeStatus(tabId, frame, replayOutputText, "Reconnecting...")
         : true;
+    if (chunkRuntimeStatus && !runtimeStatusTrusted && frame.synchronized && !frame.historyReplay
+      && !tm.isPtyResizeReplayWindowActive(tabId)) {
+      scheduleCodexRuntimeScreenCheck(tabId);
+      previous = codexErrorScanByTabRef.current[tabId];
+    }
     if (timerState.status === "failed") {
       if (chunkRuntimeStatus?.phase === "working") {
         if (!runtimeStatusTrusted) return;
@@ -5048,6 +5178,7 @@ export default function CodexFlowManagerUI() {
           chunkRuntimeStatus.phase,
         );
         if (replayDecision !== "allow") {
+          if (replayDecision === "update-reconnect") markAgentTurnReconnecting(tabId, reconnectClassification);
           if (typeof previous.pendingFinalErrorTimerId === "number") {
             try { window.clearTimeout(previous.pendingFinalErrorTimerId); } catch {}
           }
@@ -5091,14 +5222,12 @@ export default function CodexFlowManagerUI() {
     const chunkClassification = classifyCodexCliErrorText(cleanedChunk);
     const bufferClassification = classifyCodexCliErrorText(nextBuffer);
     const classificationRuntimePhase = detectCodexCliRuntimeStatusText(classificationOutputText)?.phase;
-    const recentlySawReconnect = !!(
-      bufferClassification?.phase === "reconnecting" &&
-      latestScanState.lastReconnectStatusAt &&
-      now - latestScanState.lastReconnectStatusAt <= CODEX_RECONNECT_DETAIL_GRACE_MS
-    );
-    const classification = chunkClassification?.phase === "final" && !recentlySawReconnect
+    const detectedClassification = chunkClassification?.phase === "final"
       ? chunkClassification
       : bufferClassification;
+    const classification = detectedClassification?.phase === "reconnecting" && chunkRuntimeStatus?.phase === "reconnecting"
+      ? { ...detectedClassification, reconnectAttempt: chunkRuntimeStatus.reconnectAttempt, reconnectMaxAttempts: chunkRuntimeStatus.reconnectMaxAttempts }
+      : detectedClassification;
     if (!classification) {
       codexErrorScanByTabRef.current[tabId] = {
         ...latestScanState,
@@ -5116,7 +5245,9 @@ export default function CodexFlowManagerUI() {
       classificationOutputText,
       classificationRuntimePhase,
     );
-    if (replayDecision === "suppress") {
+    if (replayDecision === "suppress" || replayDecision === "update-reconnect") {
+      if (replayDecision === "update-reconnect" && runtimeStatusTrusted)
+        markAgentTurnReconnecting(tabId, classification);
       if (typeof previous.pendingFinalErrorTimerId === "number") {
         try { window.clearTimeout(previous.pendingFinalErrorTimerId); } catch {}
       }
@@ -5145,12 +5276,10 @@ export default function CodexFlowManagerUI() {
       }
       if (isNewCandidate && delayForReconnect) {
         pendingFinalErrorTimerId = window.setTimeout(() => {
-          flushCodexPendingFinalError(tabId, errorKey, "reconnect-grace-timeout");
+          flushCodexPendingFinalError(tabId, errorKey, "reconnect-grace-timeout", latestScanState.turn);
         }, CODEX_RECONNECT_AFTER_ERROR_GRACE_MS);
         notifyLog(`codexError.pendingFinal.schedule tab=${tabId} kind=${classification.kind} graceMs=${CODEX_RECONNECT_AFTER_ERROR_GRACE_MS}`);
       }
-      const shouldScheduleScreenCheck = isNewCandidate
-        || typeof previous.pendingFinalErrorTimerId === "number";
       codexErrorScanByTabRef.current[tabId] = {
         ...latestScanState,
         buffer: nextBuffer,
@@ -5161,6 +5290,7 @@ export default function CodexFlowManagerUI() {
           ? previous.pendingFinalErrorAt
           : now,
         pendingFinalErrorTimerId,
+        pendingFinalScreenCheck: isNewCandidate ? undefined : previous.pendingFinalScreenCheck,
         pendingFinalErrorHistoryReplay: previous.pendingFinalErrorKey === errorKey
           ? !!previous.pendingFinalErrorHistoryReplay || frame.historyReplay
           : frame.historyReplay,
@@ -5171,7 +5301,7 @@ export default function CodexFlowManagerUI() {
           ? previous.pendingFinalErrorOutputText || classificationOutputText
           : classificationOutputText,
       };
-      if (shouldScheduleScreenCheck && typeof pendingFinalErrorTimerId !== "number")
+      if (typeof pendingFinalErrorTimerId !== "number")
         scheduleCodexPendingFinalIdleScreenCheck(tabId, errorKey);
       return;
     }
@@ -7162,18 +7292,22 @@ export default function CodexFlowManagerUI() {
   /**
    * 执行已排队的 Codex 自动 continue，发送前再次校验标签页、设置与尝试次数。
    */
-  const sendCodexAutoContinue = useCallback(async (tabId: string, errorKey: string): Promise<void> => {
+  const sendCodexAutoContinue = useCallback(async (tabId: string, errorKey: string, expectedTurn?: number): Promise<void> => {
     const id = String(tabId || "").trim();
     if (!id) return;
     const state = codexErrorScanByTabRef.current[id];
-    if (!state || state.pendingErrorKey !== errorKey) return;
+    if (!state || state.pendingErrorKey !== errorKey || (expectedTurn !== undefined && state.turn !== expectedTurn)) return;
+    if (agentTurnTimerByTabRef.current[id]?.status !== "failed" || state.lastFinalErrorKey !== errorKey) {
+      clearCodexErrorAutoContinueTimer(id, "auto-continue-no-longer-failed");
+      return;
+    }
 
     const prefs = codexErrorHandlingPrefsRef.current;
     if (!prefs.detectionEnabled || !prefs.autoContinueEnabled) {
       resetCodexErrorScanForTab(id, "auto-continue-disabled");
       return;
     }
-    if (isCodexAutoContinueErrorKind(state.pendingErrorKind) && !prefs.autoContinueErrorKinds.includes(state.pendingErrorKind)) {
+    if (!isCodexAutoContinueErrorKind(state.pendingErrorKind) || !prefs.autoContinueErrorKinds.includes(state.pendingErrorKind)) {
       resetCodexErrorScanForTab(id, "auto-continue-kind-disabled");
       return;
     }
@@ -7195,6 +7329,7 @@ export default function CodexFlowManagerUI() {
     }
 
     const nextAttempts = previousAttempts + 1;
+    if (typeof state.autoContinueTimerId === "number") window.clearTimeout(state.autoContinueTimerId);
     codexErrorScanByTabRef.current[id] = {
       ...state,
       buffer: "",
@@ -7216,20 +7351,25 @@ export default function CodexFlowManagerUI() {
       pendingFinalErrorHistoryReplay: undefined,
       pendingFinalErrorSynchronized: undefined,
       pendingFinalErrorOutputText: undefined,
+      pendingFinalScreenCheck: undefined,
     };
 
     const tabEnv = getTabExecEnv(id, "codex");
     notifyLog(`codexError.autoContinue.send tab=${id} attempt=${nextAttempts}/${maxAttempts}`);
     startAgentTurnTimer(id);
+    const sentTurn = state.turn + 1;
     try {
-      await tm.sendTextAndEnter(id, "continue", {
+      const sent = await tm.sendTextAndEnter(id, "continue", {
         providerId: "codex",
         terminalMode: tabEnv.terminal as any,
         distro: tabEnv.terminal === "wsl" ? tabEnv.distro : undefined,
       });
+      if (!sent && codexErrorScanByTabRef.current[id]?.turn === sentTurn && ptyByTabRef.current[id] === ptyId)
+        interruptAgentTurnTimer(id, "codex-auto-continue-not-sent");
     } catch (error) {
       notifyLog(`codexError.autoContinue.sendFailed tab=${id} error=${String((error as any)?.message || error)}`);
-      interruptAgentTurnTimer(id, "codex-auto-continue-send-failed");
+      if (codexErrorScanByTabRef.current[id]?.turn === sentTurn && ptyByTabRef.current[id] === ptyId)
+        interruptAgentTurnTimer(id, "codex-auto-continue-send-failed");
     }
   }, [
     clearCodexErrorAutoContinueTimer,
@@ -7285,20 +7425,25 @@ export default function CodexFlowManagerUI() {
       pendingFinalErrorHistoryReplay: undefined,
       pendingFinalErrorSynchronized: undefined,
       pendingFinalErrorOutputText: undefined,
+      pendingFinalScreenCheck: undefined,
     };
 
     const tabEnv = getTabExecEnv(id, "codex");
     notifyLog(`codexError.manualContinue.send tab=${id} attempt=${nextAttempts}`);
     startAgentTurnTimer(id);
+    const sentTurn = state.turn + 1;
     try {
-      await tm.sendTextAndEnter(id, "continue", {
+      const sent = await tm.sendTextAndEnter(id, "continue", {
         providerId: "codex",
         terminalMode: tabEnv.terminal as any,
         distro: tabEnv.terminal === "wsl" ? tabEnv.distro : undefined,
       });
+      if (!sent && codexErrorScanByTabRef.current[id]?.turn === sentTurn && ptyByTabRef.current[id] === ptyId)
+        interruptAgentTurnTimer(id, "codex-manual-continue-not-sent");
     } catch (error) {
       notifyLog(`codexError.manualContinue.sendFailed tab=${id} error=${String((error as any)?.message || error)}`);
-      interruptAgentTurnTimer(id, "codex-manual-continue-send-failed");
+      if (codexErrorScanByTabRef.current[id]?.turn === sentTurn && ptyByTabRef.current[id] === ptyId)
+        interruptAgentTurnTimer(id, "codex-manual-continue-send-failed");
     }
   }, [
     getTabExecEnv,
@@ -7370,7 +7515,7 @@ export default function CodexFlowManagerUI() {
     const scheduledAt = Date.now() + delayMs;
     const attempt = previousAttempts + 1;
     const timerId = window.setTimeout(() => {
-      void sendCodexAutoContinue(id, errorKey);
+      void sendCodexAutoContinue(id, errorKey, state.turn);
     }, delayMs);
     codexErrorScanByTabRef.current[id] = {
       ...state,
@@ -8427,47 +8572,58 @@ export default function CodexFlowManagerUI() {
     return () => { try { off && off(); } catch {} };
   }, [focusTabFromNotification]);
 
+  /** 核对外部完成事件归属后统一处理；会话编号与项目证据必须参与标签解析。 */
+  function handleExternalAgentCompletion(payload: ExternalAgentCompletePayload): void {
+    const providerId = String(payload?.providerId || "").trim().toLowerCase();
+    if (providerId && providerId !== "codex" && providerId !== "gemini" && providerId !== "claude" && providerId !== "antigravity" && providerId !== "grok") return;
+    const preview = String(payload?.preview || "");
+    const normalizeOptions: CompletionPreviewNormalizeOptions = {};
+    if (typeof payload?.previewEscapedWhitespace === "boolean")
+      normalizeOptions.previewEscapedWhitespace = payload.previewEscapedWhitespace;
+    const resolvedTabId = resolveExternalTabId({
+      ...payload,
+      providerId: providerId || "codex",
+    });
+    if ((providerId || "codex") === "codex" && (payload?.threadId || payload?.cwd)
+      && resolvedTabId !== String(payload?.tabId || "").trim()) {
+      try {
+        void window.host?.utils?.perfLogCritical?.(`[notifications.renderer] externalCompletion.route ${JSON.stringify({
+          sourceTab: payload?.tabId, resolvedTab: resolvedTabId, threadId: payload?.threadId,
+          cwd: payload?.cwd, timestamp: payload?.timestamp, eventId: payload?.eventId,
+        })}`);
+      } catch {}
+    }
+    if (!resolvedTabId) {
+      notifyLog(`externalCompletion skip: no tab match provider=${providerId} tab=${String(payload?.tabId || "")} env=${payload?.envLabel || ""}`);
+      return;
+    }
+    const cleanedPreview = normalizeCompletionPreview(preview, normalizeOptions);
+    const hookEventName = String(payload?.hookEventName || "").trim();
+    const completionKind = String(payload?.completionKind || "").trim().toLowerCase();
+    const isSubagentCompletion = completionKind === "subagent" || hookEventName === "SubagentStop";
+    const sessionId = String(payload?.threadId || "").trim();
+    // 解析已核对会话和项目归属，不能再用未经核对的环境变量编号固化绑定。
+    if (!isSubagentCompletion && sessionId && String(payload?.tabId || "").trim()
+      && bindHistorySessionIdToTab(resolvedTabId, sessionId, true)) {
+      // 绑定恢复不受完成通知去重或恢复期守卫影响，避免真实编号已到达却没有后续查询。
+      prefetchHistoryForTabSilently(resolvedTabId, true);
+      scheduleHistoryBindingRetry(resolvedTabId);
+    }
+    if (isSubagentCompletion) {
+      notifyLog(`externalCompletion subagent tab=${resolvedTabId} previewLen=${cleanedPreview.length} agentType=${payload?.agentType || "n/a"} agentId=${payload?.agentId || "n/a"}`);
+      handleSubagentCompletion(resolvedTabId, preview, payload?.agentType, payload?.agentId, normalizeOptions);
+      return;
+    }
+    clearPendingOscCompletion(resolvedTabId, "external-arrived");
+    notifyLog(`externalCompletion ok tab=${resolvedTabId} previewLen=${cleanedPreview.length}`);
+    handleAgentCompletion(resolvedTabId, preview, "external", normalizeOptions);
+  }
+
   // 监听主进程转发的外部完成通知（Codex/Gemini/Claude/Antigravity/Grok，JSONL 桥接）
   useEffect(() => {
     let off: (() => void) | undefined;
     try {
-      off = window.host.notifications?.onExternalAgentComplete?.((payload: ExternalAgentCompletePayload) => {
-        const providerId = String(payload?.providerId || "").trim().toLowerCase();
-        if (providerId && providerId !== "codex" && providerId !== "gemini" && providerId !== "claude" && providerId !== "antigravity" && providerId !== "grok") return;
-        const preview = String(payload?.preview || "");
-        const normalizeOptions: CompletionPreviewNormalizeOptions = {};
-        if (typeof payload?.previewEscapedWhitespace === "boolean")
-          normalizeOptions.previewEscapedWhitespace = payload.previewEscapedWhitespace;
-        const resolvedTabId = resolveExternalTabId({
-          tabId: payload?.tabId,
-          providerId: providerId || "codex",
-          envLabel: payload?.envLabel,
-        });
-        if (!resolvedTabId) {
-          notifyLog(`externalCompletion skip: no tab match provider=${providerId} tab=${String(payload?.tabId || "")} env=${payload?.envLabel || ""}`);
-          return;
-        }
-        const cleanedPreview = normalizeCompletionPreview(preview, normalizeOptions);
-        const hookEventName = String(payload?.hookEventName || "").trim();
-        const completionKind = String(payload?.completionKind || "").trim().toLowerCase();
-        const isSubagentCompletion = completionKind === "subagent" || hookEventName === "SubagentStop";
-        const sessionId = String(payload?.threadId || "").trim();
-        // 只有通知明确携带标签编号才固化绑定，避免外部终端按引擎兜底匹配时串会话。
-        if (!isSubagentCompletion && sessionId && String(payload?.tabId || "").trim()
-          && bindHistorySessionIdToTab(resolvedTabId, sessionId, true)) {
-          // 绑定恢复不受完成通知去重或恢复期守卫影响，避免真实编号已到达却没有后续查询。
-          prefetchHistoryForTabSilently(resolvedTabId, true);
-          scheduleHistoryBindingRetry(resolvedTabId);
-        }
-        if (isSubagentCompletion) {
-          notifyLog(`externalCompletion subagent tab=${resolvedTabId} previewLen=${cleanedPreview.length} agentType=${payload?.agentType || "n/a"} agentId=${payload?.agentId || "n/a"}`);
-          handleSubagentCompletion(resolvedTabId, preview, payload?.agentType, payload?.agentId, normalizeOptions);
-          return;
-        }
-        clearPendingOscCompletion(resolvedTabId, "external-arrived");
-        notifyLog(`externalCompletion ok tab=${resolvedTabId} previewLen=${cleanedPreview.length}`);
-        handleAgentCompletion(resolvedTabId, preview, "external", normalizeOptions);
-      });
+      off = window.host.notifications?.onExternalAgentComplete?.(handleExternalAgentCompletion);
     } catch {}
     return () => { try { off && off(); } catch {} };
   }, [bindHistorySessionIdToTab, handleAgentCompletion, handleSubagentCompletion, notifyLog, prefetchHistoryForTabSilently, resolveExternalTabId, scheduleHistoryBindingRetry]);

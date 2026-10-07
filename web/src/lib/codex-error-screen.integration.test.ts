@@ -8,6 +8,7 @@ const canvasProbe = vi.hoisted(() => vi.spyOn(HTMLCanvasElement.prototype, "getC
 import { Terminal } from "@xterm/xterm";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { classifyCodexCliErrorText } from "./codex-cli-error-classifier";
+import { createCodexTurnCompletionProbe, inspectCodexTurnCompletion } from "./codex-turn-completion";
 import {
   classifyCodexFinalErrorOnIdleScreen,
   consumeCodexPtyOutputChunk,
@@ -54,6 +55,101 @@ function readScreen(terminal: Terminal): string {
 }
 
 describe("Codex 错误字节流与真实终端屏幕联测", () => {
+  it.each([40, 80, 128])("%i 列中提示词自行折行时，真实活动到完成画面仍能收敛", async (cols) => {
+    const terminal = createTerminal(cols);
+    const prompt = "检查当前问题并修复所有已确认的问题".repeat(6);
+    await writeTerminal(terminal, "\x1b[?1049h\x1b[?1003h\x1b[?1006h");
+    // 按行定位模拟 Codex 自己的折行，真实缓冲区不会将这些行标成 isWrapped。
+    const rows = ["› 检查当前问题并修复所有已确认的问题", "  检查当前问题并修复所有已确认的问题", "• Working (1s • esc to interrupt)", "", "› Ask Codex to do anything"];
+    await writeTerminal(terminal, `\x1b[?2026h\x1b[H\x1b[2J${rows.map((line, index) => `\x1b[${index + 1};1H${line}`).join("")}\x1b[5;3H\x1b[?2026l`);
+    const active = inspectCodexTurnCompletion(createCodexTurnCompletionProbe(""), readScreen(terminal), prompt, false, 0);
+    expect(active.probe.boundaryPrompt).toBeUndefined();
+    expect(active.probe.activityObserved).toBe(true);
+    await writeTerminal(terminal, "\x1b[?2026h\x1b[H\x1b[2J• 已完成检查。\x1b[3;1HWorked for 17m 19s • 02:58\x1b[5;1H› Ask Codex to do anything\x1b[5;3H\x1b[?2026l");
+    const screen = readScreen(terminal);
+    const first = inspectCodexTurnCompletion(active.probe, screen, prompt, false, 1000);
+    expect(first.completed).toBe(false);
+    expect(inspectCodexTurnCompletion(first.probe, screen, prompt, false, 2000).completed).toBe(true);
+    const browsing = `${screen}\nenter/esc latest`;
+    expect(inspectCodexTurnCompletion(first.probe, browsing, prompt, false, 2000).completed).toBe(false);
+  });
+
+  it.each([80, 128])("%i 列中 Codex 自行折行的最终 502 应结束旧重连，历史重画仍不重复处理", async (cols) => {
+    const terminal = createTerminal(cols);
+    const error = "unexpected status 502 Bad Gateway: Upstream service temporarily unavailable";
+    const reconnect = classifyCodexCliErrorText(`Reconnecting... 1/5\n${error}`)!;
+    let handledErrors = rememberCodexErrorReplay([], reconnect, 1);
+    expect(reconnect.phase).toBe("reconnecting");
+    await writeTerminal(terminal, "\x1b[?1049h\x1b[?1003h\x1b[?1006h");
+
+    // Codex 按行定位绘制；这些续行不是 xterm 自动折行，不能依赖 isWrapped 合并。
+    const rows = [
+      "› 检查当前问题",
+      `■ ${error},`,
+      "url: https://example.test/v1/responses, request",
+      "id: sample-request",
+      "",
+      "› Ask Codex to do anything",
+      "GPT-6 · Context 36% left · Fast off",
+      "? for shortcuts",
+    ];
+    const finalFrame = `\x1b[?2026h\x1b[H\x1b[2J\x1b[31m${rows.map((line, index) => `\x1b[${index + 1};1H${line}`).join("")}\x1b[0m\x1b[6;3H\x1b[?2026l`;
+    const frame = consumeCodexPtyOutputChunk(createCodexPtyOutputFrameState(), finalFrame).frames[0];
+    await writeTerminal(terminal, finalFrame);
+    expect(terminal.buffer.active.getLine(3)?.isWrapped).toBe(false);
+    const candidate = classifyCodexCliErrorText(frame.text)!;
+    expect(candidate).toMatchObject({ kind: "badGateway", phase: "final" });
+    const screen = readScreen(terminal);
+    const confirmed = classifyCodexFinalErrorOnIdleScreen(screen, "检查当前问题")!;
+    expect(confirmed).toMatchObject({ kind: "badGateway", phase: "final", explicitFinal: true });
+    const check = {
+      historyReplay: false, synchronized: true, resizeReplayActive: false,
+      currentTurn: 1, currentPrompt: "检查当前问题", classification: confirmed,
+      outputText: screen, idleScreenConfirmed: true, handledErrors,
+    };
+    expect(resolveCodexErrorReplayDecision(check)).toBe("allow");
+    handledErrors = rememberCodexErrorReplay(handledErrors, confirmed, 1);
+    expect(resolveCodexErrorReplayDecision({ ...check, handledErrors })).toBe("suppress");
+    expect(resolveCodexErrorReplayDecision({
+      ...check, handledErrors, historyReplay: true, resizeReplayActive: true,
+    })).toBe("suppress");
+  });
+
+  it.each([80, 128])("%i 列新版历史视图保留输入框时，旧错误不能通过稳定屏幕确认", async (cols) => {
+    const terminal = createTerminal(cols);
+    const error = "unexpected status 502 Bad Gateway: upstream unavailable";
+    await writeTerminal(terminal, `\x1b[?1049h\x1b[?1003h\x1b[?1006h`);
+    const historical = `\x1b[?2026h\x1b[H\x1b[2J■ ${error}\r\n\r\n› Ask Codex to do anything\r\nGPT-6 · Context 35% left\r\nenter/esc latest\x1b[?2026l`;
+    await writeTerminal(terminal, historical);
+    const screen = readScreen(terminal);
+    expect(terminal.buffer.active.type).toBe("alternate");
+    expect(classifyCodexFinalErrorOnIdleScreen(screen, "检查当前问题")).toBeNull();
+
+    // 滚轮重画可能只发送旧错误，输入框下方的浏览提示保留在原屏幕上。
+    const redraw = `\x1b[?2026h\x1b[1;3H${error}\x1b[3;3H\x1b[?2026l`;
+    const frame = consumeCodexPtyOutputChunk(createCodexPtyOutputFrameState(), redraw).frames[0];
+    expect(frame.historyReplay).toBe(false);
+    const candidate = classifyCodexCliErrorText(frame.text)!;
+    expect(candidate).toMatchObject({ kind: "badGateway", phase: "final" });
+    await writeTerminal(terminal, redraw);
+    expect(classifyCodexFinalErrorOnIdleScreen(readScreen(terminal), "检查当前问题")).toBeNull();
+
+    // 返回最新画面后，相同错误再次真实发生，仍能确认且只处理一次。
+    await writeTerminal(terminal, `\x1b[H\x1b[2J› 检查当前问题\r\n■ ${error}\r\n\r\n› Ask Codex to do anything\r\nGPT-6 · Context 35% left`);
+    const currentScreen = readScreen(terminal);
+    const confirmed = classifyCodexFinalErrorOnIdleScreen(currentScreen, "检查当前问题")!;
+    expect(confirmed).toMatchObject({ kind: "badGateway", phase: "final" });
+    const check = {
+      historyReplay: false, synchronized: true, resizeReplayActive: false,
+      currentTurn: 2, currentPrompt: "检查当前问题", classification: confirmed,
+      outputText: currentScreen, idleScreenConfirmed: true, handledErrors: undefined,
+    };
+    expect(resolveCodexErrorReplayDecision(check)).toBe("allow");
+    expect(resolveCodexErrorReplayDecision({
+      ...check, handledErrors: rememberCodexErrorReplay([], confirmed, 2),
+    })).toBe("suppress");
+  });
+
   it.each([80, 128])("%i 列中旧 502 正文的局部重画必须等待屏幕确认，新一轮真实 502 仍可处理", async (cols) => {
     const terminal = createTerminal(cols);
     const error = "unexpected status 502 Bad Gateway: Upstream service temporarily unavailable, url: https://example.test/v1/responses, request id: sample-request";

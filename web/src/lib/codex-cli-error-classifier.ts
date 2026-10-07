@@ -10,6 +10,9 @@ export type CodexCliErrorKind =
   | "forbidden"
   | "badRequest"
   | "payloadTooLarge"
+  | "contextWindow"
+  | "authentication"
+  | "fatal"
   | "unknownHttp";
 
 export type CodexCliErrorSeverity = "temporary" | "blocking";
@@ -46,6 +49,9 @@ export const CODEX_CLI_ERROR_KIND_LABELS: Record<CodexCliErrorKind, string> = {
   forbidden: "403 Forbidden",
   badRequest: "400 Bad Request",
   payloadTooLarge: "413 Payload Too Large",
+  contextWindow: "Context window exceeded",
+  authentication: "Authentication failed",
+  fatal: "Codex internal error",
   unknownHttp: "unexpected status",
 };
 
@@ -59,12 +65,12 @@ const CODEX_CLI_ERROR_RULES: CodexCliErrorRule[] = [
   {
     kind: "usageLimit",
     severity: "blocking",
-    pattern: /(?:you['’]ve hit your usage limit|usage limit(?:\s+has been)?\s+reached|you['’]re\s+out\s+of\s+credits|your(?:\s+workspace)?\s+is\s+out\s+of\s+credits|you\s+hit\s+your\s+spend\s+cap|spend\s+cap\s+set\s+(?:in|by)\s+(?:your|the\s+owner))/i,
+    pattern: /(?:you['’]ve hit your usage limit|usage limit(?:\s+has been)?\s+reached|you['’]re\s+out\s+of\s+credits|your(?:\s+workspace)?\s+is\s+out\s+of\s+credits|you\s+hit\s+your\s+spend\s+cap|spend\s+cap\s+set\s+(?:in|by)\s+(?:your|the\s+owner)|Quota exceeded|To use Codex with your ChatGPT plan, upgrade to Plus|shared rollout token budget exhausted)/i,
   },
   {
     kind: "modelCapacity",
     severity: "blocking",
-    pattern: /selected model is at capacity|model is at capacity/i,
+    pattern: /selected model is at capacity|model is at capacity|Flex capacity unavailable/i,
   },
   {
     kind: "badGateway",
@@ -109,12 +115,27 @@ const CODEX_CLI_ERROR_RULES: CodexCliErrorRule[] = [
   {
     kind: "networkStream",
     severity: "temporary",
-    pattern: /(?:stream disconnected before completion|Transport error|network error|error decoding response body|stream closed before response\.completed|connection failed|Error while reading the server response)/i,
+    pattern: /(?:stream disconnected before completion|Transport error|network error|error decoding response body|stream closed before response\.completed|connection failed|Error while reading the server response|request timed out)/i,
+  },
+  {
+    kind: "contextWindow",
+    severity: "blocking",
+    pattern: /Codex ran out of room in the model['’]s context window/i,
+  },
+  {
+    kind: "authentication",
+    severity: "blocking",
+    pattern: /(?:Your access token could not be refreshed|Your refresh token has already been used to generate a new access token|Failed to refresh token|sign in with ChatGPT|unexpected status\s+401\b|401\s+Unauthorized)/i,
+  },
+  {
+    kind: "fatal",
+    severity: "blocking",
+    pattern: /(?:internal error; agent loop died unexpectedly|Fatal error:|turn aborted\. Something went wrong\?)/i,
   },
   {
     kind: "unknownHttp",
     severity: "blocking",
-    pattern: /unexpected status\s+\d{3}/i,
+    pattern: /unexpected status\s+\d{3}|exceeded retry limit(?:, last status:\s*\d{3})?/i,
   },
 ];
 
@@ -137,6 +158,15 @@ const EXPLICIT_FINAL_ERROR_PATTERN =
   /(?:exceeded retry limit|selected model is at capacity|you['’]ve hit your usage limit|usage limit(?:\s+has been)?\s+reached|you['’]re\s+out\s+of\s+credits|your(?:\s+workspace)?\s+is\s+out\s+of\s+credits|you\s+hit\s+your\s+spend\s+cap|spend\s+cap\s+set\s+(?:in|by)\s+(?:your|the\s+owner)|currently experiencing high (?:demand|load)|server overloaded|400\s+Bad Request|<h1>\s*400\s+Bad Request\s*<\/h1>|unexpected status\s+413\b|413\s+Payload Too Large|413\s+Request Entity Too Large|<h1>\s*413\s+(?:Payload Too Large|Request Entity Too Large)\s*<\/h1>)/i;
 const SOURCE_LOCATION_LINE_PATTERN = /^(?:(?:[A-Za-z]:)?[./\\\w@ -]+\.(?:ts|tsx|js|jsx|json|cjs|mjs|md|css|scss|html|yml|yaml|txt|cs|shader|uxml|uss):\d+(?::\d+)?:)/i;
 const SOURCE_LITERAL_LINE_PATTERN = /\b(?:pattern|text|kind|matchedText|label|expect|toBe|toContain)\s*[:(=]/i;
+const CODEX_ADDITIONAL_FINAL_HISTORY_LINE_PATTERN = /^(?:Quota exceeded|To use Codex with your ChatGPT plan, upgrade to Plus|shared rollout token budget exhausted|Flex capacity unavailable|request timed out|Codex ran out of room in the model['’]s context window|Your access token could not be refreshed|Your refresh token has already been used to generate a new access token|Failed to refresh token|401\s+Unauthorized|internal error; agent loop died unexpectedly|Fatal error:|turn aborted\. Something went wrong\?)/i;
+const CODEX_TRANSCRIPT_EVENT_LINE_PATTERN = /^[^\S\n]*(?:[›•■▪⚠─]|Working\s*\(|Reconnecting\.\.\.\s+\d+\/\d+)/iu;
+const CODEX_BACKGROUND_TERMINALS_FOOTER_PATTERN = /^[^\S\n]*[1-9]\d* background terminals? running · \/ps to view · \/stop to close[^\S\n]*$/u;
+const CODEX_PRIMARY_BLOCKING_ERROR_PATTERN = new RegExp(
+  "^(?:[■▪⚠][\\ufe0e\\ufe0f]?\\s*)?(?:Error running remote compact task:\\s*)?(?:"
+    + CODEX_CLI_ERROR_RULES.filter((rule) => ["usageLimit", "modelCapacity", "contextWindow", "authentication", "fatal"].includes(rule.kind))
+      .map((rule) => rule.pattern.source).join("|") + ")",
+  "i",
+);
 
 /**
  * 去除终端 ANSI/控制序列，并保留足够的换行信息用于错误文本识别。
@@ -195,7 +225,7 @@ export function getCodexCliErrorKindLabel(kind: CodexCliErrorKind | undefined): 
  * 将终端文本归一化为轻量扫描文本，避免全量历史或复杂解析带来的额外开销。
  */
 function normalizeCodexCliErrorText(input: string): string {
-  return stripAnsiForCodexErrorScan(input)
+  return joinCodexFinalHistoryContinuationLines(stripAnsiForCodexErrorScan(input))
     .replace(/[ \t]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
@@ -259,7 +289,24 @@ export function isCodexFinalHistoryLine(line: string): boolean {
   const content = line.slice(marker[0].length).replace(CODEX_COMPACT_ERROR_PREFIX_PATTERN, "");
   return marker[1] === "⚠"
     ? CODEX_SERVER_OVERLOADED_HISTORY_LINE_PATTERN.test(content)
-    : CODEX_FINAL_HISTORY_LINE_PATTERN.test(content);
+    : CODEX_FINAL_HISTORY_LINE_PATTERN.test(content) || CODEX_ADDITIONAL_FINAL_HISTORY_LINE_PATTERN.test(content);
+}
+
+/** 合并错误历史块的紧邻续行，兼容标题折行，保留独立事件和状态栏边界。 */
+export function joinCodexFinalHistoryContinuationLines(text: string): string {
+  const lines: string[] = [];
+  let historyIndex = -1;
+  for (const line of text.split("\n")) {
+    if (historyIndex >= 0 && line.trim()
+      && !CODEX_TRANSCRIPT_EVENT_LINE_PATTERN.test(line)
+      && !CODEX_BACKGROUND_TERMINALS_FOOTER_PATTERN.test(line)) {
+      lines[historyIndex] += ` ${line.trim()}`;
+      continue;
+    }
+    lines.push(line);
+    historyIndex = CODEX_FINAL_HISTORY_MARKER_PATTERN.test(line) ? lines.length - 1 : -1;
+  }
+  return lines.join("\n");
 }
 
 type CodexStatusMarker = {
@@ -372,7 +419,14 @@ function findLastRuleMatch(text: string, rule: CodexCliErrorRule): RegExpExecArr
   let lastMatch: RegExpExecArray | null = null;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(text)) !== null) {
-    if (!isLikelySourceOrDiffErrorExample(text, match.index || 0))
+    const lineStart = Math.max(0, text.lastIndexOf("\n", Math.max(0, match.index - 1)) + 1);
+    const lineText = readLineAtIndex(text, match.index);
+    const mainHttpError = /^(?:[■▪⚠][\ufe0e\ufe0f]?\s*)?(?:Error running remote compact task:\s*)?unexpected status\s+\d{3}\b[^:,\n]*/i.exec(lineText);
+    const mainError = mainHttpError || CODEX_PRIMARY_BLOCKING_ERROR_PATTERN.exec(lineText);
+    const matchOffset = text.slice(lineStart, match.index).trimStart().length;
+    // 正文里的其他错误不能覆盖主 HTTP 或明确阻断错误；详情仍保留在指纹里。
+    if ((!mainError || matchOffset < mainError[0].length)
+      && !isLikelySourceOrDiffErrorExample(text, match.index || 0))
       lastMatch = match;
     if (match[0] === "") pattern.lastIndex += 1;
   }
