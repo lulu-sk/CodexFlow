@@ -59,6 +59,60 @@ describe("TerminalAdapter（真实 xterm 键盘输入）", () => {
     return down;
   }
 
+  /** 等待真实终端写入完成，避免在模式尚未生效时点击滚动按钮。 */
+  async function renderTerminal(text: string): Promise<void> {
+    adapter.write(text);
+    await vi.waitFor(() => expect(adapter.hasPendingWriteWork?.()).toBe(false));
+  }
+
+  it("新版 Codex 的上下滚动按钮通过输入链路跳转历史端点", async () => {
+    await renderTerminal("\x1b[?1049h\x1b[?1003h\x1b[?1006h\x1b[20;1H› Ask Codex to do anything");
+    outbound.length = 0;
+    adapter.scrollToTop();
+    adapter.scrollToBottom();
+    expect(outbound).toEqual(["\x1b[1;5H", "\x1b[1;5F"]);
+  });
+
+  it.each(["shell", "claude", "gemini"])("%s 全屏界面的滚动按钮不发送 Codex 跳转键", async (provider) => {
+    providerId = provider;
+    await renderTerminal("\x1b[?1049h\x1b[?1003h\x1b[20;1H› Ask Codex to do anything");
+    outbound.length = 0;
+    adapter.scrollToTop();
+    adapter.scrollToBottom();
+    expect(outbound).toEqual([]);
+  });
+
+  it("旧版 Codex 普通缓冲区滚动按钮不向会话发送按键", async () => {
+    await renderTerminal("› Ask Codex to do anything");
+    outbound.length = 0;
+    adapter.scrollToTop();
+    adapter.scrollToBottom();
+    expect(outbound).toEqual([]);
+  });
+
+  it("新版草稿和持续滚底请求也能跳转，但无输入框的弹窗不注入按键", async () => {
+    await renderTerminal("\x1b[?1049h\x1b[?1003h\x1b[20;1H› 尚未发送的草稿");
+    outbound.length = 0;
+    adapter.scrollToBottom({ followOutput: true, source: "history-resume" });
+    expect(outbound).toEqual(["\x1b[1;5F"]);
+
+    await renderTerminal("\x1b[2J\x1b[H› 历史用户输入\r\nSelect a model\r\nGPT-6");
+    outbound.length = 0;
+    adapter.scrollToTop();
+    adapter.scrollToBottom();
+    expect(outbound).toEqual([]);
+  });
+
+  it("新版键盘上下键和 Ctrl + Home/End 保留原始导航编码", async () => {
+    await renderTerminal("\x1b[?1049h\x1b[?1003h\x1b[20;1H› Ask Codex to do anything");
+    outbound.length = 0;
+    pressKey("ArrowUp", 38);
+    pressKey("ArrowDown", 40);
+    pressKey("Home", 36, { ctrlKey: true });
+    pressKey("End", 35, { ctrlKey: true });
+    expect(outbound).toEqual(["\x1b[A", "\x1b[B", "\x1b[1;5H", "\x1b[1;5F"]);
+  });
+
   it("Codex 的 Alt + ↑ 只发送一次 Alt 编码，且阻止浏览器默认动作", () => {
     const event = pressKey("ArrowUp", 38, { altKey: true });
 

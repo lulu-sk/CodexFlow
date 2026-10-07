@@ -484,6 +484,52 @@ describe("codex-cli-error-classifier（Codex TUI 错误识别）", () => {
     expect(classifyCodexCliErrorText("Agent turn complete: done")).toBeNull();
   });
 
+  it.each([
+    ["request timed out", "networkStream", true],
+    ["Quota exceeded. Check your plan and billing details.", "usageLimit", false],
+    ["To use Codex with your ChatGPT plan, upgrade to Plus: https://example.test/plus.", "usageLimit", false],
+    ["shared rollout token budget exhausted", "usageLimit", false],
+    ["Flex capacity unavailable.", "modelCapacity", true],
+    ["Codex ran out of room in the model's context window. Start a new thread.", "contextWindow", false],
+    ["Your access token could not be refreshed because your refresh token has expired. Please log out and sign in again.", "authentication", false],
+    ["Your refresh token has already been used to generate a new access token. Please try signing in again.", "authentication", false],
+    ["Failed to refresh token: 401 Unauthorized", "authentication", false],
+    ["sign in with ChatGPT", "authentication", false],
+    ["unexpected status 401 Unauthorized", "authentication", false],
+    ["internal error; agent loop died unexpectedly", "fatal", false],
+    ["Fatal error: unable to resume thread", "fatal", false],
+    ["turn aborted. Something went wrong? Hit `/feedback` to report the issue.", "fatal", false],
+    ["exceeded retry limit, last status: 504 Gateway Timeout", "unknownHttp", false],
+    ["exceeded retry limit, last status: 500 Internal Server Error", "unknownHttp", false],
+  ] as const)("识别上游错误 %s", (message, kind, retryable) => {
+    const result = classifyCodexCliErrorText(`■ ${message}`);
+    expect(result).toMatchObject({ kind, phase: "final", explicitFinal: true, retryable });
+  });
+
+  it("主 HTTP 错误不能被正文状态码覆盖，也不能丢失最终标记", () => {
+    const result = classifyCodexCliErrorText([
+      "Reconnecting... 1/5",
+      "■ unexpected status 502 Bad Gateway: <html>",
+      "<h1>400 Bad Request</h1><p>upstream status 403 Forbidden</p>",
+      "</html>",
+      "",
+      "› Ask Codex to do anything",
+    ].join("\n"));
+    expect(result).toMatchObject({ kind: "badGateway", phase: "final", explicitFinal: true });
+  });
+
+  it("错误标题跨行时仍识别最终错误，普通方块不能借续行变成最终错误", () => {
+    expect(classifyCodexCliErrorText("■ unexpected\nstatus 502 Bad Gateway")?.explicitFinal).toBe(true);
+    expect(classifyCodexCliErrorText("■ 普通说明\nrequest timed out")?.explicitFinal).toBeUndefined();
+  });
+
+  it("额度或上下文错误不能被正文中的网络错误覆盖为可自动继续", () => {
+    expect(classifyCodexCliErrorText("■ Your workspace is out of credits. Last response: 429 Too Many Requests"))
+      .toMatchObject({ kind: "usageLimit", retryable: false, explicitFinal: true });
+    expect(classifyCodexCliErrorText("■ Codex ran out of room in the model's context window. Details: request timed out"))
+      .toMatchObject({ kind: "contextWindow", retryable: false, explicitFinal: true });
+  });
+
   it("错误类别展示文本直接使用英文识别文本", () => {
     expect(getCodexCliErrorKindLabel("rateLimited")).toBe("429 Too Many Requests");
     expect(getCodexCliErrorKindLabel("networkStream")).toBe("stream disconnected before completion");

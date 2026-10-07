@@ -2892,6 +2892,15 @@ if (!gotLock) {
       try { await configureOrUpdateProxy(); } catch {}
       try { perfLogger.log(`[BOOT] proxy ready`); } catch {}
       const appUserModelId = setupWindowsNotifications();
+      try { registerNotificationIPC(() => mainWindow, { appUserModelId, protocolScheme: PROTOCOL_SCHEME, profileId: instanceProfile.profileId }); } catch {}
+      // 通知读取不依赖脚本安装和其它引擎初始化，先并发启动以接收已有会话的完成事件。
+      void Promise.allSettled([
+        startCodexNotificationBridge(() => mainWindow),
+        startClaudeNotificationBridge(() => mainWindow),
+        startGeminiNotificationBridge(() => mainWindow),
+        startAntigravityNotificationBridge(() => mainWindow),
+        startGrokNotificationBridge(() => mainWindow),
+      ]);
       registerProtocol();
       try { perfLogger.log(`[BOOT] Using projects implementation: ${PROJECTS_IMPL}`); } catch {}
       if (DIAG) { try { perfLogger.log(`[BOOT] userData=${app.getPath('userData')}`); } catch {} }
@@ -2903,13 +2912,7 @@ if (!gotLock) {
       try { await ensureAllGeminiNotifications(); } catch {}
       try { await ensureAllAntigravityNotifications(); } catch {}
       try { await ensureAllGrokNotifications(); } catch {}
-      try { await startCodexNotificationBridge(() => mainWindow); } catch {}
-      try { await startClaudeNotificationBridge(() => mainWindow); } catch {}
-      try { await startGeminiNotificationBridge(() => mainWindow); } catch {}
-      try { await startAntigravityNotificationBridge(() => mainWindow); } catch {}
-      try { await startGrokNotificationBridge(() => mainWindow); } catch {}
       if (DIAG) { try { perfLogger.log(`[BOOT] Locale: ${i18n.getCurrentLocale?.()}`); } catch {} }
-      try { registerNotificationIPC(() => mainWindow, { appUserModelId, protocolScheme: PROTOCOL_SCHEME, profileId: instanceProfile.profileId }); } catch {}
       // 启动时静默检查更新由渲染进程完成（仅提示，不下载）
       try { setTermDebug(!!getDebugConfig().terminal.pty.debug); } catch {}
       // 启动历史索引器：后台并发解析、缓存、监听变更

@@ -1,11 +1,13 @@
 import {
   classifyCodexCliErrorText,
   isCodexFinalHistoryLine,
+  joinCodexFinalHistoryContinuationLines,
   stripAnsiForCodexErrorScan,
   type CodexCliErrorClassification,
   type CodexCliErrorPhase,
   type CodexCliRuntimePhase,
 } from "./codex-cli-error-classifier";
+import { isCodexHistoryBrowsingScreen } from "./codex-tui-screen";
 
 export const CODEX_ERROR_REPLAY_HISTORY_LIMIT = 32;
 export const CODEX_PTY_SYNCHRONIZED_FRAME_MAX_LENGTH = 2 * 1024 * 1024;
@@ -22,7 +24,7 @@ const CODEX_BACKGROUND_TERMINALS_FOOTER_PATTERN = /^[^\S\n]*[1-9]\d* background 
 
 type CodexErrorReplayCandidate = Pick<CodexCliErrorClassification, "kind" | "matchedText" | "replayFingerprint">;
 
-export type CodexErrorReplayDecision = "allow" | "suppress" | "await-idle";
+export type CodexErrorReplayDecision = "allow" | "suppress" | "await-idle" | "update-reconnect";
 
 export type CodexErrorReplayRecord = {
   key: string;
@@ -383,7 +385,7 @@ export function shouldTrustCodexRuntimeStatusForCurrentTurn({
 }
 
 /**
- * 判断当前结果应放行、压制，还是等待当前屏幕回到可输入状态后再确认。
+ * 判断当前结果应放行、压制、等待稳定屏幕，还是只更新重连进度。
  */
 export function resolveCodexErrorReplayDecision({
   historyReplay,
@@ -424,6 +426,11 @@ export function resolveCodexErrorReplayDecision({
   );
   const handledFinalError = !!handled?.phases?.includes("final") && classification.phase === "reconnecting";
   if (handled && handled.turn > normalizedTurn) return "suppress";
+  if (
+    handled && handled.turn === normalizedTurn && phaseAlreadyHandled && !handledFinalError
+    && classification.phase === "reconnecting"
+    && !historyReplay && !resizeReplayActive && (!synchronized || errorAfterCurrentTurnBoundary)
+  ) return "update-reconnect";
   if (handled && handled.turn === normalizedTurn && (phaseAlreadyHandled || handledFinalError))
     return "suppress";
 
@@ -451,13 +458,14 @@ export function shouldSuppressCodexErrorReplay(check: CodexErrorReplayCheck): bo
 }
 
 /**
- * 从 xterm 当前稳定可输入画面中解析最后一条终态错误，仅允许它与输入框之间出现已知后台终端栏。
+ * 从 xterm 当前稳定可输入画面中解析最后一个终态错误块，仅允许它与输入框之间出现已知后台终端栏。
  */
 export function classifyCodexFinalErrorOnIdleScreen(
   screenText: string,
   currentPrompt = "",
 ): CodexCliErrorClassification | null {
-  const text = stripAnsiForCodexErrorScan(screenText);
+  if (isCodexHistoryBrowsingScreen(screenText)) return null;
+  const text = joinCodexFinalHistoryContinuationLines(stripAnsiForCodexErrorScan(screenText));
   const visibleClassification = classifyCodexCliErrorText(text);
   if (
     !visibleClassification

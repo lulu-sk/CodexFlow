@@ -2852,10 +2852,11 @@ export default class TerminalManager {
    * @param tabId 目标标签页标识，用于定位对应 PTY 与终端适配器
    * @param raw 待发送的原始文本；方法内部会规范化并去除尾随换行
    * @param options 可选发送上下文（providerId/terminalMode）
+   * @returns 是否已安排发送；终端不存在时返回 false，不代表命令已执行完成。
    */
-  async sendTextAndEnter(tabId: string, raw: string, options?: TerminalSendOptions): Promise<void> {
+  async sendTextAndEnter(tabId: string, raw: string, options?: TerminalSendOptions): Promise<boolean> {
     const ptyId = this.getPtyId(tabId);
-    if (!ptyId) return;
+    if (!ptyId) return false;
     const adapter = this.adapters[tabId];
     const text = stripTrailingNewlines(String(raw ?? ""));
     const BRACKET_END = '\x1b[201~';
@@ -2864,7 +2865,7 @@ export default class TerminalManager {
       const attachmentCount = await this.sendGrokAttachments(ptyId, adapter, options?.attachmentPaths, traceId);
       if (!text && attachmentCount > 0) {
         try { this.hostPty.write(ptyId, "\r"); } catch {}
-        return;
+        return true;
       }
     }
     const selectedStrategy = this.shouldUseGeminiWindowsEditorStrategy(options?.providerId, options?.terminalMode, options?.geminiWindowsEditorReady)
@@ -2888,27 +2889,27 @@ export default class TerminalManager {
 
     if (this.shouldUseGeminiWindowsEditorStrategy(options?.providerId, options?.terminalMode, options?.geminiWindowsEditorReady)) {
       if (this.sendGeminiWindowsTextAndEnter(tabId, ptyId, text, adapter, options, traceId))
-        return;
+        return true;
     }
     if (this.shouldUseGeminiWslEditorStrategy(options?.providerId, options?.terminalMode, options?.geminiWslEditorReady, text)) {
       if (this.sendGeminiWslTextAndEnter(tabId, ptyId, text, adapter, options, traceId))
-        return;
+        return true;
     }
     if (isGeminiLikeProvider(options?.providerId)) {
       await this.sendGeminiTextAndEnter(ptyId, text, adapter, options, traceId);
-      return;
+      return true;
     }
     if (this.shouldUseClaudeWindowsSubmitStrategy(options?.providerId, options?.terminalMode, text)) {
       this.sendClaudeWindowsTextAndEnter(ptyId, text, adapter, options!.terminalMode!, traceId);
-      return;
+      return true;
     }
     if (this.shouldUseCodexWindowsQuietSubmitStrategy(options?.providerId, options?.terminalMode, text)) {
       this.sendCodexWindowsTextAndEnter(ptyId, text, adapter, options!.terminalMode!, traceId);
-      return;
+      return true;
     }
     if (this.shouldUseCodexWindowsSubmitStrategy(options?.providerId, options?.terminalMode)) {
       this.sendCodexWindowsFastTextAndEnter(ptyId, text, adapter, options!.terminalMode!, traceId);
-      return;
+      return true;
     }
 
     const sendEnter = () => {
@@ -2921,7 +2922,7 @@ export default class TerminalManager {
     if (!adapter || typeof (adapter as any).paste !== 'function') {
       try { this.hostPty.write(ptyId, text); } catch {}
       sendEnter();
-      return;
+      return true;
     }
 
     // 默认路径：监听 xterm -> PTY 的 outbound 数据；检测到 paste 结束或短暂静默后补回车。
@@ -2969,7 +2970,7 @@ export default class TerminalManager {
       clearTimers();
       try { this.hostPty.write(ptyId, text); } catch {}
       sendEnter();
-      return;
+      return true;
     }
 
     hardTimer = window.setTimeout(() => {
@@ -2977,6 +2978,7 @@ export default class TerminalManager {
       clearTimers();
       sendEnter();
     }, 800);
+    return true;
   }
 
   /**

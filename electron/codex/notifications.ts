@@ -3,6 +3,7 @@
 
 import { promises as fsp } from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { BrowserWindow } from "electron";
 import { perfLogger } from "../log";
 import { getCodexRootsFastAsync } from "../wsl";
@@ -38,6 +39,7 @@ type CodexNotifySource = {
   filePath: string;
   offset: number;
   remainder: string;
+  polling?: boolean;
 };
 
 type CodexNotifyPayload = {
@@ -69,7 +71,6 @@ type RecentCodexSubagentNotify = {
 const codexNotifySources = new Map<string, CodexNotifySource>();
 const recentCodexSubagentNotifies: RecentCodexSubagentNotify[] = [];
 let codexNotifyTimer: NodeJS.Timeout | null = null;
-let codexNotifyPolling = false;
 let codexNotifyWindowGetter: (() => BrowserWindow | null) | null = null;
 let codexNotifyBridgeGeneration = 0;
 let codexNotifyStateDecisionReader: (entry: CodexNotifyStateEntry, sourcePath?: string) => CodexNotifyStateDecision = getCodexNotifyStateDecision;
@@ -407,27 +408,27 @@ function emitCodexNotify(entry: CodexNotifyEntry, sourcePath?: string): void {
   }
 }
 
-/**
- * 中文说明：轮询读取 Codex notify 文件，避免依赖终端焦点与 OSC 触发条件。
- */
-async function pollCodexNotifyFiles(): Promise<void> {
-  if (codexNotifyPolling) return;
-  const generation = codexNotifyBridgeGeneration;
-  codexNotifyPolling = true;
+/** 独立读取单个通知来源；远端文件卡住时不阻塞其它来源，也不重复发起该来源的读取。 */
+async function pollCodexNotifySource(source: CodexNotifySource, generation: number): Promise<void> {
+  if (source.polling || generation !== codexNotifyBridgeGeneration) return;
+  source.polling = true;
   try {
-    for (const source of Array.from(codexNotifySources.values())) {
+    const entries = await readCodexNotifyEntries(source);
+    const key = source.filePath.replace(/\\/g, "/").toLowerCase();
+    if (generation !== codexNotifyBridgeGeneration || codexNotifySources.get(key) !== source) return;
+    for (const entry of entries) {
       if (generation !== codexNotifyBridgeGeneration) return;
-      const entries = await readCodexNotifyEntries(source);
-      if (generation !== codexNotifyBridgeGeneration) return;
-      if (!entries.length) continue;
-      for (const entry of entries) {
-        if (generation !== codexNotifyBridgeGeneration) return;
-        emitCodexNotify(entry, source.filePath);
-      }
+      emitCodexNotify(entry, source.filePath);
     }
   } finally {
-    if (generation === codexNotifyBridgeGeneration) codexNotifyPolling = false;
+    source.polling = false;
   }
+}
+
+/** 并行轮询各通知来源，保证 Windows 通知不会被 WSL 文件访问拖住。 */
+async function pollCodexNotifyFiles(): Promise<void> {
+  const generation = codexNotifyBridgeGeneration;
+  await Promise.all(Array.from(codexNotifySources.values(), (source) => pollCodexNotifySource(source, generation)));
 }
 
 /**
@@ -435,8 +436,20 @@ async function pollCodexNotifyFiles(): Promise<void> {
  */
 export async function startCodexNotificationBridge(getWindow: () => BrowserWindow | null): Promise<void> {
   const generation = codexNotifyBridgeGeneration;
+  const localPath = path.join(os.homedir(), ".codex", CODEX_NOTIFY_FILENAME);
   codexNotifyWindowGetter = getWindow;
-  const paths = await listCodexNotifyFiles();
+  if (!codexNotifyTimer) {
+    codexNotifyTimer = setInterval(() => {
+      void pollCodexNotifyFiles();
+    }, CODEX_NOTIFY_POLL_INTERVAL_MS);
+  }
+  // 本地来源不依赖 WSL 探测；先保留现有来源并建立本地偏移，避免启动期间漏收。
+  await syncCodexNotifySources(dedupePaths([
+    ...Array.from(codexNotifySources.values(), (source) => source.filePath),
+    localPath,
+  ]), generation);
+  if (generation !== codexNotifyBridgeGeneration) return;
+  const paths = dedupePaths([localPath, ...await listCodexNotifyFiles()]);
   if (generation !== codexNotifyBridgeGeneration) return;
   await syncCodexNotifySources(paths, generation);
   if (generation !== codexNotifyBridgeGeneration) return;
@@ -452,10 +465,6 @@ export async function startCodexNotificationBridge(getWindow: () => BrowserWindo
     if (generation !== codexNotifyBridgeGeneration) return;
     logCodexNotification(`notify bridge watch=${watchList.join(" | ") || "none"}`);
   } catch {}
-  if (codexNotifyTimer) return;
-  codexNotifyTimer = setInterval(() => {
-    void pollCodexNotifyFiles();
-  }, CODEX_NOTIFY_POLL_INTERVAL_MS);
   try { logCodexNotification(`notify bridge started sources=${codexNotifySources.size}`); } catch {}
 }
 
@@ -468,13 +477,13 @@ export function stopCodexNotificationBridge(): void {
     try { clearInterval(codexNotifyTimer); } catch {}
   }
   codexNotifyTimer = null;
-  codexNotifyPolling = false;
   codexNotifyWindowGetter = null;
   codexNotifySources.clear();
   recentCodexSubagentNotifies.length = 0;
 }
 
 export const __testing = {
+  pollCodexNotifyFiles,
   areCodexNotifyPreviewsEquivalent,
   buildCodexNotifyDispatch,
   isLegacySubagentCompletionPreview,
