@@ -181,13 +181,13 @@ const DEFAULT_TIMING: ReconcilerTiming = {
   fileRetryBaseMs: 1_000,
   localDirectoryEntriesPerSlice: 64,
   uncDirectoryEntriesPerSlice: 32,
-  localDirectorySliceIntervalMs: 5_000,
-  uncDirectorySliceIntervalMs: 10_000,
+  localDirectorySliceIntervalMs: 50,
+  uncDirectorySliceIntervalMs: 250,
   localDirectoryWallClockMs: 40,
   uncDirectoryWallClockMs: 100,
   localIoTimeoutMs: 5_000,
   uncIoTimeoutMs: 3_000,
-  sweepFileStartIntervalMs: 250,
+  sweepFileStartIntervalMs: 5,
   activePeriodicMs: 10_000,
   idlePeriodicMs: 60_000,
 };
@@ -1163,6 +1163,8 @@ async function processRootSlice(root: RootSweepState, generation: number): Promi
     while (
       root.cursor
       && processedEntries < entryBudget
+      // 预留通知容量，队列忙时暂停读取，避免吞掉尚未索引的历史文件。
+      && state.pendingFiles.size < MAX_PENDING_FILES - 64
       && Date.now() - startedAt < wallClockBudget
       && isGenerationCurrent(generation)
     ) {

@@ -13,6 +13,7 @@ import { safeWindowSend } from "./ipcSafe";
 import { detectResumeInfo, detectRuntimeShell, detectRuntimeShellFromContent } from "./history";
 import type { HistorySummary, Message, MessageContent, RuntimeShell } from "./history";
 import settings from "./settings";
+import { loadCodexStateSnapshot } from "./codexStateSnapshot";
 import { getClaudeRootCandidatesFastAsync } from "./agentSessions/claude/discovery";
 import { getGeminiRootCandidatesFastAsync } from "./agentSessions/gemini/discovery";
 import { getAntigravityRootCandidatesFastAsync } from "./agentSessions/antigravity/discovery";
@@ -1708,10 +1709,47 @@ function scheduleHistoryRootDiscovery(
 ): void {
   const isCurrent = () => historyIndexerLifecycleGeneration === lifecycleGeneration
     && reconciler.isHistoryReconcilerGenerationCurrent(reconcilerGeneration);
+  const seededRoots = new Set<string>();
+  /** 在后台批量恢复官方摘要，分片合并以免大量记录占住主线程。 */
+  const seedCodexRoots = async (candidates: readonly SessionsRootCandidate[]): Promise<void> => {
+    const roots = candidates.map((candidate) => candidate.path).filter((root) => !seededRoots.has(root));
+    for (const root of roots) seededRoots.add(root);
+    const entries = await loadCodexStateSnapshot(roots);
+    const ix: PersistIndex | undefined = g.__indexer?.index;
+    if (!isCurrent() || !ix) return;
+    let added = 0;
+    let updated = 0;
+    for (let offset = 0; offset < entries.length; offset += 128) {
+      if (!isCurrent()) return;
+      for (const entry of entries.slice(offset, offset + 128)) {
+        const key = canonicalKey(entry.summary.filePath);
+        const previous = ix.files[key];
+        if (previous) {
+          const sameMtime = previous.sig.mtimeMs === entry.sig.mtimeMs;
+          // 已完成的解析优先保留；迟到快照不能覆盖本轮刚更新的文件。
+          if (previous.sig.mtimeMs > entry.sig.mtimeMs
+            || (sameMtime && previous.sig.size > entry.sig.size)
+            || (sameMtime && previous.sig.size === entry.sig.size && previous.summary.codexHistoryResolved)) continue;
+        }
+        ix.files[key] = { sig: entry.sig, summary: { ...entry.summary, dirKey: entry.summary.dirKey || "", codexHistoryResolved: true } };
+        if (previous) updated++;
+        else added++;
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    if (!isCurrent() || (!added && !updated)) return;
+    ix.savedAt = Date.now();
+    saveIndex(ix);
+    safeWindowSend(getIndexerWindow(), "history:index:invalidate", { reason: "codex-state-snapshot" }, { tag: "indexer", suppressMs: 1000 });
+    perfLogger.log(`[indexer] codexStateSnapshot added=${added} updated=${updated}`);
+  };
   for (const providerId of ["codex", "claude", "gemini", "antigravity", "grok"] as ProviderId[]) {
-    publishHistoryRootCandidates(providerId, getImmediateLocalHistoryRootCandidates(providerId), isCurrent);
+    const immediate = getImmediateLocalHistoryRootCandidates(providerId);
+    publishHistoryRootCandidates(providerId, immediate, isCurrent);
+    if (providerId === "codex") void seedCodexRoots(immediate).catch(() => {});
     void getHistoryRootDiscoveryTask(providerId).then((candidates) => {
       publishHistoryRootCandidates(providerId, candidates, isCurrent);
+      if (providerId === "codex" && isCurrent()) void seedCodexRoots(candidates).catch(() => {});
       if (isCurrent()) reconciler.requestHistoryReconcileNow(`roots-discovered:${providerId}`);
     }).catch((error) => {
       if (isCurrent()) idxLog(`[roots] provider=${providerId} discovery failed error=${String(error)}`);

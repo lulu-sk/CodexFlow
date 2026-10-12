@@ -2,6 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { promises as fsp } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { loadCodexStateSnapshot, type CodexStateSnapshotEntry } from "./codexStateSnapshot";
+
+vi.mock("./codexStateSnapshot", () => ({ loadCodexStateSnapshot: vi.fn(async () => []) }));
 
 let userDataDir = "";
 const wslMockState = vi.hoisted(() => ({ sessionRoots: [] as string[] }));
@@ -72,6 +75,7 @@ beforeEach(async () => {
   }
   process.chdir(userDataDir);
   wslMockState.sessionRoots = [];
+  vi.mocked(loadCodexStateSnapshot).mockReset().mockResolvedValue([]);
   (global as any).__indexer = {
     retries: new Map(),
     index: { version: "v12", files: {}, savedAt: 0 },
@@ -128,7 +132,85 @@ async function startAndRefreshCodexFile(filePath: string): Promise<void> {
   }, { timeout: 2_000 });
 }
 
+/** 建立已有持久化摘要与后台快照，关闭目录发现以单独验证快速恢复入口。 */
+async function createPersistedCodexSnapshotFixture({ mtimeDelta = -1_000, sizeDelta = -1, resolved = true } = {}) {
+  const filePath = await createCodexSessionFile([{ type: "session_meta", payload: { id: "resumed", cwd: "/workspace/project", source: "cli" } }]);
+  wslMockState.sessionRoots = [];
+  const stat = await fsp.stat(filePath);
+  const key = filePath.replace(/\\/g, "/").toLowerCase();
+  const entry: CodexStateSnapshotEntry = {
+    sig: { mtimeMs: stat.mtimeMs, size: stat.size }, cwd: "/workspace/project",
+    summary: { providerId: "codex", id: "resumed", title: "最新摘要", preview: "真实请求", filePath, date: stat.mtimeMs, rawDate: "2026-04-20T00:00:00Z", dirKey: "/workspace/project", codexRelationship: { kind: "main" } },
+  };
+  const cached = {
+    sig: { mtimeMs: stat.mtimeMs + mtimeDelta, size: stat.size + sizeDelta },
+    summary: { ...entry.summary, title: "已解析摘要", date: stat.mtimeMs + mtimeDelta, codexHistoryResolved: resolved },
+  };
+  await fsp.writeFile(path.join(userDataDir, "history.index.v19.json"), JSON.stringify({ version: "v19", files: { [key]: cached }, savedAt: 1 }), "utf8");
+  vi.mocked(loadCodexStateSnapshot).mockResolvedValue([entry]);
+  return { key, entry, cached };
+}
+
 describe("electron/indexer Codex preview", () => {
+  it("启动批量摘要恢复后立刻可按项目查询，并只发送一次列表刷新", async () => {
+    const filePath = await createCodexSessionFile([{ type: "session_meta", payload: { id: "snapshot", cwd: "C:\\workspace\\project", source: "cli" } }]);
+    const stat = await fsp.stat(filePath);
+    vi.mocked(loadCodexStateSnapshot).mockResolvedValue([{
+      sig: { mtimeMs: stat.mtimeMs, size: stat.size }, cwd: "C:\\workspace\\project",
+      summary: { providerId: "codex", id: "snapshot", title: "已有摘要", preview: "已有请求", filePath, date: stat.mtimeMs, dirKey: "/mnt/c/workspace/project", codexRelationship: { kind: "main" } },
+    }]);
+    const send = vi.fn();
+    await startHistoryIndexer(() => ({ isDestroyed: () => false, webContents: { isDestroyed: () => false, mainFrame: { send } } } as any));
+    await vi.waitFor(() => expect(getIndexedSummaries().find((item) => item.id === "snapshot")?.title).toBe("已有摘要"));
+    await vi.waitFor(() => expect(send.mock.calls.filter((call) => call[0] === "history:index:invalidate")).toHaveLength(1));
+    expect(getIndexedCodexSessionRecords().find((item) => item.id === "snapshot")?.relationship.kind).toBe("main");
+  });
+
+  it("启动快照直接刷新已缓存旧会话，不必等待旧日期目录全量扫描", async () => {
+    const { key, entry } = await createPersistedCodexSnapshotFixture();
+    await ensureHistoryIndexLoaded();
+    const oldList = getIndexedSummaries();
+    expect(oldList[0].title).toBe("已解析摘要");
+    const send = vi.fn();
+    await startHistoryIndexer(() => ({ isDestroyed: () => false, webContents: { isDestroyed: () => false, mainFrame: { send } } } as any));
+    await vi.waitFor(() => expect(getIndexedSummaries()[0]?.date).toBe(entry.summary.date));
+    expect(getIndexedSummaries()).not.toBe(oldList);
+    expect((global as any).__indexer.index.files[key].sig).toEqual(entry.sig);
+    expect(getIndexedSummaries()[0]).toMatchObject({ title: "最新摘要", rawDate: entry.summary.rawDate, dirKey: "/workspace/project", codexHistoryResolved: true });
+    expect(send.mock.calls.filter((call) => call[0] === "history:index:invalidate")).toHaveLength(1);
+    await stopHistoryIndexer();
+    const persisted = JSON.parse(await fsp.readFile(path.join(userDataDir, "history.index.v19.json"), "utf8"));
+    expect(persisted.files[key].summary.date).toBe(entry.summary.date);
+  });
+
+  it.each([
+    { mtimeDelta: 0, sizeDelta: 0 },
+    { mtimeDelta: 1_000, sizeDelta: 0 },
+    { mtimeDelta: 0, sizeDelta: 1 },
+  ])("迟到快照保留签名为 %j 的完整或更新解析结果", async (deltas) => {
+    const { key, cached } = await createPersistedCodexSnapshotFixture(deltas);
+    await startHistoryIndexer(() => null);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect((global as any).__indexer.index.files[key]).toEqual(cached);
+  });
+
+  it("签名未变化但缓存尚未解析时，可信快照仍可补齐摘要", async () => {
+    const { entry } = await createPersistedCodexSnapshotFixture({ mtimeDelta: 0, sizeDelta: 0, resolved: false });
+    await startHistoryIndexer(() => null);
+    await vi.waitFor(() => expect(getIndexedSummaries()[0]?.title).toBe(entry.summary.title));
+    expect(getIndexedSummaries()[0]?.codexHistoryResolved).toBe(true);
+  });
+
+  it("停止后的迟到官方摘要不能回写新代次", async () => {
+    let complete!: (entries: any[]) => void;
+    vi.mocked(loadCodexStateSnapshot).mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+    await startHistoryIndexer(() => null);
+    await stopHistoryIndexer();
+    complete([{ summary: { providerId: "codex", id: "late", filePath: path.join(userDataDir, "late.jsonl"), dirKey: "/workspace/project" }, sig: { mtimeMs: 1, size: 1 }, cwd: "/workspace/project" }]);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(getIndexedSummaries()).toEqual([]);
+  });
+
   it("索引 Windows 的 new-chat 目录时保留完整项目归属", async () => {
     const filePath = await createCodexSessionFile([
       { type: "session_meta", payload: { id: "windows-new-chat", cwd: "C:\\workspace\\daily\\new-chat" } },

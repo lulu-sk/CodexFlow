@@ -4502,7 +4502,7 @@ ipcMain.handle('history.list', async (_e, args: {
     const canon = (p?: string): string => {
       if (!p) return '';
       try {
-        let s = String(p).replace(/\\n/g, '').replace(/\\\\+/g, '\\').replace(/^"|"$/g, '');
+        let s = String(p).replace(/\\\\+/g, '\\').replace(/^"|"$/g, '');
         if (/^\\\\wsl\.localhost\\/i.test(s)) {
           // UNC -> WSL
           const info = require('./wsl').uncToWsl(s);

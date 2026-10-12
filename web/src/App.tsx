@@ -348,8 +348,6 @@ import {
   normalizeResumeMode,
   normalizeTerminalMode,
   normalizeThemeSetting,
-  parseDateFromFilename,
-  parseRawDate,
   parseRecycleStashes,
   pickUuidFromString,
   resolveGrokAttachmentPaths,
@@ -14712,7 +14710,7 @@ export default function CodexFlowManagerUI() {
       if (ts >= group.latest) {
         group.latest = ts;
         group.latestTitle = s.title;
-        group.latestRaw = (s.rawDate ? String(s.rawDate) : String(s.date));
+        group.latestRaw = String(s.date || s.rawDate || '');
       }
       mp.set(key, group);
     }
@@ -14848,19 +14846,7 @@ export default function CodexFlowManagerUI() {
               ? rootNodes.find((node) => historySessionTreeSome(node, (session) => sessionMatchesQuery(session, q))) || null
               : null;
             const target = matchingRoot?.session || inGroup[0] || null;
-            const latestLabel = (() => {
-              if (!target) return '';
-              const candidate = target.filePath || '';
-              const byName = parseDateFromFilename(candidate);
-              if (byName) return formatAsLocal(byName);
-              const fromRaw = parseRawDate(target.rawDate);
-              if (fromRaw) return formatAsLocal(fromRaw);
-              if (target.date) {
-                const dt = new Date(target.date);
-                if (!isNaN(dt.getTime())) return formatAsLocal(dt);
-              }
-              return timeFromFilename(candidate);
-            })();
+            const latestLabel = target ? toLocalDisplayTime(target) : '';
             const defaultExpanded = (!!q && !!matchingRoot) || selectedHistoryDir === g.key;
             const expanded = (expandedGroups[g.key] ?? defaultExpanded);
             const queryMatchesGroupLabel = !!q && (g.label || '').toLowerCase().includes(q);

@@ -643,16 +643,11 @@ function parseRawDate(raw?: string): Date | null {
   } catch { return null; }
 }
 
+/** 统一显示历史更新时间，缺失时沿用原始时间和文件名回退。 */
 function toLocalDisplayTime(s: HistorySession): string {
   try {
-    const fromRaw = parseRawDate(s.rawDate);
-    if (fromRaw) return formatAsLocal(fromRaw);
-    if (s.date) {
-      const dt = new Date(s.date);
-      if (!isNaN(dt.getTime())) return formatAsLocal(dt);
-    }
-    const fromName = parseDateFromFilename(s.filePath);
-    if (fromName) return formatAsLocal(fromName);
+    const date = historySessionDate(s);
+    if (date) return formatAsLocal(date);
   } catch {}
   // 回退：尽量返回已有的原始时间/ISO，避免空白
   return String(s.rawDate || s.date || '');
@@ -1477,14 +1472,13 @@ function startOfLocalDay(dt: Date): Date {
   return new Date(dt.getFullYear(), dt.getMonth(), dt.getDate());
 }
 
+/** 分组、排序和显示统一采用更新时间，续聊旧文件也能归入最近日期。 */
 function historySessionDate(session?: HistorySession): Date | null {
   if (!session) return null;
+  const updated = parseRawDate(session.date);
+  if (updated && updated.getTime() > 0) return updated;
   const fromRaw = parseRawDate(session.rawDate);
   if (fromRaw) return fromRaw;
-  if (session.date) {
-    const dt = new Date(session.date);
-    if (!isNaN(dt.getTime())) return dt;
-  }
   return parseDateFromFilename(session.filePath);
 }
 
