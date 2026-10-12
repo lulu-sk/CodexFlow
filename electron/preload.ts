@@ -344,6 +344,10 @@ contextBridge.exposeInMainWorld('host', {
     write: (id: string, data: string) => {
       ipcRenderer.send('pty:write', { id, data });
     },
+    /** 为指定终端准备原生粘贴，正文不会拆成控制台按键。 */
+    beginNativePaste: (id: string, text: string) => ipcRenderer.invoke("pty:beginNativePaste", { id, text }),
+    /** 释放本次原生粘贴的剪贴板租借。 */
+    finishNativePaste: (id: string, token: string) => ipcRenderer.invoke("pty:finishNativePaste", { id, token }),
     ready: (id: string, colors?: TerminalPaletteColors) => {
       ipcRenderer.send('pty:ready', { id, colors });
     },

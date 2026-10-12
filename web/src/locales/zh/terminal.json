@@ -3,6 +3,8 @@
   "newConsole": "新建代理",
   "inputPlaceholder": "输入要发送的消息（支持粘贴图片、@ 搜索文件、@/ 搜索文件夹、拖拽文件），按 Ctrl + Enter 发送",
   "send": "发送",
+  "sendFailedTitle": "消息未发送",
+  "sendFailedMessage": "输入内容已保留。请回到 Codex 输入界面，启用右键粘贴后重试。如果刚更新 CodexFlow，请先重启程序。",
   "tabActions": "标签页操作",
   "detachTab": "在新窗口中打开",
   "attachTabBack": "移回主窗口",

@@ -464,6 +464,10 @@ export interface PtyAPI {
   /** 读取 PTY 的尾部输出缓存（用于渲染进程 reload/HMR 后恢复终端滚动区）。 */
   backlog?: (id: string, args?: { maxChars?: number }) => Promise<{ ok: boolean; data?: string; error?: string }>;
   write(id: string, data: string): void;
+  /** 准备 Windows 终端原生整段粘贴。 */
+  beginNativePaste?: (id: string, text: string) => Promise<{ ok: boolean; token?: string; error?: string }>;
+  /** 释放对应粘贴的剪贴板租借。 */
+  finishNativePaste?: (id: string, token: string) => Promise<{ ok: boolean; error?: string }>;
   /** 通知主进程 xterm.js 已完成双向绑定，并同步当前终端主题色。 */
   ready?: (id: string, colors?: { foreground: string; background: string }) => void;
   resize(id: string, cols: number, rows: number): void;

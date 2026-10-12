@@ -70,7 +70,7 @@ import { emitAntigravityUsageRefresh } from "@/lib/antigravity-status";
 import { emitGrokUsageRefresh } from "@/lib/grok-status";
 import { checkForUpdate, type UpdateCheckErrorType } from "@/lib/about";
 import TerminalManager from "@/lib/TerminalManager";
-import { isGeminiLikeProvider, isGeminiProvider, writeBracketedPaste, writeBracketedPasteAndEnter } from "@/lib/terminal-send";
+import { TerminalPasteError, isGeminiLikeProvider, isGeminiProvider, writeBracketedPaste, writeBracketedPasteAndEnter } from "@/lib/terminal-send";
 import { oscBufferDefaults, trimOscBuffer } from "@/lib/oscNotificationBuffer";
 import { collectRetainedAgentTurnTabIds, pruneAgentTurnHistory, pruneAgentTurnTimers } from "@/lib/agent-turn-timer";
 import { resolveAgentCompletionTab } from "@/lib/agent-completion-routing";
@@ -1474,6 +1474,7 @@ export default function CodexFlowManagerUI() {
 	    error: undefined,
 	  }));
 	  const [noticeDialog, setNoticeDialog] = useState<NoticeDialogState>(() => ({ open: false, title: "", message: "" }));
+  const pendingCommandSendByTabRef = useRef(new Set<string>());
 	  const [worktreeRecycleDialog, setWorktreeRecycleDialog] = useState<WorktreeRecycleDialogState>(() => ({
 	    open: false,
 	    projectId: "",
@@ -9976,7 +9977,7 @@ export default function CodexFlowManagerUI() {
    * 将输入区内容发送到当前标签页终端，并在首条发送时启动“Working 计时”。
    */
   async function sendCommand() {
-    if (!activeTab) return;
+    if (!activeTab || pendingCommandSendByTabRef.current.has(activeTab.id)) return;
     const text = compileTextFromChipsAndDraft(activeTab.id);
     const attachmentPaths = collectGrokAttachmentPaths(activeTab.id);
     if (!text.trim() && attachmentPaths.length <= 0) return;
@@ -9991,6 +9992,8 @@ export default function CodexFlowManagerUI() {
       } catch {}
     }
     // 用户开始新一轮输入后，立即取消恢复期守卫，避免影响真实完成通知。
+    if (pendingCommandSendByTabRef.current.has(activeTab.id)) return;
+    pendingCommandSendByTabRef.current.add(activeTab.id);
     delete resumeCompletionGuardByTabRef.current[activeTab.id];
     resetCodexErrorScanForTab(activeTab.id, "user-send", {
       advanceTurn: true,
@@ -10013,9 +10016,17 @@ export default function CodexFlowManagerUI() {
         geminiExternalEditorShortcut: geminiExternalEditorShortcutByTabRef.current[activeTab.id] || "auto",
         attachmentPaths,
       };
-      if (sendMode === 'write_and_enter') await tm.sendTextAndEnter(activeTab.id, text, sendOptions);
+      if (sendMode === 'write_and_enter') {
+        const sent = await tm.sendTextAndEnter(activeTab.id, text, sendOptions);
+        if (!sent) throw new TerminalPasteError("terminal-unavailable");
+      }
       else await tm.sendText(activeTab.id, text, sendOptions);
-    } catch {
+    } catch (error) {
+      if (error instanceof TerminalPasteError) {
+        cancelAgentTurnTimer(activeTab.id, "paste-failed");
+        setNoticeDialog({ open: true, title: t("terminal:sendFailedTitle") as string, message: t("terminal:sendFailedMessage") as string });
+        return;
+      }
       // 兜底：Gemini 与 Windows Codex 仍需保留各自的正文编码和提交等待。
       try {
         if (activeTab.providerId === "grok") {
@@ -10035,9 +10046,11 @@ export default function CodexFlowManagerUI() {
           if (sendMode === 'write_and_enter') { try { window.host.pty.write(pid, '\r'); } catch {} }
         }
       } catch {}
+    } finally {
+      pendingCommandSendByTabRef.current.delete(activeTab.id);
     }
-    setChipsByTab((m) => ({ ...m, [activeTab.id]: [] }));
-    setDraftByTab((m) => ({ ...m, [activeTab.id]: "" }));
+    setChipsByTab((m) => m[activeTab.id] === chipsByTab[activeTab.id] ? ({ ...m, [activeTab.id]: [] }) : m);
+    setDraftByTab((m) => m[activeTab.id] === draftByTab[activeTab.id] ? ({ ...m, [activeTab.id]: "" }) : m);
     setInputFullscreenState(activeTab.id, false);
     if (isTerminalFrontendDebugEnabled()) {
       try {
