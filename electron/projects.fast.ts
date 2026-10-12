@@ -36,6 +36,8 @@ export type Project = {
   lastOpenedAt?: number;
   /** 是否已确认存在内置代理引擎（codex/claude/gemini/antigravity/grok）的会话记录。 */
   hasBuiltInSessions?: boolean;
+  /** 用户明确添加的目录，即使暂时没有历史会话也保留。 */
+  explicitlyAdded?: boolean;
   /** 自定义引擎无法从会话文件反推 cwd 时，用于“保留该目录”的显式记录。 */
   dirRecord?: ProjectDirRecord;
 };
@@ -223,7 +225,6 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
     return __scanPromise;
   }
   __scanPromise = (async () => {
-  const store = loadStore();
   const logPath = path.join(app.getPath('userData'), 'scan-log.txt');
   const dbgPath = path.join(app.getPath('userData'), 'projects-debug.log');
   const dbgEnabled = () => { try { return !!getDebugConfig().projects.debug; } catch { return false; } };
@@ -281,13 +282,6 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
       return p;
     }
   };
-  const storeMap = new Map<string, Project>();
-  for (const item of store) {
-    try {
-      const key = canonKey(item.winPath, item.wslPath);
-      if (key && !storeMap.has(key)) storeMap.set(key, item);
-    } catch {}
-  }
 
   // 日志降噪：按根目录聚合统计，仅采样少量示例
   const DBG_MAX_SAMPLES = 3;
@@ -307,7 +301,7 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
       let raw = String(rawCwd || '').trim();
       if (!raw) return;
       raw = raw.replace(/^\"|\"$/g, '').trim();
-      raw = raw.split(/\\n|\r?\n|<\/?[a-zA-Z_:-]+>/)[0].trim();
+      raw = raw.split(/\r?\n|<\/?[a-zA-Z_:-]+>/)[0].trim();
       raw = tidyPathCandidate(raw);
       if (!raw) return;
       if (/\(\?:/.test(raw) || /\\r\?/.test(raw)) return;
@@ -380,6 +374,7 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
                   const prefix = await readPrefix(fp);
                   const first = (prefix.split(/\r?\n/).find(Boolean) || '').trim();
                   let raw = '';
+                  let parsedCwd = false;
                   // Codex 新版 JSONL：首行通常为 { type:'session_meta', payload:{ cwd } }（而非顶层 cwd）
                   try {
                     const obj = JSON.parse(first);
@@ -387,6 +382,7 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
                     else if (typeof obj?.payload?.cwd === 'string') raw = obj.payload.cwd;
                     else if (typeof obj?.working_dir === 'string') raw = obj.working_dir;
                     else if (typeof obj?.payload?.working_dir === 'string') raw = obj.payload.working_dir;
+                    parsedCwd = !!raw;
                   } catch {}
                   if (!raw) {
                     const m1 = (prefix || '').match(/Current\s+working\s+directory:\s*([^\r\n]+)/i); if (m1?.[1]) raw = m1[1];
@@ -395,8 +391,8 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
                   {
                     let s = String(raw || '');
                     s = s.replace(/^\"|\"$/g, '').trim();
-                    // 截断到首个 JSON 转义换行或标签边界，避免把后续说明拼进路径
-                    s = s.split(/\\n|\r?\n|<\/?[a-zA-Z_:-]+>/)[0].trim();
+                    // 已解析的 cwd 只按实际换行截断；原始 JSON 文本忽略双反斜杠中的 n。
+                    s = s.split(parsedCwd ? /\r?\n|<\/?[a-zA-Z_:-]+>/ : /(?<!\\)\\n|\r?\n|<\/?[a-zA-Z_:-]+>/)[0].trim();
                     s = tidyPathCandidate(s);
                     raw = s;
                   }
@@ -551,7 +547,14 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
     }
   } catch {}
 
-  if (projects.length > 0) {
+  {
+    // 扫描期间用户可能添加或选择目录，合并前重读缓存，避免覆盖最新保留记录。
+    const currentStore = loadStore();
+    const storeMap = new Map<string, Project>();
+    for (const item of currentStore) {
+      const key = canonKey(item.winPath, item.wslPath);
+      if (key && !storeMap.has(key)) storeMap.set(key, item);
+    }
     // 最终再做一次基于规范化 WSL 路径的去重
     const uniqueMap = new Map<string, Project>();
     for (const p of projects) {
@@ -587,11 +590,10 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
       }));
     }
 
-    // 将“自定义引擎目录记录”产生的项目合并进最终列表（即便无会话文件，也要保留）
-    for (const s of store) {
+    // 保留明确添加和自定义引擎记录的目录；旧版 add 产生的 false 标记也兼容保留。
+    for (const s of currentStore) {
       try {
-        if (!hasCustomDirRecord(s)) continue;
-        if (s.hasBuiltInSessions === true) continue;
+        if (s.explicitlyAdded !== true && !hasCustomDirRecord(s) && s.hasBuiltInSessions !== false) continue;
         const cleanWin = normalizeWinPath(s.winPath);
         if (!(await ensureDirExists(cleanWin))) continue;
         const cleanWsl = s.wslPath ? normWsl(s.wslPath) : "";
@@ -612,19 +614,6 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
     try { await saveStoreAsync(unique); } catch {}
     return unique;
   }
-  // 无新增时，清理旧存量的无效项目，避免“无中生有”
-  const cleaned: Project[] = [];
-  for (const s of store) {
-    try {
-      const cleanWin = normalizeWinPath(s.winPath);
-      if (await ensureDirExists(cleanWin)) {
-        const fixedName = deriveProjectDisplayName(cleanWin, s.wslPath);
-        cleaned.push({ ...s, winPath: pickPreferredWinPath(s.winPath, cleanWin, s.wslPath), name: fixedName || s.name });
-      }
-    } catch {}
-  }
-  if (cleaned.length !== store.length) { try { await saveStoreAsync(cleaned); } catch {} }
-  return cleaned;
   })();
   try {
     const res = await __scanPromise;
@@ -674,7 +663,8 @@ export function addProjectByWinPath(winPath: string, options?: AddProjectOptions
     });
     if (idx >= 0) {
       const exists = store[idx] as Project;
-      let changed = false;
+      let changed = exists.explicitlyAdded !== true;
+      exists.explicitlyAdded = true;
       if (exists.winPath !== normalized) {
         exists.winPath = normalized;
         changed = true;
@@ -701,6 +691,7 @@ export function addProjectByWinPath(winPath: string, options?: AddProjectOptions
       createdAt: now,
       lastOpenedAt: undefined,
       hasBuiltInSessions: false,
+      explicitlyAdded: true,
       dirRecord: nextRecord,
     };
     store.push(proj);

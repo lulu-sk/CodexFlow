@@ -111,6 +111,20 @@ afterEach(async () => {
 });
 
 describe("electron/history.listHistory", () => {
+  it("扫描和缓存分页都能匹配 Windows 的 new-chat 子目录", async () => {
+    const cwd = "C:\\workspace\\daily\\new-chat";
+    await createHistoryListJsonlFile([
+      { type: "session_meta", payload: { id: "windows-new-chat", cwd } },
+      { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "测试请求" }] } },
+    ]);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const sessions = await listHistory({ winPath: cwd, wslPath: "/mnt/c/workspace/daily/new-chat" });
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0].dirKey).toBe("/mnt/c/workspace/daily/new-chat");
+    }
+    expect(await listHistory({ winPath: "C:\\workspace\\dailyew-chat" })).toHaveLength(0);
+  });
+
   it("回退多版本在扫描和缓存分页中只保留当前版本，详情恢复继承记录", async () => {
     const thread = "11111111-1111-4111-8111-111111111111";
     const revision = "22222222-2222-4222-8222-222222222222";

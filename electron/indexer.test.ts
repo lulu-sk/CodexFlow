@@ -129,6 +129,26 @@ async function startAndRefreshCodexFile(filePath: string): Promise<void> {
 }
 
 describe("electron/indexer Codex preview", () => {
+  it("索引 Windows 的 new-chat 目录时保留完整项目归属", async () => {
+    const filePath = await createCodexSessionFile([
+      { type: "session_meta", payload: { id: "windows-new-chat", cwd: "C:\\workspace\\daily\\new-chat" } },
+      { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "测试请求" }] } },
+    ]);
+    await startAndRefreshCodexFile(filePath);
+    expect(getIndexedSummaries().find((item) => item.filePath === filePath)?.dirKey)
+      .toBe("/mnt/c/workspace/daily/new-chat");
+  });
+
+  it("首次加载不复用旧版错误项目归属缓存", async () => {
+    await fsp.writeFile(path.join(userDataDir, "history.index.v18.json"), JSON.stringify({
+      version: "v18", savedAt: Date.now(), files: {
+        stale: { sig: { mtimeMs: 1, size: 1 }, summary: { providerId: "codex", id: "stale", dirKey: "/mnt/c/workspace/dailyew-chat" } },
+      },
+    }), "utf8");
+    await ensureHistoryIndexLoaded();
+    expect(getIndexedSummaries()).toEqual([]);
+  });
+
   it("索引和增量刷新选择当前回退版本，摘要使用继承的首条用户输入", async () => {
     const thread = "11111111-1111-4111-8111-111111111111";
     const revision = "22222222-2222-4222-8222-222222222222";
@@ -184,7 +204,7 @@ describe("electron/indexer Codex preview", () => {
     const filePath = path.join(parentDir, "session.jsonl");
     const key = filePath.replace(/\\/g, "/").toLowerCase();
     (global as any).__indexer.index = {
-      version: "v18",
+      version: "v19",
       files: {
         [key]: {
           sig: { mtimeMs: 1, size: 1 },
@@ -194,7 +214,7 @@ describe("electron/indexer Codex preview", () => {
       savedAt: 0,
     };
     (global as any).__indexer.details = {
-      version: "v18",
+      version: "v19",
       files: {
         [key]: { sig: { mtimeMs: 1, size: 1 }, details: { providerId: "codex", id: "session", filePath, messages: [] } },
       },
@@ -212,8 +232,8 @@ describe("electron/indexer Codex preview", () => {
   it("首次列表请求可直接加载持久化摘要索引", async () => {
     const cachedFilePath = path.join(os.tmpdir(), "codexflow-cached-session.jsonl");
     const cacheKey = cachedFilePath.replace(/\\/g, "/").toLowerCase();
-    await fsp.writeFile(path.join(userDataDir, "history.index.v18.json"), JSON.stringify({
-      version: "v18",
+    await fsp.writeFile(path.join(userDataDir, "history.index.v19.json"), JSON.stringify({
+      version: "v19",
       savedAt: Date.now(),
       files: {
         [cacheKey]: {
@@ -295,8 +315,8 @@ describe("electron/indexer Codex preview", () => {
     await startAndRefreshCodexFile(filePath);
     await stopHistoryIndexer();
 
-    const index = JSON.parse(await fsp.readFile(path.join(userDataDir, "history.index.v18.json"), "utf8"));
-    const details = JSON.parse(await fsp.readFile(path.join(userDataDir, "history.details.v18.json"), "utf8"));
+    const index = JSON.parse(await fsp.readFile(path.join(userDataDir, "history.index.v19.json"), "utf8"));
+    const details = JSON.parse(await fsp.readFile(path.join(userDataDir, "history.details.v19.json"), "utf8"));
     const detailEntry = Object.values(details.files as Record<string, any>)
       .find((entry: any) => entry?.details?.filePath === filePath) as any;
 
@@ -319,14 +339,14 @@ describe("electron/indexer Codex preview", () => {
 
     const cacheWritesBeforeStop = writeFileSpy.mock.calls.filter(([filePath]) => {
       const name = String(filePath || "");
-      return name.endsWith("history.index.v18.json") || name.endsWith("history.details.v18.json");
+      return name.endsWith("history.index.v19.json") || name.endsWith("history.details.v19.json");
     });
     expect(cacheWritesBeforeStop).toHaveLength(0);
 
     await stopHistoryIndexer();
     const cacheWritesAfterStop = writeFileSpy.mock.calls.filter(([filePath]) => {
       const name = String(filePath || "");
-      return name.endsWith("history.index.v18.json") || name.endsWith("history.details.v18.json");
+      return name.endsWith("history.index.v19.json") || name.endsWith("history.details.v19.json");
     });
     expect(cacheWritesAfterStop).toHaveLength(2);
   });

@@ -70,12 +70,12 @@ export function pathMatchesNormalizedDirKeyScope(candidate: string, scope: strin
  * 清理从日志/JSON 中提取的路径候选：
  * - 去除首尾空白与包裹引号
  * - 折叠 JSON 转义反斜杠（例如 C:\\code -> C:\code）
+ * - 保留目录名中的反斜杠与 n，已解析的路径不能再次按换行转义处理
  * - 去除尾部分隔符
  */
 export function tidyPathCandidate(value: string): string {
   try {
     let s = String(value || "")
-      .replace(/\\n/g, "")
       .replace(/^"|"$/g, "")
       .replace(/^'|'$/g, "")
       .trim();

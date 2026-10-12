@@ -78,7 +78,7 @@ function toWslLikePathKey(input?: string): string {
     let s = String(input || "").trim();
     if (!s) return "";
     // 先清理常见的 JSON/日志噪声，保持与调用方一致
-    s = s.replace(/\\n/g, "").replace(/\\\\+/g, "\\").replace(/^"|"$/g, "").trim();
+    s = tidyPathCandidate(s);
     if (!s) return "";
 
     if (isUNCPath(s)) {
@@ -109,7 +109,7 @@ function toWslLikePathKey(input?: string): string {
  */
 function canonicalizeHistoryPathForMatch(input?: string): string {
   try {
-    let s = String(input || '').replace(/\\n/g, '').replace(/\\\\+/g, '\\').replace(/^"|"$/g, '');
+    let s = tidyPathCandidate(String(input || ''));
     if (isUNCPath(s)) {
       const info = uncToWsl(s);
       if (info) {
@@ -601,7 +601,7 @@ type HistoryListCacheEntry = {
 };
 
 // 中文说明：历史归属语义变更后提升版本，强制失效旧的列表缓存，避免继续复用错误归属结果。
-const PARSER_VERSION = 'v18';
+const PARSER_VERSION = 'v19';
 const CACHE_SCHEMA_VERSION = '2';
 
 /**

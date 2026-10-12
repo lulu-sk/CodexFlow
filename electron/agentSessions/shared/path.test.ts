@@ -17,6 +17,17 @@ const TEST_CLAUDE_SCOPE = `${TEST_PARENT_SCOPE}/projects/monorepo/apps/claude-de
 const TEST_GEMINI_SCOPE = `${TEST_PARENT_SCOPE}/projects/monorepo/packages/gemini-demo`;
 
 describe("tidyPathCandidate", () => {
+  it("已解析的 Windows 路径保留以 n 开头的目录名", () => {
+    const cwd = "C:\\workspace\\daily\\new-chat\\notes";
+    expect(tidyPathCandidate(JSON.parse(JSON.stringify(cwd)))).toBe(cwd);
+    expect(dirKeyFromCwd(cwd)).toBe("/mnt/c/workspace/daily/new-chat/notes");
+  });
+
+  it("兼容原始 JSON 中双反斜杠形式的路径", () => {
+    expect(tidyPathCandidate(String.raw`C:\\workspace\\daily\\new-chat`))
+      .toBe("C:\\workspace\\daily\\new-chat");
+  });
+
   it("保留 Windows 盘符根目录的尾部语义", () => {
     expect(tidyPathCandidate("C:\\")).toBe("C:\\");
     expect(tidyPathCandidate("C:")).toBe("C:\\");
