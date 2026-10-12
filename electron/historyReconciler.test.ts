@@ -92,6 +92,42 @@ afterEach(async () => {
 });
 
 describe("electron/historyReconciler", () => {
+  it("启动扫描在秒级覆盖旧日期目录，不丢弃超过队列容量的历史", async () => {
+    const rootPath = "C:\\history";
+    const dayPath = path.join(rootPath, "2025", "01", "01");
+    const directories = new Map([
+      [rootPath, ["2025"]],
+      [path.join(rootPath, "2025"), ["01"]],
+      [path.join(rootPath, "2025", "01"), ["01"]],
+    ]);
+    const reconcileFile = vi.fn(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 30));
+      return "updated" as const;
+    });
+    __testing.setIndexPort({
+      getSnapshot: () => createSnapshot({ rootsByProvider: { ...emptyRoots(), codex: [rootPath] } }),
+      reconcileFile,
+      normalizeFileAnchor: (_providerId, filePath) => filePath,
+      shouldIndexFile: () => true,
+    });
+    __testing.setFileSystemPort({
+      stat: async () => createDirectoryStat(),
+      opendir: async (directoryPath) => {
+        const entries = directoryPath === dayPath
+          ? Array.from({ length: 600 }, (_, index) => createFileEntry(`session-${index}.jsonl`))
+          : (directories.get(directoryPath) || []).map((name) => ({ name, isFile: () => false, isDirectory: () => true }) as fs.Dirent);
+        let index = 0;
+        return { read: async () => entries[index++] || null, close: async () => {} };
+      },
+    });
+    const generation = await beginHistoryReconcilerInitialization();
+    markHistoryReconcilerReady(generation);
+    await advance(10_000);
+    const paths = new Set(reconcileFile.mock.calls.map((call: unknown[]) => call[0]));
+    expect(paths.size).toBe(600);
+    expect(__testing.snapshot().pendingFiles).toBe(0);
+  });
+
   it("保留初始化前到达的精确文件通知", async () => {
     const reconcileFile = vi.fn(async () => "updated" as const);
     __testing.setIndexPort({

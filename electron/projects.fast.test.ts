@@ -29,6 +29,7 @@ vi.mock("./log", () => ({ perfLogger: {
 } }));
 vi.mock("./debugConfig", () => ({ getDebugConfig: () => ({ projects: { debug: false } }) }));
 vi.mock("./settings", () => ({ default: { getSettings: () => ({}) } }));
+vi.mock("./codexStateSnapshot", () => ({ loadCodexStateSnapshot: vi.fn(async () => []) }));
 
 import { addProjectByWinPath, listProjectsFromStore, scanProjectsAsync, type Project } from "./projects.fast";
 import { getCodexRootsFastAsync } from "./wsl";
@@ -44,10 +45,11 @@ afterEach(async () => {
 });
 
 /** 在临时会话目录中写入真实 JSONL 文件，供项目扫描使用。 */
-async function createSession(records: unknown[]): Promise<void> {
+async function createSession(records: unknown[], withConversation = true): Promise<void> {
   const dir = path.join(sessionRoot, "2026", "04", "29");
   await fsp.mkdir(dir, { recursive: true });
-  await fsp.writeFile(path.join(dir, "rollout-test.jsonl"), records.map((record) => JSON.stringify(record)).join("\n") + "\n", "utf8");
+  const conversation = { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "测试请求" }] } };
+  await fsp.writeFile(path.join(dir, "rollout-test.jsonl"), [...records, ...(withConversation ? [conversation] : [])].map((record) => JSON.stringify(record)).join("\n") + "\n", "utf8");
 }
 
 /** 创建实际存在的目录及缓存条目，模拟旧扫描和用户保留记录。 */
@@ -63,6 +65,26 @@ async function writeStore(projects: Project[]): Promise<void> {
 }
 
 describe("项目扫描与目录保留", () => {
+  it("只有会话头和自动注入上下文的项目不进入列表", async () => {
+    const project = await createStoredProject("empty-auto");
+    await writeStore([project]);
+    await createSession([
+      { type: "session_meta", payload: { id: "empty", cwd: project.winPath } },
+      { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "# AGENTS.md instructions\n<INSTRUCTIONS>规则</INSTRUCTIONS>" }] } },
+      { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "<environment_context>环境信息</environment_context>" }] } },
+    ], false);
+    expect(await scanProjectsAsync()).toEqual([]);
+    expect(listProjectsFromStore()).toEqual([]);
+  });
+
+  it("只有图片的真实用户请求仍保留项目", async () => {
+    await createSession([
+      { type: "session_meta", payload: { id: "image", cwd: "C:\\workspace\\image-project" } },
+      { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_image", image_url: "data:image/png;base64,aGVsbG8=" }] } },
+    ], false);
+    expect((await scanProjectsAsync()).map((project) => project.winPath)).toEqual(["C:\\workspace\\image-project"]);
+  });
+
   it("元信息中的 new-chat 子目录不会截成没有会话的父目录", async () => {
     const parent = await createStoredProject("daily");
     const cwd = path.join(parent.winPath, "new-chat");

@@ -14,6 +14,8 @@ import { parseClaudeSessionFile } from "./agentSessions/claude/parser";
 import { parseGeminiSessionFile, extractGeminiProjectHashFromPath } from "./agentSessions/gemini/parser";
 import { parseGrokSessionFile } from "./agentSessions/grok/parser";
 import { tidyPathCandidate } from "./agentSessions/shared/path";
+import { loadCodexStateSnapshot } from "./codexStateSnapshot";
+import { hasCodexConversation } from "./codexConversation";
 import { perfLogger } from "./log";
 import { getDebugConfig } from "./debugConfig";
 import settings from "./settings";
@@ -353,6 +355,11 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
     } catch {}
   };
 
+  const snapshot = await loadCodexStateSnapshot(sessionRoots.map((entry) => entry.root));
+  const snapshotFiles = new Set(snapshot.map((entry) => path.normalize(entry.summary.filePath).toLowerCase()));
+  for (const entry of snapshot)
+    await addProjectFromCwd(entry.cwd, { root: rootsInfo.windowsSessions });
+
   await perfLogger.time('projectsFast.enumerate', async () => {
     await Promise.all(sessionRoots.map(({ root, distro }) => limit(async () => {
       try {
@@ -368,6 +375,7 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
               const files = await fsp.readdir(ddir).then((fsx) => fsx.filter((f) => f.endsWith('.jsonl'))).catch(() => [] as string[]);
               for (const f of files) {
                 const fp = path.join(ddir, f);
+                if (snapshotFiles.has(path.normalize(fp).toLowerCase())) continue;
                 try {
                   const agg = getAgg(root, distro);
                   agg.files++;
@@ -434,9 +442,9 @@ export async function scanProjectsAsync(_roots?: string[], verbose = false): Pro
                   const cleanWin = normalizeWinPath((winPathGuess || '').trim());
                   const cleanWsl = normWsl((wslPathGuess || '').trim());
                   // 优先接受真实存在的目录；若不存在，也依据会话记录纳入（"会话即真相"），避免漏掉历史项目
-                  const exists = await ensureDirExists(cleanWin);
                   const key = canonKey(cleanWin, cleanWsl);
                   if (seen.has(key)) continue;
+                  if (!(await hasCodexConversation(fp, prefix))) continue;
                   seen.add(key);
                   const name = deriveProjectDisplayName(cleanWin, cleanWsl);
                   const hasDot = (await pathExists(path.join(cleanWin, '.codex'))) || (await pathExists(path.join(cleanWin, 'codex.json')));
