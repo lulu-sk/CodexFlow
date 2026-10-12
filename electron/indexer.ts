@@ -393,8 +393,8 @@ function stripDetailsForPersist(details: Details): Details {
   return { ...rest, messages: [] };
 }
 
-// 历史索引加入 Codex 会话关系字段后提升版本，避免旧缓存缺少父子关系和关联删除所需的文件签名。
-const VERSION = "v18";
+// 修正 Windows 目录名中的反斜杠与 n 后提升版本，避免继续复用错误的项目归属。
+const VERSION = "v19";
 
 /**
  * 读取 Claude Code 的 Agent 历史开关（默认 false）。

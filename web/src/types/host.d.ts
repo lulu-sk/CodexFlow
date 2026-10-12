@@ -172,6 +172,8 @@ export type Project = {
   worktreePostSetup?: WorktreePostSetupConfig;
   /** 是否已确认存在内置代理引擎（codex/claude/gemini/antigravity）的会话记录。 */
   hasBuiltInSessions?: boolean;
+  /** 用户明确添加的目录，即使暂时没有历史会话也保留。 */
+  explicitlyAdded?: boolean;
   /** 自定义引擎无法从会话文件反推 cwd 时，用于“保留该目录”的显式记录。 */
   dirRecord?: { kind: "custom_provider"; providerId: string; recordedAt: number };
   createdAt: number;

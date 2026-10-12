@@ -8987,13 +8987,16 @@ export default function CodexFlowManagerUI() {
       // 若该路径已在项目列表中，行为等同于点击对应项目
       const exists = projects.find((x) => String(x.winPath || '').replace(/\\/g, '/').toLowerCase() === winPath.replace(/\\/g, '/').toLowerCase());
       if (exists) {
+        const added = await window.host.projects.add({ winPath });
+        const project = added.ok && added.project ? added.project : exists;
+        upsertProjectInList(project);
         // 用户显式打开：若该项目处于隐藏状态，自动取消隐藏，避免“已选中但列表不可见”的矛盾状态
         if (hiddenProjectIdSet.has(exists.id)) {
           setHiddenProjectIds((prev) => prev.filter((id) => id !== exists.id));
         }
         try { suppressAutoSelectRef.current = true; } catch {}
         setSelectedProjectId(exists.id);
-        try { await openConsoleForProject(exists); } catch {}
+        try { await openConsoleForProject(project); } catch {}
         return;
       }
       const added: any = await window.host.projects.add({ winPath });
