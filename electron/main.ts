@@ -10,6 +10,7 @@ import path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { ProxyAgent, setGlobalDispatcher, Agent } from 'undici';
 import { PTYManager, setTermDebug } from "./pty";
+import { TerminalClipboardPasteManager } from "./terminalClipboardPaste";
 import opentype from 'opentype.js';
 import iconv from 'iconv-lite';
 import projects, { IMPLEMENTATION_NAME as PROJECTS_IMPL } from "./projects/index";
@@ -938,6 +939,8 @@ const APP_USER_MODEL_ID = 'com.codexflow.app';
 const DEV_APP_USER_MODEL_ID = 'com.codexflow.app.dev';
 const PROTOCOL_SCHEME = 'codexflow';
 const ptyManager = new PTYManager(() => BrowserWindow.getAllWindows().filter((win) => !win.isDestroyed()));
+const terminalClipboardPaste = new TerminalClipboardPasteManager(clipboard);
+app.on("will-quit", () => terminalClipboardPaste.dispose());
 
 /**
  * 解析请求环境，确保返回一个当前机器可见的终端环境。
@@ -3147,6 +3150,20 @@ ipcMain.handle('pty:backlog', async (_e, args: { id: string; maxChars?: number }
 
 ipcMain.on('pty:write', (_e, { id, data }: { id: string; data: string }) => {
   ptyManager.write(id, data);
+});
+
+/** 校验真实终端和文本后，准备一次 Windows 原生整段粘贴。 */
+ipcMain.handle("pty:beginNativePaste", (_e, args: { id?: unknown; text?: unknown }) => {
+  if (process.platform !== "win32" || typeof args?.id !== "string" || typeof args?.text !== "string" || !ptyManager.hasSession(args.id))
+    return { ok: false, error: "invalid-terminal" };
+  return terminalClipboardPaste.begin(args.id, args.text);
+});
+
+/** 粘贴确认、取消或失败后释放租借，避免覆盖其它终端或用户的新复制。 */
+ipcMain.handle("pty:finishNativePaste", (_e, args: { id?: unknown; token?: unknown }) => {
+  if (typeof args?.id !== "string" || typeof args?.token !== "string")
+    return { ok: false, error: "invalid-paste" };
+  return terminalClipboardPaste.finish(args.id, args.token);
 });
 
 ipcMain.on('pty:ready', (_e, payload: {

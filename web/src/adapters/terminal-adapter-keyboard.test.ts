@@ -167,6 +167,15 @@ describe("TerminalAdapter（真实 xterm 键盘输入）", () => {
     await vi.waitFor(() => expect(outbound).toEqual(["example text"]));
   });
 
+  it("原生粘贴事件只在真实鼠标报告模式开启时可用，且不产生系统输入", async () => {
+    expect(adapter.readNativePasteSequence?.()).toBeNull();
+    adapter.write("\x1b[?1003h\x1b[?1006h\x1b[4;8H");
+    await vi.waitFor(() => expect(adapter.readNativePasteSequence?.()).toBe("\x1b[<2;8;4M\x1b[<2;8;4m"));
+    expect(outbound).toEqual([]);
+    adapter.write("\x1b[?1003l");
+    await vi.waitFor(() => expect(adapter.readNativePasteSequence?.()).toBeNull());
+  });
+
   it("输入焦点在页面其他输入框时不发送快捷键", () => {
     const input = document.createElement("input");
     document.body.appendChild(input);

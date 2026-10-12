@@ -18,6 +18,7 @@ import {
 import {
   BRACKETED_PASTE_END,
   BRACKETED_PASTE_START,
+  TerminalPasteError,
   buildBracketedPastePayload,
   getPasteEnterDelayMs,
   getPasteSubmitMinWaitMs,
@@ -74,6 +75,8 @@ const TERMINAL_SEND_SCREEN_ACK_STABLE_POLLS = 2;
 const CLAUDE_LARGE_PASTE_LINE_THRESHOLD = 5;
 const CLAUDE_LARGE_PASTE_CHAR_THRESHOLD = 1000;
 const CODEX_LARGE_PASTE_CHAR_THRESHOLD = 1000;
+const CODEX_WINDOWS_NATIVE_PASTE_CHAR_THRESHOLD = 4096;
+const CODEX_WINDOWS_NATIVE_PASTE_TIMEOUT_MS = 4000;
 const CODEX_WINDOWS_FAST_SUBMIT_DELAY_MS = 32;
 const CODEX_WINDOWS_PASTE_BURST_SETTLE_MS = 140;
 const CODEX_WINDOWS_FAST_SUBMIT_MAX_WAIT_MS = 1000;
@@ -124,6 +127,9 @@ const NON_TEXT_INPUT_TYPES = new Set([
  * 渲染进程侧的 PTY 接口抽象，便于将 TerminalManager 从具体的 window.host.pty 解耦以实现复用。
  */
 export interface HostPtyAPI {
+  /** 为整段原生粘贴准备和释放剪贴板租借。 */
+  beginNativePaste?: (id: string, text: string) => Promise<{ ok: boolean; token?: string; error?: string }>;
+  finishNativePaste?: (id: string, token: string) => Promise<{ ok: boolean; error?: string }>;
   onData: (id: string, handler: (data: string) => void) => (() => void);
   write: (id: string, data: string) => void;
   /** 通知主进程 xterm.js 已完成双向绑定，并同步当前终端主题色。 */
@@ -1631,6 +1637,70 @@ export default class TerminalManager {
     });
   }
 
+  /** 大文本复用 Codex 原生右键粘贴；完整占位符稳定后才提交，失败不发送正文或兜底回车。 */
+  private async sendCodexWindowsNativePaste(
+    tabId: string,
+    ptyId: string,
+    text: string,
+    adapter: TerminalAdapterAPI | null,
+    submit: boolean,
+    traceId?: string | null,
+  ): Promise<void> {
+    let token: string | undefined;
+    try {
+      const sequence = adapter?.readNativePasteSequence?.();
+      const marker = this.buildCodexScreenAckMarker(text);
+      if (!sequence || !marker || !adapter?.readCursorTextSnapshot || !this.hostPty.beginNativePaste || !this.hostPty.finishNativePaste)
+        throw new TerminalPasteError("native-paste-unavailable");
+      /** 只认可本次完整字符数的占位符，不使用正文尾部或旧回显作兜底。 */
+      const readMarker = () => {
+        const snapshot = adapter.readCursorTextSnapshot?.({ linesBefore: 2, linesAfter: 1, maxChars: 2048 });
+        return !!snapshot?.text.includes(marker);
+      };
+      if (readMarker())
+        throw new TerminalPasteError("native-paste-existing-input");
+      const prepared = await this.hostPty.beginNativePaste(ptyId, text);
+      token = prepared.token;
+      if (!prepared.ok || !token)
+        throw new TerminalPasteError(prepared.error || "native-paste-prepare-failed");
+      if (this.getPtyId(tabId) !== ptyId || this.adapters[tabId] !== adapter)
+        throw new TerminalPasteError("native-paste-terminal-changed");
+      this.logSendDiagnostic(traceId, `trigger.mode=codex.native-paste chars=${text.length}`);
+      this.hostPty.write(ptyId, sequence);
+      const deadline = Date.now() + CODEX_WINDOWS_NATIVE_PASTE_TIMEOUT_MS;
+      let readyAt: number | null = null;
+      while (Date.now() < deadline) {
+        if (this.getPtyId(tabId) !== ptyId || this.adapters[tabId] !== adapter)
+          throw new TerminalPasteError("native-paste-terminal-changed");
+        if (readMarker() && !this.adapterHasPendingWriteWork(tabId)) {
+          readyAt ??= Date.now();
+          if (Date.now() - readyAt >= CODEX_WINDOWS_PASTE_BURST_SETTLE_MS) {
+            const released = await this.hostPty.finishNativePaste(ptyId, token);
+            token = undefined;
+            if (!released.ok)
+              throw new TerminalPasteError(released.error || "native-paste-release-failed");
+            if (this.getPtyId(tabId) !== ptyId || this.adapters[tabId] !== adapter || !readMarker())
+              throw new TerminalPasteError("native-paste-input-changed");
+            if (submit)
+              this.hostPty.write(ptyId, "\r");
+            this.logSendDiagnostic(traceId, `native-paste.confirmed submit=${submit ? 1 : 0}`);
+            return;
+          }
+        } else {
+          readyAt = null;
+        }
+        await this.sleep(TERMINAL_SEND_SCREEN_ACK_POLL_MS);
+      }
+      throw new TerminalPasteError("native-paste-timeout");
+    } catch (error) {
+      this.logSendDiagnostic(traceId, `native-paste.failed reason=${String(error)}`);
+      throw error instanceof TerminalPasteError ? error : new TerminalPasteError(String(error));
+    } finally {
+      if (token && this.hostPty.finishNativePaste)
+        await this.hostPty.finishNativePaste(ptyId, token).catch(() => undefined);
+    }
+  }
+
   /**
    * 中文说明：Claude 在 Windows / PowerShell 长文本场景下，采用“等待 PTY 回显稳定后再回车”的保守提交策略。
    * 设计背景：
@@ -2790,6 +2860,7 @@ export default class TerminalManager {
    * 发送一段文本到指定 tab 对应的终端：
    * - 优先走 xterm 的 paste 通道（若可用，可触发 bracketed paste，避免应用层对逐字输入做清洗）。
    * - Codex 在 Windows/PowerShell 下发送正文时，会统一改走显式 bracketed paste，避免正文退化成快速按键输入。
+   * - Windows Codex 超过 4096 字符时复用原生整段粘贴，完整回显确认前不返回成功。
    * - 若 adapter 不存在或 paste 不可用，则回退为直接写入 PTY。
    * - `sendText()` 仅负责“写入正文”，不会走 Gemini 外部编辑器提交链路；该链路只在 `sendTextAndEnter()` 中启用。
    */
@@ -2797,6 +2868,12 @@ export default class TerminalManager {
     const adapter = this.adapters[tabId];
     const ptyId = this.getPtyId(tabId);
     const traceId = this.shouldTraceSendDiagnostics(options?.providerId) ? this.nextSendTraceId(options?.providerId) : null;
+    if (this.shouldUseCodexWindowsSubmitStrategy(options?.providerId, options?.terminalMode) && text.length > CODEX_WINDOWS_NATIVE_PASTE_CHAR_THRESHOLD) {
+      if (!ptyId)
+        throw new TerminalPasteError("terminal-unavailable");
+      await this.sendCodexWindowsNativePaste(tabId, ptyId, text, adapter, false, traceId);
+      return;
+    }
     if (ptyId && isGrokProvider(options?.providerId)) {
       await this.sendGrokAttachments(ptyId, adapter, options?.attachmentPaths, traceId);
       if (!String(text ?? "")) return;
@@ -2845,7 +2922,7 @@ export default class TerminalManager {
    * 设计目标：
    * - 优先通过 `adapter.paste()` 走终端粘贴通道，避免 bracketed paste 模式下内嵌的 `CR` 被应用层吞掉。
    * - 仅在“文本已被目标 CLI 正常接收”的合适时机发送真正的 `'\r'`(Enter)，保证应用正确解析。
-   * - 全链路容错：任何阶段异常都会降级为直接 `write(text)` 并最终补发 `'\r'`。
+   * - 原生大文本粘贴失败会明确抛错，交由输入框保留草稿；其它策略继续沿用原有兜底。
    * - Gemini：使用“xterm paste + 局部屏幕 ACK/超时兜底 + 延迟回车”策略，避开 40ms paste 防误触窗口。
    * - Codex + Windows/PowerShell：正文统一使用显式 bracketed paste，短文本保持快速提交，长文本继续等待屏幕 ACK；Claude 仍使用原有静默等待策略。
    *
@@ -2861,6 +2938,10 @@ export default class TerminalManager {
     const text = stripTrailingNewlines(String(raw ?? ""));
     const BRACKET_END = '\x1b[201~';
     const traceId = this.shouldTraceSendDiagnostics(options?.providerId) ? this.nextSendTraceId(options?.providerId) : null;
+    if (this.shouldUseCodexWindowsSubmitStrategy(options?.providerId, options?.terminalMode) && text.length > CODEX_WINDOWS_NATIVE_PASTE_CHAR_THRESHOLD) {
+      await this.sendCodexWindowsNativePaste(tabId, ptyId, text, adapter, true, traceId);
+      return true;
+    }
     if (isGrokProvider(options?.providerId)) {
       const attachmentCount = await this.sendGrokAttachments(ptyId, adapter, options?.attachmentPaths, traceId);
       if (!text && attachmentCount > 0) {

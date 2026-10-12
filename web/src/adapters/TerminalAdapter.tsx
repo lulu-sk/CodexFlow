@@ -28,6 +28,8 @@ export type TerminalAdapterAPI = {
   // 通过 xterm 的粘贴接口注入文本；在启用 Bracketed Paste 模式的应用中可避免逐字清洗
   // 若环境不支持 paste，则回退为 write
   paste: (data: string) => void;
+  /** 根据实际鼠标报告模式构造终端内的原生右键粘贴事件，不操作系统鼠标。 */
+  readNativePasteSequence?: () => string | null;
   onData: (cb: (data: string) => void) => () => void;
   resize: () => { cols: number; rows: number };
   /** 只测量当前 DOM 可容纳的终端行列，不改变 xterm 当前行列。 */
@@ -3265,6 +3267,14 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
       if (!term) ensure();
       const d = term!.onData(cb);
       return () => d.dispose();
+    },
+    /** 仅在应用接管鼠标时报告光标处的右键按下和释放。 */
+    readNativePasteSequence: () => {
+      if (!term || term.modes.mouseTrackingMode === "none" || term.hasSelection())
+        return null;
+      const x = Math.min(term.cols, term.buffer.active.cursorX + 1);
+      const y = Math.min(term.rows, term.buffer.active.cursorY + 1);
+      return `\x1b[<2;${x};${y}M\x1b[<2;${x};${y}m`;
     },
     measureResize: () => {
       if (!term) ensure();

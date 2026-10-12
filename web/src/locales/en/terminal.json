@@ -3,6 +3,8 @@
   "newConsole": "New Agent",
   "inputPlaceholder": "Type a message to send (paste images, @ search files, @/ search folders, drag & drop files), press Ctrl+Enter to send",
   "send": "Send",
+  "sendFailedTitle": "Message was not sent",
+  "sendFailedMessage": "Your input has been kept. Return to the Codex input area, enable right-click paste, and try again. If you just updated CodexFlow, restart it first.",
   "tabActions": "Tab Actions",
   "detachTab": "Open in New Window",
   "attachTabBack": "Move Back to Main Window",

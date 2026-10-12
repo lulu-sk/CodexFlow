@@ -5,6 +5,7 @@ import {
   BRACKETED_PASTE_START,
   BRACKETED_PASTE_END,
   GEMINI_PASTE_ENTER_DELAY_MS,
+  TerminalPasteError,
   getPasteSubmitMinWaitMs,
 } from "./terminal-send";
 
@@ -80,6 +81,109 @@ describe("TerminalManager（长文本发送策略）", () => {
     const tm = new TerminalManager(() => undefined, hostPty as any, {});
     expect(await tm.sendTextAndEnter("tab-missing", "continue", { providerId: "codex" })).toBe(false);
     expect(hostPty.write).not.toHaveBeenCalled();
+  });
+
+  it.each(["pwsh", "windows", "cmd"] as const)("Codex %s 大文本通过原生整段粘贴，完整占位符稳定后只提交一次", async (terminalMode) => {
+    vi.useFakeTimers();
+    const adapter: any = createAdapterStub();
+    const sequence = "\x1b[<2;1;22M\x1b[<2;1;22m";
+    adapter.readNativePasteSequence = vi.fn(() => sequence);
+    let screen = "";
+    adapter.readCursorTextSnapshot.mockImplementation(() => ({ text: screen }));
+    const hostPty = { ...createHostPtyStub(), beginNativePaste: vi.fn().mockResolvedValue({ ok: true, token: "lease-example" }), finishNativePaste: vi.fn().mockResolvedValue({ ok: true }) };
+    createTerminalAdapterMock.mockReturnValue(adapter);
+    const tm = new TerminalManager(() => "pty-native", hostPty as any, {});
+    tm.ensurePersistentContainer("tab-native");
+    tm.setPty("tab-native", "pty-native");
+    const text = "日志😀\r\n\r\n  尾行\t".repeat(15000);
+    const pending = tm.sendTextAndEnter("tab-native", `${text}\r\n`, { providerId: "codex", terminalMode });
+    await vi.advanceTimersByTimeAsync(80);
+    expect(hostPty.write.mock.calls).toEqual([["pty-native", sequence]]);
+    expect(hostPty.beginNativePaste).toHaveBeenCalledWith("pty-native", text);
+    screen = "› [Pasted Content 1000 chars]";
+    await vi.advanceTimersByTimeAsync(400);
+    expect(hostPty.write).toHaveBeenCalledTimes(1);
+    screen = `› [Pasted Content ${Array.from(text.replace(/\r\n?/g, "\n")).length} chars]`;
+    await vi.advanceTimersByTimeAsync(240);
+    expect(await pending).toBe(true);
+    expect(hostPty.write.mock.calls).toEqual([["pty-native", sequence], ["pty-native", "\r"]]);
+    expect(hostPty.finishNativePaste).toHaveBeenCalledWith("pty-native", "lease-example");
+    expect(adapter.paste).not.toHaveBeenCalled();
+    tm.disposeAll(false);
+  });
+
+  it("原生仅写入保留末尾换行且不提交", async () => {
+    vi.useFakeTimers();
+    const adapter: any = createAdapterStub();
+    adapter.readNativePasteSequence = vi.fn(() => "native-right-click");
+    let screen = "";
+    adapter.readCursorTextSnapshot.mockImplementation(() => ({ text: screen }));
+    const hostPty = { ...createHostPtyStub(), beginNativePaste: vi.fn().mockResolvedValue({ ok: true, token: "lease-example" }), finishNativePaste: vi.fn().mockResolvedValue({ ok: true }) };
+    createTerminalAdapterMock.mockReturnValue(adapter);
+    const tm = new TerminalManager(() => "pty-native", hostPty as any, {});
+    tm.ensurePersistentContainer("tab-native");
+    const text = `${"正文\n".repeat(3000)}\n`;
+    const pending = tm.sendText("tab-native", text, { providerId: "codex", terminalMode: "pwsh" });
+    await vi.advanceTimersByTimeAsync(40);
+    screen = `› [Pasted Content ${Array.from(text).length} chars]`;
+    await vi.advanceTimersByTimeAsync(240);
+    await pending;
+    expect(hostPty.beginNativePaste).toHaveBeenCalledWith("pty-native", text);
+    expect(hostPty.write).toHaveBeenCalledTimes(1);
+    expect(hostPty.write).not.toHaveBeenCalledWith("pty-native", "\r");
+    tm.disposeAll(false);
+  });
+
+  it("原生粘贴超时释放剪贴板，禁止兜底回车或逐键重发", async () => {
+    vi.useFakeTimers();
+    const adapter: any = createAdapterStub();
+    adapter.readNativePasteSequence = vi.fn(() => "native-right-click");
+    const hostPty = { ...createHostPtyStub(), beginNativePaste: vi.fn().mockResolvedValue({ ok: true, token: "lease-example" }), finishNativePaste: vi.fn().mockResolvedValue({ ok: true }) };
+    createTerminalAdapterMock.mockReturnValue(adapter);
+    const tm = new TerminalManager(() => "pty-native", hostPty as any, {});
+    tm.ensurePersistentContainer("tab-native");
+    const pending = expect(tm.sendTextAndEnter("tab-native", "日志".repeat(100000), { providerId: "codex", terminalMode: "pwsh" })).rejects.toBeInstanceOf(TerminalPasteError);
+    await vi.advanceTimersByTimeAsync(4500);
+    await pending;
+    expect(hostPty.finishNativePaste).toHaveBeenCalledTimes(1);
+    expect(hostPty.write.mock.calls).toEqual([["pty-native", "native-right-click"]]);
+    tm.disposeAll(false);
+  });
+
+  it("大文本缺少原生入口时直接失败，禁止退回旧发送", async () => {
+    const hostPty = createHostPtyStub();
+    const tm = new TerminalManager(() => "pty-native", hostPty as any, {});
+    await expect(tm.sendTextAndEnter("tab-native", "日志".repeat(100000), { providerId: "codex", terminalMode: "pwsh" })).rejects.toBeInstanceOf(TerminalPasteError);
+    expect(hostPty.write).not.toHaveBeenCalled();
+    const missingTerminal = new TerminalManager(() => undefined, hostPty as any, {});
+    await expect(missingTerminal.sendText("tab-native", "日志".repeat(100000), { providerId: "codex", terminalMode: "pwsh" })).rejects.toBeInstanceOf(TerminalPasteError);
+  });
+
+  it.each(["preflight", "clipboard-changed", "terminal-changed"])("原生粘贴遇到 %s 时不向旧终端补发回车", async (failure) => {
+    vi.useFakeTimers();
+    const adapter: any = createAdapterStub();
+    adapter.readNativePasteSequence = vi.fn(() => {
+      if (failure === "preflight") throw new Error("snapshot unavailable");
+      return "native-right-click";
+    });
+    let screen = "";
+    let ptyId = "pty-native";
+    adapter.readCursorTextSnapshot.mockImplementation(() => ({ text: screen }));
+    const hostPty = { ...createHostPtyStub(), beginNativePaste: vi.fn().mockResolvedValue({ ok: true, token: "lease-example" }), finishNativePaste: vi.fn().mockResolvedValue({ ok: failure !== "clipboard-changed" }) };
+    createTerminalAdapterMock.mockReturnValue(adapter);
+    const tm = new TerminalManager(() => ptyId, hostPty as any, {});
+    tm.ensurePersistentContainer("tab-native");
+    const text = "日志".repeat(10000);
+    const pending = expect(tm.sendTextAndEnter("tab-native", text, { providerId: "codex", terminalMode: "pwsh" })).rejects.toBeInstanceOf(TerminalPasteError);
+    await vi.advanceTimersByTimeAsync(40);
+    screen = `› [Pasted Content ${text.length} chars]`;
+    if (failure === "terminal-changed") ptyId = "pty-replacement";
+    await vi.advanceTimersByTimeAsync(240);
+    await pending;
+    expect(hostPty.write).not.toHaveBeenCalledWith("pty-native", "\r");
+    if (failure === "preflight") expect(hostPty.beginNativePaste).not.toHaveBeenCalled();
+    else expect(hostPty.finishNativePaste).toHaveBeenCalledTimes(1);
+    tm.disposeAll(false);
   });
 
   it("Gemini 会等待 PTY 回显静默后，再延迟发送 Enter", async () => {

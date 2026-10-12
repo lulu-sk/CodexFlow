@@ -27,6 +27,15 @@ type TerminalPasteOptions = {
 export const BRACKETED_PASTE_START = "\x1b[200~";
 export const BRACKETED_PASTE_END = "\x1b[201~";
 
+/** 原生粘贴失败后必须保留草稿，禁止回退到可能卡住或误提交的逐键发送。 */
+export class TerminalPasteError extends Error {
+  /** 标识可直接反馈给输入框的发送失败。 */
+  constructor(message: string) {
+    super(message);
+    this.name = "TerminalPasteError";
+  }
+}
+
 /**
  * Gemini：粘贴结束后延迟发送 Enter（需大于 40ms 的防误触窗口）。
  */
