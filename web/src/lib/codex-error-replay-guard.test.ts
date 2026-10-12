@@ -15,6 +15,7 @@ import {
   hasCodexCurrentTurnBoundary,
   isCodexFinalErrorVisibleOnIdleScreen,
   isCodexRuntimeStatusAfterError,
+  isCodexTextAfterCurrentTurnBoundary,
   rememberCodexErrorReplay,
   resolveCodexErrorReplayDecision,
   shouldSuppressCodexErrorReplay,
@@ -178,6 +179,46 @@ function createDetectionHarness(): DetectionHarness {
 }
 
 describe("codex-error-replay-guard（Codex 历史错误重放防护）", () => {
+  it.each([4096, 16384, 65536])("长日志输入（%s 字符）仍能识别本轮边界，正文引用和残缺输入不能冒充", (length) => {
+    const prompt = ("请检查日志：\nEngine.Debug:Log (object)\nLoader:OpenScene (string,int) (at Assets/Scripts/Loader.cs:123)\n").repeat(800).slice(0, length);
+    const echoed = prompt.replace(/\s+/g, "\n  ");
+    expect(hasCodexCurrentTurnBoundary("› Ask Codex to do anything", prompt)).toBe(false);
+    expect(hasCodexCurrentTurnBoundary(`\u001b[32m› ${echoed}\u001b[0m`, prompt)).toBe(true);
+    expect(hasCodexCurrentTurnBoundary(`• ${echoed}`, prompt)).toBe(false);
+    expect(hasCodexCurrentTurnBoundary(`› ${echoed.slice(0, -20)}`, prompt)).toBe(false);
+    expect(isCodexTextAfterCurrentTurnBoundary(`■ ${ERROR_TEXT}\n› ${echoed}`, ERROR_TEXT, prompt)).toBe(false);
+    expect(isCodexTextAfterCurrentTurnBoundary(`› ${echoed}\n■ ${ERROR_TEXT}`, ERROR_TEXT, prompt)).toBe(true);
+  });
+
+  it("空白、字面量符号和大小写匹配保留原文位置，最后一处真实用户输入决定边界", () => {
+    const prompt = "检查 😀 [a+b].(cs) {x} | \\path $value?";
+    const echoed = prompt.toUpperCase().replace(/ /g, "\t\n  ");
+    const output = `›\n  ${echoed}\n■ ${ERROR_TEXT}\n› ${echoed}\n• ${echoed}`;
+    expect(hasCodexCurrentTurnBoundary(output, prompt)).toBe(true);
+    expect(isCodexTextAfterCurrentTurnBoundary(output, ERROR_TEXT, prompt)).toBe(false);
+    expect(isCodexTextAfterCurrentTurnBoundary(`${output}\n■ ${ERROR_TEXT}`, ERROR_TEXT, prompt)).toBe(true);
+    expect(hasCodexCurrentTurnBoundary(`› ${echoed.replace("[A+B]", "AAAB")}`, prompt)).toBe(false);
+    expect(hasCodexCurrentTurnBoundary(output, " \n\t")).toBe(false);
+  });
+
+  it.each([
+    ["k s σ μ ß", "K ſ ς µ ẞ", true],
+    ["İ", "i", false],
+    ["ı", "i", false],
+    ["ß", "ss", false],
+    ["\ud83d", "😀", false],
+    ["\ude00", "😀", false],
+  ])("Unicode 单字符大小写匹配：%s / %s", (prompt, echoed, expected) => {
+    expect(hasCodexCurrentTurnBoundary(`› ${echoed}`, prompt)).toBe(expected);
+  });
+
+  it("很长的错误正文也能按空白差异定位，并保留运行状态的先后关系", () => {
+    const error = `${ERROR_TEXT}: ${"trace [detail] (request) ".repeat(500)}`.trim();
+    const echoed = error.replace(/ /g, "\n  ");
+    expect(isCodexRuntimeStatusAfterError(`${echoed}\n• Working (1s)`, "working", error)).toBe(true);
+    expect(isCodexRuntimeStatusAfterError(`• Working (1s)\n${echoed}`, "working", error)).toBe(false);
+  });
+
   it("同一错误的重连态与最终态会归为同一特征", () => {
     const reconnectingError = classifyCodexCliErrorText(`
       Reconnecting... 4/5 (2m 10s  esc to interrupt)

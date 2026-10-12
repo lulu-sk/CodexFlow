@@ -1,5 +1,6 @@
 import {
   classifyCodexCliErrorText,
+  detectCodexCliRuntimeStatusText,
   isCodexFinalHistoryLine,
   joinCodexFinalHistoryContinuationLines,
   stripAnsiForCodexErrorScan,
@@ -18,8 +19,6 @@ const CLEAR_SCROLLBACK_PATTERN = /(?:\u001b\[|\u009b)3J/;
 const CLEAR_SCROLLBACK_CSI = "\u001b[3J";
 const CLEAR_SCROLLBACK_C1 = "\u009b3J";
 const CODEX_COMPOSER_PROMPT_PATTERN = /(?:^|\n)[^\S\n]*›[^\S\n]+Ask Codex to do\b/giu;
-const WORKING_STATUS_PATTERN = /\bWorking\s*\(/giu;
-const RECONNECTING_STATUS_PATTERN = /Reconnecting\.\.\.\s+\d+\/\d+/giu;
 const CODEX_BACKGROUND_TERMINALS_FOOTER_PATTERN = /^[^\S\n]*[1-9]\d* background terminals? running · \/ps to view · \/stop to close[^\S\n]*$/u;
 
 type CodexErrorReplayCandidate = Pick<CodexCliErrorClassification, "kind" | "matchedText" | "replayFingerprint">;
@@ -253,15 +252,57 @@ export function rememberCodexErrorReplay(
 }
 
 /**
- * 构造允许终端换行差异的字面量匹配表达式。
+ * 合并空白并折叠单字符大小写，同时保留每个字符在原文中的范围。
  */
-function buildFlexibleLiteralPattern(text: string): RegExp | null {
-  const parts = String(text || "").trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return null;
-  const source = parts
-    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-    .join("\\s+");
-  return new RegExp(source, "giu");
+function normalizeFlexibleLiteral(text: string): { text: string; starts: number[]; ends: number[] } {
+  const characters: string[] = [];
+  const starts: number[] = [];
+  const ends: number[] = [];
+  for (const match of text.matchAll(/\s+|[^\s]/gu)) {
+    const value = match[0];
+    const lower = value.toLowerCase();
+    const upper = value.toUpperCase();
+    // 保留 Unicode 单字符大小写语义；展开为多个字符的大小写不能混同为字面量匹配。
+    const folded = /^\s/u.test(value) ? " "
+      : value === "ı" || lower.length !== value.length ? value
+        : upper.length === value.length ? upper.toLowerCase() : lower;
+    characters.push(folded);
+    for (let index = 0; index < folded.length; index += 1) {
+      starts.push(match.index!);
+      ends.push(match.index! + value.length);
+    }
+  }
+  return { text: characters.join(""), starts, ends };
+}
+
+/**
+ * 迭代查找允许空白差异的字面量，避免长输入在 Electron 中编译正则时栈溢出。
+ */
+function findLastFlexibleLiteralMatch(
+  text: string,
+  literal: string,
+  accept?: (range: CodexTextMatchRange) => boolean,
+): CodexTextMatchRange | null {
+  const trimmedLiteral = String(literal || "").trim();
+  if (!text || !trimmedLiteral) return null;
+  const source = normalizeFlexibleLiteral(text);
+  const target = normalizeFlexibleLiteral(trimmedLiteral).text;
+  let lastMatch: CodexTextMatchRange | null = null;
+  let fromIndex = 0;
+  while (fromIndex <= source.text.length - target.length) {
+    const index = source.text.indexOf(target, fromIndex);
+    if (index < 0) break;
+    const endIndex = index + target.length - 1;
+    // 输入截断可能留下半个代理对；它不能匹配终端中完整的 Unicode 字符。
+    if (source.starts[index] === source.starts[index - 1] || source.ends[endIndex] === source.ends[endIndex + 1]) {
+      fromIndex = index + 1;
+      continue;
+    }
+    const range = { index: source.starts[index], end: source.ends[endIndex] };
+    if (!accept || accept(range)) lastMatch = range;
+    fromIndex = index + target.length;
+  }
+  return lastMatch;
 }
 
 /**
@@ -279,13 +320,6 @@ function findLastPatternMatch(text: string, pattern: RegExp): CodexTextMatchRang
     if (match[0] === "") pattern.lastIndex += 1;
   }
   return lastMatch;
-}
-
-/**
- * 返回表达式在文本中的最后一次匹配位置。
- */
-function findLastPatternIndex(text: string, pattern: RegExp): number {
-  return findLastPatternMatch(text, pattern)?.index ?? -1;
 }
 
 /**
@@ -310,32 +344,20 @@ export function isCodexRuntimeStatusAfterError(
 ): boolean {
   if (runtimePhase !== "working" && runtimePhase !== "reconnecting") return false;
   const text = stripAnsiForCodexErrorScan(outputText);
-  const errorPattern = buildFlexibleLiteralPattern(errorText);
-  if (!text || !errorPattern) return false;
-  const errorIndex = findLastPatternIndex(text, errorPattern);
-  const runtimePattern = runtimePhase === "working"
-    ? new RegExp(WORKING_STATUS_PATTERN.source, WORKING_STATUS_PATTERN.flags)
-    : new RegExp(RECONNECTING_STATUS_PATTERN.source, RECONNECTING_STATUS_PATTERN.flags);
-  return errorIndex >= 0 && findLastPatternIndex(text, runtimePattern) > errorIndex;
+  const errorMatch = findLastFlexibleLiteralMatch(text, errorText);
+  return !!errorMatch && detectCodexCliRuntimeStatusText(text.slice(errorMatch.end))?.phase === runtimePhase;
 }
 
 /**
  * 返回当前发送文本在 Codex 用户历史行中的最后一次位置。
  */
 function findLastUserPromptIndex(text: string, currentPrompt: string): number {
-  const promptPattern = buildFlexibleLiteralPattern(currentPrompt);
-  if (!promptPattern) return -1;
-  promptPattern.lastIndex = 0;
-  let lastIndex = -1;
-  let match: RegExpExecArray | null;
-  while ((match = promptPattern.exec(text)) !== null) {
-    const lineStart = Math.max(0, text.lastIndexOf("\n", Math.max(0, match.index - 1)) + 1);
-    const prefix = text.slice(lineStart, match.index);
-    const precedingText = text.slice(Math.max(0, lineStart - 32), match.index);
-    if (/^\s*›\s*$/u.test(prefix) || /(?:^|\n)\s*›\s*\n\s*$/u.test(precedingText)) lastIndex = match.index;
-    if (match[0] === "") promptPattern.lastIndex += 1;
-  }
-  return lastIndex;
+  return findLastFlexibleLiteralMatch(text, currentPrompt, ({ index }) => {
+    const lineStart = Math.max(0, text.lastIndexOf("\n", Math.max(0, index - 1)) + 1);
+    const prefix = text.slice(lineStart, index);
+    const precedingText = text.slice(Math.max(0, lineStart - 32), index);
+    return /^\s*›\s*$/u.test(prefix) || /(?:^|\n)\s*›\s*\n\s*$/u.test(precedingText);
+  })?.index ?? -1;
 }
 
 /**
@@ -347,10 +369,9 @@ export function isCodexTextAfterCurrentTurnBoundary(
   currentPrompt: string,
 ): boolean {
   const text = stripAnsiForCodexErrorScan(outputText);
-  const targetPattern = buildFlexibleLiteralPattern(targetText);
-  if (!text || !targetPattern) return false;
+  if (!text) return false;
   const promptIndex = findLastUserPromptIndex(text, currentPrompt);
-  const targetIndex = findLastPatternIndex(text, targetPattern);
+  const targetIndex = findLastFlexibleLiteralMatch(text, targetText)?.index ?? -1;
   return promptIndex >= 0 && targetIndex > promptIndex;
 }
 
@@ -473,9 +494,7 @@ export function classifyCodexFinalErrorOnIdleScreen(
     || !visibleClassification.explicitFinal
   ) return null;
 
-  const errorPattern = buildFlexibleLiteralPattern(visibleClassification.matchedText);
-  if (!errorPattern) return null;
-  const errorMatch = findLastPatternMatch(text, errorPattern);
+  const errorMatch = findLastFlexibleLiteralMatch(text, visibleClassification.matchedText);
   const composerMatch = findLastPatternMatch(
     text,
     new RegExp(CODEX_COMPOSER_PROMPT_PATTERN.source, CODEX_COMPOSER_PROMPT_PATTERN.flags),

@@ -19,7 +19,7 @@ const RUNTIME_NAMES = new Set([
   "CODEX_FINAL_ERROR_SCREEN_CONFIRM_MAX_CHECKS", "CODEX_FINAL_ERROR_SCREEN_CONFIRM_STABLE_CHECKS",
   "CODEX_RECONNECT_AFTER_ERROR_GRACE_MS",
   "clearCodexErrorAutoContinueTimer", "resetCodexErrorScanForTab", "startAgentTurnTimer", "markAgentTurnReconnecting",
-  "clearAgentTurnReconnecting", "restoreFailedAgentTurnToReconnecting", "restoreFailedAgentTurnToWorking",
+  "clearAgentTurnReconnecting", "resumeAgentTurnTimer", "restoreFailedAgentTurnToReconnecting", "restoreFailedAgentTurnToWorking",
   "interruptAgentTurnTimer", "failAgentTurnTimer", "acknowledgeAgentTurnFailure",
   "rememberHandledCodexError", "resolveCodexReplayDecision", "settleCodexIdleWithoutFinalError",
   "shouldTrustCodexIdleScreenForCurrentTurn", "scheduleCodexPendingFinalIdleScreenCheck", "shouldTrustCodexRuntimeStatus",
@@ -152,6 +152,30 @@ describe("Codex 报错处理实际调用链", () => {
   beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date("2026-01-01T00:00:00Z")); });
   afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
 
+  it("发送长日志后，完成轮询、终端回显和旧错误过滤仍能闭环", async () => {
+    const ctx = createRuntime();
+    const prompt = "请检查日志：\nEngine.Debug:Log (object)\nLoader:OpenScene (string,int) (at Assets/Scripts/Loader.cs:123)\n".repeat(100);
+    ctx.setScreen("› Ask Codex to do anything");
+    ctx.runtime.resetCodexErrorScanForTab("tab", "user-send", { advanceTurn: true, prompt, clearFrameState: true });
+    expect(ctx.scans.current.tab.currentPrompt).toBe(prompt.trim().slice(0, 4096));
+    ctx.runtime.checkCodexTurnCompletions();
+    expect(ctx.timers.current.tab.status).toBe("working");
+    expect(ctx.notify).not.toHaveBeenCalled();
+
+    ctx.runtime.processCodexPtyErrorChunk("pty", `\u001b[?2026h■ ${ERROR}\n› ${prompt}\n• Working (1s • esc to interrupt)\n\u001b[?2026l`);
+    expect(ctx.probes.current.tab.probe.boundaryPrompt).toBe(ctx.scans.current.tab.currentPrompt);
+    expect(ctx.timers.current.tab.status).toBe("working");
+    expect(ctx.notify).not.toHaveBeenCalled();
+
+    ctx.setScreen("• 已完成。\nWorked for 12s\n› Ask Codex to do anything");
+    ctx.runtime.checkCodexTurnCompletions();
+    await vi.advanceTimersByTimeAsync(1000);
+    ctx.runtime.checkCodexTurnCompletions();
+    expect(ctx.timers.current.tab.status).toBe("done");
+    expect(ctx.notify).toHaveBeenCalledTimes(1);
+    expect(ctx.chime).toHaveBeenCalledTimes(1);
+  });
+
   it.each(["foreign-window-tab", "other-tab"])("真实完成通知携带错标签 %s 时，仍完成正确任务并只通知一次", (tabId) => {
     const ctx = createRuntime();
     ctx.timers.current["other-tab"] = { ...ctx.timers.current.tab };
@@ -238,10 +262,16 @@ describe("Codex 报错处理实际调用链", () => {
     expect(ctx.notify).toHaveBeenCalledTimes(2);
   });
 
-  it("同类重连应更新次数，重复通知去重不应冻结状态", () => {
+  it("同类重连应更新次数，重复通知去重不应冻结状态", async () => {
     const ctx = createRuntime();
+    ctx.setScreen(`› continue\nReconnecting... 1/5 (1s • esc to interrupt)\n${ERROR}\n› Ask Codex to do anything`);
     ctx.runtime.processCodexPtyErrorChunk("pty", `Reconnecting... 1/5\n${ERROR}`);
+    expect(ctx.timers.current.tab.reconnectAttempt).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(160);
+    expect(ctx.timers.current.tab.reconnectAttempt).toBe(1);
+    ctx.setScreen(`› continue\nReconnecting... 2/5 (2s • esc to interrupt)\n${ERROR}\n› Ask Codex to do anything`);
     ctx.runtime.processCodexPtyErrorChunk("pty", `\nReconnecting... 2/5\n${ERROR}`);
+    await vi.advanceTimersByTimeAsync(160);
     expect(ctx.timers.current.tab.reconnectAttempt).toBe(2);
     expect(ctx.notify).not.toHaveBeenCalled();
   });
@@ -377,35 +407,142 @@ describe("Codex 报错处理实际调用链", () => {
     expect(ctx.notify).toHaveBeenCalledTimes(1);
   });
 
-  it("相同重连详情重绘时不重复通知，进度仍更新", () => {
+  it("相同重连详情重绘时不重复通知，进度仍更新", async () => {
     const ctx = createRuntime();
     ctx.prefs.current.notifyReconnectErrors = true;
+    ctx.setScreen(`› continue\nReconnecting... 1/5 (1s • esc to interrupt)\n${ERROR}\n› Ask Codex to do anything`);
     ctx.runtime.processCodexPtyErrorChunk("pty", `Reconnecting... 1/5\n${ERROR}\n`);
+    await vi.advanceTimersByTimeAsync(160);
+    ctx.setScreen(`› continue\nReconnecting... 2/5 (2s • esc to interrupt)\n${ERROR}\n› Ask Codex to do anything`);
     ctx.runtime.processCodexPtyErrorChunk("pty", `Reconnecting... 2/5\n${ERROR}\n`);
+    await vi.advanceTimersByTimeAsync(160);
     expect(ctx.timers.current.tab.reconnectAttempt).toBe(2);
     expect(ctx.notify).toHaveBeenCalledTimes(1);
   });
 
-  it("只重绘重连标题时也应更新次数", () => {
+  it("只重绘重连标题时也应更新次数", async () => {
     const ctx = createRuntime();
+    ctx.setScreen(`› continue\nReconnecting... 1/5 (1s • esc to interrupt)\n${ERROR}\n› Ask Codex to do anything`);
     ctx.runtime.processCodexPtyErrorChunk("pty", `Reconnecting... 1/5\n${ERROR}\n`);
+    await vi.advanceTimersByTimeAsync(160);
+    ctx.setScreen("› continue\nReconnecting... 2/5 (2s • esc to interrupt)\n› Ask Codex to do anything");
     ctx.runtime.processCodexPtyErrorChunk("pty", "Reconnecting... 2/5\n");
+    await vi.advanceTimersByTimeAsync(160);
     expect(ctx.timers.current.tab.reconnectAttempt).toBe(2);
   });
 
   it("同步局部重绘的 Working 应清掉当前重连展示", async () => {
     const ctx = createRuntime();
     ctx.runtime.processCodexPtyErrorChunk("pty", `› continue\nReconnecting... 1/5\n${ERROR}\n`);
-    ctx.setScreen("› continue\n• Processing\nWorking (2s)\n› Ask Codex to do anything");
+    ctx.setScreen("› continue\n• Processing\nWorking (2s • esc to interrupt)\n› Ask Codex to do anything");
     ctx.runtime.processCodexPtyErrorChunk("pty", "\u001b[?2026hWorking (2s)\u001b[?2026l");
     await vi.advanceTimersByTimeAsync(160);
     expect(ctx.timers.current.tab.reconnectAttempt).toBeUndefined();
   });
 
+  it.each([false, true])("压缩上下文应自动清除重连，保持本轮起始时间：同步=%s", async (synchronized) => {
+    const ctx = createRuntime();
+    const startedAt = ctx.timers.current.tab.startedAt;
+    ctx.timers.current.tab.reconnectAttempt = 1;
+    ctx.timers.current.tab.reconnectErrorKind = "networkStream";
+    ctx.timers.current.tab.reconnectErrorMessage = "stream disconnected before completion";
+    ctx.setScreen("› continue\n• Compacting context (45s • esc to interrupt)\n  Making room to continue.\n› Ask Codex to do anything");
+    const chunk = "• Compacting context (45s • esc to interrupt)";
+    ctx.runtime.processCodexPtyErrorChunk("pty", synchronized ? `\u001b[?2026h${chunk}\u001b[?2026l` : chunk);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(ctx.timers.current.tab.reconnectAttempt).toBeUndefined();
+    expect(ctx.timers.current.tab.status).toBe("working");
+    expect(ctx.timers.current.tab.startedAt).toBe(startedAt);
+    expect(ctx.notify).not.toHaveBeenCalled();
+  });
+
+  it("旧重连标题的局部重画不能覆盖实际正在压缩的屏幕", async () => {
+    const ctx = createRuntime();
+    ctx.setScreen("› continue\n• Compacting context (45s • esc to interrupt)\n  Making room to continue.\n› Ask Codex to do anything");
+    ctx.runtime.processCodexPtyErrorChunk("pty", `\u001b[?2026hReconnecting... 1/5\n${ERROR}\u001b[?2026l`);
+    expect(ctx.timers.current.tab.reconnectAttempt).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(ctx.timers.current.tab.reconnectAttempt).toBeUndefined();
+    expect(ctx.notify).not.toHaveBeenCalled();
+  });
+
+  it("没有换行的重连局部绘制应核对实际屏幕，恢复后也不能残留", async () => {
+    const ctx = createRuntime();
+    const chunk = `\u001b[?2026h\u001b[3;1H• 正在检查代码\u001b[20;1H◦ Reconnecting... 2/5 (45s • esc to interrupt)\u001b[21;1H${ERROR}\u001b[?2026l`;
+    ctx.setScreen(`› continue\n◦ Reconnecting... 2/5 (45s • esc to interrupt)\n${ERROR}\n› Ask Codex to do anything`);
+    ctx.runtime.processCodexPtyErrorChunk("pty", chunk);
+    await vi.advanceTimersByTimeAsync(160);
+    expect(ctx.timers.current.tab.reconnectAttempt).toBe(2);
+    ctx.setScreen("› continue\n◦ Compacting context (45s • esc to interrupt)\n› Ask Codex to do anything");
+    ctx.runtime.processCodexPtyErrorChunk("pty", chunk);
+    await vi.advanceTimersByTimeAsync(160);
+    expect(ctx.timers.current.tab.reconnectAttempt).toBeUndefined();
+    expect(ctx.notify).not.toHaveBeenCalled();
+  });
+
+  it("已经误显示重连时，没有新的状态文字也应由屏幕自动纠正", async () => {
+    const ctx = createRuntime();
+    ctx.timers.current.tab.reconnectAttempt = 1;
+    ctx.timers.current.tab.reconnectErrorKind = "networkStream";
+    ctx.setScreen("› continue\n• 正在检查代码。\n› Ask Codex to do anything");
+    ctx.runtime.checkCodexTurnCompletions();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(ctx.timers.current.tab.reconnectAttempt).toBeUndefined();
+    expect(ctx.timers.current.tab.status).toBe("working");
+    expect(ctx.notify).not.toHaveBeenCalled();
+  });
+
+  it.each(["continue", ""])("输入已滚出屏幕或由终端直接提交时，真实重连仍能确认：%s", async (prompt) => {
+    const ctx = createRuntime();
+    ctx.scans.current.tab.currentPrompt = prompt;
+    ctx.setScreen(`• Reconnecting... 3/5 (1m 03s • esc to interrupt)\n  ${ERROR}\n› Ask Codex to do anything`);
+    ctx.runtime.processCodexPtyErrorChunk("pty", `Reconnecting... 3/5\n${ERROR}`);
+    await vi.advanceTimersByTimeAsync(160);
+    expect(ctx.timers.current.tab.reconnectAttempt).toBe(3);
+    ctx.setScreen("• Compacting context (45s • esc to interrupt)\n  Making room to continue.\n› Ask Codex to do anything");
+    ctx.runtime.checkCodexTurnCompletions();
+    await vi.advanceTimersByTimeAsync(160);
+    expect(ctx.timers.current.tab.reconnectAttempt).toBeUndefined();
+    expect(ctx.timers.current.tab.status).toBe("working");
+  });
+
+  it("手动继续清理重连和待确认错误，保留本轮时间且不发送消息", async () => {
+    const ctx = createRuntime();
+    const startedAt = ctx.timers.current.tab.startedAt;
+    ctx.timers.current.tab.reconnectAttempt = 1;
+    ctx.timers.current.tab.reconnectErrorKind = "networkStream";
+    ctx.scans.current.tab.autoContinueAttempts = 2;
+    ctx.runtime.processCodexPtyErrorChunk("pty", `■ ${ERROR}\n`);
+    ctx.runtime.resumeAgentTurnTimer("tab");
+    await vi.advanceTimersByTimeAsync(11000);
+    expect(ctx.timers.current.tab.status).toBe("working");
+    expect(ctx.timers.current.tab.startedAt).toBe(startedAt);
+    expect(ctx.timers.current.tab.reconnectAttempt).toBeUndefined();
+    expect(ctx.scans.current.tab.pendingFinalError).toBeUndefined();
+    expect(ctx.scans.current.tab.currentPrompt).toBe("continue");
+    expect(ctx.scans.current.tab.turn).toBe(1);
+    expect(ctx.scans.current.tab.autoContinueAttempts).toBe(2);
+    expect(ctx.send).not.toHaveBeenCalled();
+    expect(ctx.notify).not.toHaveBeenCalled();
+  });
+
+  it.each(["resize", "history", "new-turn"])("恢复检查不能越过保护边界：%s", async (mode) => {
+    const ctx = createRuntime();
+    ctx.timers.current.tab.reconnectAttempt = 1;
+    ctx.setScreen("› continue\n• Compacting context (45s • esc to interrupt)\n› Ask Codex to do anything");
+    ctx.runtime.scheduleCodexRuntimeScreenCheck("tab");
+    if (mode === "resize") ctx.setResizing(true);
+    if (mode === "history") ctx.setScreen("› continue\n• Compacting context (45s • esc to interrupt)\n↓ Back to bottom\n› Ask Codex to do anything\nenter/esc latest");
+    if (mode === "new-turn") ctx.scans.current.tab = ctx.runtime.createCodexErrorScanState({ turn: 2, currentPrompt: "new task" });
+    await vi.advanceTimersByTimeAsync(160);
+    expect(ctx.timers.current.tab.reconnectAttempt).toBe(1);
+    expect(ctx.notify).not.toHaveBeenCalled();
+  });
+
   it("同步局部重绘的重连标题也应从稳定屏幕更新进度", async () => {
     const ctx = createRuntime();
     ctx.runtime.processCodexPtyErrorChunk("pty", `› continue\nReconnecting... 1/5\n${ERROR}\n`);
-    ctx.setScreen(`› continue\nReconnecting... 2/5\n${ERROR}\n› Ask Codex to do anything`);
+    ctx.setScreen(`› continue\nReconnecting... 2/5 (2s • esc to interrupt)\n${ERROR}\n› Ask Codex to do anything`);
     ctx.runtime.processCodexPtyErrorChunk("pty", "\u001b[?2026hReconnecting... 2/5\u001b[?2026l");
     await vi.advanceTimersByTimeAsync(160);
     expect(ctx.timers.current.tab.reconnectAttempt).toBe(2);
@@ -415,7 +552,7 @@ describe("Codex 报错处理实际调用链", () => {
     const ctx = createRuntime();
     ctx.runtime.processCodexPtyErrorChunk("pty", `■ ${ERROR}\n`);
     await vi.advanceTimersByTimeAsync(160);
-    ctx.setScreen("Working (2s)\n› continue\n› Ask Codex to do anything");
+    ctx.setScreen("Working (2s • esc to interrupt)\n› continue\n› Ask Codex to do anything");
     ctx.runtime.processCodexPtyErrorChunk("pty", "\u001b[?2026hWorking (2s)\u001b[?2026l");
     await vi.advanceTimersByTimeAsync(160);
     expect(ctx.timers.current.tab.status).toBe("failed");
@@ -425,7 +562,7 @@ describe("Codex 报错处理实际调用链", () => {
     const ctx = createRuntime();
     ctx.runtime.processCodexPtyErrorChunk("pty", `■ ${ERROR}\n`);
     await vi.advanceTimersByTimeAsync(160);
-    ctx.setScreen("› continue\nWorking (2s)\n› Ask Codex to do anything");
+    ctx.setScreen("› continue\nWorking (2s • esc to interrupt)\n› Ask Codex to do anything");
     ctx.runtime.processCodexPtyErrorChunk("pty", "\u001b[?2026hWorking (2s)\u001b[?2026l");
     ctx.prefs.current.detectionEnabled = false;
     await vi.advanceTimersByTimeAsync(160);
