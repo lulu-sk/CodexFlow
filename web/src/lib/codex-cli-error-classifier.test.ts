@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   classifyCodexCliErrorText,
   detectCodexCliRuntimeStatusText,
+  detectCodexCliRuntimeStatusOnScreen,
   getCodexCliErrorKindLabel,
   isCodexCliErrorAutoRetryable,
   shouldDelayCodexCliFinalErrorForReconnect,
@@ -194,6 +195,51 @@ describe("codex-cli-error-classifier（Codex TUI 错误识别）", () => {
     `;
 
     expect(detectCodexCliRuntimeStatusText(text)?.phase).toBe("working");
+  });
+
+  it("压缩上下文是正常运行状态，不能继续沿用旧重连错误", () => {
+    const text = [
+      "Reconnecting... 1/5 (40s • esc to interrupt)",
+      "stream disconnected before completion",
+      "• Compacting context (45s • esc to interrupt)",
+      "  Making room to continue.",
+      "› Ask Codex to do anything",
+    ].join("\n");
+    expect(detectCodexCliRuntimeStatusText(text)?.phase).toBe("working");
+    expect(classifyCodexCliErrorText(text)).toBeNull();
+  });
+
+  it.each([
+    'const text = "Reconnecting... 1/5";',
+    "+ Reconnecting... 1/5 (1s • esc to interrupt)",
+    "src/status.ts:12:Reconnecting... 1/5",
+    "这里提到了 Reconnecting... 1/5，但代理仍在正常工作。",
+  ])("正文和源码中的重连示例不是运行状态：%s", (text) => {
+    expect(detectCodexCliRuntimeStatusText(text)).toBeNull();
+  });
+
+  it.each(["45s • esc to interrupt", "45s", "2h 05m 03s"])("真实活动栏兼容有无中断提示：%s", (clock) => {
+    const screen = `• Compacting context (${clock})\n  Making room to continue.\n› Ask Codex to do anything`;
+    expect(detectCodexCliRuntimeStatusOnScreen(screen)?.phase).toBe("working");
+  });
+
+  it.each(["•", "◦", "●", ""])("活动圆点变化不应丢失真实重连：%s", (indicator) => {
+    const screen = `${indicator} Reconnecting... 2/5 (45s • esc to interrupt)\n› Ask Codex to do anything`;
+    expect(detectCodexCliRuntimeStatusOnScreen(screen)?.reconnectAttempt).toBe(2);
+  });
+
+  it("没有换行的光标定位更新仍能识别独立状态栏", () => {
+    const chunk = "\u001b[?2026h\u001b[3;1H• 正在检查代码\u001b[20;1H◦ Reconnecting... 2/5 (45s • esc to interrupt)\u001b[?2026l";
+    expect(detectCodexCliRuntimeStatusText(chunk)?.reconnectAttempt).toBe(2);
+    expect(detectCodexCliRuntimeStatusText(chunk.replace("Reconnecting... 2/5", "Compacting context"))?.phase).toBe("working");
+  });
+
+  it.each([
+    "Reconnecting... 1/5\n› Ask Codex to do anything",
+    "Reconnecting... 1/5 (45s • esc to interrupt)\n• 后续正常输出。\n› Ask Codex to do anything",
+    "Reconnecting... 1/5 (45s • esc to interrupt)\n```\n› Ask Codex to do anything",
+  ])("输入框附近的历史文字不能冒充活动栏：%s", (screen) => {
+    expect(detectCodexCliRuntimeStatusOnScreen(screen)).toBeNull();
   });
 
   it("服务过载警告完成后会覆盖旧的 Working 状态", () => {

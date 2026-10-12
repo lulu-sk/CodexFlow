@@ -78,7 +78,9 @@ import { createCodexTurnCompletionProbe, inspectCodexTurnCompletion, observeCode
 import {
   classifyCodexCliErrorText,
   detectCodexCliRuntimeStatusText,
+  detectCodexCliRuntimeStatusOnScreen,
   getCodexCliErrorKindLabel,
+  isCodexCliErrorAutoRetryable,
   shouldDelayCodexCliFinalErrorForReconnect,
   stripAnsiForCodexErrorScan,
   type CodexCliErrorClassification,
@@ -3313,6 +3315,18 @@ export default function CodexFlowManagerUI() {
     notifyLog(`agentTimer.reconnect.clear tab=${id} source=${source}`);
   }, [notifyLog]);
 
+  /** 手动继续时清除误判残留；正在计时的轮次保留起始时间，也不向终端发送内容。 */
+  const resumeAgentTurnTimer = useCallback((tabId: string): void => {
+    const id = String(tabId || "").trim();
+    if (!id) return;
+    if (agentTurnTimerByTabRef.current[id]?.status === "working") {
+      resetCodexErrorScanForTab(id, "manual-timer-resume", { keepAttempts: true });
+      clearAgentTurnReconnecting(id, "manual-timer-resume");
+      return;
+    }
+    startAgentTurnTimer(id);
+  }, [clearAgentTurnReconnecting, resetCodexErrorScanForTab, startAgentTurnTimer]);
+
   /**
    * 当 Codex 后续明确进入 Reconnecting 时，把误落的失败状态恢复为进行中并清理失败残留。
    */
@@ -3760,6 +3774,8 @@ export default function CodexFlowManagerUI() {
     if (!hasWorkingAgentTimer) return;
     for (const [id, timer] of Object.entries(agentTurnTimerByTabRef.current)) {
       if (timer.status !== "working" || resolveTabProviderId(id).toLowerCase() !== "codex") continue;
+      if (timer.reconnectAttempt || timer.reconnectErrorKind || timer.reconnectErrorMessage)
+        scheduleCodexRuntimeScreenCheck(id);
       const snapshot = tm.readTerminalCursorTextSnapshot(id, { linesBefore: 256, linesAfter: 8, maxChars: CODEX_TURN_OUTPUT_MAX_LENGTH });
       const screenText = snapshot?.text || "";
       const existing = codexTurnCompletionProbeByTabRef.current[id];
@@ -4728,9 +4744,10 @@ export default function CodexFlowManagerUI() {
     frame: Pick<CodexPtyOutputFrame, "historyReplay" | "synchronized">,
     outputText: string,
     statusText: string,
+    runtimeScreenConfirmed = false,
   ): boolean {
     const state = codexErrorScanByTabRef.current[tabId];
-    return shouldTrustCodexRuntimeStatusForCurrentTurn({
+    const trusted = shouldTrustCodexRuntimeStatusForCurrentTurn({
       historyReplay: !!frame.historyReplay,
       synchronized: !!frame.synchronized,
       resizeReplayActive: tm.isPtyResizeReplayWindowActive(tabId),
@@ -4738,12 +4755,20 @@ export default function CodexFlowManagerUI() {
       outputText,
       statusText,
     });
+    if (trusted || !runtimeScreenConfirmed || frame.historyReplay
+      || tm.isPtyResizeReplayWindowActive(tabId)
+      || agentTurnTimerByTabRef.current[tabId]?.status !== "working"
+      || hasCodexCurrentTurnBoundary(outputText, state?.currentPrompt || "")) return trusted;
+    // 长任务可能已把输入滚出读取范围；只允许真实活动栏更新进行中的计时，不能撤销失败。
+    return !!detectCodexCliRuntimeStatusOnScreen(outputText);
   }
 
-  /** 同步帧可能只重画状态栏；等待真实屏幕稳定并确认轮次后再更新运行状态。 */
+  /** 重连候选和局部重画都要核对稳定屏幕；已有重连在恢复后也由此自动纠正。 */
   function scheduleCodexRuntimeScreenCheck(tabId: string): void {
     const initialState = codexErrorScanByTabRef.current[tabId];
-    if (!initialState || initialState.pendingRuntimeScreenCheck?.turn === initialState.turn) return;
+    if (!initialState || initialState.pendingRuntimeScreenCheck?.turn === initialState.turn
+      || initialState.outputFrameState?.historyReplay || initialState.outputFrameState?.synchronized
+      || tm.isPtyResizeReplayWindowActive(tabId)) return;
     const check = { turn: initialState.turn };
     const ptyId = ptyByTabRef.current[tabId];
     const startedAt = agentTurnTimerByTabRef.current[tabId]?.startedAt;
@@ -4765,6 +4790,7 @@ export default function CodexFlowManagerUI() {
         || (timer.status !== "working" && timer.status !== "failed")
         || !codexErrorHandlingPrefsRef.current.detectionEnabled
         || resolveTabProviderId(tabId).toLowerCase() !== "codex"
+        || state.outputFrameState?.historyReplay || state.outputFrameState?.synchronized
         || tm.isPtyResizeReplayWindowActive(tabId)) { finish(); return; }
       const screenText = tm.hasPendingTerminalOutput(tabId) ? "" : String(tm.readTerminalCursorTextSnapshot(tabId, {
         linesBefore: 256, linesAfter: 4, maxChars: CODEX_TURN_OUTPUT_MAX_LENGTH,
@@ -4772,21 +4798,23 @@ export default function CodexFlowManagerUI() {
       const nextStableChecks = screenText && screenText === lastScreenText ? stableChecks + 1 : 1;
       if (screenText && nextStableChecks >= CODEX_FINAL_ERROR_SCREEN_CONFIRM_STABLE_CHECKS) {
         finish();
-        const runtime = detectCodexCliRuntimeStatusText(screenText);
+        const runtime = detectCodexCliRuntimeStatusOnScreen(screenText);
         if (isCodexHistoryBrowsingScreen(screenText)) return;
         if (!runtime) {
-          if (hasCodexCurrentTurnBoundary(screenText, state.currentPrompt || "")
-            && classifyCodexFinalErrorOnIdleScreen(screenText, state.currentPrompt || ""))
-            processCodexPtyErrorFrame(ptyId, screenText, { text: screenText, synchronized: true, historyReplay: false });
+          if (hasCodexComposerPrompt(screenText)) {
+            if (classifyCodexFinalErrorOnIdleScreen(screenText, state.currentPrompt || ""))
+              processCodexPtyErrorFrame(ptyId, screenText, { text: screenText, synchronized: true, historyReplay: false }, true);
+            else if (timer.status === "working") {
+              settleCodexIdleWithoutFinalError(tabId, "runtime-screen-without-reconnect");
+              clearAgentTurnReconnecting(tabId, "runtime-screen-without-reconnect");
+            }
+          }
           return;
         }
-        const trusted = shouldTrustCodexRuntimeStatusForCurrentTurn({
-          historyReplay: false, synchronized: true, resizeReplayActive: false,
-          currentPrompt: state.currentPrompt || "", outputText: screenText,
-          statusText: runtime.phase === "working" ? "Working" : "Reconnecting...",
-        });
+        const trusted = shouldTrustCodexRuntimeStatus(tabId,
+          { historyReplay: false, synchronized: true }, screenText, runtime.statusText || "Reconnecting...", true);
         if (trusted)
-          processCodexPtyErrorFrame(ptyId, screenText, { text: screenText, synchronized: true, historyReplay: false });
+          processCodexPtyErrorFrame(ptyId, screenText, { text: screenText, synchronized: true, historyReplay: false }, true);
         return;
       }
       if (attempt < CODEX_FINAL_ERROR_SCREEN_CONFIRM_MAX_CHECKS)
@@ -4973,6 +5001,7 @@ export default function CodexFlowManagerUI() {
       synchronized: false,
       historyReplay: false,
     },
+    runtimeScreenConfirmed = false,
   ) {
     if (!ptyId || typeof chunk !== "string" || chunk.length === 0) return;
     const prefs = codexErrorHandlingPrefsRef.current;
@@ -5009,16 +5038,24 @@ export default function CodexFlowManagerUI() {
       ? cleanedChunk
       : `${previous.buffer || ""}${cleanedChunk}`.slice(-CODEX_ERROR_SCAN_MAX_BUFFER_LENGTH);
     const now = Date.now();
-    const chunkRuntimeStatus = detectCodexCliRuntimeStatusText(cleanedChunk);
+    const chunkRuntimeStatus = detectCodexCliRuntimeStatusText(chunk);
     const runtimeStatusTrusted = chunkRuntimeStatus?.phase === "working"
-      ? shouldTrustCodexRuntimeStatus(tabId, frame, replayOutputText, "Working")
+      ? shouldTrustCodexRuntimeStatus(tabId, frame, replayOutputText, chunkRuntimeStatus.statusText || "Working", runtimeScreenConfirmed)
       : chunkRuntimeStatus?.phase === "reconnecting"
-        ? shouldTrustCodexRuntimeStatus(tabId, frame, replayOutputText, "Reconnecting...")
+        ? shouldTrustCodexRuntimeStatus(tabId, frame, replayOutputText, "Reconnecting...", runtimeScreenConfirmed)
         : true;
-    if (chunkRuntimeStatus && !runtimeStatusTrusted && frame.synchronized && !frame.historyReplay
+    if (!runtimeScreenConfirmed
+      && (chunkRuntimeStatus?.phase === "reconnecting" || (chunkRuntimeStatus && !runtimeStatusTrusted)
+        || timerState.reconnectAttempt || timerState.reconnectErrorKind || timerState.reconnectErrorMessage)
+      && !frame.historyReplay
       && !tm.isPtyResizeReplayWindowActive(tabId)) {
       scheduleCodexRuntimeScreenCheck(tabId);
       previous = codexErrorScanByTabRef.current[tabId];
+    }
+    // 字节片段可能只是旧标题，只有本轮稳定屏幕才能进入或推进重连状态。
+    if (chunkRuntimeStatus?.phase === "reconnecting" && !runtimeScreenConfirmed) {
+      codexErrorScanByTabRef.current[tabId] = { ...previous, buffer: replayOutputText };
+      return;
     }
     if (timerState.status === "failed") {
       if (chunkRuntimeStatus?.phase === "working") {
@@ -5233,6 +5270,25 @@ export default function CodexFlowManagerUI() {
         ...latestScanState,
         buffer: nextBuffer,
       };
+      if (runtimeScreenConfirmed && runtimeStatusTrusted && chunkRuntimeStatus?.phase === "reconnecting"
+        && timerState.reconnectErrorKind)
+        markAgentTurnReconnecting(tabId, {
+          kind: timerState.reconnectErrorKind,
+          severity: "temporary",
+          retryable: isCodexCliErrorAutoRetryable(timerState.reconnectErrorKind),
+          matchedText: timerState.reconnectErrorMessage || "Reconnecting...",
+          phase: "reconnecting",
+          reconnectAttempt: chunkRuntimeStatus.reconnectAttempt,
+          reconnectMaxAttempts: chunkRuntimeStatus.reconnectMaxAttempts,
+        });
+      return;
+    }
+
+    if (classification.phase === "reconnecting"
+      && (!runtimeScreenConfirmed || !runtimeStatusTrusted || chunkRuntimeStatus?.phase !== "reconnecting")) {
+      codexErrorScanByTabRef.current[tabId] = { ...latestScanState, buffer: nextBuffer };
+      if (!runtimeScreenConfirmed && !frame.historyReplay && !tm.isPtyResizeReplayWindowActive(tabId))
+        scheduleCodexRuntimeScreenCheck(tabId);
       return;
     }
 
@@ -15619,7 +15675,8 @@ export default function CodexFlowManagerUI() {
             const tabId = String(agentTurnCtxMenu.tabId || "").trim();
             const timerState = tabId ? agentTurnTimerByTab[tabId] : undefined;
             if (!tabId || !timerState) return null;
-            const canContinueTimer = timerState.status !== "working";
+            const canContinueTimer = timerState.status !== "working"
+              || !!(timerState.reconnectAttempt || timerState.reconnectErrorKind || timerState.reconnectErrorMessage);
             const isCodexFailed = timerState.status === "failed" && resolveTabProviderId(tabId).toLowerCase() === "codex";
             const hasScheduledCodexContinue = isCodexFailed && (
               Number(timerState.autoContinueScheduledAt || 0) > Date.now() ||
@@ -15637,7 +15694,7 @@ export default function CodexFlowManagerUI() {
                   disabled={!canContinueTimer}
                   onClick={() => {
                     if (!canContinueTimer) return;
-                    startAgentTurnTimer(tabId);
+                    resumeAgentTurnTimer(tabId);
                     setAgentTurnCtxMenu((m) => ({ ...m, show: false, tabId: null }));
                   }}
                 >

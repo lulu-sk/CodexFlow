@@ -7,7 +7,7 @@ const canvasProbe = vi.hoisted(() => vi.spyOn(HTMLCanvasElement.prototype, "getC
 
 import { Terminal } from "@xterm/xterm";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
-import { classifyCodexCliErrorText } from "./codex-cli-error-classifier";
+import { classifyCodexCliErrorText, detectCodexCliRuntimeStatusOnScreen } from "./codex-cli-error-classifier";
 import { createCodexTurnCompletionProbe, inspectCodexTurnCompletion } from "./codex-turn-completion";
 import {
   classifyCodexFinalErrorOnIdleScreen,
@@ -55,6 +55,18 @@ function readScreen(terminal: Terminal): string {
 }
 
 describe("Codex 错误字节流与真实终端屏幕联测", () => {
+  it.each([40, 80, 128])("%i 列中状态栏从重连局部重画为压缩后，实际屏幕应恢复工作中", async (cols) => {
+    const terminal = createTerminal(cols);
+    const reconnect = "• Reconnecting... 1/5 (56s • esc to interrupt)";
+    const compact = "• Compacting context (45s • esc to interrupt)";
+    const reconnectLine = reconnect.length > cols ? reconnect.slice(0, cols - 1) + "…" : reconnect;
+    const compactLine = compact.length > cols ? compact.slice(0, cols - 1) + "…" : compact;
+    await writeTerminal(terminal, `\x1b[?1049h\x1b[H\x1b[2J› continue\x1b[3;1H${reconnectLine}\x1b[4;1H  stream disconnected before completion\x1b[6;1H› Ask Codex to do anything`);
+    expect(detectCodexCliRuntimeStatusOnScreen(readScreen(terminal))?.phase).toBe("reconnecting");
+    await writeTerminal(terminal, `\x1b[?2026h\x1b[3;1H\x1b[2K${compactLine}\x1b[4;1H\x1b[2K  Making room to continue.\x1b[6;3H\x1b[?2026l`);
+    expect(detectCodexCliRuntimeStatusOnScreen(readScreen(terminal))?.phase).toBe("working");
+  });
+
   it.each([40, 80, 128])("%i 列中提示词自行折行时，真实活动到完成画面仍能收敛", async (cols) => {
     const terminal = createTerminal(cols);
     const prompt = "检查当前问题并修复所有已确认的问题".repeat(6);

@@ -33,6 +33,7 @@ export type CodexCliErrorClassification = {
 
 export type CodexCliRuntimeStatus = {
   phase: CodexCliRuntimePhase;
+  statusText?: string;
   reconnectAttempt?: number;
   reconnectMaxAttempts?: number;
 };
@@ -145,8 +146,9 @@ const ANSI_SEQUENCE_PATTERN =
 const CONTROL_CHARS_EXCEPT_WHITESPACE_PATTERN = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
 const MAX_MATCHED_TEXT_LENGTH = 280;
 const MAX_REPLAY_FINGERPRINT_DETAIL_LENGTH = 160;
-const RECONNECTING_STATUS_PATTERN = /Reconnecting\.\.\.\s+(\d+)\/(\d+)/gi;
-const WORKING_STATUS_PATTERN = /\bWorking\s*\(/gi;
+const RECONNECTING_STATUS_PATTERN = /^[^\S\n]*(?:[•●◦][^\S\n]*)?Reconnecting\.\.\.[^\S\n]+(\d+)\/(\d+)\b/gimu;
+const WORKING_STATUS_PATTERN = /^[^\S\n]*(?:[•●◦][^\S\n]*)?(Working|Compacting context)[^\S\n]*\(/gimu;
+const RUNTIME_CURSOR_POSITION_PATTERN = /(?:\u001b\[|\u009b)\d*(?:;\d*)?[HfG]/gu;
 const CODEX_COMPOSER_PROMPT_PATTERN = /(?:^|\n)[^\S\n]*›[^\S\n]+Ask Codex to do\b/giu;
 const CODEX_FINAL_HISTORY_LINE_PATTERN =
   /^(?:unexpected status\s+\d{3}|exceeded retry limit|stream disconnected before completion|Conversation interrupted|Goal budget reached|you['’]ve hit your usage limit|usage limit(?:\s+has been)?\s+reached|you['’]re\s+out\s+of\s+credits|your(?:\s+workspace)?\s+is\s+out\s+of\s+credits|you\s+hit\s+your\s+spend\s+cap|spend\s+cap\s+set\s+(?:in|by)\s+(?:your|the\s+owner)|selected model is at capacity|model is at capacity|(?:we['’]re\s+|codex\s+is\s+)?currently experiencing high (?:demand|load)|server overloaded|rate limit exceeded|connection failed|Error while reading the server response|Transport error|network error|error decoding response body|stream closed before response\.completed|concurrency limit exceeded|429\s+Too Many Requests|Too Many Requests|502\s+Bad Gateway|503\s+Service Unavailable|400\s+Bad Request|403\s+Forbidden|413\s+(?:Payload Too Large|Request Entity Too Large)|sign in with ChatGPT)\b/i;
@@ -159,7 +161,7 @@ const EXPLICIT_FINAL_ERROR_PATTERN =
 const SOURCE_LOCATION_LINE_PATTERN = /^(?:(?:[A-Za-z]:)?[./\\\w@ -]+\.(?:ts|tsx|js|jsx|json|cjs|mjs|md|css|scss|html|yml|yaml|txt|cs|shader|uxml|uss):\d+(?::\d+)?:)/i;
 const SOURCE_LITERAL_LINE_PATTERN = /\b(?:pattern|text|kind|matchedText|label|expect|toBe|toContain)\s*[:(=]/i;
 const CODEX_ADDITIONAL_FINAL_HISTORY_LINE_PATTERN = /^(?:Quota exceeded|To use Codex with your ChatGPT plan, upgrade to Plus|shared rollout token budget exhausted|Flex capacity unavailable|request timed out|Codex ran out of room in the model['’]s context window|Your access token could not be refreshed|Your refresh token has already been used to generate a new access token|Failed to refresh token|401\s+Unauthorized|internal error; agent loop died unexpectedly|Fatal error:|turn aborted\. Something went wrong\?)/i;
-const CODEX_TRANSCRIPT_EVENT_LINE_PATTERN = /^[^\S\n]*(?:[›•■▪⚠─]|Working\s*\(|Reconnecting\.\.\.\s+\d+\/\d+)/iu;
+const CODEX_TRANSCRIPT_EVENT_LINE_PATTERN = /^[^\S\n]*(?:[›•●◦■▪⚠─]|(?:Working|Compacting context)\s*\(|Reconnecting\.\.\.\s+\d+\/\d+)/iu;
 const CODEX_BACKGROUND_TERMINALS_FOOTER_PATTERN = /^[^\S\n]*[1-9]\d* background terminals? running · \/ps to view · \/stop to close[^\S\n]*$/u;
 const CODEX_PRIMARY_BLOCKING_ERROR_PATTERN = new RegExp(
   "^(?:[■▪⚠][\\ufe0e\\ufe0f]?\\s*)?(?:Error running remote compact task:\\s*)?(?:"
@@ -312,6 +314,7 @@ export function joinCodexFinalHistoryContinuationLines(text: string): string {
 type CodexStatusMarker = {
   kind: "reconnecting" | "working";
   index: number;
+  statusText?: string;
   attempt?: number;
   maxAttempts?: number;
 };
@@ -333,6 +336,7 @@ function collectCodexStatusMarkers(text: string): CodexStatusMarker[] {
     markers.push({
       kind: "working",
       index: match.index || 0,
+      statusText: match[1],
     });
   }
   markers.sort((left, right) => left.index - right.index);
@@ -434,21 +438,37 @@ function findLastRuleMatch(text: string, rule: CodexCliErrorRule): RegExpExecArr
 }
 
 /**
- * 读取终端文本中最后一个可验证的 Codex 运行状态标记；可输入框不参与运行状态判断。
+ * 读取独立运行状态行；绝对光标定位视为绘制边界，可输入框不参与运行状态判断。
  */
 export function detectCodexCliRuntimeStatusText(input: string): CodexCliRuntimeStatus | null {
-  const text = normalizeCodexCliErrorText(input);
+  const text = normalizeCodexCliErrorText(String(input || "").replace(RUNTIME_CURSOR_POSITION_PATTERN, "\n"));
   if (!text) return null;
   const markers = collectCodexStatusMarkers(text);
   const latest = markers[markers.length - 1];
   if (!latest) return null;
   if (hasCodexFinalHistoryEndedAfterRuntimeStatus(text, latest.index)) return null;
-  if (latest.kind === "working") return { phase: "working" };
+  if (latest.kind === "working") return { phase: "working", statusText: latest.statusText };
   return {
     phase: "reconnecting",
     reconnectAttempt: latest.attempt,
     reconnectMaxAttempts: latest.maxAttempts,
   };
+}
+
+/** 只读取输入框附近带计时的活动栏，避免把历史正文里的状态示例当作当前状态。 */
+export function detectCodexCliRuntimeStatusOnScreen(input: string): CodexCliRuntimeStatus | null {
+  const text = stripAnsiForCodexErrorScan(input);
+  const composer = Array.from(text.matchAll(CODEX_COMPOSER_PROMPT_PATTERN)).at(-1);
+  if (!composer) return null;
+  const area = text.slice(0, composer.index).split("\n").slice(-8).join("\n");
+  const markers = collectCodexStatusMarkers(area);
+  const latest = markers.at(-1);
+  if (!latest || !/\((?:<1s|(?:\d+h\s+)?(?:\d+m\s+)?\d+s)(?:[^\n)]*\)|[^\n)]*…$)/iu.test(readLineAtIndex(area, latest.index)))
+    return null;
+  const followingLines = area.slice(latest.index).split("\n").slice(1);
+  if (followingLines.some((line) => CODEX_TRANSCRIPT_EVENT_LINE_PATTERN.test(line)
+    || /^[^\S\n]*(?:Worked for\b|```)/u.test(line))) return null;
+  return detectCodexCliRuntimeStatusText(area);
 }
 
 /**
