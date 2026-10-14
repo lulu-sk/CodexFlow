@@ -84,6 +84,7 @@ describe("TerminalManager（PTY 缩放重绘窗口）", () => {
       text: "■ error\n› Ask Codex to do anything",
     };
     const adapter = {
+      readProgramStatus: vi.fn(() => ({ state: "done", app: "claude-code", id: "", message: "完成", receivedAt: 1000 })),
       hasPendingWriteWork: vi.fn(() => true),
       readCursorTextSnapshot: vi.fn(() => snapshot),
     };
@@ -93,5 +94,7 @@ describe("TerminalManager（PTY 缩放重绘窗口）", () => {
     expect(tm.readTerminalCursorTextSnapshot("tab-a", { linesBefore: 32 })).toBe(snapshot);
     expect(adapter.readCursorTextSnapshot).toHaveBeenCalledWith({ linesBefore: 32 });
     expect(tm.readTerminalCursorTextSnapshot("missing-tab")).toBeNull();
+    expect(tm.readTerminalProgramStatus("tab-a")).toEqual(adapter.readProgramStatus());
+    expect(tm.readTerminalProgramStatus("missing-tab")).toBeNull();
   });
 });

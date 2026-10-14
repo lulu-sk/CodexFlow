@@ -10,6 +10,7 @@ import {
   type TerminalScrollToBottomOptions,
 } from '@/adapters/TerminalAdapter';
 import { isWindowsLikeTerminal, type TerminalMode } from '@/lib/shell';
+import type { TerminalProgramStatus } from '@/lib/terminal-program-status';
 import {
   getTerminalTheme,
   normalizeTerminalAppearance,
@@ -564,6 +565,11 @@ export default class TerminalManager {
     } catch {
       return null;
     }
+  }
+
+  /** 读取指定标签页的主任务状态；状态随终端适配器释放，不跨标签复用。 */
+  readTerminalProgramStatus(tabId: string): TerminalProgramStatus | null {
+    return this.adapters[tabId]?.readProgramStatus?.() || null;
   }
 
   /**

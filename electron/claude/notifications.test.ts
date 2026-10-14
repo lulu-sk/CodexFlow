@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../agentSessions/claude/discovery", () => ({
@@ -80,6 +81,23 @@ describe("electron/claude/notifications（多行预览保真）", () => {
     await mod.ensureAllClaudeNotifications();
 
     expect(fs.readFileSync(settingsPath, "utf8")).toBe(original);
+  });
+
+  it("真实执行 Stop 脚本：优先使用官方最后回复字段，且不阻止 goal 或其它钩子继续", async () => {
+    const root = createTempDir("claude-notify-runtime-");
+    tempDirs.push(root);
+    const mod = await loadClaudeNotificationsModule(root);
+    await mod.ensureAllClaudeNotifications();
+    const result = spawnSync(process.execPath, [path.join(root, "hooks", "codexflow_stop_notify.js")], {
+      input: JSON.stringify({ hook_event_name: "Stop", stop_hook_active: true, session_id: "session-example", last_assistant_message: "检查完成。\n验证通过。", assistant_response: "旧兼容字段" }),
+      env: { ...process.env, CLAUDE_CODEXFLOW_TAB_ID: "tab-example" },
+      encoding: "utf8",
+      timeout: 5000,
+    });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({ continue: true, suppressOutput: true });
+    const event = JSON.parse(fs.readFileSync(path.join(root, "hooks", "codexflow_after_agent_notify.jsonl"), "utf8").trim());
+    expect(event).toMatchObject({ tabId: "tab-example", sessionId: "session-example", preview: "检查完成。\n验证通过。" });
   });
 
   it("读取已有 hook 脚本失败时不应改写 settings.json", async () => {

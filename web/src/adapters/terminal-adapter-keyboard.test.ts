@@ -3,6 +3,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TerminalAdapterAPI } from "./TerminalAdapter";
 import * as clipboard from "@/lib/clipboard";
+import { PROGRAM_STATUS_CAPABILITY_REPLY } from "@/lib/terminal-program-status";
 
 vi.mock("@/i18n/setup", () => ({
   default: { t: (key: string) => key },
@@ -64,6 +65,30 @@ describe("TerminalAdapter（真实 xterm 键盘输入）", () => {
     adapter.write(text);
     await vi.waitFor(() => expect(adapter.hasPendingWriteWork?.()).toBe(false));
   }
+
+  it("真实 xterm 回应 Claude 状态探测，并解析逐字分片的主任务完成状态", async () => {
+    providerId = "claude";
+    await renderTerminal("\x1b]7501;?\x1b\\");
+    expect(outbound).toEqual([PROGRAM_STATUS_CAPABILITY_REPLY]);
+    const report = "\x1b]7501;state=done:app=claude-code:msg=5Lu75Yqh5a6M5oiQ\x07";
+    for (const char of report) await renderTerminal(char);
+    expect(adapter.readProgramStatus?.()).toMatchObject({ state: "done", message: "任务完成", id: "" });
+    // 带 id 的子任务及其它程序不能替换主会话记录。
+    await renderTerminal("\x1b]7501;state=working:id=agent-1:app=claude-code\x1b\\");
+    await renderTerminal("\x1b]7501;state=error:app=another-program\x07");
+    await renderTerminal("\x1b]7501;state=clear:id=agent-1\x07");
+    expect(adapter.readProgramStatus?.()?.state).toBe("done");
+    await renderTerminal("\x1b]7501;state=clear\x07");
+    expect(adapter.readProgramStatus?.()).toBeNull();
+  });
+
+  it("其它引擎不启用 Claude 状态探测，普通文字不能伪造协议事件", async () => {
+    await renderTerminal("\x1b]7501;?\x07");
+    expect(outbound).toEqual([]);
+    providerId = "claude";
+    await renderTerminal("7501;state=done:app=claude-code");
+    expect(adapter.readProgramStatus?.()).toBeNull();
+  });
 
   it("新版 Codex 的上下滚动按钮通过输入链路跳转历史端点", async () => {
     await renderTerminal("\x1b[?1049h\x1b[?1003h\x1b[?1006h\x1b[20;1H› Ask Codex to do anything");

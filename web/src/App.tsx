@@ -74,6 +74,7 @@ import { TerminalPasteError, isGeminiLikeProvider, isGeminiProvider, writeBracke
 import { oscBufferDefaults, trimOscBuffer } from "@/lib/oscNotificationBuffer";
 import { collectRetainedAgentTurnTabIds, pruneAgentTurnHistory, pruneAgentTurnTimers } from "@/lib/agent-turn-timer";
 import { resolveAgentCompletionTab } from "@/lib/agent-completion-routing";
+import { inspectClaudeProgramStatus, inspectClaudeTurnState, type ClaudeTurnProbe } from "@/lib/claude-turn-state";
 import { createCodexTurnCompletionProbe, inspectCodexTurnCompletion, observeCodexTurnCompletionBoundary, type CodexTurnCompletionProbe } from "@/lib/codex-turn-completion";
 import {
   classifyCodexCliErrorText,
@@ -1962,6 +1963,10 @@ export default function CodexFlowManagerUI() {
   const agentTurnCtxMenuRef = useRef<HTMLDivElement | null>(null);
   const completionSnapshotRef = useRef<Record<string, CompletionSnapshot>>({});
   const codexTurnCompletionProbeByTabRef = useRef<Record<string, { startedAt: number; probe: CodexTurnCompletionProbe }>>({});
+  const claudeTurnProbeByTabRef = useRef<Record<string, ClaudeTurnProbe>>({});
+  const claudeCompletionCandidateByTabRef = useRef<Record<string, { preview: string; source: CompletionEventSource }>>({});
+  const claudeFreshOutputByTabRef = useRef<Record<string, boolean>>({});
+  const checkClaudeTurnStateRef = useRef<(() => void) | null>(null);
   const pendingOscCompletionTimersRef = useRef<Record<string, number>>({});
   const pendingOscCompletionPreviewRef = useRef<Record<string, string>>({});
   const resumeCompletionGuardByTabRef = useRef<Record<string, number>>({});
@@ -3170,6 +3175,8 @@ export default function CodexFlowManagerUI() {
       return;
     }
     resetCodexErrorScanForTab(id, "timer-start", { keepAttempts: true });
+    delete claudeCompletionCandidateByTabRef.current[id];
+    delete claudeTurnProbeByTabRef.current[id];
     const now = Date.now();
     const nextState: AgentTurnTimerState = {
       status: "working",
@@ -3205,6 +3212,8 @@ export default function CodexFlowManagerUI() {
   const completeAgentTurnTimer = useCallback((tabId: string) => {
     const id = String(tabId || "").trim();
     if (!id) return;
+    delete claudeCompletionCandidateByTabRef.current[id];
+    delete claudeTurnProbeByTabRef.current[id];
     const now = Date.now();
 
     // 获取当前状态，避免在 updater 内部执行副作用
@@ -3418,6 +3427,8 @@ export default function CodexFlowManagerUI() {
   const interruptAgentTurnTimer = useCallback((tabId: string, source: string) => {
     const id = String(tabId || "").trim();
     if (!id) return;
+    delete claudeCompletionCandidateByTabRef.current[id];
+    delete claudeTurnProbeByTabRef.current[id];
     const now = Date.now();
 
     const current = agentTurnTimerByTabRef.current[id];
@@ -3514,6 +3525,9 @@ export default function CodexFlowManagerUI() {
   const cancelAgentTurnTimer = useCallback((tabId: string, source: string) => {
     const id = String(tabId || "").trim();
     if (!id) return;
+    delete claudeCompletionCandidateByTabRef.current[id];
+    delete claudeTurnProbeByTabRef.current[id];
+    delete claudeFreshOutputByTabRef.current[id];
     if (agentTurnTimerByTabRef.current[id]) {
       const nextRef = { ...agentTurnTimerByTabRef.current };
       delete nextRef[id];
@@ -3804,6 +3818,68 @@ export default function CodexFlowManagerUI() {
     checkCodexTurnCompletions();
   }, [agentTurnClockTick, hasWorkingAgentTimer, handleAgentCompletion, notifyLog, resolveTabProviderId, tm]);
 
+  /** 读取 Claude 当前画面，确认真正完成，并在 goal 自动续跑后开启下一段计时。 */
+  function checkClaudeTurnState(): void {
+    for (const id of Object.keys(ptyByTabRef.current)) {
+      if (resolveTabProviderId(id).toLowerCase() !== "claude") continue;
+      const timer = agentTurnTimerByTabRef.current[id];
+      const candidate = claudeCompletionCandidateByTabRef.current[id];
+      const freshOutput = !!claudeFreshOutputByTabRef.current[id];
+      if (!freshOutput && candidate === undefined && timer?.status !== "working") continue;
+      const frame = codexErrorScanByTabRef.current[id]?.outputFrameState;
+      const blocked = tm.hasPendingTerminalOutput(id) || tm.isPtyResizeReplayWindowActive(id)
+        || !!frame?.synchronized;
+      const programStatus = tm.readTerminalProgramStatus(id);
+      if (programStatus) {
+        const result = inspectClaudeProgramStatus(programStatus, timer?.startedAt ?? Infinity, blocked);
+        if (result.working && freshOutput && timer?.status === "done"
+          && programStatus.receivedAt >= (timer.finishedAt || timer.startedAt)) {
+          delete completionSnapshotRef.current[id];
+          clearPendingForTab(id);
+          startAgentTurnTimer(id);
+          notifyLog(`agentTimer.start tab=${id} source=claude-program-status`);
+        }
+        if (result.completed && timer?.status === "working") {
+          delete claudeCompletionCandidateByTabRef.current[id];
+          delete claudeTurnProbeByTabRef.current[id];
+          delete claudeFreshOutputByTabRef.current[id];
+          handleAgentCompletion(id, candidate?.preview || programStatus.message, candidate?.source || "screen",
+            { previewEscapedWhitespace: false }, true);
+          notifyLog(`agentTimer.done tab=${id} source=claude-program-status`);
+        }
+        // 已接通协议时，执行中、弹窗、错误和中断状态不能被旧 Stop 或历史画面覆盖。
+        continue;
+      }
+      const snapshot = blocked ? null : tm.readTerminalCursorTextSnapshot(id, { linesBefore: 16, linesAfter: 8, maxChars: 12_000 });
+      const result = inspectClaudeTurnState(claudeTurnProbeByTabRef.current[id] || {}, snapshot?.text || "", candidate !== undefined, blocked);
+      claudeTurnProbeByTabRef.current[id] = result.probe;
+      if (!snapshot) continue;
+      delete claudeFreshOutputByTabRef.current[id];
+      if (result.working && freshOutput && timer?.status === "done") {
+        delete completionSnapshotRef.current[id];
+        clearPendingForTab(id);
+        startAgentTurnTimer(id);
+        // 新轮 Stop 可能先于画面更新到达，保留它供后续真正空闲时确认。
+        if (candidate !== undefined) claudeCompletionCandidateByTabRef.current[id] = candidate;
+        notifyLog(`agentTimer.start tab=${id} source=claude-auto-resume`);
+      }
+      if (!result.completed || candidate === undefined) continue;
+      delete claudeCompletionCandidateByTabRef.current[id];
+      delete claudeTurnProbeByTabRef.current[id];
+      handleAgentCompletion(id, candidate.preview, candidate.source, { previewEscapedWhitespace: false }, true);
+      notifyLog(`agentTimer.done tab=${id} source=stable-claude-idle-screen`);
+    }
+  }
+
+  checkClaudeTurnStateRef.current = checkClaudeTurnState;
+  const hasClaudeTab = Object.values(tabsByProject).some((list) => list.some((tab) => tab.providerId === "claude"));
+  // 完成后也要观察后续输出，才能发现不经过用户发送入口的 goal 续跑。
+  useEffect(() => {
+    if (!hasClaudeTab) return;
+    const timer = window.setInterval(() => checkClaudeTurnStateRef.current?.(), 1000);
+    return () => window.clearInterval(timer);
+  }, [hasClaudeTab]);
+
   /**
    * 监听键盘 ESC；当焦点位于终端区域且该标签页计时中时，执行取消计时。
    */
@@ -3863,6 +3939,11 @@ export default function CodexFlowManagerUI() {
     for (const tabId of Object.keys(resumeCompletionGuardByTabRef.current)) {
       if (trackedTabIdSet.has(tabId)) continue;
       delete resumeCompletionGuardByTabRef.current[tabId];
+    }
+    for (const map of [claudeTurnProbeByTabRef.current, claudeCompletionCandidateByTabRef.current, claudeFreshOutputByTabRef.current]) {
+      for (const tabId of Object.keys(map)) {
+        if (!trackedTabIdSet.has(tabId)) delete map[tabId];
+      }
     }
     setAgentTurnCtxMenu((prev) => {
       if (!prev.show || !prev.tabId) return prev;
@@ -4470,8 +4551,16 @@ export default function CodexFlowManagerUI() {
     preview: string,
     source: CompletionEventSource = "unknown",
     normalizeOptions?: CompletionPreviewNormalizeOptions,
+    claudeScreenConfirmed = false,
   ) {
     if (!tabId) return;
+    if (!claudeScreenConfirmed && resolveTabProviderId(tabId).toLowerCase() === "claude" && source !== "screen" && source !== "manual") {
+      // Stop 钩子并行执行，goal 或其它钩子仍可能阻止停止，不能在这里提前完成。
+      claudeCompletionCandidateByTabRef.current[tabId] = { preview: normalizeCompletionPreview(preview, normalizeOptions), source };
+      delete claudeTurnProbeByTabRef.current[tabId];
+      notifyLog(`claudeCompletion.candidate tab=${tabId} source=${source}`);
+      return;
+    }
     if (source !== "osc")
       clearPendingOscCompletion(tabId, `${source}-handled`);
     const hasWorkingTimer = agentTurnTimerByTabRef.current[String(tabId || "")]?.status === "working";
@@ -5417,6 +5506,14 @@ export default function CodexFlowManagerUI() {
     }
   }
 
+  /** 记录当前 Claude 标签的真实新输出，窗口回放不能触发自动续计时。 */
+  function processClaudePtyActivity(ptyId: string, chunk: string): void {
+    const tabId = ptyToTabRef.current[ptyId];
+    if (!tabId || !chunk || resolveTabProviderId(tabId).toLowerCase() !== "claude"
+      || tm.isPtyResizeReplayWindowActive(tabId)) return;
+    claudeFreshOutputByTabRef.current[tabId] = true;
+  }
+
   function processPtyNotificationChunk(ptyId: string, chunk: string) {
     if (!ptyId || typeof chunk !== 'string' || chunk.length === 0) return;
     const hasOsc = chunk.includes(OSC_NOTIFICATION_PREFIX);
@@ -5621,6 +5718,7 @@ export default function CodexFlowManagerUI() {
     try {
       off = window.host.pty.onData(ptyId, (data) => {
         try { processCodexPtyErrorChunk(ptyId, data); } catch (err) { console.warn('processCodexPtyErrorChunk failed', err); }
+        processClaudePtyActivity(ptyId, data);
         try { processPtyNotificationChunk(ptyId, data); } catch (err) { console.warn('processPtyNotificationChunk failed', err); }
       });
     } catch (err) {
@@ -8650,6 +8748,13 @@ export default function CodexFlowManagerUI() {
     }
     if (!resolvedTabId) {
       notifyLog(`externalCompletion skip: no tab match provider=${providerId} tab=${String(payload?.tabId || "")} env=${payload?.envLabel || ""}`);
+      return;
+    }
+    const eventAt = Date.parse(payload?.timestamp || "");
+    const currentTimer = agentTurnTimerByTabRef.current[resolvedTabId];
+    if (providerId === "claude" && currentTimer?.status === "working" && Number.isFinite(eventAt)
+      && eventAt < currentTimer.startedAt - 2000) {
+      notifyLog(`externalCompletion skip tab=${resolvedTabId} reason=stale-claude-turn`);
       return;
     }
     const cleanedPreview = normalizeCompletionPreview(preview, normalizeOptions);

@@ -20,7 +20,7 @@ const CLAUDE_HOOK_SCRIPT = String.raw`#!/usr/bin/env node
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
 /**
- * CodexFlow: Claude Code Stop hook -> 完成事件桥接
+ * CodexFlow: Claude Code Stop hook -> 待确认的完成事件桥接
  *
  * 说明：
  * - Claude Code 会捕获 hook 的 stdout 用于解析 JSON（continue/suppressOutput 等）。
@@ -300,6 +300,7 @@ const raw = safeReadStdin();
 const data = safeParseJson(raw) || {};
 logInfo("start pid=" + process.pid + " inputBytes=" + raw.length);
 const directResponse =
+  (typeof data.last_assistant_message === "string" ? data.last_assistant_message : "") ||
   (typeof data.assistant_response === "string" ? data.assistant_response : "") ||
   (typeof data.response === "string" ? data.response : "") ||
   (typeof data.output === "string" ? data.output : "");

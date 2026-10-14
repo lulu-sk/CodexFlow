@@ -47,6 +47,7 @@ vi.mock("@xterm/xterm", () => {
       },
       unicode: { activeVersion: "6" },
       options: {},
+      parser: { registerOscHandler: vi.fn(() => ({ dispose: vi.fn() })) },
       element: null,
       textarea: null,
       _core: {
