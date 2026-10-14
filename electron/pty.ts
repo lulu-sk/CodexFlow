@@ -272,6 +272,18 @@ export class PTYManager {
     }
   }
 
+  /** Claude 原生终端优先使用随包 ConPTY，保证能力握手可往返；加载失败时沿用系统回退。 */
+  private spawnWindowsPty(file: string, args: string[], options: pty.IWindowsPtyForkOptions, preferBundled: boolean): IPty {
+    if (preferBundled) {
+      try {
+        return pty.spawn(file, args, { ...options, useConptyDll: true });
+      } catch (error) {
+        dlog(`[pty] Claude bundled ConPTY fallback: ${String(error)}`);
+      }
+    }
+    return pty.spawn(file, args, options);
+  }
+
   /**
    * 中文说明：将 PTY 输出合并后再发送到渲染进程，降低高频输出下的 IPC 消息数量。
    *
@@ -502,6 +514,7 @@ export class PTYManager {
     const cols = opts.cols || 80;
     const rows = opts.rows || 24;
     const startupCmd = opts.startupCmd || '';
+    const preferBundledConpty = String(opts.env?.CLAUDE_CODEXFLOW_PROVIDER_ID || '').toLowerCase() === 'claude';
     let startupNotice = "";
     let fallbackReason: string | undefined;
 
@@ -549,13 +562,13 @@ export class PTYManager {
       const shell = resolved.command;
       const args: string[] = termMode === 'cmd' ? ['/d', '/v:off'] : ['-NoLogo'];
       const cwd = winPath && winPath.trim().length > 0 ? winPath : undefined;
-      proc = pty.spawn(shell, args, {
+      proc = this.spawnWindowsPty(shell, args, {
         name: 'xterm-256color',
         cols,
         rows,
         cwd,
         env
-      });
+      }, preferBundledConpty);
     } else {
       // WSL 模式
       let shell = 'wsl.exe';
@@ -598,13 +611,13 @@ export class PTYManager {
         termMode = 'windows';
         fallbackReason = 'wsl_spawn_failed';
         startupNotice = `CodexFlow: WSL 环境不可用，已切换到 PowerShell。${error?.message ? ` (${String(error.message)})` : ""}\r\n`;
-        proc = pty.spawn(resolved.command, ['-NoLogo'], {
+        proc = this.spawnWindowsPty(resolved.command, ['-NoLogo'], {
           name: 'xterm-256color',
           cols,
           rows,
           cwd: winPath || undefined,
           env
-        });
+        }, preferBundledConpty);
       }
     }
 

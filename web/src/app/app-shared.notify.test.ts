@@ -29,6 +29,10 @@ describe("app-shared（完成通知：识别与环境变量注入）", () => {
     expect(isAgentCompletionMessage("codex wants to edit foo.ts")).toBe(false);
   });
 
+  it.each(["4;0;", "4;1;50", "4;2;0", "4;3;", "4;4;100"])("进度协议 %s 不得触发完成通知", (message) => {
+    expect(isAgentCompletionMessage(message)).toBe(false);
+  });
+
   it("normalizeCompletionPreviewForDedupe：统一空白并清理前缀", () => {
     expect(normalizeCompletionPreviewForDedupe(" agent-turn-complete:\n已完成\t任务   输出 ")).toBe("已完成 任务 输出");
   });

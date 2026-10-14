@@ -8,6 +8,7 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import i18n from "@/i18n/setup";
 import { copyTextCrossPlatform, readTextCrossPlatform } from "@/lib/clipboard";
 import { isCodexOwnedTranscriptScreen } from "@/lib/codex-tui-screen";
+import { parseTerminalProgramStatus, PROGRAM_STATUS_CAPABILITY_REPLY, type TerminalProgramStatus } from "@/lib/terminal-program-status";
 import {
   DEFAULT_TERMINAL_FONT_FAMILY,
   getTerminalTheme,
@@ -23,6 +24,8 @@ export type TerminalScrollToBottomOptions = {
 };
 
 export type TerminalAdapterAPI = {
+  /** 读取程序上报的主任务状态，避免依赖终端画面或停止钩子推测。 */
+  readProgramStatus?: () => TerminalProgramStatus | null;
   mount: (el: HTMLElement) => { cols: number; rows: number };
   write: (data: string) => void;
   // 通过 xterm 的粘贴接口注入文本；在启用 Bracketed Paste 模式的应用中可避免逐字清洗
@@ -145,6 +148,7 @@ export type TerminalAdapterOptions = {
 };
 
 export function createTerminalAdapter(options?: TerminalAdapterOptions): TerminalAdapterAPI {
+  let programStatus: TerminalProgramStatus | null = null;
   // 调试辅助：统一配置（preload 注入只读缓存）
   const dbgEnabled = () => { try { return !!(globalThis as any).__cf_term_debug__; } catch { return false; } };
   const dlog = (msg: string) => { if (dbgEnabled()) { try { (window as any).host?.utils?.perfLog?.(msg); } catch {} } };
@@ -2617,6 +2621,7 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
       // 终端初始化：尽量与成熟 IDE 的稳定配置对齐
       const themePalette = getTerminalTheme(appearance.theme).palette;
       term = new Terminal({
+        allowProposedApi: true,
         // 光标闪烁提升输入感知
         cursorBlink: true,
         // 光标样式：使用竖线（更接近编辑器/Windows Terminal 的“插入位”感受）
@@ -2638,6 +2643,19 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
         letterSpacing: 0,
         // 高滚动缓存，避免频繁重绘导致的“伪影残留”误判
         scrollback: 10000,
+      });
+      // xterm 负责分片和终止符解析；回复能力探测后，Claude 才会开始上报状态。
+      term.parser.registerOscHandler(7501, (payload) => {
+        if (options?.getProviderId?.() !== "claude") return false;
+        if (payload === "?") {
+          term!.input(PROGRAM_STATUS_CAPABILITY_REPLY, false);
+          return true;
+        }
+        const status = parseTerminalProgramStatus(payload);
+        if (!status || status.id) return true;
+        if (status.state === "clear") programStatus = null;
+        else if (status.app === "claude-code") programStatus = status;
+        return true;
       });
       // 在 Windows + ConPTY 且系统构建号 >= 21376 时，启用 xterm 的 reflow（对滚动缓冲区重排）
       try {
@@ -3357,6 +3375,7 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
       if (!term) ensure();
       return readCursorTextSnapshot(options);
     },
+    readProgramStatus: () => programStatus,
     // 主动聚焦隐藏 textarea，避免切换后输入法合成态残留导致的键位/光标错位
     focus: () => {
       try {
@@ -3451,6 +3470,7 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
       // 释放终端与引用
       term?.dispose();
       term = null;
+      programStatus = null;
       fitAddon = null;
       container = null;
       lastAuxMouseDownAt = 0;

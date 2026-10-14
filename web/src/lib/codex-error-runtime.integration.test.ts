@@ -8,8 +8,11 @@ import * as classifier from "./codex-cli-error-classifier";
 import * as replay from "./codex-error-replay-guard";
 import * as settings from "./codex-error-handling-settings";
 import * as completion from "./codex-turn-completion";
+import { inspectClaudeProgramStatus, inspectClaudeTurnState } from "./claude-turn-state";
+import type { TerminalProgramStatus } from "./terminal-program-status";
 import { resolveAgentCompletionTab } from "./agent-completion-routing";
 import { isCodexHistoryBrowsingScreen } from "./codex-tui-screen";
+import { shouldDedupeRepeatedExternalCompletion, shouldDedupeCrossSourceCompletion } from "../app/app-shared";
 
 const ERROR = "unexpected status 502 Bad Gateway: upstream unavailable";
 const FINAL_SCREEN = `› continue\n■ ${ERROR}\n\n› Ask Codex to do anything`;
@@ -29,6 +32,7 @@ const RUNTIME_NAMES = new Set([
   "sendCodexAutoContinue", "sendCodexManualContinue", "scheduleCodexAutoContinue",
   "checkCodexTurnCompletions", "completeAgentTurnTimer", "handleAgentCompletion", "isDuplicateCompletion", "recordCompletionSnapshot",
   "resolveExternalTabId", "handleExternalAgentCompletion",
+  "checkClaudeTurnState", "processClaudePtyActivity", "cancelAgentTurnTimer",
 ]);
 
 /** 从实际应用抽取报错闭包，替换宿主边界，不在测试中重写状态机。 */
@@ -63,12 +67,238 @@ function readRuntimeSource(): string {
 
 const runtimeSource = readRuntimeSource();
 
+describe("Claude 完成与 goal 续跑实际调用链", () => {
+  const idle = "任务完成。\n────────────────\n❯ \n────────────────\n⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents";
+  const busy = `${idle} · esc to interrupt`;
+
+  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date("2026-01-01T00:00:00Z")); });
+  afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
+
+  it("官方完成状态不依赖 Stop、结束耗时行或输入框；迟到通知不重复完成", async () => {
+    const ctx = createRuntime("claude");
+    ctx.setScreen("");
+    ctx.setProgramStatus("done", "最终回复");
+    ctx.runtime.checkClaudeTurnState();
+    expect(ctx.timers.current.tab.status).toBe("working");
+    await vi.advanceTimersByTimeAsync(3000);
+    ctx.runtime.checkClaudeTurnState();
+    ctx.runtime.checkClaudeTurnState();
+    ctx.runtime.handleAgentCompletion("tab", "最终回复", "external");
+    ctx.runtime.checkClaudeTurnState();
+    expect(ctx.timers.current.tab.status).toBe("done");
+    expect(ctx.notify).toHaveBeenCalledTimes(1);
+    expect(ctx.chime).toHaveBeenCalledTimes(1);
+    expect(ctx.autoCommit).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["working", "blocked", "idle", "error"] as const)("官方 %s 状态阻止旧 Stop 和空闲画面提前报完成", async (state) => {
+    const ctx = createRuntime("claude");
+    ctx.setScreen(idle);
+    ctx.runtime.handleAgentCompletion("tab", "停止检查", "external");
+    ctx.setProgramStatus(state);
+    ctx.runtime.checkClaudeTurnState();
+    await vi.advanceTimersByTimeAsync(10_000);
+    ctx.runtime.checkClaudeTurnState();
+    expect(ctx.timers.current.tab.status).toBe("working");
+    expect(ctx.notify).not.toHaveBeenCalled();
+  });
+
+  it("done 后恢复执行会重启计时，旧 done 不能结束新发送的一轮", async () => {
+    const ctx = createRuntime("claude");
+    ctx.setProgramStatus("done");
+    await vi.advanceTimersByTimeAsync(3000);
+    ctx.runtime.checkClaudeTurnState();
+    expect(ctx.timers.current.tab.status).toBe("done");
+    await vi.advanceTimersByTimeAsync(10_000);
+    ctx.runtime.startAgentTurnTimer("tab");
+    ctx.runtime.checkClaudeTurnState();
+    expect(ctx.timers.current.tab.status).toBe("working");
+    ctx.setProgramStatus("done");
+    await vi.advanceTimersByTimeAsync(3000);
+    ctx.runtime.checkClaudeTurnState();
+    expect(ctx.timers.current.tab.status).toBe("done");
+    await vi.advanceTimersByTimeAsync(1000);
+    ctx.setProgramStatus("working");
+    ctx.runtime.processClaudePtyActivity("pty", "新状态");
+    ctx.runtime.checkClaudeTurnState();
+    expect(ctx.timers.current.tab.status).toBe("working");
+    ctx.setProgramStatus("done");
+    await vi.advanceTimersByTimeAsync(3000);
+    ctx.runtime.checkClaudeTurnState();
+    expect(ctx.timers.current.tab.status).toBe("done");
+    expect(ctx.notify).toHaveBeenCalledTimes(3);
+  });
+
+  it("完成状态遇到未解析输出及窗口回放会等待，后续 working 会撤销完成", async () => {
+    const ctx = createRuntime("claude");
+    ctx.setProgramStatus("done");
+    ctx.setPendingOutput(true);
+    await vi.advanceTimersByTimeAsync(3000);
+    ctx.runtime.checkClaudeTurnState();
+    expect(ctx.timers.current.tab.status).toBe("working");
+    ctx.setPendingOutput(false);
+    ctx.setResizing(true);
+    ctx.runtime.checkClaudeTurnState();
+    expect(ctx.timers.current.tab.status).toBe("working");
+    ctx.setResizing(false);
+    ctx.setProgramStatus("working");
+    ctx.runtime.checkClaudeTurnState();
+    expect(ctx.timers.current.tab.status).toBe("working");
+    expect(ctx.notify).not.toHaveBeenCalled();
+  });
+
+  it("Stop 后继续执行不提前结束、响铃或自动提交；最终空闲后只完成一次", async () => {
+    const ctx = createRuntime("claude");
+    const startedAt = ctx.timers.current.tab.startedAt;
+    ctx.setScreen(busy);
+    ctx.runtime.handleExternalAgentCompletion({ providerId: "claude", tabId: "tab", threadId: "work-session", preview: "继续检查" });
+    ctx.runtime.checkClaudeTurnState();
+    await vi.advanceTimersByTimeAsync(10_000);
+    ctx.runtime.checkClaudeTurnState();
+    expect(ctx.timers.current.tab).toMatchObject({ status: "working", startedAt });
+    expect(ctx.notify).not.toHaveBeenCalled();
+    expect(ctx.chime).not.toHaveBeenCalled();
+    expect(ctx.autoCommit).not.toHaveBeenCalled();
+
+    ctx.runtime.handleExternalAgentCompletion({ providerId: "claude", tabId: "tab", preview: "最终完成" });
+    ctx.setScreen(idle);
+    ctx.runtime.checkClaudeTurnState();
+    await vi.advanceTimersByTimeAsync(3000);
+    ctx.runtime.checkClaudeTurnState();
+    ctx.runtime.checkClaudeTurnState();
+    expect(ctx.timers.current.tab).toMatchObject({ status: "done", startedAt, elapsedMs: 14_000 });
+    expect(ctx.notify).toHaveBeenCalledTimes(1);
+    expect(ctx.notify).toHaveBeenCalledWith("tab", "最终完成");
+    expect(ctx.chime).toHaveBeenCalledTimes(1);
+    expect(ctx.autoCommit).toHaveBeenCalledTimes(1);
+  });
+
+  it("goal 在已完成后自动续跑，无需发送消息即可开启新计时，并能再次结束", async () => {
+    const ctx = createRuntime("claude");
+    ctx.setScreen(idle);
+    ctx.runtime.handleAgentCompletion("tab", "第一轮", "external");
+    ctx.runtime.checkClaudeTurnState();
+    await vi.advanceTimersByTimeAsync(3000);
+    ctx.runtime.checkClaudeTurnState();
+    const finishedAt = ctx.timers.current.tab.finishedAt;
+    expect(ctx.timers.current.tab.status).toBe("done");
+
+    await vi.advanceTimersByTimeAsync(20_000);
+    ctx.setScreen(`Goal not yet met… continuing\n${busy}`);
+    ctx.runtime.processClaudePtyActivity("pty", "Goal not yet met… continuing");
+    ctx.runtime.checkClaudeTurnState();
+    expect(ctx.timers.current.tab).toMatchObject({ status: "working", startedAt: finishedAt + 20_000 });
+    expect(ctx.send).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(5000);
+    ctx.runtime.handleAgentCompletion("tab", "第二轮", "external");
+    ctx.setScreen(idle);
+    ctx.runtime.checkClaudeTurnState();
+    await vi.advanceTimersByTimeAsync(3000);
+    ctx.runtime.checkClaudeTurnState();
+    expect(ctx.timers.current.tab).toMatchObject({ status: "done", elapsedMs: 8000 });
+    expect(ctx.histories.current.tab).toHaveLength(2);
+    expect(ctx.histories.current.tab.reduce((total: number, turn: { elapsedMs: number }) => total + turn.elapsedMs, 0)).toBe(12_000);
+    expect(ctx.notify).toHaveBeenCalledTimes(2);
+  });
+
+  it("新输入清理上一轮停止候选，迟到的旧 Stop 不得结束新轮次", async () => {
+    const ctx = createRuntime("claude");
+    ctx.runtime.handleAgentCompletion("tab", "旧回复", "external");
+    ctx.timers.current.tab.status = "done";
+    const oldTimestamp = new Date().toISOString();
+    await vi.advanceTimersByTimeAsync(10_000);
+    ctx.runtime.startAgentTurnTimer("tab");
+    expect(ctx.claudeCandidates.current.tab).toBeUndefined();
+    ctx.runtime.handleExternalAgentCompletion({ providerId: "claude", tabId: "tab", preview: "旧回复", timestamp: oldTimestamp });
+    ctx.setScreen(idle);
+    ctx.runtime.checkClaudeTurnState();
+    await vi.advanceTimersByTimeAsync(3000);
+    ctx.runtime.checkClaudeTurnState();
+    expect(ctx.timers.current.tab.status).toBe("working");
+    expect(ctx.notify).not.toHaveBeenCalled();
+  });
+
+  it("新轮 Stop 先于终端空闲画面到达，自动启动后仍能确认完成", async () => {
+    const ctx = createRuntime("claude");
+    ctx.timers.current.tab.status = "done";
+    ctx.setScreen(busy);
+    ctx.runtime.processClaudePtyActivity("pty", "继续执行");
+    ctx.runtime.handleAgentCompletion("tab", "新轮最终回复", "external");
+    ctx.runtime.checkClaudeTurnState();
+    expect(ctx.timers.current.tab.status).toBe("working");
+    ctx.setScreen(idle);
+    ctx.runtime.checkClaudeTurnState();
+    await vi.advanceTimersByTimeAsync(3000);
+    ctx.runtime.checkClaudeTurnState();
+    expect(ctx.timers.current.tab.status).toBe("done");
+    expect(ctx.notify).toHaveBeenCalledWith("tab", "新轮最终回复");
+  });
+
+  it("双通道的迟到完成事件经屏幕确认后仍去重，不重复响铃或提交", async () => {
+    const ctx = createRuntime("claude");
+    ctx.setScreen(idle);
+    ctx.runtime.handleAgentCompletion("tab", "已完成", "external");
+    ctx.runtime.checkClaudeTurnState();
+    await vi.advanceTimersByTimeAsync(3000);
+    ctx.runtime.checkClaudeTurnState();
+    ctx.runtime.handleAgentCompletion("tab", "已完成", "osc");
+    ctx.runtime.checkClaudeTurnState();
+    await vi.advanceTimersByTimeAsync(3000);
+    ctx.runtime.checkClaudeTurnState();
+    expect(ctx.notify).toHaveBeenCalledTimes(1);
+    expect(ctx.chime).toHaveBeenCalledTimes(1);
+    expect(ctx.autoCommit).toHaveBeenCalledTimes(1);
+  });
+
+  it("手动中断或取消后清理旧候选，旧画面不触发通知或重启", async () => {
+    for (const action of ["interruptAgentTurnTimer", "cancelAgentTurnTimer"]) {
+      const ctx = createRuntime("claude");
+      ctx.runtime.handleAgentCompletion("tab", "旧候选", "external");
+      ctx.runtime[action]("tab", "manual");
+      ctx.setScreen(idle);
+      ctx.runtime.checkClaudeTurnState();
+      await vi.advanceTimersByTimeAsync(3000);
+      ctx.runtime.checkClaudeTurnState();
+      ctx.setScreen(busy);
+      ctx.runtime.processClaudePtyActivity("pty", "旧画面重绘");
+      ctx.runtime.checkClaudeTurnState();
+      expect(ctx.timers.current.tab?.status).not.toBe("working");
+      expect(ctx.notify).not.toHaveBeenCalled();
+    }
+  });
+
+  it("输出待解析及窗口回放不确认完成；没有新输出的旧运行画面也不重启计时", async () => {
+    const ctx = createRuntime("claude");
+    ctx.setScreen(idle);
+    ctx.runtime.handleAgentCompletion("tab", "已完成", "osc");
+    ctx.setPendingOutput(true);
+    ctx.runtime.checkClaudeTurnState();
+    await vi.advanceTimersByTimeAsync(5000);
+    ctx.runtime.checkClaudeTurnState();
+    expect(ctx.timers.current.tab.status).toBe("working");
+    ctx.setPendingOutput(false);
+    ctx.setResizing(true);
+    ctx.runtime.checkClaudeTurnState();
+    expect(ctx.timers.current.tab.status).toBe("working");
+    ctx.setResizing(false);
+    ctx.runtime.checkClaudeTurnState();
+    await vi.advanceTimersByTimeAsync(3000);
+    ctx.runtime.checkClaudeTurnState();
+    expect(ctx.timers.current.tab.status).toBe("done");
+    ctx.setScreen(busy);
+    ctx.runtime.checkClaudeTurnState();
+    expect(ctx.timers.current.tab.status).toBe("done");
+  });
+});
+
 /** 为真实应用闭包提供终端、通知、设置及 React 状态边界。 */
-function createRuntime() {
+function createRuntime(providerId = "codex") {
   let screen = FINAL_SCREEN;
+  let programStatus: TerminalProgramStatus | null = null;
   let pendingOutput = false;
   let resizing = false;
   const timers = { current: { tab: { status: "working", startedAt: Date.now() - 1000, elapsedMs: 0 } } as Record<string, any> };
+  const histories = { current: {} as Record<string, any[]> };
   const scans = { current: {} as Record<string, any> };
   const handled = { current: {} as Record<string, any[]> };
   const prefs = { current: { ...settings.DEFAULT_CODEX_ERROR_HANDLING_PREFS, autoContinueDelaySeconds: 5 } };
@@ -78,8 +308,11 @@ function createRuntime() {
   const snapshots = { current: {} as Record<string, any> };
   const chime = vi.fn();
   const autoCommit = vi.fn();
+  const claudeProbes = { current: {} as Record<string, any> };
+  const claudeCandidates = { current: {} as Record<string, any> };
+  const claudeFreshOutput = { current: {} as Record<string, boolean> };
   const tabs = { current: {
-    project: [{ id: "tab", providerId: "codex", name: "PowerShell", historySessionId: "work-session" }],
+    project: [{ id: "tab", providerId, name: "PowerShell", historySessionId: "work-session" }],
     other: [{ id: "other-tab", providerId: "codex", name: "PowerShell", historySessionId: "other-session" }],
   } };
   const sessions = { current: {} as Record<string, string> };
@@ -100,11 +333,13 @@ function createRuntime() {
     },
   };
   const bindings = {
-    ...classifier, ...replay, ...settings, ...completion, isCodexHistoryBrowsingScreen, resolveAgentCompletionTab,
+    ...classifier, ...replay, ...settings, ...completion, isCodexHistoryBrowsingScreen, resolveAgentCompletionTab, inspectClaudeTurnState, inspectClaudeProgramStatus,
+    claudeTurnProbeByTabRef: claudeProbes, claudeCompletionCandidateByTabRef: claudeCandidates,
+    claudeFreshOutputByTabRef: claudeFreshOutput,
     window: browserTimers, useCallback: (fn: unknown) => fn, MAX_AGENT_TURN_HISTORY: 30,
     codexErrorScanByTabRef: scans, codexHandledErrorKeysByPtyRef: handled,
     codexErrorHandlingPrefsRef: prefs, agentTurnTimerByTabRef: timers,
-    agentTurnHistoryByTabRef: { current: {} }, codexTurnCompletionProbeByTabRef: probes,
+    agentTurnHistoryByTabRef: histories, codexTurnCompletionProbeByTabRef: probes,
     completionSnapshotRef: snapshots, hasWorkingAgentTimer: true,
     tabsByProjectRef: tabs, agentSessionIdByTabRef: sessions,
     projectsRef: { current: [
@@ -115,7 +350,7 @@ function createRuntime() {
     COMPLETION_DEDUPE_WINDOW_MS: 1600, COMPLETION_CROSS_SOURCE_WINDOW_MS: 5000,
     normalizeCompletionPreview: (value: string) => value.trim(),
     isEquivalentCompletionPreview: (a: string, b: string) => a === b,
-    shouldDedupeRepeatedExternalCompletion: () => false, shouldDedupeCrossSourceCompletion: () => false,
+    shouldDedupeRepeatedExternalCompletion, shouldDedupeCrossSourceCompletion,
     clearPendingOscCompletion: vi.fn(), consumeResumeCompletionGuardIfNeeded: () => false,
     shouldEnableAgentTimerForProvider: () => true, notificationPrefsRef: { current: { sound: true } },
     playCompletionChime: chime, enqueueAutoCommit: autoCommit, tabProjectRef: { current: { tab: "project" } },
@@ -124,7 +359,7 @@ function createRuntime() {
     historyActiveTurnStartedAtByTabRef: { current: {} }, historyMatchByTabRef: { current: {} },
     ptyByTabRef: { current: { tab: "pty" } }, ptyToTabRef: { current: { pty: "tab" } },
     activeTabIdRef: { current: "tab" }, pendingCompletionsRef: { current: {} },
-    resolveTabProviderId: () => "codex", resolveCodexErrorKindLabel: classifier.getCodexCliErrorKindLabel,
+    resolveTabProviderId: () => providerId, resolveCodexErrorKindLabel: classifier.getCodexCliErrorKindLabel,
     getTabExecEnv: () => ({ terminal: "powershell", distro: "" }),
     resolveAgentTurnElapsedMs: () => 1000, formatElapsedClock: () => "1s",
     setAgentTurnTimerByTab: vi.fn(), setAgentTurnHistoryByTab: vi.fn(),
@@ -132,6 +367,7 @@ function createRuntime() {
     clearPendingForTab: vi.fn(), isAppForeground: () => false, autoClearActiveTabIfForeground: vi.fn(),
     applyPending: vi.fn(), showCompletionNotification: notify, t: (key: string) => key,
     tm: {
+      readTerminalProgramStatus: () => programStatus,
       readTerminalCursorTextSnapshot: () => ({ text: screen }),
       hasPendingTerminalOutput: () => pendingOutput,
       isPtyResizeReplayWindowActive: () => resizing,
@@ -141,8 +377,12 @@ function createRuntime() {
   const runtime = new Function(...Object.keys(bindings), runtimeSource)(...Object.values(bindings));
   scans.current.tab = runtime.createCodexErrorScanState({ turn: 1, currentPrompt: "continue" });
   return {
-    runtime, timers, scans, handled, prefs, notify, send, probes, snapshots, chime, autoCommit, tabs, sessions, bindSession,
+    runtime, timers, histories, scans, handled, prefs, notify, send, probes, snapshots, chime, autoCommit, tabs, sessions, bindSession,
+    claudeProbes, claudeCandidates, claudeFreshOutput,
     setScreen: (value: string) => { screen = value; },
+    setProgramStatus: (state: TerminalProgramStatus["state"], message = "") => {
+      programStatus = { state, app: "claude-code", id: "", message, receivedAt: Date.now() };
+    },
     setPendingOutput: (value: boolean) => { pendingOutput = value; },
     setResizing: (value: boolean) => { resizing = value; },
   };

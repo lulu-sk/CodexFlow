@@ -1676,8 +1676,11 @@ function normalizeCompletionPrefs(raw?: Partial<CompletionPreferences> | null): 
   };
 }
 
+/** 区分 OSC 完成通知、权限提醒和终端进度协议。 */
 function isAgentCompletionMessage(message: string): boolean {
   const normalized = message.trim();
+  // OSC 9;4 是进度协议；开启、更新、清除进度均不代表代理完成。
+  if (/^4;[0-4](?:;[^\r\n]*)?$/u.test(normalized)) return false;
   // 中文说明：部分引擎会发出“空 payload”的 OSC 9; 通知（仅用于提示宿主“已完成”），这里也应视为完成事件。
   // 为空时后续会走默认文案（如“点击查看详情”），避免整条完成链路失效。
   if (!normalized) return true;

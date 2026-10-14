@@ -47,6 +47,23 @@ import { PTYManager } from './pty';
 import * as pty from 'node-pty';
 
 describe('PTYManager', () => {
+  it('Claude Windows 标签使用随包 ConPTY；加载失败仍按原参数回退系统', async () => {
+    const { win } = createWindowStub();
+    const manager = new PTYManager(() => [win as any]);
+    const spawn = vi.mocked(pty.spawn);
+    spawn.mockReset();
+    spawn.mockReturnValue(createPtyStub() as any);
+    await manager.openWSLConsole({ terminal: 'pwsh', env: { CLAUDE_CODEXFLOW_PROVIDER_ID: 'claude' } });
+    expect(spawn.mock.calls[0]?.[2]).toMatchObject({ useConptyDll: true });
+    spawn.mockReset();
+    spawn.mockImplementationOnce(() => { throw new Error('bundled unavailable'); });
+    spawn.mockReturnValue(createPtyStub() as any);
+    await manager.openWSLConsole({ terminal: 'pwsh', env: { CLAUDE_CODEXFLOW_PROVIDER_ID: 'claude' } });
+    expect(spawn).toHaveBeenCalledTimes(2);
+    expect(spawn.mock.calls[0]?.[2]).toMatchObject({ useConptyDll: true });
+    expect((spawn.mock.calls[1]?.[2] as { useConptyDll?: boolean }).useConptyDll).toBeUndefined();
+  });
+
   afterEach(() => {
     settingsMock.terminalCapabilities.normalizeTerm = true;
     settingsMock.terminalCapabilities.trueColor = false;
