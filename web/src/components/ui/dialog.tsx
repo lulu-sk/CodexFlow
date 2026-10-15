@@ -14,7 +14,7 @@ let dialogGlobalKeydownInstalled = false;
 /**
  * 判断 Enter 自动确认是否需要跳过当前事件目标（仅在事件目标位于弹窗内时）。
  * - textarea / 可编辑区域：Enter 通常用于换行
- * - button：让浏览器默认行为接管，避免二次触发
+ * - button / select / summary / 日期时间控件：保留浏览器自身的键盘操作
  */
 function shouldSkipEnterAutoConfirm(target: EventTarget | null, dialogRoot: HTMLElement): boolean {
   try {
@@ -26,6 +26,8 @@ function shouldSkipEnterAutoConfirm(target: EventTarget | null, dialogRoot: HTML
     } catch {}
     if (el instanceof HTMLTextAreaElement) return true;
     if (el instanceof HTMLButtonElement) return true;
+    if (el instanceof HTMLSelectElement || (el instanceof HTMLElement && el.tagName === "SUMMARY")) return true;
+    if (el instanceof HTMLInputElement && ["date", "time", "datetime-local", "checkbox", "radio"].includes(el.type)) return true;
     if (typeof el.isContentEditable === "boolean" && el.isContentEditable) return true;
     return false;
   } catch {

@@ -11,6 +11,7 @@ import { Worker } from 'node:worker_threads';
 import { ProxyAgent, setGlobalDispatcher, Agent } from 'undici';
 import { PTYManager, setTermDebug } from "./pty";
 import { TerminalClipboardPasteManager } from "./terminalClipboardPaste";
+import { ScheduledMessageQueue } from "./scheduledMessages";
 import opentype from 'opentype.js';
 import iconv from 'iconv-lite';
 import projects, { IMPLEMENTATION_NAME as PROJECTS_IMPL } from "./projects/index";
@@ -941,6 +942,35 @@ const PROTOCOL_SCHEME = 'codexflow';
 const ptyManager = new PTYManager(() => BrowserWindow.getAllWindows().filter((win) => !win.isDestroyed()));
 const terminalClipboardPaste = new TerminalClipboardPasteManager(clipboard);
 app.on("will-quit", () => terminalClipboardPaste.dispose());
+const scheduledMessages = new ScheduledMessageQueue((id) => ptyManager.hasSession(id), () => {
+  const tasks = scheduledMessages.list();
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
+    try { win.webContents.send("scheduledMessages.changed", tasks); } catch {}
+  }
+});
+const scheduledMessagesTimer = setInterval(() => scheduledMessages.tick(), 1000);
+scheduledMessagesTimer.unref();
+app.on("will-quit", () => clearInterval(scheduledMessagesTimer));
+
+/** 注册预约操作，只允许应用窗口的主页面访问，并统一返回可处理的结果。 */
+function registerScheduledMessageHandler(action: string, handler: (senderId: number, args: any) => unknown): void {
+  ipcMain.handle(`scheduledMessages.${action}`, (event, args) => {
+    if (!BrowserWindow.fromWebContents(event.sender) || event.senderFrame !== event.sender.mainFrame) return { ok: false, error: "unavailable" };
+    try { return handler(event.sender.id, args); }
+    catch { return { ok: false, error: "unavailable" }; }
+  });
+}
+registerScheduledMessageHandler("list", () => ({ ok: true, tasks: scheduledMessages.list() }));
+registerScheduledMessageHandler("save", (_senderId, args) => {
+  if (args?.id !== undefined && (typeof args.id !== "string" || args.id.length > 200)) return { ok: false, error: "invalid" };
+  return scheduledMessages.save(args?.input, args?.id);
+});
+registerScheduledMessageHandler("cancel", (_senderId, args) => typeof args?.id === "string" ? scheduledMessages.cancel(args.id) : { ok: false, error: "invalid" });
+registerScheduledMessageHandler("extend", (_senderId, args) => typeof args?.id === "string" && args.id.length <= 200 && typeof args?.delayMs === "number" && typeof args?.baseScheduledAt === "number" ? scheduledMessages.extend(args.id, args.delayMs, args.baseScheduledAt) : { ok: false, error: "invalid" });
+registerScheduledMessageHandler("restoreHistory", (_senderId, args) => typeof args?.token === "string" && args.token.length <= 200 && (args?.direction === "undo" || args?.direction === "redo") ? scheduledMessages.restoreHistory(args.token, args.direction) : { ok: false, error: "invalid" });
+registerScheduledMessageHandler("claim", (senderId, args) => typeof args?.id === "string" ? scheduledMessages.claim(args.id, senderId) : { ok: false, error: "invalid" });
+registerScheduledMessageHandler("finish", (senderId, args) => typeof args?.id === "string" && typeof args?.success === "boolean" ? scheduledMessages.finish(args.id, senderId, args.success) : { ok: false, error: "invalid" });
 
 /**
  * 解析请求环境，确保返回一个当前机器可见的终端环境。
@@ -3187,6 +3217,7 @@ ipcMain.on('pty:resize', (_e, { id, cols, rows }: { id: string; cols: number; ro
 });
 
 ipcMain.on('pty:close', (_e, { id }: { id: string }) => {
+  scheduledMessages.cancelForPty(id);
   ptyManager.close(id);
 });
 
@@ -5968,6 +5999,7 @@ ipcMain.handle('images.materializePreviewURL', async (_e, { src }: { src?: strin
 });
 
 ipcMain.handle('images.trash', async (_e, { winPath }: { winPath: string }) => {
+  if (scheduledMessages.protectsImage(winPath)) return { ok: true };
   try {
     if (!winPath || typeof winPath !== 'string') throw new Error('invalid path');
     try {

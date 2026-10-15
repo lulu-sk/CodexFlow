@@ -6,7 +6,7 @@ import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Combobox } from "@/components/ui/combobox";
-import PathChipsInput, { buildPathChipFromPath, mergePathChips, type PathChip } from "@/components/ui/path-chips-input";
+import PathChipsInput, { buildPathChipFromPath, mergePathChips, createPathChipsHistory, recordPathChipsHistoryChange, type PathChip, type PathChipsHistory, type PathChipsValueState } from "@/components/ui/path-chips-input";
 import InteractiveImagePreview from "@/components/ui/interactive-image-preview";
 import { retainPreviewUrl, releasePreviewUrl } from "@/lib/previewUrlRegistry";
 import { retainPastedImage, releasePastedImage, requestTrashWinPath } from "@/lib/imageResourceRegistry";
@@ -26,6 +26,7 @@ import {
   Settings as SettingsIcon,
   History as HistoryIcon,
   Send,
+  Clock3,
   PlugZap,
   CheckCircle2,
   MoreVertical,
@@ -71,6 +72,10 @@ import { emitGrokUsageRefresh } from "@/lib/grok-status";
 import { checkForUpdate, type UpdateCheckErrorType } from "@/lib/about";
 import TerminalManager from "@/lib/TerminalManager";
 import { TerminalPasteError, isGeminiLikeProvider, isGeminiProvider, writeBracketedPaste, writeBracketedPasteAndEnter } from "@/lib/terminal-send";
+import { ScheduleMessageDialog } from "@/features/scheduled-messages/schedule-message-dialog";
+import { ScheduledMessageList } from "@/features/scheduled-messages/scheduled-message-list";
+import { useScheduledMessages } from "@/features/scheduled-messages/use-scheduled-messages";
+import type { ScheduledMessage, ScheduledMessageInput } from "@/types/host";
 import { oscBufferDefaults, trimOscBuffer } from "@/lib/oscNotificationBuffer";
 import { collectRetainedAgentTurnTabIds, pruneAgentTurnHistory, pruneAgentTurnTimers } from "@/lib/agent-turn-timer";
 import { resolveAgentCompletionTab } from "@/lib/agent-completion-routing";
@@ -8207,6 +8212,14 @@ export default function CodexFlowManagerUI() {
   }, [themeMode, themeSetting]);
   const [chipsByTab, setChipsByTab] = useState<Record<string, PathChip[]>>(() => restoredTabDraftState.chipsByTab);
   const [draftByTab, setDraftByTab] = useState<Record<string, string>>(() => restoredTabDraftState.draftByTab);
+  const inputHistoryByTabRef = useRef(new Map<string, PathChipsHistory>());
+  const inputValuesByTabRef = useRef({ draftByTab, chipsByTab });
+  inputValuesByTabRef.current = { draftByTab, chipsByTab };
+  const [scheduleDialog, setScheduleDialog] = useState<{ input: ScheduledMessageInput; id?: string; draft?: string; chips?: PathChip[] } | null>(null);
+  const scheduledMessageTasks = useScheduledMessages((task) => sendCommand(task), (task) => {
+    const tab = (tabsByProjectRef.current[task.projectId] || []).find((item) => item.id === task.tabId);
+    return !!tab && isTabOwnedByWindow(tab, currentWindowId) && ptyByTabRef.current[task.tabId] === task.ptyId && !pendingCommandSendByTabRef.current.has(task.tabId);
+  });
   const [inputFullscreenByTab, setInputFullscreenByTab] = useState<Record<string, boolean>>({});
   const [inputFullscreenClosingTabs, setInputFullscreenClosingTabs] = useState<Record<string, boolean>>({});
   const fullscreenCloseTimersRef = useRef<Record<string, number>>({});
@@ -8905,6 +8918,7 @@ export default function CodexFlowManagerUI() {
       try { tm.disposeTab(tabId, true); } catch (err) { console.warn('tm.disposeTab failed', err); }
     }
     if (tabIds.length > 0) {
+      for (const tabId of tabIds) inputHistoryByTabRef.current.delete(tabId);
       setPtyByTab((prev) => {
         const next = { ...prev };
         for (const tabId of tabIds) delete next[tabId];
@@ -10081,100 +10095,195 @@ export default function CodexFlowManagerUI() {
   /**
    * 将输入区内容发送到当前标签页终端，并在首条发送时启动“Working 计时”。
    */
-  async function sendCommand() {
-    if (!activeTab || pendingCommandSendByTabRef.current.has(activeTab.id)) return;
-    const text = compileTextFromChipsAndDraft(activeTab.id);
-    const attachmentPaths = collectGrokAttachmentPaths(activeTab.id);
-    if (!text.trim() && attachmentPaths.length <= 0) return;
-    const pid = ptyByTabRef.current[activeTab.id];
-    if (!pid) return;
-    const activeEnv = tabExecEnvByTabRef.current[activeTab.id] || getProviderEnv(activeTab.providerId);
+  async function sendCommand(scheduled?: ScheduledMessage): Promise<boolean> {
+    const targetTab = scheduled
+      ? (tabsByProjectRef.current[scheduled.projectId] || []).find((tab) => tab.id === scheduled.tabId)
+      : activeTab;
+    if (!targetTab || pendingCommandSendByTabRef.current.has(targetTab.id)) return false;
+    if (scheduled && (!isTabOwnedByWindow(targetTab, currentWindowId) || targetTab.providerId !== scheduled.providerId || ptyByTabRef.current[targetTab.id] !== scheduled.ptyId)) return false;
+    const text = scheduled ? scheduled.text : compileTextFromChipsAndDraft(targetTab.id);
+    const attachmentPaths = scheduled ? scheduled.attachmentPaths : collectGrokAttachmentPaths(targetTab.id);
+    if (!text.trim() && attachmentPaths.length <= 0) return false;
+    const pid = ptyByTabRef.current[targetTab.id];
+    if (!pid) return false;
+    const targetProject = scheduled
+      ? { id: scheduled.projectId, winPath: scheduled.projectWinRoot, wslPath: scheduled.projectWslRoot, name: scheduled.projectName }
+      : selectedProject;
+    const effectiveSendMode = scheduled ? "write_and_enter" : sendMode;
+    const activeEnv = tabExecEnvByTabRef.current[targetTab.id] || getProviderEnv(targetTab.providerId);
     if (isTerminalFrontendDebugEnabled()) {
       try {
         await (window as any).host?.utils?.perfLogCritical?.(
-          `[terminal.scroll-debug app] send.start tab=${activeTab.id} provider=${activeTab.providerId} mode=${sendMode} textLen=${text.length} chips=${(chipsByTab[activeTab.id] || []).length} draftLen=${String(draftByTab[activeTab.id] || "").length}`,
+          `[terminal.scroll-debug app] send.start tab=${targetTab.id} provider=${targetTab.providerId} mode=${effectiveSendMode} textLen=${text.length} chips=${(chipsByTab[targetTab.id] || []).length} draftLen=${String(draftByTab[targetTab.id] || "").length}`,
         );
       } catch {}
     }
-    // 用户开始新一轮输入后，立即取消恢复期守卫，避免影响真实完成通知。
-    if (pendingCommandSendByTabRef.current.has(activeTab.id)) return;
-    pendingCommandSendByTabRef.current.add(activeTab.id);
-    delete resumeCompletionGuardByTabRef.current[activeTab.id];
-    resetCodexErrorScanForTab(activeTab.id, "user-send", {
-      advanceTurn: true,
-      prompt: text,
-      clearFrameState: true,
-    });
-    if (shouldEnableAgentTimerForProvider(activeTab.providerId)) startAgentTurnTimer(activeTab.id);
-    else cancelAgentTurnTimer(activeTab.id, "provider-not-supported");
-    // 统一改用 TerminalManager 的封装，保证行为一致且便于复用
+    // 在异步准备后再次检查，防止对话关闭或被其他发送入口占用。
+    if (pendingCommandSendByTabRef.current.has(targetTab.id) || ptyByTabRef.current[targetTab.id] !== pid) return false;
+    pendingCommandSendByTabRef.current.add(targetTab.id);
+    delete resumeCompletionGuardByTabRef.current[targetTab.id];
+    resetCodexErrorScanForTab(targetTab.id, "user-send", { advanceTurn: true, prompt: text, clearFrameState: true });
+    if (shouldEnableAgentTimerForProvider(targetTab.providerId)) startAgentTurnTimer(targetTab.id);
+    else cancelAgentTurnTimer(targetTab.id, "provider-not-supported");
     try {
       const sendOptions = {
-        providerId: activeTab.providerId,
+        providerId: targetTab.providerId,
         terminalMode: activeEnv.terminal as any,
-        projectWinRoot: selectedProject?.winPath,
-        projectWslRoot: selectedProject?.wslPath,
-        projectName: selectedProject?.name,
+        projectWinRoot: targetProject?.winPath,
+        projectWslRoot: targetProject?.wslPath,
+        projectName: targetProject?.name,
         distro: activeEnv.terminal === "wsl" ? activeEnv.distro : undefined,
-        geminiWindowsEditorReady: !!geminiWindowsEditorReadyByTabRef.current[activeTab.id],
-        geminiWslEditorReady: !!geminiWslEditorReadyByTabRef.current[activeTab.id],
-        geminiExternalEditorShortcut: geminiExternalEditorShortcutByTabRef.current[activeTab.id] || "auto",
+        geminiWindowsEditorReady: !!geminiWindowsEditorReadyByTabRef.current[targetTab.id],
+        geminiWslEditorReady: !!geminiWslEditorReadyByTabRef.current[targetTab.id],
+        geminiExternalEditorShortcut: geminiExternalEditorShortcutByTabRef.current[targetTab.id] || "auto",
         attachmentPaths,
       };
-      if (sendMode === 'write_and_enter') {
-        const sent = await tm.sendTextAndEnter(activeTab.id, text, sendOptions);
+      if (effectiveSendMode === "write_and_enter") {
+        const sent = await tm.sendTextAndEnter(targetTab.id, text, sendOptions);
         if (!sent) throw new TerminalPasteError("terminal-unavailable");
-      }
-      else await tm.sendText(activeTab.id, text, sendOptions);
+      } else await tm.sendText(targetTab.id, text, sendOptions);
     } catch (error) {
-      if (error instanceof TerminalPasteError) {
-        cancelAgentTurnTimer(activeTab.id, "paste-failed");
-        setNoticeDialog({ open: true, title: t("terminal:sendFailedTitle") as string, message: t("terminal:sendFailedMessage") as string });
-        return;
+      // 定时发送不执行未知失败后的兜底，避免部分粘贴完成后再次写入。
+      if (scheduled || error instanceof TerminalPasteError) {
+        cancelAgentTurnTimer(targetTab.id, "paste-failed");
+        if (!scheduled) setNoticeDialog({ open: true, title: t("terminal:sendFailedTitle") as string, message: t("terminal:sendFailedMessage") as string });
+        return false;
       }
-      // 兜底：Gemini 与 Windows Codex 仍需保留各自的正文编码和提交等待。
       try {
-        if (activeTab.providerId === "grok") {
+        if (targetTab.providerId === "grok") {
           const write = (data: string) => { try { window.host.pty.write(pid, data); } catch {} };
           for (const attachmentPath of attachmentPaths) writeBracketedPaste(write, attachmentPath);
           if (text) writeBracketedPaste(write, text);
-          if (sendMode === "write_and_enter") write("\r");
-        } else if (isGeminiLikeProvider(activeTab.providerId)
-          || (activeTab.providerId === "codex" && isWindowsLike(activeEnv.terminal))) {
+          if (effectiveSendMode === "write_and_enter") write("\r");
+        } else if (isGeminiLikeProvider(targetTab.providerId)
+          || (targetTab.providerId === "codex" && isWindowsLike(activeEnv.terminal))) {
           const write = (data: string) => { try { window.host.pty.write(pid, data); } catch {} };
-          const pasteOptions = { providerId: activeTab.providerId, terminalMode: activeEnv.terminal };
-          if (sendMode === "write_and_enter") writeBracketedPasteAndEnter(write, text, pasteOptions);
+          const pasteOptions = { providerId: targetTab.providerId, terminalMode: activeEnv.terminal };
+          if (effectiveSendMode === "write_and_enter") writeBracketedPasteAndEnter(write, text, pasteOptions);
           else writeBracketedPaste(write, text, pasteOptions);
         } else {
-          // 非 Gemini：直接写入 PTY，并在需要时单独补 CR
           try { window.host.pty.write(pid, text); } catch {}
-          if (sendMode === 'write_and_enter') { try { window.host.pty.write(pid, '\r'); } catch {} }
+          if (effectiveSendMode === "write_and_enter") { try { window.host.pty.write(pid, "\r"); } catch {} }
         }
       } catch {}
     } finally {
-      pendingCommandSendByTabRef.current.delete(activeTab.id);
+      pendingCommandSendByTabRef.current.delete(targetTab.id);
     }
-    setChipsByTab((m) => m[activeTab.id] === chipsByTab[activeTab.id] ? ({ ...m, [activeTab.id]: [] }) : m);
-    setDraftByTab((m) => m[activeTab.id] === draftByTab[activeTab.id] ? ({ ...m, [activeTab.id]: "" }) : m);
-    setInputFullscreenState(activeTab.id, false);
-    if (isTerminalFrontendDebugEnabled()) {
-      try {
-        await (window as any).host?.utils?.perfLogCritical?.(
-          `[terminal.scroll-debug app] send.cleared tab=${activeTab.id} provider=${activeTab.providerId} mode=${sendMode}`,
-        );
-      } catch {}
+    if (!scheduled) {
+      setChipsByTab((m) => m[targetTab.id] === chipsByTab[targetTab.id] ? ({ ...m, [targetTab.id]: [] }) : m);
+      setDraftByTab((m) => m[targetTab.id] === draftByTab[targetTab.id] ? ({ ...m, [targetTab.id]: "" }) : m);
+      setInputFullscreenState(targetTab.id, false);
+      if (isTerminalFrontendDebugEnabled()) {
+        try {
+          await (window as any).host?.utils?.perfLogCritical?.(
+            `[terminal.scroll-debug app] send.cleared tab=${targetTab.id} provider=${targetTab.providerId} mode=${effectiveSendMode}`,
+          );
+        } catch {}
+      }
     }
-
-    // worktree 自动提交：用户第 2 条输入开始，每次输入后若有变更则提交一次
     try {
-      const projectId = selectedProject?.id;
+      const projectId = targetProject?.id;
       if (projectId) {
-        const prevCount = userInputCountByTabIdRef.current[activeTab.id] || 0;
-        const nextCount = prevCount + 1;
-        userInputCountByTabIdRef.current[activeTab.id] = nextCount;
+        const nextCount = (userInputCountByTabIdRef.current[targetTab.id] || 0) + 1;
+        userInputCountByTabIdRef.current[targetTab.id] = nextCount;
         if (nextCount >= 2) enqueueAutoCommit(projectId, "user", text);
       }
     } catch {}
+    return true;
+  }
+
+  /** 保存当前内容快照，或打开已有预约的时间编辑。 */
+  function openScheduleDialog(tabId: string, task?: ScheduledMessage): void {
+    if (task) { setScheduleDialog({ input: task, id: task.id }); return; }
+    const tab = tabs.find((item) => item.id === tabId);
+    const ptyId = ptyByTabRef.current[tabId];
+    if (!tab || !selectedProject || !ptyId || pendingCommandSendByTabRef.current.has(tabId)) return;
+    const text = compileTextFromChipsAndDraft(tabId);
+    const attachmentPaths = collectGrokAttachmentPaths(tabId);
+    if (!text.trim() && !attachmentPaths.length) return;
+    const chips = chipsByTab[tabId] || [];
+    setScheduleDialog({
+      input: { tabId, tabName: tab.name, providerId: tab.providerId, projectId: selectedProject.id, projectName: selectedProject.name, projectWinRoot: selectedProject.winPath || "", projectWslRoot: selectedProject.wslPath || "", ptyId, text, attachmentPaths, imagePaths: chips.filter(isGeminiImageChip).map((chip) => chip.winPath || "").filter(Boolean), scheduledAt: Date.now() + 10 * 60_000 },
+      draft: draftByTab[tabId], chips: chipsByTab[tabId],
+    });
+  }
+
+  /** 按标签隔离输入历史，在普通输入和全屏输入之间保留撤销顺序。 */
+  function getInputHistory(tabId: string): PathChipsHistory {
+    let history = inputHistoryByTabRef.current.get(tabId);
+    if (!history) { history = createPathChipsHistory(); inputHistoryByTabRef.current.set(tabId, history); }
+    return history;
+  }
+
+  /** 将预约操作与草稿变化一起写入输入框历史，恢复失败时不移动历史位置。 */
+  function recordScheduledMessageChange(tabId: string, token: string | undefined, change?: (current: PathChipsValueState) => PathChipsValueState): void {
+    const values = inputValuesByTabRef.current;
+    const before = { draft: values.draftByTab[tabId] || "", chips: values.chipsByTab[tabId] || [] };
+    const after = change ? change(before) : before;
+    if (token) recordPathChipsHistoryChange(getInputHistory(tabId), before, after, {
+      /** 由主进程校验任务状态，避免恢复已经开始发送的消息。 */
+      async restore(direction) {
+        try {
+          const result = await window.host.scheduledMessages.restoreHistory(token, direction);
+          if (result.ok) return true;
+        } catch {}
+        setNoticeDialog({ open: true, title: t("terminal:schedule.historyTitle"), message: t("terminal:schedule.historyUnavailable") });
+        return false;
+      },
+    });
+    setDraftByTab((current) => ({ ...current, [tabId]: after.draft }));
+    setChipsByTab((current) => ({ ...current, [tabId]: after.chips }));
+  }
+
+  /** 主进程确认后记录预约与草稿清空，保留保存期间输入的新内容。 */
+  async function saveScheduledMessage(input: ScheduledMessageInput) {
+    if (!scheduleDialog || !window.host.scheduledMessages) return { ok: false, error: "unavailable" };
+    const history = getInputHistory(input.tabId);
+    if (history.busy) return { ok: false, error: "unavailable" };
+    history.busy = true;
+    try {
+      const result = await window.host.scheduledMessages.save(input, scheduleDialog.id);
+      if (result.ok) {
+        recordScheduledMessageChange(input.tabId, result.historyToken, scheduleDialog.id ? undefined : (current) => ({
+          draft: current.draft === (scheduleDialog.draft || "") ? "" : current.draft,
+          chips: JSON.stringify(current.chips) === JSON.stringify(scheduleDialog.chips || []) ? [] : current.chips,
+        }));
+        if (!scheduleDialog.id) setInputFullscreenState(input.tabId, false);
+      }
+      return result;
+    } finally { history.busy = false; }
+  }
+
+  /** 追加独立预约，并把这一新增操作记录在所属输入框的历史中。 */
+  async function appendScheduledMessage(id: string, delayMs: number, baseScheduledAt: number) {
+    const task = scheduledMessageTasks.find((item) => item.id === id);
+    if (!task) return { ok: false, error: "unavailable" };
+    const history = getInputHistory(task.tabId);
+    if (history.busy) return { ok: false, error: "unavailable" };
+    history.busy = true;
+    try {
+      const result = await window.host.scheduledMessages.extend(id, delayMs, baseScheduledAt);
+      if (result.ok) recordScheduledMessageChange(task.tabId, result.historyToken);
+      return result;
+    } finally { history.busy = false; }
+  }
+
+  /** 取消预约后把正文放回输入框，并追加到已有草稿，避免丢失任何输入。 */
+  async function cancelScheduledMessage(id: string) {
+    const task = scheduledMessageTasks.find((item) => item.id === id);
+    if (!task) return { ok: false };
+    const history = getInputHistory(task.tabId);
+    if (history.busy) return { ok: false };
+    history.busy = true;
+    try {
+      const result = await window.host.scheduledMessages.cancel(id);
+      if (result.ok) {
+        const env = tabExecEnvByTabRef.current[task.tabId] || getProviderEnv(task.providerId);
+        const attachments = task.attachmentPaths.map((rawPath) => buildPathChipFromPath({ rawPath, runEnv: env.terminal as any, winRoot: task.projectWinRoot, projectPathStyle: "absolute" })).filter((chip): chip is PathChip => !!chip);
+        recordScheduledMessageChange(task.tabId, result.historyToken, (current) => ({ draft: [current.draft, task.text].filter(Boolean).join("\n\n"), chips: mergePathChips(current.chips, attachments) }));
+      }
+      return result;
+    } finally { history.busy = false; }
   }
 
   /**
@@ -10190,7 +10299,7 @@ export default function CodexFlowManagerUI() {
   function hasPendingPromptInputForTab(tabId: string): boolean {
     const draft = String(draftByTab[tabId] || "").trim();
     const chips = chipsByTab[tabId] || [];
-    return draft.length > 0 || chips.length > 0;
+    return draft.length > 0 || chips.length > 0 || scheduledMessageTasks.some((task) => task.tabId === tabId);
   }
 
   /**
@@ -10202,6 +10311,7 @@ export default function CodexFlowManagerUI() {
     const projectId = String(projectIdOverride || selectedProject?.id || "").trim();
     if (!projectId) return;
     const closingTab = (tabsByProjectRef.current[projectId] || []).find((tab) => tab.id === tabId) || null;
+    inputHistoryByTabRef.current.delete(tabId);
     if (closingTab?.kind === "git") {
       const projectRoot = String(projectsRef.current.find((project) => project.id === projectId)?.winPath || selectedProject?.winPath || "").trim();
       if (projectRoot) {
@@ -13881,7 +13991,7 @@ export default function CodexFlowManagerUI() {
     : closeTabConfirmKind === "working"
       ? (t("terminal:closeWorkingConfirm.title", "确认关闭进行中的标签页？") as string)
       : (t("terminal:closeInputConfirm.title", "关闭带未发送内容的标签页？") as string);
-  const closeTabConfirmDescription = closeWorkingTabConfirm.tabName
+  const closeTabConfirmBaseDescription = closeWorkingTabConfirm.tabName
     ? closeTabConfirmKind === "workingInput"
       ? (t("terminal:closeWorkingInputConfirm.desc", { name: closeWorkingTabConfirm.tabName }) as string)
       : closeTabConfirmKind === "working"
@@ -13892,6 +14002,7 @@ export default function CodexFlowManagerUI() {
       : closeTabConfirmKind === "working"
         ? (t("terminal:closeWorkingConfirm.descNoName", "该终端标签页仍在进行中。关闭后将中断当前任务/进程，是否继续？") as string)
         : (t("terminal:closeInputConfirm.descNoName", "该终端标签页还有未发送的输入内容或附件。关闭后将丢弃这些内容，是否继续？") as string);
+  const closeTabConfirmDescription = closeTabConfirmBaseDescription + (scheduledMessageTasks.some((task) => task.tabId === closeWorkingTabConfirm.tabId) ? `\n\n${t("terminal:schedule.closeWarning")}` : "");
   const closeTabConfirmActionLabel = closeTabConfirmKind === "input"
     ? (t("terminal:closeInputConfirm.confirm", "关闭并丢弃") as string)
     : closeTabConfirmKind === "workingInput"
@@ -14259,6 +14370,14 @@ export default function CodexFlowManagerUI() {
             const fullscreenState = isInputClosing ? "closing" : "open";
             const inputPlaceholder = t('terminal:inputPlaceholder') as string;
             const sendLabel = t('terminal:send') as string;
+            const scheduleButton = (
+              <Button variant="secondary" size="icon" aria-label={t("terminal:schedule.title")} title={t("terminal:schedule.title")} disabled={!(draftByTab[tab.id] || "").trim() && !(chipsByTab[tab.id] || []).length || !ptyByTab[tab.id]} onClick={() => openScheduleDialog(tab.id)} className="h-8 w-8 rounded-full shadow-sm">
+                <Clock3 className="h-4 w-4" />
+              </Button>
+            );
+            const tabScheduledTasks = scheduledMessageTasks.filter((task) => task.tabId === tab.id);
+            const scheduledList = <ScheduledMessageList tasks={tabScheduledTasks} onEdit={(task) => openScheduleDialog(tab.id, task)} onCancel={cancelScheduledMessage} onExtend={appendScheduledMessage} />;
+            const inputStatusBar = renderAgentTurnStatusBar(tab.id, "mb-0.5 px-1", tab.historySessionId);
             const expandLabel = isInputFullscreen ? (t('terminal:collapseInput') as string) : (t('terminal:expandInput') as string);
             const tabExecEnv = getTabExecEnv(tab.id, tab.providerId);
 
@@ -14300,7 +14419,9 @@ export default function CodexFlowManagerUI() {
                             <div className="h-5 shrink-0">
                               {renderAgentTurnStatusBar(tab.id, "px-4 pt-0.5 pb-0.5", tab.historySessionId)}
                             </div>
+                            {scheduledList}
                             <PathChipsInput
+                              history={getInputHistory(tab.id)}
                               placeholder={inputPlaceholder}
                               chips={chipsByTab[tab.id] || []}
                               onChipsChange={(next) => setChipsByTab((m) => ({ ...m, [tab.id]: next }))}
@@ -14322,6 +14443,7 @@ export default function CodexFlowManagerUI() {
                               draftInputClassName="flex-1 min-h-[18rem]"
                             />
                             <div className="pointer-events-auto absolute right-2 bottom-2 flex flex-row gap-2">
+                              {scheduleButton}
                               <Button
                                 size="icon"
                                 aria-label={sendLabel}
@@ -14347,12 +14469,14 @@ export default function CodexFlowManagerUI() {
                       </div>
                     ) : null}
                     {!isInputFullscreen ? (
-                      <div className="relative z-30 mt-0.5 h-[8.75rem] shrink-0 w-full">
-                        <div className="relative flex h-full min-h-0 w-full flex-col">
-                          <div className="relative z-30 h-5 shrink-0 overflow-visible">
-                            {renderAgentTurnStatusBar(tab.id, "mb-0.5 px-1", tab.historySessionId)}
+                      <div className="relative z-30 mt-0.5 flex shrink-0 w-full flex-col">
+                        {scheduledList}
+                        <div className={`relative flex min-h-0 w-full flex-col ${tabScheduledTasks.length && !inputStatusBar ? "h-[7.5rem]" : "h-[8.75rem]"}`}>
+                          <div className={`relative z-30 shrink-0 overflow-visible ${tabScheduledTasks.length && !inputStatusBar ? "h-0" : "h-5"}`}>
+                            {inputStatusBar}
                           </div>
                           <PathChipsInput
+                            history={getInputHistory(tab.id)}
                             placeholder={inputPlaceholder}
                             chips={chipsByTab[tab.id] || []}
                             onChipsChange={(next) => setChipsByTab((m) => ({ ...m, [tab.id]: next }))}
@@ -14374,6 +14498,7 @@ export default function CodexFlowManagerUI() {
                           />
 
                           <div className="absolute right-2 bottom-2 flex flex-row gap-2">
+                            {scheduleButton}
                             <Button
                               size="icon"
                               aria-label={sendLabel}
@@ -15338,6 +15463,7 @@ export default function CodexFlowManagerUI() {
 
   return (
     <TooltipProvider>
+      {scheduleDialog && <ScheduleMessageDialog key={scheduleDialog.id || scheduleDialog.input.tabId} input={scheduleDialog.input} editing={!!scheduleDialog.id} onClose={() => setScheduleDialog(null)} onSubmit={saveScheduledMessage} />}
       {isDetachedTabWindow ? (
         <div className="grid h-screen min-h-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden bg-white/60 dark:bg-slate-900/40 dark:text-slate-100">
           {DetachedWindowTopBar}

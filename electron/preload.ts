@@ -188,6 +188,28 @@ const APP_WINDOW_MODE = readArgValue("--codexflow-app-window-mode=").toLowerCase
   : "main";
 
 contextBridge.exposeInMainWorld('host', {
+  scheduledMessages: {
+    /** 读取本次应用运行中的预约列表。 */
+    list: () => ipcRenderer.invoke("scheduledMessages.list"),
+    /** 新增预约或更新发送时间。 */
+    save: (input: import("./scheduledMessages").ScheduledMessageInput, id?: string) => ipcRenderer.invoke("scheduledMessages.save", { input, id }),
+    /** 取消待发送预约或移除失败记录。 */
+    cancel: (id: string) => ipcRenderer.invoke("scheduledMessages.cancel", { id }),
+    /** 保留原预约，在基准时刻之后新增单次预约。 */
+    extend: (id: string, delayMs: number, baseScheduledAt: number) => ipcRenderer.invoke("scheduledMessages.extend", { id, delayMs, baseScheduledAt }),
+    /** 恢复输入框历史中的预约操作和绝对时间。 */
+    restoreHistory: (token: string, direction: "undo" | "redo") => ipcRenderer.invoke("scheduledMessages.restoreHistory", { token, direction }),
+    /** 原子领取预约，防止多窗口重复发送。 */
+    claim: (id: string) => ipcRenderer.invoke("scheduledMessages.claim", { id }),
+    /** 回报发送结果，失败时保留快照。 */
+    finish: (id: string, success: boolean) => ipcRenderer.invoke("scheduledMessages.finish", { id, success }),
+    /** 订阅队列状态，并返回解绑入口。 */
+    onChanged: (callback: (tasks: import("./scheduledMessages").ScheduledMessage[]) => void) => {
+      const listener = (_event: unknown, tasks: import("./scheduledMessages").ScheduledMessage[]) => callback(tasks);
+      ipcRenderer.on("scheduledMessages.changed", listener);
+      return () => ipcRenderer.removeListener("scheduledMessages.changed", listener);
+    },
+  },
   app: {
     bootId: APP_BOOT_ID,
     window: {

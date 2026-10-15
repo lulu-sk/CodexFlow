@@ -3,7 +3,8 @@
 import React, { act, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRoot, type Root } from "react-dom/client";
-import PathChipsInput, { buildPathChipFromPath, mergePathChips, type PathChip } from "./path-chips-input";
+import PathChipsInput, { buildPathChipFromPath, mergePathChips, createPathChipsHistory, recordPathChipsHistoryChange, type PathChip, type PathChipsValueState } from "./path-chips-input";
+import { ScheduledMessageQueue, type ScheduledMessageResult, type ScheduledMessageRepeatEnd } from "../../../../electron/scheduledMessages";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -592,6 +593,88 @@ describe("PathChipsInput 撤回历史", () => {
 
     await dispatchKeyDown(editor, { key: "y", ctrlKey: true });
     expect(editor.value).toBe("abc");
+  });
+
+  it.each(["count", "at"] as const)("输入框撤销重做同步恢复任务、原时间、%s 结束条件和附件，重新挂载后仍按顺序回退", async (endMode) => {
+    restoreRaf = installSyncRequestAnimationFrame();
+    const mounted = createMountedRoot();
+    cleanup = mounted.unmount;
+    const history = createPathChipsHistory();
+    let now = new Date("2030-01-01T08:00:00Z").getTime();
+    const target = now + 10 * 60_000;
+    const repeatEnd: ScheduledMessageRepeatEnd = endMode === "count" ? { mode: "count", count: 5 } : { mode: "at", at: target + 2 * 60 * 60_000 };
+    const queue = new ScheduledMessageQueue(() => true, () => {}, () => now);
+    let applySchedule!: (result: ScheduledMessageResult, after?: PathChipsValueState) => void;
+    let remount!: () => void;
+    const chip = createPathChip({ id: "attachment", fileName: "example.png", winPath: "/attachments/example.png" });
+    /** 模拟应用层的受控草稿及预约历史写入，并支持普通／全屏输入框切换。 */
+    function ScheduledHarness() {
+      const [value, setValue] = useState<PathChipsValueState>({ draft: "", chips: [chip] });
+      const [key, setKey] = useState(0);
+      remount = () => setKey((current) => current + 1);
+      applySchedule = (result, after = value) => {
+        recordPathChipsHistoryChange(history, value, after, { restore: async (direction) => queue.restoreHistory(result.historyToken!, direction).ok });
+        setValue(after);
+      };
+      return <><PathChipsInput key={key} history={history} draft={value.draft} chips={value.chips} onDraftChange={(draft) => setValue((current) => ({ ...current, draft }))} onChipsChange={(chips) => setValue((current) => ({ ...current, chips }))} multiline /><div data-testid="chips-count">{value.chips.length}</div></>;
+    }
+    await act(async () => mounted.root.render(<ScheduledHarness />));
+    await dispatchInput(getEditor(mounted.host), "预约正文", "insertText");
+    const created = queue.save({ tabId: "tab", tabName: "Example", providerId: "codex", projectId: "project", projectName: "Example", projectWinRoot: "", projectWslRoot: "/repo/example", ptyId: "pty", text: "预约正文", attachmentPaths: ["/attachments/example.png"], imagePaths: ["/attachments/example.png"], scheduledAt: target, repeatEveryMs: 30 * 60_000, repeatEnd });
+    await act(async () => applySchedule(created, { draft: "", chips: [] }));
+    await act(async () => remount());
+    await dispatchInput(getEditor(mounted.host), "后续草稿", "insertText");
+    now += 60_000;
+    await dispatchKeyDown(getEditor(mounted.host), { key: "z", ctrlKey: true });
+    expect(getEditor(mounted.host).value).toBe("");
+    expect(queue.list()).toHaveLength(1);
+    await dispatchKeyDown(getEditor(mounted.host), { key: "z", ctrlKey: true });
+    expect(queue.list()).toEqual([]);
+    expect(getEditor(mounted.host).value).toBe("预约正文");
+    expect(getChipCount(mounted.host)).toBe(1);
+    await dispatchKeyDown(getEditor(mounted.host), { key: "y", ctrlKey: true });
+    expect(queue.list()[0]).toMatchObject({ scheduledAt: target, repeatEveryMs: 30 * 60_000, repeatEnd, imagePaths: ["/attachments/example.png"] });
+    expect(getEditor(mounted.host).value).toBe("");
+    expect(getChipCount(mounted.host)).toBe(0);
+    await dispatchKeyDown(getEditor(mounted.host), { key: "y", ctrlKey: true });
+    expect(getEditor(mounted.host).value).toBe("后续草稿");
+
+    const edited = queue.save({ ...queue.list()[0], scheduledAt: target + 5 * 60_000, repeatEnd: { mode: "count", count: 8 } }, created.task!.id);
+    await act(async () => applySchedule(edited));
+    const appended = queue.extend(created.task!.id, 10 * 60_000);
+    await act(async () => applySchedule(appended));
+    const canceled = queue.cancel(created.task!.id);
+    await act(async () => applySchedule(canceled, { draft: "后续草稿\n\n预约正文", chips: [chip] }));
+    await dispatchKeyDown(getEditor(mounted.host), { key: "z", ctrlKey: true });
+    expect(queue.list()).toHaveLength(2);
+    expect(queue.list()[0].repeatEnd).toEqual({ mode: "count", count: 8 });
+    expect(queue.list()[1].repeatEnd).toBeUndefined();
+    expect(getEditor(mounted.host).value).toBe("后续草稿");
+    await dispatchKeyDown(getEditor(mounted.host), { key: "z", ctrlKey: true });
+    expect(queue.list()).toHaveLength(1);
+    await dispatchKeyDown(getEditor(mounted.host), { key: "z", ctrlKey: true });
+    expect(queue.list()[0].scheduledAt).toBe(target);
+    expect(queue.list()[0].repeatEnd).toEqual(repeatEnd);
+    for (let step = 0; step < 3; step++) await dispatchKeyDown(getEditor(mounted.host), { key: "y", ctrlKey: true });
+    expect(queue.list()).toEqual([appended.task]);
+    expect(getEditor(mounted.host).value).toBe("后续草稿\n\n预约正文");
+  });
+
+  it("外部任务恢复失败时不恢复半份草稿，也不移动撤销位置", async () => {
+    restoreRaf = installSyncRequestAnimationFrame();
+    const mounted = createMountedRoot();
+    cleanup = mounted.unmount;
+    const history = createPathChipsHistory();
+    const restore = vi.fn(async () => false);
+    recordPathChipsHistoryChange(history, { draft: "已发送正文", chips: [] }, { draft: "", chips: [] }, { restore });
+    const onDraftChange = vi.fn();
+    await act(async () => mounted.root.render(<PathChipsInput history={history} draft="" chips={[]} onDraftChange={onDraftChange} onChipsChange={() => {}} multiline />));
+    await dispatchKeyDown(getEditor(mounted.host), { key: "z", ctrlKey: true });
+    expect(restore).toHaveBeenCalledWith("undo");
+    expect(getEditor(mounted.host).value).toBe("");
+    expect(onDraftChange).not.toHaveBeenCalled();
+    expect(history.past).toHaveLength(1);
+    expect(history.future).toHaveLength(0);
   });
 
   it("图片 blob 预览失效后应回退到 file 预览", async () => {
