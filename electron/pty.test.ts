@@ -14,6 +14,10 @@ vi.mock('node-pty', () => ({
   spawn: vi.fn(),
 }));
 
+vi.mock('./windowsPathEnvironment.js', () => ({
+  refreshWindowsEnvironment: vi.fn(async (env) => env),
+}));
+
 vi.mock('./wslConptyProxy.js', async () => {
   const actual = await vi.importActual<typeof import('./wslConpty')>('./wslConpty');
   return {
@@ -45,6 +49,7 @@ vi.mock('./log.js', () => ({
 
 import { PTYManager } from './pty';
 import * as pty from 'node-pty';
+import { refreshWindowsEnvironment } from './windowsPathEnvironment.js';
 
 describe('PTYManager', () => {
   it('Claude Windows 标签使用随包 ConPTY；加载失败仍按原参数回退系统', async () => {
@@ -65,12 +70,62 @@ describe('PTYManager', () => {
   });
 
   afterEach(() => {
+    vi.mocked(refreshWindowsEnvironment).mockReset();
+    vi.mocked(refreshWindowsEnvironment).mockImplementation(async (env) => env);
     settingsMock.terminalCapabilities.normalizeTerm = true;
     settingsMock.terminalCapabilities.trueColor = false;
     settingsMock.getSettings.mockClear();
     settingsMock.getTerminalCapabilitySettings.mockClear();
     settingsMock.getTerminalProxyEnabled.mockReset();
     settingsMock.getTerminalProxyEnabled.mockReturnValue(true);
+  });
+
+  it.each(['windows', 'pwsh', 'cmd'] as const)('%s 使用补入最新路径的环境，不修改主进程', async (terminal) => {
+    const manager = new PTYManager(() => []);
+    const spawn = vi.mocked(pty.spawn);
+    spawn.mockReset();
+    spawn.mockReturnValue(createPtyStub() as any);
+    const originalPath = process.env.Path;
+    vi.mocked(refreshWindowsEnvironment).mockImplementationOnce(async (env) => ({ ...env, Path: 'X:\\Apps\\agy\\bin', GEMINI_API_KEY: 'user-example' }));
+
+    await manager.openWSLConsole({ terminal });
+
+    expect(spawn.mock.calls[0]?.[2]?.env?.Path).toBe('X:\\Apps\\agy\\bin');
+    expect(spawn.mock.calls[0]?.[2]?.env?.GEMINI_API_KEY).toBe('user-example');
+    expect(process.env.Path).toBe(originalPath);
+  });
+
+  it.each(['Path', 'PATH', 'path'])('显式指定 %s 时尊重自定义环境', async (key) => {
+    const manager = new PTYManager(() => []);
+    const spawn = vi.mocked(pty.spawn);
+    spawn.mockReset();
+    spawn.mockReturnValue(createPtyStub() as any);
+    vi.mocked(refreshWindowsEnvironment).mockImplementationOnce(async (env) => ({ ...env, Path: 'X:\\System', GEMINI_API_KEY: 'user-example' }));
+
+    await manager.openWSLConsole({ terminal: 'pwsh', env: { [key]: 'X:\\Custom' } });
+
+    expect(refreshWindowsEnvironment).toHaveBeenCalledTimes(1);
+    expect(spawn.mock.calls[0]?.[2]?.env?.[key]).toBe('X:\\Custom');
+    expect(spawn.mock.calls[0]?.[2]?.env?.GEMINI_API_KEY).toBe('user-example');
+    expect(Object.keys(spawn.mock.calls[0]?.[2]?.env || {}).filter((name) => name.toLowerCase() === 'path')).toEqual([key]);
+  });
+
+  it('会话显式密钥覆盖最新用户环境，且终端能力在刷新后处理', async () => {
+    const manager = new PTYManager(() => []);
+    const spawn = vi.mocked(pty.spawn);
+    spawn.mockReset();
+    spawn.mockReturnValue(createPtyStub() as any);
+    vi.mocked(refreshWindowsEnvironment).mockImplementationOnce(async (env) => ({
+      ...env, GEMINI_API_KEY: 'user-example', TERM: 'dumb', NO_COLOR: '1',
+    }));
+
+    await manager.openWSLConsole({ terminal: 'pwsh', env: { gemini_api_key: 'session-example' } });
+
+    const env = spawn.mock.calls[0]?.[2]?.env;
+    expect(env?.gemini_api_key).toBe('session-example');
+    expect(env).not.toHaveProperty('GEMINI_API_KEY');
+    expect(env?.TERM).toBe('xterm-256color');
+    expect(env).not.toHaveProperty('NO_COLOR');
   });
 
   /**
@@ -253,16 +308,19 @@ describe('PTYManager', () => {
     }
   });
 
-  it('关闭终端代理时应清理代理变量并保留显式绕过策略', async () => {
+  it.each(['windows', 'pwsh', 'cmd', 'wsl'] as const)('%s 关闭终端代理时应清理刷新和会话中的代理变量', async (terminal) => {
     const { win } = createWindowStub();
     const manager = new PTYManager(() => [win as any]);
     const spawn = vi.mocked(pty.spawn);
     spawn.mockReset();
     spawn.mockReturnValue(createPtyStub() as any);
     settingsMock.getTerminalProxyEnabled.mockReturnValue(false);
+    vi.mocked(refreshWindowsEnvironment).mockImplementationOnce(async (env) => ({
+      ...env, Path: 'X:\\Tools\\bin', ALL_PROXY: 'http://proxy.example:8080',
+    }));
 
     await manager.openWSLConsole({
-      terminal: 'pwsh',
+      terminal,
       env: {
         HTTP_PROXY: 'http://127.0.0.1:7890',
         https_proxy: 'http://127.0.0.1:7890',
@@ -273,15 +331,23 @@ describe('PTYManager', () => {
     const env = spawn.mock.calls[0]?.[2]?.env as Record<string, string>;
     expect(env).not.toHaveProperty('HTTP_PROXY');
     expect(env).not.toHaveProperty('https_proxy');
+    expect(env).not.toHaveProperty('ALL_PROXY');
     expect(env).toHaveProperty('NO_PROXY', '*');
-    expect(env.WSLENV).toBe('TERM/u');
+    expect(env.WSLENV.split(':')).toContain('TERM/u');
+    expect(env.WSLENV).not.toMatch(/HTTP_PROXY|CODEXFLOW_PROXY|https_proxy/);
+    if (terminal !== 'wsl') expect(env.Path).toBe('X:\\Tools\\bin');
   });
 
-  it('内置和系统 ConPTY 都失败时才应把 WSL 切换为 PowerShell', async () => {
+  it.each([true, false])('内置和系统 ConPTY 都失败时才回退 PowerShell，并保留代理开关 %s', async (terminalProxyEnabled) => {
     const { win } = createWindowStub();
     const manager = new PTYManager(() => [win as any]);
     const spawn = vi.mocked(pty.spawn);
     const powershell = createPtyStub();
+    settingsMock.getTerminalProxyEnabled.mockReturnValue(terminalProxyEnabled);
+    vi.mocked(refreshWindowsEnvironment).mockImplementationOnce(async (env) => ({
+      ...env, GEMINI_API_KEY: 'user-example', Path: 'X:\\Tools\\bin',
+      ALL_PROXY: 'http://proxy.example:8080',
+    }));
     spawn.mockReset();
     spawn
       .mockImplementationOnce(() => { throw new Error('bundled conpty failed'); })
@@ -295,6 +361,15 @@ describe('PTYManager', () => {
     expect(spawn).toHaveBeenCalledTimes(3);
     expect((spawn.mock.calls[0]?.[2] as { useConptyDll?: boolean }).useConptyDll).toBe(true);
     expect((spawn.mock.calls[1]?.[2] as { useConptyDll?: boolean }).useConptyDll).toBe(false);
+    expect(refreshWindowsEnvironment).toHaveBeenCalledTimes(1);
+    expect(spawn.mock.calls[2]?.[2]?.env?.GEMINI_API_KEY).toBe('user-example');
+    const env = spawn.mock.calls[2]?.[2]?.env;
+    expect(env?.Path).toBe('X:\\Tools\\bin');
+    if (terminalProxyEnabled) expect(env?.ALL_PROXY).toBe('http://proxy.example:8080');
+    else {
+      expect(env).not.toHaveProperty('ALL_PROXY');
+      expect(env?.NO_PROXY).toBe('*');
+    }
   });
 
   it('WSL 回退到 PowerShell 后也应等待前端绑定再执行启动命令', async () => {
@@ -331,6 +406,7 @@ describe('PTYManager', () => {
     expect(proc.write).not.toHaveBeenCalled();
     manager.ready(opened.id);
     expect(proc.write).toHaveBeenCalledWith("bash -lc 'codex --yolo'\r");
+    expect(refreshWindowsEnvironment).not.toHaveBeenCalled();
   });
 
   it('ready 应安全忽略无待启动命令的原生 PTY，并向 WSL 同步主题色', () => {

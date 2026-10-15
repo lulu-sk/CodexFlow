@@ -19,6 +19,7 @@ import {
   type TerminalPaletteColors,
 } from './wslConpty.js';
 import { spawnIsolatedWslConpty } from './wslConptyProxy.js';
+import { refreshWindowsEnvironment } from './windowsPathEnvironment.js';
 
 // 终端日志总开关（主进程）。默认关闭，由统一调试配置控制，也可通过 IPC 置位。
 let TERM_DEBUG = (() => { try { return !!(getDebugConfig().terminal.pty.debug); } catch { return false; } })();
@@ -155,6 +156,11 @@ function mergeExtraEnv(base: Record<string, string>, extra?: Record<string, stri
     if (!k) continue;
     if (value === undefined || value === null) continue;
     const v = typeof value === "string" ? value : String(value);
+    if (os.platform() === "win32") {
+      for (const existing of Object.keys(next)) {
+        if (existing !== k && existing.toLowerCase() === k.toLowerCase()) delete next[existing];
+      }
+    }
     next[k] = v;
   }
   return next;
@@ -520,18 +526,26 @@ export class PTYManager {
 
     const id = uid();
 
-    let env = sanitizeInheritedTerminalColorEnvironment(
-      { ...process.env } as Record<string, string>,
-    );
-    env = mergeExtraEnv(env, opts.env);
     const terminalProxyEnabled = typeof (settings as any).getTerminalProxyEnabled === "function"
       ? (settings as any).getTerminalProxyEnabled() !== false
       : true;
-    if (!terminalProxyEnabled) env = stripTerminalProxyEnvironment(env);
     const terminalCapabilities = normalizeTerminalCapabilitySettings(
       settings.getTerminalCapabilitySettings(),
     );
-    env = applyTerminalCapabilityEnvironment(env, terminalCapabilities);
+    /**
+     * 在刷新系统环境后应用会话覆盖、代理开关与终端能力，回退终端也遵循同一规则。
+     */
+    const prepareEnvironment = (base: NodeJS.ProcessEnv): Record<string, string> => {
+      const clean = sanitizeInheritedTerminalColorEnvironment(base as Record<string, string>);
+      const merged = mergeExtraEnv(clean, opts.env);
+      const filtered = terminalProxyEnabled ? merged : stripTerminalProxyEnvironment(merged);
+      return applyTerminalCapabilityEnvironment(filtered, terminalCapabilities);
+    };
+    let termMode = (opts.terminal || settings.getSettings().terminal || 'wsl');
+    let baseEnvironment = { ...process.env };
+    if (os.platform() === 'win32' && (termMode === 'windows' || termMode === 'pwsh' || termMode === 'cmd'))
+      baseEnvironment = await refreshWindowsEnvironment(baseEnvironment);
+    let env = prepareEnvironment(baseEnvironment);
     const capabilityEnvKeys: string[] = [];
     if (terminalCapabilities.normalizeTerm && String(env.TERM || "").trim())
       capabilityEnvKeys.push("TERM");
@@ -543,7 +557,6 @@ export class PTYManager {
       capabilityEnvKeys.push("COLORTERM");
 
     // 根据设置选择 WSL 或 Windows 本地终端
-    let termMode = (opts.terminal || settings.getSettings().terminal || 'wsl');
     let proc: IPty;
     if (os.platform() !== 'win32') {
       // 在非 Windows 环境使用本地 shell 便于开发调试
@@ -607,6 +620,7 @@ export class PTYManager {
         proc = wslPty;
         dlog(`[pty] WSL ConPTY backend=${wslPty.backend} host=isolated`);
       } catch (error: any) {
+        env = prepareEnvironment(await refreshWindowsEnvironment({ ...process.env }));
         const resolved = resolveWindowsShell('windows');
         termMode = 'windows';
         fallbackReason = 'wsl_spawn_failed';
