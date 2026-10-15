@@ -2,6 +2,8 @@
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
 import type { TerminalThemeId } from "./terminal-theme";
+import type { ScheduledMessage, ScheduledMessageInput, ScheduledMessageResult } from "../../../electron/scheduledMessages";
+export type { ScheduledMessage, ScheduledMessageInput, ScheduledMessageRepeatEnd } from "../../../electron/scheduledMessages";
 
 export {}; // make this a module
 
@@ -1337,6 +1339,18 @@ export interface I18nAPI {
 declare global {
   interface Window {
     host: {
+      scheduledMessages: {
+        list(): Promise<{ ok: boolean; tasks?: ScheduledMessage[]; error?: string }>;
+        save(input: ScheduledMessageInput, id?: string): Promise<ScheduledMessageResult>;
+        cancel(id: string): Promise<ScheduledMessageResult>;
+        /** 保留原预约，在基准时刻之后新增单次预约。 */
+        extend(id: string, delayMs: number, baseScheduledAt: number): Promise<ScheduledMessageResult>;
+        /** 撤销或重做预约操作，保持原定时间。 */
+        restoreHistory(token: string, direction: "undo" | "redo"): Promise<ScheduledMessageResult>;
+        claim(id: string): Promise<ScheduledMessageResult>;
+        finish(id: string, success: boolean): Promise<ScheduledMessageResult>;
+        onChanged(callback: (tasks: ScheduledMessage[]) => void): () => void;
+      };
       app: AppAPI;
       env: EnvAPI;
       pty: PtyAPI;

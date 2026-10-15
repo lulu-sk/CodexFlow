@@ -43,6 +43,8 @@ export interface PathChipsInputProps extends Omit<React.InputHTMLAttributes<HTML
   onChipsChange: (next: PathChip[]) => void;
   draft: string; // 当前未生成 Chip 的文本草稿
   onDraftChange: (v: string) => void;
+  /** 按对话保存历史，并允许外部操作与输入编辑共享撤销顺序。 */
+  history?: PathChipsHistory;
   /** Windows 项目根与名称（用于持久化图片归档） */
   winRoot?: string;
   /** 项目的 WSL 根路径（绝对 WSL 路径，如 /home/you/project） */
@@ -379,14 +381,48 @@ type PathChipsInputSelection = {
   direction: Exclude<HTMLInputElement["selectionDirection"], null>;
 };
 
-type PathChipsValueState = {
+export type PathChipsValueState = {
   draft: string;
   chips: PathChip[];
 };
 
 type PathChipsHistorySnapshot = PathChipsValueState & {
   selection: PathChipsInputSelection;
+  transaction?: PathChipsHistoryTransaction;
 };
+
+export type PathChipsHistoryTransaction = {
+  /** 先恢复外部状态；失败时保留输入及历史位置。 */
+  restore(direction: "undo" | "redo"): Promise<boolean>;
+};
+
+export type PathChipsHistory = {
+  past: PathChipsHistorySnapshot[];
+  current: PathChipsHistorySnapshot | null;
+  future: PathChipsHistorySnapshot[];
+  lastRecordedAt: number;
+  lastMergeMode: PathChipsInputHistoryMergeMode;
+  expectedSignature: string | null;
+  busy: boolean;
+};
+
+/** 创建可跨输入框全屏切换保留的独立历史。 */
+export function createPathChipsHistory(): PathChipsHistory {
+  return { past: [], current: null, future: [], lastRecordedAt: 0, lastMergeMode: null, expectedSignature: null, busy: false };
+}
+
+/** 将外部任务操作和输入内容变化记录为同一步，即使正文未变化也可撤销。 */
+export function recordPathChipsHistoryChange(history: PathChipsHistory, before: PathChipsValueState, after: PathChipsValueState, transaction: PathChipsHistoryTransaction): void {
+  const matches = history.current && buildValueStateSignature(history.current) === buildValueStateSignature(before);
+  if (!matches) history.past = [];
+  history.past.push(matches ? cloneHistorySnapshot(history.current!) : buildHistorySnapshot({ ...before, selection: createCollapsedSelection(before.draft.length) }));
+  if (history.past.length > MAX_INPUT_HISTORY_ENTRIES) history.past.shift();
+  history.current = buildHistorySnapshot({ ...after, selection: createCollapsedSelection(after.draft.length), transaction });
+  history.future = [];
+  history.expectedSignature = buildValueStateSignature(after);
+  history.lastRecordedAt = 0;
+  history.lastMergeMode = null;
+}
 
 type PathChipsInputHistoryMergeMode = "insert" | "delete" | null;
 
@@ -488,6 +524,7 @@ function buildHistorySnapshot(args: PathChipsHistorySnapshot): PathChipsHistoryS
     draft: String(args.draft || ""),
     chips: cloneChipsForHistory(args.chips),
     selection: cloneSelectionSnapshot(args.selection),
+    transaction: args.transaction,
   };
 }
 
@@ -556,6 +593,7 @@ export default function PathChipsInput({
   onChipsChange,
   draft,
   onDraftChange,
+  history,
   className,
   winRoot,
   projectWslRoot,
@@ -586,21 +624,8 @@ export default function PathChipsInput({
     draft: String(draft || ""),
     chips: cloneChipsForHistory(chips),
   });
-  const historyRef = useRef<{
-    past: PathChipsHistorySnapshot[];
-    current: PathChipsHistorySnapshot | null;
-    future: PathChipsHistorySnapshot[];
-    lastRecordedAt: number;
-    lastMergeMode: PathChipsInputHistoryMergeMode;
-    expectedSignature: string | null;
-  }>({
-    past: [],
-    current: null,
-    future: [],
-    lastRecordedAt: 0,
-    lastMergeMode: null,
-    expectedSignature: null,
-  });
+  const historyRef = useRef<PathChipsHistory>(history || createPathChipsHistory());
+  const [historyBusy, setHistoryBusy] = useState(false);
 
   // @ 面板状态
   const [open, setOpen] = useState(false);
@@ -834,6 +859,7 @@ export default function PathChipsInput({
       return;
     }
     if (hist.expectedSignature === nextSignature) {
+      nextSnapshot.transaction = hist.current.transaction;
       hist.current = nextSnapshot;
       return;
     }
@@ -852,6 +878,7 @@ export default function PathChipsInput({
     args: { draft?: string; chips?: PathChip[]; selection?: PathChipsInputSelection },
     options?: { mergeMode?: PathChipsInputHistoryMergeMode },
   ): boolean => {
+    if (historyRef.current.busy) return false;
     const current = readCurrentValueState();
     const nextDraft = typeof args.draft === "string" ? args.draft : current.draft;
     const nextChips = Array.isArray(args.chips) ? cloneChipsForHistory(args.chips) : cloneChipsForHistory(current.chips);
@@ -902,66 +929,36 @@ export default function PathChipsInput({
     return true;
   }, [onChipsChange, onDraftChange, readCurrentValueState, restoreSelectionAfterRender]);
 
-  /**
-   * 中文说明：撤回最近一次输入框编辑，统一恢复文字、Chip 与光标位置。
-   */
-  const undoValueChange = useCallback((): boolean => {
+  /** 按输入顺序撤销或重做；先原子恢复定时任务，再恢复正文、附件与选区。 */
+  const moveHistory = useCallback(async (direction: "undo" | "redo"): Promise<boolean> => {
     const hist = historyRef.current;
-    if (!hist.current) {
+    const source = direction === "undo" ? hist.past : hist.future;
+    const destination = direction === "undo" ? hist.future : hist.past;
+    if (hist.busy || !hist.current || !source.length) return false;
+    const nextSnapshot = cloneHistorySnapshot(source[source.length - 1]);
+    const transaction = direction === "undo" ? hist.current.transaction : nextSnapshot.transaction;
+    hist.busy = true;
+    try {
+      if (transaction) {
+        setHistoryBusy(true);
+        if (!await transaction.restore(direction)) return false;
+      }
       const current = readCurrentValueState();
-      hist.current = buildHistorySnapshot({
-        ...current,
-        selection: captureSelectionSnapshot(inputRef.current, current.draft),
-      });
-    }
-    if (!hist.current || hist.past.length === 0) return false;
-
-    const current = readCurrentValueState();
-    const previousSnapshot = cloneHistorySnapshot(hist.past.pop() as PathChipsHistorySnapshot);
-    hist.future.push(cloneHistorySnapshot(hist.current));
-    hist.current = cloneHistorySnapshot(previousSnapshot);
-    hist.expectedSignature = buildValueStateSignature({
-      draft: previousSnapshot.draft,
-      chips: previousSnapshot.chips,
-    });
-    hist.lastRecordedAt = 0;
-    hist.lastMergeMode = null;
-
-    const publishedChips = cloneChipsForHistory(previousSnapshot.chips);
-    const chipsChanged = buildChipsStateSignature(current.chips) !== buildChipsStateSignature(previousSnapshot.chips);
-    valueStateRef.current = { draft: previousSnapshot.draft, chips: publishedChips };
-    if (chipsChanged) onChipsChange(publishedChips);
-    if (current.draft !== previousSnapshot.draft) onDraftChange(previousSnapshot.draft);
-    restoreSelectionAfterRender(previousSnapshot.selection);
-    return true;
-  }, [onChipsChange, onDraftChange, readCurrentValueState, restoreSelectionAfterRender]);
-
-  /**
-   * 中文说明：重做最近一次已撤回的输入框编辑。
-   */
-  const redoValueChange = useCallback((): boolean => {
-    const hist = historyRef.current;
-    if (!hist.current || hist.future.length === 0) return false;
-
-    const current = readCurrentValueState();
-    const nextSnapshot = cloneHistorySnapshot(hist.future.pop() as PathChipsHistorySnapshot);
-    hist.past.push(cloneHistorySnapshot(hist.current));
-    if (hist.past.length > MAX_INPUT_HISTORY_ENTRIES) hist.past.shift();
-    hist.current = cloneHistorySnapshot(nextSnapshot);
-    hist.expectedSignature = buildValueStateSignature({
-      draft: nextSnapshot.draft,
-      chips: nextSnapshot.chips,
-    });
-    hist.lastRecordedAt = 0;
-    hist.lastMergeMode = null;
-
-    const publishedChips = cloneChipsForHistory(nextSnapshot.chips);
-    const chipsChanged = buildChipsStateSignature(current.chips) !== buildChipsStateSignature(nextSnapshot.chips);
-    valueStateRef.current = { draft: nextSnapshot.draft, chips: publishedChips };
-    if (chipsChanged) onChipsChange(publishedChips);
-    if (current.draft !== nextSnapshot.draft) onDraftChange(nextSnapshot.draft);
-    restoreSelectionAfterRender(nextSnapshot.selection);
-    return true;
+      source.pop();
+      destination.push(cloneHistorySnapshot(hist.current));
+      if (destination.length > MAX_INPUT_HISTORY_ENTRIES) destination.shift();
+      hist.current = nextSnapshot;
+      hist.expectedSignature = buildValueStateSignature(nextSnapshot);
+      hist.lastRecordedAt = 0;
+      hist.lastMergeMode = null;
+      const publishedChips = cloneChipsForHistory(nextSnapshot.chips);
+      valueStateRef.current = { draft: nextSnapshot.draft, chips: publishedChips };
+      if (buildChipsStateSignature(current.chips) !== buildChipsStateSignature(nextSnapshot.chips)) onChipsChange(publishedChips);
+      if (current.draft !== nextSnapshot.draft) onDraftChange(nextSnapshot.draft);
+      restoreSelectionAfterRender(nextSnapshot.selection);
+      return true;
+    } catch { return false; }
+    finally { hist.busy = false; if (transaction) setHistoryBusy(false); }
   }, [onChipsChange, onDraftChange, readCurrentValueState, restoreSelectionAfterRender]);
 
   /**
@@ -972,14 +969,14 @@ export default function PathChipsInput({
     const inputType = String(nativeEvent?.inputType || "");
     if (inputType === "historyUndo") {
       event.preventDefault();
-      undoValueChange();
+      void moveHistory("undo");
       return;
     }
     if (inputType === "historyRedo") {
       event.preventDefault();
-      redoValueChange();
+      void moveHistory("redo");
     }
-  }, [redoValueChange, undoValueChange]);
+  }, [moveHistory]);
 
   /**
    * 将拖拽到输入框的 Windows 路径转换为 Chip 并追加（包含目录判定、图片预览与去重）。
@@ -1299,16 +1296,17 @@ export default function PathChipsInput({
   }, [applyValueChange, buildMergedChips, logLayoutDiagnostic, projectPathStyle, readCurrentValueState, runEnv, t, winRoot]);
 
   const onKeyDown = (e: React.KeyboardEvent<any>) => {
+    if (historyRef.current.busy) { e.preventDefault(); return; }
     try { externalOnKeyDown && externalOnKeyDown(e); } catch {}
     if (e.defaultPrevented) return;
     if (isUndoShortcut(e)) {
       e.preventDefault();
-      undoValueChange();
+      void moveHistory("undo");
       return;
     }
     if (isRedoShortcut(e)) {
       e.preventDefault();
-      redoValueChange();
+      void moveHistory("redo");
       return;
     }
     if (e.key === "@") {
@@ -1695,6 +1693,7 @@ export default function PathChipsInput({
         {multiline ? (
           <textarea
             ref={inputRef as any}
+            readOnly={historyBusy || rest.readOnly}
             value={draft}
             onChange={onChange}
             onBeforeInput={onBeforeInput}
@@ -1716,6 +1715,7 @@ export default function PathChipsInput({
         ) : (
           <input
             ref={inputRef as any}
+            readOnly={historyBusy || rest.readOnly}
             value={draft}
             onChange={onChange}
             onBeforeInput={onBeforeInput}
