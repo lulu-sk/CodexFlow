@@ -2,14 +2,30 @@
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
 import os from "node:os";
+import { execFile } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { __antigravityUsageTest, parseAntigravityUsageResponse } from "./usage";
 
+vi.mock("node:child_process", () => ({ execFile: vi.fn() }));
+
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 describe("electron/antigravity/usage", () => {
+  it("查找 agy 时使用已刷新的子进程环境", async () => {
+    vi.stubEnv("AGY_PATH", "");
+    vi.stubEnv("ANTIGRAVITY_CLI_PATH", "");
+    const env = { PATH: "X:\\Apps\\agy\\bin" };
+    const exec = vi.mocked(execFile).mockImplementation(((_file: unknown, _args: unknown, _options: unknown, callback: Function) => {
+      callback(null, "X:\\Apps\\agy\\bin\\agy.exe\r\n");
+      return {};
+    }) as any);
+    expect(await __antigravityUsageTest.resolveAgyPathWindowsAsync(env)).toBe("X:\\Apps\\agy\\bin\\agy.exe");
+    expect(exec).toHaveBeenCalledWith("where.exe", ["agy"], expect.objectContaining({ env, timeout: 5000 }), expect.any(Function));
+  });
+
   it("parseAntigravityUsageResponse：解析 RetrieveUserQuotaSummary 分组额度", () => {
     const snapshot = parseAntigravityUsageResponse({
       response: {

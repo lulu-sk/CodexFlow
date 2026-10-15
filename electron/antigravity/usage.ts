@@ -8,6 +8,7 @@ import https from "node:https";
 import { execFile } from "node:child_process";
 import * as pty from "node-pty";
 import { perfLogger } from "../log";
+import { refreshWindowsEnvironment } from "../windowsPathEnvironment";
 
 export type AntigravityUsageWindow = {
   label: string;
@@ -88,12 +89,12 @@ let warmAgySession: WarmAgySession | null = null;
 /**
  * 执行命令并读取 stdout，所有探测命令都必须有超时。
  */
-function execFileTextAsync(file: string, args: string[], timeoutMs: number): Promise<string> {
+function execFileTextAsync(file: string, args: string[], timeoutMs: number, env?: NodeJS.ProcessEnv): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(
       file,
       args,
-      { windowsHide: true, timeout: Math.max(1000, timeoutMs), maxBuffer: 16 * 1024 * 1024 },
+      { windowsHide: true, timeout: Math.max(1000, timeoutMs), maxBuffer: 16 * 1024 * 1024, env },
       (err, stdout) => {
         if (err) return reject(err);
         resolve(Buffer.isBuffer(stdout) ? stdout.toString("utf8") : String(stdout ?? ""));
@@ -672,11 +673,11 @@ function resolveAgyPathFromEnv(): string | null {
 /**
  * 查找 Windows 侧 agy 可执行文件。
  */
-async function resolveAgyPathWindowsAsync(): Promise<string | null> {
+async function resolveAgyPathWindowsAsync(env: NodeJS.ProcessEnv): Promise<string | null> {
   const fromEnv = resolveAgyPathFromEnv();
   if (fromEnv) return fromEnv;
   try {
-    const stdout = await execFileTextAsync("where.exe", ["agy"], 5000);
+    const stdout = await execFileTextAsync("where.exe", ["agy"], 5000, env);
     const first = String(stdout || "").split(/\r?\n/).map((x) => x.trim()).find(Boolean);
     if (first) return first;
   } catch {}
@@ -723,8 +724,8 @@ async function resolveAgyPathUnixAsync(): Promise<string | null> {
 /**
  * 查找 agy 可执行文件。
  */
-async function resolveAgyPathAsync(): Promise<string | null> {
-  return os.platform() === "win32" ? resolveAgyPathWindowsAsync() : resolveAgyPathUnixAsync();
+async function resolveAgyPathAsync(env: NodeJS.ProcessEnv): Promise<string | null> {
+  return os.platform() === "win32" ? resolveAgyPathWindowsAsync(env) : resolveAgyPathUnixAsync();
 }
 
 /**
@@ -774,10 +775,10 @@ async function ensureAgyWarmSessionAsync(): Promise<void> {
     scheduleWarmAgyShutdown();
     return;
   }
-  const agyPath = await resolveAgyPathAsync();
+  const env = await refreshWindowsEnvironment({ ...process.env });
+  const agyPath = await resolveAgyPathAsync(env);
   if (!agyPath) throw new Error("ANTIGRAVITY_CLI_NOT_FOUND");
 
-  const env = { ...process.env };
   const cwd = os.homedir();
   const launch = resolveAgyPtyCommand(agyPath);
   const proc = pty.spawn(launch.file, launch.args, {
@@ -847,6 +848,7 @@ export const __antigravityUsageTest = {
   parseQuotaSummaryWindows,
   parseModelConfigWindows,
   resolveAgyPtyCommand,
+  resolveAgyPathWindowsAsync,
   resolveModelGroup,
   toProcessCandidate,
 };
