@@ -2327,16 +2327,21 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
     }
   };
 
-  /** 新版 Codex 自管历史时，通过原有输入链路跳转端点，不改变终端输入焦点。 */
-  const scrollCodexTranscriptBoundary = (action: "top" | "bottom"): boolean => {
-    if (!term || options?.getProviderId?.() !== "codex") return false;
-    const snapshot = readCursorTextSnapshot({ linesBefore: term.rows, linesAfter: term.rows });
-    const cursorLine = snapshot ? readLogicalLineAt(term.buffer.active, snapshot.cursorAbsY)?.text || "" : "";
-    if (!snapshot || !isCodexOwnedTranscriptScreen(
-      snapshot.bufferType, term.modes.mouseTrackingMode, snapshot.text, cursorLine,
-    )) return false;
+  /** Codex／Claude 自管历史时，通过原有输入链路跳转端点，不改变终端输入焦点。 */
+  const scrollTranscriptBoundary = (action: "top" | "bottom"): boolean => {
+    if (!term || term.buffer.active.type !== "alternate") return false;
+    const providerId = options?.getProviderId?.();
+    if (providerId !== "codex" && providerId !== "claude") return false;
+    if (providerId === "codex") {
+      const snapshot = readCursorTextSnapshot({ linesBefore: term.rows, linesAfter: term.rows });
+      const cursorLine = snapshot ? readLogicalLineAt(term.buffer.active, snapshot.cursorAbsY)?.text || "" : "";
+      if (!snapshot || !isCodexOwnedTranscriptScreen(
+        snapshot.bufferType, term.modes.mouseTrackingMode, snapshot.text, cursorLine,
+      )) return false;
+    }
+    // Claude 的滚动快捷键不依赖鼠标报告或输入框，执行中和展开历史时同样可用。
     viewportReadAnchor = null;
-    markViewportUserScroll(`codex.${action}`);
+    markViewportUserScroll(`${providerId}.${action}`);
     term.input(action === "top" ? "\x1b[1;5H" : "\x1b[1;5F", true);
     return true;
   };
@@ -3397,14 +3402,14 @@ export function createTerminalAdapter(options?: TerminalAdapterOptions): Termina
     },
     scrollToTop: () => {
       try {
-        if (scrollCodexTranscriptBoundary("top")) return;
+        if (scrollTranscriptBoundary("top")) return;
         viewportReadAnchor = null;
         markViewportUserScroll("api.top");
         term?.scrollToTop();
       } catch {}
     },
     scrollToBottom: (options?: TerminalScrollToBottomOptions) => {
-      if (scrollCodexTranscriptBoundary("bottom")) return;
+      if (scrollTranscriptBoundary("bottom")) return;
       if (options?.followOutput) {
         startViewportBottomFollow(options);
         return;
