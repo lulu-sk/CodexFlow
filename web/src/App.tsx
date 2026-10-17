@@ -118,8 +118,11 @@ import {
 import { resolveDirRowDropPosition } from "@/lib/dir-tree-dnd";
 import HistoryCopyButton from "@/components/history/history-copy-button";
 import { useHistoryImageContextMenu } from "@/components/history/history-image-context-menu";
+import { normalizeHistoryImageContent } from "../../electron/agentSessions/shared/historyImagePath";
 import HistoryPanelToggleButton from "@/components/history/history-panel-toggle-button";
 import HistoryTurnDiffCard from "@/features/history/history-turn-diff-card";
+import { buildHistoryActivityGroups, resolveHistoryActivityVisibility, type HistoryActivityDisclosureState } from "@/features/history/activity-groups";
+import { HistoryActivityDisclosure, useHistoryActivityScrollAnchor } from "@/features/history/history-activity-disclosure";
 import { bindHistorySessionIdToTabs, findBestHistorySessionForTab, shouldWaitForHistorySessionBinding } from "@/features/history/session-binding";
 import { lookupHistoryWithStableContext } from "@/features/history/session-lookup";
 import { shouldMergeHistoryPrefetchIntoVisibleList } from "@/features/history/prefetch-visibility";
@@ -153,7 +156,7 @@ import {
   shouldReuseHistoryDetailLoad,
   upsertHistoryDetailSessionMessages,
 } from "@/features/history/detail-message-cache";
-import { resolveHistoryDetailTypeFilter } from "@/features/history/detail-type-filter";
+import { isHistoryDetailTypeVisibleByDefault, resolveHistoryDetailTypeFilter } from "@/features/history/detail-type-filter";
 import { HistoryMarkdown } from "@/features/history/renderers/history-markdown";
 import {
   buildHistoryContentItemKey,
@@ -18796,7 +18799,8 @@ type HistoryUserInputScrollRequest = {
  * - 主视图改为“路径 + 小图”紧凑排布，避免历史详情被大图撑开；
  * - 悬停与点击交互统一复用输入框 chips 的图片预览行为。
  */
-function HistoryImageContent({ item, itemKey }: { item: MessageContent; itemKey: string }) {
+function HistoryImageContent({ item: rawItem, itemKey }: { item: MessageContent; itemKey: string }) {
+  const item = normalizeHistoryImageContent(rawItem);
   const primarySrc = String(item?.src || "").trim();
   const fallbackSrc = String(item?.fallbackSrc || "").trim();
   const localPath = String(item?.localPath || "").trim();
@@ -18924,6 +18928,7 @@ function ContentRenderer({
             <HistoryTurnDiffCard
               key={`${kprefix || 'itm'}-turn-diff-${i}`}
               diffText={text}
+              diffSource={c.diffSource}
               projectWinPath={projectWinPath}
               cwd={typeof (c as any).cwd === 'string' ? String((c as any).cwd) : undefined}
               patchable={(c as any).patchable !== false}
@@ -19173,6 +19178,9 @@ type HistoryRenderOptions = {
   projectWinPath?: string;
   onOpenGit?: () => void;
   inlineImageState?: HistoryInlineImageRenderState;
+  activityDisclosures?: ReadonlyMap<number, HistoryActivityDisclosureState>;
+  onToggleActivity?: (id: string, trigger: HTMLButtonElement) => void;
+  searchActive?: boolean;
 };
 
 /**
@@ -19181,6 +19189,11 @@ type HistoryRenderOptions = {
  */
 function buildHistoryMessageKey(sessionId: string, originalIndex: number): string {
   return `${sessionId}-${originalIndex}`;
+}
+
+/** 为虚拟列表提供稳定的取键函数，避免父层刷新时重建全部行高布局。 */
+function getHistoryMessageViewKey(view: HistoryMessageView): string {
+  return view.messageKey;
 }
 
 /**
@@ -19221,6 +19234,17 @@ function renderHistoryHeader(session: HistorySession) {
  * 关键点：必须使用稳定 messageKey 作为 DOM 标识，避免筛选/搜索后的节点复用错位。
  */
 function HistoryMessageCard({ view, options }: { view: HistoryMessageView; options?: HistoryRenderOptions }) {
+  const group = options?.activityDisclosures?.get(view.originalIndex);
+  return (
+    <div className="min-w-0">
+      {group ? <HistoryActivityDisclosure group={group} onToggle={options?.onToggleActivity} searchActive={options?.searchActive} /> : null}
+      <HistoryMessageContentCard view={view} options={options} />
+    </div>
+  );
+}
+
+/** 渲染消息正文，折叠入口独立于正文搜索范围，避免耗时标签干扰命中定位。 */
+function HistoryMessageContentCard({ view, options }: { view: HistoryMessageView; options?: HistoryRenderOptions }) {
   const message = view.message;
   const messageKey = view.messageKey;
   if (!hasVisibleHistoryMessageContent(message, messageKey, options?.inlineImageState)) return null;
@@ -19254,6 +19278,7 @@ function HistoryMessageCard({ view, options }: { view: HistoryMessageView; optio
           <HistoryTurnDiffCard
             key={`${messageKey}-turn-diff-${index}`}
             diffText={String(item.text || '')}
+            diffSource={item.diffSource}
             projectWinPath={options?.projectWinPath}
             cwd={typeof (item as any).cwd === 'string' ? String((item as any).cwd) : undefined}
             patchable={(item as any).patchable !== false}
@@ -19433,6 +19458,11 @@ function normalizeHistoryReadMessages(res: any): HistoryMessage[] {
   const rawMessages = Array.isArray(res?.messages) ? res.messages : [];
   return rawMessages.map((message: any) => ({
     role: String(message?.role || "unknown"),
+    turnId: typeof message?.turnId === "string" ? message.turnId : undefined,
+    phase: typeof message?.phase === "string" ? message.phase : undefined,
+    timestamp: typeof message?.timestamp === "string" ? message.timestamp : undefined,
+    durationMs: typeof message?.durationMs === "number" && Number.isFinite(message.durationMs) && message.durationMs >= 0
+      ? message.durationMs : undefined,
     content: Array.isArray(message?.content)
       ? message.content.map((item: any) => ({
         ...item,
@@ -19510,13 +19540,7 @@ function buildHistoryTypeFilter(messages: HistoryMessage[]): Record<string, bool
 
   const next: Record<string, boolean> = {};
   for (const key of filtered) {
-    next[key] = (
-      key === 'input_text'
-      || key === 'output_text'
-      || key === 'image'
-      || key === 'subagent_notification'
-      || key === 'turn_diff'
-    );
+    next[key] = isHistoryDetailTypeVisibleByDefault(key);
   }
   return next;
 }
@@ -19575,6 +19599,7 @@ function HistoryDetail({ sessions, selectedHistoryId, historyDetailRefreshNonce,
   }, [MAX_HISTORY_MESSAGE_CACHE]);
   const [typeFilter, setTypeFilter] = useState<Record<string, boolean>>({});
   const [detailSearchInput, setDetailSearchInput] = useState("");
+  const [expandedActivityIds, setExpandedActivityIds] = useState<ReadonlySet<string>>(() => new Set());
   const reqSeq = useRef(0);
   const lastLoadedFingerprintRef = useRef<string>("");
   const lastLoadedHistoryIdRef = useRef<string>("");
@@ -19614,13 +19639,15 @@ function HistoryDetail({ sessions, selectedHistoryId, historyDetailRefreshNonce,
 
   useEffect(() => {
     setDetailSearchInput("");
+    setExpandedActivityIds(new Set());
   }, [selectedHistoryId]);
 
   const detailSession = selectedLocalSession || selectedSession;
+  const defaultTypeFilter = useMemo(() => buildHistoryTypeFilter(detailSession?.messages || []), [detailSession?.messages]);
   const effectiveTypeFilter = useMemo(() => resolveHistoryDetailTypeFilter(
     typeFilter,
-    buildHistoryTypeFilter(detailSession?.messages || []),
-  ), [detailSession?.messages, typeFilter]);
+    defaultTypeFilter,
+  ), [defaultTypeFilter, typeFilter]);
   const debouncedDetailSearch = useDebouncedValue(detailSearchInput, HISTORY_DETAIL_SEARCH_DEBOUNCE_MS);
   const deferredDetailSearch = useDeferredValue(debouncedDetailSearch);
   const normalizedDetailSearch = useMemo(() => deferredDetailSearch.trim().toLowerCase(), [deferredDetailSearch]);
@@ -19670,7 +19697,11 @@ function HistoryDetail({ sessions, selectedHistoryId, historyDetailRefreshNonce,
     };
   }, [filteredHistory.matches, filteredHistory.messages, inlineImageState]);
 
-  const filteredMessages = visibleFilteredHistory.messages;
+  const activityGroups = useMemo(() => buildHistoryActivityGroups(detailSession?.messages || []), [detailSession?.messages]);
+  const activityVisibility = useMemo(() => resolveHistoryActivityVisibility(
+    visibleFilteredHistory.messages, activityGroups, expandedActivityIds, detailSearchActive,
+  ), [visibleFilteredHistory.messages, activityGroups, expandedActivityIds, detailSearchActive]);
+  const filteredMessages = activityVisibility.messages;
   const showNoMatch = detailSearchActive && filteredMessages.length === 0;
   const detailScrollAreaRef = useRef<HTMLDivElement | null>(null);
   const historyVirtualListRef = useRef<VirtualizedListHandle | null>(null);
@@ -19684,11 +19715,12 @@ function HistoryDetail({ sessions, selectedHistoryId, historyDetailRefreshNonce,
   const historyScrollToTopTitle = t("common:scrollToTopWithShortcut") as string;
   const historyScrollToBottomTitle = t("common:scrollToBottomWithShortcut") as string;
   const detailRenderSession = detailSession || selectedSession;
-  const filteredMessageTextSize = useMemo(() => filteredMessages.reduce((total, view) => (
+  // 用展开前的候选规模决定是否虚拟化，避免展开执行过程时切换列表导致滚动位置跳变。
+  const filteredMessageTextSize = useMemo(() => visibleFilteredHistory.messages.reduce((total, view) => (
     total + view.message.content.reduce((messageTotal, item) => messageTotal + String(item?.text ?? "").length, 0)
-  ), 0), [filteredMessages]);
+  ), 0), [visibleFilteredHistory.messages]);
   const useVirtualizedHistory = shouldUseVirtualizedHistoryDetail({
-    messageCount: filteredMessages.length,
+    messageCount: visibleFilteredHistory.messages.length,
     totalTextSize: filteredMessageTextSize,
     searchActive: detailSearchActive,
     domHighlightEnabled,
@@ -20250,6 +20282,28 @@ function HistoryDetail({ sessions, selectedHistoryId, historyDetailRefreshNonce,
     activateUserInputIndex(nextIndex);
   }, [activateUserInputIndex, userInputMessageKeys.length]);
 
+  const captureHistoryActivityAnchor = useHistoryActivityScrollAnchor({
+    messages: filteredMessages,
+    scrollContainerRef: detailScrollAreaRef,
+    virtualListRef: historyVirtualListRef,
+    virtualized: useVirtualizedHistory,
+    viewportKey: scrollStateKey,
+  });
+  /** 保留折叠入口的视口位置，并让详情层保存展开选择以跨越虚拟行卸载。 */
+  const toggleHistoryActivity = useCallback((id: string, trigger: HTMLButtonElement) => {
+    const group = activityGroups.find((candidate) => candidate.id === id);
+    if (!group) return;
+    cancelHistoryDetailBottomScroll();
+    cancelHistoryDetailScrollRestore();
+    captureHistoryActivityAnchor(group, trigger);
+    setExpandedActivityIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, [activityGroups, cancelHistoryDetailBottomScroll, cancelHistoryDetailScrollRestore, captureHistoryActivityAnchor]);
+
   const activeDetailMessageKey = activeUserInputIndex !== null
     ? activeUserInputMessageKey || undefined
     : (detailSearchActive ? activeMatch?.messageKey : undefined);
@@ -20259,7 +20313,10 @@ function HistoryDetail({ sessions, selectedHistoryId, historyDetailRefreshNonce,
     projectWinPath,
     onOpenGit,
     inlineImageState,
-  }), [activeDetailMessageKey, registerMessageRef, projectWinPath, onOpenGit, inlineImageState]);
+    activityDisclosures: activityVisibility.disclosures,
+    onToggleActivity: toggleHistoryActivity,
+    searchActive: detailSearchActive,
+  }), [activeDetailMessageKey, registerMessageRef, projectWinPath, onOpenGit, inlineImageState, activityVisibility.disclosures, toggleHistoryActivity, detailSearchActive]);
 
   /**
    * 将历史详情滚动区滚动到顶部。
@@ -20880,7 +20937,7 @@ function HistoryDetail({ sessions, selectedHistoryId, historyDetailRefreshNonce,
                         </div>
                       </div>
                       <span className="text-[0.68rem] font-apple-regular text-[var(--cf-text-primary)] truncate leading-tight">
-                        {k === "system_context" ? t('history:typeSystemContext') : k === "context_summary" ? t('history:typeContextSummary') : k}
+                        {k === "system_context" ? t('history:typeSystemContext') : k === "context_summary" ? t('history:typeContextSummary') : k === "context_compaction" ? t("history:contextCompaction") : k}
                       </span>
                     </label>
                   ))
@@ -20930,7 +20987,7 @@ function HistoryDetail({ sessions, selectedHistoryId, historyDetailRefreshNonce,
                         estimateItemHeight={HISTORY_DETAIL_VIRTUAL_ESTIMATED_HEIGHT}
                         getEstimatedItemHeight={estimateHistoryMessageHeight}
                         overscan={HISTORY_DETAIL_VIRTUAL_OVERSCAN}
-                        getItemKey={(view) => view.messageKey}
+                        getItemKey={getHistoryMessageViewKey}
                         renderItem={(view) => <HistoryMessageCard view={view} options={detailRenderOptions} />}
                       />
                     </div>

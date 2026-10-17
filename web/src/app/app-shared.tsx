@@ -492,7 +492,14 @@ type MessageContent = {
   diffSource?: 'apply_patch' | 'file_change' | 'turn_diff';
   patchable?: boolean;
 };
-type HistoryMessage = { role: string; content: MessageContent[] };
+type HistoryMessage = {
+  role: string;
+  content: MessageContent[];
+  turnId?: string;
+  phase?: string;
+  timestamp?: string;
+  durationMs?: number;
+};
 type HistorySession = {
   providerId: "codex" | "claude" | "gemini" | "antigravity" | "grok";
   id: string;

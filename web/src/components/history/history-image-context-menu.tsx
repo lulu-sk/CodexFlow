@@ -5,6 +5,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Copy as CopyIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { normalizeHistoryImageLocalPath } from "../../../../electron/agentSessions/shared/historyImagePath";
 
 export type HistoryImageContextMenuPayload = {
   src?: string;
@@ -55,7 +56,7 @@ async function copyHistoryImageToClipboard(args: HistoryImageContextMenuPayload)
   const hostImages = window.host?.images;
   if (!hostImages?.copyToClipboard) return;
   await hostImages.copyToClipboard({
-    localPath: String(args.localPath || "").trim(),
+    localPath: normalizeHistoryImageLocalPath(args.localPath),
     src: String(args.src || "").trim(),
     fallbackSrc: String(args.fallbackSrc || "").trim(),
   });
@@ -65,7 +66,7 @@ async function copyHistoryImageToClipboard(args: HistoryImageContextMenuPayload)
  * 中文说明：复制历史图片的本地路径文本，便于继续排查或复用原文件。
  */
 async function copyHistoryImagePathToClipboard(localPath?: string): Promise<void> {
-  const normalizedPath = String(localPath || "").trim();
+  const normalizedPath = normalizeHistoryImageLocalPath(localPath);
   if (!normalizedPath) return;
 
   try {
@@ -88,7 +89,7 @@ export function useHistoryImageContextMenu(payload: HistoryImageContextMenuPaylo
   const { t } = useTranslation(["history"]);
   const primarySrc = String(payload.src || "").trim();
   const fallbackSrc = String(payload.fallbackSrc || "").trim();
-  const localPath = String(payload.localPath || "").trim();
+  const localPath = normalizeHistoryImageLocalPath(payload.localPath);
   const [menuState, setMenuState] = useState<HistoryImageContextMenuState>({ show: false, x: 0, y: 0 });
   const menuRef = useRef<HTMLDivElement | null>(null);
 

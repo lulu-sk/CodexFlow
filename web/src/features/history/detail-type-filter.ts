@@ -7,3 +7,12 @@ export function resolveHistoryDetailTypeFilter(
 ): Record<string, boolean> {
   return Object.keys(current).length > 0 ? current : fallback;
 }
+
+/** 默认展示主对话与改动，压缩摘要等辅助类型需用户手动勾选。 */
+export function isHistoryDetailTypeVisibleByDefault(key: string): boolean {
+  return key === "input_text"
+    || key === "output_text"
+    || key === "image"
+    || key === "subagent_notification"
+    || key === "turn_diff";
+}

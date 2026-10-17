@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import React, { act } from "react";
+import { createPortal } from "react-dom";
 import { afterEach, describe, expect, it } from "vitest";
 import { createRoot, type Root } from "react-dom/client";
 import { Dialog, DialogContent } from "./dialog";
@@ -131,6 +132,34 @@ describe("Dialog（全局 Enter 自动确认）", () => {
     });
 
     expect(confirmed).toBe(1);
+  });
+
+  it("弹窗外的文件菜单拥有 Enter 和 Escape，不触发弹窗确认或取消", async () => {
+    let confirmed = 0;
+    let cancelled = 0;
+    restoreRaf = installSyncRequestAnimationFrame();
+    const mounted = createMountedRoot();
+    cleanup = mounted.unmount;
+    await act(async () => {
+      mounted.root.render(
+        <Dialog open={true}>
+          <DialogContent>
+            <button data-cf-dialog-primary="true" onClick={() => { confirmed += 1; }}>确认</button>
+            <button data-cf-dialog-cancel="true" onClick={() => { cancelled += 1; }}>取消</button>
+            {createPortal(<div role="menu"><button role="menuitem" data-testid="file-menu-item">查看变更</button></div>, document.body)}
+          </DialogContent>
+        </Dialog>,
+      );
+    });
+    const item = getByTestId<HTMLButtonElement>("file-menu-item");
+    item.focus();
+    for (const key of ["Enter", "Escape"]) {
+      const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+      await act(async () => { item.dispatchEvent(event); });
+      expect(event.defaultPrevented).toBe(false);
+    }
+    expect(confirmed).toBe(0);
+    expect(cancelled).toBe(0);
   });
 
   it("弹窗打开时：Enter 应优先触发主按钮（背景 textarea 聚焦）", async () => {

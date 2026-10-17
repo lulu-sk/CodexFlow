@@ -100,6 +100,8 @@ function normalizeDiffPath(rawPath: string): string {
  * 从 diff --git 头中提取目标文件路径，兼容常见的空格文件名。
  */
 function resolveDiffGitTargetPath(line: string): string {
+  const quotedTarget = /\s("b\/(?:\\.|[^"\\])*")\s*$/.exec(line);
+  if (quotedTarget) return normalizeDiffPath(quotedTarget[1]);
   const markerIndex = line.lastIndexOf(" b/");
   if (markerIndex < 0) return "";
   return normalizeDiffPath(line.slice(markerIndex + 1));

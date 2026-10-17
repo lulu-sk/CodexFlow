@@ -107,12 +107,13 @@ afterEach(() => {
 describe("useHistoryImageContextMenu", () => {
   it("右键缩略图后应显示复制图片菜单并调用宿主剪贴板接口", async () => {
     const copyToClipboard = vi.fn().mockResolvedValue({ ok: true });
+    const copyText = vi.fn().mockResolvedValue({ ok: true });
     (window as any).host = {
       images: {
         copyToClipboard,
       },
       utils: {
-        copyText: vi.fn().mockResolvedValue({ ok: true }),
+        copyText,
       },
     };
 
@@ -122,7 +123,7 @@ describe("useHistoryImageContextMenu", () => {
         mounted.root.render(
           <HistoryImageContextMenuHarness
             payload={{
-              localPath: "C:\\repo\\image.png",
+              localPath: "C:\\\\repo\\\\image.png",
               src: "file:///C:/repo/image.png",
               fallbackSrc: "data:image/png;base64,AAAA",
             }}
@@ -148,6 +149,11 @@ describe("useHistoryImageContextMenu", () => {
         fallbackSrc: "data:image/png;base64,AAAA",
       });
       expect(findButtonByText("history:copyImage")).toBeNull();
+      await dispatchContextMenu(thumbImage);
+      const copyPathButton = findButtonByText("history:copyPath");
+      if (!copyPathButton) throw new Error("missing copy path button");
+      await dispatchClick(copyPathButton);
+      expect(copyText).toHaveBeenCalledWith("C:\\repo\\image.png");
     } finally {
       mounted.unmount();
     }

@@ -6,8 +6,10 @@ import type { HistoryMessage, MessageContent } from "@/app/app-shared";
 import { useHistoryImageContextMenu } from "@/components/history/history-image-context-menu";
 import InteractiveImagePreview from "@/components/ui/interactive-image-preview";
 import { HistoryMarkdown } from "@/features/history/renderers/history-markdown";
+import { normalizeHistoryImageContent, normalizeHistoryImageLocalPath } from "../../../../electron/agentSessions/shared/historyImagePath";
 
-const IMAGE_PATH_PATTERN = /@?((?:[A-Za-z]:[\\/]|\/mnt\/[A-Za-z]\/|\/(?:home|root|Users)\/|\\\\[^\\\/\r\n]+\\[^\\\/\r\n]+\\)[^\r\n"'`]*?\.(?:png|jpe?g|webp|gif|bmp|svg))/gi;
+// UNC 只从文本边界或参数分隔符后开始，避免从转义盘符路径中间误取网络路径。
+const IMAGE_PATH_PATTERN = /@?((?:[A-Za-z]:[\\/]|\/mnt\/[A-Za-z]\/|\/(?:home|root|Users)\/|(?<![^\s"'`=([{,;@：，；（【])\\{2,}[^\\\/\s"'`:<>|?*]+\\+[^\\\/\r\n"'`:<>|?*]+\\+)[^\r\n"'`]*?\.(?:png|jpe?g|webp|gif|bmp|svg))/gi;
 const IMAGE_OPEN_TAG_PATTERN = /<image\s+name=\[([^\]]+)\]>/gi;
 const IMAGE_CLOSE_TAG_PATTERN = /<\/image>/gi;
 const IMAGE_PLACEHOLDER_PATTERN = /\[(image\s+\d+[^\]]*)\]/gi;
@@ -769,7 +771,7 @@ function pushHistoryInlineImagePathTokens(
     out.push({
       kind: "path",
       rawText: captured,
-      displayText: captured,
+      displayText: normalizedPath,
       start,
       end,
       path: normalizedPath,
@@ -938,16 +940,18 @@ function doesHistoryInlineImageMatchToken(
 /**
  * 中文说明：渲染单个“文本 token + 小图”行内片段。
  */
-function HistoryInlineImageToken({ displayText, image }: { displayText: string; image: MessageContent }) {
+function HistoryInlineImageToken({ displayText, image: rawImage }: { displayText: string; image: MessageContent }) {
+  const image = normalizeHistoryImageContent(rawImage);
   const primarySrc = String(image?.src || "").trim();
   const fallbackSrc = String(image?.fallbackSrc || "").trim();
+  const localPath = normalizeHistoryImageLocalPath(image.localPath);
   const { openContextMenu: openImageContextMenu, contextMenuNode } = useHistoryImageContextMenu({
     src: primarySrc,
     fallbackSrc,
-    localPath: image.localPath,
+    localPath,
   });
   const dialogMetaLines = [
-    image.localPath ? `路径: ${image.localPath}` : "",
+    localPath ? `路径: ${localPath}` : "",
     image.mimeType ? `类型: ${image.mimeType}` : "",
     fallbackSrc ? "回退: 会话内图片数据" : "",
   ].filter((line) => String(line || "").trim().length > 0);
@@ -958,13 +962,13 @@ function HistoryInlineImageToken({ displayText, image }: { displayText: string; 
       <InteractiveImagePreview
         src={primarySrc}
         fallbackSrc={fallbackSrc}
-        alt={image.localPath || displayText || "history image"}
-        dialogTitle={image.localPath || displayText || "图片"}
+        alt={localPath || displayText || "history image"}
+        dialogTitle={localPath || displayText || "图片"}
         dialogDescription={image.mimeType || undefined}
         dialogMeta={dialogMetaLines.length > 0 ? (
           <div className="space-y-1">
             {dialogMetaLines.map((line, index) => (
-              <div key={`${image.localPath || displayText}-dialog-meta-${index}`} className="break-all whitespace-pre-wrap">{line}</div>
+              <div key={`${localPath || displayText}-dialog-meta-${index}`} className="break-all whitespace-pre-wrap">{line}</div>
             ))}
           </div>
         ) : undefined}
@@ -1004,7 +1008,7 @@ function normalizeHistoryImagePathCandidate(value?: string): string {
   raw = raw.replace(/^`+|`+$/g, "").trim();
   raw = raw.replace(/^"+|"+$/g, "").trim();
   raw = raw.replace(/^'+|'+$/g, "").trim();
-  return raw;
+  return normalizeHistoryImageLocalPath(raw);
 }
 
 /**
@@ -1034,6 +1038,7 @@ export function toHistoryInlineImagePreviewSrc(value?: string): string {
     return `file:///${encodeHistoryInlineImageFileUrlPath(`${drive}:/${rest}`)}`;
   }
 
+  if (raw.startsWith("\\\\")) return `file:${encodeHistoryInlineImageFileUrlPath(raw.replace(/\\/g, "/"))}`;
   if (raw.startsWith("//")) return `file:${encodeHistoryInlineImageFileUrlPath(raw)}`;
   if (raw.startsWith("/")) return `file://${encodeHistoryInlineImageFileUrlPath(raw)}`;
   return "";
@@ -1111,9 +1116,10 @@ function buildHistoryInlineImageContentFromPath(value?: string): MessageContent 
  * - 文本里的真实路径优先作为 `localPath` 展示，保证详情信息稳定。
  */
 export function mergeHistoryInlineImageWithPathFallback(
-  image: MessageContent,
+  rawImage: MessageContent,
   pathValue?: string,
 ): MessageContent {
+  const image = normalizeHistoryImageContent(rawImage);
   const pathImage = buildHistoryInlineImageContentFromPath(pathValue);
   if (!pathImage) return image;
 
@@ -1124,14 +1130,14 @@ export function mergeHistoryInlineImageWithPathFallback(
     String(pathImage.fallbackSrc || "").trim(),
   ].filter((candidate, index, list) => candidate.length > 0 && candidate !== primarySrc && list.indexOf(candidate) === index);
 
-  return {
+  return normalizeHistoryImageContent({
     ...pathImage,
     ...image,
     src: primarySrc,
     fallbackSrc: fallbackCandidates[0] || undefined,
     localPath: pathImage.localPath || image.localPath,
     mimeType: image.mimeType || pathImage.mimeType,
-  };
+  });
 }
 
 /**

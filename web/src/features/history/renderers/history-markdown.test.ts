@@ -4,8 +4,10 @@
 import { describe, expect, it } from "vitest";
 import {
   formatHistoryLocalPathPositionSuffix,
+  readHistoryMarkdownCodeBlock,
   resolveHistoryLocalPathLink,
   shouldAppendHistoryLocalPathPositionSuffix,
+  stripHistoryLocalPathPositionLabel,
   transformHistoryMarkdownUrl,
 } from "./history-markdown";
 
@@ -120,5 +122,52 @@ describe("shouldAppendHistoryLocalPathPositionSuffix", () => {
 
   it("链接文本已包含相同行号（无列号）时，不应因链接含列号而重复追加", () => {
     expect(shouldAppendHistoryLocalPathPositionSuffix("accountStorage.ts:205", { line: 205, column: 3 })).toBe(false);
+  });
+});
+
+describe("stripHistoryLocalPathPositionLabel", () => {
+  it("只去掉当前链接的行列后缀，保留可读文件名", () => {
+    expect(stripHistoryLocalPathPositionLabel("main.ts:42:3", { line: 42 })).toBe("main.ts");
+    expect(stripHistoryLocalPathPositionLabel("创建流程#L42C3", { line: 42 })).toBe("创建流程");
+    expect(stripHistoryLocalPathPositionLabel("main.ts#42", { line: 42 })).toBe("main.ts");
+    expect(stripHistoryLocalPathPositionLabel("main.ts:420", { line: 42 })).toBe("main.ts:420");
+    expect(stripHistoryLocalPathPositionLabel("问题 42", { line: 42 })).toBe("问题 42");
+  });
+});
+
+describe("readHistoryMarkdownCodeBlock", () => {
+  it("从普通 fenced（围栏）代码读取 bat 语言，保留缩进和命令内容", () => {
+    const text = '  set "EXAMPLE_MIRROR=https://example.com/releases/" && npm ci  ';
+    expect(readHistoryMarkdownCodeBlock({
+      type: "element",
+      tagName: "pre",
+      children: [{
+        type: "element",
+        tagName: "code",
+        properties: { className: ["language-bat"] },
+        children: [{ type: "text", value: `${text}\n` }],
+      }],
+    })).toEqual({ language: "bat", text });
+  });
+
+  it("从语法高亮的逐行节点恢复换行和空行，复制时不连成一行", () => {
+    expect(readHistoryMarkdownCodeBlock({
+      type: "element",
+      tagName: "pre",
+      properties: { "data-language": "typescript" },
+      children: [{
+        type: "element",
+        tagName: "code",
+        children: [
+          { type: "element", tagName: "span", properties: { "data-line": "" }, children: [
+            { type: "element", tagName: "span", children: [{ type: "text", value: "  const " }] },
+            { type: "text", value: "value = 1;" },
+          ] },
+          { type: "text", value: "\n" },
+          { type: "element", tagName: "span", properties: { "data-line": "" }, children: [] },
+          { type: "element", tagName: "span", properties: { "data-line": "" }, children: [{ type: "text", value: "console.log(value);" }] },
+        ],
+      }],
+    })).toEqual({ language: "typescript", text: "  const value = 1;\n\nconsole.log(value);" });
   });
 });

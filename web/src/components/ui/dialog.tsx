@@ -108,6 +108,8 @@ function findDialogCancelButton(root: HTMLElement): HTMLButtonElement | null {
  */
 function handleGlobalDialogKeydown(event: KeyboardEvent) {
   if (!event || event.defaultPrevented) return;
+  // 右键菜单可能通过 Portal 挂在弹窗外，菜单内按键应由菜单处理。
+  if (event.target instanceof Element && event.target.closest('[role="menu"]')) return;
 
   try {
     const list = Array.from(document.querySelectorAll<HTMLElement>(DIALOG_CONTENT_SELECTOR));

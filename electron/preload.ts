@@ -664,7 +664,7 @@ contextBridge.exposeInMainWorld('host', {
     read: async (args: { filePath: string; providerId?: "codex" | "claude" | "gemini" | "antigravity" | "grok"; forceParse?: boolean }) => {
       return await ipcRenderer.invoke('history.read', args);
     },
-    revertTurnDiff: async (args: { projectWinPath: string; diffText: string; operation?: 'undo' | 'reapply' }) => {
+    revertTurnDiff: async (args: { projectWinPath: string; diffText: string; cwd?: string; operation?: 'undo' | 'reapply' }) => {
       return await ipcRenderer.invoke('history.revertTurnDiff', args);
     },
     findEmptySessions: async () => {

@@ -58,6 +58,7 @@ import i18n from "./i18n";
 import wsl from "./wsl";
 import fileIndex from "./fileIndex";
 import images from "./images";
+import { historyImageTransport, isHistoryImageReference } from "./history-image-transport";
 import { normalizePathOpenCandidate } from "./pathOpen";
 import { installInputContextMenu } from "./contextMenu";
 import { installRendererResponseSecurityHeaders } from "./security/rendererHeaders";
@@ -5026,7 +5027,7 @@ ipcMain.handle('history.read', async (_e, args: { filePath: string; providerId?:
     const cached = getHistoryReadCachedDetails(lookupPaths);
     if (cached) {
       cacheHistoryReadDetails(lookupPaths, cached);
-      return cached;
+      return historyImageTransport.prepareDetails(cached);
     }
   }
 
@@ -5036,37 +5037,40 @@ ipcMain.handle('history.read', async (_e, args: { filePath: string; providerId?:
     const stat = await fsp.stat(filePath);
     const parsed = await parseClaudeSessionFile(filePath, stat, { summaryOnly: false, maxLines: 50_000 });
     cacheHistoryReadDetails(lookupPaths, parsed as any);
-    return parsed as any;
+    return historyImageTransport.prepareDetails(parsed as any);
   }
   if (providerId === "gemini") {
     const stat = await fsp.stat(filePath);
     const parsed = await parseGeminiSessionFile(filePath, stat, { summaryOnly: false, maxBytes: 64 * 1024 * 1024 });
     cacheHistoryReadDetails(lookupPaths, parsed as any);
-    return parsed as any;
+    return historyImageTransport.prepareDetails(parsed as any);
   }
   if (providerId === "antigravity") {
     const stat = await fsp.stat(filePath);
     const parsed = await parseAntigravitySessionFile(filePath, stat, { summaryOnly: false });
     cacheHistoryReadDetails(lookupPaths, parsed as any);
-    return parsed as any;
+    return historyImageTransport.prepareDetails(parsed as any);
   }
   if (providerId === "grok") {
     const stat = await fsp.stat(filePath);
     const parsed = await parseGrokSessionFile(filePath, stat, { summaryOnly: false, maxBytes: 64 * 1024 * 1024 });
     cacheHistoryReadDetails(lookupPaths, parsed as any);
-    return parsed as any;
+    return historyImageTransport.prepareDetails(parsed as any);
   }
 
   const parsed = await history.readHistoryFile(filePath, { maxLines: 0 });
   const withMeta = { ...(parsed as any), providerId: "codex", filePath: requestedFilePath || filePath };
   cacheHistoryReadDetails(lookupPaths, withMeta as any);
-  return withMeta;
+  return historyImageTransport.prepareDetails(withMeta);
 });
 
-ipcMain.handle('history.revertTurnDiff', async (_e, args: { projectWinPath?: string; diffText?: string; operation?: 'undo' | 'reapply' }) => {
+ipcMain.handle('history.revertTurnDiff', async (_e, args: { projectWinPath?: string; diffText?: string; cwd?: string; operation?: 'undo' | 'reapply' }) => {
+  if (args?.cwd !== undefined && typeof args.cwd !== 'string')
+    return { ok: false, code: 'invalid_request', error: '历史工作目录类型无效。' };
   return await revertHistoryTurnDiff({
     projectWinPath: String(args?.projectWinPath || ''),
     diffText: String(args?.diffText || ''),
+    cwd: typeof args?.cwd === 'string' ? args.cwd : undefined,
     operation: args?.operation === 'reapply' ? 'reapply' : 'undo',
   });
 });
@@ -5984,7 +5988,11 @@ ipcMain.handle('images.copyToClipboard', async (_e, {
   fallbackSrc?: string;
 }) => {
   try {
-    return await images.copyImageToClipboard({ localPath, src, fallbackSrc });
+    return await images.copyImageToClipboard({
+      localPath,
+      src: historyImageTransport.resolveSource(src),
+      fallbackSrc: historyImageTransport.resolveSource(fallbackSrc),
+    });
   } catch (e: any) {
     return { ok: false, error: String(e) } as any;
   }
@@ -5992,7 +6000,10 @@ ipcMain.handle('images.copyToClipboard', async (_e, {
 
 ipcMain.handle('images.materializePreviewURL', async (_e, { src }: { src?: string }) => {
   try {
-    return await images.materializeImagePreviewURL(src);
+    const resolved = historyImageTransport.resolveSource(src);
+    if (isHistoryImageReference(src) && !resolved)
+      return { ok: false, error: "历史图片引用已过期，请重新打开会话。" };
+    return await images.materializeImagePreviewURL(resolved);
   } catch (e: any) {
     return { ok: false, error: String(e) } as any;
   }
