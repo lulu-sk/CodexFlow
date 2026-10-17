@@ -10,6 +10,7 @@ import { randomUUID } from "node:crypto";
 import { perfLogger } from "../log";
 import { getDebugConfig } from "../debugConfig";
 import { winToWsl } from "../wsl";
+import { resolveCodexAuthJsonPathAsync } from "./authPath";
 
 type PendingRequest = {
   resolve: (value: unknown) => void;
@@ -17,6 +18,7 @@ type PendingRequest = {
 };
 
 export type CodexAccountInfo = {
+  authMode?: string | null;
   accountId: string | null;
   userId: string | null;
   email: string | null;
@@ -27,6 +29,7 @@ export type CodexRateLimitWindow = {
   usedPercent: number | null;
   limitWindowSeconds: number | null;  // 原始字段（秒），UI 层转换为分钟/小时/天
   resetAfterSeconds: number | null;   // 原始字段，统一命名
+  resetsAt?: number | null;           // 绝对重置时间（秒），避免缓存展示随刷新漂移
 };
 
 export type CodexRateLimitSnapshot = {
@@ -37,6 +40,7 @@ export type CodexRateLimitSnapshot = {
 const INITIALIZE_ID = "cf-init";
 const ORIGINATOR = "codex_vscode";
 const CLIENT_INFO = { name: "CodexFlow", title: "CodexFlow", version: "0.0.0" };
+const REQUEST_TIMEOUT_MS = 20_000;
 
 export type CodexBridgeOptions = {
   mode?: "native" | "wsl";
@@ -44,9 +48,11 @@ export type CodexBridgeOptions = {
 };
 
 type AuthPayload = {
+  email?: string;
   "https://api.openai.com/auth"?: {
     chatgpt_account_id?: string;
     chatgpt_user_id?: string;
+    user_id?: string;
     chatgpt_plan_type?: string;
   };
   "https://api.openai.com/profile"?: { email?: string };
@@ -105,9 +111,8 @@ function findCodexViaWhereExe(mode: "native" | "wsl"): string | null {
 
       const lower = codexPath.toLowerCase();
       const isExe = lower.endsWith(".exe");
-      const isCmd = lower.endsWith(".cmd") || lower.endsWith(".bat");
-      const isPs1 = lower.endsWith(".ps1");
-      const isSh = !isExe && !isCmd && !isPs1; // 其他情况按 shell 脚本处理
+
+      if (mode === "native" && isExe) return codexPath;
 
       // 如果 where.exe 直接指向 vendor 下的二进制，则直接使用
       if (/node_modules[\\/]@openai[\\/]codex[\\/]vendor[\\/]/i.test(lower)) {
@@ -141,10 +146,14 @@ function findCodexViaWhereExe(mode: "native" | "wsl"): string | null {
       // 脚本所在目录即为 npm 全局 bin 目录（%~dp0 / $basedir）
       const binDir = path.dirname(codexPath);
       const vendorDir = path.join(binDir, "node_modules", "@openai", "codex", "vendor");
-      if (!fs.existsSync(vendorDir)) continue;
-
-      // 在 vendor 目录内自适应选择子目录与可执行文件
-      const selected = selectVendorBinary(vendorDir, mode);
+      // 新版 npm 包将二进制拆到了可选的平台包，旧版仍放在 vendor 内。
+      const packageName = mode === "wsl"
+        ? (process.arch === "arm64" ? "codex-linux-arm64" : "codex-linux-x64")
+        : (process.arch === "arm64" ? "codex-win32-arm64" : "codex-win32-x64");
+      const platformVendor = path.join(binDir, "node_modules", "@openai", packageName, "vendor");
+      const nestedVendor = path.join(binDir, "node_modules", "@openai", "codex", "node_modules", "@openai", packageName, "vendor");
+      const selected = [vendorDir, platformVendor, nestedVendor]
+        .map((dir) => selectVendorBinary(dir, mode)).find(Boolean);
       if (selected) {
         perfLogger.log(`[codex] Found via where.exe: ${selected}`);
         return selected;
@@ -262,6 +271,16 @@ function resolveBinaryPath(mode: "native" | "wsl"): string {
     return hint;
   }
 
+  // macOS/Linux 的普通全局安装通过 PATH 定位，不依赖编辑器插件。
+  if (process.platform !== "win32") {
+    for (const dir of (process.env.PATH || "").split(path.delimiter)) {
+      const candidate = path.resolve(dir || ".", "codex");
+      try {
+        if (fs.statSync(candidate).isFile() && pathExistsExecutable(candidate)) return candidate;
+      } catch {}
+    }
+  }
+
   // 2. 尝试通过 where.exe 查找 npm 全局安装的版本（优先）
   const npmGlobal = findCodexViaWhereExe(mode);
   if (npmGlobal) return npmGlobal;
@@ -302,8 +321,9 @@ export class CodexBridge {
   private initPromise: Promise<void> | null = null;
   private disposed = false;
   private userAgent: string | null = null;
-  private lastToken: string | null = null;
-  private tokenFetchedAt = 0;
+  private requestTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private authPathPromise: Promise<string | null> | null = null;
+  private authFingerprint: string | undefined;
   private readonly mode: "native" | "wsl";
   private readonly wslDistro?: string;
 
@@ -317,23 +337,51 @@ export class CodexBridge {
    * - `forceRefresh=true` 时强制刷新 token（用于“记录账号”等需要及时感知切换的场景）。
    */
   async getAccountInfo(forceRefresh: boolean = false): Promise<CodexAccountInfo> {
-    const token = await this.ensureToken(!!forceRefresh);
-    return this.decodeAccount(token);
-  }
-
-  async getRateLimit(): Promise<CodexRateLimitSnapshot> {
-    const payload = await this.requestJson("/wham/usage");
-    const rate = payload?.rate_limit ?? null;
+    await this.ensureProcess();
+    let response: any;
+    try {
+      response = await this.sendRequest("account", "account/read", { refreshToken: forceRefresh });
+    } catch (error) {
+      if (!this.isUnsupportedMethod(error)) throw error;
+      return this.decodeAccount(await this.ensureToken(forceRefresh));
+    }
+    const account = response?.account;
+    if (!account) return { authMode: null, accountId: null, userId: null, email: null, plan: null };
+    if (account.type !== "chatgpt")
+      return { authMode: account.type, accountId: null, userId: null, email: null, plan: null };
+    // 账号接口负责登录状态和展示信息；旧接口仅补充备份去重需要的身份 ID。
+    const decoded = this.decodeAccount(await this.ensureToken(false, false).catch(() => null));
     return {
-      primary: this.mapWindow(rate?.primary_window),
-      secondary: this.mapWindow(rate?.secondary_window),
+      ...decoded,
+      authMode: "chatgpt",
+      email: account.email || decoded.email,
+      plan: account.planType || decoded.plan,
     };
   }
 
+  /** 使用官方额度接口，并仅在旧 CLI 不支持时回退到历史接口。 */
+  async getRateLimit(): Promise<CodexRateLimitSnapshot> {
+    await this.ensureProcess();
+    try {
+      const payload = await this.sendRequest("usage", "account/rateLimits/read", {});
+      const rate = payload?.rateLimitsByLimitId?.codex ?? payload?.rateLimits;
+      if (!rate || typeof rate !== "object") throw new Error("Codex rate limits unavailable");
+      return { primary: this.mapWindow(rate.primary, true), secondary: this.mapWindow(rate.secondary, true) };
+    } catch (error) {
+      if (!this.isUnsupportedMethod(error)) throw error;
+      const payload = await this.requestJson("/wham/usage");
+      const rate = payload?.rate_limit;
+      if (!rate || typeof rate !== "object") throw new Error("Codex rate limits unavailable");
+      return { primary: this.mapWindow(rate.primary_window), secondary: this.mapWindow(rate.secondary_window) };
+    }
+  }
+
+  /** 关闭后台查询进程，并结束所有待处理请求。 */
   async dispose(): Promise<void> {
     this.disposed = true;
     this.pending.forEach(({ reject }) => reject(new Error("CodexBridge disposed")));
     this.pending.clear();
+    this.clearRequestTimers();
     this.rl?.close();
     this.rl = null;
     if (this.proc && !this.proc.killed) {
@@ -345,17 +393,24 @@ export class CodexBridge {
     this.initPromise = null;
   }
 
-  private mapWindow(raw: any): CodexRateLimitWindow | null {
+  /** 统一新旧额度窗口的单位，并保留绝对重置时间。 */
+  private mapWindow(raw: any, modern = false): CodexRateLimitWindow | null {
     if (!raw || typeof raw !== "object") return null;
     // 保留原始字段，UI 层负责单位转换与展示
+    const used = modern ? raw.usedPercent : raw.used_percent;
+    const duration = modern ? raw.windowDurationMins : raw.limit_window_seconds;
+    const resetsAt = modern ? raw.resetsAt : raw.reset_at;
+    const resetAfter = Number.isFinite(resetsAt)
+      ? Math.max(0, resetsAt - Math.floor(Date.now() / 1000)) : raw.reset_after_seconds;
     return {
-      usedPercent: Number.isFinite(raw.used_percent) ? Number(raw.used_percent) : null,
-      limitWindowSeconds: Number.isFinite(raw.limit_window_seconds)
-        ? Number(raw.limit_window_seconds)
+      usedPercent: Number.isFinite(used) ? Number(used) : null,
+      limitWindowSeconds: Number.isFinite(duration)
+        ? Number(duration) * (modern ? 60 : 1)
         : null,
-      resetAfterSeconds: Number.isFinite(raw.reset_after_seconds)
-        ? Number(raw.reset_after_seconds)
+      resetAfterSeconds: Number.isFinite(resetAfter)
+        ? Number(resetAfter)
         : null,
+      resetsAt: Number.isFinite(resetsAt) ? Number(resetsAt) : null,
     };
   }
 
@@ -371,9 +426,9 @@ export class CodexBridge {
       const profile = decoded["https://api.openai.com/profile"] ?? {};
       return {
         accountId: auth.chatgpt_account_id ?? null,
-        userId: auth.chatgpt_user_id ?? null,
+        userId: auth.chatgpt_user_id ?? auth.user_id ?? null,
         plan: auth.chatgpt_plan_type ?? null,
-        email: profile.email ?? null,
+        email: profile.email ?? decoded.email ?? null,
       };
     } catch (err) {
       perfLogger.log(`[codex] decode token failed: ${String(err)}`);
@@ -394,7 +449,7 @@ export class CodexBridge {
         const currentToken = token;
         if (!currentToken) throw new Error("Not signed in to ChatGPT, unable to fetch rate limit");
         const headers = this.buildHeaders(currentToken);
-        const res = await fetch(url, { method: "GET", headers });
+        const res = await fetch(url, { method: "GET", headers, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
         if (res.status === 401 && attempt === 0) {
           token = await this.ensureToken(true);
           if (!token) throw new Error("Unable to refresh ChatGPT login status");
@@ -411,8 +466,7 @@ export class CodexBridge {
             err instanceof Error ? err.stack ?? err.message : String(err)
           }`,
         );
-        attempt += 1;
-        if (attempt >= maxRetry) break;
+        break;
       }
     }
     throw new Error(
@@ -442,13 +496,8 @@ export class CodexBridge {
     return headers;
   }
 
-  private async ensureToken(force: boolean): Promise<string | null> {
-    await this.ensureProcess();
-    const now = Date.now();
-    // 延长缓存到 1 小时，降低请求频率；401 时会强刷
-    if (!force && this.lastToken && now - this.tokenFetchedAt < 3_600_000) {
-      return this.lastToken;
-    }
+  private async ensureToken(force: boolean, checkProcess = true): Promise<string | null> {
+    if (checkProcess) await this.ensureProcess();
     try {
       const result = await this.sendRequest("auth", "getAuthStatus", {
         includeToken: true,
@@ -458,18 +507,16 @@ export class CodexBridge {
         result && typeof (result as any).authToken === "string"
           ? (result as any).authToken
           : null;
-      if (token) {
-        this.lastToken = token;
-        this.tokenFetchedAt = Date.now();
-      }
       return token;
     } catch (err) {
       perfLogger.log(`[codex] getAuthStatus failed: ${String(err)}`);
-      return null;
+      throw err;
     }
   }
 
   private async ensureProcess(): Promise<void> {
+    if (this.disposed) throw new Error("CodexBridge disposed");
+    await this.checkAuthFileChanged();
     if (this.disposed) throw new Error("CodexBridge disposed");
     if (this.initPromise) return this.initPromise;
     this.initPromise = this.startProcess().catch((err) => {
@@ -479,9 +526,35 @@ export class CodexBridge {
     return this.initPromise;
   }
 
+  /** 凭据文件变化后重启空闲查询进程，让外部登录、退出和账号切换及时生效。 */
+  private async checkAuthFileChanged(): Promise<void> {
+    this.authPathPromise ??= resolveCodexAuthJsonPathAsync({
+      key: this.mode, options: { mode: this.mode, wslDistro: this.wslDistro },
+    }).then((result) => result.ok ? result.authJsonPath : null);
+    const authPath = await this.authPathPromise;
+    if (!authPath) {
+      this.authPathPromise = null;
+      return;
+    }
+    const stat = await fs.promises.stat(authPath).catch(() => null);
+    const fingerprint = stat ? `${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}` : "missing";
+    if (this.authFingerprint === fingerprint) return;
+    // 已发出的请求先按原身份完成，下次空闲查询再重载，避免打断并发的账号/额度请求。
+    if (this.pending.size > 0) return;
+    if (this.authFingerprint !== undefined && this.proc) {
+      const previous = this.proc;
+      this.proc = null;
+      this.rl?.close();
+      this.rl = null;
+      this.initPromise = null;
+      previous.kill();
+    }
+    this.authFingerprint = fingerprint;
+  }
+
   private async startProcess(): Promise<void> {
-    const binary = resolveBinaryPath(this.mode);
-    if (!fs.existsSync(binary)) {
+    const binary = this.mode === "wsl" ? "" : resolveBinaryPath(this.mode);
+    if (this.mode !== "wsl" && !fs.existsSync(binary)) {
       throw new Error(`Codex CLI not found: ${binary}`);
     }
     if (this.mode === "native" && !pathExistsExecutable(binary)) {
@@ -490,10 +563,11 @@ export class CodexBridge {
     const binDir = path.dirname(binary);
     let child: ChildProcessWithoutNullStreams;
     if (this.mode === "wsl") {
-      child = this.spawnWslProcess(binary);
+      child = this.spawnWslProcess();
     } else {
       child = spawn(binary, ["app-server"], {
         stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
         env: {
           ...process.env,
           PATH: process.env.PATH
@@ -505,9 +579,18 @@ export class CodexBridge {
     }
     this.proc = child;
     this.proc.on("error", (err) => {
+      if (this.proc !== child) return;
       perfLogger.log(`[codex] process error: ${String(err)}`);
+      this.pending.forEach(({ reject }) => reject(err));
+      this.pending.clear();
+      this.clearRequestTimers();
+      this.proc = null;
+      this.rl?.close();
+      this.rl = null;
+      this.initPromise = null;
     });
     this.proc.on("exit", (code, signal) => {
+      if (this.proc !== child) return;
       perfLogger.log(`[codex] process exit code=${code} signal=${signal ?? ""}`);
       this.initPromise = null;
       this.proc = null;
@@ -516,6 +599,7 @@ export class CodexBridge {
       const error = createCliExitedError();
       this.pending.forEach(({ reject }) => reject(error));
       this.pending.clear();
+      this.clearRequestTimers();
     });
 
     this.rl = readline.createInterface({ input: this.proc.stdout });
@@ -525,17 +609,13 @@ export class CodexBridge {
       if (text) perfLogger.log(`[codex stderr] ${text}`);
     });
 
-    await new Promise<void>((resolve, reject) => {
-      this.pending.set(INITIALIZE_ID, {
-        resolve: () => resolve(),
-        reject,
-      });
-      this.writeMessage({
-        id: INITIALIZE_ID,
-        method: "initialize",
-        params: { clientInfo: CLIENT_INFO },
-      });
-    });
+    try {
+      await this.sendRequest("init", "initialize", { clientInfo: CLIENT_INFO }, INITIALIZE_ID);
+      this.writeMessage({ method: "initialized" });
+    } catch (error) {
+      child.kill();
+      throw error;
+    }
   }
 
   private handleLine(line: string) {
@@ -549,6 +629,7 @@ export class CodexBridge {
       return;
     }
     if (message.id === INITIALIZE_ID) {
+      this.clearRequestTimer(INITIALIZE_ID);
       this.userAgent = message?.result?.userAgent ?? null;
       const pending = this.pending.get(INITIALIZE_ID);
       if (pending) {
@@ -570,6 +651,7 @@ export class CodexBridge {
     if (typeof message.id === "string") {
       const pending = this.pending.get(message.id);
       if (pending) {
+        this.clearRequestTimer(message.id);
         this.pending.delete(message.id);
         if (message.error) {
           pending.reject(
@@ -583,30 +665,48 @@ export class CodexBridge {
           pending.resolve(message.result);
         }
       }
-      if (message.method === "codex/event/auth_status_change") {
-        this.tokenFetchedAt = 0;
-      }
       return;
-    }
-    if (message.method === "codex/event/auth_status_change") {
-      this.tokenFetchedAt = 0;
     }
   }
 
-  private sendRequest(namespace: string, method: string, params: any): Promise<any> {
+  /** 发送带超时的协议请求，防止后台进程失去响应时界面永久等待。 */
+  private sendRequest(namespace: string, method: string, params: any, requestId?: string): Promise<any> {
     if (!this.proc || !this.proc.stdin || this.proc.stdin.destroyed) {
       return Promise.reject(new Error("codex 子进程未就绪"));
     }
-    const id = `${namespace}:${randomUUID()}`;
+    const id = requestId ?? `${namespace}:${randomUUID()}`;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
+      this.requestTimers.set(id, setTimeout(() => {
+        this.pending.delete(id);
+        this.requestTimers.delete(id);
+        reject(new Error(`Codex request timed out: ${method}`));
+      }, REQUEST_TIMEOUT_MS));
       try {
         this.writeMessage({ id, method, params });
       } catch (err) {
         this.pending.delete(id);
+        this.clearRequestTimer(id);
         reject(err instanceof Error ? err : new Error(String(err)));
       }
     });
+  }
+
+  /** 仅将协议明确报告的方法缺失视为旧版兼容场景。 */
+  private isUnsupportedMethod(error: unknown): boolean {
+    return /-32601|unknown (?:variant|method)|method not found|unrecognized method/i.test(String(error));
+  }
+
+  /** 清理已完成请求的超时计时器。 */
+  private clearRequestTimer(id: string): void {
+    clearTimeout(this.requestTimers.get(id));
+    this.requestTimers.delete(id);
+  }
+
+  /** 清理进程关闭时剩余的超时计时器。 */
+  private clearRequestTimers(): void {
+    this.requestTimers.forEach((timer) => clearTimeout(timer));
+    this.requestTimers.clear();
   }
 
   private writeMessage(payload: Record<string, unknown>) {
@@ -617,16 +717,17 @@ export class CodexBridge {
     this.proc.stdin.write(serialized);
   }
 
-  private spawnWslProcess(binary: string): ChildProcessWithoutNullStreams {
+  private spawnWslProcess(): ChildProcessWithoutNullStreams {
     if (process.platform !== "win32") {
       throw new Error("WSL mode not supported on this platform");
     }
     const distroArg = this.wslDistro ? ["-d", this.wslDistro] : [];
-    const wslPath = winToWsl(binary);
-    if (!wslPath || !wslPath.startsWith("/")) {
+    const hint = process.env.CODEXFLOW_CODEX_BIN;
+    const wslPath = hint ? (hint.startsWith("/") ? hint : winToWsl(hint)) : null;
+    if (hint && (!wslPath || !wslPath.startsWith("/"))) {
       throw new Error("Unable to convert Codex CLI path for WSL usage");
     }
-    const escapedBin = shEscape(wslPath);
+    const escapedBin = wslPath ? shEscape(wslPath) : "codex";
     const exports: string[] = [
       `export CODEX_INTERNAL_ORIGINATOR_OVERRIDE=${shEscape(ORIGINATOR)}`,
     ];
@@ -635,12 +736,11 @@ export class CodexBridge {
       const value = process.env[name];
       if (value) exports.push(`export ${name}=${shEscape(value)}`);
     }
-    const binDir = path.posix.dirname(wslPath.replace(/\\/g, "/"));
+    const binDir = wslPath ? path.posix.dirname(wslPath.replace(/\\/g, "/")) : "";
     if (binDir && binDir !== "/") {
       exports.unshift(`export PATH="$PATH:${escapeForDoubleQuotes(binDir)}"`);
     }
     const script = [
-      `if [ ! -x ${escapedBin} ]; then chmod +x ${escapedBin} 2>/dev/null || true; fi`,
       ...exports,
       `exec ${escapedBin} app-server`,
     ].join("; ");

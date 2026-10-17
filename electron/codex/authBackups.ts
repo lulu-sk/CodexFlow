@@ -7,8 +7,8 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { CodexAccountInfo, CodexBridgeOptions } from "./bridge";
-import { getDistroCodexUNCAsync } from "../wsl";
+import type { CodexAccountInfo } from "./bridge";
+export { resolveCodexAuthJsonPathAsync } from "./authPath";
 
 export type CodexAccountStatusKey = "signed_in" | "signed_out";
 
@@ -44,7 +44,7 @@ export function resolveCodexAccountStatusKey(info: CodexAccountInfo | null | und
  * 生成“账号身份签名”：用于识别账号变化与备份去重。
  * 说明：
  * - 旧版本仅使用 accountId，部分环境下可能无法区分不同账号；
- * - 新版本优先使用 userId 作为身份（其次 accountId，再其次 email），确保可同时保留多个账号备份用于切换。
+ * - 同时保留用户与工作区身份，避免同一用户在多个工作区的备份互相覆盖。
  */
 export function resolveCodexAccountSignature(info: CodexAccountInfo | null | undefined): {
   status: CodexAccountStatusKey;
@@ -55,8 +55,8 @@ export function resolveCodexAccountSignature(info: CodexAccountInfo | null | und
   const accountId = status === "signed_in" ? String(info?.accountId || "").trim() || null : null;
   const userId = status === "signed_in" ? String(info?.userId || "").trim() || null : null;
   const email = status === "signed_in" ? String(info?.email || "").trim().toLowerCase() || null : null;
-  const identity = userId || accountId || email || "";
-  const signature = `v2|${status}|${identity}`;
+  const identity = [userId || email || "", accountId || ""].join("|");
+  const signature = `v3|${status}|${identity}`;
   return { status, accountId, signature };
 }
 
@@ -92,6 +92,48 @@ function getBackupDir(_runtimeKey: string): string {
  */
 function backupIdFromSignature(signature: string): string {
   return createHash("sha256").update(String(signature || ""), "utf8").digest("hex").slice(0, 16);
+}
+
+/** 校验文件中的实际身份，避免外部切换后将新凭据写入旧账号的备份。 */
+function assertAuthContentMatchesAccount(content: Buffer, expected: {
+  accountId: string | null;
+  userId?: string | null;
+  email?: string | null;
+}): void {
+  const raw = JSON.parse(content.toString("utf8").replace(/^\uFEFF/, ""));
+  if (!raw || typeof raw !== "object" || !raw.tokens
+    || (raw.auth_mode && !["chatgpt", "chatgptAuthTokens"].includes(raw.auth_mode))
+    || (!raw.auth_mode && raw.OPENAI_API_KEY))
+    throw new Error("认证文件不是可备份的 ChatGPT 登录凭据");
+
+  const claims: any[] = [];
+  for (const token of [raw.tokens.access_token, raw.tokens.id_token]) {
+    if (typeof token !== "string") continue;
+    try {
+      const parts = token.split(".");
+      if (parts.length === 3)
+        claims.push(JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")));
+    } catch {}
+  }
+  const authClaims = claims.map((claim) => claim?.["https://api.openai.com/auth"] ?? {});
+  const actual = {
+    accountId: raw.tokens.account_id || authClaims.find((claim) => claim.chatgpt_account_id)?.chatgpt_account_id || null,
+    userId: authClaims.map((claim) => claim.chatgpt_user_id || claim.user_id).find(Boolean) || null,
+    email: claims.map((claim) => claim?.email || claim?.["https://api.openai.com/profile"]?.email).find(Boolean) || null,
+  };
+  let matched = false;
+  for (const key of ["accountId", "userId", "email"] as const) {
+    const requested = String(expected[key] || "").trim();
+    if (!requested) continue;
+    const found = String(actual[key] || "").trim();
+    // 身份 ID 可严格比对；令牌未携带邮箱时以身份 ID 为准。
+    if (key === "email" && !found && matched) continue;
+    if ((key === "email" ? found.toLowerCase() : found) !== (key === "email" ? requested.toLowerCase() : requested))
+      throw new Error("认证文件的账号已变化，未写入备份或覆盖当前凭据，请刷新后重试");
+    matched = true;
+  }
+  if (!matched || typeof raw.tokens.access_token !== "string" || !raw.tokens.access_token.trim())
+    throw new Error("无法确认认证文件的账号身份，未写入备份或覆盖当前凭据");
 }
 
 /**
@@ -190,7 +232,7 @@ async function writeFileAtomic(targetPath: string, data: Buffer | string): Promi
 async function readJsonSafe(filePath: string): Promise<any | null> {
   try {
     const text = await fsp.readFile(filePath, "utf8");
-    return JSON.parse(text || "null");
+    return JSON.parse(text.replace(/^\uFEFF/, "") || "null");
   } catch {
     return null;
   }
@@ -249,27 +291,6 @@ function resolveBackupPaths(runtimeKey: string, id: string): { authPath: string;
 }
 
 /**
- * 解析当前运行环境对应的 `.codex/auth.json` 路径：
- * - native：使用当前系统用户目录 `~/.codex/auth.json`
- * - wsl：使用对应发行版 `$HOME/.codex` 的 UNC 路径
- */
-export async function resolveCodexAuthJsonPathAsync(runtime: { key: string; options: CodexBridgeOptions }): Promise<{ ok: true; authJsonPath: string } | { ok: false; error: string }> {
-  try {
-    const mode = runtime?.options?.mode ?? "native";
-    if (mode === "wsl" && os.platform() === "win32") {
-      const distro = String(runtime?.options?.wslDistro || "").trim();
-      if (!distro) return { ok: false, error: "missing wsl distro" };
-      const codexUNC = await getDistroCodexUNCAsync(distro);
-      if (!codexUNC) return { ok: false, error: "无法定位 WSL 的 $HOME/.codex" };
-      return { ok: true, authJsonPath: path.join(codexUNC, "auth.json") };
-    }
-    return { ok: true, authJsonPath: path.join(os.homedir(), ".codex", "auth.json") };
-  } catch (e: any) {
-    return { ok: false, error: String(e) };
-  }
-}
-
-/**
  * 枚举全局 auth.json 备份列表（按更新时间倒序）。
  */
 export async function listCodexAuthBackupsAsync(runtimeKey: string): Promise<CodexAuthBackupItem[]> {
@@ -321,9 +342,9 @@ export async function upsertCodexAuthBackupAsync(args: {
     const signature = String(args.signature || "").trim();
     const id = backupIdFromSignature(signature);
     const { authPath, metaPath } = resolveBackupPaths(runtimeKey, id);
-    await fsp.mkdir(path.dirname(authPath), { recursive: true });
-
     const content = await fsp.readFile(authJsonPath);
+    assertAuthContentMatchesAccount(content, args);
+    await fsp.mkdir(path.dirname(authPath), { recursive: true });
     await writeFileAtomic(authPath, content);
 
     const now = Date.now();
@@ -353,6 +374,39 @@ export async function upsertCodexAuthBackupAsync(args: {
     return { ok: true, item: meta };
   } catch (e: any) {
     return { ok: false, error: String(e) };
+  }
+}
+
+/** 切换前保存现有凭据；无法确认身份或备份失败时阻止覆盖。 */
+export async function preserveCodexAuthBeforeSwitchAsync(args: {
+  runtimeKey: string;
+  authJsonPath: string;
+  getAccountInfo: () => Promise<CodexAccountInfo>;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    if (!String(args.authJsonPath || "").trim()) return { ok: false, error: "缺少认证文件路径" };
+    try {
+      await fsp.stat(args.authJsonPath);
+    } catch (error: any) {
+      if (error?.code === "ENOENT") return { ok: true };
+      throw error;
+    }
+    const info = await args.getAccountInfo();
+    const identity = resolveCodexAccountSignature(info);
+    if (identity.status !== "signed_in")
+      return { ok: false, error: "无法确认现有认证文件的账号，未覆盖当前凭据" };
+    const saved = await upsertCodexAuthBackupAsync({
+      runtimeKey: args.runtimeKey,
+      authJsonPath: args.authJsonPath,
+      ...identity,
+      userId: info.userId,
+      email: info.email,
+      plan: info.plan,
+      reason: "before-switch",
+    });
+    return saved.ok ? { ok: true } : { ok: false, error: saved.error };
+  } catch (error) {
+    return { ok: false, error: `保存当前账号失败，未切换账号：${String(error)}` };
   }
 }
 
@@ -393,6 +447,9 @@ export async function applyCodexAuthBackupAsync(args: {
     if (!target) return { ok: false, error: "missing targetAuthJsonPath" };
 
     const content = await fsp.readFile(authPath);
+    const meta = normalizeMeta(await readJsonSafe(resolveBackupPaths(runtimeKey, backupId).metaPath));
+    if (!meta || meta.status !== "signed_in") return { ok: false, error: "无法确认备份账号，请重新记录账号" };
+    assertAuthContentMatchesAccount(content, meta);
     await fsp.mkdir(path.dirname(target), { recursive: true });
     await writeFileAtomic(target, content);
     return { ok: true };
