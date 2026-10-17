@@ -1209,12 +1209,18 @@ body {
     linear-gradient(180deg, color-mix(in oklab, var(--cf-app-bg) 94%, white) 0%, var(--cf-app-bg) 100%);
 }
 
-.cf-git-toolbar,
-.cf-git-pane-header,
-.cf-git-footer,
-.cf-git-banner,
-.cf-git-log-header,
-.cf-git-filterbar,
+/* 常驻栏只显示工作台底色，不需要采样背后内容。避免背景动画在 4K 下反复使大面积模糊图层失效。 */
+.cf-git-workbench .cf-git-toolbar,
+.cf-git-workbench .cf-git-pane-header,
+.cf-git-workbench .cf-git-pane-footer,
+.cf-git-workbench .cf-git-footer,
+.cf-git-workbench .cf-git-banner,
+.cf-git-workbench .cf-git-log-header,
+.cf-git-workbench .cf-git-filterbar {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
 .cf-git-dialog-panel,
 .cf-git-menu-panel,
 .cf-git-empty-state {
@@ -1417,7 +1423,7 @@ body {
   contain: layout paint;
 }
 
-/* 日志行在分页追加后需要稳定重绘标题列；这里彻底禁用 contain，避免滚动加载触发滚动条宽度变化后，浏览器错误复用旧的文本绘制结果。 */
+/* 允许各列随可用宽度收缩，使长文本省略号在分页和调整列宽后保持正确。 */
 .cf-git-log-row .truncate,
 .cf-git-tree-row .truncate,
 .cf-git-worktree-row .truncate {
@@ -1430,12 +1436,10 @@ body {
   cursor: default;
 }
 
-/* 提交信息列在分页后偶发整列不绘制文字；单独收口字体与绘制属性，避免命中虚拟列表里的异常文本缓存。 */
+/* 标题与同行背景、图谱和元信息一起绘制，避免逐行提升为独立 3D 图层后出现局部闪白。 */
 .cf-git-log-subject-text {
   font-family: inherit;
   font-weight: 500;
-  transform: translateZ(0);
-  backface-visibility: hidden;
 }
 
 .cf-git-tone-accent {
