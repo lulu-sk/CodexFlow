@@ -41,6 +41,18 @@ export function formatGeminiUsageErrorText(raw: unknown, t: TFunction): string {
 
   if (!message) return `${defaultTitle}\n${defaultHint}`;
 
+  if (/GEMINI_ACCOUNT_VALIDATION_REQUIRED/i.test(message)) {
+    const title = t("common:geminiUsage.errors.validationRequired.title", "Gemini 需要账号验证");
+    const hint = t("common:geminiUsage.errors.validationRequired.hint", "请在终端运行 gemini 完成账号验证后重试");
+    return `${title}\n${hint}`;
+  }
+
+  if (/GEMINI_TIER_INELIGIBLE/i.test(message)) {
+    const title = t("common:geminiUsage.errors.ineligible.title", "Gemini 账号暂不可用");
+    const hint = t("common:geminiUsage.errors.ineligible.hint", "请在终端运行 gemini 查看账号可用性提示");
+    return `${title}\n${hint}`;
+  }
+
   if (GEMINI_NOT_LOGGED_IN_PATTERNS.some((p) => p.test(message))) {
     const title = t("common:geminiUsage.errors.notLoggedIn.title", "Gemini 未登录");
     const hint = t("common:geminiUsage.errors.notLoggedIn.hint", "请在对应运行环境完成登录后重试");

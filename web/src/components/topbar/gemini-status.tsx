@@ -9,6 +9,7 @@ import { RotateCcw } from "lucide-react";
 import type { AppSettings, GeminiQuotaSnapshot, GeminiQuotaBucket } from "@/types/host";
 import { GEMINI_USAGE_REFRESH_EVENT, formatGeminiUsageErrorText } from "@/lib/gemini-status";
 import { useHoverCard } from "@/components/topbar/hover-card";
+import { useLatestRequest } from "@/lib/use-latest-request";
 
 type TerminalMode = NonNullable<AppSettings["terminal"]>;
 
@@ -103,6 +104,7 @@ function readGeminiUsageCache(envKey: string): GeminiUsageCacheEntry {
 
 function useGeminiUsageCached(envKey: string): [FetchState<GeminiQuotaSnapshot>, () => void] {
   const { t } = useTranslation(["common"]);
+  const beginRequest = useLatestRequest(envKey);
   const [state, setState] = useState<FetchState<GeminiQuotaSnapshot>>(() => {
     const cached = readGeminiUsageCache(envKey);
     return { loading: false, error: cached.error, data: cached.data };
@@ -114,10 +116,12 @@ function useGeminiUsageCached(envKey: string): [FetchState<GeminiQuotaSnapshot>,
   }, [envKey]);
 
   const fetchUsage = useCallback(async () => {
+    const isCurrent = beginRequest();
     const now = Date.now();
     setState((prev) => ({ ...prev, loading: true, error: null }));
     try {
       const res = await window.host.gemini.getUsage();
+      if (!isCurrent()) return;
       if (res.ok) {
         const entry: GeminiUsageCacheEntry = { attemptedAt: now, error: null, data: res.snapshot ?? null };
         GEMINI_USAGE_CACHE.set(envKey, entry);
@@ -129,12 +133,13 @@ function useGeminiUsageCached(envKey: string): [FetchState<GeminiQuotaSnapshot>,
         setState({ loading: false, error: errorText, data: null });
       }
     } catch (err) {
+      if (!isCurrent()) return;
       const errorText = formatGeminiUsageErrorText(err, t);
       const entry: GeminiUsageCacheEntry = { attemptedAt: now, error: errorText, data: null };
       GEMINI_USAGE_CACHE.set(envKey, entry);
       setState({ loading: false, error: errorText, data: null });
     }
-  }, [envKey, t]);
+  }, [beginRequest, envKey, t]);
 
   return [state, fetchUsage];
 }
