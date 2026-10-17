@@ -14028,6 +14028,7 @@ export default function CodexFlowManagerUI() {
 		        <ProviderSwitcher
 		          activeId={activeProviderId}
 		          providers={providerItems}
+		          providerEnvs={providerEnvById}
 		          onChange={changeActiveProvider}
 		          terminalMode={terminalMode}
 		          distro={terminalMode === "wsl" ? wslDistro : undefined}

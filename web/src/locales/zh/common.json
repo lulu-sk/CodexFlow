@@ -62,7 +62,7 @@
     "reset": "重置时间 {time}",
     "resetNotProvided": "未提供",
     "resetFinished": "已重置",
-    "windowUnknown": "不限",
+    "windowUnknown": "未知窗口",
     "windowWeekly": "{count} 周",
     "windowDaily": "{count} 天",
     "windowHourly": "{count} 小时",
@@ -140,6 +140,14 @@
       "projectRequired": {
         "title": "Gemini 未完成配置",
         "hint": "请在设置中完成 Gemini 配置后重试"
+      },
+      "validationRequired": {
+        "title": "Gemini 需要账号验证",
+        "hint": "请在终端运行 gemini 完成账号验证后重试"
+      },
+      "ineligible": {
+        "title": "Gemini 账号暂不可用",
+        "hint": "请在终端运行 gemini 查看账号可用性提示"
       }
     }
   },
@@ -200,7 +208,7 @@
     "onDemandDisabled": "未启用",
     "updatedAt": "更新时间 {time}",
     "sourceLive": "实时",
-    "sourceCache": "Grok 官方缓存",
+    "sourceCache": "最近成功结果",
     "empty": "暂无账号额度信息",
     "errors": {
       "default": {

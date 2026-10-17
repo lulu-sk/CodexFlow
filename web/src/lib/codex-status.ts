@@ -2,7 +2,18 @@
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
 import type { TFunction } from "i18next";
-import type { CodexRateLimitSnapshot, CodexRateLimitWindow } from "@/types/host";
+import type { CodexAccountInfo, CodexRateLimitSnapshot, CodexRateLimitWindow } from "@/types/host";
+
+/** 根据官方认证类型或可用身份字段判断登录状态。 */
+export function isCodexAccountSignedIn(account: CodexAccountInfo | null | undefined): boolean {
+  return !!(account?.authMode || account?.email || account?.accountId || account?.userId);
+}
+
+/** 按绝对时间计算剩余秒数，兼容旧版只有相对时间的快照。 */
+function getResetAfterSeconds(window: CodexRateLimitWindow): number | null {
+  return typeof window.resetsAt === "number" && Number.isFinite(window.resetsAt)
+    ? Math.max(0, window.resetsAt - Date.now() / 1000) : window.resetAfterSeconds;
+}
 
 const MIN_INTERVAL_MS = 60_000;     // 1 分钟
 const MAX_INTERVAL_MS = 6 * 60 * 60 * 1000;  // 6 小时
@@ -13,6 +24,7 @@ const CLI_EXIT_PATTERNS = [
   /codex\s*cli\s*已退出/i,
 ];
 const NOT_SIGNED_IN_PATTERNS = [
+  /chatgpt authentication required|authentication required to read rate limits/i,
   /尚未登录\s*chatgpt/i,
   /not\s+(signed\s+)?in\s+to\s+chatgpt/i,
 ];
@@ -46,11 +58,10 @@ export function computeRefreshInterval(snapshot: CodexRateLimitSnapshot | null |
   
   // 仅从有消耗的窗口中选取最小重置时间
   const candidates: number[] = [];
-  if (snapshot.primary?.usedPercent && snapshot.primary.usedPercent > 0 && snapshot.primary.resetAfterSeconds) {
-    candidates.push(snapshot.primary.resetAfterSeconds);
-  }
-  if (snapshot.secondary?.usedPercent && snapshot.secondary.usedPercent > 0 && snapshot.secondary.resetAfterSeconds) {
-    candidates.push(snapshot.secondary.resetAfterSeconds);
+  for (const window of [snapshot.primary, snapshot.secondary]) {
+    if (!window || window.usedPercent == null || window.usedPercent <= 0) continue;
+    const seconds = getResetAfterSeconds(window);
+    if (seconds != null && seconds > 0) candidates.push(seconds);
   }
   
   let seconds = candidates.length > 0 ? Math.min(...candidates) : DEFAULT_INTERVAL_SECONDS;
@@ -80,7 +91,7 @@ export function formatWindowLabel(
   t: TFunction,
 ): string {
   if (!window || window.limitWindowSeconds == null || Number.isNaN(window.limitWindowSeconds)) {
-    return t("common:codexUsage.windowUnknown", "不限");
+    return t("common:codexUsage.windowUnknown", "未知窗口");
   }
   // UI 层转换：秒 → 分钟
   const minutes = Number(window.limitWindowSeconds) / 60;
@@ -160,7 +171,9 @@ export function formatResetTime(
   seconds: number | null | undefined,
   t: TFunction,
   language?: string,
+  resetsAt?: number | null,
 ): string {
+  if (typeof resetsAt === "number" && Number.isFinite(resetsAt)) seconds = resetsAt - Date.now() / 1000;
   if (!Number.isFinite(seconds) || seconds == null) {
     return t("common:codexUsage.resetNotProvided", "未提供");
   }

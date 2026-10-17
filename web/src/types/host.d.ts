@@ -973,6 +973,7 @@ export interface StorageAPI {
 }
 
 export type CodexAccountInfo = {
+  authMode?: string | null;
   accountId: string | null;
   userId: string | null;
   email: string | null;
@@ -983,6 +984,7 @@ export type CodexRateLimitWindow = {
   usedPercent: number | null;
   limitWindowSeconds: number | null;  // 原始字段（秒），UI 层转换为分钟/小时/天
   resetAfterSeconds: number | null;   // 原始字段，统一命名
+  resetsAt?: number | null;
 };
 
 export type CodexRateLimitSnapshot = {
@@ -1008,11 +1010,12 @@ export type ClaudeUsageWindow = {
   remainingPercent: number | null;
   usedPercent: number | null;
   resetText?: string | null;
+  resetAt?: number | null;
 };
 
 export type ClaudeUsageSnapshot = {
   providerId: "claude";
-  source: "ccline-cache" | "tmux-capture";
+  source: "oauth-api" | "oauth-api-cache" | "ccline-cache" | "tmux-capture";
   collectedAt: number;
   cachedAt?: number | null;
   resetAt?: number | null;

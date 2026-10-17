@@ -93,4 +93,9 @@ describe("providers/runtime（主进程 Provider 默认值解析）", () => {
     expect(resolveProviderRuntimeEnvFromSettings(cfg, "custom-1")).toEqual({ terminal: "windows", distro: "Ubuntu-22.04" });
     expect(resolveProviderRuntimeEnvFromSettings(cfg, "missing")).toEqual({ terminal: "wsl", distro: "Ubuntu-24.04" });
   });
+
+  it("Codex 独立环境与旧全局环境不同的时候，以引擎自己的配置为准", () => {
+    const cfg = { terminal: "wsl", distro: "TestLinux", providers: { env: { codex: { terminal: "pwsh", distro: "" } } } } as any;
+    expect(resolveProviderRuntimeEnvFromSettings(cfg, "codex")).toEqual({ terminal: "pwsh", distro: undefined });
+  });
 });

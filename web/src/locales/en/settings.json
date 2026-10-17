@@ -342,6 +342,7 @@
     "statusLoading": "Loading account…",
     "statusError": "Account unavailable",
     "statusUnknown": "Not signed in",
+    "statusSignedIn": "Signed in",
     "statusLabel": "Status",
     "email": "Email",
     "planLabel": "Plan",

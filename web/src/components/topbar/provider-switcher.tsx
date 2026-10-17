@@ -5,7 +5,7 @@ import React, { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { AppSettings, ProviderItem } from "@/types/host";
+import type { AppSettings, ProviderEnv, ProviderItem } from "@/types/host";
 import { getBuiltInProviders } from "@/lib/providers/builtins";
 import { resolveProvider } from "@/lib/providers/resolve";
 import type { ThemeMode } from "@/lib/theme";
@@ -23,6 +23,7 @@ export type ProviderSwitcherProps = {
   onChange: (id: string) => void;
   terminalMode?: TerminalMode;
   distro?: string;
+  providerEnvs?: Record<string, ProviderEnv>;
   themeMode?: ThemeMode;
   className?: string;
 };
@@ -30,7 +31,7 @@ export type ProviderSwitcherProps = {
 /**
  * 顶部栏引擎切换器：内置引擎与自定义引擎同排展示（自定义无用量面板）。
  */
-export const ProviderSwitcher: React.FC<ProviderSwitcherProps> = ({ activeId, providers, onChange, terminalMode, distro, themeMode, className }) => {
+export const ProviderSwitcher: React.FC<ProviderSwitcherProps> = ({ activeId, providers, onChange, terminalMode, distro, providerEnvs, themeMode, className }) => {
   const { t } = useTranslation(["providers", "common"]);
 
   const byId = useMemo(() => {
@@ -70,13 +71,16 @@ export const ProviderSwitcher: React.FC<ProviderSwitcherProps> = ({ activeId, pr
         const isGemini = p.id === "gemini";
         const isAntigravity = p.id === "antigravity";
         const isGrok = p.id === "grok";
+        const providerEnv = providerEnvs?.[p.id];
+        const providerTerminalMode = providerEnv?.terminal ?? terminalMode;
+        const providerDistro = typeof providerEnv?.distro === "string" ? providerEnv.distro.trim() || undefined : distro;
         return (
           <div key={p.id} className="flex items-center">
             {isCodex ? (
               selected ? (
                 <CodexUsageHoverCard
-                  terminalMode={terminalMode}
-                  distro={terminalMode === "wsl" ? distro : undefined}
+                  terminalMode={providerTerminalMode}
+                  distro={providerTerminalMode === "wsl" ? providerDistro : undefined}
                   loadPolicy="ifMissing"
                   enableAutoRefreshInterval={false}
                   enableGlobalRefreshEvent={false}
@@ -112,8 +116,8 @@ export const ProviderSwitcher: React.FC<ProviderSwitcherProps> = ({ activeId, pr
             ) : isClaude ? (
               selected ? (
                 <ClaudeUsageHoverCard
-                  terminalMode={terminalMode}
-                  distro={terminalMode === "wsl" ? distro : undefined}
+                  terminalMode={providerTerminalMode}
+                  distro={providerTerminalMode === "wsl" ? providerDistro : undefined}
                   loadPolicy="ifMissing"
                   enableGlobalRefreshEvent={true}
                   renderTrigger={({ percentLabel, usageState }) => (
@@ -148,8 +152,8 @@ export const ProviderSwitcher: React.FC<ProviderSwitcherProps> = ({ activeId, pr
             ) : isGemini ? (
               selected ? (
                 <GeminiUsageHoverCard
-                  terminalMode={terminalMode}
-                  distro={terminalMode === "wsl" ? distro : undefined}
+                  terminalMode={providerTerminalMode}
+                  distro={providerTerminalMode === "wsl" ? providerDistro : undefined}
                   loadPolicy="ifMissing"
                   enableGlobalRefreshEvent={true}
                   renderTrigger={({ percentLabel, usageState }) => (
@@ -184,8 +188,8 @@ export const ProviderSwitcher: React.FC<ProviderSwitcherProps> = ({ activeId, pr
             ) : isGrok ? (
               selected ? (
                 <GrokUsageHoverCard
-                  terminalMode={terminalMode}
-                  distro={terminalMode === "wsl" ? distro : undefined}
+                  terminalMode={providerTerminalMode}
+                  distro={providerTerminalMode === "wsl" ? providerDistro : undefined}
                   renderTrigger={({ percentLabel, summaryLabel, usageState }) => (
                     <Button
                       variant="ghost"

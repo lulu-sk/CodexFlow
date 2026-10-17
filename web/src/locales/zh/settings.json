@@ -342,6 +342,7 @@
     "statusLoading": "正在读取账号信息…",
     "statusError": "账号信息不可用",
     "statusUnknown": "未登录",
+    "statusSignedIn": "已登录",
     "statusLabel": "状态",
     "email": "邮箱",
     "planLabel": "套餐",

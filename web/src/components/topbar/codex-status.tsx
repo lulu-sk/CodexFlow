@@ -16,12 +16,14 @@ import {
   formatUsageSummaryLabel,
   formatWindowLabel,
   resolveDominantUsageWindow,
+  isCodexAccountSignedIn,
   translateRateLimitError,
   translateCodexBridgeError,
   CODEX_RATE_REFRESH_EVENT,
   CODEX_AUTH_CHANGED_EVENT,
 } from "@/lib/codex-status";
 import { useHoverCard } from "@/components/topbar/hover-card";
+import { useLatestRequest } from "@/lib/use-latest-request";
 
 type FetchState<T> = {
   loading: boolean;
@@ -89,6 +91,7 @@ function useCodexAccountCached(envKey: string): [
   { attempted: boolean },
 ] {
   const { t } = useTranslation(["settings"]);
+  const beginRequest = useLatestRequest(envKey);
   const [attempted, setAttempted] = useState<boolean>(() => readCodexAccountCache(envKey).attemptedAt != null);
   const [state, setState] = useState<FetchState<CodexAccountInfo>>(() => {
     const cached = readCodexAccountCache(envKey);
@@ -102,11 +105,13 @@ function useCodexAccountCached(envKey: string): [
   }, [envKey]);
 
   const fetchAccount = useCallback(async () => {
+    const isCurrent = beginRequest();
     const now = Date.now();
     setAttempted(true);
     setState((prev) => ({ ...prev, loading: true, error: null }));
     try {
       const res = await window.host.codex.getAccountInfo();
+      if (!isCurrent()) return;
       if (res.ok) {
         const entry: CodexAccountCacheEntry = { attemptedAt: now, error: null, data: res.info ?? null };
         CODEX_ACCOUNT_CACHE.set(envKey, entry);
@@ -118,17 +123,19 @@ function useCodexAccountCached(envKey: string): [
         setState({ loading: false, error: errorText, data: null });
       }
     } catch {
+      if (!isCurrent()) return;
       const errorText = t("settings:codexAccount.statusError", "账号信息不可用") as string;
       const entry: CodexAccountCacheEntry = { attemptedAt: now, error: errorText, data: null };
       CODEX_ACCOUNT_CACHE.set(envKey, entry);
       setState({ loading: false, error: errorText, data: null });
     }
-  }, [envKey, t]);
+  }, [beginRequest, envKey, t]);
 
   // 监听“账号已切换”事件：清空缓存并立即重新拉取
   useEffect(() => {
     const onAuthChanged = () => {
       try {
+        CODEX_ACCOUNT_CACHE.clear();
         CODEX_ACCOUNT_CACHE.set(envKey, { attemptedAt: null, data: null, error: null });
         setAttempted(false);
         setState({ loading: false, error: null, data: null });
@@ -143,9 +150,11 @@ function useCodexAccountCached(envKey: string): [
 }
 
 function useCodexAccount(
+  envKey: string,
   auto = true,
   translateError?: (error: unknown) => string,
 ): [FetchState<CodexAccountInfo>, () => void] {
+  const beginRequest = useLatestRequest(envKey);
   const [state, setState] = useState<FetchState<CodexAccountInfo>>({
     loading: false,
     error: null,
@@ -161,9 +170,11 @@ function useCodexAccount(
     [translateError],
   );
   const fetchAccount = useCallback(async () => {
+    const isCurrent = beginRequest();
     setState((prev) => ({ ...prev, loading: true, error: null }));
     try {
       const res = await window.host.codex.getAccountInfo();
+      if (!isCurrent()) return;
       if (res.ok) {
         setState({ loading: false, error: null, data: res.info ?? null });
       } else {
@@ -174,13 +185,17 @@ function useCodexAccount(
         });
       }
     } catch (err) {
+      if (!isCurrent()) return;
       setState({
         loading: false,
         error: resolveError(err),
         data: null,
       });
     }
-  }, [resolveError]);
+  }, [beginRequest, resolveError]);
+  useEffect(() => {
+    setState({ loading: false, error: null, data: null });
+  }, [envKey]);
   useEffect(() => {
     if (auto) fetchAccount();
   }, [auto, fetchAccount]);
@@ -246,6 +261,7 @@ function useCodexRateCached(envKey: string): [
   { attempted: boolean },
 ] {
   const { t } = useTranslation(["common"]);
+  const beginRequest = useLatestRequest(envKey);
   const resolveErrorMessage = useCallback(
     (error: unknown) => translateRateLimitError(error, t),
     [t],
@@ -272,11 +288,13 @@ function useCodexRateCached(envKey: string): [
   }, [envKey]);
 
   const fetchRate = useCallback(async () => {
+    const isCurrent = beginRequest();
     const now = Date.now();
     setAttempted(true);
     setState((prev) => ({ ...prev, loading: true, error: null }));
     try {
       const res = await window.host.codex.getRateLimit();
+      if (!isCurrent()) return;
       if (res.ok) {
         const entry: CodexRateCacheEntry = { attemptedAt: now, error: null, data: res.snapshot ?? null };
         CODEX_RATE_CACHE.set(envKey, entry);
@@ -288,17 +306,19 @@ function useCodexRateCached(envKey: string): [
         setState({ loading: false, error: errorText, data: null });
       }
     } catch (err) {
+      if (!isCurrent()) return;
       const errorText = resolveErrorMessage(err);
       const entry: CodexRateCacheEntry = { attemptedAt: now, error: errorText, data: null };
       CODEX_RATE_CACHE.set(envKey, entry);
       setState({ loading: false, error: errorText, data: null });
     }
-  }, [envKey, resolveErrorMessage]);
+  }, [beginRequest, envKey, resolveErrorMessage]);
 
   // 监听“账号已切换”事件：清空缓存并立即重新拉取用量
   useEffect(() => {
     const onAuthChanged = () => {
       try {
+        CODEX_RATE_CACHE.clear();
         CODEX_RATE_CACHE.set(envKey, { attemptedAt: null, data: null, error: null });
         setAttempted(false);
         setState({ loading: false, error: null, data: null });
@@ -354,7 +374,7 @@ const CodexRateDetails: React.FC<{
           </span>
           <span className="text-xs text-[var(--cf-text-secondary)]">
             {t("common:codexUsage.reset", {
-              time: formatResetTime(state.data.primary?.resetAfterSeconds ?? null, t, i18n.language),
+              time: formatResetTime(state.data.primary?.resetAfterSeconds ?? null, t, i18n.language, state.data.primary?.resetsAt),
             })}
           </span>
         </div>
@@ -372,7 +392,7 @@ const CodexRateDetails: React.FC<{
           </span>
           <span className="text-xs text-[var(--cf-text-secondary)]">
             {t("common:codexUsage.reset", {
-              time: formatResetTime(state.data.secondary?.resetAfterSeconds ?? null, t, i18n.language),
+              time: formatResetTime(state.data.secondary?.resetAfterSeconds ?? null, t, i18n.language, state.data.secondary?.resetsAt),
             })}
           </span>
         </div>
@@ -491,7 +511,7 @@ export const CodexUsageHoverCard: React.FC<CodexUsageHoverCardProps> = ({
   const signedIn = useMemo(() => {
     const account = accountState.data;
     if (!account) return false;
-    return !!(account.email || account.accountId || account.userId);
+    return isCodexAccountSignedIn(account);
   }, [accountState.data]);
 
   const accountStatusText = useMemo(() => {
@@ -602,6 +622,9 @@ function resolveAccountLabel(account: CodexAccountInfo | null, t: TFunction): st
   if (account.email) return account.email;
   if (account.accountId) return account.accountId;
   if (account.userId) return account.userId;
+  if (account.authMode === "apiKey") return "API Key";
+  if (account.authMode === "amazonBedrock") return "Amazon Bedrock";
+  if (isCodexAccountSignedIn(account)) return t("settings:codexAccount.statusSignedIn", "已登录");
   return t("settings:codexAccount.statusUnknown", "未登录");
 }
 
@@ -685,21 +708,10 @@ export const CodexAccountInline: React.FC<{
     },
     [t],
   );
-  const [accountState, reloadAccount] = useCodexAccount(auto, errorTranslator);
   const envKey = useMemo(() => resolveCodexEnvKey(terminalMode, distro), [terminalMode, distro]);
+  const [accountState, reloadAccount] = useCodexAccount(envKey, auto, errorTranslator);
   const [rateState, reloadRate, rateMeta] = useCodexRateCached(envKey);
   const hover = useHoverCard();
-  const lastEnvKeyRef = useRef(envKey);
-
-  useEffect(() => {
-    if (!auto) {
-      lastEnvKeyRef.current = envKey;
-      return;
-    }
-    if (lastEnvKeyRef.current === envKey) return;
-    lastEnvKeyRef.current = envKey;
-    reloadAccount();
-  }, [auto, envKey, reloadAccount]);
 
   useEffect(() => {
     if (!expanded || !auto) return;

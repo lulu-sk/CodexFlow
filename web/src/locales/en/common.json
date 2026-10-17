@@ -62,7 +62,7 @@
     "reset": "Resets {time}",
     "resetNotProvided": "Not available",
     "resetFinished": "Already reset",
-    "windowUnknown": "No limit",
+    "windowUnknown": "Unknown window",
     "windowWeekly": "{count, plural, one {# week} other {# weeks}}",
     "windowDaily": "{count, plural, one {# day} other {# days}}",
     "windowHourly": "{count, plural, one {# hour} other {# hours}}",
@@ -140,6 +140,14 @@
       "projectRequired": {
         "title": "Gemini setup required",
         "hint": "Finish Gemini setup in Settings, then try again"
+      },
+      "validationRequired": {
+        "title": "Gemini account verification required",
+        "hint": "Run gemini in the terminal to verify your account, then try again"
+      },
+      "ineligible": {
+        "title": "Gemini account unavailable",
+        "hint": "Run gemini in the terminal to check account eligibility"
       }
     }
   },
@@ -200,7 +208,7 @@
     "onDemandDisabled": "Disabled",
     "updatedAt": "Updated {time}",
     "sourceLive": "Live",
-    "sourceCache": "Official Grok cache",
+    "sourceCache": "Recent successful result",
     "empty": "No account usage data",
     "errors": {
       "default": {

@@ -65,7 +65,7 @@ import { installRendererResponseSecurityHeaders } from "./security/rendererHeade
 import { getQuitConfirmDialogTextForLocale } from "./locales/quitConfirm";
 import { registerQuitConfirmIPC, requestQuitConfirmFromRenderer } from "./quitConfirmBridge";
 import { CodexBridge, type CodexBridgeOptions } from "./codex/bridge";
-import { applyCodexAuthBackupAsync, deleteCodexAuthBackupAsync, isSafeAuthBackupId, listCodexAuthBackupsAsync, readCodexAuthBackupMetaAsync, resolveCodexAccountSignature, resolveCodexAuthJsonPathAsync, upsertCodexAuthBackupAsync, upsertCodexAuthBackupMetaOnlyAsync } from "./codex/authBackups";
+import { applyCodexAuthBackupAsync, deleteCodexAuthBackupAsync, isSafeAuthBackupId, listCodexAuthBackupsAsync, preserveCodexAuthBeforeSwitchAsync, readCodexAuthBackupMetaAsync, resolveCodexAccountSignature, resolveCodexAuthJsonPathAsync, upsertCodexAuthBackupAsync, upsertCodexAuthBackupMetaOnlyAsync } from "./codex/authBackups";
 import { ensureAllCodexNotifications } from "./codex/config";
 import { startCodexNotificationBridge, stopCodexNotificationBridge } from "./codex/notifications";
 import type { CodexStateCleanupResult } from "./codexStateCleanup";
@@ -1458,9 +1458,8 @@ type CodexBridgeDescriptor = { key: string; options: CodexBridgeOptions };
 
 function deriveCodexBridgeDescriptor(cfg: AppSettings): CodexBridgeDescriptor {
   try {
-    const terminal = cfg?.terminal ?? "wsl";
+    const { terminal, distro: raw } = resolveProviderRuntimeEnvFromSettings(cfg, "codex");
     if (terminal === "wsl" && process.platform === "win32") {
-      const raw = cfg?.distro;
       const distro = raw ? String(raw) : undefined;
       return { key: `wsl:${distro ?? ""}`, options: { mode: "wsl", wslDistro: distro } };
     }
@@ -1586,8 +1585,9 @@ function resolveCodexBridgeTarget(): CodexBridgeDescriptor {
   return deriveCodexBridgeDescriptor(settings.getSettings());
 }
 
-function ensureCodexBridge(): CodexBridge {
-  const { key, options } = resolveCodexBridgeTarget();
+/** 按请求开始时确定的环境获取查询进程，避免异步操作中途串环境。 */
+function ensureCodexBridge(runtime: CodexBridgeDescriptor = resolveCodexBridgeTarget()): CodexBridge {
+  const { key, options } = runtime;
   let bridge = codexBridges.get(key);
   if (!bridge) {
     bridge = new CodexBridge(options);
@@ -1601,6 +1601,7 @@ function ensureCodexBridge(): CodexBridge {
  */
 async function maybeAutoBackupCodexAuthJsonOnAccountRefresh(info: any, runtime: CodexBridgeDescriptor): Promise<void> {
   try {
+    if (runtime.key !== resolveCodexBridgeTarget().key) return;
     const cfg = settings.getSettings() as any;
     const recordEnabled = !!cfg?.codexAccount?.recordEnabled;
     if (!recordEnabled) return;
@@ -1612,6 +1613,14 @@ async function maybeAutoBackupCodexAuthJsonOnAccountRefresh(info: any, runtime: 
     const lastMap = (lastMapRaw && typeof lastMapRaw === "object") ? (lastMapRaw as Record<string, string>) : {};
     const lastSig = String(lastMap[runtimeKey] || "").trim();
 
+    /** 仅更新仍启用记录的当前环境，保留等待期间保存的其他设置。 */
+    const recordSignature = () => {
+      const latest = settings.getSettings() as any;
+      if (!latest?.codexAccount?.recordEnabled || runtime.key !== resolveCodexBridgeTarget().key) return;
+      const latestMap = latest.codexAccount.lastSeenSignatureByRuntime || {};
+      settings.updateSettings({ codexAccount: { ...latest.codexAccount, lastSeenSignatureByRuntime: { ...latestMap, [runtimeKey]: signature } } as any });
+    };
+
     const normalizeOptionalField = (value: any): string | undefined => {
       const s = String(value ?? "").trim();
       return s ? s : undefined;
@@ -1622,8 +1631,7 @@ async function maybeAutoBackupCodexAuthJsonOnAccountRefresh(info: any, runtime: 
 
     // 未登录：仅记录签名，避免反复尝试备份
     if (status === "signed_out") {
-      const nextMap = { ...lastMap, [runtimeKey]: signature };
-      settings.updateSettings({ codexAccount: { ...cfg?.codexAccount, recordEnabled: true, lastSeenSignatureByRuntime: nextMap } as any });
+      recordSignature();
       return;
     }
 
@@ -1655,8 +1663,7 @@ async function maybeAutoBackupCodexAuthJsonOnAccountRefresh(info: any, runtime: 
         });
         if (!backupRes.ok) return;
       }
-      const nextMap = { ...lastMap, [runtimeKey]: signature };
-      settings.updateSettings({ codexAccount: { ...cfg?.codexAccount, recordEnabled: true, lastSeenSignatureByRuntime: nextMap } as any });
+      recordSignature();
       return;
     }
 
@@ -1674,8 +1681,7 @@ async function maybeAutoBackupCodexAuthJsonOnAccountRefresh(info: any, runtime: 
     });
     if (!backupRes.ok) return;
 
-    const nextMap = { ...lastMap, [runtimeKey]: signature };
-    settings.updateSettings({ codexAccount: { ...cfg?.codexAccount, recordEnabled: true, lastSeenSignatureByRuntime: nextMap } as any });
+    recordSignature();
   } catch {}
 }
 
@@ -1750,8 +1756,8 @@ async function flushSettingsMaintenance(): Promise<void> {
       if (request.refreshCodexAccount && !settingsMaintenanceStopping) {
         try {
           const runtime = deriveCodexBridgeDescriptor(settings.getSettings());
-          const bridge = ensureCodexBridge();
-          const info = await bridge.getAccountInfo(true);
+          const bridge = ensureCodexBridge(runtime);
+          const info = await bridge.getAccountInfo();
           await maybeAutoBackupCodexAuthJsonOnAccountRefresh(info, runtime);
         } catch {}
       }
@@ -7344,11 +7350,10 @@ ipcMain.handle('utils.pathExists', async (_e, args: { path: string; dirOnly?: bo
 
 ipcMain.handle("codex.accountInfo", async () => {
   try {
-    const bridge = ensureCodexBridge();
-    const cfg = settings.getSettings() as any;
-    const recordEnabled = !!cfg?.codexAccount?.recordEnabled;
-    const info = await bridge.getAccountInfo(recordEnabled);
-    try { await maybeAutoBackupCodexAuthJsonOnAccountRefresh(info, resolveCodexBridgeTarget()); } catch {}
+    const runtime = resolveCodexBridgeTarget();
+    const bridge = ensureCodexBridge(runtime);
+    const info = await bridge.getAccountInfo();
+    try { await maybeAutoBackupCodexAuthJsonOnAccountRefresh(info, runtime); } catch {}
     return { ok: true, info };
   } catch (e: any) {
     return { ok: false, error: String(e) };
@@ -7379,25 +7384,16 @@ ipcMain.handle("codex.authBackups.apply", async (_e, args: { id: string }) => {
 
     // 若启用了“记录账号”，切换前先备份一次当前 auth.json，避免覆盖丢失
     if (recordEnabled) {
-      try {
-        const bridge = ensureCodexBridge();
-        const current = await bridge.getAccountInfo(true);
-        const sig = resolveCodexAccountSignature(current);
-        if (sig.status === "signed_in") {
-          await upsertCodexAuthBackupAsync({
-            runtimeKey: runtime.key,
-            authJsonPath: authRes.authJsonPath,
-            signature: sig.signature,
-            status: sig.status,
-            accountId: sig.accountId,
-            userId: current?.userId ?? null,
-            email: current?.email ?? null,
-            plan: current?.plan ?? null,
-            reason: "before-switch",
-          });
-        }
-      } catch {}
+      const preserved = await preserveCodexAuthBeforeSwitchAsync({
+        runtimeKey: runtime.key,
+        authJsonPath: authRes.authJsonPath,
+        getAccountInfo: () => ensureCodexBridge(runtime).getAccountInfo(),
+      });
+      if (!preserved.ok) return preserved;
     }
+
+    if (runtime.key !== resolveCodexBridgeTarget().key)
+      return { ok: false, error: "运行环境已变更，请重新切换账号" };
 
     const applyRes = await applyCodexAuthBackupAsync({
       runtimeKey: runtime.key,
@@ -7414,10 +7410,12 @@ ipcMain.handle("codex.authBackups.apply", async (_e, args: { id: string }) => {
       try {
         const meta = await readCodexAuthBackupMetaAsync(runtime.key, backupId);
         if (meta && meta.signature) {
-          const lastMapRaw = cfg?.codexAccount?.lastSeenSignatureByRuntime;
+          const latest = settings.getSettings() as any;
+          if (!latest?.codexAccount?.recordEnabled) return { ok: true };
+          const lastMapRaw = latest.codexAccount.lastSeenSignatureByRuntime;
           const lastMap = (lastMapRaw && typeof lastMapRaw === "object") ? (lastMapRaw as Record<string, string>) : {};
           const nextMap = { ...lastMap, [runtime.key]: String(meta.signature || "").trim() };
-          settings.updateSettings({ codexAccount: { ...cfg?.codexAccount, recordEnabled: true, lastSeenSignatureByRuntime: nextMap } as any });
+          settings.updateSettings({ codexAccount: { ...latest.codexAccount, lastSeenSignatureByRuntime: nextMap } as any });
         }
       } catch {}
     }
