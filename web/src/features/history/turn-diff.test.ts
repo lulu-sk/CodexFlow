@@ -96,6 +96,23 @@ describe("parseHistoryTurnDiff", () => {
     expect(parsed.deletions).toBe(1);
   });
 
+  it("纯重命名从带引号的差异头识别目标路径，保留各文件的独立摘要", () => {
+    const parsed = parseHistoryTurnDiff([
+      'diff --git "a/old name.bin" "b/new name.bin"',
+      "similarity index 100%",
+      "rename from old name.bin",
+      "rename to new name.bin",
+      'diff --git "a/old \\"quoted\\".bin" "b/new \\"quoted\\".bin"',
+      "similarity index 100%",
+      'rename from old "quoted".bin',
+      'rename to new "quoted".bin',
+    ].join("\n"));
+
+    expect(parsed.files.map((file) => file.path)).toEqual(["new name.bin", 'new "quoted".bin']);
+    expect(parsed.summaryFiles).toHaveLength(2);
+    expect(parsed.files[0]?.lines.map((line) => line.text)).toContain("rename to new name.bin");
+  });
+
   it("解析并合并同一轮中的多个 apply_patch 文件记录", () => {
     const parsed = parseHistoryTurnDiff([
       "*** Begin Patch",

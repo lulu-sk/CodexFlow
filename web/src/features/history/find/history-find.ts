@@ -87,7 +87,7 @@ function shouldSkipTextNode(node: Text): boolean {
   const parent = node.parentElement;
   if (!parent) return true;
   // 说明：防御性跳过，正常情况下我们只扫描 data-history-search-scope 区域
-  const skip = parent.closest("button,input,textarea,select,option,[contenteditable='true'],[aria-hidden='true']");
+  const skip = parent.closest("button,input,textarea,select,option,[contenteditable='true'],[aria-hidden='true'],[data-history-search-ignore]");
   return !!skip;
 }
 

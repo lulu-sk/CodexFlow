@@ -458,7 +458,14 @@ export type MessageContent = {
   diffSource?: "apply_patch" | "file_change" | "turn_diff";
   patchable?: boolean;
 };
-export type HistoryMessage = { role: string; content: MessageContent[] };
+export type HistoryMessage = {
+  role: string;
+  content: MessageContent[];
+  turnId?: string;
+  phase?: string;
+  timestamp?: string;
+  durationMs?: number;
+};
 
 // ---- Host API 声明 ----
 export interface PtyAPI {
@@ -838,7 +845,7 @@ export interface HistoryAPI {
     };
   }): Promise<{ ok: boolean; sessions?: HistorySummary[]; matchedSession?: HistorySummary; error?: string }>;
   read(args: { filePath: string; providerId?: "codex" | "claude" | "gemini" | "antigravity" | "grok"; forceParse?: boolean }): Promise<{ id: string; title: string; date: number; messages: HistoryMessage[]; skippedLines: number; providerId?: "codex" | "claude" | "gemini" | "antigravity" | "grok" }>;
-  revertTurnDiff(args: { projectWinPath: string; diffText: string; operation?: "undo" | "reapply" }): Promise<
+  revertTurnDiff(args: { projectWinPath: string; diffText: string; cwd?: string; operation?: "undo" | "reapply" }): Promise<
     | { ok: true; repoRoot: string }
     | { ok: false; code: "invalid_request" | "project_not_found" | "not_git_repo" | "conflict" | "apply_failed"; error: string }
   >;

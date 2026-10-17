@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type MouseEvent } from "react";
 import { useTranslation } from "react-i18next";
 import {
   FilePenLine,
   Focus,
   ListTree,
   Loader2,
+  MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
   Redo2,
@@ -25,6 +26,7 @@ import {
   type HistoryDiffFile,
   type HistoryDiffLine,
 } from "./turn-diff";
+import { historyDiffFileKey } from "./turn-diff-file-actions";
 
 type HistoryDiffViewType = "unified" | "split";
 
@@ -35,8 +37,10 @@ type HistoryTurnDiffReviewDialogProps = {
   rawFileCount: number;
   additions: number;
   deletions: number;
-  cwd?: string;
-  projectWinPath?: string;
+  pathBase?: string;
+  fileRequest?: { path: string } | null;
+  onFileMenu: (path: string, event: MouseEvent<HTMLElement>) => void;
+  actionError?: string;
   action: "undo" | "reapply";
   patchAction: "undo" | "reapply" | null;
   canPatchAction: boolean;
@@ -278,6 +282,7 @@ function HistoryDiffFileBlock({
   viewType,
   isFocused,
   onToggleFocus,
+  onFileMenu,
 }: {
   file: HistoryDiffFile;
   displayPath: string;
@@ -285,6 +290,7 @@ function HistoryDiffFileBlock({
   viewType: HistoryDiffViewType;
   isFocused: boolean;
   onToggleFocus: () => void;
+  onFileMenu: (path: string, event: MouseEvent<HTMLElement>) => void;
 }) {
   const { t } = useTranslation("history");
   const focusLabel = isFocused
@@ -294,6 +300,7 @@ function HistoryDiffFileBlock({
     <section
       className="min-w-0 overflow-hidden rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-solid)]"
       data-history-diff-file-index={fileIndex}
+      onContextMenu={(event) => onFileMenu(file.path, event)}
     >
       <div className="flex min-w-0 items-center gap-3 border-b border-[var(--cf-border)] bg-[var(--cf-surface-muted)] px-3 py-1.5">
         <span className="truncate text-xs font-apple-semibold text-[var(--cf-text-primary)]" title={file.path}>{displayPath}</span>
@@ -302,6 +309,11 @@ function HistoryDiffFileBlock({
             <span className="text-emerald-600 dark:text-emerald-400">+{file.additions}</span>{" "}
             <span className="text-red-600 dark:text-red-400">-{file.deletions}</span>
           </span>
+          <button type="button" aria-label={String(t("history:turnDiffFileMenu"))} title={String(t("history:turnDiffFileMenu"))}
+            className="flex h-9 w-9 items-center justify-center rounded-md text-[var(--cf-text-secondary)] hover:bg-[var(--cf-accent-light)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--cf-accent)]/45"
+            onClick={(event) => onFileMenu(file.path, event)}>
+            <MoreHorizontal className="h-4 w-4" />
+          </button>
           <button
             type="button"
             aria-label={focusLabel}
@@ -345,8 +357,10 @@ export default function HistoryTurnDiffReviewDialog({
   rawFileCount,
   additions,
   deletions,
-  cwd,
-  projectWinPath,
+  pathBase,
+  fileRequest,
+  onFileMenu,
+  actionError,
   action,
   patchAction,
   canPatchAction,
@@ -367,23 +381,27 @@ export default function HistoryTurnDiffReviewDialog({
         file,
         index,
         key: JSON.stringify([file.path, occurrence]),
-        displayPath: formatHistoryDiffPath(file.path, cwd, projectWinPath),
+        displayPath: formatHistoryDiffPath(file.path, pathBase),
       };
     });
-  }, [cwd, files, projectWinPath]);
+  }, [files, pathBase]);
   const focusedFileEntry = focusedFileIndex === null
     ? null
     : fileEntries.find((entry) => entry.index === focusedFileIndex) || null;
-  const visibleFileEntries = focusedFileEntry ? [focusedFileEntry] : fileEntries;
+  const visibleFileEntries = focusedFileEntry
+    ? fileEntries.filter((entry) => historyDiffFileKey(entry.file.path) === historyDiffFileKey(focusedFileEntry.file.path))
+    : fileEntries;
   const patchActionLabel = patchAction
-    ? t(action === "undo" ? "history:turnDiffReverting" : "history:turnDiffReapplying")
+    ? t(patchAction === "undo" ? "history:turnDiffReverting" : "history:turnDiffReapplying")
     : t(action === "undo" ? "history:turnDiffUndo" : "history:turnDiffReapply");
 
   useEffect(() => {
     setFileListOpen(false);
     setViewType("unified");
-    setFocusedFileIndex(null);
-  }, [files]);
+    setFocusedFileIndex(fileRequest
+      ? files.findIndex((file) => historyDiffFileKey(file.path) === historyDiffFileKey(fileRequest.path))
+      : null);
+  }, [files, fileRequest, open]);
 
   /**
    * 将审核内容滚回顶部，避免切换文件后保留旧文件的滚动位置。
@@ -505,6 +523,7 @@ export default function HistoryTurnDiffReviewDialog({
             </div>
           </div>
         </DialogHeader>
+        {actionError ? <div role="alert" className="shrink-0 whitespace-pre-wrap break-words border-b border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800 dark:border-red-900/70 dark:bg-red-950/40 dark:text-red-200">{actionError}</div> : null}
         <div className="relative isolate flex min-h-0 flex-1 overflow-hidden">
           {fileListOpen ? (
             <>
@@ -568,6 +587,7 @@ export default function HistoryTurnDiffReviewDialog({
                           )}
                           title={entry.file.path}
                           onClick={() => handleFocusFile(entry.index)}
+                          onContextMenu={(event) => onFileMenu(entry.file.path, event)}
                         >
                           <FilePenLine className="h-4 w-4 shrink-0" />
                           <span className="min-w-0 flex-1 truncate text-xs">{entry.displayPath}</span>
@@ -598,6 +618,7 @@ export default function HistoryTurnDiffReviewDialog({
                   viewType={viewType}
                   isFocused={focusedFileEntry?.index === entry.index}
                   onToggleFocus={() => handleToggleFileFocus(entry.index)}
+                  onFileMenu={onFileMenu}
                 />
               ))}
             </div>

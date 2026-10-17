@@ -3,12 +3,22 @@
 
 import React, { useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { MarkdownHooks, defaultUrlTransform, type ExtraProps, type Components } from "react-markdown";
+import Markdown, { MarkdownHooks, defaultUrlTransform, type ExtraProps, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import { rehypePrettyCode } from "rehype-pretty-code";
 import { useTranslation } from "react-i18next";
+import { Code2, ExternalLink, FileCode2, FileText, Folder } from "lucide-react";
+import type { Data as HastData } from "hast";
+import HistoryCopyButton from "@/components/history/history-copy-button";
 import { cn } from "@/lib/utils";
+
+declare module "hast" {
+  interface Data {
+    /** 保存高亮前的代码原文，保证复制内容与原始空白一致。 */
+    historyCodeSource?: string;
+  }
+}
 
 type HistoryMarkdownProps = {
   /** 原始文本（通常为 history item 的 text）。 */
@@ -45,6 +55,7 @@ type HistoryMarkdownLinkMenuContextValue = {
 };
 
 const HistoryMarkdownLinkMenuContext = React.createContext<HistoryMarkdownLinkMenuContextValue | null>(null);
+const HistoryMarkdownCodeBlockContext = React.createContext(false);
 
 type HistoryBuiltinIdeId = "vscode" | "cursor" | "windsurf" | "rider";
 
@@ -63,10 +74,30 @@ type HistoryGlobalIdeConfig = {
 };
 
 const CODE_BLOCK_CLASS_NAME =
-  "max-w-full overflow-x-auto rounded-apple bg-[var(--cf-surface-muted)] border border-[var(--cf-border)] p-3 text-xs text-[var(--cf-text-primary)] font-mono shadow-apple-inner";
+  "!m-0 max-w-full overflow-x-auto !rounded-none !border-0 !bg-transparent p-3 text-xs text-[var(--cf-text-primary)] font-mono !shadow-none";
 
 const INLINE_CODE_CLASS_NAME =
   "rounded-apple-sm bg-[var(--cf-surface-muted)] px-1.5 py-0.5 text-[0.85em] text-[var(--cf-text-primary)] font-mono break-all [overflow-wrap:anywhere]";
+
+const HISTORY_REMARK_PLUGINS: NonNullable<React.ComponentProps<typeof Markdown>["remarkPlugins"]> = [remarkGfm, remarkBreaks];
+const HISTORY_REHYPE_PLUGINS: NonNullable<React.ComponentProps<typeof Markdown>["rehypePlugins"]> = [
+  preserveHistoryMarkdownCodeSource,
+  [
+    rehypePrettyCode,
+    {
+      // 同时提供明暗主题，代码颜色由现有 CSS 切换。
+      theme: { light: "github-light", dark: "github-dark" },
+      keepBackground: false,
+      defaultLang: "plaintext",
+      bypassInlineCode: true,
+    },
+  ],
+];
+
+/** 保守识别可能的代码块，其余正文同步渲染，避免等待语法高亮。 */
+function mayContainHistoryMarkdownCodeBlock(text: string): boolean {
+  return /`{3,}|~{3,}|\t| {4}/.test(text);
+}
 
 /**
  * 中文说明：判断当前行是否为 fenced code block 的起止行（``` 或 ~~~）。
@@ -402,6 +433,57 @@ function extractPlainTextFromReactNode(node: React.ReactNode): string {
   return "";
 }
 
+/** 去掉链接文本中已经包含的同一行号，供独立的行列标签展示。 */
+export function stripHistoryLocalPathPositionLabel(labelText: string, link: Pick<ResolvedHistoryLocalLink, "line">): string {
+  const label = String(labelText || "");
+  const line = typeof link.line === "number" && link.line > 0 ? Math.floor(link.line) : 0;
+  if (!line) return label;
+  return label.replace(new RegExp(`(?:#L${line}(?:C\\d+)?|#${line}(?::\\d+)?|:${line}(?::\\d+)?)$`, "i"), "");
+}
+
+type HistoryCodeSyntaxNode = {
+  type: string;
+  tagName?: string;
+  value?: string;
+  properties?: Record<string, unknown>;
+  data?: HastData;
+  children?: HistoryCodeSyntaxNode[];
+};
+
+/** 提取语法树中的代码文本，保留 token（词元）之间的原始空格。 */
+function readHistoryCodeSyntaxText(node: HistoryCodeSyntaxNode): string {
+  if (node.type === "text") return String(node.value ?? "");
+  return (node.children || []).map(readHistoryCodeSyntaxText).join("");
+}
+
+/** 在高亮前保存代码原文，避免排版插件为空行补空格后改变复制内容。 */
+function preserveHistoryMarkdownCodeSource() {
+  /** 遍历语法树，仅保存代码块正文，行内代码保持原样。 */
+  return function captureCodeSource(node: HistoryCodeSyntaxNode): void {
+    if (node.type === "element" && node.tagName === "pre") {
+      const codeNode = node.children?.find((child) => child.type === "element" && child.tagName === "code");
+      if (codeNode)
+        codeNode.data = { ...codeNode.data, historyCodeSource: readHistoryCodeSyntaxText(codeNode).replace(/\n$/, "") };
+    }
+    for (const child of node.children || []) captureCodeSource(child);
+  };
+}
+
+/** 从高亮前后的代码节点读取语言和文本，按行恢复高亮结构中的换行。 */
+export function readHistoryMarkdownCodeBlock(node: HistoryCodeSyntaxNode | undefined): { language: string; text: string } {
+  const codeNode = node?.children?.find((child) => child.type === "element" && child.tagName === "code");
+  if (!codeNode) return { language: "", text: "" };
+  const className = codeNode.properties?.className;
+  const classes = Array.isArray(className) ? className.join(" ") : String(className || "");
+  const language = String(codeNode.properties?.["data-language"] ?? node?.properties?.["data-language"] ?? classes.match(/(?:^|\s)language-([^\s]+)/)?.[1] ?? "");
+  const lines = codeNode.children?.filter((child) => child.type === "element" && child.properties && Object.prototype.hasOwnProperty.call(child.properties, "data-line"));
+  const originalSource = codeNode.data?.historyCodeSource;
+  const text = typeof originalSource === "string"
+    ? originalSource
+    : lines?.length ? lines.map(readHistoryCodeSyntaxText).join("\n") : readHistoryCodeSyntaxText(codeNode).replace(/\n$/, "");
+  return { language, text };
+}
+
 /**
  * 中文说明：归一化内置 IDE 标识，非法时返回 null。
  */
@@ -523,22 +605,33 @@ async function openHistoryLocalPath(link: ResolvedHistoryLocalLink, projectRootP
  * 中文说明：Markdown 链接渲染，默认走 Host API 打开外部链接，避免在 Electron 内部直接跳转。
  */
 function MarkdownLink(props: MarkdownAnchorProps) {
-  const { href, onClick, onContextMenu, children, className, ...rest } = props;
+  const { href, onClick, onContextMenu, children, className, node: _node, ...rest } = props;
   const { t } = useTranslation(["history"]);
   const localLink = useMemo(() => resolveHistoryLocalPathLink(String(href || "")), [href]);
+  const isExternalLink = !localLink && /^https?:\/\//i.test(String(href || ""));
   const safeHref = localLink ? "#" : href;
   const labelText = useMemo(() => extractPlainTextFromReactNode(children), [children]);
-  const positionSuffix = useMemo(() => formatHistoryLocalPathPositionSuffix(localLink), [localLink]);
-  const shouldAppendPositionSuffix = useMemo(
-    () => shouldAppendHistoryLocalPathPositionSuffix(labelText, localLink),
+  const localLabelText = useMemo(
+    () => localLink ? stripHistoryLocalPathPositionLabel(labelText, localLink) : labelText,
     [labelText, localLink],
   );
+  const isFolderLink = /[\\/]$/.test(localLink?.openPath || "") || /目录|文件夹|(?:^|\s)(?:folder|directory)(?:$|\s)/i.test(labelText);
+  const LocalPathIcon = isFolderLink
+    ? Folder
+    : /\.(?:[cm]?[jt]sx?|cs|cpp|c|h|hpp|py|rs|go|java|rb|php|sh|ps1|bat|cmd|sql|json|ya?ml|toml|xml|html|css|scss|vue|svelte)$/i.test(localLink?.openPath || "")
+      ? FileCode2
+      : FileText;
   const menuCtx = useContext(HistoryMarkdownLinkMenuContext);
   return (
     <a
       {...rest}
-      className={cn("break-words [overflow-wrap:anywhere]", className)}
+      className={cn(
+        "break-words [overflow-wrap:anywhere]",
+        (localLink || isExternalLink) && "rounded-apple-sm !font-medium !text-[var(--cf-accent)] !no-underline decoration-current hover:!underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--cf-accent)] [&_code]:!bg-transparent [&_code]:!px-0 [&_code]:!py-0 [&_code]:!text-inherit [&_code]:!text-[1em]",
+        className,
+      )}
       href={safeHref}
+      title={localLink?.rawPath || rest.title}
       onContextMenu={async (e) => {
         try {
           if (onContextMenu) onContextMenu(e);
@@ -587,27 +680,53 @@ function MarkdownLink(props: MarkdownAnchorProps) {
         } catch {}
       }}
     >
-      {children}
-      {shouldAppendPositionSuffix ? positionSuffix : null}
+      {localLink ? <LocalPathIcon aria-hidden="true" className="mr-1 inline-block h-[1em] w-[1em] align-[-0.125em]" /> : null}
+      {isExternalLink ? <ExternalLink aria-hidden="true" className="mr-1 inline-block h-[0.9em] w-[0.9em] align-[-0.1em]" /> : null}
+      {localLabelText === labelText ? children : localLabelText}
+      {localLink?.line ? (
+        <span data-history-search-ignore className="ml-1 whitespace-nowrap text-[0.9em]">
+          ({localLink.column
+            ? t("history:localFileLineColumn", { line: localLink.line, column: localLink.column })
+            : t("history:localFileLine", { line: localLink.line })})
+        </span>
+      ) : null}
     </a>
   );
 }
 
 /**
- * 中文说明：Markdown 代码块容器渲染（统一应用滚动、背景、边框与字体样式）。
+ * 为代码块提供语言标题和独立复制按钮，保留内部横向滚动与语法高亮。
  */
 function MarkdownPre(props: MarkdownPreProps) {
-  const { className, ...rest } = props;
-  return <pre {...rest} className={cn(CODE_BLOCK_CLASS_NAME, className)} />;
+  const { className, children, node, ...rest } = props;
+  const { t } = useTranslation(["history"]);
+  const { language, text } = useMemo(() => readHistoryMarkdownCodeBlock(node), [node]);
+  const languageLabel = !language || language === "plaintext" || language === "text"
+    ? t("history:codeBlockPlainText")
+    : language;
+  return (
+    <div className="not-prose max-w-full overflow-hidden rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-muted)] shadow-apple-inner">
+      <div className="flex items-center justify-between gap-2 border-b border-[var(--cf-border)] px-3 py-1.5 text-xs text-[var(--cf-text-secondary)]">
+        <span data-history-search-ignore className="flex min-w-0 items-center gap-1.5 font-mono">
+          <Code2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+          <span className="truncate">{languageLabel}</span>
+        </span>
+        <HistoryCopyButton text={text} disabled={!text} className="h-7 w-7 shrink-0" iconClassName="h-3.5 w-3.5" />
+      </div>
+      <HistoryMarkdownCodeBlockContext.Provider value={true}>
+        <pre {...rest} className={cn(CODE_BLOCK_CLASS_NAME, className)}>{children}</pre>
+      </HistoryMarkdownCodeBlockContext.Provider>
+    </div>
+  );
 }
 
 /**
  * 中文说明：Markdown code 渲染：尽量只对行内 code 追加样式，避免影响代码块的高亮结构。
  */
 function MarkdownCode(props: MarkdownCodeProps) {
-  const { className, ...rest } = props;
-  // 经验规则：block code 通常带 className（language-xxx / shiki 等），行内 code 多数没有。
-  const shouldStyleInline = !className;
+  const { className, node: _node, ...rest } = props;
+  const inCodeBlock = useContext(HistoryMarkdownCodeBlockContext);
+  const shouldStyleInline = !inCodeBlock && !className;
   return <code {...rest} className={cn(shouldStyleInline ? INLINE_CODE_CLASS_NAME : "", className)} />;
 }
 
@@ -632,7 +751,7 @@ const MARKDOWN_COMPONENTS: Components = {
 
 /**
  * 中文说明：历史详情专用 Markdown 渲染器。
- * - 采用 react-markdown 的 Hooks 版本以支持 async rehype（rehype-pretty-code）；
+ * - 普通正文同步渲染，代码块采用 Hooks 版本等待异步语法高亮；
  * - 内置轻量预处理修复，尽量贴近 Cursor 插件的展示细节；
  * - 默认使用 prose 排版，并通过 data-history-search-scope 标记可搜索内容区域。
  */
@@ -654,6 +773,7 @@ export function HistoryMarkdown(props: HistoryMarkdownProps) {
   const [globalIdeConfig, setGlobalIdeConfig] = useState<HistoryGlobalIdeConfig>({ mode: "auto" });
 
   const processed = useMemo(() => preprocessHistoryMarkdown(text), [text]);
+  const hasCodeBlock = useMemo(() => mayContainHistoryMarkdownCodeBlock(processed), [processed]);
   const closeLocalPathMenu = useCallback(() => {
     setLocalPathMenu({ open: false, x: 0, y: 0, link: null });
   }, []);
@@ -867,22 +987,9 @@ export function HistoryMarkdown(props: HistoryMarkdownProps) {
           data-history-search-scope
           className={cn("cf-history-markdown prose prose-sm min-w-0 max-w-none overflow-hidden break-words [overflow-wrap:anywhere] dark:prose-invert", className)}
         >
-          <MarkdownHooks
-            remarkPlugins={[remarkGfm, remarkBreaks]}
-            rehypePlugins={[
-              [
-                rehypePrettyCode,
-                {
-                  // 说明：同时提供亮/暗主题，暗色模式通过 CSS 选择 --shiki-dark 覆盖 token 颜色。
-                  theme: { light: "github-light", dark: "github-dark" },
-                  keepBackground: false,
-                  // 说明：默认按纯文本处理未标注语言的代码块，避免加载失败产生噪音日志
-                  defaultLang: "plaintext",
-                  // 说明：行内 code 通常更偏“强调/片段”，不做语法高亮可显著降低处理开销
-                  bypassInlineCode: true,
-                },
-              ],
-            ]}
+          {hasCodeBlock ? <MarkdownHooks
+            remarkPlugins={HISTORY_REMARK_PLUGINS}
+            rehypePlugins={HISTORY_REHYPE_PLUGINS}
             components={MARKDOWN_COMPONENTS}
             urlTransform={transformHistoryMarkdownUrl}
             fallback={
@@ -891,7 +998,11 @@ export function HistoryMarkdown(props: HistoryMarkdownProps) {
             }
           >
             {processed}
-          </MarkdownHooks>
+          </MarkdownHooks> : <Markdown
+            remarkPlugins={HISTORY_REMARK_PLUGINS}
+            components={MARKDOWN_COMPONENTS}
+            urlTransform={transformHistoryMarkdownUrl}
+          >{processed}</Markdown>}
         </div>
       </HistoryMarkdownLinkMenuContext.Provider>
 

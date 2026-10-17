@@ -53,13 +53,15 @@ function summarizeInteractiveImagePreviewLogValue(value: unknown): unknown {
 }
 
 /**
- * 中文说明：判断当前渲染环境是否需要把本地图片来源物化为 `data:` URL。
+ * 中文说明：判断图片来源是否需要由主进程物化为可显示地址。
+ * - 历史图片引用在开发和打包环境均按需读取；
  * - 开发态 `http://127.0.0.1:5173` 无法直接加载 `file:///`；
  * - 打包态 `file://` 仍保留原始本地地址，避免不必要的内存放大。
  */
 function shouldMaterializeInteractiveImagePreviewSource(value?: string): boolean {
   const raw = String(value || "").trim();
   if (!raw) return false;
+  if (/^codexflow-history-image:/i.test(raw)) return true;
   if (!INTERACTIVE_IMAGE_PREVIEW_LOCAL_SOURCE_PATTERN.test(raw)) return false;
   if (typeof window === "undefined") return false;
   const protocol = String(window.location.protocol || "").toLowerCase();
@@ -134,10 +136,16 @@ export default function InteractiveImagePreview({
   const [preparedFallbackSrc, setPreparedFallbackSrc] = useState<string>(() => (
     shouldMaterializeInteractiveImagePreviewSource(stableFallbackSrc) ? "" : stableFallbackSrc
   ));
+  const [preparedSourcePair, setPreparedSourcePair] = useState(() => ({ primarySrc, fallbackSrc: stableFallbackSrc }));
+  const preparedSourcesAreCurrent = preparedSourcePair.primarySrc === primarySrc && preparedSourcePair.fallbackSrc === stableFallbackSrc;
+  const [requestedFallback, setRequestedFallback] = useState<{ primarySrc: string; fallbackSrc: string } | null>(() => (
+    primarySrc ? null : { primarySrc, fallbackSrc: stableFallbackSrc }
+  ));
+  const fallbackRequested = requestedFallback?.primarySrc === primarySrc && requestedFallback?.fallbackSrc === stableFallbackSrc;
   const [resolvedSrc, setResolvedSrc] = useState<string>(() => {
     const nextPrimarySrc = shouldMaterializeInteractiveImagePreviewSource(primarySrc) ? "" : primarySrc;
     const nextFallbackSrc = shouldMaterializeInteractiveImagePreviewSource(stableFallbackSrc) ? "" : stableFallbackSrc;
-    return nextPrimarySrc || nextFallbackSrc;
+    return nextPrimarySrc || (!primarySrc ? nextFallbackSrc : "");
   });
   const [hoverRect, setHoverRect] = useState<DOMRect | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -153,6 +161,11 @@ export default function InteractiveImagePreview({
   const dialogDragStateRef = useRef<InteractiveImagePreviewDragState | null>(null);
   const previewInitLogKeyRef = useRef<string>("");
   const previewLoadLogKeysRef = useRef<Set<string>>(new Set());
+  const previewLogContextRef = useRef({ title: dialogTitle, alt });
+
+  useEffect(() => {
+    previewLogContextRef.current = { title: dialogTitle, alt };
+  }, [alt, dialogTitle]);
 
   /**
    * 中文说明：写入图片预览链路关键日志，帮助定位真实 `src/currentSrc` 与回退切换过程。
@@ -176,6 +189,9 @@ export default function InteractiveImagePreview({
     const nextDirectFallbackSrc = shouldMaterializeInteractiveImagePreviewSource(stableFallbackSrc) ? "" : stableFallbackSrc;
     setPreparedPrimarySrc(nextDirectPrimarySrc);
     setPreparedFallbackSrc(nextDirectFallbackSrc);
+    setPreparedSourcePair((previous) => previous.primarySrc === primarySrc && previous.fallbackSrc === stableFallbackSrc
+      ? previous : { primarySrc, fallbackSrc: stableFallbackSrc });
+    setRequestedFallback(primarySrc ? null : { primarySrc, fallbackSrc: stableFallbackSrc });
 
     (async () => {
       const nextPrimarySrc = shouldMaterializeInteractiveImagePreviewSource(primarySrc)
@@ -183,26 +199,37 @@ export default function InteractiveImagePreview({
         : nextDirectPrimarySrc;
       if (!active) return;
       setPreparedPrimarySrc(nextPrimarySrc);
+      if (!nextPrimarySrc && stableFallbackSrc)
+        setRequestedFallback({ primarySrc, fallbackSrc: stableFallbackSrc });
       if (nextPrimarySrc && nextPrimarySrc !== primarySrc)
-        logInteractiveImagePreview("materialized", { title: dialogTitle, alt, from: primarySrc, toKind: nextPrimarySrc, slot: "primary" });
-
-      const nextFallbackSrc = shouldMaterializeInteractiveImagePreviewSource(stableFallbackSrc)
-        ? await materializeInteractiveImagePreviewSource(stableFallbackSrc)
-        : nextDirectFallbackSrc;
-      if (!active) return;
-      setPreparedFallbackSrc(nextFallbackSrc);
-      if (nextFallbackSrc && nextFallbackSrc !== stableFallbackSrc)
-        logInteractiveImagePreview("materialized", { title: dialogTitle, alt, from: stableFallbackSrc, toKind: nextFallbackSrc, slot: "fallback" });
+        logInteractiveImagePreview("materialized", { ...previewLogContextRef.current, from: primarySrc, toKind: nextPrimarySrc, slot: "primary" });
     })();
 
     return () => {
       active = false;
     };
-  }, [alt, dialogTitle, logInteractiveImagePreview, primarySrc, stableFallbackSrc]);
+  }, [logInteractiveImagePreview, primarySrc, stableFallbackSrc]);
 
   useEffect(() => {
-    setResolvedSrc(preparedPrimarySrc || preparedFallbackSrc);
-  }, [preparedFallbackSrc, preparedPrimarySrc]);
+    if (!fallbackRequested || !stableFallbackSrc) return;
+    let active = true;
+
+    /** 仅在主图不可用后读取回退图，丢弃换图或卸载后的旧结果。 */
+    const prepareFallback = async () => {
+      const nextFallbackSrc = await materializeInteractiveImagePreviewSource(stableFallbackSrc);
+      if (!active) return;
+      setPreparedFallbackSrc(nextFallbackSrc);
+      if (nextFallbackSrc && nextFallbackSrc !== stableFallbackSrc)
+        logInteractiveImagePreview("materialized", { ...previewLogContextRef.current, from: stableFallbackSrc, toKind: nextFallbackSrc, slot: "fallback" });
+    };
+    void prepareFallback();
+
+    return () => { active = false; };
+  }, [fallbackRequested, logInteractiveImagePreview, primarySrc, stableFallbackSrc]);
+
+  useEffect(() => {
+    setResolvedSrc(preparedSourcesAreCurrent ? (fallbackRequested ? preparedFallbackSrc : preparedPrimarySrc) : "");
+  }, [fallbackRequested, preparedFallbackSrc, preparedPrimarySrc, preparedSourcesAreCurrent]);
 
   useEffect(() => {
     const candidate = primarySrc || stableFallbackSrc;
@@ -239,7 +266,13 @@ export default function InteractiveImagePreview({
    * 中文说明：当主图失效时自动切到回退图；若已无可用回退，则标记为损坏。
    */
   const handleImageError = useCallback((event: React.SyntheticEvent<HTMLImageElement>) => {
+    // 换图提交到预备状态更新之间，旧图片的错误不能触发新图片的回退。
+    const expectedSrc = fallbackRequested ? preparedFallbackSrc : preparedPrimarySrc;
+    if (!preparedSourcesAreCurrent || !expectedSrc || resolvedSrc !== expectedSrc || event.currentTarget.getAttribute("src") !== expectedSrc)
+      return;
     const currentSrc = String(event.currentTarget.currentSrc || event.currentTarget.src || "");
+    const canUseFallback = !!stableFallbackSrc && !fallbackRequested && primarySrc !== stableFallbackSrc
+      && (!preparedFallbackSrc || resolvedSrc !== preparedFallbackSrc);
     logInteractiveImagePreview("error", {
       title: dialogTitle,
       alt,
@@ -249,16 +282,16 @@ export default function InteractiveImagePreview({
       currentSrc,
       naturalWidth: Number(event.currentTarget.naturalWidth || 0),
       naturalHeight: Number(event.currentTarget.naturalHeight || 0),
-      action: stableFallbackSrc && resolvedSrc !== stableFallbackSrc ? "switch-fallback" : "mark-broken",
+      action: canUseFallback ? "switch-fallback" : "mark-broken",
     });
-    if (preparedFallbackSrc && resolvedSrc !== preparedFallbackSrc) {
-      setResolvedSrc(preparedFallbackSrc);
+    if (canUseFallback) {
+      setRequestedFallback({ primarySrc, fallbackSrc: stableFallbackSrc });
       return;
     }
     try {
       event.currentTarget.dataset.cfPreviewBroken = "1";
     } catch {}
-  }, [alt, dialogTitle, logInteractiveImagePreview, preparedFallbackSrc, primarySrc, resolvedSrc, stableFallbackSrc]);
+  }, [alt, dialogTitle, fallbackRequested, logInteractiveImagePreview, preparedFallbackSrc, preparedPrimarySrc, preparedSourcesAreCurrent, primarySrc, resolvedSrc, stableFallbackSrc]);
 
   /**
    * 中文说明：记录触发元素位置，用于在视口中计算悬停预览浮层位置。
