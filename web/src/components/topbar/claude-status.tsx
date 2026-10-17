@@ -9,6 +9,7 @@ import { RotateCcw } from "lucide-react";
 import type { AppSettings, ClaudeUsageSnapshot } from "@/types/host";
 import { CLAUDE_USAGE_REFRESH_EVENT, formatClaudeUsageErrorText } from "@/lib/claude-status";
 import { useHoverCard } from "@/components/topbar/hover-card";
+import { useLatestRequest } from "@/lib/use-latest-request";
 
 type TerminalMode = NonNullable<AppSettings["terminal"]>;
 
@@ -55,13 +56,14 @@ function formatResetTimeMs(ms: number | null | undefined, language?: string): st
  * 解析 Claude 单窗口的“重置时间”展示文案：优先使用抓取到的 resetText，其次使用缓存的 resetAt。
  */
 function resolveClaudeResetLabel(
-  win: { resetText?: string | null } | null | undefined,
+  win: { resetText?: string | null; resetAt?: number | null } | null | undefined,
   resetAtMs: number | null | undefined,
   language: string | undefined,
   fallback: string,
 ): string {
   const text = String(win?.resetText ?? "").trim();
   if (text) return text;
+  if (win?.resetAt != null) return formatResetTimeMs(win.resetAt, language);
   if (Number.isFinite(resetAtMs) && resetAtMs != null) return formatResetTimeMs(resetAtMs, language);
   return fallback;
 }
@@ -95,6 +97,7 @@ function readClaudeUsageCache(envKey: string): ClaudeUsageCacheEntry {
 
 function useClaudeUsageCached(envKey: string): [FetchState<ClaudeUsageSnapshot>, () => void] {
   const { t } = useTranslation(["common"]);
+  const beginRequest = useLatestRequest(envKey);
   const [state, setState] = useState<FetchState<ClaudeUsageSnapshot>>(() => {
     const cached = readClaudeUsageCache(envKey);
     return { loading: false, error: cached.error, data: cached.data };
@@ -106,10 +109,12 @@ function useClaudeUsageCached(envKey: string): [FetchState<ClaudeUsageSnapshot>,
   }, [envKey]);
 
   const fetchUsage = useCallback(async () => {
+    const isCurrent = beginRequest();
     const now = Date.now();
     setState((prev) => ({ ...prev, loading: true, error: null }));
     try {
       const res = await window.host.claude.getUsage();
+      if (!isCurrent()) return;
       if (res.ok) {
         const entry: ClaudeUsageCacheEntry = { attemptedAt: now, error: null, data: res.snapshot ?? null };
         CLAUDE_USAGE_CACHE.set(envKey, entry);
@@ -121,12 +126,13 @@ function useClaudeUsageCached(envKey: string): [FetchState<ClaudeUsageSnapshot>,
         setState({ loading: false, error: errorText, data: null });
       }
     } catch (err) {
+      if (!isCurrent()) return;
       const errorText = formatClaudeUsageErrorText(err, t);
       const entry: ClaudeUsageCacheEntry = { attemptedAt: now, error: errorText, data: null };
       CLAUDE_USAGE_CACHE.set(envKey, entry);
       setState({ loading: false, error: errorText, data: null });
     }
-  }, [envKey, t]);
+  }, [beginRequest, envKey, t]);
 
   return [state, fetchUsage];
 }
@@ -215,9 +221,9 @@ export const ClaudeUsageHoverCard: React.FC<ClaudeUsageHoverCardProps> = ({
 
   const updatedAt = usageState.data?.cachedAt ?? usageState.data?.collectedAt ?? null;
   const sourceLabel = usageState.data
-    ? (usageState.data.source === "ccline-cache"
+    ? (usageState.data.source === "ccline-cache" || usageState.data.source === "oauth-api-cache"
       ? t("common:claudeUsage.sourceCache", "缓存")
-      : usageState.data.source === "tmux-capture"
+      : usageState.data.source === "tmux-capture" || usageState.data.source === "oauth-api"
         ? t("common:claudeUsage.sourceLive", "实时")
         : usageState.data.source)
     : "";
@@ -282,7 +288,7 @@ export const ClaudeUsageHoverCard: React.FC<ClaudeUsageHoverCardProps> = ({
                     {t("common:codexUsage.reset", {
                       time: resolveClaudeResetLabel(
                         usageState.data.windows.sevenDay,
-                        usageState.data.resetAt ?? null,
+                        null,
                         i18n.language,
                         t("common:codexUsage.resetNotProvided", "未提供"),
                       ),
@@ -307,7 +313,7 @@ export const ClaudeUsageHoverCard: React.FC<ClaudeUsageHoverCardProps> = ({
                       {t("common:codexUsage.reset", {
                         time: resolveClaudeResetLabel(
                           usageState.data.windows.weekOpus,
-                          usageState.data.resetAt ?? null,
+                          null,
                           i18n.language,
                           t("common:codexUsage.resetNotProvided", "未提供"),
                         ),

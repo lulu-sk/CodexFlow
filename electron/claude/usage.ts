@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
+import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { perfLogger } from "../log";
 import { winToWslAsync } from "../wsl";
@@ -16,12 +17,14 @@ export type ClaudeUsageWindow = {
   usedPercent: number | null;
   /** 重置时间文本（Claude TUI 原始/解析结果），不可用时为 null。 */
   resetText?: string | null;
+  /** 当前窗口自己的绝对重置时间（ms）。 */
+  resetAt?: number | null;
 };
 
 export type ClaudeUsageSnapshot = {
   providerId: "claude";
-  /** 数据来源：优先读取本地缓存；WSL 下可用 tmux-capture 兜底。 */
-  source: "ccline-cache" | "tmux-capture";
+  /** 数据来源：优先官方接口，缓存与 WSL 终端抓取用于兜底。 */
+  source: "oauth-api" | "oauth-api-cache" | "ccline-cache" | "tmux-capture";
   /** 抓取时间（ms）。 */
   collectedAt: number;
   /** 缓存计算/抓取时间（ms），仅 cache 源可用。 */
@@ -38,19 +41,17 @@ export type ClaudeUsageSnapshot = {
 
 type ProviderRuntimeEnv = { terminal: "wsl" | "windows" | "pwsh" | "cmd"; distro?: string };
 
-type ClaudeApiUsageCache = {
-  five_hour_utilization?: number;
-  seven_day_utilization?: number;
-  resets_at?: string;
-  cached_at?: string;
-};
+let lastVerifiedUsage: { identity: string; snapshot: ClaudeUsageSnapshot } | null = null;
 
+/** 解析有效百分比，缺失值保留未知，不能当作零消耗。 */
 function clampPercent(value: unknown): number | null {
+  if (value == null || (typeof value !== "number" && typeof value !== "string") || String(value).trim() === "") return null;
   const num = typeof value === "number" ? value : Number(String(value ?? ""));
   if (!Number.isFinite(num)) return null;
   return Math.max(0, Math.min(100, num));
 }
 
+/** 解析可选的 ISO 时间。 */
 function toMs(dateText: unknown): number | null {
   const text = String(dateText ?? "").trim();
   if (!text) return null;
@@ -64,6 +65,7 @@ function toMs(dateText: unknown): number | null {
 function execWslWithTimeoutAsync(
   args: string[],
   timeoutMs: number,
+  allowErrorOutput = false,
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     execFile(
@@ -71,7 +73,7 @@ function execWslWithTimeoutAsync(
       args,
       { windowsHide: true, timeout: Math.max(1000, timeoutMs), maxBuffer: 16 * 1024 * 1024 },
       (err, stdout, stderr) => {
-        if (err) return reject(err);
+        if (err && (!allowErrorOutput || !String(stdout ?? "").trim())) return reject(err);
         resolve({
           stdout: Buffer.isBuffer(stdout) ? stdout.toString("utf8") : String(stdout ?? ""),
           stderr: Buffer.isBuffer(stderr) ? stderr.toString("utf8") : String(stderr ?? ""),
@@ -81,69 +83,69 @@ function execWslWithTimeoutAsync(
   });
 }
 
+/** 转义传给 POSIX shell 的单个参数。 */
 function shEscape(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-function resolveClaudeCacheFilePathWindows(): string {
-  const base = String(process.env.CLAUDE_HOME || process.env.CLAUDE_CONFIG_DIR || "").trim();
-  if (base) return path.join(base, "ccline", ".api_usage_cache.json");
-  return path.join(os.homedir(), ".claude", "ccline", ".api_usage_cache.json");
+/** 定位当前 Windows 环境使用的 Claude 配置目录。 */
+function resolveClaudeConfigDirWindows(): string {
+  const base = String(process.env.CLAUDE_CONFIG_DIR || process.env.CLAUDE_HOME || "").trim();
+  return base || path.join(os.homedir(), ".claude");
 }
 
-async function readClaudeCacheFileWindowsAsync(): Promise<string | null> {
+/** 从当前终端环境读取 Claude OAuth 身份，不跨环境读取或修改凭据。 */
+async function readClaudeOAuthTokenAsync(env: ProviderRuntimeEnv): Promise<{ token: string; expired: boolean } | null> {
+  let raw: string;
+  if (env.terminal === "wsl") {
+    const script = 'if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then printf "%s" "$CLAUDE_CODE_OAUTH_TOKEN"; else cat "${CLAUDE_CONFIG_DIR:-${CLAUDE_HOME:-$HOME/.claude}}/.credentials.json" 2>/dev/null || true; fi';
+    const args = [...(env.distro ? ["-d", env.distro] : []), "--", "sh", "-lc", script];
+    raw = (await execWslWithTimeoutAsync(args, 5000)).stdout;
+  } else {
+    const token = String(process.env.CLAUDE_CODE_OAUTH_TOKEN || "").trim();
+    if (token) return { token, expired: false };
+    const configDir = resolveClaudeConfigDirWindows();
+    raw = await fs.readFile(path.join(configDir, ".credentials.json"), "utf8").catch(() => "");
+  }
+  const text = raw.replace(/^\uFEFF/, "").trim();
+  if (!text) return null;
+  if (!text.startsWith("{")) return { token: text, expired: false };
   try {
-    const p = resolveClaudeCacheFilePathWindows();
-    const buf = await fs.readFile(p, "utf8");
-    return String(buf ?? "").trim() || null;
+    const oauth = JSON.parse(text)?.claudeAiOauth;
+    if (typeof oauth?.accessToken !== "string" || !oauth.accessToken.trim()) return null;
+    return { token: oauth.accessToken.trim(), expired: typeof oauth.expiresAt === "number" && oauth.expiresAt <= Date.now() };
   } catch {
     return null;
   }
 }
 
-async function readClaudeCacheFileWslAsync(distro?: string, timeoutMs = 5000): Promise<string | null> {
-  if (os.platform() !== "win32") return null;
-  const args = distro
-    ? ["-d", distro, "--", "sh", "-lc", "cat ~/.claude/ccline/.api_usage_cache.json 2>/dev/null || true"]
-    : ["--", "sh", "-lc", "cat ~/.claude/ccline/.api_usage_cache.json 2>/dev/null || true"];
-  try {
-    const { stdout } = await execWslWithTimeoutAsync(args, timeoutMs);
-    const text = String(stdout ?? "").trim();
-    return text ? text : null;
-  } catch {
-    return null;
-  }
+/** 将官方接口的单个额度窗口转换为界面数据。 */
+function parseClaudeApiWindow(value: any): ClaudeUsageWindow {
+  const usedPercent = clampPercent(value?.utilization);
+  return {
+    usedPercent,
+    remainingPercent: usedPercent == null ? null : 100 - usedPercent,
+    resetAt: toMs(value?.resets_at),
+  };
 }
 
-function parseClaudeCclineCache(text: string): ClaudeUsageSnapshot | null {
-  try {
-    const obj = JSON.parse(String(text || "")) as ClaudeApiUsageCache;
-    const fiveUsed = clampPercent(obj.five_hour_utilization);
-    const weekUsed = clampPercent(obj.seven_day_utilization);
-    if (fiveUsed == null && weekUsed == null) return null;
-
-    const cachedAt = toMs(obj.cached_at);
-    const resetAt = toMs(obj.resets_at);
-    const fiveRem = fiveUsed == null ? null : clampPercent(100 - fiveUsed);
-    const weekRem = weekUsed == null ? null : clampPercent(100 - weekUsed);
-
-    return {
-      providerId: "claude",
-      source: "ccline-cache",
-      collectedAt: Date.now(),
-      cachedAt,
-      resetAt,
-      windows: {
-        fiveHour: { usedPercent: fiveUsed, remainingPercent: fiveRem },
-        sevenDay: { usedPercent: weekUsed, remainingPercent: weekRem },
-        weekOpus: null,
-      },
-    };
-  } catch {
-    return null;
-  }
+/** 使用官方 OAuth 用量接口读取当前账号的实时额度。 */
+async function fetchClaudeUsageAsync(token: string): Promise<ClaudeUsageSnapshot> {
+  const response = await fetch("https://api.anthropic.com/api/oauth/usage", {
+    headers: { Authorization: `Bearer ${token}`, "anthropic-beta": "oauth-2025-04-20", Accept: "application/json" },
+    signal: AbortSignal.timeout(12_000),
+  });
+  if (!response.ok) throw Object.assign(new Error(`Claude 用量请求失败：HTTP ${response.status}`), { status: response.status });
+  const data = await response.json() as any;
+  const fiveHour = parseClaudeApiWindow(data?.five_hour);
+  const sevenDay = parseClaudeApiWindow(data?.seven_day);
+  const weekOpus = data?.seven_day_opus ? parseClaudeApiWindow(data.seven_day_opus) : null;
+  if (fiveHour.usedPercent == null && sevenDay.usedPercent == null && weekOpus?.usedPercent == null)
+    throw new Error("Claude 用量接口未返回有效额度");
+  return { providerId: "claude", source: "oauth-api", collectedAt: Date.now(), windows: { fiveHour, sevenDay, weekOpus } };
 }
 
+/** 定位随应用打包的 Claude 终端抓取脚本。 */
 function resolveBundledClaudeCaptureScriptPath(): string | null {
   const cands: string[] = [];
   try {
@@ -161,6 +163,7 @@ function resolveBundledClaudeCaptureScriptPath(): string | null {
   return null;
 }
 
+/** 在当前 WSL 发行版启动独立终端会话并抓取官方用量界面。 */
 async function runClaudeUsageCaptureWslAsync(
   distro?: string,
   timeoutMs = 30_000,
@@ -183,7 +186,7 @@ async function runClaudeUsageCaptureWslAsync(
 
   const args = distro ? ["-d", distro, "--", "sh", "-lc", cmd] : ["--", "sh", "-lc", cmd];
 
-  const { stdout } = await execWslWithTimeoutAsync(args, timeoutMs);
+  const { stdout } = await execWslWithTimeoutAsync(args, timeoutMs, true);
   const text = String(stdout ?? "").trim();
   if (!text) return null;
   const obj = JSON.parse(text) as any;
@@ -228,29 +231,46 @@ async function runClaudeUsageCaptureWslAsync(
 }
 
 /**
- * 获取 Claude Code 用量快照（优先读取本地缓存；WSL 下支持 tmux-capture 兜底）。
+ * 优先读取官方实时用量，仅复用相同凭据的短时成功缓存；WSL 下保留终端抓取兜底。
  */
 export async function getClaudeUsageSnapshotAsync(env: ProviderRuntimeEnv): Promise<ClaudeUsageSnapshot> {
   return perfLogger.time("[claude] usage snapshot", async () => {
     const terminal = env.terminal;
+    let apiError: unknown = null;
+    const credential = await readClaudeOAuthTokenAsync(env).catch(() => null);
+    if (credential && !credential.expired) {
+      const identity = createHash("sha256").update(`${terminal}:${env.distro || ""}\0${credential.token}`).digest("hex");
+      if (lastVerifiedUsage?.identity !== identity) lastVerifiedUsage = null;
+      try {
+        const snapshot = await fetchClaudeUsageAsync(credential.token);
+        lastVerifiedUsage = { identity, snapshot };
+        return snapshot;
+      }
+      catch (error) {
+        if ([401, 403].includes(Number((error as { status?: number })?.status))) {
+          lastVerifiedUsage = null;
+          throw error;
+        }
+        const cached = lastVerifiedUsage?.identity === identity ? lastVerifiedUsage.snapshot : null;
+        if (cached && Date.now() - cached.collectedAt >= 0 && Date.now() - cached.collectedAt <= 5 * 60_000)
+          return { ...cached, source: "oauth-api-cache", cachedAt: cached.collectedAt, collectedAt: Date.now() };
+        apiError = error;
+      }
+    } else lastVerifiedUsage = null;
     if (terminal === "wsl") {
-      const cache = await readClaudeCacheFileWslAsync(env.distro);
-      const parsed = cache ? parseClaudeCclineCache(cache) : null;
-      if (parsed) return parsed;
-
       const viaScript = await runClaudeUsageCaptureWslAsync(env.distro).catch((e) => {
         // 脚本错误直接向上抛（用于 UI 显示）
         throw e;
       });
       if (viaScript) return viaScript;
+      if (apiError) throw apiError;
       throw new Error("Claude 用量信息不可用（未找到缓存，且 WSL 抓取失败）");
     }
 
     if (terminal === "windows" || terminal === "pwsh" || terminal === "cmd") {
-      const cache = await readClaudeCacheFileWindowsAsync();
-      const parsed = cache ? parseClaudeCclineCache(cache) : null;
-      if (parsed) return parsed;
-      throw new Error("未找到 Claude 用量缓存文件：~/.claude/ccline/.api_usage_cache.json");
+      if (apiError) throw apiError;
+      if (credential?.expired) throw new Error("Claude 登录凭据已过期，请先在当前运行环境重新登录 Claude Code");
+      throw new Error("Claude 用量信息不可用，请先在当前运行环境登录 Claude Code");
     }
 
     throw new Error("Claude 用量信息不可用：未知运行环境");

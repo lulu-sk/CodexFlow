@@ -21,6 +21,7 @@ const CLAUDE_CLI_NOT_FOUND_PATTERNS = [
 ];
 
 const CLAUDE_AUTH_REQUIRED_PATTERNS = [
+  /HTTP\s+(401|403)\b/i,
   /\bauth_required_or_cli_prompted_login\b/i,
   /\bnot\s+logged\s+in\b/i,
   /需要登录/i,

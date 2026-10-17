@@ -116,7 +116,7 @@ booted=false
 
 while [ $iterations -lt $max_iterations ]; do
   sleep "$SLEEP_BOOT"
-  ((iterations++))
+  iterations=$((iterations+1))
 
   output=$("$TMUX_CMD" -L "$LABEL" capture-pane -t "$SESSION:0.0" -p 2>/dev/null || echo "")
 
@@ -265,7 +265,8 @@ extract_pct_and_reset() {
     }
   ')
 
-  echo "$pct" "$resets"
+  # 保留百分比占位，避免 read 把重置时间误当作百分比。
+  echo "${pct:-null}" "$resets"
 }
 
 read session_pct session_resets < <(extract_pct_and_reset "Current session")
@@ -279,12 +280,12 @@ fi
 
 if echo "$usage_output" | grep -q "Current week (Opus)"; then
   read week_opus_pct week_opus_resets < <(extract_pct_and_reset "Current week (Opus)")
-  week_opus_json="{\"pct_left\": ${week_opus_pct:-0}, \"resets\": \"${week_opus_resets}\"}"
+  week_opus_json="{\"pct_left\": ${week_opus_pct:-null}, \"resets\": \"${week_opus_resets}\"}"
 else
   week_opus_json="null"
 fi
 
-if [ -z "$session_pct" ] || [ -z "$week_all_pct" ]; then
+if [ "$session_pct" = "null" ] || [ "$week_all_pct" = "null" ]; then
   "$TMUX_CMD" -L "$LABEL" send-keys -t "$SESSION:0.0" Escape 2>/dev/null || true
   sleep 0.2
   "$TMUX_CMD" -L "$LABEL" send-keys -t "$SESSION:0.0" "/" 2>/dev/null
@@ -298,7 +299,7 @@ if [ -z "$session_pct" ] || [ -z "$week_all_pct" ]; then
   read week_all_pct week_all_resets < <(extract_pct_and_reset "Current week")
 fi
 
-if [ -z "$session_pct" ] || [ -z "$week_all_pct" ]; then
+if [ "$session_pct" = "null" ] || [ "$week_all_pct" = "null" ]; then
   if [ "${CLAUDE_TUI_DEBUG:-0}" != "0" ]; then
     debug_file="$(mktemp -t claude_usage_pane)"
     echo "$usage_output" > "$debug_file"
