@@ -6,6 +6,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { perfLogger } from "../log";
+import { resolveGeminiOAuthClientConfigAsync, resolveGeminiUsageUserAgentAsync } from "./oauthClient";
 
 export type GeminiQuotaBucket = {
   remainingAmount?: string;
@@ -31,17 +32,21 @@ type GeminiOauthCredsFile = {
   expiry_date?: number;
   token_type?: string;
   scope?: string;
+  projectHint?: string;
 };
 
 type LoadCodeAssistResponse = {
   currentTier?: { id?: string };
+  paidTier?: { id?: string };
   cloudaicompanionProject?: string;
   allowedTiers?: Array<{ id?: string; isDefault?: boolean }>;
+  ineligibleTiers?: Array<{ reasonCode?: string; reasonMessage?: string; validationUrl?: string }>;
 };
 
 type LongRunningOperationResponse = {
   name?: string;
   done?: boolean;
+  error?: { code?: number; message?: string };
   response?: { cloudaicompanionProject?: { id?: string } };
 };
 
@@ -55,26 +60,12 @@ type GeminiOAuthClientConfig = {
 };
 
 /**
- * 解析 Gemini OAuth 客户端配置（用于用 refresh_token 刷新 access_token）。
- *
- * 注意：由于仓库安全策略（GitHub Push Protection），项目源码中不允许硬编码任何 OAuth Client ID/Secret；
- * 若希望启用自动刷新，请自行创建 OAuth 客户端，并通过环境变量注入：
- * - CODEXFLOW_GEMINI_OAUTH_CLIENT_ID
- * - CODEXFLOW_GEMINI_OAUTH_CLIENT_SECRET
- */
-function resolveGeminiOAuthClientConfigFromEnv(): GeminiOAuthClientConfig | null {
-  const clientId = String(process.env.CODEXFLOW_GEMINI_OAUTH_CLIENT_ID || "").trim();
-  const clientSecret = String(process.env.CODEXFLOW_GEMINI_OAUTH_CLIENT_SECRET || "").trim();
-  if (!clientId || !clientSecret) return null;
-  return { clientId, clientSecret };
-}
-
-/**
  * 解析 Code Assist 的 baseUrl（允许通过环境变量覆盖 endpoint）。
  */
 function getCodeAssistBaseUrl(): string {
   const endpoint = String(process.env.CODE_ASSIST_ENDPOINT || CODE_ASSIST_ENDPOINT).trim() || CODE_ASSIST_ENDPOINT;
-  return `${endpoint}/${CODE_ASSIST_API_VERSION}`;
+  const version = String(process.env.CODE_ASSIST_API_VERSION || CODE_ASSIST_API_VERSION).trim() || CODE_ASSIST_API_VERSION;
+  return `${endpoint}/${version}`;
 }
 
 /**
@@ -141,12 +132,12 @@ async function refreshAccessTokenAsync(
   );
   if (!res.ok) {
     const msg = String(res.data?.error_description || res.data?.error || res.raw || `HTTP ${res.status}`).trim();
-    throw new Error(`Gemini token 刷新失败：${msg}`);
+    throw Object.assign(new Error(`Gemini token 刷新失败：${msg}`), { status: res.status, code: res.data?.error });
   }
 
   const accessToken = String(res.data?.access_token || "").trim();
   const expiresIn = Number(res.data?.expires_in ?? 0);
-  if (!accessToken) throw new Error("Gemini token 刷新失败：未返回 access_token");
+  if (!accessToken) throw Object.assign(new Error("Gemini token 刷新失败：未返回 access_token"), { status: res.status, code: "missing_access_token" });
   const expiryDateMs = Date.now() + Math.max(60, expiresIn) * 1000;
   return { accessToken, expiryDateMs };
 }
@@ -156,7 +147,7 @@ async function refreshAccessTokenAsync(
  */
 function resolveGeminiHomeWindows(): string {
   const base = String(process.env.GEMINI_HOME || "").trim();
-  return base || path.join(os.homedir(), ".gemini");
+  return base || path.join(String(process.env.GEMINI_CLI_HOME || "").trim() || os.homedir(), ".gemini");
 }
 
 /**
@@ -183,7 +174,7 @@ async function readGeminiOauthCredsWindowsAsync(): Promise<GeminiOauthCredsFile 
     const home = resolveGeminiHomeWindows();
     const p = path.join(home, "oauth_creds.json");
     const raw = await fs.readFile(p, "utf8");
-    const obj = JSON.parse(String(raw || "")) as GeminiOauthCredsFile;
+    const obj = JSON.parse(String(raw || "").replace(/^\uFEFF/, "")) as GeminiOauthCredsFile;
     if (!obj || typeof obj !== "object") return null;
     return obj;
   } catch {
@@ -213,13 +204,13 @@ function execWslTextAsync(args: string[], timeoutMs: number): Promise<string> {
  */
 async function readGeminiOauthCredsWslAsync(distro?: string): Promise<GeminiOauthCredsFile | null> {
   if (os.platform() !== "win32") return null;
-  const cmd = "cat ~/.gemini/oauth_creds.json 2>/dev/null || true";
+  const cmd = 'cat "${GEMINI_HOME:-${GEMINI_CLI_HOME:-$HOME}/.gemini}/oauth_creds.json" 2>/dev/null || true';
   const args = distro ? ["-d", distro, "--", "sh", "-lc", cmd] : ["--", "sh", "-lc", cmd];
   try {
     const raw = await execWslTextAsync(args, 5000);
     const text = String(raw || "").trim();
     if (!text) return null;
-    const obj = JSON.parse(text) as GeminiOauthCredsFile;
+    const obj = JSON.parse(text.replace(/^\uFEFF/, "")) as GeminiOauthCredsFile;
     if (!obj || typeof obj !== "object") return null;
     return obj;
   } catch {
@@ -253,24 +244,24 @@ async function fileExistsAsync(p: string): Promise<boolean> {
 /**
  * 获取可用 access_token：若本地 access_token 即将过期，则尝试用 refresh_token 刷新。
  */
-async function resolveValidAccessTokenAsync(creds: GeminiOauthCredsFile): Promise<{ accessToken: string; expiryDateMs: number }> {
+async function resolveValidAccessTokenAsync(creds: GeminiOauthCredsFile, env: ProviderRuntimeEnv, forceRefresh = false): Promise<{ accessToken: string; expiryDateMs: number }> {
   const access = String(creds.access_token || "").trim();
   const refresh = String(creds.refresh_token || "").trim();
   const expiry = Number(creds.expiry_date ?? 0);
   const now = Date.now();
   const safeWindowMs = 90_000;
 
-  if (access && Number.isFinite(expiry) && expiry > now + safeWindowMs) {
+  if (!forceRefresh && access && (!creds.expiry_date || (Number.isFinite(expiry) && expiry > now + safeWindowMs))) {
     return { accessToken: access, expiryDateMs: expiry };
   }
   if (!refresh) {
     throw new Error("Gemini 未提供 refresh_token，请先在终端重新登录（gemini → Login with Google）");
   }
 
-  const oauth = resolveGeminiOAuthClientConfigFromEnv();
+  const oauth = await resolveGeminiOAuthClientConfigAsync(env);
   if (!oauth) {
     throw new Error(
-      "Gemini access_token 已过期，且未配置 OAuth 客户端用于自动刷新（需要 client_id/client_secret）。" +
+      "Gemini access_token 已过期，且未能从已安装 CLI 读取 OAuth 客户端配置。" +
       "请在对应运行环境运行 `gemini` 并重新登录以更新 oauth_creds.json，或设置环境变量 " +
       "CODEXFLOW_GEMINI_OAUTH_CLIENT_ID / CODEXFLOW_GEMINI_OAUTH_CLIENT_SECRET 后重试。"
     );
@@ -286,6 +277,7 @@ async function codeAssistPostAsync<T extends object>(
   body: T,
   accessToken: string,
   timeoutMs: number,
+  userAgent: string,
 ): Promise<any> {
   const res = await fetchJsonWithTimeoutAsync(
     methodUrl(method),
@@ -294,6 +286,7 @@ async function codeAssistPostAsync<T extends object>(
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${accessToken}`,
+        "User-Agent": userAgent,
       },
       body: JSON.stringify(body),
     },
@@ -302,7 +295,7 @@ async function codeAssistPostAsync<T extends object>(
   if (res.ok) return res.data;
   const message =
     String(res.data?.error?.message || res.data?.error || res.raw || "").trim() || `HTTP ${res.status}`;
-  throw new Error(`Gemini ${method} 请求失败：${message}`);
+  throw Object.assign(new Error(`Gemini ${method} 请求失败：HTTP ${res.status} ${message}`), { status: res.status });
 }
 
 /**
@@ -312,6 +305,7 @@ async function codeAssistGetAsync(
   url: string,
   accessToken: string,
   timeoutMs: number,
+  userAgent: string,
 ): Promise<any> {
   const res = await fetchJsonWithTimeoutAsync(
     url,
@@ -320,6 +314,7 @@ async function codeAssistGetAsync(
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${accessToken}`,
+        "User-Agent": userAgent,
       },
     },
     timeoutMs,
@@ -327,7 +322,7 @@ async function codeAssistGetAsync(
   if (res.ok) return res.data;
   const message =
     String(res.data?.error?.message || res.data?.error || res.raw || "").trim() || `HTTP ${res.status}`;
-  throw new Error(`Gemini 操作请求失败：${message}`);
+  throw Object.assign(new Error(`Gemini 操作请求失败：HTTP ${res.status} ${message}`), { status: res.status });
 }
 
 /**
@@ -357,41 +352,57 @@ function getDefaultTierId(loadRes: LoadCodeAssistResponse): string | null {
   const tiers = Array.isArray(loadRes.allowedTiers) ? loadRes.allowedTiers : [];
   const def = tiers.find((t) => t && t.isDefault && t.id);
   if (def?.id) return String(def.id);
-  const first = tiers.find((t) => t && t.id);
-  if (first?.id) return String(first.id);
-  return null;
+  return "legacy-tier";
+}
+
+/** 缺少可用项目时，优先保留服务器返回的套餐资格原因。 */
+function throwIneligibleOrProjectRequired(loadRes: LoadCodeAssistResponse): never {
+  const ineligible = loadRes.ineligibleTiers?.[0];
+  if (ineligible) {
+    const code = ineligible.reasonCode === "VALIDATION_REQUIRED" ? "GEMINI_ACCOUNT_VALIDATION_REQUIRED" : "GEMINI_TIER_INELIGIBLE";
+    throw Object.assign(new Error(`${code}: ${ineligible.reasonMessage || "该账号当前无法使用 Code Assist"}`), { code });
+  }
+  throw Object.assign(new Error("该账号需要设置 GOOGLE_CLOUD_PROJECT（或 GOOGLE_CLOUD_PROJECT_ID）后才能获取用量"), { code: "project_required" });
 }
 
 /**
  * 确保用户已完成 Code Assist onboarding，并返回 projectId/tierId。
  */
-async function setupUserProjectAsync(accessToken: string): Promise<{ projectId: string; tierId: string | null }> {
-  const projectHint = resolveProjectHintFromEnv();
+async function setupUserProjectAsync(accessToken: string, projectHint: string | undefined, userAgent: string): Promise<{ projectId: string; tierId: string | null }> {
   const loadBody = {
     cloudaicompanionProject: projectHint,
     metadata: coreClientMetadata(projectHint),
   };
-  const loadRes = (await codeAssistPostAsync("loadCodeAssist", loadBody, accessToken, 12_000)) as LoadCodeAssistResponse;
+  const loadRes = (await codeAssistPostAsync("loadCodeAssist", loadBody, accessToken, 12_000, userAgent)) as LoadCodeAssistResponse;
+  if (!loadRes) throw new Error("Gemini loadCodeAssist 未返回账号配置");
 
-  const currentTierId = loadRes?.currentTier?.id ? String(loadRes.currentTier.id) : null;
+  const validationTier = !loadRes.currentTier
+    ? loadRes.ineligibleTiers?.find((tier) => tier.reasonCode === "VALIDATION_REQUIRED" && tier.validationUrl)
+    : undefined;
+  if (validationTier) {
+    const code = "GEMINI_ACCOUNT_VALIDATION_REQUIRED";
+    throw Object.assign(new Error(`${code}: ${validationTier.reasonMessage || "该账号需要完成验证"}`), { code });
+  }
+
+  const currentTierId = loadRes?.currentTier ? String(loadRes.paidTier?.id || loadRes.currentTier.id || "standard-tier") : null;
   const projectFromServer = loadRes?.cloudaicompanionProject ? String(loadRes.cloudaicompanionProject) : null;
   if (currentTierId) {
     if (!projectFromServer) {
       if (projectHint) return { projectId: projectHint, tierId: currentTierId };
-      throw new Error("该账号需要设置 GOOGLE_CLOUD_PROJECT（或 GOOGLE_CLOUD_PROJECT_ID）后才能获取用量");
+      throwIneligibleOrProjectRequired(loadRes);
     }
     return { projectId: projectFromServer, tierId: currentTierId };
   }
 
   // 未完成 onboarding：选择默认 tier 触发一次 onboard，随后轮询 operation
   const tierId = getDefaultTierId(loadRes);
-  if (!tierId) throw new Error("无法确定 Gemini Code Assist Tier");
+  if (!tierId) throw Object.assign(new Error("无法确定 Gemini Code Assist Tier"), { code: "tier_unavailable" });
 
   const onboardBody: any = {
     tierId,
     metadata: coreClientMetadata(projectHint),
   };
-  if (tierId !== "FREE") {
+  if (tierId !== "free-tier" && tierId !== "FREE") {
     onboardBody.cloudaicompanionProject = projectHint;
     onboardBody.metadata = coreClientMetadata(projectHint);
   } else {
@@ -399,18 +410,21 @@ async function setupUserProjectAsync(accessToken: string): Promise<{ projectId: 
     onboardBody.metadata = coreClientMetadata(undefined);
   }
 
-  let op = (await codeAssistPostAsync("onboardUser", onboardBody, accessToken, 20_000)) as LongRunningOperationResponse;
+  let op = (await codeAssistPostAsync("onboardUser", onboardBody, accessToken, 20_000, userAgent)) as LongRunningOperationResponse;
+  const operationName = op?.name;
   const start = Date.now();
   const maxWaitMs = 60_000;
-  while (!op?.done && op?.name && Date.now() - start < maxWaitMs) {
+  while (!op?.done && operationName && Date.now() - start < maxWaitMs) {
     await new Promise((r) => setTimeout(r, 5000));
-    op = (await codeAssistGetAsync(operationUrl(op.name), accessToken, 12_000)) as LongRunningOperationResponse;
+    op = (await codeAssistGetAsync(operationUrl(operationName), accessToken, 12_000, userAgent)) as LongRunningOperationResponse;
   }
+  if (!op?.done) throw new Error("Gemini onboarding 超时，请先在终端完成登录初始化");
+  if (op.error) throw new Error(`Gemini onboarding 失败：${op.error.message || op.error.code || "未知错误"}`);
 
   const fromOp = op?.response?.cloudaicompanionProject?.id ? String(op.response.cloudaicompanionProject.id) : null;
   if (fromOp) return { projectId: fromOp, tierId };
   if (projectHint) return { projectId: projectHint, tierId };
-  throw new Error("Gemini onboarding 未返回 projectId，且未提供 GOOGLE_CLOUD_PROJECT");
+  throwIneligibleOrProjectRequired(loadRes);
 }
 
 /**
@@ -437,10 +451,24 @@ export async function getGeminiQuotaSnapshotAsync(env: ProviderRuntimeEnv): Prom
       throw new Error(`未找到 Gemini 登录凭据（oauth_creds.json）。当前 Gemini 运行环境为 Windows，因此只会读取：${winPath}。请先运行 \`gemini\` 并完成登录。`);
     }
 
-    const { accessToken } = await resolveValidAccessTokenAsync(creds);
-    const { projectId, tierId } = await setupUserProjectAsync(accessToken);
-    // 兼容：部分后端不接受 userAgent 字段（会报 Unknown name "userAgent"），因此仅传 project。
-    const quota = await codeAssistPostAsync("retrieveUserQuota", { project: projectId }, accessToken, 12_000);
+    let { accessToken } = await resolveValidAccessTokenAsync(creds, env);
+    const userAgent = await resolveGeminiUsageUserAgentAsync(env);
+    const projectHint = env.terminal === "wsl"
+      ? (await execWslTextAsync([...(env.distro ? ["-d", env.distro] : []), "--", "sh", "-lc",
+        'printf "%s" "${GOOGLE_CLOUD_PROJECT:-$GOOGLE_CLOUD_PROJECT_ID}"'], 5000)).trim() || undefined
+      : resolveProjectHintFromEnv();
+    let project: { projectId: string; tierId: string | null };
+    let quota: any;
+    try {
+      project = await setupUserProjectAsync(accessToken, projectHint, userAgent);
+      quota = await codeAssistPostAsync("retrieveUserQuota", { project: project.projectId }, accessToken, 12_000, userAgent);
+    } catch (error) {
+      if ((error as { status?: number })?.status !== 401) throw error;
+      ({ accessToken } = await resolveValidAccessTokenAsync(creds, env, true));
+      project = await setupUserProjectAsync(accessToken, projectHint, userAgent);
+      quota = await codeAssistPostAsync("retrieveUserQuota", { project: project.projectId }, accessToken, 12_000, userAgent);
+    }
+    const { projectId, tierId } = project;
     const buckets = Array.isArray(quota?.buckets) ? (quota.buckets as GeminiQuotaBucket[]) : [];
     return {
       providerId: "gemini",
