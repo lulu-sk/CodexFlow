@@ -154,6 +154,7 @@ import {
   upsertHistoryDetailSessionMessages,
 } from "@/features/history/detail-message-cache";
 import { resolveHistoryDetailTypeFilter } from "@/features/history/detail-type-filter";
+import { HistoryMarkdown } from "@/features/history/renderers/history-markdown";
 import {
   buildHistoryContentItemKey,
   hasVisibleHistoryMessageContent,
@@ -18905,6 +18906,7 @@ function ContentRenderer({
   inlineImageState?: HistoryInlineImageRenderState;
   skipTypes?: string[];
 }) {
+  const { t } = useTranslation(["history"]);
   if (!Array.isArray(items) || items.length === 0) return null;
   return (
     <div className="min-w-0 space-y-2">
@@ -18930,6 +18932,21 @@ function ContentRenderer({
           );
         }
         if (inlineImageState?.hiddenTextItemKeys?.has(contentItemKey)) return null;
+        if (ty === 'system_context' || ty === 'context_summary') {
+          return (
+            <div key={`${kprefix || 'itm'}-context-${i}`} className="min-w-0 overflow-hidden rounded-apple border border-[var(--cf-border)] bg-[var(--cf-surface-muted)] p-3 text-sm text-[var(--cf-text-primary)]">
+              <div className="mb-1 flex min-w-0 items-center justify-between gap-2 text-xs text-[var(--cf-text-secondary)] font-apple-semibold">
+                <span>{ty === 'system_context' ? t('history:typeSystemContext') : t('history:typeContextSummary')}</span>
+                <HistoryCopyButton text={text} />
+              </div>
+              {ty === 'system_context' ? (
+                <pre className={HISTORY_DETAIL_PRE_CLASS_NAME}><code data-history-search-scope>{text}</code></pre>
+              ) : (
+                <HistoryMarkdown text={text} projectRootPath={projectWinPath} />
+              )}
+            </div>
+          );
+        }
         if (ty === 'user_instructions') {
           // 展开显示 user_instructions（移除折叠）
           return (
@@ -20863,7 +20880,7 @@ function HistoryDetail({ sessions, selectedHistoryId, historyDetailRefreshNonce,
                         </div>
                       </div>
                       <span className="text-[0.68rem] font-apple-regular text-[var(--cf-text-primary)] truncate leading-tight">
-                        {k}
+                        {k === "system_context" ? t('history:typeSystemContext') : k === "context_summary" ? t('history:typeContextSummary') : k}
                       </span>
                     </label>
                   ))

@@ -394,8 +394,8 @@ function stripDetailsForPersist(details: Details): Details {
   return { ...rest, messages: [] };
 }
 
-// 修正 Windows 目录名中的反斜杠与 n 后提升版本，避免继续复用错误的项目归属。
-const VERSION = "v19";
+// Claude 历史改为区分真实对话与自动上下文，失效旧标题与预览缓存。
+const VERSION = "v20";
 
 /**
  * 读取 Claude Code 的 Agent 历史开关（默认 false）。

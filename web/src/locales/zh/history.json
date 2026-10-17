@@ -6,6 +6,8 @@
   "copyAll": "复制全部",
   "export": "导出",
   "filterTypes": "筛选类型",
+  "typeSystemContext": "系统上下文",
+  "typeContextSummary": "会话压缩摘要",
   "selectAll": "全选",
   "deselectAll": "取消全选",
   "invertSelection": "反选",

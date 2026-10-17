@@ -14,12 +14,11 @@ function getHistoryMessageText(message: HistoryMessage): string {
 }
 
 /**
- * 判断历史消息是否只包含子代理通知。
+ * 判断历史消息是否只包含通知或自动生成的上下文，避免开启筛选后误计为用户输入。
  */
-function isHistorySubagentNotificationMessage(message: HistoryMessage): boolean {
+function isHistoryGeneratedOnlyMessage(message: HistoryMessage): boolean {
   const items = Array.isArray(message?.content) ? message.content : [];
-  if (items.length === 0) return false;
-  return items.every((item) => String(item?.type || "").trim().toLowerCase() === "subagent_notification");
+  return items.every((item) => ["subagent_notification", "system_context", "context_summary", "local_command"].includes(String(item?.type || "").trim().toLowerCase()));
 }
 
 /**
@@ -41,7 +40,7 @@ function isHistoryTurnAbortedMessage(message: HistoryMessage): boolean {
  */
 function isHistoryUserInputMessage(message: HistoryMessage): boolean {
   return String(message?.role || "").trim().toLowerCase() === "user"
-    && !isHistorySubagentNotificationMessage(message)
+    && !isHistoryGeneratedOnlyMessage(message)
     && !isHistoryTurnAbortedMessage(message);
 }
 

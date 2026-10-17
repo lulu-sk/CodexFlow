@@ -18,6 +18,20 @@ function textMessage(role: string, text: string, type = "input_text"): HistoryMe
 }
 
 describe("history user input anchors", () => {
+  it("开启系统筛选后仍跳过自动内容，并保留真实输入和用户图片", () => {
+    const keys = buildHistoryUserInputMessageKeys([
+      historyView("context", textMessage("user", "图片尺寸说明", "system_context")),
+      historyView("summary", textMessage("user", "压缩摘要", "context_summary")),
+      historyView("command", textMessage("user", "本地命令", "local_command")),
+      historyView("system", textMessage("system", "系统消息")),
+      historyView("empty", { role: "user", content: [] }),
+      historyView("real", textMessage("user", "真实输入")),
+      historyView("image", { role: "user", content: [{ type: "image", text: "图片", src: "data:image/png;base64,aGVsbG8=" }] }),
+      historyView("mixed", { role: "user", content: [{ type: "system_context", text: "系统前缀" }, { type: "input_text", text: "真实输入" }] }),
+    ]);
+    expect(keys).toEqual(["real", "image", "mixed"]);
+  });
+
   it("首个 goal context 计入 USER Input，后续重复 goal context 不计入", () => {
     const keys = buildHistoryUserInputMessageKeys([
       historyView("goal-1", textMessage("user", "<codex_internal_context source=\"goal\">\n<objective>目标</objective>\n</codex_internal_context>")),

@@ -600,8 +600,8 @@ type HistoryListCacheEntry = {
   savedAt: number;
 };
 
-// 中文说明：历史归属语义变更后提升版本，强制失效旧的列表缓存，避免继续复用错误归属结果。
-const PARSER_VERSION = 'v19';
+// Claude 历史解析语义变更后提升版本，避免继续复用系统指令生成的标题与预览。
+const PARSER_VERSION = 'v20';
 const CACHE_SCHEMA_VERSION = '2';
 
 /**

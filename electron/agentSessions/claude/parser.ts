@@ -10,6 +10,7 @@ import { sha256Hex } from "../shared/crypto";
 import { createHistoryImageContent } from "../shared/historyImage";
 import { dirKeyFromCwd, dirKeyOfFilePath, tidyPathCandidate } from "../shared/path";
 import { isWinOrWslPathLineForPreview } from "../shared/preview";
+import { splitClaudeUserContext } from "./user-context";
 
 export type ClaudeParseOptions = {
   /** 索引阶段仅提取 cwd/preview 等轻量信息，避免完整解析。 */
@@ -43,7 +44,7 @@ export type ClaudeSessionDetails = {
 export async function parseClaudeSessionFile(filePath: string, stat: Stats, opts?: ClaudeParseOptions): Promise<ClaudeSessionDetails> {
   const summaryOnly = !!opts?.summaryOnly;
   const maxLines = Math.max(1, Math.min(200_000, Number(opts?.maxLines ?? (summaryOnly ? 400 : 20_000))));
-  const maxLineChars = Math.max(8 * 1024, Math.min(2_000_000, Number(opts?.maxLineChars ?? 1_000_000)));
+  const maxLineChars = Math.max(8 * 1024, Math.min(2_000_000, Number(opts?.maxLineChars ?? (summaryOnly ? 1_000_000 : 2_000_000))));
 
   const id = `claude:${sha256Hex(filePath)}`;
   const date = Number(stat?.mtimeMs || 0);
@@ -127,12 +128,16 @@ export async function parseClaudeSessionFile(filePath: string, stat: Stats, opts
         const trimmed = line.trim();
         if (!trimmed) return;
         lineCount++;
+        if (line.length > maxLineChars) { skippedLines++; return; }
         let obj: any;
         try {
           obj = JSON.parse(trimmed);
         } catch {
           return;
         }
+
+        // 接口请求快照会重放对话并附带系统指令，不属于新的历史消息。
+        if (/^api-request(?:-|$)/i.test(String(obj?.type || ""))) return;
 
         trySetRawDate(obj?.timestamp ?? obj?.ts ?? obj?.time);
         trySetCwd(obj?.cwd ?? obj?.project ?? obj?.workingDirectory ?? obj?.working_dir);
@@ -148,12 +153,15 @@ export async function parseClaudeSessionFile(filePath: string, stat: Stats, opts
         const structuredToolMessages = extractClaudeStructuredToolMessages(messageObj ?? obj, readToolPathById);
 
         if (role === "user" && primaryText) {
-          const { promptText, transcriptText } = splitClaudeUserTextForLocalCommandTranscript(primaryText);
-          if (promptText) updatePreviewFromUserText(promptText);
-          const content: Message["content"] = [];
-          if (transcriptText) content.push({ type: "local_command", text: transcriptText });
-          if (promptText) content.push({ type: "input_text", text: promptText });
-          if (content.length > 0) pushMessage({ role, content });
+          const content = splitClaudeUserContext(primaryText, {
+            isMeta: obj?.isMeta === true || messageObj?.isMeta === true,
+            isCompactSummary: obj?.isCompactSummary === true || messageObj?.isCompactSummary === true,
+            promptSource: obj?.promptSource ?? messageObj?.promptSource,
+          });
+          for (const item of content) {
+            if (item.type === "input_text") updatePreviewFromUserText(item.text);
+            pushMessage({ role: item.type === "input_text" ? "user" : "system", content: [item] });
+          }
         } else if (primaryText) {
           const type = role === "assistant" ? "output_text" : "text";
           pushMessage({ role, content: [{ type, text: primaryText }] });
@@ -393,67 +401,6 @@ function resolveClaudeImageMimeType(part: any): string | undefined {
     return undefined;
   } catch {
     return undefined;
-  }
-}
-
-/**
- * 判断一行文本是否属于 Claude Code 的“本地命令 transcript”噪声片段。
- * 这些内容通常来自 `/model` 等本地命令与其 stdout/stderr，并不代表用户真实输入。
- */
-function isClaudeLocalCommandTranscriptLine(line: string): boolean {
-  try {
-    const s = String(line || "").trim();
-    if (!s) return false;
-    const lower = s.toLowerCase();
-    if (lower.startsWith("caveat:")) return true;
-    if (lower.includes("<command-name>")) return true;
-    if (lower.includes("<command-message>")) return true;
-    if (lower.includes("<command-args>")) return true;
-    if (lower.includes("<local-command-")) return true;
-    if (lower.includes("</local-command-")) return true;
-    return false;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * 将 Claude user 文本拆分为：真实 prompt 与本地命令 transcript（默认应隐藏）。
- * - promptText：用于 preview/title 与默认展示（input_text）
- * - transcriptText：归类为 local_command，默认筛选不勾选
- */
-function splitClaudeUserTextForLocalCommandTranscript(text?: string): { promptText: string; transcriptText: string } {
-  try {
-    const raw = String(text ?? "");
-    const trimmed = raw.trim();
-    if (!trimmed) return { promptText: "", transcriptText: "" };
-
-    const lower = trimmed.toLowerCase();
-    const hasMarkers =
-      lower.startsWith("caveat:") ||
-      lower.includes("<command-name>") ||
-      lower.includes("<command-message>") ||
-      lower.includes("<command-args>") ||
-      lower.includes("<local-command-");
-    if (!hasMarkers) return { promptText: trimmed, transcriptText: "" };
-
-    const lines = trimmed.split(/\r?\n/);
-    const transcriptLines: string[] = [];
-    const promptLines: string[] = [];
-    for (const line of lines) {
-      if (!line || /^\s*$/.test(line)) continue;
-      if (isClaudeLocalCommandTranscriptLine(line)) transcriptLines.push(line);
-      else promptLines.push(line);
-    }
-    if (transcriptLines.length === 0) return { promptText: trimmed, transcriptText: "" };
-    if (promptLines.length === 0) return { promptText: "", transcriptText: trimmed };
-    return {
-      promptText: promptLines.join("\n").trim(),
-      transcriptText: transcriptLines.join("\n").trim(),
-    };
-  } catch {
-    const fallback = String(text ?? "").trim();
-    return { promptText: fallback, transcriptText: "" };
   }
 }
 
