@@ -826,6 +826,13 @@ export interface GitWorkbenchAPI {
   }) => void): () => void;
 }
 
+export type HistoryFavoriteEntry = {
+  filePath: string;
+  providerId?: string;
+  id?: string;
+  addedAt: number;
+};
+
 export interface HistoryAPI {
   list(args: {
     scope?: "current_project" | "project_group" | "all_sessions";
@@ -843,7 +850,13 @@ export interface HistoryAPI {
       cwd?: string;
       startedAt?: number;
     };
+    /** 仅返回已收藏的历史（在分页前过滤）。 */
+    favoritesOnly?: boolean;
   }): Promise<{ ok: boolean; sessions?: HistorySummary[]; matchedSession?: HistorySummary; error?: string }>;
+  /** 读取历史收藏列表。 */
+  listFavorites(): Promise<{ ok: boolean; items?: HistoryFavoriteEntry[]; error?: string }>;
+  /** 收藏或取消收藏一条历史，返回最新收藏列表。 */
+  setFavorite(args: { filePath: string; providerId?: string; id?: string; favorite: boolean }): Promise<{ ok: boolean; items?: HistoryFavoriteEntry[]; error?: string }>;
   read(args: { filePath: string; providerId?: "codex" | "claude" | "gemini" | "antigravity" | "grok"; forceParse?: boolean }): Promise<{ id: string; title: string; date: number; messages: HistoryMessage[]; skippedLines: number; providerId?: "codex" | "claude" | "gemini" | "antigravity" | "grok" }>;
   revertTurnDiff(args: { projectWinPath: string; diffText: string; cwd?: string; operation?: "undo" | "reapply" }): Promise<
     | { ok: true; repoRoot: string }

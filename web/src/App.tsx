@@ -61,7 +61,10 @@ import {
   GitBranch,
   Loader2,
   Download,
+  Star,
+  StarOff,
 } from "lucide-react";
+import { useHistoryFavorites } from "@/features/history/useHistoryFavorites";
 import AboutSupport from "@/components/about-support";
 import { ProviderSwitcher } from "@/components/topbar/provider-switcher";
 import { emitCodexRateRefresh } from "@/lib/codex-status";
@@ -458,6 +461,8 @@ type HistoryScopeDescriptor = {
   scopeProjects: Project[];
   projectNeedles: string[];
   primaryProject: Project | null;
+  /** 仅看收藏：与范围正交，参与缓存键与服务端分页过滤。 */
+  favoritesOnly: boolean;
 };
 
 type HistoryProjectMatch = {
@@ -6075,6 +6080,15 @@ export default function CodexFlowManagerUI() {
   type HistoryProjectCacheEntry = { sessions: HistorySession[]; hasMore: boolean; nextOffset: number };
   // 按设计要求：历史面板默认筛选保持为“当前项目”，待项目恢复后自动生效，不在初始化空档期改写为“全部会话”。
   const [historySearchScope, setHistorySearchScope] = useState<HistorySearchScope>("current_project");
+  const [historyFavoritesOnly, setHistoryFavoritesOnly] = useState(false);
+  /** 收藏加载或保存失败时展示反馈，避免界面静默回滚。 */
+  const reportHistoryFavoriteError = useCallback((error: unknown): void => {
+    console.warn("history favorites failed", error);
+    setNoticeDialog({ open: true, title: String(t("history:favorite")), message: String(t("history:favoritesFailed")) });
+  }, [t]);
+  const { isHistoryFavorite, toggleHistoryFavorite, historyFavoritesRevision } = useHistoryFavorites(reportHistoryFavoriteError);
+  const historyFavoriteMatcherRef = useRef(isHistoryFavorite);
+  useLayoutEffect(() => { historyFavoriteMatcherRef.current = isHistoryFavorite; }, [isHistoryFavorite]);
   // 历史范围缓存：仅保留最近使用的少量视图，避免频繁切换范围导致内存持续增长
   const HISTORY_PROJECT_CACHE_MAX = 6;
   const HISTORY_PAGE_INITIAL_LIMIT = 300;
@@ -6217,13 +6231,14 @@ export default function CodexFlowManagerUI() {
     return {
       requestedScope,
       effectiveScope,
-      cacheKey: `${effectiveScope}::${baseCacheKey}`,
+      cacheKey: `${effectiveScope}::${baseCacheKey}${historyFavoritesOnly ? `::favorites:${historyFavoritesRevision}` : ""}`,
       projectIds,
       scopeProjects,
       projectNeedles,
       primaryProject: selectedProject || null,
+      favoritesOnly: historyFavoritesOnly,
     };
-  }, [historySearchScope, projectsById, resolveHistoryScopeProjectIds, selectedProject]);
+  }, [historyFavoritesOnly, historyFavoritesRevision, historySearchScope, projectsById, resolveHistoryScopeProjectIds, selectedProject]);
   const historyScopeDescriptorRef = useRef<HistoryScopeDescriptor>(historyScopeDescriptor);
   const selectedHistoryCacheKeyRef = useRef<string>(historyScopeDescriptor.cacheKey);
   const historyScopeProjectIdSet = useMemo(() => new Set(historyScopeDescriptor.projectIds), [historyScopeDescriptor.projectIds]);
@@ -6722,6 +6737,7 @@ export default function CodexFlowManagerUI() {
       groupProjectWinPaths: descriptor.scopeProjects.map((project) => String(project.winPath || "").trim()),
       limit: safeLimit,
       offset: safeOffset,
+      favoritesOnly: descriptor.favoritesOnly,
     });
     if (!(res && res.ok && Array.isArray(res.sessions))) throw new Error("history.list failed");
     return res.sessions.map((h: any) => mapHistoryListItemToSession(h));
@@ -7083,7 +7099,7 @@ export default function CodexFlowManagerUI() {
     if (!q) return;
     const maxRounds = 20;
     for (let round = 0; round < maxRounds; round++) {
-      const hasMatch = historySessionsRef.current.some((s) => sessionMatchesQuery(s, q));
+      const hasMatch = historySessionsRef.current.some((s) => (!historyScopeDescriptorRef.current.favoritesOnly || historyFavoriteMatcherRef.current(s)) && sessionMatchesQuery(s, q));
       if (hasMatch) return;
       if (!historyHasMoreRef.current) return;
       const loaded = await loadMoreHistorySessions();
@@ -7098,7 +7114,7 @@ export default function CodexFlowManagerUI() {
     if (!q) return;
     await ensureHistoryMatchLoaded(q);
     const first = historySessionsRef.current
-      .filter((s) => sessionMatchesQuery(s, q))
+      .filter((s) => (!historyScopeDescriptorRef.current.favoritesOnly || historyFavoriteMatcherRef.current(s)) && sessionMatchesQuery(s, q))
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
     if (!first) return;
     const key = historyTimelineGroupKey(first, new Date());
@@ -9697,6 +9713,7 @@ export default function CodexFlowManagerUI() {
     const projectNeedles = historyScopeDescriptor.projectNeedles;
     const cacheKey = historyScopeDescriptor.cacheKey;
     const belongsToSelected = (item: any): boolean => {
+      if (historyScopeDescriptor.favoritesOnly && !historyFavoriteMatcherRef.current(item)) return false;
       if (historyScopeDescriptor.effectiveScope === "all_sessions") return true;
       try {
         const dirKey = String((item && (item.dirKey || '')) || '');
@@ -13280,18 +13297,20 @@ export default function CodexFlowManagerUI() {
     /**
      * 悬停快捷键处理器。
      * - 项目列表：H=隐藏/取消隐藏；D=删除 worktree 或移除目录记录
-     * - 历史列表：Delete/Del=删除历史对话（删除到回收站）
+     * - 历史列表：Delete/Del=删除历史对话（删除到回收站）；F=收藏/取消收藏
      */
     const handler = (event: KeyboardEvent) => {
       const k = String(event?.key || "");
       const code = String((event as any)?.code || "");
       const key = k.toLowerCase();
       const isHistoryDeleteKey = key === "delete" || code === "Delete";
-      if (!isHistoryDeleteKey && key !== "h" && key !== "d") return;
+      // 长按不重复切换，避免收藏状态来回闪烁。
+      const isHistoryFavoriteKey = key === "f" && !event.repeat;
+      if (!isHistoryDeleteKey && !isHistoryFavoriteKey && key !== "h" && key !== "d") return;
       if (shouldIgnoreHoverShortcutEvent(event)) return;
 
-      // 历史项优先：Delete/Del = 删除历史对话（删除到回收站）
-      if (isHistoryDeleteKey) {
+      // 历史项优先：Delete/Del = 删除历史对话（删除到回收站）；F = 收藏/取消收藏
+      if (isHistoryDeleteKey || isHistoryFavoriteKey) {
         try {
           const hoverEl = document.querySelector('[data-cf-history-row-id]:hover') as HTMLElement | null;
           if (hoverEl) {
@@ -13305,6 +13324,10 @@ export default function CodexFlowManagerUI() {
                   : (historySessionsRef.current.find((s) => s.id === hoverId) || null);
               if (item) {
                 event.preventDefault();
+                if (isHistoryFavoriteKey) {
+                  void toggleHistoryFavorite(item);
+                  return;
+                }
                 openHistoryDeleteConfirm(item, hoverGroupKey);
                 hoveredHistoryShortcutRef.current = null;
                 return;
@@ -13312,6 +13335,7 @@ export default function CodexFlowManagerUI() {
             }
           }
         } catch {}
+        if (isHistoryFavoriteKey) return;
       }
 
       // 项目列表：H = 隐藏/取消隐藏；D = 删除（worktree 删除 或 移除目录记录）
@@ -13373,7 +13397,7 @@ export default function CodexFlowManagerUI() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [gitInfoByProjectId, hiddenProjectIdSet, openHistoryDeleteConfirm, openWorktreeDeleteDialog, removeProjectDirRecord, shouldIgnoreHoverShortcutEvent, unhideProject]);
+  }, [gitInfoByProjectId, hiddenProjectIdSet, openHistoryDeleteConfirm, openWorktreeDeleteDialog, removeProjectDirRecord, shouldIgnoreHoverShortcutEvent, toggleHistoryFavorite, unhideProject]);
 
   // ---------- Renderers ----------
 
@@ -14918,7 +14942,12 @@ export default function CodexFlowManagerUI() {
     openGitWorkbenchTabForProjectId(projectId);
   }, [openGitWorkbenchTabForProjectId, selectedHistoryDetailProject?.id]);
 
-  const historySessionTree = useMemo(() => buildHistorySessionTree(historySessions), [historySessions]);
+  // 仅看收藏时再做一次本地过滤：覆盖取消收藏后的即时移除，以及索引增量事件推入的非收藏项。
+  const visibleHistorySessions = useMemo(
+    () => (historyFavoritesOnly ? historySessions.filter((session) => isHistoryFavorite(session)) : historySessions),
+    [historyFavoritesOnly, historySessions, isHistoryFavorite],
+  );
+  const historySessionTree = useMemo(() => buildHistorySessionTree(visibleHistorySessions), [visibleHistorySessions]);
 
   const timelineGroups = useMemo<HistoryTimelineGroup[]>(() => {
     const baseNow = historyNow;
@@ -15040,11 +15069,15 @@ export default function CodexFlowManagerUI() {
               <DropdownMenuTrigger>
                 <button
                   type="button"
-                  className="flex h-7 w-7 items-center justify-center rounded-apple-sm text-[var(--cf-text-muted)] transition-all hover:bg-[var(--cf-surface-hover)] hover:text-[var(--cf-text-primary)] focus-visible:outline-none active:scale-95"
-                  title={`${t("history:scopeHint", "选择历史搜索范围") as string}：${activeHistoryScopeOption.label}`}
+                  className={cn(
+                    "relative flex h-7 w-7 items-center justify-center rounded-apple-sm transition-all hover:bg-[var(--cf-surface-hover)] hover:text-[var(--cf-text-primary)] focus-visible:outline-none active:scale-95",
+                    historyFavoritesOnly ? "text-[var(--cf-accent)]" : "text-[var(--cf-text-muted)]",
+                  )}
+                  title={`${t("history:scopeHint", "选择历史搜索范围") as string}：${activeHistoryScopeOption.label}${historyFavoritesOnly ? ` · ${t("history:favoritesOnly") as string}` : ""}`}
                   aria-label={t("history:scopeHint", "选择历史搜索范围") as string}
                 >
                   <SlidersHorizontal className="h-4 w-4" />
+                  {historyFavoritesOnly ? <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-[var(--cf-accent)]" /> : null}
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="!w-40 p-1 shadow-apple-lg border-[var(--cf-border)] backdrop-blur-apple">
@@ -15076,6 +15109,26 @@ export default function CodexFlowManagerUI() {
                     </div>
                   </DropdownMenuItem>
                 ))}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  className={cn(
+                    "flex items-center gap-2 rounded-apple-sm px-2 py-1.5 text-[12px] leading-tight transition-colors",
+                    historyFavoritesOnly ? "bg-[var(--cf-accent-light)]" : "hover:bg-[var(--cf-surface-hover)]",
+                  )}
+                  onClick={() => setHistoryFavoritesOnly((v) => !v)}
+                >
+                  <div className="flex h-4 w-4 shrink-0 items-center justify-center">
+                    {historyFavoritesOnly ? <Check className="h-3.5 w-3.5 text-[var(--cf-accent)]" /> : null}
+                  </div>
+                  <div
+                    className={cn(
+                      "flex-1 truncate",
+                      historyFavoritesOnly ? "font-apple-medium text-[var(--cf-text-primary)]" : "text-[var(--cf-text-secondary)]",
+                    )}
+                  >
+                    {t("history:favoritesOnly")}
+                  </div>
+                </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
@@ -15245,6 +15298,9 @@ export default function CodexFlowManagerUI() {
                                 ) : null}
                               </div>
                             </div>
+                            {isHistoryFavorite(s) ? (
+                              <Star className="h-3 w-3 shrink-0 fill-current text-slate-400 dark:text-slate-500" aria-label={t('history:favorited') as string} />
+                            ) : null}
                             <span
                               className={`max-w-[4.75rem] shrink-0 truncate text-right text-[11px] ${active ? 'text-slate-600 dark:text-slate-400' : 'text-slate-500 dark:text-slate-400'}`}
                               title={relativeLabel}
@@ -15273,18 +15329,23 @@ export default function CodexFlowManagerUI() {
               </Button>
             </div>
           )}
-          {historySessions.length === 0 && !historyLoading && (
+          {visibleHistorySessions.length === 0 && !historyLoading && (
             <div className="px-4 py-8 text-center">
               <div className="mb-3 flex justify-center">
                 <div className="p-3 rounded-xl bg-slate-100/60 dark:bg-slate-800/60">
-                  <FileClock className="h-6 w-6 text-[var(--cf-text-muted)]" />
+                  {historyFavoritesOnly
+                    ? <Star className="h-6 w-6 text-[var(--cf-text-muted)]" />
+                    : <FileClock className="h-6 w-6 text-[var(--cf-text-muted)]" />}
                 </div>
               </div>
               {/* 按设计要求：当前筛选范围无历史时，统一展示固定提示文案。 */}
-              <div className="text-sm text-[var(--cf-text-muted)] font-apple-medium">{t('history:empty')}</div>
+              <div className="text-sm text-[var(--cf-text-muted)] font-apple-medium">{historyFavoritesOnly ? t('history:favoritesEmpty') : t('history:empty')}</div>
+              {historyFavoritesOnly ? (
+                <div className="mt-1 text-xs text-[var(--cf-text-muted)]">{t('history:favoritesEmptyHint')}</div>
+              ) : null}
             </div>
           )}
-          {historySessions.length > 0 && historyQuery.trim().length > 0 && filteredTimelineGroups.length === 0 && (
+          {visibleHistorySessions.length > 0 && historyQuery.trim().length > 0 && filteredTimelineGroups.length === 0 && (
             <div className="px-4 py-8 text-center">
               <div className="mb-3 flex justify-center">
                 <div className="p-3 rounded-xl bg-slate-100/60 dark:bg-slate-800/60">
@@ -15626,6 +15687,19 @@ export default function CodexFlowManagerUI() {
                   }}
                 >
                   <FileText className="h-4 w-4 text-[var(--cf-text-muted)]" /> {t("history:referenceInSession")}
+                </button>
+                <button
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[var(--cf-text-primary)] rounded-apple-sm hover:bg-[var(--cf-surface-hover)] transition-all duration-apple-fast"
+                  onClick={() => {
+                    const it = historyCtxMenu.item;
+                    setHistoryCtxMenu((m) => ({ ...m, show: false }));
+                    void toggleHistoryFavorite(it);
+                  }}
+                >
+                  {isHistoryFavorite(historyCtxMenu.item)
+                    ? <StarOff className="h-4 w-4 text-[var(--cf-text-muted)]" />
+                    : <Star className="h-4 w-4 text-[var(--cf-text-muted)]" />}
+                  {isHistoryFavorite(historyCtxMenu.item) ? t('history:unfavorite') : t('history:favorite')} (F)
                 </button>
 	              </>
 	            ) : null}

@@ -39,6 +39,7 @@ import {
   type HistoryDeleteTarget,
 } from "./historyFastDelete";
 import { createHistoryScopeMatcher } from "./historyScope";
+import { createHistoryFavoriteMatcher, listHistoryFavorites, setHistoryFavorite } from "./historyFavorites";
 import {
   buildCodexRelationDeletePlan,
   collectCodexSessionRecords,
@@ -4547,6 +4548,7 @@ ipcMain.handle('history.list', async (_e, args: {
   offset?: number;
   historyRoot?: string;
   recoveryHint?: HistoryListRecoveryHint;
+  favoritesOnly?: boolean;
 }) => {
   try {
     // 首次列表请求只等待持久化摘要索引，不等待后台目录扫描。
@@ -4719,7 +4721,11 @@ ipcMain.handle('history.list', async (_e, args: {
       geminiHashNeedles,
       extractGeminiProjectHashFromPath,
     });
-    const belongsToScope = (item: Pick<FallbackHistorySummary, 'providerId' | 'dirKey' | 'projectHash' | 'filePath'>): boolean => {
+    // 仅看收藏时在分页前过滤，保证收藏不会因位于未加载的分页而缺失。
+    const favoriteMatcher = args?.favoritesOnly === true ? createHistoryFavoriteMatcher(listHistoryFavorites()) : null;
+    /** 在范围判断前匹配收藏，供索引与回退扫描共用分页前过滤规则。 */
+    const belongsToScope = (item: Pick<FallbackHistorySummary, 'providerId' | 'dirKey' | 'projectHash' | 'filePath'> & { id?: string }): boolean => {
+      if (favoriteMatcher && !favoriteMatcher(item)) return false;
       return historyScopeMatcher({
         providerId: item.providerId,
         dirKey: item.dirKey,
@@ -4764,9 +4770,9 @@ ipcMain.handle('history.list', async (_e, args: {
       if (scope === 'all_sessions') {
         const allCodex = await history.listHistory(
           {},
-          { historyRoot: prefRoot, limit: fallbackTargetCount },
+          { historyRoot: prefRoot, limit: favoriteMatcher ? undefined : fallbackTargetCount },
         );
-        return allCodex.map(normalizeHistorySummary);
+        return allCodex.map(normalizeHistorySummary).filter(belongsToScope).slice(0, fallbackTargetCount);
       }
       if (scope === 'project_group' && projectPairs.length > 0) {
         const allCodex = await history.listHistory(
@@ -4779,9 +4785,9 @@ ipcMain.handle('history.list', async (_e, args: {
       }
       const current = await history.listHistory(
         { wslPath: args.projectWslPath, winPath: args.projectWinPath },
-        { historyRoot: prefRoot, limit: fallbackTargetCount },
+        { historyRoot: prefRoot, limit: favoriteMatcher ? undefined : fallbackTargetCount },
       );
-      return current.map(normalizeHistorySummary).filter((item) => belongsToScope(item));
+      return current.map(normalizeHistorySummary).filter(belongsToScope).slice(0, fallbackTargetCount);
     };
     /**
      * 中文说明：采集 Claude/Gemini 的回退历史，并按分页预算提前截止，避免先解析完整个 Provider。
@@ -4850,7 +4856,7 @@ ipcMain.handle('history.list', async (_e, args: {
       return dedupeSortHistorySummaries([...codexItems, ...claudeItems, ...geminiItems, ...antigravityItems, ...grokItems]).slice(0, fallbackTargetCount);
     };
     const all = getIndexedSummaries();
-    const filtered = scope === 'all_sessions'
+    const filtered = scope === 'all_sessions' && !favoriteMatcher
       ? all
       : all.filter((summary) => belongsToScope(summary));
     // 精确目标独立于列表分页返回，避免较旧会话已在索引中却永远落不到首屏。
@@ -4874,7 +4880,7 @@ ipcMain.handle('history.list', async (_e, args: {
           perfLogger.log(`[history:list:probe] needles=${JSON.stringify(needles)} all=${all.length} filtered=${filtered.length} foundIdx=${foundIdx} foundFiltered=${foundFiltered}`);
         }
       } catch {}
-      if (scope !== 'all_sessions' && filtered.length === 0) {
+      if ((scope !== 'all_sessions' || favoriteMatcher) && filtered.length === 0) {
         // 索引范围空命中必须快速返回；带会话线索的请求已在后台提交定向恢复。
         return { ok: true, sessions: [] };
       }
@@ -4900,6 +4906,35 @@ ipcMain.handle('history.list', async (_e, args: {
     if (recoveryRequested) return { ok: true, sessions: [] };
     const fallback = await perfLogger.time('history.list.fallback', async () => await collectFallbackSummaries());
     return { ok: true, sessions: paginate(fallback) };
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+/** 读取当前 profile 的历史收藏，不向渲染进程开放文件系统。 */
+ipcMain.handle('history.listFavorites', async () => {
+  try {
+    return { ok: true, items: listHistoryFavorites() };
+  } catch (e: any) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+/** 校验收藏目标和开关，只写入当前 profile 的固定收藏文件。 */
+ipcMain.handle('history.setFavorite', async (_e, args: { filePath?: string; providerId?: string; id?: string; favorite?: boolean }) => {
+  try {
+    const filePath = typeof args?.filePath === 'string' ? args.filePath.trim() : '';
+    if (!filePath) return { ok: false, error: 'missing filePath' };
+    if (typeof args?.favorite !== 'boolean') return { ok: false, error: 'invalid favorite' };
+    const items = setHistoryFavorite(
+      {
+        filePath,
+        providerId: typeof args?.providerId === 'string' ? args.providerId : undefined,
+        id: typeof args?.id === 'string' ? args.id : undefined,
+      },
+      args.favorite,
+    );
+    return { ok: true, items };
   } catch (e: any) {
     return { ok: false, error: String(e) };
   }

@@ -658,11 +658,20 @@ contextBridge.exposeInMainWorld('host', {
         cwd?: string;
         startedAt?: number;
       };
+      favoritesOnly?: boolean;
     }) => {
       return await ipcRenderer.invoke('history.list', args);
     },
     read: async (args: { filePath: string; providerId?: "codex" | "claude" | "gemini" | "antigravity" | "grok"; forceParse?: boolean }) => {
       return await ipcRenderer.invoke('history.read', args);
+    },
+    /** 通过主进程读取当前 profile 的收藏列表。 */
+    listFavorites: async () => {
+      return await ipcRenderer.invoke('history.listFavorites');
+    },
+    /** 通过主进程保存收藏开关并返回确认后的列表。 */
+    setFavorite: async (args: { filePath: string; providerId?: string; id?: string; favorite: boolean }) => {
+      return await ipcRenderer.invoke('history.setFavorite', args);
     },
     revertTurnDiff: async (args: { projectWinPath: string; diffText: string; cwd?: string; operation?: 'undo' | 'reapply' }) => {
       return await ipcRenderer.invoke('history.revertTurnDiff', args);
