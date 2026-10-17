@@ -78,8 +78,8 @@ beforeEach(async () => {
   vi.mocked(loadCodexStateSnapshot).mockReset().mockResolvedValue([]);
   (global as any).__indexer = {
     retries: new Map(),
-    index: { version: "v12", files: {}, savedAt: 0 },
-    details: { version: "v12", files: {}, savedAt: 0 },
+    index: { version: "v21", files: {}, savedAt: 0 },
+    details: { version: "v21", files: {}, savedAt: 0 },
   };
 });
 
@@ -92,8 +92,8 @@ afterEach(async () => {
     vi.unstubAllEnvs();
     (global as any).__indexer = {
       retries: new Map(),
-      index: { version: "v12", files: {}, savedAt: 0 },
-      details: { version: "v12", files: {}, savedAt: 0 },
+      index: { version: "v21", files: {}, savedAt: 0 },
+      details: { version: "v21", files: {}, savedAt: 0 },
     };
     wslMockState.sessionRoots = [];
     userDataDir = "";
@@ -146,15 +146,15 @@ async function createPersistedCodexSnapshotFixture({ mtimeDelta = -1_000, sizeDe
     sig: { mtimeMs: stat.mtimeMs + mtimeDelta, size: stat.size + sizeDelta },
     summary: { ...entry.summary, title: "已解析摘要", date: stat.mtimeMs + mtimeDelta, codexHistoryResolved: resolved },
   };
-  await fsp.writeFile(path.join(userDataDir, "history.index.v20.json"), JSON.stringify({ version: "v20", files: { [key]: cached }, savedAt: 1 }), "utf8");
+  await fsp.writeFile(path.join(userDataDir, "history.index.v21.json"), JSON.stringify({ version: "v21", files: { [key]: cached }, savedAt: 1 }), "utf8");
   vi.mocked(loadCodexStateSnapshot).mockResolvedValue([entry]);
   return { key, entry, cached };
 }
 
 describe("electron/indexer Codex preview", () => {
-  it("不再加载旧解析版本中由系统指令生成的 Claude 标题", async () => {
-    await fsp.writeFile(path.join(userDataDir, "history.index.v19.json"), JSON.stringify({
-      version: "v19", savedAt: 1, files: {
+  it.each(["v19", "v20"])("不再加载旧解析版本 %s 中由系统指令生成的 Claude 标题", async (version) => {
+    await fsp.writeFile(path.join(userDataDir, `history.index.${version}.json`), JSON.stringify({
+      version, savedAt: 1, files: {
         "old-claude-session": { sig: { mtimeMs: 1, size: 1 }, summary: {
           providerId: "claude", id: "old-claude-session", title: "Codebase and user instructions",
           filePath: "/workspace/sessions/claude.jsonl", date: 1, dirKey: "/workspace/project",
@@ -163,6 +163,51 @@ describe("electron/indexer Codex preview", () => {
     }), "utf8");
     await ensureHistoryIndexLoaded();
     expect(getIndexedSummaries()).toEqual([]);
+  });
+
+  it.each([false, true])("摘要跳过仅显示内容时保留元数据，线程名更新=%s", async (updateThreadName) => {
+    const imageData = `data:image/png;base64,${"A".repeat(256 * 1024)}`;
+    const marker = "summary-display-only";
+    const filePath = await createCodexSessionFile([
+      {
+        timestamp: "2026-04-29T03:35:01.000Z", type: "session_meta",
+        payload: {
+          id: "session-index-summary-only",
+          source: { subagent: { thread_spawn: { parent_thread_id: "session-index-parent", agent_role: "research", depth: 1 } } },
+        },
+      },
+      { type: "state", shell: "pwsh", marker, value: imageData },
+      {
+        type: "response_item", payload: {
+          type: "message", role: "user",
+          content: [{ type: "input_text", text: "<environment_context>\n<cwd>/workspace/project</cwd>\n</environment_context>\n修复摘要索引" }],
+        },
+      },
+      { type: "response_item", payload: { type: "function_call", arguments: { marker, value: imageData } } },
+      { type: "response_item", payload: { type: "function_call_output", output: [{ type: "image", marker, image_url: imageData }] } },
+      { type: "response_item", payload: { type: "reasoning", summary: [{ text: "只在详情展示的推理" }], encrypted_content: imageData } },
+      { type: "custom_tool_call_output", marker, output: imageData },
+      ...(updateThreadName ? [{ type: "event_msg", payload: { type: "thread_name_updated", thread_name: "更新后的摘要标题" } }] : []),
+    ]);
+    const stringify = vi.spyOn(JSON, "stringify");
+
+    await startAndRefreshCodexFile(filePath);
+
+    const key = filePath.replace(/\\/g, "/").toLowerCase();
+    const details = (global as any).__indexer.details.files[key].details;
+    const expectedTitle = updateThreadName ? "更新后的摘要标题" : "修复摘要索引";
+    expect(getIndexedSummaries().find((item) => item.filePath === filePath)).toMatchObject({
+      id: "session-index-summary-only", title: expectedTitle, preview: expectedTitle,
+      rawDate: "2026-04-29T03:35:01.000Z", dirKey: "/workspace/project",
+      resumeMode: "modern", resumeId: "session-index-summary-only", runtimeShell: "windows",
+      codexRelationship: { kind: "subagent", parentThreadId: "session-index-parent", agentRole: "research", agentDepth: 1 },
+    });
+    expect(details.messages).toEqual([]);
+    expect(details.cwd).toBe("/workspace/project");
+    expect(details.skippedLines).toBe(0);
+    expect(stringify.mock.calls.some(([value]) => (
+      value?.marker === marker || (Array.isArray(value) && value.some((item) => item?.marker === marker))
+    ))).toBe(false);
   });
 
   it("启动批量摘要恢复后立刻可按项目查询，并只发送一次列表刷新", async () => {
@@ -192,7 +237,7 @@ describe("electron/indexer Codex preview", () => {
     expect(getIndexedSummaries()[0]).toMatchObject({ title: "最新摘要", rawDate: entry.summary.rawDate, dirKey: "/workspace/project", codexHistoryResolved: true });
     expect(send.mock.calls.filter((call) => call[0] === "history:index:invalidate")).toHaveLength(1);
     await stopHistoryIndexer();
-    const persisted = JSON.parse(await fsp.readFile(path.join(userDataDir, "history.index.v20.json"), "utf8"));
+    const persisted = JSON.parse(await fsp.readFile(path.join(userDataDir, "history.index.v21.json"), "utf8"));
     expect(persisted.files[key].summary.date).toBe(entry.summary.date);
   });
 
@@ -299,7 +344,7 @@ describe("electron/indexer Codex preview", () => {
     const filePath = path.join(parentDir, "session.jsonl");
     const key = filePath.replace(/\\/g, "/").toLowerCase();
     (global as any).__indexer.index = {
-      version: "v20",
+      version: "v21",
       files: {
         [key]: {
           sig: { mtimeMs: 1, size: 1 },
@@ -309,7 +354,7 @@ describe("electron/indexer Codex preview", () => {
       savedAt: 0,
     };
     (global as any).__indexer.details = {
-      version: "v20",
+      version: "v21",
       files: {
         [key]: { sig: { mtimeMs: 1, size: 1 }, details: { providerId: "codex", id: "session", filePath, messages: [] } },
       },
@@ -327,8 +372,8 @@ describe("electron/indexer Codex preview", () => {
   it("首次列表请求可直接加载持久化摘要索引", async () => {
     const cachedFilePath = path.join(os.tmpdir(), "codexflow-cached-session.jsonl");
     const cacheKey = cachedFilePath.replace(/\\/g, "/").toLowerCase();
-    await fsp.writeFile(path.join(userDataDir, "history.index.v20.json"), JSON.stringify({
-      version: "v20",
+    await fsp.writeFile(path.join(userDataDir, "history.index.v21.json"), JSON.stringify({
+      version: "v21",
       savedAt: Date.now(),
       files: {
         [cacheKey]: {
@@ -410,8 +455,8 @@ describe("electron/indexer Codex preview", () => {
     await startAndRefreshCodexFile(filePath);
     await stopHistoryIndexer();
 
-    const index = JSON.parse(await fsp.readFile(path.join(userDataDir, "history.index.v20.json"), "utf8"));
-    const details = JSON.parse(await fsp.readFile(path.join(userDataDir, "history.details.v20.json"), "utf8"));
+    const index = JSON.parse(await fsp.readFile(path.join(userDataDir, "history.index.v21.json"), "utf8"));
+    const details = JSON.parse(await fsp.readFile(path.join(userDataDir, "history.details.v21.json"), "utf8"));
     const detailEntry = Object.values(details.files as Record<string, any>)
       .find((entry: any) => entry?.details?.filePath === filePath) as any;
 
@@ -434,14 +479,14 @@ describe("electron/indexer Codex preview", () => {
 
     const cacheWritesBeforeStop = writeFileSpy.mock.calls.filter(([filePath]) => {
       const name = String(filePath || "");
-      return name.endsWith("history.index.v20.json") || name.endsWith("history.details.v20.json");
+      return name.endsWith("history.index.v21.json") || name.endsWith("history.details.v21.json");
     });
     expect(cacheWritesBeforeStop).toHaveLength(0);
 
     await stopHistoryIndexer();
     const cacheWritesAfterStop = writeFileSpy.mock.calls.filter(([filePath]) => {
       const name = String(filePath || "");
-      return name.endsWith("history.index.v20.json") || name.endsWith("history.details.v20.json");
+      return name.endsWith("history.index.v21.json") || name.endsWith("history.details.v21.json");
     });
     expect(cacheWritesAfterStop).toHaveLength(2);
   });

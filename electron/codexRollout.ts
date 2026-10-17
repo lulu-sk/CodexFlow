@@ -131,10 +131,10 @@ async function* readSegments(header: string, segments: Segment[]): AsyncGenerato
 }
 
 /** 打开逻辑会话流，兼容回退与分叉的多层历史前缀；引用缺失时拒绝返回不完整详情。 */
-export async function openCodexHistoryStream(filePath: string, highWaterMark: number): Promise<Readable> {
+export async function openCodexHistoryStream(filePath: string, highWaterMark: number, opts?: { rawBytes?: boolean }): Promise<Readable> {
   const header = await readHeader(filePath);
   let base = readHistoryBase(header);
-  if (!base) return fs.createReadStream(filePath, { encoding: "utf8", highWaterMark });
+  if (!base) return fs.createReadStream(filePath, { encoding: opts?.rawBytes ? undefined : "utf8", highWaterMark });
   const paths = new Map<string, string>();
   for (const root of historyRoots(filePath)) await collectRolloutPaths(root, paths);
   const segments: Segment[] = [{ filePath }];

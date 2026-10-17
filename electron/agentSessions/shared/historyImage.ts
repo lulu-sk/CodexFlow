@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { MessageContent } from "../../history";
 import { isUNCPath, normalizeWinPath, uncToWsl } from "../../wsl";
+import { normalizeHistoryImageLocalPath } from "./historyImagePath";
 
 export type HistoryImageContentOptions = {
   localPath?: string;
@@ -14,9 +15,12 @@ export type HistoryImageContentOptions = {
   text?: string;
   tags?: string[];
   preferDataUrl?: boolean;
+  /** 有会话内图片回退时，将本地文件检查延后到实际预览，避免解析阶段逐张访问磁盘。 */
+  deferLocalFileCheck?: boolean;
 };
 
-const IMAGE_PATH_PATTERN = /@?((?:[A-Za-z]:(?:\\|\/)|\/mnt\/[A-Za-z]\/|\/(?:home|root|Users)\/|\\\\[^\\\/\r\n]+\\[^\\\/\r\n]+\\)[^\r\n"'`]*?\.(?:png|jpe?g|webp|gif|bmp|svg))/gi;
+// UNC 只从文本边界或参数分隔符后开始，避免从转义盘符路径中间误取网络路径。
+const IMAGE_PATH_PATTERN = /@?((?:[A-Za-z]:(?:\\|\/)|\/mnt\/[A-Za-z]\/|\/(?:home|root|Users)\/|(?<![^\s"'`=([{,;@：，；（【])\\{2,}[^\\\/\s"'`:<>|?*]+\\+[^\\\/\r\n"'`:<>|?*]+\\+)[^\r\n"'`]*?\.(?:png|jpe?g|webp|gif|bmp|svg))/gi;
 
 /**
  * 中文说明：从文本中提取图片绝对路径候选。
@@ -50,14 +54,16 @@ export function createHistoryImageContent(options: HistoryImageContentOptions): 
   const localPath = normalizeImagePathCandidate(options.localPath);
   const mimeType = normalizeMimeType(options.mimeType) || inferMimeTypeFromPath(localPath) || inferMimeTypeFromDataUrl(options.dataUrl);
   const dataUrl = buildImageDataUrl(options.dataUrl, options.base64Data, mimeType);
-  const hasLocalFile = !!localPath && historyImagePathExists(localPath);
+  const localPreviewUrl = localPath ? toHistoryImagePreviewUrl(localPath) : "";
+  const canDeferLocalFileCheck = !!options.deferLocalFileCheck && !!dataUrl && !!localPreviewUrl;
+  const hasLocalPreview = !!localPath && (canDeferLocalFileCheck || historyImagePathExists(localPath));
   const preferDataUrl = !!options.preferDataUrl && !!dataUrl;
   const primarySrc = preferDataUrl
     ? dataUrl
-    : (hasLocalFile ? toHistoryImagePreviewUrl(localPath) : dataUrl);
+    : (hasLocalPreview ? localPreviewUrl : dataUrl);
   const fallbackSrc = preferDataUrl
-    ? (hasLocalFile ? toHistoryImagePreviewUrl(localPath) : "")
-    : (hasLocalFile ? dataUrl : "");
+    ? (hasLocalPreview ? localPreviewUrl : "")
+    : (hasLocalPreview ? dataUrl : "");
   if (!primarySrc) return null;
 
   const content: MessageContent = {
@@ -127,7 +133,7 @@ function normalizeImagePathCandidate(value?: string): string {
     raw = raw.replace(/^`+|`+$/g, "").trim();
     raw = raw.replace(/^"+|"+$/g, "").trim();
     raw = raw.replace(/^'+|'+$/g, "").trim();
-    return raw;
+    return normalizeHistoryImageLocalPath(raw);
   } catch {
     return String(value || "").trim();
   }

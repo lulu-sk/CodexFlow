@@ -394,8 +394,8 @@ function stripDetailsForPersist(details: Details): Details {
   return { ...rest, messages: [] };
 }
 
-// Claude 历史改为区分真实对话与自动上下文，失效旧标题与预览缓存。
-const VERSION = "v20";
+// 合并 Codex 轮次与 Claude 上下文解析变更，避免复用任一分支生成的不完整缓存。
+const VERSION = "v21";
 
 /**
  * 读取 Claude Code 的 Agent 历史开关（默认 false）。
@@ -1356,6 +1356,8 @@ async function parseCodexDetails(fp: string, stat: fs.Stats, opts?: { summaryOnl
                 }
                 pushMessage({ role: normalizeCodexDetailsRoleForContent(role, items), content: items });
               }
+            } else if (summaryOnly) {
+              // 摘要不保留正文，跳过仅用于详情展示的构造；元数据提取和记录计数仍正常执行。
             } else if (obj.type === 'function_call' || obj.record_type === 'tool_call' || ((obj as any).type === 'response_item' && (obj as any).payload && (((obj as any).payload.type === 'function_call') || ((obj as any).payload.record_type === 'tool_call')))) {
               const src: any = ((obj as any).type === 'response_item' && (obj as any).payload) ? (obj as any).payload : obj;
               const name = src.name || src.tool || src.function || 'function';

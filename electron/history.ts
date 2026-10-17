@@ -19,6 +19,7 @@ import { filterCodexHistoryPreviewText } from './agentSessions/shared/preview';
 import { pathMatchesDirKeyScope, tidyPathCandidate } from "./agentSessions/shared/path";
 import { extractCodexSessionRelationship, type CodexSessionRelationship } from "./codexSessionRelations";
 import { openCodexHistoryStream, selectCurrentHistorySummaries } from "./codexRollout";
+import { readBufferHistoryLines } from "./historyLineReader";
 
 /**
  * History 读取模块: 支持逐行解析 JSONL, list/read 接口
@@ -59,7 +60,18 @@ export type MessageContent = {
   /** 当前差异是否可以安全交给 Git/apply_patch 执行撤销或重新应用。 */
   patchable?: boolean;
 };
-export type Message = { role: string; content: MessageContent[]; turnId?: string };
+export type Message = {
+  role: string;
+  content: MessageContent[];
+  /** 用户轮次标识，与模型单次请求的内部标识区分。 */
+  turnId?: string;
+  /** Codex 原始输出阶段，例如 commentary 或 final_answer。 */
+  phase?: string;
+  /** 记录的原始时间，供历史详情计算执行过程的用时。 */
+  timestamp?: string;
+  /** 明确开始、结束事件之间的轮次用时。 */
+  durationMs?: number;
+};
 
 // 历史摘要前缀与缓存上限（控制内存占用）
 const SUMMARY_PREFIX_BYTES = 48 * 1024; // 仅保留文件头 48KB，用于提取 metadata / cwd 提示
@@ -600,8 +612,8 @@ type HistoryListCacheEntry = {
   savedAt: number;
 };
 
-// Claude 历史解析语义变更后提升版本，避免继续复用系统指令生成的标题与预览。
-const PARSER_VERSION = 'v20';
+// 合并 Codex 轮次与 Claude 上下文解析变更，避免复用任一分支生成的不完整缓存。
+const PARSER_VERSION = 'v21';
 const CACHE_SCHEMA_VERSION = '2';
 
 /**
@@ -1848,17 +1860,18 @@ function extractCodexApplyPatchBlocks(toolName: unknown, callArguments: unknown)
 }
 
 /**
- * 提取 Codex 记录携带的轮次 ID，用于把同一轮内的多次文件修改合并为一个改动条。
+ * 优先使用用户轮次 ID；内部模型请求 ID 仅供没有轮次事件的旧日志回退。
  */
-function resolveCodexTurnId(record: any, source: any): string {
+function resolveCodexTurnId(record: any, source: any, activeTurnId = ''): string {
   const candidates = [
     source?.turn_id,
     source?.turnId,
-    source?.internal_chat_message_metadata_passthrough?.turn_id,
     record?.turn_id,
     record?.turnId,
     record?.payload?.turn_id,
     record?.payload?.turnId,
+    activeTurnId,
+    source?.internal_chat_message_metadata_passthrough?.turn_id,
     record?.payload?.internal_chat_message_metadata_passthrough?.turn_id,
   ];
   for (const candidate of candidates) {
@@ -1872,6 +1885,7 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
   // 简单缓存：基于文件 mtimeMs + size，避免重复解析未变更文件。
   // 关键点：缓存需要感知“是否完整解析”，避免较小 maxLines 的截断结果污染后续完整详情读取。
   type CacheVal = {
+    parserVersion: string;
     mtimeMs: number;
     size: number;
     complete: boolean;
@@ -1906,6 +1920,8 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
   const imagePathCandidatesByCallId = new Map<string, string[]>();
   const turnDiffMessagesByKey = new Map<string, Message>();
   const turnDiffSourceByKey = new Map<string, 'apply_patch' | 'file_change' | 'turn_diff'>();
+  // 无同轮正文时按最后一次替换的位置排序，同一位置保留更新先后。
+  const turnDiffPositionByMessage = new Map<Message, number>();
   type FileChangeSegment = { path: string; type: CodexFileChangeOperation; text: string };
   type FileChangeTurnState = {
     segments: FileChangeSegment[];
@@ -1916,33 +1932,43 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
   const commandCwdByTurn = new Map<string, string>();
   let anonymousTurnDiffIndex = 0;
   let historyCwd = '';
+  let activeTurnId = '';
+  let activeTurnCompleted = false;
+  let currentMessageMetadata: Pick<Message, 'phase' | 'timestamp'> = {};
+  let currentCompactionOutput = false;
+  const turnStartedAt = new Map<string, number>();
+  const turnMessagesById = new Map<string, Message[]>();
 
   /**
-   * 将指定轮次的改动卡片放到该轮最后一条消息之后，避免日志事件顺序导致卡片夹在助手正文中间。
+   * 解析完成后一次整理轮次改动卡片，避免每条消息都扫描整个历史数组。
    */
-  function placeTurnDiffAfterTurnMessages(turnId: string, turnDiffMessage: Message): void {
-    const normalizedTurnId = String(turnId || '').trim();
-    if (!normalizedTurnId) return;
-    const currentIndex = messages.indexOf(turnDiffMessage);
-    if (currentIndex >= 0) messages.splice(currentIndex, 1);
-    let anchorIndex = -1;
+  function finalizeTurnDiffMessageOrder(): Message[] {
+    const cards = new Set(turnDiffPositionByMessage.keys());
+    if (cards.size === 0) return messages;
+    const lastMessageByTurn = new Map<string, Message>();
+    for (const message of messages) {
+      if (message.turnId && !cards.has(message)) lastMessageByTurn.set(message.turnId, message);
+    }
+    const cardsAfterMessage = new Map<Message, Message>();
+    const cardsAtBoundary = new Map<number, Message[]>();
+    for (const [card, position] of turnDiffPositionByMessage) {
+      const anchor = lastMessageByTurn.get(card.turnId!);
+      if (anchor) cardsAfterMessage.set(anchor, card);
+      else {
+        const siblings = cardsAtBoundary.get(position) || [];
+        siblings.push(card);
+        cardsAtBoundary.set(position, siblings);
+      }
+    }
+    const ordered: Message[] = [];
     for (let index = 0; index < messages.length; index += 1) {
       const message = messages[index];
-      if (String(message?.turnId || '').trim() === normalizedTurnId && message !== turnDiffMessage)
-        anchorIndex = index;
+      if (!cards.has(message)) ordered.push(message);
+      const card = cardsAfterMessage.get(message);
+      if (card) ordered.push(card);
+      for (const unanchoredCard of cardsAtBoundary.get(index + 1) || []) ordered.push(unanchoredCard);
     }
-    if (anchorIndex >= 0) messages.splice(anchorIndex + 1, 0, turnDiffMessage);
-    else messages.push(turnDiffMessage);
-  }
-
-  /**
-   * 在同一轮的新消息写入后重新定位已存在的改动卡片，兼容 turn_diff 先于助手输出到达的日志。
-   */
-  function relocateTurnDiffForTurn(turnId: string): void {
-    const normalizedTurnId = String(turnId || '').trim();
-    if (!normalizedTurnId) return;
-    const turnDiffMessage = turnDiffMessagesByKey.get(`turn:${normalizedTurnId}`);
-    if (turnDiffMessage) placeTurnDiffAfterTurnMessages(normalizedTurnId, turnDiffMessage);
+    return ordered;
   }
 
   /**
@@ -1950,7 +1976,21 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
    */
   function withTurnId(message: Message, turnId?: string): Message {
     const normalizedTurnId = String(turnId || '').trim();
-    return normalizedTurnId ? { ...message, turnId: normalizedTurnId } : message;
+    const result = { ...message, ...currentMessageMetadata, ...(normalizedTurnId ? { turnId: normalizedTurnId } : {}) };
+    if (currentCompactionOutput) {
+      result.role = 'compaction';
+      result.content = result.content.map((item) => ({
+        ...item,
+        type: 'context_compaction',
+        tags: ['context_compaction'],
+      }));
+    }
+    if (normalizedTurnId) {
+      const turnMessages = turnMessagesById.get(normalizedTurnId) || [];
+      turnMessages.push(result);
+      turnMessagesById.set(normalizedTurnId, turnMessages);
+    }
+    return result;
   }
 
   /**
@@ -1989,7 +2029,10 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
         item.diffSource = source;
         item.patchable = typeof options.patchable === 'boolean' ? options.patchable : source !== 'file_change';
         turnDiffSourceByKey.set(key, source);
-        if (turnId) placeTurnDiffAfterTurnMessages(turnId, existing);
+        if (turnId) {
+          turnDiffPositionByMessage.delete(existing);
+          turnDiffPositionByMessage.set(existing, messages.length);
+        }
         return;
       }
       if (options.appendAlways || !String(item.text || '').includes(text)) item.text = `${String(item.text || '').trim()}\n${text}`.trim();
@@ -2001,18 +2044,17 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
       return;
     }
 
-    const message: Message = {
+    const message: Message = withTurnId({
       role: 'change',
-      turnId: turnId || undefined,
       content: [{ type: 'turn_diff', text, tags: options.tags }],
-    };
+    }, turnId);
     message.content[0].cwd = String(options.cwd || '').trim() || undefined;
     message.content[0].diffSource = source;
     message.content[0].patchable = typeof options.patchable === 'boolean' ? options.patchable : source !== 'file_change';
     turnDiffMessagesByKey.set(key, message);
     turnDiffSourceByKey.set(key, source);
-    if (turnId) placeTurnDiffAfterTurnMessages(turnId, message);
-    else messages.push(message);
+    messages.push(message);
+    if (turnId) turnDiffPositionByMessage.set(message, messages.length);
   }
 
   /**
@@ -2066,7 +2108,7 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
   if (stat) {
     const key = filePath;
     const prev = cache.get(key);
-    if (prev && prev.mtimeMs === stat.mtimeMs && prev.size === stat.size && (prev.complete || prev.maxLines >= maxLines)) {
+    if (prev && prev.parserVersion === PARSER_VERSION && prev.mtimeMs === stat.mtimeMs && prev.size === stat.size && (prev.complete || prev.maxLines >= maxLines)) {
       return prev.result;
     }
   }
@@ -2282,6 +2324,7 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
         const imageData = String(inlineImages[index] || '').trim();
         const imageItem = createHistoryImageContent({
           localPath: localImages[index],
+          deferLocalFileCheck: true,
           dataUrl: /^data:image\//i.test(imageData) ? imageData : undefined,
           base64Data: imageData && !/^data:image\//i.test(imageData) ? imageData : undefined,
           tags: ['message.image', 'event_msg.user_message.image'],
@@ -2296,6 +2339,7 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
         for (const localPath of pathCandidates) {
           const imageItem = createHistoryImageContent({
             localPath,
+            deferLocalFileCheck: true,
             tags: ['message.image', 'event_msg.user_message.image'],
           });
           if (imageItem) {
@@ -2391,6 +2435,7 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
           : (typeof block.path === 'string' ? block.path : localPathHint));
       return createHistoryImageContent({
         localPath,
+        deferLocalFileCheck: true,
         dataUrl: imageUrl,
         mimeType: typeof block.mime_type === 'string' ? block.mime_type : (typeof block.mimeType === 'string' ? block.mimeType : undefined),
       });
@@ -2418,6 +2463,24 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
     if (!line.trim()) return lineIndex;
     try {
       const obj = JSON.parse(line);
+      const source = obj.type === 'response_item' && obj.payload ? obj.payload : obj;
+      currentMessageMetadata = {
+        ...(typeof source.phase === 'string' ? { phase: source.phase } : {}),
+        ...(typeof obj.timestamp === 'string' ? { timestamp: obj.timestamp } : {}),
+      };
+      currentCompactionOutput = obj.metadata?.compaction_output === true;
+      const explicitTurnId = resolveCodexTurnId(obj, source);
+      const eventType = obj.type === 'event_msg' ? String(obj.payload?.type || '').toLowerCase() : '';
+      if ((eventType === 'task_started' || obj.type === 'turn_context') && explicitTurnId) {
+        activeTurnId = explicitTurnId;
+        activeTurnCompleted = false;
+        const timestampMs = Date.parse(String(obj.timestamp || ''));
+        if (eventType === 'task_started' && Number.isFinite(timestampMs)) turnStartedAt.set(activeTurnId, timestampMs);
+      } else if (activeTurnCompleted && (eventType === 'user_message' || (source.type === 'message' && source.role === 'user'))) {
+        // 没有开始事件的旧日志以新的用户输入切断上一轮，避免跨轮合并相同文件。
+        activeTurnId = '';
+        activeTurnCompleted = false;
+      }
       if (lineIndex === 0) {
         // 新版：顶层为 session_meta，真实头部在 payload 中
         if (obj && obj.type === 'session_meta' && obj.payload) {
@@ -2476,7 +2539,15 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
       const turnDiffEventText = obj.type === 'event_msg' && obj.payload && obj.payload.type === 'turn_diff'
         ? String(obj.payload.unified_diff || '').trim()
         : '';
-      const codexTurnId = resolveCodexTurnId(obj, obj?.payload);
+      const codexTurnId = resolveCodexTurnId(obj, obj?.payload, activeTurnId);
+      if (eventType === 'task_complete' || eventType === 'task_completed') {
+        const startedAt = turnStartedAt.get(codexTurnId);
+        const completedAt = Date.parse(String(obj.timestamp || ''));
+        if (startedAt !== undefined && Number.isFinite(completedAt) && completedAt >= startedAt) {
+          for (const message of turnMessagesById.get(codexTurnId) || []) message.durationMs = completedAt - startedAt;
+        }
+        if (codexTurnId === activeTurnId) activeTurnCompleted = true;
+      }
       const completedItem = obj.type === 'event_msg'
         && obj.payload
         && obj.payload.type === 'item_completed'
@@ -2492,7 +2563,10 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
       if (obj.type === 'turn_context' && obj.payload?.cwd && !historyCwd)
         historyCwd = normalizeCodexFileChangeCwd(obj.payload.cwd);
 
-      if (obj.type === 'message' || obj.record_type === 'message' || (obj.type === 'response_item' && obj.payload && (obj.payload.type === 'message' || obj.payload.record_type === 'message'))) {
+      if (obj.type === 'compacted' || completedItemType === 'contextcompaction') {
+        const text = typeof obj.payload?.message === 'string' ? obj.payload.message : pretty(obj.payload || obj);
+        messages.push(withTurnId({ role: 'compaction', content: [{ type: 'context_compaction', text, tags: ['context_compaction'] }] }, codexTurnId));
+      } else if (obj.type === 'message' || obj.record_type === 'message' || (obj.type === 'response_item' && obj.payload && (obj.payload.type === 'message' || obj.payload.record_type === 'message'))) {
 	        const src: any = (obj.type === 'response_item' && obj.payload) ? obj.payload : obj;
 	        const role = src.role || src.actor || src.from || 'user';
 	        const contentArr: MessageContent[] = [];
@@ -2622,7 +2696,6 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
         if (contentArr.length > 0) {
           const message = withTurnId({ role: normalizeHistoryMessageRoleForContent(role, contentArr), content: contentArr }, codexTurnId);
           messages.push(message);
-          relocateTurnDiffForTurn(codexTurnId);
         }
       } else if (userMessageEventContent) {
         try {
@@ -2630,7 +2703,6 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
         } catch {}
         if (!mergePathOnlyUserMessageIntoPreviousUserMessage(userMessageEventContent)) {
           messages.push(withTurnId({ role: 'user', content: userMessageEventContent }, codexTurnId));
-          relocateTurnDiffForTurn(codexTurnId);
         }
       } else if (fileChangeItem) {
         const fileChangeCwd = normalizeCodexFileChangeCwd(
@@ -2666,7 +2738,7 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
         const applyPatchBlocks = extractCodexApplyPatchBlocks(name, callArguments);
         if (applyPatchBlocks.length > 0) {
           upsertTurnDiffMessage({
-            turnId: resolveCodexTurnId(obj, src),
+            turnId: resolveCodexTurnId(obj, src, activeTurnId),
             fallbackKey: String((src as any).call_id || ''),
             text: applyPatchBlocks.join('\n'),
             tags: ['custom_tool_call.apply_patch', 'apply_patch', 'turn_diff'],
@@ -2688,8 +2760,7 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
         rememberImagePathsFromText(text);
         const imagePathCandidates = extractImagePathCandidatesFromFunctionCallArguments(callArguments, text);
         rememberImagePathsForCallId((src as any).call_id, imagePathCandidates);
-        messages.push(withTurnId({ role: 'tool', content: [{ type: 'function_call', text, tags: ['function_call'] }] }, resolveCodexTurnId(obj, src)));
-        relocateTurnDiffForTurn(resolveCodexTurnId(obj, src));
+        messages.push(withTurnId({ role: 'tool', content: [{ type: 'function_call', text, tags: ['function_call'] }] }, resolveCodexTurnId(obj, src, activeTurnId)));
       } else if (
         obj.type === 'function_call_output'
         || obj.type === 'custom_tool_call_output'
@@ -2728,9 +2799,8 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
           contentArr.unshift({ type: 'function_output', text, tags: ['function_output'] });
         }
         if (contentArr.length > 0) {
-          const turnId = resolveCodexTurnId(obj, src);
+          const turnId = resolveCodexTurnId(obj, src, activeTurnId);
           messages.push(withTurnId({ role: 'tool', content: contentArr }, turnId));
-          relocateTurnDiffForTurn(turnId);
         }
       } else if (obj.type === 'reasoning' || (obj.type === 'response_item' && obj.payload && obj.payload.type === 'reasoning')) {
         // 仅展示公开的 summary，忽略/标注加密内容
@@ -2749,9 +2819,8 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
           }
         } catch {}
         if (items.length > 0) {
-          const turnId = resolveCodexTurnId(obj, src);
+          const turnId = resolveCodexTurnId(obj, src, activeTurnId);
           messages.push(withTurnId({ role: 'reasoning', content: items }, turnId));
-          relocateTurnDiffForTurn(turnId);
         }
       } else if (obj.record_type === 'state' || obj.type === 'state' || (obj.type === 'response_item' && obj.payload && (obj.payload.type === 'state' || obj.payload.record_type === 'state'))) {
         const role = 'state';
@@ -2781,22 +2850,22 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
   }
 
   // 改为统一使用 UNC/Windows 直读，不再通过 wsl 调用读取
-  const historyStream = stat ? await openCodexHistoryStream(filePath, chunk) : null;
+  const historyStream = stat ? await openCodexHistoryStream(filePath, chunk, { rawBytes: true }) : null;
 
   return new Promise((resolve, reject) => {
     try {
       if (!historyStream) return resolve({ id, title, date, messages, skippedLines: 0 });
       const rs = historyStream;
-      const rl = readline.createInterface({ input: rs, crlfDelay: Infinity });
+      let rl: readline.Interface | undefined;
       let lineIndex = 0;
       let done = false;
       let hitLineLimit = false;
       const finish = () => {
         if (done) return;
         done = true;
-        try { rl.close(); } catch {}
+        try { rl?.close(); } catch {}
         try { rs.destroy(); } catch {}
-        const result = { id, title, date: (stat?.mtimeMs || Date.now()), messages, skippedLines: skipped };
+        const result = { id, title, date: (stat?.mtimeMs || Date.now()), messages: finalizeTurnDiffMessageOrder(), skippedLines: skipped };
         try {
           if (stat) {
             const key = filePath;
@@ -2806,6 +2875,7 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
               for (const k of cache.keys()) { cache.delete(k); if (++i >= 50) break; }
             }
             cache.set(key, {
+              parserVersion: PARSER_VERSION,
               mtimeMs: stat.mtimeMs,
               size: stat.size,
               complete: !hitLineLimit,
@@ -2819,10 +2889,24 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
       const fail = (err: any) => {
         if (done) return;
         done = true;
-        try { rl.close(); } catch {}
+        try { rl?.close(); } catch {}
         try { rs.destroy(); } catch {}
         reject(err);
       };
+      if (!rs.readableEncoding) {
+        readBufferHistoryLines(rs, (line) => {
+          if (done) return false;
+          lineIndex = parseLine(line, lineIndex);
+          if (Number.isFinite(maxLines) && lineIndex >= maxLines) {
+            hitLineLimit = true;
+            finish();
+            return false;
+          }
+          return true;
+        }).then(finish, fail);
+        return;
+      }
+      rl = readline.createInterface({ input: rs, crlfDelay: Infinity });
       rl.on('line', (line) => {
         if (done) return;
         lineIndex = parseLine(line, lineIndex);
@@ -2846,7 +2930,7 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
       });
     } catch (err) {
       // fs 读取初始化失败，返回空结构
-      const result = { id, title, date: (stat?.mtimeMs || Date.now()), messages, skippedLines: skipped };
+      const result = { id, title, date: (stat?.mtimeMs || Date.now()), messages: finalizeTurnDiffMessageOrder(), skippedLines: skipped };
       try {
         if (stat) {
           const key = filePath;
@@ -2855,6 +2939,7 @@ export async function readHistoryFile(filePath: string, opts?: { chunkSize?: num
             for (const k of cache.keys()) { cache.delete(k); if (++i >= 50) break; }
           }
           cache.set(key, {
+            parserVersion: PARSER_VERSION,
             mtimeMs: stat.mtimeMs,
             size: stat.size,
             complete: !Number.isFinite(maxLines),
