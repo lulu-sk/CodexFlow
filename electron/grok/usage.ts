@@ -2,8 +2,10 @@
 // Copyright (c) 2025 Lulu (GitHub: lulu-sk, https://github.com/lulu-sk)
 
 import path from "node:path";
+import os from "node:os";
+import { createHash } from "node:crypto";
 import { promises as fsp } from "node:fs";
-import { getGrokRootCandidatesFastAsync } from "../agentSessions/grok/discovery";
+import { execInWslAsync } from "../wsl";
 import { perfLogger } from "../log";
 
 export type GrokUsageSnapshot = {
@@ -53,14 +55,13 @@ type GrokCredentialState =
   | { kind: "missing" };
 
 type GrokUsageContext = {
-  home: string;
   credential: GrokCredentialState;
+  baseUrl: string;
 };
 
 const DEFAULT_BILLING_BASE_URL = "https://cli-chat-proxy.grok.com/v1";
 const BILLING_REQUEST_TIMEOUT_MS = 15_000;
-const MAX_BILLING_LOG_TAIL_BYTES = 2 * 1024 * 1024;
-const BILLING_LOG_MESSAGE = "billing: fetched credits config";
+let lastVerifiedUsage: { identity: string; snapshot: GrokUsageSnapshot } | null = null;
 
 /**
  * 将未知值转换为普通对象。
@@ -82,7 +83,7 @@ function toTrimmedString(value: unknown): string {
  */
 function toNonNegativeNumber(value: unknown): number | null {
   const normalized = typeof value === "string" ? value.trim() : value;
-  if (normalized == null || normalized === "") return null;
+  if (normalized == null || normalized === "" || (typeof normalized !== "number" && typeof normalized !== "string")) return null;
   const numberValue = typeof normalized === "number" ? normalized : Number(normalized);
   if (!Number.isFinite(numberValue) || numberValue < 0) return null;
   return numberValue;
@@ -110,8 +111,7 @@ function toTimestampMs(value: unknown): number | null {
  */
 async function readJsonObjectAsync(filePath: string): Promise<Record<string, unknown> | null> {
   try {
-    const raw = (await fsp.readFile(filePath, "utf8")).replace(/^\uFEFF/, "");
-    return asRecord(JSON.parse(raw));
+    return parseJsonObject(await fsp.readFile(filePath, "utf8"));
   } catch {
     return null;
   }
@@ -162,31 +162,40 @@ function resolveCredentialState(store: Record<string, unknown> | null): GrokCred
 }
 
 /**
- * 按设置中的终端环境定位当前 Grok 主目录。
+ * 读取 JSON 文本，并兼容文件开头的 UTF-8 BOM。
  */
-async function resolveGrokHomeAsync(env: ProviderRuntimeEnv): Promise<string | null> {
-  const candidates = await getGrokRootCandidatesFastAsync();
-  const expectedDistro = toTrimmedString(env.distro).toLowerCase();
-  const candidate = candidates.find((item) => {
-    if (env.terminal !== "wsl") return item.source === "windows";
-    if (item.source !== "wsl") return false;
-    if (!expectedDistro) return true;
-    return toTrimmedString(item.distro).toLowerCase() === expectedDistro;
-  });
-  return candidate?.path ? path.dirname(candidate.path) : null;
+function parseJsonObject(raw: string): Record<string, unknown> | null {
+  try { return asRecord(JSON.parse(raw.replace(/^\uFEFF/, ""))); }
+  catch { return null; }
 }
 
 /**
  * 读取当前 Grok 主目录中的认证状态。
  */
 async function resolveUsageContextAsync(env: ProviderRuntimeEnv): Promise<GrokUsageContext> {
-  const home = await resolveGrokHomeAsync(env);
-  if (!home) throw new Error("GROK_USAGE_AUTH_REQUIRED");
-  const store = await readJsonObjectAsync(path.join(home, "auth.json"));
+  if (env.terminal === "wsl") {
+    const script = [
+      'printf "PROXY=%s\\n" "${GROK_CLI_CHAT_PROXY_BASE_URL:-}"',
+      'printf "API_KEY=%s\\n" "${XAI_API_KEY:+yes}"',
+      'cat "${GROK_AUTH_PATH:-${GROK_HOME:-$HOME/.grok}/auth.json}" 2>/dev/null || true',
+    ].join("\n");
+    const raw = await execInWslAsync(env.distro, script, { timeoutMs: 5000 });
+    if (raw == null) throw new Error("GROK_USAGE_AUTH_REQUIRED");
+    const [proxyLine, apiKeyLine, ...authLines] = raw.split(/\r?\n/);
+    const credential = resolveCredentialState(parseJsonObject(authLines.join("\n")));
+    return {
+      credential: credential.kind === "missing" && apiKeyLine === "API_KEY=yes" ? { kind: "api-key" } : credential,
+      baseUrl: resolveBillingBaseUrl(proxyLine?.replace(/^PROXY=/, "")),
+    };
+  }
+  const home = toTrimmedString(process.env.GROK_HOME) || path.join(os.homedir(), ".grok");
+  const configuredAuthPath = toTrimmedString(process.env.GROK_AUTH_PATH);
+  const store = await readJsonObjectAsync(configuredAuthPath || path.join(home, "auth.json"));
   const credential = resolveCredentialState(store);
-  if (credential.kind === "missing" && env.terminal !== "wsl" && toTrimmedString(process.env.XAI_API_KEY))
-    return { home, credential: { kind: "api-key" } };
-  return { home, credential };
+  return {
+    credential: credential.kind === "missing" && toTrimmedString(process.env.XAI_API_KEY) ? { kind: "api-key" } : credential,
+    baseUrl: resolveBillingBaseUrl(process.env.GROK_CLI_CHAT_PROXY_BASE_URL),
+  };
 }
 
 /**
@@ -196,7 +205,7 @@ function readCent(config: Record<string, unknown>, key: string): number | null {
   if (!Object.prototype.hasOwnProperty.call(config, key)) return null;
   const cent = asRecord(config[key]);
   if (!cent) return null;
-  return toNonNegativeNumber(cent.val) ?? 0;
+  return Object.prototype.hasOwnProperty.call(cent, "val") ? toNonNegativeNumber(cent.val) : 0;
 }
 
 /**
@@ -239,7 +248,7 @@ function parseBillingSnapshot(
     collectedAt: Date.now(),
     updatedAt,
     accountEmail,
-    subscriptionTier: toTrimmedString(response.subscriptionTier) || null,
+    subscriptionTier: toTrimmedString(response.subscriptionTier ?? response.subscription_tier) || null,
     quota: {
       usedPercent: reportedPercent ?? derivedPercent,
       periodType: toTrimmedString(currentPeriod?.type) || null,
@@ -247,7 +256,7 @@ function parseBillingSnapshot(
       periodEndAt: toTimestampMs(currentPeriod?.end) ?? toTimestampMs(config.billingPeriodEnd),
       includedUsedCents,
       includedLimitCents,
-      onDemandEnabled: toOptionalBoolean(response.onDemandEnabled),
+      onDemandEnabled: toOptionalBoolean(response.onDemandEnabled ?? response.on_demand_enabled),
       onDemandUsedCents: readCent(config, "onDemandUsed"),
       onDemandCapCents: readCent(config, "onDemandCap"),
       prepaidBalanceCents: readCent(config, "prepaidBalance"),
@@ -260,8 +269,8 @@ function parseBillingSnapshot(
 /**
  * 解析可选的 Grok 代理地址，仅允许 HTTP(S) 地址。
  */
-function resolveBillingBaseUrl(): string {
-  const configured = toTrimmedString(process.env.GROK_CLI_CHAT_PROXY_BASE_URL).replace(/\/$/, "");
+function resolveBillingBaseUrl(value: unknown): string {
+  const configured = toTrimmedString(value).replace(/\/$/, "");
   if (/^https?:\/\//i.test(configured)) return configured;
   return DEFAULT_BILLING_BASE_URL;
 }
@@ -269,11 +278,11 @@ function resolveBillingBaseUrl(): string {
 /**
  * 使用 Grok 官方 OAuth 身份实时获取账号额度。
  */
-async function fetchBillingSnapshotAsync(credential: GrokOAuthCredential): Promise<GrokUsageSnapshot> {
+async function fetchBillingSnapshotAsync(credential: GrokOAuthCredential, baseUrl: string): Promise<GrokUsageSnapshot> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), BILLING_REQUEST_TIMEOUT_MS);
   try {
-    const response = await fetch(`${resolveBillingBaseUrl()}/billing?format=credits`, {
+    const response = await fetch(`${baseUrl}/billing?format=credits`, {
       method: "GET",
       signal: controller.signal,
       headers: {
@@ -310,62 +319,32 @@ async function fetchBillingSnapshotAsync(credential: GrokOAuthCredential): Promi
 }
 
 /**
- * 从文件尾部读取最近的完整 JSONL 行。
- */
-async function readJsonlTailLinesAsync(filePath: string): Promise<string[]> {
-  let handle: Awaited<ReturnType<typeof fsp.open>> | null = null;
-  try {
-    handle = await fsp.open(filePath, "r");
-    const stat = await handle.stat();
-    const readLength = Math.min(stat.size, MAX_BILLING_LOG_TAIL_BYTES);
-    if (readLength <= 0) return [];
-    const start = stat.size - readLength;
-    const buffer = Buffer.alloc(readLength);
-    const { bytesRead } = await handle.read(buffer, 0, readLength, start);
-    const lines = buffer.subarray(0, bytesRead).toString("utf8").replace(/^\uFEFF/, "").split(/\r?\n/);
-    if (start > 0) lines.shift();
-    return lines;
-  } catch {
-    return [];
-  } finally {
-    await handle?.close().catch(() => undefined);
-  }
-}
-
-/**
- * 读取 Grok 官方统一日志中最近一次成功的额度快照。
- */
-async function readCachedBillingSnapshotAsync(home: string, accountEmail: string | null): Promise<GrokUsageSnapshot | null> {
-  const lines = await readJsonlTailLinesAsync(path.join(home, "logs", "unified.jsonl"));
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    const line = toTrimmedString(lines[index]);
-    if (!line || !line.includes(BILLING_LOG_MESSAGE)) continue;
-    try {
-      const entry = asRecord(JSON.parse(line));
-      if (toTrimmedString(entry?.msg) !== BILLING_LOG_MESSAGE) continue;
-      const timestamp = toTimestampMs(entry?.ts) ?? Date.now();
-      const snapshot = parseBillingSnapshot(entry?.ctx, "billing-cache", timestamp, accountEmail);
-      if (snapshot) return snapshot;
-    } catch {}
-  }
-  return null;
-}
-
-/**
  * 获取 Grok Build 当前账号的消费者额度快照。
  */
 export async function getGrokUsageSnapshotAsync(env: ProviderRuntimeEnv): Promise<GrokUsageSnapshot> {
   return perfLogger.time("[grok] account usage snapshot", async () => {
-    const { home, credential } = await resolveUsageContextAsync(env);
+    const { baseUrl, credential } = await resolveUsageContextAsync(env);
+    const identity = credential.kind === "oauth"
+      ? createHash("sha256").update(`${env.terminal}:${env.distro || ""}:${baseUrl}\0${credential.credential.userId}\0${credential.credential.token}`).digest("hex")
+      : "";
+    if (lastVerifiedUsage?.identity !== identity) lastVerifiedUsage = null;
     if (credential.kind === "api-key") throw new Error("GROK_USAGE_API_KEY_UNSUPPORTED");
     if (credential.kind === "missing") throw new Error("GROK_USAGE_AUTH_REQUIRED");
     if (credential.credential.isTeam) throw new Error("GROK_USAGE_TEAM_UNSUPPORTED");
 
     try {
-      return await fetchBillingSnapshotAsync(credential.credential);
+      const snapshot = await fetchBillingSnapshotAsync(credential.credential, baseUrl);
+      lastVerifiedUsage = { identity, snapshot };
+      return snapshot;
     } catch (error) {
-      const cached = await readCachedBillingSnapshotAsync(home, credential.credential.email);
-      if (cached) return cached;
+      // 认证失败时不能借用其他登录时期的日志掩盖失效状态。
+      if (error instanceof Error && error.message === "GROK_USAGE_AUTH_EXPIRED") {
+        lastVerifiedUsage = null;
+        throw error;
+      }
+      const cached = lastVerifiedUsage?.identity === identity ? lastVerifiedUsage.snapshot : null;
+      if (cached && Date.now() - cached.updatedAt >= 0 && Date.now() - cached.updatedAt <= 5 * 60_000)
+        return { ...cached, source: "billing-cache", collectedAt: Date.now() };
       throw error;
     }
   });

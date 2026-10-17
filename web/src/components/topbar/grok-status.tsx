@@ -10,6 +10,7 @@ import { useHoverCard } from "@/components/topbar/hover-card";
 import { cn } from "@/lib/utils";
 import { formatGrokUsageErrorText, GROK_USAGE_REFRESH_EVENT } from "@/lib/grok-status";
 import type { AppSettings, GrokUsageSnapshot } from "@/types/host";
+import { useLatestRequest } from "@/lib/use-latest-request";
 
 type TerminalMode = NonNullable<AppSettings["terminal"]>;
 
@@ -78,24 +79,33 @@ export const GrokUsageHoverCard: React.FC<GrokUsageHoverCardProps> = ({
   const { t, i18n } = useTranslation(["common"]);
   const hover = useHoverCard();
   const lastRefreshAtRef = useRef(0);
+  const envKey = terminalMode === "wsl" ? `wsl:${distro ?? ""}` : terminalMode ?? "default";
+  const beginRequest = useLatestRequest(envKey);
   const [usageState, setUsageState] = useState<FetchState>({ loading: false, error: null, data: null });
+
+  useEffect(() => {
+    setUsageState({ loading: false, error: null, data: null });
+  }, [envKey]);
 
   /**
    * 从主进程重新获取 Grok 账号额度。
    */
   const reloadUsage = useCallback(async () => {
+    const isCurrent = beginRequest();
     setUsageState((previous) => ({ ...previous, loading: true, error: null }));
     try {
       const result = await window.host.grok.getUsage();
+      if (!isCurrent()) return;
       if (result.ok) {
         setUsageState({ loading: false, error: null, data: result.snapshot ?? null });
         return;
       }
       setUsageState({ loading: false, error: formatGrokUsageErrorText(result.error, t), data: null });
     } catch (reason) {
+      if (!isCurrent()) return;
       setUsageState({ loading: false, error: formatGrokUsageErrorText(reason, t), data: null });
     }
-  }, [distro, t, terminalMode]);
+  }, [beginRequest, t]);
 
   useEffect(() => {
     reloadUsage();
@@ -135,7 +145,7 @@ export const GrokUsageHoverCard: React.FC<GrokUsageHoverCardProps> = ({
     || quota?.onDemandCapCents != null
     || quota?.onDemandEnabled === false;
   const sourceLabel = snapshot?.source === "billing-cache"
-    ? t("common:grokUsage.sourceCache", "Grok 官方缓存")
+    ? t("common:grokUsage.sourceCache", "最近成功结果")
     : t("common:grokUsage.sourceLive", "实时");
 
   return (

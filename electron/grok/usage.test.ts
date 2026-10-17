@@ -3,11 +3,11 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const discoveryMocks = vi.hoisted(() => ({
-  getGrokRootCandidatesFastAsync: vi.fn(),
+const wslMocks = vi.hoisted(() => ({
+  execInWslAsync: vi.fn(),
 }));
 
-vi.mock("../agentSessions/grok/discovery", () => discoveryMocks);
+vi.mock("../wsl", () => wslMocks);
 
 import { __grokUsageTest, getGrokUsageSnapshotAsync } from "./usage";
 
@@ -16,17 +16,20 @@ let fetchMock: ReturnType<typeof vi.fn>;
 
 beforeEach(async () => {
   tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "codexflow-grok-usage-"));
-  discoveryMocks.getGrokRootCandidatesFastAsync.mockReset();
-  discoveryMocks.getGrokRootCandidatesFastAsync.mockResolvedValue([
-    { path: path.join(tempRoot, "sessions"), exists: false, source: "windows", kind: "local" },
-  ]);
+  vi.stubEnv("GROK_AUTH_PATH", "");
+  vi.stubEnv("GROK_HOME", tempRoot);
+  vi.stubEnv("XAI_API_KEY", "");
+  vi.stubEnv("GROK_CLI_CHAT_PROXY_BASE_URL", "");
+  wslMocks.execInWslAsync.mockReset();
   fetchMock = vi.fn();
   vi.stubGlobal("fetch", fetchMock);
+  await getGrokUsageSnapshotAsync({ terminal: "pwsh" }).catch(() => undefined);
 });
 
 afterEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   if (tempRoot) await fs.promises.rm(tempRoot, { recursive: true, force: true });
 });
 
@@ -78,6 +81,31 @@ async function writeBillingLogFixture(home: string, ctx: unknown): Promise<void>
 }
 
 describe("getGrokUsageSnapshotAsync", () => {
+  it("使用 Grok 官方支持的自定义认证文件", async () => {
+    const authHome = path.join(tempRoot, "custom-auth");
+    await writeAuthFixture(authHome, "oidc");
+    vi.stubEnv("GROK_AUTH_PATH", path.join(authHome, "auth.json"));
+    mockBillingResponse({ config: { creditUsagePercent: 10 } });
+    expect((await getGrokUsageSnapshotAsync({ terminal: "pwsh" })).quota.usedPercent).toBe(10);
+  });
+
+  it("登录失效时不能用历史额度掩盖认证错误", async () => {
+    await writeAuthFixture(tempRoot, "oidc");
+    await writeBillingLogFixture(tempRoot, { config: { creditUsagePercent: 10 } });
+    mockBillingResponse({}, 401);
+    await expect(getGrokUsageSnapshotAsync({ terminal: "pwsh" })).rejects.toThrow("GROK_USAGE_AUTH_EXPIRED");
+  });
+
+  it("认证失效后清除本进程此前确认成功的额度缓存", async () => {
+    await writeAuthFixture(tempRoot, "oidc");
+    mockBillingResponse({ config: { creditUsagePercent: 10 } });
+    await getGrokUsageSnapshotAsync({ terminal: "pwsh" });
+    mockBillingResponse({}, 403);
+    await expect(getGrokUsageSnapshotAsync({ terminal: "pwsh" })).rejects.toThrow("GROK_USAGE_AUTH_EXPIRED");
+    fetchMock.mockRejectedValue(new Error("offline"));
+    await expect(getGrokUsageSnapshotAsync({ terminal: "pwsh" })).rejects.toThrow("offline");
+  });
+
   it("通过官方 OAuth 接口读取新版账号额度", async () => {
     await writeAuthFixture(tempRoot, "oidc");
     mockBillingResponse({
@@ -148,19 +176,25 @@ describe("getGrokUsageSnapshotAsync", () => {
     });
   });
 
-  it("WSL 模式只读取指定发行版的 Grok 认证", async () => {
+  it("WSL 模式读取指定发行版自己的认证路径与代理设置", async () => {
     const wslHome = path.join(tempRoot, "wsl-home");
     await writeAuthFixture(wslHome, "oidc");
-    discoveryMocks.getGrokRootCandidatesFastAsync.mockResolvedValue([
-      { path: path.join(tempRoot, "windows-home", "sessions"), exists: false, source: "windows", kind: "local" },
-      { path: path.join(wslHome, "sessions"), exists: false, source: "wsl", kind: "unc", distro: "TestDistro" },
-      { path: path.join(tempRoot, "other-home", "sessions"), exists: false, source: "wsl", kind: "unc", distro: "OtherDistro" },
-    ]);
+    wslMocks.execInWslAsync.mockResolvedValue("PROXY=https://proxy.example.test/v1\nAPI_KEY=\n" + await fs.promises.readFile(path.join(wslHome, "auth.json"), "utf8"));
     mockBillingResponse({ config: { creditUsagePercent: 10 } });
 
     const snapshot = await getGrokUsageSnapshotAsync({ terminal: "wsl", distro: "TestDistro" });
 
     expect(snapshot.quota.usedPercent).toBe(10);
+    expect(wslMocks.execInWslAsync).toHaveBeenCalledWith("TestDistro", expect.stringContaining("${GROK_AUTH_PATH:-${GROK_HOME:-$HOME/.grok}/auth.json}"), { timeoutMs: 5000 });
+    expect(fetchMock.mock.calls[0][0]).toBe("https://proxy.example.test/v1/billing?format=credits");
+  });
+
+  it("未指定发行版时让 WSL 使用系统默认发行版，不能借用 Windows 凭据", async () => {
+    await writeAuthFixture(tempRoot, "oidc");
+    wslMocks.execInWslAsync.mockResolvedValue("PROXY=\nAPI_KEY=\n");
+    await expect(getGrokUsageSnapshotAsync({ terminal: "wsl" })).rejects.toThrow("GROK_USAGE_AUTH_REQUIRED");
+    expect(wslMocks.execInWslAsync.mock.calls[0][0]).toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("API Key 登录明确返回账号额度不受支持", async () => {
@@ -179,9 +213,9 @@ describe("getGrokUsageSnapshotAsync", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("实时请求失败时回退到 Grok 官方额度日志", async () => {
+  it("实时请求失败时只复用相同凭据五分钟内的成功用量", async () => {
     await writeAuthFixture(tempRoot, "oidc");
-    await writeBillingLogFixture(tempRoot, {
+    mockBillingResponse({
       config: {
         creditUsagePercent: 67,
         currentPeriod: { type: "USAGE_PERIOD_TYPE_MONTHLY", end: "2026-04-01T00:00:00Z" },
@@ -189,13 +223,14 @@ describe("getGrokUsageSnapshotAsync", () => {
       },
       subscriptionTier: "SuperGrok Heavy",
     });
+    const fresh = await getGrokUsageSnapshotAsync({ terminal: "pwsh" });
     fetchMock.mockRejectedValue(new Error("offline"));
 
     const snapshot = await getGrokUsageSnapshotAsync({ terminal: "pwsh" });
 
     expect(snapshot).toMatchObject({
       source: "billing-cache",
-      updatedAt: Date.parse("2026-01-02T03:04:05.000Z"),
+      updatedAt: fresh.updatedAt,
       subscriptionTier: "SuperGrok Heavy",
       quota: {
         usedPercent: 67,
@@ -203,6 +238,24 @@ describe("getGrokUsageSnapshotAsync", () => {
         prepaidBalanceCents: 0,
       },
     });
+    vi.spyOn(Date, "now").mockReturnValue(fresh.updatedAt + 6 * 60_000);
+    await expect(getGrokUsageSnapshotAsync({ terminal: "pwsh" })).rejects.toThrow("offline");
+  });
+
+  it("不能将没有账号归属的官方历史日志认作当前账号额度", async () => {
+    await writeAuthFixture(tempRoot, "oidc");
+    await writeBillingLogFixture(tempRoot, { config: { creditUsagePercent: 67 } });
+    fetchMock.mockRejectedValue(new Error("offline"));
+    await expect(getGrokUsageSnapshotAsync({ terminal: "pwsh" })).rejects.toThrow("offline");
+  });
+
+  it("切换账号后网络失败不能回退到之前账号的用量", async () => {
+    await writeAuthFixture(tempRoot, "oidc");
+    mockBillingResponse({ config: { creditUsagePercent: 10 } });
+    await getGrokUsageSnapshotAsync({ terminal: "pwsh" });
+    await writeAuthFixture(tempRoot, "oidc", { user_id: "other-user", key: "other-token" });
+    fetchMock.mockRejectedValue(new Error("offline"));
+    await expect(getGrokUsageSnapshotAsync({ terminal: "pwsh" })).rejects.toThrow("offline");
   });
 
   it("无有效 OAuth 登录时返回登录提示错误", async () => {
@@ -214,6 +267,14 @@ describe("getGrokUsageSnapshotAsync", () => {
 });
 
 describe("__grokUsageTest", () => {
+  it("兼容接口返回的蛇形套餐字段，异常金额不能变成零", () => {
+    const snapshot = __grokUsageTest.parseBillingSnapshot({
+      subscription_tier: "SuperGrok", on_demand_enabled: false,
+      config: { creditUsagePercent: 10, used: { val: "invalid" }, prepaidBalance: {} },
+    }, "billing-api", 1, null);
+    expect(snapshot).toMatchObject({ subscriptionTier: "SuperGrok", quota: { onDemandEnabled: false, includedUsedCents: null, prepaidBalanceCents: 0 } });
+  });
+
   it("新版百分比优先于旧版金额推导结果", () => {
     const snapshot = __grokUsageTest.parseBillingSnapshot({
       config: {
