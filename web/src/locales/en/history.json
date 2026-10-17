@@ -6,6 +6,8 @@
   "copyAll": "Copy All",
   "export": "Export",
   "filterTypes": "Filter Types",
+  "typeSystemContext": "System context",
+  "typeContextSummary": "Compacted conversation summary",
   "selectAll": "Select All",
   "deselectAll": "Deselect All",
   "invertSelection": "Invert",
