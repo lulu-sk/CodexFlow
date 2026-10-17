@@ -391,6 +391,25 @@ describe("electron/history.listHistory", () => {
 });
 
 describe("electron/history.readHistoryFile", () => {
+  it("字节流跨块和混合换行不会丢失尾行，空行不占读取上限", async () => {
+    const records = [
+      { type: "session_meta", payload: { id: "mixed-line-reader" } },
+      { type: "message", role: "user", content: "第一条🙂" },
+      { type: "message", role: "assistant", content: "第二条中文" },
+      { type: "message", role: "assistant", content: "无换行尾条🙂" },
+    ];
+    const filePath = await createHistoryJsonlFile(records);
+    const lines = records.map((record) => JSON.stringify(record));
+    await fsp.writeFile(filePath, `${lines[0]}\r\n\r\n${lines[1]}\r${lines[2]}\n${lines[3]}`, "utf8");
+    const limited = await readHistoryFile(filePath, { chunkSize: 1, maxLines: 2 });
+    expect(collectTexts(limited.messages)).toContain("第一条🙂");
+    expect(collectTexts(limited.messages)).not.toContain("第二条中文");
+    const full = await readHistoryFile(filePath, { chunkSize: 2, maxLines: 0 });
+    expect(collectTexts(full.messages)).toEqual(expect.arrayContaining(["第一条🙂", "第二条中文", "无换行尾条🙂"]));
+    expect(full.skippedLines).toBe(0);
+    expect(await readHistoryFile(filePath, { maxLines: 0 })).toBe(full);
+  });
+
   it("将不带 for 后缀的 AGENTS.md instructions 解析为说明分类", async () => {
     const filePath = await createHistoryJsonlFile([
       {
@@ -708,7 +727,7 @@ describe("electron/history.readHistoryFile", () => {
     ]);
   });
 
-  it("新版 custom_tool_call_output 会按图片顺序恢复缺失路径对应的会话图片", async () => {
+  it("新版 custom_tool_call_output 延后文件检查时，按图片顺序保留缺失路径对应的会话回退图", async () => {
     const localImagePathA = "C:\\workspace\\fixtures\\missing-image-a.png";
     const localImagePathB = "C:\\workspace\\fixtures\\missing-image-b.png";
     const dataUrlA = "data:image/png;base64,QUFB";
@@ -758,7 +777,11 @@ describe("electron/history.readHistoryFile", () => {
 
     expect(imageItems).toHaveLength(2);
     expect(normalizedLocalPaths).toEqual([localImagePathA, localImagePathB]);
-    expect(imageItems.map((item) => item.src)).toEqual([dataUrlA, dataUrlB]);
+    expect(imageItems.map((item) => item.src)).toEqual([
+      "file:///C:/workspace/fixtures/missing-image-a.png",
+      "file:///C:/workspace/fixtures/missing-image-b.png",
+    ]);
+    expect(imageItems.map((item) => item.fallbackSrc)).toEqual([dataUrlA, dataUrlB]);
     expect(collectTexts(parsed.messages).join("\n")).not.toContain("base64,QUFB");
     expect(collectTexts(parsed.messages).join("\n")).not.toContain("base64,QkJC");
   });
@@ -900,6 +923,158 @@ describe("electron/history.readHistoryFile", () => {
     const parsed = await readHistoryFile(filePath, { maxLines: 0 });
 
     expect(parsed.messages.map((message) => message.role)).toEqual(["assistant", "assistant", "change", "user"]);
+  });
+
+  it("没有同轮正文时，卡片保持最后更新位置和多个卡片的更新顺序", async () => {
+    const filePath = await createHistoryJsonlFile([
+      { type: "session_meta", payload: { id: "unanchored-turn-diffs" } },
+      { type: "event_msg", payload: { type: "turn_diff", turn_id: "turn-a", unified_diff: "initial a" } },
+      { type: "state", sequence: 1 },
+      { type: "event_msg", payload: { type: "turn_diff", turn_id: "turn-b", unified_diff: "initial b" } },
+      { type: "event_msg", payload: { type: "turn_diff", turn_id: "turn-a", unified_diff: "latest a" } },
+      { type: "event_msg", payload: { type: "turn_diff", turn_id: "turn-b", unified_diff: "latest b" } },
+      { type: "state", sequence: 2 },
+    ]);
+    const parsed = await readHistoryFile(filePath, { maxLines: 0 });
+    const ordered = parsed.messages.filter((message) => message.role === "state" || message.role === "change");
+
+    expect(ordered.map((message) => message.role)).toEqual(["state", "change", "change", "state"]);
+    expect(ordered[1]).toMatchObject({ turnId: "turn-a", content: [{ text: "latest a" }] });
+    expect(ordered[2]).toMatchObject({ turnId: "turn-b", content: [{ text: "latest b" }] });
+    expect(ordered.filter((message) => message.role === "state").map((message) => JSON.parse(message.content[0].text).sequence))
+      .toEqual([1, 2]);
+  });
+
+  it("长会话的轮次卡片保持最新内容，并紧跟各轮最后一条消息", async () => {
+    const lines: unknown[] = [{ type: "session_meta", payload: { id: "long-turn-order", cwd: "/workspace/project" } }];
+    const turnCount = 200;
+    const messagesPerTurn = 100;
+    for (let turn = 0; turn < turnCount; turn += 1) {
+      const turnId = `turn-${turn}`;
+      lines.push(
+        { type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
+        { type: "event_msg", payload: { type: "turn_diff", turn_id: turnId, unified_diff: "initial diff" } },
+      );
+      for (let message = 0; message < messagesPerTurn; message += 1) {
+        lines.push({
+          type: "response_item",
+          payload: {
+            type: "message", role: "assistant",
+            internal_chat_message_metadata_passthrough: { turn_id: `request-${turn}-${message}` },
+            content: [{ type: "output_text", text: `output-${turn}-${message}` }],
+          },
+        });
+      }
+      lines.push({ type: "event_msg", payload: { type: "turn_diff", turn_id: turnId, unified_diff: `latest diff ${turn}` } });
+    }
+    const filePath = await createHistoryJsonlFile(lines);
+    const parsed = await readHistoryFile(filePath, { maxLines: 0 });
+    const visibleMessages = parsed.messages.filter((message) => message.role === "assistant" || message.role === "change");
+
+    expect(parsed.skippedLines).toBe(0);
+    expect(visibleMessages).toHaveLength(turnCount * (messagesPerTurn + 1));
+    for (let turn = 0; turn < turnCount; turn += 1) {
+      const offset = turn * (messagesPerTurn + 1);
+      expect(visibleMessages[offset + messagesPerTurn - 1]).toMatchObject({
+        role: "assistant", turnId: `turn-${turn}`, content: [{ text: `output-${turn}-${messagesPerTurn - 1}` }],
+      });
+      expect(visibleMessages[offset + messagesPerTurn]).toMatchObject({
+        role: "change", turnId: `turn-${turn}`, content: [{ text: `latest diff ${turn}` }],
+      });
+    }
+    expect(await readHistoryFile(filePath, { maxLines: 0 })).toBe(parsed);
+  });
+
+  it("把模型请求与 FileChange 归到真实用户轮次，且不同轮次的相同文件保持独立", async () => {
+    const patch = "*** Begin Patch\n*** Update File: src/example.ts\n@@\n-old\n+new\n*** End Patch";
+    const lines: unknown[] = [{ type: "session_meta", payload: { id: "session-request-turns", cwd: "/tmp/project" } }];
+    for (const turnId of ["user-turn-first", "user-turn-second"]) {
+      lines.push(
+        { timestamp: "2026-10-18T01:00:00.000Z", type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
+        { type: "turn_context", payload: { turn_id: turnId, cwd: "/tmp/project" } },
+        {
+          type: "response_item",
+          payload: {
+            type: "custom_tool_call", name: "apply_patch", call_id: `${turnId}-patch`, input: patch,
+            internal_chat_message_metadata_passthrough: { turn_id: "model-request-id" },
+          },
+        },
+        {
+          type: "event_msg",
+          payload: {
+            type: "item_completed", turn_id: turnId,
+            item: { type: "FileChange", id: `${turnId}-file`, changes: { "src/example.ts": { type: "update", unified_diff: "@@ -1 +1 @@\n-old\n+new\n" } } },
+          },
+        },
+        {
+          timestamp: "2026-10-18T01:00:02.000Z", type: "response_item",
+          payload: {
+            type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "修改完成" }],
+            internal_chat_message_metadata_passthrough: { turn_id: "model-request-id" },
+          },
+        },
+        { timestamp: "2026-10-18T01:00:03.000Z", type: "event_msg", payload: { type: "task_complete", turn_id: turnId } },
+      );
+    }
+    const filePath = await createHistoryJsonlFile(lines);
+    const parsed = await readHistoryFile(filePath, { maxLines: 0 });
+    const changes = parsed.messages.filter((message) => message.role === "change");
+    const assistants = parsed.messages.filter((message) => message.role === "assistant");
+
+    expect(changes).toHaveLength(2);
+    expect(changes.map((message) => message.turnId)).toEqual(["user-turn-first", "user-turn-second"]);
+    expect(changes.every((message) => message.content[0]?.diffSource === "file_change")).toBe(true);
+    expect(changes.every((message) => !message.content[0]?.text.includes("*** Begin Patch"))).toBe(true);
+    expect(assistants).toMatchObject([
+      { turnId: "user-turn-first", phase: "final_answer", timestamp: "2026-10-18T01:00:02.000Z", durationMs: 3000 },
+      { turnId: "user-turn-second", phase: "final_answer", timestamp: "2026-10-18T01:00:02.000Z", durationMs: 3000 },
+    ]);
+  });
+
+  it("同一轮没有显式 ID 的 turn_diff 更新只保留最新卡片", async () => {
+    const filePath = await createHistoryJsonlFile([
+      { type: "session_meta", payload: { id: "session-turn-diff-updates" } },
+      { type: "turn_context", payload: { turn_id: "user-turn" } },
+      { type: "event_msg", payload: { type: "turn_diff", unified_diff: "first diff" } },
+      { type: "response_item", payload: { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "正在修改" }] } },
+      { type: "event_msg", payload: { type: "turn_diff", unified_diff: "latest diff" } },
+    ]);
+    const parsed = await readHistoryFile(filePath, { maxLines: 0 });
+    const changes = parsed.messages.filter((message) => message.role === "change");
+
+    expect(changes).toHaveLength(1);
+    expect(changes[0]).toMatchObject({ turnId: "user-turn", content: [{ text: "latest diff" }] });
+    expect(parsed.messages.find((message) => message.role === "assistant")).toMatchObject({ turnId: "user-turn", phase: "commentary" });
+  });
+
+  it("只凭明确压缩标记分类摘要，不误隐藏内容相似的普通答复", async () => {
+    const text = "ASSISTANT OUTPUT：上下文压缩说明";
+    const filePath = await createHistoryJsonlFile([
+      { type: "session_meta", payload: { id: "session-compaction" } },
+      { type: "turn_context", payload: { turn_id: "user-turn" } },
+      {
+        type: "response_item", metadata: { compaction_output: true },
+        payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text }] },
+      },
+      {
+        type: "response_item", metadata: { compaction_output: true },
+        payload: { type: "reasoning", summary: [{ type: "summary_text", text: "摘要推理" }] },
+      },
+      { type: "compacted", payload: { message: `摘要前缀\n${text}`, replacement_history: [] } },
+      {
+        type: "response_item",
+        payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text }] },
+      },
+    ]);
+    const parsed = await readHistoryFile(filePath, { maxLines: 0 });
+    const compactions = parsed.messages.filter((message) => message.role === "compaction");
+    const normalOutput = parsed.messages.filter((message) => message.role === "assistant");
+
+    expect(compactions).toHaveLength(3);
+    expect(compactions.every((message) => message.content.every((item) => item.type === "context_compaction"))).toBe(true);
+    expect(compactions.flatMap((message) => message.content.flatMap((item) => item.tags || []))).not.toContain("output_text");
+    expect(compactions.flatMap((message) => message.content.flatMap((item) => item.tags || []))).not.toContain("message.output_text");
+    expect(normalOutput).toMatchObject([{ phase: "final_answer", content: [{ type: "output_text", text }] }]);
   });
 
   it("缺少 turn_diff 时会按轮次合并 exec 中的 apply_patch 记录", async () => {

@@ -47,6 +47,20 @@ afterEach(async () => {
 });
 
 describe("Codex 物理记录与逻辑会话", () => {
+  it("普通文件可按需返回字节流，其它调用继续返回 UTF-8 文本流", async () => {
+    const files = await createRollouts();
+    await fsp.writeFile(files.original, jsonl([header(), { type: "test", text: "中文🙂" }]), "utf8");
+    const raw = await openCodexHistoryStream(files.original, 1, { rawBytes: true });
+    expect(raw.readableEncoding).toBeNull();
+    const bytes: Buffer[] = [];
+    for await (const chunk of raw) {
+      expect(Buffer.isBuffer(chunk)).toBe(true);
+      bytes.push(chunk);
+    }
+    expect(Buffer.concat(bytes).toString("utf8")).toContain("中文🙂");
+    expect((await readRecords(files.original))[1].text).toBe("中文🙂");
+  });
+
   it("区分稳定会话编号与回退后的物理记录编号", () => {
     expect(parseCodexRolloutFileName(`rollout-2026-01-02T02-00-00-${THREAD}_${REVISION}.jsonl`))
       .toEqual({ timestamp: "2026-01-02T02-00-00", rolloutId: REVISION });
