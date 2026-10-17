@@ -21,7 +21,7 @@ const path = require("node:path");
 const DEFAULT_BASE_PORT = 5173;
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_WAIT_READY_MS = 30_000;
-const DEFAULT_ELECTRON_INSTALL_TIMEOUT_MS = 5 * 60_000;
+const DEFAULT_ELECTRON_INSTALL_TIMEOUT_MS = 15 * 60_000;
 
 /**
  * 解析命令行参数（仅解析本脚本关注的参数；其它参数将原样透传给 Electron）。
@@ -273,13 +273,20 @@ async function ensureElectronBinary(projectRoot) {
     throw new Error("未找到 node_modules/electron/install.js，请先在 Windows 侧重新执行 npm i");
   }
 
-  console.log("[dev-worktree] 检测到 Electron 二进制缺失，开始尝试自动修复...");
+  const configuredTimeoutMs = Number(process.env.CODEXFLOW_ELECTRON_INSTALL_TIMEOUT_MS);
+  const timeoutMs = Number.isSafeInteger(configuredTimeoutMs) && configuredTimeoutMs >= 1_000 && configuredTimeoutMs <= 2_147_483_647
+    ? configuredTimeoutMs : DEFAULT_ELECTRON_INSTALL_TIMEOUT_MS;
+  console.log(`[dev-worktree] 检测到 Electron 二进制缺失，开始尝试自动修复（最长等待 ${timeoutMs / 1_000} 秒）...`);
 
-  await runCommandWithTimeout(process.execPath, [installScript], {
-    cwd: projectRoot,
-    env: { ...process.env },
-    timeoutMs: DEFAULT_ELECTRON_INSTALL_TIMEOUT_MS,
-  });
+  try {
+    await runCommandWithTimeout(process.execPath, [installScript], {
+      cwd: projectRoot,
+      env: { ...process.env },
+      timeoutMs,
+    });
+  } catch (error) {
+    throw new Error(`Electron 自动修复失败：${String(error?.message || error)}\n可设置 CODEXFLOW_ELECTRON_INSTALL_TIMEOUT_MS 延长等待时间（毫秒）；下载慢时可设置 ELECTRON_MIRROR 后重试。`);
+  }
 
   const repairedPath = isElectronBinaryReady(projectRoot);
   if (repairedPath) return repairedPath;
@@ -353,6 +360,7 @@ function printHelpAndExit(code) {
     "",
     "说明：",
     "  该命令适合在多个 worktree 中同时运行；每个 worktree 会使用不同端口与不同 profile。",
+    "  Electron 缺失时自动下载，默认最多等待 15 分钟；CODEXFLOW_ELECTRON_INSTALL_TIMEOUT_MS 可设置等待毫秒数。",
   ].join("\n"));
   process.exit(code);
 }
@@ -409,7 +417,9 @@ async function main() {
     cleanupAndExit(1);
   });
 
-  vite.on("exit", (code) => {
+  vite.on("exit", (code, signal) => {
+    if (!exiting && code !== 0)
+      console.error(`[dev-worktree] Vite 提前退出：code=${code} signal=${signal || "none"}`);
     // Vite 退出则同步退出（Electron 将无法正常加载）
     cleanupAndExit(typeof code === "number" ? code : 1);
   });
@@ -443,7 +453,9 @@ async function main() {
     cleanupAndExit(1);
   });
 
-  electron.on("exit", (code) => {
+  electron.on("exit", (code, signal) => {
+    if (!exiting && code !== 0)
+      console.error(`[dev-worktree] Electron 提前退出：code=${code} signal=${signal || "none"}`);
     cleanupAndExit(typeof code === "number" ? code : 0);
   });
 }

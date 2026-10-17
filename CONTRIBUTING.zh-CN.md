@@ -19,6 +19,7 @@
 
 - 安装依赖：`npm i`（会编译主进程到 `dist/electron` 并重建原生依赖）。
 - 启动开发：`npm run dev`（先恢复 Electron 兼容的原生模块，再同时启动 Vite 与 Electron）。
+  - Electron 二进制缺失时会自动下载，默认最多等待 15 分钟；可通过 `CODEXFLOW_ELECTRON_INSTALL_TIMEOUT_MS` 设置等待毫秒数（至少 1000）。下载慢时可临时配置 `ELECTRON_MIRROR`；使用 npmmirror 时同时设置 `ELECTRON_CUSTOM_DIR={{ version }}`，保留安装包校验。
 - 执行测试：`npm run test`（运行 Vitest 前会把 `better-sqlite3` 重建为 Node 版本，请勿直接调用 Vitest）。
   - 默认使用一个测试工作进程，避免真实 Git 操作争抢资源而触发原有超时；临时实验目录 `.tmp/` 不参与测试收集。
   - Git 集成测试仍使用独立真实仓库；新增初始配置可复用 `electron/git/testUtils/repoConfig.ts`，不要共享可变仓库或减少断言来提速。
