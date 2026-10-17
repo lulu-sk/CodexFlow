@@ -18,7 +18,7 @@
 
 # CodexFlow
 
-> 为 **AI 编程代理** 打造的"统一工作台"——一键切换 **Codex / Claude / Gemini / Antigravity CLI**（及自定义引擎），按**项目目录**组织会话与历史，通过 **Git Worktree** 并行多任务，用完整 **Git 面板**审查代码，Markdown 渲染浏览与继续历史对话，并为 CLI 提供图形输入框，支持**粘贴图片 / 拖拽文件 / @项目文件 / 全屏输入**，让 Prompt 编写更高效。
+> 为 **AI 编程代理** 打造的"统一工作台"——一键切换 **Codex / Claude / Gemini / Antigravity CLI / Grok Build**（及自定义引擎），按**项目目录**组织会话与历史，通过 **Git Worktree** 并行多任务，用完整 **Git 面板**审查代码，Markdown 渲染浏览与继续历史对话，并为 CLI 提供图形输入框，支持**粘贴图片 / 拖拽文件 / @项目文件 / 全屏输入**，让 Prompt 编写更高效。
 
 - 平台建议：**Windows 11 + WSL** 与 **Windows 11 + PowerShell 7** 都推荐。
 - 项目结构：**UI 宿主与最小终端桥接**(Electron + React + Vite + node-pty + xterm)。
@@ -46,12 +46,12 @@
 
 ## ✨ 核心特性
 
-1. **多引擎统一工作台（Codex / Claude / Gemini / Antigravity CLI / Terminal + 自定义引擎）**
-   顶栏一键切换引擎；内置引擎支持**用量展示**与**完成通知**（任务栏徽标/系统通知/提示音）。每个引擎可独立配置**启动命令**（`codex`、`claude`、`gemini`、`agy` 或自定义命令）、**亮/暗图标**与**运行环境**（WSL / PowerShell 7 / Windows PowerShell / CMD / 指定 WSL 发行版），并支持自定义引擎扩展。
+1. **多引擎统一工作台（Codex / Claude / Gemini / Antigravity CLI / Grok Build / Terminal + 自定义引擎）**
+   顶栏一键切换引擎；内置引擎支持**用量展示**与**完成通知**（任务栏徽标/系统通知/提示音）。每个引擎可独立配置**启动命令**（`codex`、`claude`、`gemini`、`agy`、`grok` 或自定义命令）、**亮/暗图标**与**运行环境**（WSL / PowerShell 7 / Windows PowerShell / CMD / 指定 WSL 发行版），并支持自定义引擎扩展。
 2. **跨引擎历史中心**
-   只读增量索引多引擎（Codex / Claude / Gemini / Antigravity CLI）原生会话记录（Windows + WSL 路径全读取），按项目目录聚合展示，可一键新增会话；支持筛选、快速搜索与时间分组预览。详情页支持 **Markdown 渲染**（代码高亮）与**页内查找高亮**，高效历史记录查询。
+   只读增量索引多引擎（Codex / Claude / Gemini / Antigravity CLI / Grok Build）原生会话记录（Windows + WSL 路径全读取），按项目目录聚合展示，可一键新增会话；支持筛选、快速搜索与时间分组预览。详情页支持 **Markdown 渲染**（代码高亮）与**页内查找高亮**，高效历史记录查询。
 3. **原生 Git worktree 并行工作流（为并行 Agent 设计，推荐用法）**
-   以分支为入口（分支徽标 `⎇`）一键创建/复用 worktree：支持**单**或**多引擎（Codex / Claude / Gemini / Antigravity CLI）混合并行工作**（并发进度面板、取消、回滚清理）。完成后支持一键回收，形成“创建 → 运行 → 合并 → 清理”的闭环。
+   以分支为入口（分支徽标 `⎇`）一键创建/复用 worktree：支持**单**或**多引擎（Codex / Claude / Gemini / Antigravity CLI / Grok Build）混合并行工作**（并发进度面板、取消、回滚清理）。完成后支持一键回收，形成“创建 → 运行 → 合并 → 清理”的闭环。
 4. **完整 Git 面板：审查、提交与历史**
    不离开 CodexFlow 就能处理本地改动：查看左右对比差异、精确暂存、编写提交、拉取/获取/推送、检查分支与 worktree、浏览提交图谱，并查看提交详情中的变更文件和补丁上下文。它能把 Agent 产出的改动变成清晰的“审查 → 提交”流程，而不是一堆终端命令。
 5. **为 CLI 提供图形输入框：@文件 / @规则 / 图片 / 拖拽**
@@ -64,7 +64,7 @@
 8. **用量与账号管理**
    顶栏实时监控各引擎配额/用量；支持多账号配置与快速切换（按引擎维度独立管理历史与会话）。
 9. **高完成度体验与深度可定制**
-   亮/暗/跟随系统主题；终端字体、主题与滚动条等外观定制；项目排序/隐藏/拖拽分组与备注名；网络代理支持。
+   亮/暗/跟随系统主题；终端字体、主题与滚动条等外观定制；项目排序/隐藏/拖拽分组与备注名；网络代理支持，并可设置新终端是否继承代理。
 
 ------
 
@@ -85,7 +85,7 @@
 ### 5) Git 面板（改动、差异、分支、提交日志、提交详情）
 ![Git 面板](assets/screenshots/git-panel.png)
 
-### 6) 设置与引擎（Codex、Claude、Gemini、Antigravity CLI、自定义引擎）
+### 6) 设置与引擎（Codex、Claude、Gemini、Antigravity CLI、Grok Build、自定义引擎）
 ![设置与引擎](assets/screenshots/settings-engines.png)
 
 ---
@@ -94,7 +94,7 @@
 
 ### 环境准备
 - 推荐 **Windows 11 + WSL** 或 **Windows 11 + PowerShell 7**。
-- 至少有一个 AI 编程代理 CLI 可在 WSL 或 PowerShell 中运行（例如 `codex`、`claude`、`gemini` 或 Antigravity CLI `agy`）。
+- 至少有一个 AI 编程代理 CLI 可在 WSL 或 PowerShell 中运行（例如 `codex`、`claude`、`gemini`、Antigravity CLI `agy` 或 Grok Build `grok`）。
 
 ### WSL 环境准备教程
 - [在 Windows 安装 WSL(Ubuntu)并在 WSL 安装 Codex CLI](./docs/setup-wsl-codex.zh-CN.md)
@@ -105,7 +105,7 @@
 
 ### 初次使用
 1. 点击界面右上角的 **设置**（齿轮）配置执行环境：选择 **WSL / PowerShell 7 / Windows PowerShell / CMD**，需要 WSL 时指定正确的发行版后保存。
-2. 在顶部栏选择所需引擎（Codex / Claude / Gemini / Antigravity CLI / Terminal / 自定义）。
+2. 在顶部栏选择所需引擎（Codex / Claude / Gemini / Antigravity CLI / Grok Build / Terminal / 自定义）。
 3. 选择(或添加)一个项目目录,点击 **+** 新建会话。
 4. 在终端中登录或使用 API 凭据,按需完成初始设置。
 5. 在输入框中粘贴图片、@项目文件、@规则文件、拖拽文件,开始你的对话与协作。
@@ -117,7 +117,7 @@
 - **历史筛选与复制**：支持筛选并直接复制所见内容,历史支持 Markdown 渲染方便阅读。
 - **输入增强**：粘贴图片自动内联预览；使用全屏模式编写长 Prompt。
 - **Git 面板**：Agent 改了什么先看清楚，再选择要提交的内容；分支历史、提交信息和推送都能在同一个面板里完成。
-- **Worktree 工作流**：从项目侧边栏创建 worktree,并行运行 Agent,然后将成果合并回基分支。
+- **Worktree 工作流**：从项目侧边栏创建 worktree,并行运行 Agent,然后将成果合并回基分支。仓库至少要有一次提交才能创建 worktree。
 - **多项目切换**：左侧项目区显示活跃会话数,利于多任务掌控。
 - **多实例(Profile)**：先在设置里开启"实验性功能"(需重启),之后可直接再次启动应用实现多开；如需固定 profile,可使用 `--profile <name>`(如 `CodexFlow.exe --profile work`)。
 - **键盘快捷键**：悬停列表项可查看可用快捷键；弹窗支持键盘操作。
@@ -139,6 +139,8 @@ npm i
 npm run dev
 # 开发时,主进程会从 DEV_SERVER_URL=http://localhost:5173 加载页面
 ```
+
+* Electron 二进制缺失时会自动下载，默认最多等待 15 分钟；可通过 `CODEXFLOW_ELECTRON_INSTALL_TIMEOUT_MS` 设置等待毫秒数（至少 1000）。下载慢时可临时配置 `ELECTRON_MIRROR`；使用 npmmirror 时同时设置 `ELECTRON_CUSTOM_DIR={{ version }}`，保留安装包校验。
 
 ### 生产构建
 
@@ -228,10 +230,14 @@ npm run i18n:check
   antigravity/
     usage.ts                    # Antigravity CLI 用量快照探测
     notifications.ts            # Antigravity 完成通知支持
+  grok/
+    usage.ts                    # Grok Build 账号用量
+    notifications.ts            # Grok Build 完成通知支持
   agentSessions/
     antigravity/                # Antigravity CLI 会话发现与解析
     claude/                     # Claude 会话发现与解析
     gemini/                     # Gemini 会话发现与解析
+    grok/                       # Grok Build 会话发现与解析
   providers/
     runtime.ts                  # 引擎运行时解析
   projects/
@@ -262,6 +268,7 @@ npm run i18n:check
         claude-status.tsx                # Claude 用量面板
         gemini-status.tsx                # Gemini 用量面板
         antigravity-status.tsx           # Antigravity 用量面板
+        grok-status.tsx                  # Grok Build 用量面板
       ui/*
     lib/
       providers/                # 引擎定义与 YOLO 预设
@@ -275,6 +282,7 @@ npm run i18n:check
       codex/commands.ts
       claude/commands.ts
       gemini/commands.ts
+      grok/commands.ts
     types/host.d.ts
     vite.config.mts
 /tailwind.config.js
@@ -293,7 +301,7 @@ npm run i18n:check
 
 * 发行版默认：`distro = 'Ubuntu-24.04'`
 * 终端模式：`terminal = 'wsl' | 'pwsh' | 'windows' | 'cmd'`（WSL、PowerShell 7、Windows PowerShell 5 或 CMD）
-* 引擎命令：每个引擎独立存储启动命令（如 `codex`、`claude`、`gemini`、`agy`），可选 YOLO 预设
+* 引擎命令：每个引擎独立存储启动命令（如 `codex`、`claude`、`gemini`、`agy`、`grok`），可选 YOLO 预设
 
 * WSL：`bash -lc "<engineCmd>"`
 * PowerShell 7：可用时通过 `pwsh` 执行

@@ -18,7 +18,7 @@
 
 # CodexFlow
 
-> A "Unified Workbench" crafted for **AI Coding Agents** — switch between **Codex / Claude / Gemini / Antigravity CLI** (and custom engines) in one click, organize sessions and history by **project directories**, run parallel tasks with **Git Worktree**, review code in a full **Git panel**, browse and resume conversations with Markdown rendering, and provide a graphical input box for CLI with **pasted images / dragged files / @project files / full-screen input** for more efficient prompting.
+> A "Unified Workbench" crafted for **AI Coding Agents** — switch between **Codex / Claude / Gemini / Antigravity CLI / Grok Build** (and custom engines) in one click, organize sessions and history by **project directories**, run parallel tasks with **Git Worktree**, review code in a full **Git panel**, browse and resume conversations with Markdown rendering, and provide a graphical input box for CLI with **pasted images / dragged files / @project files / full-screen input** for more efficient prompting.
 
 - **Platform Recommendation**: **Windows 11 + WSL** and **Windows 11 + PowerShell 7** are both recommended.
 - **Project Structure**: **UI Host with a Minimal Terminal Bridge** (Electron + React + Vite + node-pty + xterm).
@@ -46,12 +46,12 @@
 
 ## ✨ Core Features
 
-1. **Unified Multi-Engine Workbench (Codex / Claude / Gemini / Antigravity CLI / Terminal + Custom)**
-   Switch engines instantly via the top bar. Built-in engines support **usage monitoring** and **completion notifications** (taskbar badges/system notifications/alert sounds). Each engine can be independently configured with **startup commands** (`codex`, `claude`, `gemini`, `agy`, or your own command), **light/dark icons**, and **execution environments** (WSL / PowerShell 7 / Windows PowerShell / CMD / specific WSL distro), with support for custom engine extensions.
+1. **Unified Multi-Engine Workbench (Codex / Claude / Gemini / Antigravity CLI / Grok Build / Terminal + Custom)**
+   Switch engines instantly via the top bar. Built-in engines support **usage monitoring** and **completion notifications** (taskbar badges/system notifications/alert sounds). Each engine can be independently configured with **startup commands** (`codex`, `claude`, `gemini`, `agy`, `grok`, or your own command), **light/dark icons**, and **execution environments** (WSL / PowerShell 7 / Windows PowerShell / CMD / specific WSL distro), with support for custom engine extensions.
 2. **Cross-Engine History Center**
-   Read-only incremental indexing of native session records across multiple engines (Codex / Claude / Gemini / Antigravity CLI) with full support for both Windows and WSL paths. Sessions are aggregated by project directory with one-click creation of new sessions. Features include filtering, quick search, and time-grouped previews. The detail view supports **Markdown rendering** (with syntax highlighting) and **in-page search highlighting** for efficient history lookups.
+   Read-only incremental indexing of native session records across multiple engines (Codex / Claude / Gemini / Antigravity CLI / Grok Build) with full support for both Windows and WSL paths. Sessions are aggregated by project directory with one-click creation of new sessions. Features include filtering, quick search, and time-grouped previews. The detail view supports **Markdown rendering** (with syntax highlighting) and **in-page search highlighting** for efficient history lookups.
 3. **Native Git Worktree Parallel Workflow (Designed for Parallel Agents, Recommended)**
-   Create or reuse worktrees directly from branches (branch badge `⎇`). Supports **single or hybrid parallel workflows** across multiple engines (Codex / Claude / Gemini / Antigravity CLI) with a concurrent progress panel, cancellation, and rollback cleanup. Provides a seamless loop of "Create → Run → Merge → Clean" after task completion.
+   Create or reuse worktrees directly from branches (branch badge `⎇`). Supports **single or hybrid parallel workflows** across multiple engines (Codex / Claude / Gemini / Antigravity CLI / Grok Build) with a concurrent progress panel, cancellation, and rollback cleanup. Provides a seamless loop of "Create → Run → Merge → Clean" after task completion.
 4. **Complete Git Panel for Review, Commit, and History**
    Work with local changes without leaving CodexFlow: review side-by-side diffs, stage precise changes, write commits, pull/fetch/push, inspect branches and worktrees, browse the commit graph, and open commit details with changed files and patch context. It turns agent output into a clean review-to-commit workflow instead of a pile of terminal commands.
 5. **GUI Input for CLI: @Files / @Rules / Images / Drag-and-Drop**
@@ -64,7 +64,7 @@
 8. **Usage & Account Management**
    Real-time monitoring of quotas and usage for each engine in the top bar. Supports multi-account configuration and quick switching (independent management of history and sessions per engine).
 9. **Polished Experience & Deep Customization**
-   Supports Light/Dark/System-matching themes. Customizable terminal fonts, themes, scrollbars, and overall appearance. Project management includes sorting, hiding, drag-and-drop grouping, and custom nicknames. Full network proxy support is also included.
+   Supports Light/Dark/System-matching themes. Customizable terminal fonts, themes, scrollbars, and overall appearance. Project management includes sorting, hiding, drag-and-drop grouping, and custom nicknames. Full network proxy support is included, with a switch to decide whether new terminals inherit the proxy.
 
 ------
 
@@ -85,7 +85,7 @@
 ### 5) Git Panel (Changes, Diffs, Branches, Commit Log, Commit Details)
 ![Git Panel](assets/screenshots/git-panel.png)
 
-### 6) Settings & Engines (Codex, Claude, Gemini, Antigravity CLI, Custom Engines)
+### 6) Settings & Engines (Codex, Claude, Gemini, Antigravity CLI, Grok Build, Custom Engines)
 ![Settings and Engines](assets/screenshots/settings-engines.png)
 
 ---
@@ -94,7 +94,7 @@
 
 ### Environment Preparation
 - Recommended: **Windows 11 + WSL** or **Windows 11 + PowerShell 7**.
-- At least one AI Programming Agent CLI runnable in WSL or PowerShell (for example `codex`, `claude`, `gemini`, or Antigravity CLI `agy`).
+- At least one AI Programming Agent CLI runnable in WSL or PowerShell (for example `codex`, `claude`, `gemini`, Antigravity CLI `agy`, or Grok Build `grok`).
 
 ### WSL Setup Tutorial
 - [Install WSL (Ubuntu) and Codex CLI on Windows](./docs/setup-wsl-codex.en.md)
@@ -105,7 +105,7 @@
 
 ### First-Time Use
 1. Click the **Settings** (gear icon) in the top right to configure the environment: Select **WSL / PowerShell 7 / Windows PowerShell / CMD**, specify the correct WSL distro when needed, and save.
-2. Choose your desired engine from the top bar (Codex / Claude / Gemini / Antigravity CLI / Terminal / Custom).
+2. Choose your desired engine from the top bar (Codex / Claude / Gemini / Antigravity CLI / Grok Build / Terminal / Custom).
 3. Select (or add) a project directory and click **+** to start a new session.
 4. Log in or provide API credentials in the terminal as required.
 5. Paste images, use `@` for project files or rules, drag files in, and start your collaborative coding journey.
@@ -117,7 +117,7 @@
 - **Filter & Copy History**: Supports filtering and direct copying of rendered content; Markdown rendering makes history easy to read.
 - **Input Boosters**: Pasted images automatically show inline previews; use full-screen mode for composing long prompts.
 - **Git Panel**: See exactly what the agent changed, choose what to commit, and handle branch history, commit messages, and pushes from one panel.
-- **Worktree Workflow**: Create worktrees from the project sidebar to run agents in parallel, then merge results back to the base branch.
+- **Worktree Workflow**: Create worktrees from the project sidebar to run agents in parallel, then merge results back to the base branch. The repository needs at least one commit before a worktree can be created.
 - **Multi-Project Management**: The left sidebar shows active session counts, helping you keep track of multiple tasks.
 - **Multiple Instances (Profiles)**: Enable "Experimental Features" in settings (requires restart) to open multiple application instances. For a persistent profile, use `--profile <name>` (e.g., `CodexFlow.exe --profile work`).
 - **Keyboard Shortcuts**: Hover over list items to see available shortcuts; dialogs support keyboard navigation.
@@ -139,6 +139,8 @@ npm i
 npm run dev
 # During development, the main process loads from DEV_SERVER_URL=http://localhost:5173
 ```
+
+* If the Electron binary is missing, it is downloaded automatically (waits up to 15 minutes by default). Override the wait with `CODEXFLOW_ELECTRON_INSTALL_TIMEOUT_MS` (milliseconds, at least 1000). For slow downloads, set `ELECTRON_MIRROR`; when using npmmirror, also set `ELECTRON_CUSTOM_DIR={{ version }}` to keep package verification.
 
 ### Production Build
 ```bash
@@ -221,10 +223,14 @@ npm run i18n:check
   antigravity/
     usage.ts                    # Antigravity CLI usage snapshot detection
     notifications.ts            # Antigravity completion notification support
+  grok/
+    usage.ts                    # Grok Build account usage
+    notifications.ts            # Grok Build completion notification support
   agentSessions/
     antigravity/                # Antigravity CLI session discovery & parsing
     claude/                     # Claude session discovery & parsing
     gemini/                     # Gemini session discovery & parsing
+    grok/                       # Grok Build session discovery & parsing
   providers/
     runtime.ts                  # Engine runtime resolution
   projects/
@@ -255,6 +261,7 @@ npm run i18n:check
         claude-status.tsx                # Claude usage panel
         gemini-status.tsx                # Gemini usage panel
         antigravity-status.tsx           # Antigravity usage panel
+        grok-status.tsx                  # Grok Build usage panel
       ui/*
     lib/
       providers/                # Engine definitions & YOLO presets
@@ -268,6 +275,7 @@ npm run i18n:check
       codex/commands.ts
       claude/commands.ts
       gemini/commands.ts
+      grok/commands.ts
     types/host.d.ts
     vite.config.mts
 /tailwind.config.js
@@ -286,7 +294,7 @@ npm run i18n:check
 
 * **Default Distro**: `distro = 'Ubuntu-24.04'`
 * **Terminal Mode**: `terminal = 'wsl' | 'pwsh' | 'windows' | 'cmd'` (WSL, PowerShell 7, Windows PowerShell 5, or CMD).
-* **Engine Commands**: Each engine independently stores its startup command (e.g., `codex`, `claude`, `gemini`, `agy`), with optional YOLO presets.
+* **Engine Commands**: Each engine independently stores its startup command (e.g., `codex`, `claude`, `gemini`, `agy`, `grok`), with optional YOLO presets.
 * **Execution**:
   * **WSL**: `bash -lc "<engineCmd>"`
   * **PowerShell 7**: Executed with `pwsh` when available.
