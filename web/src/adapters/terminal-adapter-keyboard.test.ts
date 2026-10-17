@@ -98,13 +98,84 @@ describe("TerminalAdapter（真实 xterm 键盘输入）", () => {
     expect(outbound).toEqual(["\x1b[1;5H", "\x1b[1;5F"]);
   });
 
-  it.each(["shell", "claude", "gemini"])("%s 全屏界面的滚动按钮不发送 Codex 跳转键", async (provider) => {
+  it.each(["shell", "gemini"])("%s 全屏界面的滚动按钮不发送历史跳转键", async (provider) => {
     providerId = provider;
     await renderTerminal("\x1b[?1049h\x1b[?1003h\x1b[20;1H› Ask Codex to do anything");
     outbound.length = 0;
     adapter.scrollToTop();
     adapter.scrollToBottom();
     expect(outbound).toEqual([]);
+  });
+
+  it.each([
+    ["开启鼠标报告", "\x1b[?1003h\x1b[?1006h"],
+    ["关闭鼠标报告", ""],
+  ])("Claude 全屏历史在%s时，按钮和键盘都发送原生端点跳转键", async (_label, mouseMode) => {
+    providerId = "claude";
+    await renderTerminal(`\x1b[?1049h${mouseMode}\x1b[20;1H❯ 尚未发送的草稿`);
+    outbound.length = 0;
+
+    adapter.scrollToTop();
+    adapter.scrollToBottom();
+    pressKey("Home", 36, { ctrlKey: true });
+    pressKey("End", 35, { ctrlKey: true });
+
+    expect(outbound).toEqual(["\x1b[1;5H", "\x1b[1;5F", "\x1b[1;5H", "\x1b[1;5F"]);
+    expect(adapter.readCursorTextSnapshot?.()?.text).toContain("尚未发送的草稿");
+  });
+
+  it("Claude 执行中没有输入框时仍能跳转，持续滚底请求只发送一次且不抢焦点", async () => {
+    providerId = "claude";
+    await renderTerminal("\x1b[?1049h\x1b[?1003h\x1b[20;1Hesc to interrupt");
+    outbound.length = 0;
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+    input.focus();
+
+    adapter.scrollToTop();
+    adapter.scrollToBottom({ followOutput: true, source: "history-resume" });
+    await renderTerminal("\r\nmore output");
+
+    expect(outbound).toEqual(["\x1b[1;5H", "\x1b[1;5F"]);
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("Claude 普通缓冲区继续滚动真实历史，进出全屏后立即切换行为", async () => {
+    providerId = "claude";
+    await renderTerminal(Array.from({ length: 80 }, (_, i) => `line ${i}\r\n`).join(""));
+    outbound.length = 0;
+
+    adapter.scrollToTop();
+    expect(adapter.getScrollSnapshot?.()).toMatchObject({ viewportY: 0, isAtBottom: false });
+    adapter.scrollToBottom();
+    expect(adapter.getScrollSnapshot?.()?.viewportY).toBeGreaterThan(0);
+    expect(adapter.getScrollSnapshot?.()?.isAtBottom).toBe(true);
+    expect(outbound).toEqual([]);
+
+    await renderTerminal("\x1b[?1049h");
+    adapter.scrollToTop();
+    adapter.scrollToBottom();
+    expect(outbound).toEqual(["\x1b[1;5H", "\x1b[1;5F"]);
+
+    await renderTerminal("\x1b[?1049l");
+    outbound.length = 0;
+    adapter.scrollToTop();
+    expect(adapter.getScrollSnapshot?.()).toMatchObject({ viewportY: 0, isAtBottom: false });
+    adapter.scrollToBottom();
+    expect(adapter.getScrollSnapshot?.()?.isAtBottom).toBe(true);
+    expect(outbound).toEqual([]);
+  });
+
+  it("全屏滚动按钮读取最新引擎，切换到其它引擎后停止发送跳转键", async () => {
+    await renderTerminal("\x1b[?1049h");
+    providerId = "claude";
+    adapter.scrollToTop();
+    providerId = "shell";
+    adapter.scrollToTop();
+    adapter.scrollToBottom();
+    providerId = "codex";
+    adapter.scrollToBottom();
+    expect(outbound).toEqual(["\x1b[1;5H"]);
   });
 
   it("旧版 Codex 普通缓冲区滚动按钮不向会话发送按键", async () => {
